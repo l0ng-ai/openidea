@@ -399,6 +399,12 @@ pub fn parse_tasks(output: &str) -> Vec<(String, GradleTask)> {
     out
 }
 
+/// Static fallback until Gradle has reported its tasks.
+pub(crate) fn has_war_plugin(script: &str) -> bool {
+    let script = strip_comments(script);
+    script.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == "war")
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

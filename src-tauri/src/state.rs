@@ -64,19 +64,28 @@ impl AppState {
         }
         let config_dir = app.path().app_config_dir()?;
         let data_dir = app.path().app_data_dir()?;
+        let local_data_dir = app.path().app_local_data_dir()?;
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
+        if let Err(error) = std::fs::create_dir_all(&local_data_dir) {
+            tracing::warn!(?local_data_dir, %error, "cannot create local data directory");
+        }
+        tracing::info!(?data_dir, ?local_data_dir, "application data directories");
+        // Saved git HTTPS credentials (askpass answers them silently).
+        ide_ssh::git_creds::init(data_dir.join("git-credentials.json"));
         // File › Invalidate Caches… requested at the last run.
-        let removed = ide_workspace::caches::apply_pending(&data_dir);
+        let removed = ide_workspace::caches::apply_pending(&data_dir, &local_data_dir);
         if !removed.is_empty() {
             tracing::info!("invalidated caches: {removed:?}");
         }
+        ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
         let global_sink: SharedSink = Arc::new(TauriSink { app: app.clone(), window: None });
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
         let host = Arc::new(Host::new(ide_host::HostConfig {
             config_dir: config_dir.clone(),
             data_dir: data_dir.clone(),
+            local_data_dir,
             languages: languages.clone(),
             syntax,
             sink_for: Box::new(move |window| {
@@ -90,7 +99,7 @@ impl AppState {
             recent: RecentProjects::load(&config_dir),
             askpass: start_askpass(&app),
             sink: global_sink,
-            plugins: crate::commands::plugin::create_host(&app, &data_dir)?,
+            plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
             web: ide_web::WebServer::new(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,
@@ -158,10 +167,24 @@ fn start_askpass(app: &AppHandle) -> Option<ide_ssh::askpass::AskpassServer> {
     let on_prompt = Arc::new(move |p: ide_ssh::askpass::AskpassPrompt| {
         // A focused Settings window hands the prompt to its project window.
         let window = crate::windows::target_window(&handle).map(|w| AppState::owner_window(w.label()).to_owned());
-        TauriSink { app: handle.clone(), window }.emit(IdeEvent::Askpass { id: p.id, prompt: p.prompt, kind: p.kind });
+        let remember = ide_ssh::askpass::remembers(&p.prompt);
+        TauriSink { app: handle.clone(), window }.emit(IdeEvent::Askpass {
+            id: p.id,
+            prompt: p.prompt,
+            kind: p.kind,
+            remember,
+        });
     });
     match ide_ssh::askpass::AskpassServer::start(exe, on_prompt) {
         Ok(server) => {
+            ide_vcs::set_git_command_observer(
+                ide_ssh::askpass::COMMAND_ENV,
+                Arc::new(|id, success, stderr| {
+                    if let Some(store) = ide_ssh::git_creds::get() {
+                        store.command_finished(id, success, stderr);
+                    }
+                }),
+            );
             ide_vcs::set_askpass_env(server.env());
             Some(server)
         }

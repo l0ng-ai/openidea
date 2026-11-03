@@ -73,13 +73,35 @@ describe("Language Servers page settings", () => {
 
   afterEach(() => setToolsBackend(null));
 
+  const pythonPicker = async (user: ReturnType<typeof userEvent.setup>) => {
+    await waitFor(() => expect(listItem("pyright")).not.toBeNull());
+    await user.click(listItem("pyright")!);
+    // No on/off box: the group's picker replaces it.
+    expect(within(details("Pyright")).queryByRole("checkbox", { name: /^Use Pyright/ })).toBeNull();
+    return within(details("Pyright")).getByRole("button", { name: "Language server for Python" });
+  };
+
+  it("lists one picker per group of interchangeable servers, on each member", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await pythonPicker(user);
+    await user.click(listItem("ty")!);
+    const ty = details("ty (Python)");
+    expect(within(ty).getByRole("button", { name: "Language server for Python" })).toHaveTextContent("Automatic");
+    // The language is in the label already, so names drop a "(Python)" suffix.
+    expect(within(ty).getByText(/basedpyright → Pyright → ty\.$/)).toBeInTheDocument();
+    await user.click(listItem("gopls")!);
+    expect(within(details("gopls")).getByRole("checkbox", { name: /Use gopls/ })).toBeInTheDocument();
+    expect(within(details("gopls")).queryByRole("button", { name: /^Language server for/ })).toBeNull();
+  });
+
   it("selects exactly one Python analyzer and restores automatic fallback without writing defaults", async () => {
     const user = userEvent.setup();
     renderPage();
-    const picker = screen.getByRole("button", { name: "Python language server" });
+    const picker = await pythonPicker(user);
     expect(picker).toHaveTextContent("Automatic");
     await user.click(picker);
-    await user.click(screen.getByRole("option", { name: "ty" }));
+    await user.click(screen.getByRole("option", { name: /^ty/ }));
     expect(stagedFor("languageServers.basedpyright.enabled")).toBe(false);
     expect(stagedFor("languageServers.pyright.enabled")).toBe(false);
     expect(stagedFor("languageServers.ty.enabled")).toBeNull();
@@ -99,9 +121,9 @@ describe("Language Servers page settings", () => {
         <LanguageServersPage />
       </TestSettingsForm>,
     );
-    const picker = screen.getByRole("button", { name: "Python language server" });
+    const picker = await pythonPicker(user);
     await user.click(picker);
-    await user.click(screen.getByRole("option", { name: "Pyright" }));
+    await user.click(screen.getByRole("option", { name: /^Pyright/ }));
     expect(stagedFor("languageServers.basedpyright.enabled")).toBe(false);
     expect(stagedFor("languageServers.pyright.enabled")).toBe(true);
     expect(stagedFor("languageServers.ty.enabled")).toBe(false);

@@ -74,6 +74,24 @@ function inOrder(text: string, query: string): boolean {
   return i >= query.length;
 }
 
+/** Whether an `@` query is a typed-out path (`../x`, `./x`, `/x`) rather than a project file search. */
+export const isPathQuery = (query: string) => /^(\.\.?(\/|$)|\/)/.test(query);
+
+const isDrive = (part: string | undefined) => !!part && /^[A-Za-z]:$/.test(part);
+
+/** `rel` (as typed after `@`) resolved against `root`, `.` and `..` folded lexically. */
+export function resolveTyped(root: string, rel: string): string {
+  const out: string[] = [];
+  const path = rel.startsWith("/") ? rel : `${root.replace(/\\/g, "/")}/${rel}`;
+  for (const part of path.split("/")) {
+    if (part === "..") {
+      // Never fold away a Windows drive (`C:`).
+      if (out.length > 1 || !isDrive(out[0])) out.pop();
+    } else if (part && part !== ".") out.push(part);
+  }
+  return isDrive(out[0]) ? out.join("/") : `/${out.join("/")}`;
+}
+
 /** `@rel` with a line range suffix when given ("@src/a.rs:10-20"). */
 export function mentionOf(rel: string, lines?: { from: number; to: number }): string {
   if (!lines) return `@${rel}`;
@@ -129,6 +147,17 @@ export function modeIcon(mode: string): string {
   if (m.includes("edit") || m === "code") return "edit";
   if (m === "auto" || m === "agent") return "run";
   return "lock";
+}
+
+/** The settings that approve everything without asking (a bypass mode, or approvals), by option id. */
+export function bypassDefaults(config: readonly AgentConfigOption[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  const mode = modeOption(config);
+  const unlock = mode?.values.find((v) => modeIcon(v.value) === "unlock");
+  if (mode && unlock) out[mode.id] = unlock.value;
+  const approval = config.find((o) => o.category === "approval");
+  if (approval?.values.some((v) => v.value === "bypass")) out[approval.id] = "bypass";
+  return out;
 }
 
 /** Shift+Tab: the mode after the current one. */

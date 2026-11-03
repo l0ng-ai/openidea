@@ -3,6 +3,9 @@
  * tests of a previous run, using each framework's own filter syntax.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { formatArgs } from "../configs";
+import { djangoTestsOf } from "../djangoTypes";
+import { goTestParts, withoutGoSelection } from "../goArguments";
 import { frameworkFor } from "./index";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 
@@ -82,16 +85,23 @@ function pytestArgs(base: string[], paths: string[][]): string[] | null {
   return [...kept, ...ids];
 }
 
-const isGoPkgPattern = (a: string) => a === "." || a === "./..." || a.startsWith("./");
-
 function goArgs(base: string[], paths: string[][]): string[] | null {
   const pkgs = unique(paths.map((p) => p[0]!).filter(Boolean));
   if (!pkgs.length) return null;
   const tests = paths.filter((p) => p.length > 1);
-  const args = dropFlag(base, ["-run"]).filter((a) => !isGoPkgPattern(a));
+  const parts = goTestParts(base);
   const top = unique(tests.map((p) => p[1]!));
-  const run = top.length ? ["-run", `^(${top.map(escapeRegExp).join("|")})$`] : [];
-  return [...args, ...run, ...pkgs];
+  const pattern =
+    tests.length === 1 && tests[0]!.length > 2
+      ? tests[0]!
+          .slice(1)
+          .map((name) => `^${escapeRegExp(name)}$`)
+          .join("/")
+      : `^(${top.map(escapeRegExp).join("|")})$`;
+  const run = top.length ? ["-run", pattern] : [];
+  // A file-scoped run is reported under this synthetic import path; keep its file targets.
+  const targets = pkgs.includes("command-line-arguments") ? parts.targets : pkgs;
+  return ["test", ...withoutGoSelection(parts.flags), ...run, ...targets, ...parts.program];
 }
 
 function jvmArgs(config: RunConfig, paths: string[][]): string[] | null {
@@ -148,6 +158,12 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
     case "pytest":
       args = pytestArgs(config.args, paths);
       break;
+    case "unittest": {
+      // Django: dotted labels (`polls.tests.QuestionTests.test_x`) in place of the run's own target.
+      const tests = djangoTestsOf(config, unique(paths.map((p) => p.join("."))));
+      if (!tests) return null;
+      return { ...config, ...tests, name, detected: true, env: { ...config.env } };
+    }
     case "go":
       args = goArgs(config.args, paths);
       break;
@@ -158,5 +174,24 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
       args = null;
   }
   if (!args) return null;
-  return { ...config, args, name, detected: true, env: { ...config.env } };
+  return {
+    ...config,
+    args,
+    name,
+    detected: true,
+    env: { ...config.env },
+    ...(frameworkFor(config) === "go" && config.params?.goKind
+      ? {
+          cwd: config.params.module || config.cwd,
+          params:
+            config.params.scope === "file"
+              ? {
+                  ...config.params,
+                  pattern: args[args.indexOf("-run") + 1] ?? "",
+                  toolArgs: formatArgs(withoutGoSelection(goTestParts(args).flags)),
+                }
+              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "false" },
+        }
+      : {}),
+  };
 }

@@ -9,13 +9,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
+mod markers;
 mod registry;
 mod syntax;
+pub use markers::marked_root;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
-    CSS_CLASS, CSS_ID, CSS_VARIABLE, FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES,
-    ParsedTree, SpellingKind, SpellingRegion, Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind,
-    SyntaxHighlights, TreeError, WebReference, WebReferenceKind, merge_visibility,
+    CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, FileReference, Literal, LiteralKind, MAX_CACHED_TREES,
+    MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion, Syntax, SyntaxCache, SyntaxCacheStats,
+    SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference, WebReferenceKind, merge_visibility,
 };
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
@@ -41,12 +43,40 @@ pub struct LanguageConfig {
     /// Name of the CodeMirror/Lezer language the UI should load for instant highlighting.
     #[serde(default)]
     pub ui_mode: Option<String>,
+    /// Modes replacing `ui_mode` in a framework's projects (Angular templates);
+    /// the first one whose root marker is found applies.
+    #[serde(default)]
+    pub framework_ui_modes: Vec<FrameworkUiMode>,
     #[serde(default)]
     pub tree_sitter: Option<String>,
     #[serde(default)]
     pub language_servers: Vec<LanguageServerConfig>,
     #[serde(default)]
     pub debugger: Option<DebuggerConfig>,
+    /// External formatter used when no language server can format, or selected in settings.
+    #[serde(default)]
+    pub formatter: Option<FormatterConfig>,
+}
+
+/// An external formatting tool and its language-specific parser.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FormatterConfig {
+    pub tool: String,
+    pub parser: String,
+    #[serde(default)]
+    pub range: bool,
+}
+
+/// A CodeMirror mode for the files of a framework's projects.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FrameworkUiMode {
+    pub ui_mode: String,
+    /// Files whose presence in a directory above a file, up to the project
+    /// folder, marks the framework's project, e.g. `angular.json`; matched like
+    /// language servers' `root-markers`.
+    pub root_markers: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
@@ -66,7 +96,9 @@ pub struct LanguageServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Files whose presence marks a workspace root, e.g. `Cargo.toml`.
+    /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
+    /// `file#table` requires the TOML file to contain that dotted table, e.g.
+    /// `pyproject.toml#tool.ruff`.
     #[serde(default)]
     pub root_markers: Vec<String>,
     /// Serve only files below a root marker, not the whole project: a framework's
@@ -103,6 +135,9 @@ pub struct LanguageServerConfig {
     /// a JDK 21+); reported as the failure instead of launching it.
     #[serde(skip)]
     pub launch_error: Option<String>,
+    /// Register source files with tsserver when no project configuration exists.
+    #[serde(default)]
+    pub tsserver_project: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

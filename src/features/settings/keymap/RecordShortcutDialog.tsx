@@ -22,7 +22,7 @@ export interface RecordShortcutDialogProps {
   onCancel: () => void;
   /** `removeConflicts`: also unbind the conflicting assignments. */
   onSubmit: (binding: string, conflicts: Conflict[], removeConflicts: boolean) => void;
-  /** Record a mouse shortcut (side buttons with modifiers) instead of keys. */
+  /** Record a mouse shortcut (modified left clicks or side buttons) instead of keys. */
   mouse?: boolean;
 }
 
@@ -178,7 +178,7 @@ function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecon
   );
 }
 
-/** Pad that records a side-button click with its modifiers; shortcuts stay off while the dialog is open. */
+/** Record modified left clicks and side buttons; shortcuts stay off while the dialog is open. */
 function MouseRecorder({ value, onChange }: { value: string; onChange: (binding: string) => void }) {
   useEffect(() => suspendKeyboardDispatch(), []);
   const record = (e: MouseEvent<HTMLDivElement>) => {
@@ -202,7 +202,7 @@ function MouseRecorder({ value, onChange }: { value: string; onChange: (binding:
         <span className={styles.recorded}>{formatBinding(value)}</span>
       ) : (
         <span className={styles.recorderPlaceholder}>
-          <T>Click here with a mouse side button, holding any modifiers</T>
+          <T>Click here with Ctrl, Alt or Command held, or use a mouse side button</T>
         </span>
       )}
     </div>

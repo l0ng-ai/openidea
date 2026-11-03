@@ -3,13 +3,19 @@
 //! wraps one [`Host`] and adds windows, menus and plugins; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
+pub mod data_dirs;
 pub mod environment;
+mod formatter;
+mod java_runtime;
+mod kotlin_bridge;
+pub mod notebook;
 pub mod ops;
 mod project;
 mod proxy;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
+pub mod trust;
 
 pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
 
@@ -28,7 +34,10 @@ pub type SinkFactory = Box<dyn Fn(&str) -> SharedSink + Send + Sync>;
 
 pub struct HostConfig {
     pub config_dir: PathBuf,
+    /// Persistent user state, including credentials and recovery history.
     pub data_dir: PathBuf,
+    /// Machine-local tools and rebuildable caches.
+    pub local_data_dir: PathBuf,
     pub languages: Arc<LanguageRegistry>,
     /// Grammars, possibly still being built on another thread.
     pub syntax: Arc<OnceLock<Arc<Syntax>>>,
@@ -42,11 +51,16 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    pub trust: trust::TrustStore,
     pub config_dir: PathBuf,
+    /// Persistent user state, including credentials and recovery history.
     pub data_dir: PathBuf,
+    /// Machine-local tools and rebuildable caches.
+    pub local_data_dir: PathBuf,
     pub languages: Arc<LanguageRegistry>,
     syntax: Arc<OnceLock<Arc<Syntax>>>,
     pub global_settings: SettingsStore,
+    pub dependency_versions: Arc<ide_workspace::dependencies::VersionCache>,
     pub terminals: TerminalManager,
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
@@ -65,21 +79,35 @@ pub struct Host {
     /// One project per window, keyed by window label.
     projects: RwLock<HashMap<String, Arc<Project>>>,
     requests: requests::Requests,
+    project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
 }
 
 impl Host {
     pub fn new(config: HostConfig) -> Self {
-        let HostConfig { config_dir, data_dir, languages, syntax, sink_for, owner, runtime, project_environment } =
-            config;
+        let HostConfig {
+            config_dir,
+            data_dir,
+            local_data_dir,
+            languages,
+            syntax,
+            sink_for,
+            owner,
+            runtime,
+            project_environment,
+        } = config;
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
+            trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
-            environment: environment::Environment::new(project_environment, data_dir.clone()),
+            environment: environment::Environment::new(project_environment, local_data_dir.clone()),
             global_settings,
+            dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
+                data_dir.join("cache/dependency-versions"),
+            )),
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),
@@ -88,11 +116,13 @@ impl Host {
             syntax,
             config_dir,
             data_dir,
+            local_data_dir,
             sink_for,
             owner,
             runtime,
             projects: RwLock::default(),
             requests: Default::default(),
+            project_requests: RwLock::default(),
         };
         host.apply_proxy();
         host
@@ -117,6 +147,10 @@ impl Host {
             .ok_or_else(|| IdeError::not_found("no project is open in this window"))
     }
 
+    pub fn require_trust(&self, window: &str) -> IdeResult<()> {
+        self.project(window)?.require_trust()
+    }
+
     /// The window that owns what `window` starts.
     pub fn owner_window<'a>(&self, window: &'a str) -> &'a str {
         (self.owner)(window)
@@ -132,26 +166,129 @@ impl Host {
     }
 
     pub fn close_project(&self, window: &str) {
-        if let Some(project) = self.projects.write().remove(window) {
+        let project = self.projects.write().remove(window);
+        if let Some(project) = project {
             if !project.light {
                 self.environment.project_closed();
             }
+            if let Some(bridge) = &project.kotlin_bridge {
+                bridge.stop();
+            }
+            project.documents.clear_workspace_edit_history();
             project.agents.shutdown();
-            let lsp = project.lsp.clone();
-            self.runtime.spawn(async move { lsp.shutdown_all().await });
+            project.notebooks.stop_admission();
+            // What the closing window started goes with it — the builds and searches it
+            // asked for, its runs, its shells and its debug sessions — and the language
+            // servers finish shutting down before the window is gone, as IDEA closes a
+            // project's processes.
+            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+                self.cancel_request(request);
+            }
+            self.processes.kill_project(&project.root);
+            self.terminals.kill_key(self.owner_window(window));
+            self.shutdown_project_workers_blocking(
+                vec![project.notebooks.clone()],
+                project.kotlin_bridge.iter().cloned().collect(),
+                Some(project.lsp.clone()),
+                Some((self.debugger.clone(), window.to_owned())),
+            );
         }
     }
 
-    /// Stops what this host started: language servers, agents, runs and terminals.
+    /// Synchronous project/window destruction must finish owned kernel cleanup,
+    /// not enqueue work which can be lost as the desktop runtime exits.
+    fn shutdown_project_workers_blocking(
+        &self,
+        notebooks: Vec<Arc<notebook::NotebookService>>,
+        bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
+        lsp: Option<Arc<ide_lsp::LspManager>>,
+        debug: Option<(Arc<ide_dap::DebugManager>, String)>,
+    ) {
+        for bridge in &bridges {
+            bridge.stop();
+        }
+        for service in &notebooks {
+            service.stop_admission();
+        }
+        let runtime = self.runtime.clone();
+        let wait = move || {
+            let worker = std::thread::spawn(move || {
+                runtime.block_on(async move {
+                    for bridge in bridges {
+                        bridge.shutdown().await;
+                    }
+                    for service in notebooks {
+                        service.shutdown().await;
+                    }
+                    if let Some(lsp) = lsp {
+                        lsp.shutdown_all().await;
+                    }
+                    if let Some((debug, key)) = debug {
+                        debug.stop_key(&key).await;
+                    }
+                });
+            });
+            if let Err(error) = worker.join() {
+                tracing::error!("notebook shutdown thread failed: {error:?}");
+            }
+        };
+        if tokio::runtime::Handle::try_current()
+            .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+        {
+            tokio::task::block_in_place(wait);
+        } else {
+            wait();
+        }
+    }
+
+    /// Called before the desktop runtime exits, including update/restart exits.
+    pub fn shutdown_notebooks_on_exit(&self) {
+        let projects = self.projects();
+        self.shutdown_project_workers_blocking(
+            projects.iter().map(|project| project.notebooks.clone()).collect(),
+            projects.iter().filter_map(|project| project.kotlin_bridge.clone()).collect(),
+            None,
+            None,
+        );
+    }
+
+    /// Called before desktop exit, which may bypass document destructors.
+    pub fn clear_workspace_edit_history_on_exit(&self) {
+        for project in self.projects() {
+            project.documents.clear_workspace_edit_history();
+        }
+    }
+
+    /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
         self.environment.shutdown();
         self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
-        for project in projects {
+        for project in &projects {
+            if let Some(bridge) = &project.kotlin_bridge {
+                bridge.stop();
+            }
+            project.documents.clear_workspace_edit_history();
+            project.notebooks.stop_admission();
             project.agents.shutdown();
-            project.lsp.shutdown_all().await;
+        }
+        // Kernel cleanup owns its interrupt/termination/reaping deadlines. An
+        // outer LSP timeout must never abort it before owned children are reaped.
+        for project in &projects {
+            if let Some(bridge) = &project.kotlin_bridge {
+                bridge.shutdown().await;
+            }
+            project.notebooks.shutdown().await;
+        }
+        let stop_language_servers = async {
+            for project in &projects {
+                project.lsp.shutdown_all().await;
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
+            tracing::warn!("language servers did not shut down in time");
         }
     }
 
@@ -161,7 +298,19 @@ impl Host {
         self.requests.begin(id)
     }
 
+    pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {
+        let token = self.begin_request(id);
+        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
+        if self.project(window).is_ok_and(|p| !p.is_trusted()) {
+            token.cancel();
+        }
+        token
+    }
+
     pub fn end_request(&self, id: RequestId) {
+        for ids in self.project_requests.write().values_mut() {
+            ids.retain(|entry| *entry != id);
+        }
         self.requests.end(id);
     }
 

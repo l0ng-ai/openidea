@@ -4,31 +4,31 @@
  * italic / effects editor, and a live preview. Edits are staged in
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Button, Checkbox, Input, Tree, type SelectOption, T } from "@/ui";
-import { fontWeightVars, type TextAttributesOverride } from "@/platform/editorSettings";
+import { fontWeightVars, type CustomColorSchemes, type TextAttributesOverride } from "@/platform/editorSettings";
 import {
   ATTRIBUTES,
   SCHEMES,
-  boldWeight,
+  overrideDeclarations,
   effectiveScheme,
-  schemeTokens,
+  resolvedSchemeTokens,
+  listSchemes,
+  customSchemes,
   type AttributeDef,
-  type SchemeId,
 } from "@/platform/colorScheme";
 import { HEX_COLOR } from "../../model/schema";
 import { Row, Select } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import { editorPage } from "./kit";
 import styles from "./Editor.module.css";
+import { executeAction, registerActions } from "@/platform/actions";
+import { call, commands } from "@/platform/ipc";
+import { ask, confirm, showError } from "@/workbench/messages";
+import { parseIcls, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx } from "@/platform/i18n";
 
 type Overrides = Record<string, Record<string, TextAttributesOverride>>;
-
-const SCHEME_OPTIONS: SelectOption[] = [
-  { value: "theme-default", label: "Theme default" },
-  ...SCHEMES.map((s) => ({ value: s.id, label: s.name })),
-];
 
 interface Node {
   key: string;
@@ -56,9 +56,14 @@ function buildTree(): Node[] {
 const TREE = buildTree();
 
 /** CSS custom properties of a scheme plus pending overrides (for the preview). */
-function previewVars(id: SchemeId, o: Record<string, TextAttributesOverride> | undefined): CSSProperties {
+function previewVars(
+  id: string,
+  o: Record<string, TextAttributesOverride> | undefined,
+  customs: CustomColorSchemes,
+): CSSProperties {
   const vars: Record<string, string> = {};
-  for (const [k, v] of schemeTokens(id))
+  const tokens = resolvedSchemeTokens(id, customs);
+  for (const [k, v] of tokens)
     if (
       k.startsWith("--syn-") ||
       k.startsWith("--fg-") ||
@@ -67,21 +72,8 @@ function previewVars(id: SchemeId, o: Record<string, TextAttributesOverride> | u
       k === "--caret"
     )
       vars[k] = v;
-  vars["--bg-editor"] = schemeTokens(id).get("--bg-editor") ?? schemeTokens(id).get("--bg-island") ?? "";
-  for (const attr of ATTRIBUTES) {
-    const ov = o?.[attr.id];
-    if (!ov) continue;
-    if (ov.foreground && attr.fg) vars[attr.fg] = ov.foreground;
-    if (ov.background && attr.bg) vars[attr.bg] = ov.background;
-    if (attr.token) {
-      if (ov.bold !== undefined) vars[`--syn-${attr.token}-bold`] = boldWeight(ov.bold);
-      if (ov.italic !== undefined) vars[`--syn-${attr.token}-italic`] = ov.italic ? "italic" : "normal";
-      if (ov.background) vars[`--syn-${attr.token}-bg`] = ov.background;
-      if (ov.effect && ov.effect !== "none")
-        vars[`--syn-${attr.token}-effect`] =
-          `${ov.effect === "strikeout" ? "line-through" : ov.effect === "wave" ? "underline wavy" : "underline"} ${ov.effectColor ?? "currentColor"}`;
-    }
-  }
+  vars["--bg-editor"] = tokens.get("--bg-editor") ?? tokens.get("--bg-island") ?? "";
+  for (const [key, value] of overrideDeclarations(o)) vars[key] = value;
   return vars as CSSProperties;
 }
 
@@ -270,17 +262,21 @@ function ColorRow({
 }
 
 function ColorSchemePage() {
-  const [scheme, setScheme] = useSetting<string>("editor.colorScheme");
-  const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides");
+  const [scheme, setScheme] = useSetting<string>("editor.colorScheme", "global");
+  const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides", "global");
   const [weight] = useSetting<number>("editor.fontWeight");
   const [boldFontWeight] = useSetting<number>("editor.boldFontWeight");
+  const [rawCustoms, setCustoms] = useSetting<CustomColorSchemes>("editor.customSchemes", "global");
+  const customs = useMemo(() => customSchemes(rawCustoms), [rawCustoms]);
+  const [report, setReport] = useState("");
+  const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string>("keyword");
-  const id = effectiveScheme(scheme);
+  const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const vars = useMemo(
-    () => ({ ...previewVars(id, mine), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
-    [id, mine, weight, boldFontWeight],
+    () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
+    [id, mine, customs, weight, boldFontWeight],
   );
   const update = (attrId: string, v: TextAttributesOverride | undefined) => {
     const next: Overrides = { ...(overrides ?? {}) };
@@ -291,13 +287,128 @@ function ColorSchemePage() {
     else delete next[id];
     setOverrides(next);
   };
-  const schemeName = SCHEMES.find((s) => s.id === id)?.name ?? id;
+  const schemes = listSchemes(customs);
+  const schemeName = schemes.find((s) => s.id === id)?.name ?? id;
+  const options: SelectOption[] = [
+    { value: "theme-default", label: "Theme default" },
+    ...schemes.map((s) => ({ value: s.id, label: s.name })),
+  ];
+  const handlers = useRef<Record<string, (path?: string) => Promise<void>>>({});
+  useEffect(() => {
+    handlers.current = {
+      import: async (file) => {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const path =
+          file ??
+          (await open({
+            multiple: false,
+            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
+          }));
+        if (!path) return;
+        const parsed = parseIcls(await call(commands.fsReadText(path)));
+        let overwrite = false;
+        if (schemes.some((s) => s.name === parsed.scheme.name)) {
+          const canOverwrite = Object.values(customs).some((s) => s.name === parsed.scheme.name);
+          const { button } = await ask({
+            title: tx("Import Scheme"),
+            body: tx`A scheme named '${parsed.scheme.name}' already exists.`,
+            buttons: [
+              ...(canOverwrite ? [{ id: "overwrite", label: tx("Overwrite") }] : []),
+              { id: "both", label: tx("Keep Both"), primary: true },
+            ],
+          });
+          if (button !== "overwrite" && button !== "both") return;
+          overwrite = button === "overwrite";
+        }
+        const next = importScheme(customs, parsed.scheme, overwrite);
+        setCustoms(next.customs);
+        if (overwrite)
+          setOverrides(Object.fromEntries(Object.entries(overrides ?? {}).filter(([key]) => key !== next.id)));
+        setScheme(next.id);
+        setReport(tx`Applied ${parsed.applied} values; skipped ${parsed.skipped} unsupported or invalid values.`);
+      },
+      export: async (file) => {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const path =
+          file ??
+          (await save({
+            defaultPath: `${schemeName.replace(/[/\\:*?"<>|]/g, "_")}.icls`,
+            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
+          }));
+        if (!path) return;
+        const bytes = Array.from(new TextEncoder().encode(exportIcls(id, customs, mine)));
+        // The save dialog already confirmed replacing an existing file.
+        await call(commands.fsDelete(path)).catch(() => {});
+        await call(commands.fsCreateFileBytes(path, bytes));
+        setReport(tx("Scheme exported."));
+      },
+      delete: async () => {
+        if (
+          !customs[id] ||
+          !(await confirm({
+            title: tx("Delete Scheme"),
+            message: tx`Delete color scheme '${schemeName}'?`,
+            ok: tx("Delete"),
+          }))
+        )
+          return;
+        const next = deleteScheme(customs, overrides ?? {}, scheme, id);
+        setCustoms(next.customs);
+        setOverrides(next.overrides);
+        setScheme(next.selected);
+        setReport("");
+      },
+    };
+  });
+  const pending = useRef(false);
+  useEffect(
+    () =>
+      registerActions(
+        (["import", "export", "delete"] as const).map((name) => ({
+          id: `editor.colorScheme.${name}`,
+          title: name === "import" ? "Import Scheme" : name === "export" ? "Export Scheme" : "Delete Scheme",
+          category: "Editor",
+          run: async ({ arg }) => {
+            if (pending.current) return;
+            pending.current = true;
+            setBusy(true);
+            try {
+              await handlers.current[name]!(typeof arg === "string" ? arg : undefined);
+            } catch (error) {
+              await showError(
+                tx("Color Scheme"),
+                error instanceof Error && error.message === "Invalid .icls color scheme"
+                  ? tx("Invalid .icls color scheme")
+                  : String(error),
+              );
+            } finally {
+              pending.current = false;
+              setBusy(false);
+            }
+          },
+        })),
+      ),
+    [],
+  );
   return (
     <div className={styles.page}>
       <div className={styles.schemeRow}>
         <Row label="Scheme">
-          <Select value={scheme} options={SCHEME_OPTIONS} onChange={setScheme} aria-label="Scheme" />
+          <Select value={scheme} options={options} onChange={setScheme} aria-label="Scheme" />
         </Row>
+        <Button size="small" disabled={busy} onClick={() => void executeAction("editor.colorScheme.import")}>
+          <T>Import Scheme</T>
+        </Button>
+        <Button size="small" disabled={busy} onClick={() => void executeAction("editor.colorScheme.export")}>
+          <T>Export Scheme</T>
+        </Button>
+        <Button
+          size="small"
+          disabled={busy || !customs[id]}
+          onClick={() => void executeAction("editor.colorScheme.delete")}
+        >
+          <T>Delete Scheme</T>
+        </Button>
         <Button
           size="small"
           disabled={!mine}
@@ -306,6 +417,11 @@ function ColorSchemePage() {
           <T>Restore Defaults</T>
         </Button>
       </div>
+      {report && (
+        <div role="status" className={styles.note}>
+          {report}
+        </div>
+      )}
       {scheme === "theme-default" && (
         <div className={styles.note}>{tx`Follows the IDE theme: currently ${schemeName}.`}</div>
       )}
@@ -364,6 +480,7 @@ export const COLOR_SCHEME_PAGE = editorPage({
   id: "editor.colorScheme",
   title: "Color Scheme",
   order: 23,
+  projectScope: false,
   keywords: [
     "colors",
     "syntax highlighting",

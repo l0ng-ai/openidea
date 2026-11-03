@@ -970,6 +970,85 @@ fn g() {}
 }
 
 #[test]
+fn folding_xml_custom_regions() {
+    for (start, end) in [
+        ("<!--region要折叠的内容-->", "<!-- endregion -->"),
+        ("<!--region name-->", "<!--endregion-->"),
+        ("<!-- <editor-fold desc=\"Head\"> -->", "<!-- </editor-fold> -->"),
+    ] {
+        let text = format!("<project>\n  {start}\n  <name>demo</name>\n  {end}\n</project>\n");
+        assert!(folds("xml", &text).contains(&(1, 3, FoldKind::Region)), "{text}");
+    }
+}
+
+#[test]
+fn folding_custom_regions_use_configured_comment_tokens() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/folding/regions.json")).unwrap();
+    let registry = LanguageRegistry::load(None).unwrap();
+    let cache = SyntaxCache::new(std::sync::Arc::new(Syntax::new()));
+    for language in fixture["languages"].as_array().unwrap() {
+        let id = language.as_str().unwrap();
+        let cfg = registry.get(&lang(id)).unwrap();
+        let mut tokens = Vec::new();
+        if let Some(line) = &cfg.line_comment {
+            tokens.push((line.as_str(), ""));
+        }
+        if let Some((open, close)) = &cfg.block_comment {
+            tokens.push((open.as_str(), close.as_str()));
+        }
+        for (open, close) in tokens {
+            for space in ["", " ", "  "] {
+                // Word delimiters require a separator in the language itself.
+                if space.is_empty() && open.ends_with(|c: char| c.is_ascii_alphanumeric()) {
+                    continue;
+                }
+                let wrap = |body: &str| format!("  {open}{space}{body}{space}{close}");
+                for marker in fixture["markers"].as_array().unwrap() {
+                    let start = wrap(marker["start"].as_str().unwrap());
+                    let end = wrap(marker["end"].as_str().unwrap());
+                    let tokens = folding::CommentTokens::from(&cfg);
+                    assert_eq!(folding::region_marker(&start, &tokens), Some(true), "{id}: {start}");
+                    assert_eq!(folding::region_marker(&end, &tokens), Some(false), "{id}: {end}");
+                    // Ruby block delimiters must occupy separate lines; Haskell
+                    // interprets `--` followed immediately by a symbol as an operator.
+                    if (id == "ruby" && open == "=begin") || (id == "haskell" && space.is_empty()) {
+                        continue;
+                    }
+                    let text = format!("{start}\n\n{end}\n");
+                    let expected = vec![(0, 2, FoldKind::Region)];
+                    assert_eq!(folds(id, &text), expected, "{id}: {text}");
+                    let doc = ide_core::DocId::next();
+                    cache.open(doc, &lang(id), 0);
+                    let actual = cache.folding(doc, &lang(id), 0, &text);
+                    assert_eq!(cache.folding(doc, &lang(id), 0, &text), actual);
+                    cache.close(doc);
+                    assert_eq!(
+                        actual.iter().map(|f| (f.start_line, f.end_line, f.kind)).collect::<Vec<_>>(),
+                        expected,
+                        "cached {id}: {text}"
+                    );
+                    let nested = format!("{end}\n\n{start}\n{start}\n\n{end}\n{end}\n{start}\n");
+                    assert_eq!(
+                        folds(id, &nested),
+                        vec![(2, 6, FoldKind::Region), (3, 5, FoldKind::Region)],
+                        "nested {id}: {nested}"
+                    );
+                }
+                for invalid in fixture["invalid"].as_array().unwrap() {
+                    let start = wrap(invalid.as_str().unwrap());
+                    assert_eq!(
+                        folding::region_marker(&start, &folding::CommentTokens::from(&cfg)),
+                        None,
+                        "invalid {id}: {start}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn folding_python_bodies_start_at_header() {
     let src = "import os\nimport sys\n\nclass A:\n    def f(self):\n        return [\n            1,\n        ]\n\n\ndef g():\n    pass\n";
     assert_eq!(

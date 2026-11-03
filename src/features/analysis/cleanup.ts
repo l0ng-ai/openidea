@@ -126,7 +126,10 @@ export async function runCodeCleanup(choice: ScopeChoice, options: CleanupOption
       });
       await executeAction("code.cleanupFile", { path, ...options });
       await editors?.saveAll();
-      if (!wasOpen.has(path)) editors?.closePath?.(path);
+      if (!wasOpen.has(path) && (await editors?.closePath?.(path)) === false) {
+        run.cancelled = true;
+        break;
+      }
       done++;
     }
   } finally {

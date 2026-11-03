@@ -1,10 +1,15 @@
 //! Child processes of the gh CLI: bounded runs and cancellable line streams.
 
+use ide_core::process::terminate_tree;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// How long a cancelled or timed-out child's process group (gh spawns git and helpers)
+/// gets to exit on `SIGTERM` before `SIGKILL`: git removes its lock files on `SIGTERM`.
+const KILL_GRACE: Duration = Duration::from_millis(20);
 
 pub(crate) struct Output {
     pub stdout: String,
@@ -20,34 +25,11 @@ pub(crate) enum Stream {
 
 fn prepare(cmd: &mut Command) {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    ide_core::process::prepare(cmd);
+    ide_core::process::prepare(ide_core::process::own_group(cmd));
 }
 
 fn spawn(cmd: &mut Command) -> IdeResult<Child> {
     cmd.spawn().map_err(|e| IdeError::unavailable(format!("could not run gh: {e}")))
-}
-
-/// Kills the child and, on Unix, its whole process group (gh spawns git and helpers).
-pub(crate) fn kill(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as libc::pid_t;
-        // SAFETY: plain syscall; the child leads its own process group (`prepare`).
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn read_all(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
@@ -60,9 +42,30 @@ fn read_all(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Str
 
 /// Runs `cmd` to completion. Fails when it outlives `timeout` or `cancel` fires;
 /// a non-zero exit is reported in [`Output::success`], not as an error.
-pub(crate) fn run(mut cmd: Command, timeout: Duration, cancel: Option<&CancellationToken>) -> IdeResult<Output> {
+pub(crate) fn run(cmd: Command, timeout: Duration, cancel: Option<&CancellationToken>) -> IdeResult<Output> {
+    run_with_input(cmd, None, timeout, cancel)
+}
+
+/// [`run`] with `input` written to the child's stdin (then closed).
+pub(crate) fn run_with_input(
+    mut cmd: Command,
+    input: Option<&str>,
+    timeout: Duration,
+    cancel: Option<&CancellationToken>,
+) -> IdeResult<Output> {
     prepare(&mut cmd);
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = spawn(&mut cmd)?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        let input = input.to_owned();
+        // A writer thread: a large body must not block on a full pipe while gh is not reading yet.
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(input.as_bytes());
+        });
+    }
     let out = child.stdout.take().map(read_all);
     let err = child.stderr.take().map(read_all);
     let deadline = Instant::now() + timeout;
@@ -71,11 +74,11 @@ pub(crate) fn run(mut cmd: Command, timeout: Duration, cancel: Option<&Cancellat
             break status;
         }
         if cancel.is_some_and(CancellationToken::is_cancelled) {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         if Instant::now() >= deadline {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::unavailable("gh did not respond in time"));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -149,7 +152,7 @@ pub(crate) fn stream(
     let mut stderr_tail: Vec<String> = Vec::new();
     while open > 0 {
         if cancel.is_cancelled() {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
@@ -172,7 +175,7 @@ pub(crate) fn stream(
             break status;
         }
         if cancel.is_cancelled() {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         std::thread::sleep(Duration::from_millis(10));

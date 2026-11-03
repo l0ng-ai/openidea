@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { DEFAULT_SSH_CONFIG } from "@/platform/remoteSettings";
 import { commands, type Settings } from "@/platform/ipc";
 
 const settingsSet = vi.fn();
@@ -24,8 +25,9 @@ import { registerAction, executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useKeymap } from "@/platform/keymap";
 import { ContextMenuHost } from "@/ui";
+import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
-import { stage, useSettingsDialog } from "../model/staging";
+import { openSettings, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
 import { activate } from "..";
 import { MessagesHost } from "@/workbench/messages";
@@ -64,6 +66,69 @@ async function openDialog(page?: string) {
 }
 
 describe("Settings dialog", () => {
+  it("stages properties conversion through its action and applies the checkbox", async () => {
+    const dialog = await openDialog("editor.fileEncodings");
+    const checkbox = within(dialog).getByRole("checkbox", { name: "Transparent native-to-ascii conversion" });
+    expect(checkbox).not.toBeChecked();
+    await act(async () => fireEvent.click(checkbox));
+    expect(checkbox).toBeChecked();
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "editor.encodings.nativeToAscii", "true");
+  });
+
+  it("toggles properties conversion through its stable action", async () => {
+    await executeAction("editor.encodings.toggleNativeToAscii");
+    expect(settingsSet).toHaveBeenCalledWith("global", "editor.encodings.nativeToAscii", "true");
+    await executeAction("editor.encodings.toggleNativeToAscii");
+    expect(settingsSet).toHaveBeenLastCalledWith("global", "editor.encodings.nativeToAscii", "false");
+  });
+
+  it("edits CMake profiles in project settings and persists them on Apply", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.cmake");
+    expect(within(dialog).getByRole("option", { name: "Debug" })).toBeInTheDocument();
+    fireEvent.click(
+      within(within(dialog).getByRole("toolbar", { name: "CMake profile actions" })).getByRole("button", {
+        name: "Add",
+      }),
+    );
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Release" } });
+    fireEvent.change(within(dialog).getByLabelText("Build type"), { target: { value: "Release" } });
+    fireEvent.change(within(dialog).getByLabelText("Generator"), { target: { value: "Ninja" } });
+    fireEvent.change(within(dialog).getByLabelText("Build arguments"), { target: { value: "-j 8" } });
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    const write = settingsSet.mock.calls.find((c) => c[1] === "cmake.profiles")!;
+    expect(write[0]).toBe("project");
+    expect(JSON.parse(write[2])).toEqual([
+      expect.objectContaining({ name: "Debug", buildType: "Debug" }),
+      expect.objectContaining({ name: "Release", buildType: "Release", generator: "Ninja", buildArgs: ["-j", "8"] }),
+    ]);
+  });
+
+  it("finds Gradle JVM and applies project Gradle settings", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.gradle");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Gradle JVM" } });
+    expect(within(dialog).getByRole("tree", { name: "Settings pages" }).textContent).toContain("Gradle");
+    expect(within(dialog).getByLabelText("Gradle JVM")).toBeInTheDocument();
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.jvm", "/jdk21"));
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.distribution", "local"));
+    expect(within(dialog).getByPlaceholderText("Gradle installation directory")).toBeInTheDocument();
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.home", "/gradle"));
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.userHome", "/gradle-cache"));
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["project", "languages.java.gradle.jvm", '"/jdk21"'],
+        ["project", "languages.java.gradle.distribution", '"local"'],
+        ["project", "languages.java.gradle.home", '"/gradle"'],
+        ["project", "languages.java.gradle.userHome", '"/gradle-cache"'],
+      ]),
+    );
+  });
+
   it("searches pages and highlights matching option labels", async () => {
     const dialog = await openDialog("appearance");
     fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "soft wrap" } });
@@ -107,6 +172,58 @@ describe("Settings dialog", () => {
     expect(within(dialog).getByRole("button", { name: "Apply" })).toBeDisabled();
   });
 
+  it("stages manual editor and proportional CJK fallback names and applies them", async () => {
+    const dialog = await openDialog("editor.font");
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Font" }), { target: { value: "Maple Mono NF" } });
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Fallback font" }), {
+      target: { value: "思源宋体" },
+    });
+    expect(settingsSet).not.toHaveBeenCalled();
+    expect(within(dialog).getByLabelText("Font preview").style.fontFamily).toContain("思源宋体");
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual([
+      ["global", "editor.fallbackFont", '"思源宋体"'],
+      ["global", "editor.fontFamily", '"Maple Mono NF"'],
+    ]);
+  });
+
+  it("cancels manual font edits without changing saved preferences", async () => {
+    const dialog = await openDialog("editor.font");
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Font" }), { target: { value: "Unsaved Font" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(settingsSet).not.toHaveBeenCalled();
+    expect(useSettingsDialog.getState().open).toBe(false);
+    expect(useProject.getState().settings?.editor?.fontFamily).toBe("JetBrains Mono");
+  });
+
+  it("keeps global and project font edits separate when switching scope", async () => {
+    useSettingsDialog.setState({ scopes: {} });
+    const global = setAt(structuredClone(DEFAULT_SETTINGS) as Settings, "editor.fontFamily", "Global Font");
+    current = setAt(global, "editor.fontFamily", "Project Font");
+    settingsGetGlobal.mockResolvedValue(global);
+    useProject.setState({
+      settings: current,
+      project: { root: "/synthetic", name: "synthetic", settings: current } as never,
+    });
+    const dialog = await openDialog("editor.font");
+    const font = () => within(dialog).getByRole("combobox", { name: "Font" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+    expect(font()).toHaveValue("Project Font");
+    fireEvent.change(font(), { target: { value: "Project Maple" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
+    expect(font()).toHaveValue("Global Font");
+    fireEvent.change(font(), { target: { value: "Global Maple" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+    expect(font()).toHaveValue("Project Maple");
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["project", "editor.fontFamily", '"Project Maple"'],
+        ["global", "editor.fontFamily", '"Global Maple"'],
+      ]),
+    );
+  });
+
   it("Typography Settings weights preview live and apply as editor settings", async () => {
     const dialog = await openDialog("editor.font");
     expect(within(dialog).getByRole("button", { name: "Main font weight" })).toHaveTextContent("Regular");
@@ -128,6 +245,24 @@ describe("Settings dialog", () => {
     ]);
   });
 
+  it("enables, saves and clears the custom UI fallback font", async () => {
+    const dialog = await openDialog("appearance");
+    const fallback = within(dialog).getByRole("combobox", { name: "UI fallback font" });
+    const custom = within(dialog).getByRole("checkbox", { name: "Use custom font:" });
+    expect(fallback).toBeDisabled();
+    fireEvent.click(custom);
+    expect(fallback).toBeEnabled();
+    fireEvent.change(fallback, { target: { value: "Songti SC" } });
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.uiFontFallback", JSON.stringify("Songti SC"));
+    fireEvent.change(fallback, { target: { value: "" } });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.uiFontFallback", JSON.stringify(""));
+    fireEvent.click(custom);
+    expect(fallback).toBeDisabled();
+  });
+
   it("edits and saves independent custom font weights", async () => {
     const dialog = await openDialog("editor.font");
     for (const [label, value] of [
@@ -146,6 +281,28 @@ describe("Settings dialog", () => {
       ["global", "editor.boldFontWeight", "650"],
       ["global", "editor.fontWeight", "450"],
     ]);
+  });
+
+  it("enables Apply and Reset for a secret-only edit, and Reset discards it", async () => {
+    current = setAt(current, "ssh.configs", [{ ...DEFAULT_SSH_CONFIG, id: "ssh-dialog", auth: "password" }]);
+    useProject.setState({ settings: current });
+    const needsSecret = vi.spyOn(commands, "sshNeedsSecret").mockResolvedValue({ status: "ok", data: true });
+    const setSecret = vi.spyOn(commands, "sshSetSecret").mockResolvedValue();
+    try {
+      const dialog = await openDialog("tools.sshConfigurations");
+      const apply = within(dialog).getByRole("button", { name: "Apply" });
+      expect(apply).toBeDisabled();
+      fireEvent.change(within(dialog).getByLabelText("Password"), { target: { value: crypto.randomUUID() } });
+      expect(apply).toBeEnabled();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
+      expect(within(dialog).getByLabelText("Password")).toHaveValue("");
+      expect(apply).toBeDisabled();
+      expect(setSecret).not.toHaveBeenCalled();
+      expect(settingsSet).not.toHaveBeenCalled();
+    } finally {
+      needsSecret.mockRestore();
+      setSecret.mockRestore();
+    }
   });
 
   it("Cancel discards staged edits", async () => {
@@ -269,6 +426,37 @@ describe("Settings dialog", () => {
       expect(within(dialog).getByLabelText("Language server JDK")).toBeInTheDocument();
       expect(within(dialog).getByText(/used by new projects/)).toBeInTheDocument();
     });
+  });
+
+  it("keeps object settings stable when child keys are staged (HTTP Proxy)", async () => {
+    const seen: Array<{ mode: string; host: string }> = [];
+    function Probe() {
+      const [proxy] = useSetting<{ mode: string; host: string }>("proxy", "global");
+      seen.push(proxy);
+      return <output data-testid="proxy">{`${proxy.mode}:${proxy.host}`}</output>;
+    }
+    openSettings("general.httpProxy");
+    const view = render(
+      <PageContext.Provider value={{ pageId: "general.httpProxy", scope: "global" }}>
+        <Probe />
+      </PageContext.Provider>,
+    );
+    expect(screen.getByTestId("proxy")).toHaveTextContent("auto:");
+    act(() => {
+      stage("general.httpProxy", "global", "proxy.mode", "manual");
+      stage("general.httpProxy", "global", "proxy.host", "127.0.0.1");
+    });
+    expect(screen.getByTestId("proxy")).toHaveTextContent("manual:127.0.0.1");
+    expect(seen.at(-1)).toMatchObject({ mode: "manual", host: "127.0.0.1" });
+    view.unmount();
+
+    const dialog = await openDialog("general.httpProxy");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Manual proxy configuration" }));
+    expect(within(dialog).getByRole("radio", { name: "Manual proxy configuration" })).toBeChecked();
+    fireEvent.change(within(dialog).getByLabelText("Host name"), { target: { value: "127.0.0.1" } });
+    expect(within(dialog).getByLabelText("Host name")).toHaveValue("127.0.0.1");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "No proxy" }));
+    expect(within(dialog).getByRole("radio", { name: "No proxy" })).toBeChecked();
   });
 
   it("survives invalid settings values", async () => {

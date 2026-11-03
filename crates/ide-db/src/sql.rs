@@ -8,6 +8,7 @@ use specta::Type;
 pub fn quote_ident(driver: DbDriver, name: &str) -> String {
     match driver {
         DbDriver::Mysql => format!("`{}`", name.replace('`', "``")),
+        DbDriver::SqlServer => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
@@ -52,6 +53,7 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
              WHERE schema_name NOT LIKE 'pg\\_toast%' AND schema_name NOT LIKE 'pg\\_temp%' ORDER BY 1"
         }
         DbDriver::Mysql if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
+        DbDriver::SqlServer if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
         DbDriver::Postgres => {
             "SELECT schema_name FROM information_schema.schemata \
              WHERE schema_name NOT IN ('pg_catalog', 'information_schema') \
@@ -60,6 +62,10 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
         DbDriver::Mysql => {
             "SELECT schema_name FROM information_schema.schemata \
              WHERE schema_name NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') ORDER BY 1"
+        }
+        DbDriver::SqlServer => {
+            "SELECT schema_name FROM information_schema.schemata \
+             WHERE schema_name NOT IN ('sys', 'information_schema', 'guest') ORDER BY 1"
         }
     }
 }
@@ -79,6 +85,11 @@ pub fn tables(driver: DbDriver, schema: &str) -> String {
             quote_literal(driver, schema)
         ),
         DbDriver::Mysql => format!(
+            "SELECT table_name, CASE WHEN table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END \
+             FROM information_schema.tables WHERE table_schema = {} ORDER BY 1",
+            quote_literal(driver, schema)
+        ),
+        DbDriver::SqlServer => format!(
             "SELECT table_name, CASE WHEN table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END \
              FROM information_schema.tables WHERE table_schema = {} ORDER BY 1",
             quote_literal(driver, schema)
@@ -110,6 +121,16 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
              FROM information_schema.columns WHERE table_schema = {s} AND table_name = {t} \
              ORDER BY ordinal_position"
         ),
+        DbDriver::SqlServer => format!(
+            "SELECT column_name, data_type, is_nullable, column_default, \
+             CASE WHEN EXISTS (SELECT 1 FROM information_schema.table_constraints tc \
+               JOIN information_schema.key_column_usage k ON k.constraint_name = tc.constraint_name \
+               AND k.table_schema = tc.table_schema AND k.table_name = tc.table_name \
+               WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = {s} \
+               AND tc.table_name = {t} AND k.column_name = c.column_name) THEN 1 ELSE 0 END \
+             FROM information_schema.columns c WHERE c.table_schema = {s} AND c.table_name = {t} \
+             ORDER BY c.ordinal_position"
+        ),
     }
 }
 
@@ -133,6 +154,13 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
             "SELECT index_name, CASE WHEN non_unique = 0 THEN 1 ELSE 0 END, column_name \
              FROM information_schema.statistics WHERE table_schema = {s} AND table_name = {t} \
              ORDER BY index_name, seq_in_index"
+        ),
+        DbDriver::SqlServer => format!(
+            "SELECT i.name, CASE WHEN i.is_unique = 1 THEN 1 ELSE 0 END, c.name \
+             FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+             JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+             WHERE OBJECT_SCHEMA_NAME(i.object_id) = {s} AND OBJECT_NAME(i.object_id) = {t} AND i.name IS NOT NULL \
+             ORDER BY i.name, ic.key_ordinal"
         ),
     }
 }
@@ -171,6 +199,20 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              WHERE c.table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
              ORDER BY c.table_schema, c.table_name, c.ordinal_position LIMIT 50000"
         }
+        DbDriver::SqlServer => {
+            "SELECT c.table_schema, c.table_name, CASE WHEN t.table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END, \
+             c.column_name, c.data_type, c.is_nullable, \
+             CASE WHEN EXISTS (SELECT 1 FROM information_schema.table_constraints tc \
+               JOIN information_schema.key_column_usage k ON k.constraint_name = tc.constraint_name \
+               AND k.table_schema = tc.table_schema AND k.table_name = tc.table_name \
+               WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = c.table_schema \
+               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END, \
+             CASE WHEN c.column_default IS NOT NULL THEN 1 ELSE 0 END \
+             FROM information_schema.columns c JOIN information_schema.tables t \
+             ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+             WHERE c.table_schema NOT IN ('sys', 'information_schema') \
+             ORDER BY c.table_schema, c.table_name, c.ordinal_position"
+        }
     }
 }
 
@@ -202,6 +244,13 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
              AND table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
              ORDER BY table_schema, table_name, constraint_name, ordinal_position LIMIT 20000"
         }
+        DbDriver::SqlServer => {
+            "SELECT table_schema, table_name, constraint_name, column_name, \
+             referenced_table_schema, referenced_table_name, referenced_column_name \
+             FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL \
+             AND table_schema NOT IN ('sys', 'information_schema') \
+             ORDER BY table_schema, table_name, constraint_name, ordinal_position"
+        }
     }
 }
 
@@ -218,6 +267,9 @@ pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String
         DbDriver::Mysql => format!(
             "SELECT table_schema, table_name, constraint_name, column_name,              referenced_table_schema, referenced_table_name, referenced_column_name              FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL              AND table_schema = {s} AND table_name = {t} ORDER BY constraint_name, ordinal_position"
         ),
+        DbDriver::SqlServer => format!(
+            "SELECT table_schema, table_name, constraint_name, column_name,              referenced_table_schema, referenced_table_name, referenced_column_name              FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL              AND table_schema = {s} AND table_name = {t} ORDER BY constraint_name, ordinal_position"
+        ),
     }
 }
 
@@ -227,6 +279,7 @@ pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
         DbDriver::Sqlite => None,
         DbDriver::Postgres => Some("SELECT current_schema()"),
         DbDriver::Mysql => Some("SELECT DATABASE()"),
+        DbDriver::SqlServer => Some("SELECT DB_NAME()"),
     }
 }
 
@@ -250,8 +303,14 @@ pub fn table_page(
 ) -> String {
     let mut sql = format!("SELECT * FROM {}", qualified(driver, schema, table));
     if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
-        let f = f.strip_prefix("WHERE ").or_else(|| f.strip_prefix("where ")).unwrap_or(f);
-        sql.push_str(&format!(" WHERE {f}"));
+        let mut f = f.strip_prefix("WHERE ").or_else(|| f.strip_prefix("where ")).unwrap_or(f);
+        if let Some(i) = f.find(';') {
+            f = &f[..i];
+        }
+        f = f.trim();
+        if !f.is_empty() {
+            sql.push_str(&format!(" WHERE {f}"));
+        }
     }
     if !sort.is_empty() {
         let keys: Vec<String> = sort
@@ -260,7 +319,14 @@ pub fn table_page(
             .collect();
         sql.push_str(&format!(" ORDER BY {}", keys.join(", ")));
     }
-    sql.push_str(&format!(" LIMIT {} OFFSET {offset}", limit + 1));
+    if driver == DbDriver::SqlServer {
+        if sort.is_empty() {
+            sql.push_str(" ORDER BY (SELECT 1)");
+        }
+        sql.push_str(&format!(" OFFSET {offset} ROWS FETCH NEXT {} ROWS ONLY", limit + 1));
+    } else {
+        sql.push_str(&format!(" LIMIT {} OFFSET {offset}", limit + 1));
+    }
     sql
 }
 
@@ -400,6 +466,10 @@ pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
             "SELECT trigger_name, lower(action_timing), lower(event_manipulation) FROM information_schema.triggers \
              WHERE event_object_schema = {s} AND event_object_table = {t} ORDER BY 1"
         ),
+        DbDriver::SqlServer => format!(
+            "SELECT t.name, lower(te.type_desc), '' FROM sys.triggers t \
+             WHERE OBJECT_SCHEMA_NAME(t.parent_id) = {s} AND OBJECT_NAME(t.parent_id) = {t} ORDER BY 1"
+        ),
     }
 }
 
@@ -436,6 +506,10 @@ pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
              (SELECT GROUP_CONCAT(CONCAT(p.parameter_name, ' ', p.dtd_identifier) ORDER BY p.ordinal_position \
               SEPARATOR ', ') FROM information_schema.parameters p WHERE p.specific_schema = r.routine_schema \
               AND p.specific_name = r.specific_name AND p.ordinal_position > 0), r.dtd_identifier \
+             FROM information_schema.routines r WHERE r.routine_schema = {s} ORDER BY 1"
+        )),
+        DbDriver::SqlServer => Some(format!(
+            "SELECT r.routine_name, lower(r.routine_type), '', r.data_type \
              FROM information_schema.routines r WHERE r.routine_schema = {s} ORDER BY 1"
         )),
     }
@@ -559,6 +633,10 @@ mod tests {
             "SELECT * FROM \"public\".\"users\" WHERE age > 3 ORDER BY \"id\" DESC LIMIT 51 OFFSET 100"
         );
         assert_eq!(table_page(DbDriver::Mysql, "", "t", Some("  "), &[], 0, 10), "SELECT * FROM `t` LIMIT 11 OFFSET 0");
+        assert_eq!(
+            table_page(DbDriver::SqlServer, "dbo", "users", Some("id = 1;"), &[], 0, 500),
+            "SELECT * FROM [dbo].[users] WHERE id = 1 ORDER BY (SELECT 1) OFFSET 0 ROWS FETCH NEXT 501 ROWS ONLY"
+        );
     }
 
     #[test]
@@ -584,6 +662,30 @@ mod tests {
             "DELETE FROM \"s\".\"t\" WHERE \"k\" IS NULL"
         );
         assert!(edit_statement(DbDriver::Postgres, "s", "t", &DbRowEdit::Delete { key: vec![] }).is_err());
+    }
+
+    #[test]
+    fn sqlserver_quoting_and_schema() {
+        assert_eq!(quote_ident(DbDriver::SqlServer, "a]b"), "[a]]b]");
+        assert_eq!(qualified(DbDriver::SqlServer, "dbo", "t"), "[dbo].[t]");
+        assert_eq!(qualified(DbDriver::SqlServer, "", "t"), "[t]");
+        assert_eq!(current_schema(DbDriver::SqlServer), Some("SELECT DB_NAME()"));
+        assert_eq!(crate::conn::begin_statement(DbDriver::SqlServer), "BEGIN TRAN");
+        assert_eq!(
+            schemas(DbDriver::SqlServer, true),
+            "SELECT schema_name FROM information_schema.schemata ORDER BY 1"
+        );
+        assert!(schemas(DbDriver::SqlServer, false).contains("NOT IN ('sys', 'information_schema', 'guest')"));
+    }
+
+    #[test]
+    fn sqlserver_introspection_queries() {
+        assert!(tables(DbDriver::SqlServer, "dbo").contains("information_schema.tables"));
+        assert!(columns(DbDriver::SqlServer, "dbo", "t").contains("information_schema.columns"));
+        assert!(indexes(DbDriver::SqlServer, "dbo", "t").contains("sys.indexes"));
+        assert!(foreign_keys(DbDriver::SqlServer).contains("referenced_table_name IS NOT NULL"));
+        assert!(table_foreign_keys(DbDriver::SqlServer, "dbo", "t").contains("table_schema = 'dbo'"));
+        assert!(completion_columns(DbDriver::SqlServer).contains("information_schema.columns"));
     }
 
     #[test]

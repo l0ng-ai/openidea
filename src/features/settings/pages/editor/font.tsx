@@ -2,11 +2,12 @@
  * Editor › Font: family (installed fonts, monospaced filter), size, line height,
  * ligatures, Typography Settings (main / bold weight, fallback font), editable preview.
  */
+
+import { FontPicker } from "../../components/FontPicker";
 import { useState } from "react";
 import { Checkbox, type SelectOption, T } from "@/ui";
 import { monoFontFamily } from "@/platform/fonts";
 import { NumberInput, Row, SearchLabel, Select } from "../../components/Form";
-import { FontSelect } from "../../components/FontSelect";
 import { useLabelMatch, usePageContext, useSetting } from "../../components/context";
 import { FONT_WEIGHTS, fontWeightOf, fontWeightVars } from "@/platform/editorSettings";
 import { LIMITS } from "../../model/schema";
@@ -22,7 +23,7 @@ function FontRow() {
     <Row label="Font">
       <span className={styles.fontFamily}>
         <span className={styles.fontSelect}>
-          <FontSelect value={family} onChange={setFamily} monospacedOnly={monoOnly} aria-label="Font" />
+          <FontPicker value={family} onChange={setFamily} label="Font" monoOnly={monoOnly} />
         </span>
         <span className={matched ? styles.matched : undefined}>
           <Checkbox
@@ -55,7 +56,7 @@ function FallbackRow() {
   const [fallback, setFallback] = useSetting<string>("editor.fallbackFont");
   return (
     <Row label="Fallback font" hint="For symbols not supported by the main font">
-      <FontSelect value={fallback} onChange={setFallback} none aria-label="Fallback font" />
+      <FontPicker value={fallback} onChange={setFallback} label="Fallback font" allowEmpty />
     </Row>
   );
 }

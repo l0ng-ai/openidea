@@ -87,6 +87,16 @@ describe("HotSwap", () => {
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "2 classes reloaded" });
   });
 
+  it("limits a configuration update to that configuration's debug session", async () => {
+    const one = { ...session(1, true), runConfig: { id: "tomcat:one" } as NonNullable<DebugSession["runConfig"]> };
+    const two = { ...session(2, true), runConfig: { id: "tomcat:two" } as NonNullable<DebugSession["runConfig"]> };
+    useDebug.setState({ sessions: { 1: one, 2: two } });
+    await reloadChangedClasses(false, "tomcat:two");
+    expect(ipc.javaBuildWorkspace).not.toHaveBeenCalled();
+    expect(ipc.debugRedefineClasses).toHaveBeenCalledTimes(1);
+    expect(ipc.debugRedefineClasses).toHaveBeenCalledWith(2);
+  });
+
   it("does not reload after a failed build", async () => {
     ipc.javaBuildWorkspace.mockImplementationOnce(() => ipc.ok("failed"));
     await reloadChangedClasses();

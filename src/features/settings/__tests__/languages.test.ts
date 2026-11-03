@@ -31,8 +31,18 @@ describe("languages settings", () => {
     expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(v.java.jdk).toBe("");
     expect(v.java.jdtlsJdk).toBe("/opt/jdk-25");
-    expect(v.java.maven).toEqual({ home: "/opt/maven", userSettings: "", localRepository: "" });
+    expect(v.java.maven).toEqual({ home: "/opt/maven", userSettings: "", localRepository: "", unlinkedProjects: [] });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
+  });
+
+  it("keeps Prettier opt-in on save and normalizes its enabled languages", () => {
+    expect(validateLanguages({}).prettier).toMatchObject({ prefer: false, runOnSave: false, path: "" });
+    expect(
+      validateLanguages({
+        prettier: { path: " ./bin/prettier ", languages: ["markdown", 4, "markdown"], prefer: true, runOnSave: true },
+      }).prettier,
+    ).toEqual({ path: "./bin/prettier", languages: ["markdown"], prefer: true, runOnSave: true });
+    expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
   });
 
   it("marks folders with one role each", () => {
@@ -58,6 +68,7 @@ describe("language pages", () => {
       "Java",
       "Node.js",
       "Python Interpreter",
+      "Prettier",
       "Rust",
       "TypeScript",
     ]);
@@ -75,5 +86,34 @@ describe("language pages", () => {
       "~/.m2/wrapper/dists/apache-maven-3.9.16",
     );
     expect(tildify("C:/Program Files/Java/jdk-21")).toBe("C:/Program Files/Java/jdk-21");
+  });
+});
+
+describe("Go module settings", () => {
+  it("keeps automatic vendoring by default and normalizes malformed environment entries", () => {
+    expect(validateLanguages({ go: {} }).go.modules).toEqual({ env: {}, autoVendor: true });
+    const modules = validateLanguages({
+      go: {
+        modules: {
+          autoVendor: false,
+          env: {
+            GOPROXY: "https://proxy.example",
+            GOPRIVATE: "example.com/private",
+            GOFLAGS: "-race",
+            INVALID: 3,
+            "BAD KEY": "value",
+            NULL: "x\0y",
+          },
+        },
+      },
+    }).go.modules;
+    expect(modules).toEqual({
+      autoVendor: false,
+      env: { GOPROXY: "https://proxy.example", GOPRIVATE: "example.com/private", GOFLAGS: "-race" },
+    });
+    expect(validateLanguages({ go: { modules: { autoVendor: "no", env: [] } } }).go.modules).toEqual({
+      env: {},
+      autoVendor: true,
+    });
   });
 });

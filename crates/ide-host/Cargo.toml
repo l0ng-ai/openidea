@@ -10,6 +10,7 @@ name = "openidea-server"
 path = "src/bin/server.rs"
 
 [dependencies]
+encoding_rs.workspace = true
 ide-core.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
@@ -34,17 +35,27 @@ ide-ssh.workspace = true
 ide-remote.workspace = true
 ide-jsonrpc.workspace = true
 ide-agent.workspace = true
+ide-notebook.workspace = true
 ide-tools = { path = "../ide-tools" }
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
+specta-typescript.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 dunce.workspace = true
 dirs.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
-tempfile.workspace = true
+ide-ssh = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["fs", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

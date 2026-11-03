@@ -275,7 +275,12 @@ export function installVcsStore(): () => void {
     if (useVcs.getState().available) scheduleRefresh(200);
     else void discoverRoots();
   });
-  const offFs = onIdeEvent("fsChanged", () => scheduleRefresh(250));
+  // `.git/**` internals show up through other watchers too; refreshing status
+  // on those alone rewrites `.git/index` and re-triggers this handler.
+  const offFs = onIdeEvent("fsChanged", (e) => {
+    const worktree = [...e.created, ...e.modified, ...e.removed].some((p) => !/(^|[/\\])\.git([/\\]|$)/.test(p));
+    if (worktree) scheduleRefresh(250);
+  });
   const offSettings = onWorkflowSettingsChange(
     (s) => s.vcs.showDirtyDirectories,
     (show) => {

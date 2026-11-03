@@ -39,6 +39,12 @@ impl SecretFile {
         }
     }
 
+    /// Every stored key, sorted (the secrets themselves stay private).
+    pub fn keys(&self) -> Vec<String> {
+        let _g = self.lock.lock();
+        self.read().into_keys().collect()
+    }
+
     fn read(&self) -> BTreeMap<String, String> {
         match std::fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {

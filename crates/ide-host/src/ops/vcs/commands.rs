@@ -45,13 +45,16 @@ pub enum RemoteOp {
         branch: String,
     },
     /// Pushes local `branch` (only up to `revision` when set) to its upstream, or to
-    /// remote branch `target` of the same remote.
+    /// remote branch `target`; `remote` overrides the upstream's remote (Push dialog's
+    /// remote picker).
     PushBranch {
         branch: String,
         revision: Option<String>,
         force_with_lease: bool,
         #[serde(default)]
         target: Option<String>,
+        #[serde(default)]
+        remote: Option<String>,
     },
     /// Fast-forwards local `branch` (not checked out) to its upstream.
     UpdateBranch {
@@ -120,18 +123,18 @@ fn per_repo(
     Ok(())
 }
 
-/// Shelf and patches work in the primary repository only: changes of a nested one
-/// fail instead of being left out silently.
-fn in_primary_repo(project: &Project, paths: &[PathBuf]) -> IdeResult<()> {
+/// A shelf is one patch for one owning repository. Validate the whole selection before reverting files.
+fn shelf_repository(project: &Project, paths: &[PathBuf]) -> IdeResult<PathBuf> {
     let repos = project.repos();
-    let primary = repos.primary().map(|r| r.root());
-    match paths.iter().find(|p| repos.for_path(p).map(|r| r.root()) != primary) {
-        Some(p) => Err(ide_core::IdeError::invalid(format!(
-            "{} is in another git repository; shelving and patches support the project's main repository only",
-            p.display()
-        ))),
-        None => Ok(()),
+    let root = paths
+        .first()
+        .and_then(|p| repos.for_path(p))
+        .map(|r| r.root())
+        .ok_or_else(|| ide_core::IdeError::invalid("select files in a git repository to shelve"))?;
+    if paths.iter().any(|p| repos.for_path(p).map(|r| r.root()) != Some(root)) {
+        return Err(ide_core::IdeError::invalid("select files from a single git repository to shelve"));
     }
+    Ok(root.to_path_buf())
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
@@ -184,21 +187,39 @@ pub async fn vcs_branch_info(host: &Host, window: &str, repo: Option<PathBuf>) -
 }
 
 /// Gutter change markers for a file, computed against its current (unsaved) text.
-pub fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
+pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
     let project = host.project(window)?;
-    let text = project.text_of(&path)?;
-    project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false))
+    blocking(move || {
+        let text = project.text_of(&path)?;
+        project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+    })
+    .await
 }
 
 pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.file_at(&path, rev.as_deref()))).await
+    blocking(move || {
+        project.with_repo_of(&path, |r| r.file_at(&path, rev.as_deref(), project.vcs_encoding(&path, rev.as_deref())?))
+    })
+    .await
 }
 
-pub async fn vcs_blame(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<BlameLine>> {
+pub async fn vcs_blame(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    text: Option<String>,
+    revision: Option<String>,
+) -> IdeResult<Vec<BlameLine>> {
     let project = host.project(window)?;
-    let text = project.documents.text_of(&path);
-    blocking(move || project.with_repo_of(&path, |r| r.blame(&path, text.as_deref()))).await
+    // An explicit text wins (merge view annotates its side panes, not the worktree).
+    blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
+        project.with_repo_of(&path, |r| {
+            r.blame(&path, text.as_deref(), revision.as_deref(), project.vcs_encoding(&path, revision.as_deref())?)
+        })
+    })
+    .await
 }
 
 pub async fn vcs_log(host: &Host, window: &str, repo: Option<PathBuf>, query: LogQuery) -> IdeResult<Vec<Commit>> {
@@ -238,17 +259,20 @@ pub async fn vcs_stashes(host: &Host, window: &str, repo: Option<PathBuf>) -> Id
 }
 
 pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || per_repo(&project, &paths, None, |r, paths| r.stage(paths))).await
 }
 
 /// Project-host operation (also registered with the remote dispatcher).
+/// Returns the ignore files that were updated, so the UI can show them.
 pub async fn vcs_add_to_ignore(
     host: &Host,
     window: &str,
     paths: Vec<PathBuf>,
     destination: IgnoreDestination,
-) -> IdeResult<()> {
+) -> IdeResult<Vec<String>> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
         for path in &paths {
@@ -257,29 +281,32 @@ pub async fn vcs_add_to_ignore(
             }
         }
         apply_git_executable(&project.settings.effective());
-        let result = ide_vcs::add_to_ignore(&paths, destination);
+        let result = project.with_disk_sync(|| ide_vcs::add_to_ignore(&paths, destination));
         // Exclude may live outside a worktree's watched directory. Refresh filters and UI explicitly.
         project.watcher.reload_ignore_rules();
         for (_, watcher) in project.content_watchers.lock().iter() {
             watcher.reload_ignore_rules();
         }
         project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
-        result.map(|_| ())
+        result.map(|files| files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
     })
     .await
 }
 
 pub async fn vcs_unstage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || per_repo(&project, &paths, None, |r, paths| r.unstage(paths))).await
 }
 
 pub async fn vcs_stage_patch(host: &Host, window: &str, patch: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo(|r| r.stage_patch(&patch))).await
+    blocking(move || project.with_repo(|r| r.stage_patch(&patch, &|path| project.vcs_encoding(path, Some(":0"))))).await
 }
 
 pub async fn vcs_discard(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || per_repo(&project, &paths, Some("Rollback"), |r, paths| r.discard(paths))).await
 }
@@ -291,9 +318,15 @@ pub async fn vcs_commit(
     message: String,
     options: CommitOptions,
 ) -> IdeResult<String> {
+    host.require_trust(window)?;
     // Commit hooks may run for a long time.
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.commit_with(&message, &options))).await
+    blocking(move || {
+        project.with_repo_recorded(repo.as_deref(), None, |r| {
+            r.commit_with(&message, &options, &|path| project.vcs_encoding(path, None))
+        })
+    })
+    .await
 }
 
 pub async fn vcs_checkout(
@@ -304,6 +337,7 @@ pub async fn vcs_checkout(
     create: bool,
     options: Option<ide_vcs::CheckoutOptions>,
 ) -> IdeResult<ide_vcs::CheckoutOutcome> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let options = options.unwrap_or_default();
     blocking(move || {
@@ -322,6 +356,7 @@ pub async fn vcs_create_branch(
     start: Option<String>,
     checkout: bool,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let recorded = checkout.then_some("Git checkout");
     blocking(move || {
@@ -333,6 +368,7 @@ pub async fn vcs_create_branch(
 /// Undo Commit: moves HEAD back to the commit's parent, keeping its changes staged.
 /// Returns the undone commit's message.
 pub async fn vcs_undo_commit(host: &Host, window: &str, repo: Option<PathBuf>, commit: String) -> IdeResult<String> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.undo_commit(&commit))).await
 }
@@ -343,6 +379,7 @@ pub async fn vcs_delete_branch(
     repo: Option<PathBuf>,
     branch: String,
 ) -> IdeResult<ide_vcs::DeletedBranch> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.delete_branch_restorable(&branch))).await
 }
@@ -354,6 +391,7 @@ pub async fn vcs_restore_branch(
     repo: Option<PathBuf>,
     deleted: ide_vcs::DeletedBranch,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.restore_branch(&deleted))).await
 }
@@ -365,16 +403,19 @@ pub async fn vcs_rename_branch(
     from: String,
     to: String,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.rename_branch(&from, &to))).await
 }
 
 pub async fn vcs_merge(host: &Host, window: &str, repo: Option<PathBuf>, branch: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_recorded(repo.as_deref(), Some("Git merge"), |r| r.merge(&branch))).await
 }
 
 pub async fn vcs_rebase(host: &Host, window: &str, repo: Option<PathBuf>, onto: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_recorded(repo.as_deref(), Some("Git rebase"), |r| r.rebase(&onto))).await
 }
@@ -387,6 +428,7 @@ pub async fn vcs_stash_push(
     include_untracked: bool,
     keep_index: bool,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
         project.with_repo_recorded(repo.as_deref(), Some("Git stash"), |r| {
@@ -405,6 +447,7 @@ pub async fn vcs_stash_apply(
     reinstate_index: bool,
     branch: Option<String>,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
         project.with_repo_recorded(repo.as_deref(), Some("Git unstash"), |r| match branch.as_deref() {
@@ -416,6 +459,7 @@ pub async fn vcs_stash_apply(
 }
 
 pub async fn vcs_stash_drop(host: &Host, window: &str, repo: Option<PathBuf>, index: u32) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.stash_drop(index))).await
 }
@@ -429,6 +473,7 @@ pub async fn vcs_remote(
     op: RemoteOp,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {
@@ -443,12 +488,17 @@ pub async fn vcs_remote(
                 r.push_with_tags(force_with_lease, set_upstream, tags, &cancel, &out)
             }
             RemoteOp::DeleteBranch { branch } => r.delete_remote_branch(&branch, &cancel, &out),
-            RemoteOp::PushBranch { branch, revision, force_with_lease, target } => match target {
-                Some(target) => {
-                    r.push_branch_to(&branch, revision.as_deref(), &target, force_with_lease, &cancel, &out)
-                }
-                None => r.push_branch(&branch, revision.as_deref(), force_with_lease, &cancel, &out),
-            },
+            RemoteOp::PushBranch { branch, revision, force_with_lease, target, remote } => r.push_branch_to(
+                &branch,
+                PushBranchOptions {
+                    revision: revision.as_deref(),
+                    target: target.as_deref(),
+                    remote: remote.as_deref(),
+                    force_with_lease,
+                },
+                &cancel,
+                &out,
+            ),
             RemoteOp::UpdateBranch { branch } => r.update_branch(&branch, &cancel, &out),
             RemoteOp::PullFrom { remote, branches, rebase, options } => {
                 r.pull_from(&remote, &branches, rebase, &options, &cancel, &out)
@@ -464,12 +514,14 @@ pub async fn vcs_remote(
 /// The user's side is `ours` (sides swapped during a rebase, as in IDEA).
 pub async fn vcs_conflict_versions(host: &Host, window: &str, path: PathBuf) -> IdeResult<ide_vcs::MergeVersions> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.merge_versions(&path))).await
+    blocking(move || project.with_repo_of(&path, |r| r.merge_versions(&path, project.vcs_encoding(&path, Some(":2"))?)))
+        .await
 }
 
 pub async fn vcs_diff_text(host: &Host, window: &str, path: PathBuf, staged: bool) -> IdeResult<String> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.diff_text(&path, staged))).await
+    blocking(move || project.with_repo_of(&path, |r| r.diff_text(&path, staged, project.vcs_encoding(&path, None)?)))
+        .await
 }
 
 /// Line hunks between two arbitrary texts (diff viewer, commit dialog).
@@ -479,16 +531,18 @@ pub fn vcs_diff_hunks(_host: &Host, _window: &str, old_text: String, new_text: S
 
 /// Stages only the selected hunks of a file's working-tree changes.
 /// Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
-pub fn vcs_stage_hunks(host: &Host, window: &str, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
+pub async fn vcs_stage_hunks(host: &Host, window: &str, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
-    let current = ide_vfs::load_text(&path)?.text;
-    project.with_repo_of(&path, |r| {
-        let index_text = r.file_at(&path, Some(":0"))?.unwrap_or_default();
-        let rel = path.strip_prefix(r.root()).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-        let selected: Vec<usize> = hunks.iter().map(|&h| h as usize).collect();
-        let patch = ide_vcs::build_partial_patch(&rel, &index_text, &current, &selected);
-        if patch.is_empty() { Ok(()) } else { r.stage_patch(&patch) }
+    blocking(move || {
+        let encoding = project.vcs_encoding(&path, Some(":0"))?;
+        let current = project.documents.load_file_as(&path, encoding.charset.name())?.text;
+        project.with_repo_of(&path, |r| {
+            let selected: Vec<usize> = hunks.iter().map(|&h| h as usize).collect();
+            r.stage_hunks(&path, &current, &selected, encoding)
+        })
     })
+    .await
 }
 
 /// Clones a repository (Get from VCS). Works without an open project.
@@ -521,7 +575,8 @@ pub async fn vcs_init(host: &Host, _window: &str, dir: PathBuf) -> IdeResult<()>
 
 /// Settings › Git › Test: runs `git --version` on `path`, or on the auto-detected
 /// executable when `path` is empty.
-pub async fn vcs_git_version(_host: &Host, _window: &str, path: String) -> IdeResult<GitExecutableInfo> {
+pub async fn vcs_git_version(host: &Host, window: &str, path: String) -> IdeResult<GitExecutableInfo> {
+    host.require_trust(window)?;
     tokio::task::spawn_blocking(move || {
         let explicit = path.trim();
         let exe = if explicit.is_empty() {
@@ -563,6 +618,7 @@ pub async fn vcs_operation(
     op: GitOperation,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {
@@ -603,6 +659,7 @@ pub async fn vcs_create_tag(
     message: Option<String>,
     force: bool,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.create_tag(&name, &commit, message.as_deref(), force)))
         .await
@@ -621,6 +678,7 @@ pub async fn vcs_merge_with(
     branches: Vec<String>,
     options: MergeOptions,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
         project.with_repo_recorded(repo.as_deref(), Some("Git merge"), |r| r.merge_with(&branches, &options))
@@ -636,6 +694,7 @@ pub async fn vcs_rebase_with(
     upstream: String,
     options: RebaseOptions,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
         project.with_repo_recorded(repo.as_deref(), Some("Git rebase"), |r| r.rebase_with(&upstream, &options))
@@ -649,6 +708,7 @@ pub async fn vcs_remotes(host: &Host, window: &str, repo: Option<PathBuf>) -> Id
 }
 
 pub async fn vcs_edit_remote(host: &Host, window: &str, repo: Option<PathBuf>, edit: RemoteEdit) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.edit_remote(&edit))).await
 }
@@ -666,9 +726,10 @@ pub async fn vcs_add_worktree(
     commitish: String,
     new_branch: Option<String>,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_at(repo.as_deref(), |r| r.add_worktree(&path, &commitish, new_branch.as_deref()))
+        project.with_repo_recorded(repo.as_deref(), None, |r| r.add_worktree(&path, &commitish, new_branch.as_deref()))
     })
     .await
 }
@@ -680,8 +741,36 @@ pub async fn vcs_remove_worktree(
     path: PathBuf,
     force: bool,
 ) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force))).await
+}
+
+pub async fn vcs_compare_scope(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<CompareScope> {
+    let project = host.project(window)?;
+    blocking(move || Ok(project.repos().compare_scope(&paths))).await
+}
+
+pub async fn vcs_compare_paths(
+    host: &Host,
+    window: &str,
+    paths: Vec<PathBuf>,
+    revision: String,
+    repositories: Option<Vec<PathBuf>>,
+    request: RequestId,
+) -> IdeResult<CompareResult> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = blocking(move || {
+        let settings = project.settings.effective();
+        if project.is_trusted() {
+            apply_git_executable(&settings);
+        }
+        project.repos().compare_paths(&paths, &revision, repositories.as_deref(), &cancel)
+    })
+    .await;
+    host.end_request(request);
+    result
 }
 
 /// Compare with Local: tracked files that differ between `rev` and the working tree.
@@ -705,6 +794,19 @@ pub async fn vcs_diff_revisions(
 ) -> IdeResult<Vec<ChangedFile>> {
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.diff_revisions(&from, &to))).await
+}
+
+/// The best common ancestor of `a` and `b` (`git merge-base`), if any: the New Pull
+/// Request tab's three-dot diff.
+pub async fn vcs_merge_base(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    a: String,
+    b: String,
+) -> IdeResult<Option<String>> {
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.merge_base(&a, &b))).await
 }
 
 pub async fn vcs_create_patch(
@@ -742,39 +844,58 @@ pub async fn vcs_apply_patch(
     repo: Option<PathBuf>,
     patch: String,
 ) -> IdeResult<ApplyOutcome> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.apply_patch(&patch))).await
+    blocking(move || project.with_repo_recorded(repo.as_deref(), None, |r| r.apply_patch(&patch))).await
 }
 
 /// Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them.
 pub async fn vcs_shelve(host: &Host, window: &str, name: String, paths: Vec<PathBuf>) -> IdeResult<ShelvedChangeList> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        in_primary_repo(&project, &paths)?;
+        let repo = shelf_repository(&project, &paths)?;
         keep_private(&project.root);
-        project.with_repo_recorded(None, Some("Shelve"), |r| r.shelve(&shelf_dir(&project.root), &name, &paths))
+        project.with_repo_recorded(Some(&repo), Some("Shelve"), |r| r.shelve(&shelf_dir(&project.root), &name, &paths))
     })
     .await
 }
 
 pub fn vcs_shelves(host: &Host, window: &str) -> IdeResult<Vec<ShelvedChangeList>> {
     let project = host.project(window)?;
-    ide_vcs::shelf::list(&shelf_dir(&project.root))
+    let mut shelves = ide_vcs::shelf::list(&shelf_dir(&project.root))?;
+    let primary = project.repos().primary().map(|r| ide_core::IpcPath::from(r.root().to_path_buf()));
+    for entry in &mut shelves {
+        if entry.repo.is_none() {
+            entry.repo = primary.clone();
+        }
+    }
+    Ok(shelves)
 }
 
 /// Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
 /// merge UI); with `remove`, deletes it from the shelf.
-pub async fn vcs_unshelve(host: &Host, window: &str, id: String, remove: bool) -> IdeResult<ApplyOutcome> {
+pub async fn vcs_unshelve(
+    host: &Host,
+    window: &str,
+    id: String,
+    remove: bool,
+    path: Option<String>,
+) -> IdeResult<ApplyOutcome> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_recorded(None, Some("Unshelve"), |r| r.unshelve(&shelf_dir(&project.root), &id, remove))
+        let repo = ide_vcs::shelf::repository(&shelf_dir(&project.root), &id)?;
+        project.with_repo_recorded(repo.as_deref(), Some("Unshelve"), |r| {
+            ide_vcs::shelf::unshelve_path(r, &shelf_dir(&project.root), &id, remove, path.as_deref())
+        })
     })
     .await
 }
 
-pub fn vcs_shelf_delete(host: &Host, window: &str, id: String) -> IdeResult<()> {
+pub fn vcs_shelf_delete(host: &Host, window: &str, id: String, path: Option<String>) -> IdeResult<()> {
     let project = host.project(window)?;
-    ide_vcs::shelf::delete(&shelf_dir(&project.root), &id)
+    ide_vcs::shelf::delete_path(&shelf_dir(&project.root), &id, path.as_deref())
 }
 
 pub fn vcs_shelf_rename(host: &Host, window: &str, id: String, name: String) -> IdeResult<()> {
@@ -782,9 +903,37 @@ pub fn vcs_shelf_rename(host: &Host, window: &str, id: String, name: String) -> 
     ide_vcs::shelf::rename(&shelf_dir(&project.root), &id, &name)
 }
 
-pub fn vcs_shelf_patch(host: &Host, window: &str, id: String) -> IdeResult<String> {
+pub fn vcs_shelf_patch(host: &Host, window: &str, id: String, path: Option<String>) -> IdeResult<String> {
     let project = host.project(window)?;
-    ide_vcs::shelf::patch_of(&shelf_dir(&project.root), &id)
+    ide_vcs::shelf::selected_patch(&shelf_dir(&project.root), &id, path.as_deref())
+}
+
+pub async fn vcs_shelf_diff(host: &Host, window: &str, id: String) -> IdeResult<Vec<ide_vcs::shelf::ShelfDiffFile>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        let repo = ide_vcs::shelf::repository(&shelf_dir(&project.root), &id)?;
+        project.with_repo_at(repo.as_deref(), |r| ide_vcs::shelf::diff_files(r, &shelf_dir(&project.root), &id))
+    })
+    .await
+}
+
+pub async fn vcs_shelf_import(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    name: String,
+    patch: String,
+) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || {
+        if repo.is_none() && project.repos().is_empty() {
+            return ide_vcs::shelf::import_patch(&shelf_dir(&project.root), &name, &patch, None);
+        }
+        project.with_repo_at(repo.as_deref(), |r| {
+            ide_vcs::shelf::import_patch(&shelf_dir(&project.root), &name, &patch, Some(r.root()))
+        })
+    })
+    .await
 }
 
 pub fn vcs_changelists_load(host: &Host, window: &str) -> IdeResult<ChangelistState> {
@@ -799,13 +948,20 @@ pub fn vcs_changelists_save(host: &Host, window: &str, changelists: ChangelistSt
 }
 
 /// Create Patch › Save to file.
-pub async fn vcs_write_patch(_host: &Host, _window: &str, path: PathBuf, patch: String) -> IdeResult<()> {
+pub async fn vcs_write_patch(host: &Host, window: &str, path: PathBuf, patch: String) -> IdeResult<()> {
+    let project = host.project(window).ok();
     blocking(move || {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        let write = || {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&path, patch)?;
+            Ok(())
+        };
+        match project {
+            Some(project) => project.with_disk_sync(write),
+            None => write(),
         }
-        std::fs::write(&path, patch)?;
-        Ok(())
     })
     .await
 }
@@ -814,9 +970,11 @@ pub async fn vcs_write_patch(_host: &Host, _window: &str, path: PathBuf, patch: 
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
-    d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?) });
+    d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
-    d.add("vcs_blame", |c| async move { vcs_blame(&c.host, &c.window, c.arg("path")?).await });
+    d.add("vcs_blame", |c| async move {
+        vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
+    });
     d.add("vcs_log", |c| async move { vcs_log(&c.host, &c.window, c.arg("repo")?, c.arg("query")?).await });
     d.add("vcs_commit_files", |c| async move {
         vcs_commit_files(&c.host, &c.window, c.arg("repo")?, c.arg("commit")?).await
@@ -896,7 +1054,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "vcs_diff_hunks",
         |c| async move { Ok(vcs_diff_hunks(&c.host, &c.window, c.arg("oldText")?, c.arg("newText")?)) },
     );
-    d.add("vcs_stage_hunks", |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?) });
+    d.add(
+        "vcs_stage_hunks",
+        |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?).await },
+    );
     d.add("vcs_clone", |c| async move {
         vcs_clone(&c.host, &c.window, c.arg("request")?, c.arg("url")?, c.arg("dest")?, c.sender("onOutput")?).await
     });
@@ -939,11 +1100,26 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_remove_worktree", |c| async move {
         vcs_remove_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("force")?).await
     });
+    d.add("vcs_compare_scope", |c| async move { vcs_compare_scope(&c.host, &c.window, c.arg("paths")?).await });
+    d.add("vcs_compare_paths", |c| async move {
+        vcs_compare_paths(
+            &c.host,
+            &c.window,
+            c.arg("paths")?,
+            c.arg("revision")?,
+            c.arg("repositories")?,
+            c.arg("request")?,
+        )
+        .await
+    });
     d.add("vcs_diff_with_worktree", |c| async move {
         vcs_diff_with_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("rev")?).await
     });
     d.add("vcs_diff_revisions", |c| async move {
         vcs_diff_revisions(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?).await
+    });
+    d.add("vcs_merge_base", |c| async move {
+        vcs_merge_base(&c.host, &c.window, c.arg("repo")?, c.arg("a")?, c.arg("b")?).await
     });
     d.add("vcs_create_patch", |c| async move {
         vcs_create_patch(&c.host, &c.window, c.arg("repo")?, c.arg("source")?).await
@@ -957,10 +1133,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("vcs_shelve", |c| async move { vcs_shelve(&c.host, &c.window, c.arg("name")?, c.arg("paths")?).await });
     d.add("vcs_shelves", |c| async move { vcs_shelves(&c.host, &c.window) });
-    d.add("vcs_unshelve", |c| async move { vcs_unshelve(&c.host, &c.window, c.arg("id")?, c.arg("remove")?).await });
-    d.add("vcs_shelf_delete", |c| async move { vcs_shelf_delete(&c.host, &c.window, c.arg("id")?) });
+    d.add("vcs_unshelve", |c| async move {
+        vcs_unshelve(&c.host, &c.window, c.arg("id")?, c.arg("remove")?, c.arg("path")?).await
+    });
+    d.add("vcs_shelf_delete", |c| async move { vcs_shelf_delete(&c.host, &c.window, c.arg("id")?, c.arg("path")?) });
     d.add("vcs_shelf_rename", |c| async move { vcs_shelf_rename(&c.host, &c.window, c.arg("id")?, c.arg("name")?) });
-    d.add("vcs_shelf_patch", |c| async move { vcs_shelf_patch(&c.host, &c.window, c.arg("id")?) });
+    d.add("vcs_shelf_diff", |c| async move { vcs_shelf_diff(&c.host, &c.window, c.arg("id")?).await });
+    d.add("vcs_shelf_import", |c| async move {
+        vcs_shelf_import(&c.host, &c.window, c.arg("repo")?, c.arg("name")?, c.arg("patch")?).await
+    });
+    d.add("vcs_shelf_patch", |c| async move { vcs_shelf_patch(&c.host, &c.window, c.arg("id")?, c.arg("path")?) });
     d.add("vcs_changelists_load", |c| async move { vcs_changelists_load(&c.host, &c.window) });
     d.add("vcs_changelists_save", |c| async move { vcs_changelists_save(&c.host, &c.window, c.arg("changelists")?) });
     d.add(

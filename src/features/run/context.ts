@@ -4,15 +4,20 @@
  * direct interpreter invocation for main files. Best effort, IDEA-style.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { goTestParts } from "./goArguments";
+import { isWindows } from "./jvmTypes";
 
 export type FileRole = "test" | "main" | "script" | null;
 
-export function fileRole(relPath: string, content?: string): FileRole {
+/** `django`: a Django project, whose default test module is `tests.py` (elsewhere a script). */
+export function fileRole(relPath: string, content?: string, windows = isWindows(), django = false): FileRole {
   const name = relPath.split("/").pop() ?? relPath;
   if (
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
     /(^|\/)__tests__\//.test(relPath) ||
     /^test_.*\.py$|_test\.py$/.test(name) ||
+    (django && name === "tests.py") ||
     /_test\.go$/.test(name) ||
     /(Test|Tests|Spec|IT)\.(kt|java|scala|groovy)$/.test(name) ||
     (/(^|\/)tests\/[^/]+\.rs$/.test(relPath) && name !== "mod.rs")
@@ -23,6 +28,7 @@ export function fileRole(relPath: string, content?: string): FileRole {
   if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
     return "main";
   if (/\.(py|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
+  if (windows && /\.(bat|cmd)$/i.test(name)) return "script";
   return null;
 }
 
@@ -32,7 +38,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
-  if (/\.py$/.test(relPath)) return ["pytest", "python"];
+  if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/\.go$/.test(relPath)) return ["go"];
   if (/\.rs$/.test(relPath)) return ["cargo"];
   if (/\.(kt|java|scala|groovy)$/.test(relPath)) return ["gradle", "maven"];
@@ -42,7 +48,9 @@ function testKinds(relPath: string): string[] {
 /** Configs whose working directory most specifically contains `relPath` (ties in their original order). */
 function allClosest(configs: RunConfig[], relPath: string): RunConfig[] {
   const score = (c: RunConfig) => {
-    const cwd = (c.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
+    const cwd = (c.kind === "go" ? (c.params?.module ?? c.cwd ?? "") : (c.cwd ?? ""))
+      .replace(/^\.\/?/, "")
+      .replace(/\/+$/, "");
     if (!cwd) return 0;
     return relPath === cwd || relPath.startsWith(cwd + "/") ? cwd.length : -1;
   };
@@ -56,8 +64,11 @@ function closest(configs: RunConfig[], relPath: string): RunConfig | undefined {
   return allClosest(configs, relPath)[0];
 }
 
-function relToCwd(relPath: string, config: RunConfig): string {
-  const cwd = (config.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
+/** `relPath` relative to the working directory of `config`. */
+export function relToCwd(relPath: string, config: RunConfig): string {
+  const cwd = (config.kind === "go" ? (config.params?.module ?? config.cwd ?? "") : (config.cwd ?? ""))
+    .replace(/^\.\/?/, "")
+    .replace(/\/+$/, "");
   return cwd && relPath.startsWith(cwd + "/") ? relPath.slice(cwd.length + 1) : relPath;
 }
 
@@ -80,8 +91,11 @@ function derived(base: RunConfig, relPath: string, patch: Partial<RunConfig>): R
 export function projectPython(configs: RunConfig[]): { command: string; prefix: string[] } | null {
   const py = configs.find((c) => c.kind === "python");
   if (py) {
-    const m = py.args.indexOf("-m");
-    return { command: py.command, prefix: m >= 0 ? py.args.slice(0, m) : py.args.filter((a) => !a.endsWith(".py")) };
+    // The interpreter part ends where the program starts: `-m`, or the script (`manage.py`). What follows
+    // (`runserver`, `test`…) belongs to that program, never to the interpreter.
+    const end = py.args.findIndex((a) => a === "-m" || a.endsWith(".py"));
+    const python = py.args.findIndex((a) => /^python[\d.]*$/.test(a));
+    return { command: py.command, prefix: py.args.slice(0, end >= 0 ? end : python + 1) };
   }
   const pytest = configs.find((c) => c.kind === "pytest");
   if (!pytest) return null;
@@ -121,7 +135,8 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
  */
 export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[] {
   const kinds = testKinds(relPath);
-  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind));
+  // Configurations produced from a test or file are results of narrowing, never bases for it.
+  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"));
   const best = allClosest(candidates, relPath);
   if (best.length) return best;
   const fallback = candidates[0] ?? implicitPytest(relPath, configs);
@@ -148,10 +163,20 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
     case "pytest":
     case "python":
       return derived(base, relPath, { args: [...base.args, file] });
+    case "django-test": {
+      const tests = djangoTestsOf(base, [djangoLabel(file)]);
+      return tests ? derived(base, relPath, tests) : null;
+    }
     case "go": {
       const dir = dirOf(file);
-      const args = base.args.map((a) => (a === "./..." ? (dir ? `./${dir}` : ".") : a));
-      return derived(base, relPath, { args, name: `go test ${dir ? `./${dir}` : "."}` });
+      const target = dir ? `./${dir}` : ".";
+      const parts = goTestParts(base.args);
+      const args = ["test", ...parts.flags, target, ...parts.program];
+      return derived(base, relPath, {
+        args,
+        name: `go test ${target}`,
+        ...(base.params?.goKind ? { params: { ...base.params, scope: "directory", target } } : {}),
+      });
     }
     case "cargo": {
       const m = /(?:^|\/)tests\/([^/]+)\.rs$/.exec(relPath);
@@ -194,7 +219,7 @@ function mainConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null 
   return null;
 }
 
-function scriptConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null {
+function scriptConfigFor(relPath: string, configs: RunConfig[], windows = isWindows()): RunConfig | null {
   const base: RunConfig = {
     id: `context:file:${relPath}`,
     name: relPath.split("/").pop() ?? relPath,
@@ -220,14 +245,23 @@ function scriptConfigFor(relPath: string, configs: RunConfig[]): RunConfig | nul
     const shell = relPath.endsWith(".zsh") ? "zsh" : relPath.endsWith(".bash") ? "bash" : "sh";
     return { ...base, command: shell, args: [relPath] };
   }
+  if (windows && /\.(bat|cmd)$/i.test(relPath)) {
+    const file = relPath.split("/").pop() ?? relPath;
+    return { ...base, command: "cmd.exe", args: ["/c", file], cwd: dirOf(relPath) || null };
+  }
   return null;
 }
 
 /** Config to run for the file at `relPath` (relative to the project root), if any. */
-export function contextConfig(relPath: string, configs: RunConfig[], content?: string): RunConfig | null {
-  const role = fileRole(relPath, content);
+export function contextConfig(
+  relPath: string,
+  configs: RunConfig[],
+  content?: string,
+  windows = isWindows(),
+): RunConfig | null {
+  const role = fileRole(relPath, content, windows, hasDjangoTests(configs));
   if (role === "test") return testConfigFor(relPath, configs);
-  if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs);
-  if (role === "script") return scriptConfigFor(relPath, configs);
+  if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs, windows);
+  if (role === "script") return scriptConfigFor(relPath, configs, windows);
   return null;
 }

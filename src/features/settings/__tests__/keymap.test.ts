@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerAction } from "@/platform/actions";
+import { allActions, registerAction } from "@/platform/actions";
 import {
   applyKeymapSettings,
   bindingsFor,
@@ -37,6 +37,24 @@ import {
 } from "../keymap/model";
 import { buildKeymapTree } from "../keymap/KeymapPage";
 import { groupPath } from "../keymap/groups";
+import { registerLspActions } from "@/editor/lsp/actions";
+import { _resetI18nForTests, setLocale } from "@/platform/i18n";
+
+it("finds the translated declaration action by 声明 and its English title", async () => {
+  const dispose = registerLspActions();
+  try {
+    await setLocale("zh");
+    for (const query of ["声明", "Go to Declaration or Usages"]) {
+      const tree = buildKeymapTree(allActions(), { preset: "intellij-macos", overrides: {} }, query, "");
+      const titles = (nodes: typeof tree): string[] =>
+        nodes.flatMap((node) => (node.kind === "group" ? titles(node.children) : [node.action.title]));
+      expect(titles(tree)).toContain("转到声明或用法");
+    }
+  } finally {
+    dispose();
+    _resetI18nForTests();
+  }
+});
 
 const key = (
   code: string,

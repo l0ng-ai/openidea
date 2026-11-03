@@ -22,9 +22,23 @@ pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResu
     blocking(move || project.documents.open_virtual(&vd.uri, vd.language_id, &vd.text)).await
 }
 
+/// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
+/// without opening it: previews of closed files.
+pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<String>> {
+    let project = host.project(window)?;
+    blocking(move || Ok(project.documents.ui_mode_of(&path))).await
+}
+
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
-pub fn doc_set_encoding(host: &Host, window: &str, doc: DocId, encoding: String, reload: bool) -> IdeResult<String> {
-    host.project(window)?.documents.set_encoding(doc, &encoding, reload)
+pub async fn doc_set_encoding(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    encoding: String,
+    reload: bool,
+) -> IdeResult<String> {
+    let project = host.project(window)?;
+    host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
 }
 
 pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
@@ -108,11 +122,12 @@ pub fn history_content(host: &Host, window: &str, id: String) -> IdeResult<Strin
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_open_virtual", |c| async move { doc_open_virtual(&c.host, &c.window, c.arg("uri")?).await });
+    d.add("doc_ui_mode", |c| async move { doc_ui_mode(&c.host, &c.window, c.arg("path")?).await });
     d.add("doc_set_encoding", |c| async move {
-        doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?)
+        doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });
     d.add("doc_set_line_ending", |c| async move {
-        doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)
+        blocking(move || doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)).await
     });
     d.add("doc_outline", |c| async move { doc_outline(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_folding", |c| async move { doc_folding(&c.host, &c.window, c.arg("doc")?).await });

@@ -3,47 +3,16 @@
 
 use crate::InstallEvent;
 use ide_core::error::ErrorKind;
+use ide_core::output_encoding::decode_tool_output;
+use ide_core::process::{kill_tree, own_group};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub type Emit<'a> = &'a dyn Fn(InstallEvent);
-
-/// Starts the child as the leader of its own process group, so [`kill`] reaches what it
-/// starts in turn (`npm` → `node`, `go install` → the compiler, `pip` → build backends).
-fn own_group(cmd: &mut Command) -> &mut Command {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    cmd
-}
-
-/// Kills the child and everything it started.
-fn kill(child: &mut Child) {
-    #[cfg(unix)]
-    if let Ok(pid) = i32::try_from(child.id()) {
-        // SAFETY: plain syscall; the child leads its own process group (`own_group`) and is not reaped yet.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let mut taskkill = Command::new("taskkill");
-        ide_core::process::prepare(&mut taskkill)
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let _ = taskkill.status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
 
 fn describe(cmd: &Command) -> String {
     let mut s = Path::new(cmd.get_program()).file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -86,8 +55,9 @@ pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> 
     for pipe in pipes.into_iter().flatten() {
         let tx = tx.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(pipe).lines() {
+            for line in BufReader::new(pipe).split(b'\n') {
                 let Ok(line) = line else { break };
+                let line = decode_tool_output(&line).trim_end_matches('\r').to_owned();
                 if tx.send(line).is_err() {
                     break;
                 }
@@ -98,7 +68,7 @@ pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> 
     let mut output = String::new();
     let status = loop {
         if cancel.is_cancelled() {
-            kill(&mut child);
+            kill_tree(&mut child);
             return Err(IdeError::cancelled());
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -127,14 +97,14 @@ pub fn run_quiet(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> 
     let mut stdout = child.stdout.take()?;
     let mut stderr = child.stderr.take()?;
     let out_t = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        s
+        let mut s = Vec::new();
+        let _ = stdout.read_to_end(&mut s);
+        decode_tool_output(&s)
     });
     let err_t = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
+        let mut s = Vec::new();
+        let _ = stderr.read_to_end(&mut s);
+        decode_tool_output(&s)
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -142,7 +112,7 @@ pub fn run_quiet(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> 
             Ok(Some(s)) => break s,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(15)),
             _ => {
-                kill(&mut child);
+                kill_tree(&mut child);
                 return None;
             }
         }
@@ -219,7 +189,25 @@ impl Http {
 
     /// GETs `url` as text, failing when the response is larger than `max_bytes`.
     pub fn get_text_limited(&self, url: &str, max_bytes: Option<u64>, cancel: &CancellationToken) -> IdeResult<String> {
+        self.get_text_response(url, max_bytes, false, cancel)
+    }
+
+    /// Adoptium uses 404 as well as an empty array for absent platform builds.
+    pub fn get_text_or_empty_on_404(&self, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
+        self.get_text_response(url, None, true, cancel)
+    }
+
+    fn get_text_response(
+        &self,
+        url: &str,
+        max_bytes: Option<u64>,
+        empty_on_404: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<String> {
         let mut cmd = self.base(url);
+        if empty_on_404 {
+            cmd.args(["--write-out", "\n%{http_code}"]);
+        }
         if let Some(max) = max_bytes {
             cmd.arg("--max-filesize").arg(max.to_string());
         }
@@ -236,7 +224,7 @@ impl Http {
         });
         let status = loop {
             if cancel.is_cancelled() {
-                kill(&mut child);
+                kill_tree(&mut child);
                 return Err(IdeError::cancelled());
             }
             match child.try_wait()? {
@@ -244,15 +232,23 @@ impl Http {
                 None => std::thread::sleep(Duration::from_millis(30)),
             }
         };
-        let body = out_t.join().unwrap_or_default();
+        let mut body = out_t.join().unwrap_or_default();
+        if empty_on_404 && let Some(split) = body.iter().rposition(|b| *b == b'\n') {
+            let code = &body[split + 1..];
+            if code == b"404" {
+                return Ok("[]".into());
+            }
+            body.truncate(split);
+        }
         if let Some(max) = max_bytes
             && body.len() as u64 > max
         {
             return Err(IdeError::new(ErrorKind::Io, format!("{url}: response is larger than {max} bytes")));
         }
         if !status.success() {
-            let mut err = String::new();
-            let _ = stderr.read_to_string(&mut err);
+            let mut err = Vec::new();
+            let _ = stderr.read_to_end(&mut err);
+            let err = decode_tool_output(&err);
             return Err(IdeError::new(ErrorKind::Io, format!("GET {url} failed: {}", err.trim())));
         }
         String::from_utf8(body).map_err(|_| IdeError::new(ErrorKind::Protocol, format!("{url}: response is not UTF-8")))
@@ -272,15 +268,15 @@ impl Http {
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
         let mut stderr = child.stderr.take().expect("piped");
         let err_t = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = stderr.read_to_string(&mut s);
-            s
+            let mut s = Vec::new();
+            let _ = stderr.read_to_end(&mut s);
+            decode_tool_output(&s)
         });
         let mut last = Instant::now();
         let mut last_bytes = 0;
         let status = loop {
             if cancel.is_cancelled() {
-                kill(&mut child);
+                kill_tree(&mut child);
                 let _ = std::fs::remove_file(dest);
                 return Err(IdeError::cancelled());
             }
@@ -320,6 +316,89 @@ pub fn progress_event(bytes: u64, size: Option<u64>) -> InstallEvent {
     }
 }
 
+/// Runs a formatter with separate pipes so diagnostics can never become document text.
+pub(crate) fn run_input(
+    cmd: &mut Command,
+    input: &str,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> IdeResult<String> {
+    use std::io::Write;
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut child = own_group(cmd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stdin = child.stdin.take().unwrap();
+    let input = input.to_owned();
+    // All pipes drain concurrently, including stdin: large documents cannot deadlock or bypass the timeout.
+    enum Pipe {
+        Written(std::io::Result<()>),
+        Read(bool, std::io::Result<Vec<u8>>),
+    }
+    let (tx, rx) = mpsc::channel();
+    let writer = tx.clone();
+    std::thread::spawn(move || {
+        let _ = writer.send(Pipe::Written(stdin.write_all(input.as_bytes())));
+    });
+    for (is_stderr, mut pipe) in [
+        (false, Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>),
+        (true, Box::new(child.stderr.take().unwrap()) as Box<dyn Read + Send>),
+    ] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = tx.send(Pipe::Read(is_stderr, pipe.read_to_end(&mut bytes).map(|_| bytes)));
+        });
+    }
+    drop(tx);
+    let started = Instant::now();
+    let (mut status, mut output, mut errors, mut written) = (None, None, None, None);
+    let result = loop {
+        if cancel.is_cancelled() {
+            break Err(IdeError::cancelled());
+        }
+        if started.elapsed() >= timeout {
+            break Err(IdeError::new(ErrorKind::TimedOut, "Formatting timed out"));
+        }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(s) => status = s,
+                Err(e) => break Err(e.into()),
+            }
+        }
+        if status.is_some() && output.is_some() && errors.is_some() && written.is_some() {
+            break Ok(());
+        }
+        match rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(Pipe::Written(result)) => written = Some(result),
+            Ok(Pipe::Read(true, result)) => errors = Some(result),
+            Ok(Pipe::Read(false, result)) => output = Some(result),
+            Err(mpsc::RecvTimeoutError::Disconnected) if output.is_some() && errors.is_some() && written.is_some() => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break Err(IdeError::internal("formatter pipe reader failed")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    };
+    if result.is_err() {
+        kill_tree(&mut child);
+    }
+    result?;
+    let output = output.unwrap()?;
+    let errors = errors.unwrap()?;
+    let status = status.unwrap();
+    if !status.success() {
+        let diagnostics: String = String::from_utf8_lossy(&errors).into_owned();
+        return Err(IdeError::invalid(if diagnostics.trim().is_empty() {
+            format!("Formatter exited with {status}")
+        } else {
+            diagnostics
+        }));
+    }
+    written.unwrap()?;
+    String::from_utf8(output).map_err(|e| IdeError::invalid(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,6 +436,25 @@ mod tests {
         assert!(err.message.contains("failed"), "{}", err.message);
         let lines = lines.into_inner().unwrap();
         assert!(lines.contains(&"one".to_string()) && lines.contains(&"two".to_string()), "{lines:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_build_is_empty_but_http_failures_are_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let curl = tmp.path().join("curl");
+        let http = Http { curl: curl.clone(), https_only: false };
+        for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
+        {
+            std::fs::write(&curl, format!("#!/bin/sh\nprintf 'payload\\n{code:03}'\nexit {exit}\n")).unwrap();
+            std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let result = http.get_text_or_empty_on_404("https://example.test/build", &CancellationToken::new());
+            match expected {
+                Some(body) => assert_eq!(result.unwrap(), body),
+                None => assert!(result.is_err()),
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -415,5 +513,39 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "echo v1.2.3"]);
         assert_eq!(run_quiet(cmd, Duration::from_secs(5)), Some((true, "v1.2.3\n".into())));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn separate_diagnostics_and_never_return_failed_output() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat; printf warning >&2"]);
+        assert_eq!(run_input(&mut command, "a😀\n", Duration::from_secs(2), &Default::default()).unwrap(), "a😀\n");
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf broken; printf 'invalid syntax' >&2; exit 1"]);
+        let e = run_input(&mut command, "", Duration::from_secs(2), &Default::default()).unwrap_err();
+        assert_eq!(e.message, "invalid syntax");
+    }
+
+    #[test]
+    fn timeout_kills_formatter_and_cancellation_prevents_start() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 10 &"]);
+        let start = Instant::now();
+        assert_eq!(
+            run_input(&mut command, "", Duration::from_millis(50), &Default::default()).unwrap_err().kind,
+            ErrorKind::TimedOut
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(
+            run_input(&mut Command::new("does-not-exist"), "", Duration::from_secs(2), &cancel).unwrap_err().kind,
+            ErrorKind::Cancelled
+        );
     }
 }

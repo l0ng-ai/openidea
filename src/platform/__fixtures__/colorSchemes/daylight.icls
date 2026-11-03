@@ -1,0 +1,8 @@
+<scheme name="Daylight" version="142" parent_scheme="Default">
+  <colors><option name="SELECTION_BACKGROUND" value="ccddff"/></colors>
+  <attributes>
+    <option name="TEXT"><value><option name="FOREGROUND" value="202030"/><option name="BACKGROUND" value="f8f8f0"/></value></option>
+    <option name="KOTLIN_KEYWORD"><value><option name="FOREGROUND" value="663399"/></value></option>
+    <option name="JAVA_STRING"><value><option name="FOREGROUND" value="006633"/></value></option>
+  </attributes>
+</scheme>

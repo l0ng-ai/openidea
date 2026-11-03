@@ -59,6 +59,9 @@ pub struct RemoteLaunch {
 
 #[derive(Default)]
 pub struct WindowsState {
+    pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
+    pub groups_restored: AtomicBool,
+    pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
@@ -84,7 +87,7 @@ impl WindowsState {
         launch.files.extend(files.into_iter().map(Into::into));
     }
 
-    fn pending(&self, label: &str) -> Option<Launch> {
+    pub(crate) fn pending(&self, label: &str) -> Option<Launch> {
         self.launches.lock().get(label).cloned()
     }
 
@@ -193,9 +196,31 @@ pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
 }
 
 pub fn focus(window: &WebviewWindow) {
+    if crate::window_groups::select(window.app_handle(), window.label(), window.label()).is_ok() {
+        return;
+    }
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+/// Present one project's save prompt at a time, including hidden group members.
+pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
+    if !app.state::<WindowsState>().quitting() {
+        return;
+    }
+    let next = project_window_labels(app)
+        .into_iter()
+        .filter(|label| Some(label.as_str()) != closed)
+        .find_map(|label| app.get_webview_window(&label));
+    if let Some(window) = next {
+        focus(&window);
+        if window.close().is_err() {
+            app.state::<WindowsState>().set_quitting(false);
+        }
+    } else {
+        app.exit(0);
+    }
 }
 
 /// The window whose open project is `root` (already canonical).
@@ -259,6 +284,11 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    let visible = cfg!(target_os = "macos") && config.visible;
+    let focused = config.focus;
+    if visible {
+        config.visible = false;
+    }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
@@ -268,15 +298,29 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
     }
+    #[cfg(target_os = "linux")]
+    let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
+    #[cfg(target_os = "macos")]
+    align_titlebar(app, &window);
     // "Sync with OS" needs the OS mode, known once the window exists.
     if let Some(a) = appearance.filter(|a| plugin_frame.is_none() && (a.sync_with_os || a.theme == "system"))
         && window.theme().is_ok_and(|t| t == Theme::Dark)
     {
         let _ = window.set_background_color(Some(frame_color(&a, true)));
+    }
+    #[cfg(target_os = "linux")]
+    if show_after_build {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+    }
+    if visible {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+        if focused {
+            let _ = window.set_focus();
+        }
     }
     Ok(window)
 }
@@ -292,6 +336,20 @@ fn apply_zoom(app: &AppHandle, window: &WebviewWindow) {
     }
 }
 
+/// Aligns the native window buttons before the page reports its title bar height,
+/// so they don't visibly move once it loads.
+#[cfg(target_os = "macos")]
+fn align_titlebar(app: &AppHandle, window: &WebviewWindow) {
+    // `--h-titlebar` in tokens.css.
+    const HEIGHT: f64 = 40.0;
+    const COMPACT_HEIGHT: f64 = 32.0;
+    let Some(a) = app.try_state::<AppState>().map(|s| s.global_settings.effective().appearance) else {
+        return;
+    };
+    let height = if a.compact_mode { COMPACT_HEIGHT } else { HEIGHT };
+    let _ = crate::titlebar::set_height(window, height * f64::from(a.zoom.clamp(50, 300)) / 100.0);
+}
+
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
 pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
     build_project_window(app, window_config(app)?)
@@ -299,18 +357,35 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new())
+    create_window_with(app, project, Vec::new(), false)
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
-fn create_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) -> IdeResult<WebviewWindow> {
+fn create_window_with(
+    app: &AppHandle,
+    project: Option<PathBuf>,
+    files: Vec<PathBuf>,
+    restoring: bool,
+) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() })
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
 }
 
-fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> IdeResult<WebviewWindow> {
+/// Restoring a saved group preserves its membership and selected tab.
+pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
+    create_window_with(app, Some(project), Vec::new(), true)
+}
+
+fn create_window_for(
+    app: &AppHandle,
+    title: Option<String>,
+    launch: Launch,
+    _restoring: bool,
+) -> IdeResult<WebviewWindow> {
+    #[cfg(target_os = "macos")]
+    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -330,6 +405,11 @@ fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> 
     }
     app.state::<WindowsState>().set_launch(&label, launch);
     let window = build_project_window(app, config)?;
+    #[cfg(target_os = "macos")]
+    if let Some(target) = tab_target {
+        crate::window_groups::join(app, target.label(), window.label())?;
+        return Ok(window);
+    }
     focus(&window);
     Ok(window)
 }
@@ -343,7 +423,7 @@ pub fn spawn_window(app: &AppHandle, project: Option<PathBuf>) {
 fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_with(&app, project, files) {
+        if let Err(e) = create_window_with(&app, project, files, false) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -382,7 +462,17 @@ pub fn open_project_window(
     if !new_window {
         return Ok(OpenOutcome::Current);
     }
-    let window = create_window_with(app, Some(root), files)?;
+    let window = create_window_with(app, Some(root), files, false)?;
+    Ok(OpenOutcome::Opened { label: window.label().to_owned() })
+}
+
+/// Opens `file` in a forced new window: `project` (None: LightEdit) plus the
+/// single file, always creating a window even when the project is already open
+/// in another one (unlike [`open_project_window`], which focuses it). Used to
+/// detach an editor tab out of its window.
+pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
+    tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
+    let window = create_window_with(app, project, vec![file], false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -410,7 +500,7 @@ pub fn open_remote_window(app: &AppHandle, ssh_config: &str, path: &str, new_win
     }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { ssh_config: ssh_config.to_owned(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() })?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -643,7 +733,6 @@ pub fn path_launch(path: PathBuf) -> Launch {
 }
 
 /// Second instance launched: focus this one and open its path argument.
-#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     match cli_path(&args, Path::new(&cwd)) {
         Some(path) => open_path(app, &path),
@@ -690,7 +779,7 @@ pub fn open_settings_window(
     let mut config = window_config(app)?;
     config.label = label.clone();
     config.title = "Settings".into();
-    // Frameless on Windows like project windows (tauri.windows.conf.json): the page draws
+    // Frameless on Windows and Linux like project windows (tauri.<os>.conf.json): the page draws
     // the title bar in the app theme instead of a system caption that follows the OS theme.
     (config.width, config.height) = SETTINGS_SIZE;
     (config.min_width, config.min_height) = (Some(SETTINGS_MIN_SIZE.0), Some(SETTINGS_MIN_SIZE.1));
@@ -704,32 +793,171 @@ pub fn open_settings_window(
         config.background_color = Some(color);
     }
     windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
+    #[cfg(target_os = "linux")]
+    crate::linux_window_state::prepare(app, &mut config);
     let builder = WebviewWindowBuilder::from_config(app, &config);
     // AppKit child windows can disappear when dragged to another display's Space.
     // The settings label already tracks ownership and parent-close cleanup.
     #[cfg(not(target_os = "macos"))]
     let builder = builder.and_then(|b| b.parent(&parent));
     let window = builder
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
-    // window-state restores the remembered size; the position always follows the parent.
-    if let (Ok(pos), Ok(size), Ok(own), Ok(scale)) =
-        (parent.outer_position(), parent.outer_size(), window.outer_size(), parent.scale_factor())
-    {
-        let (pos, size, own) =
-            (pos.to_logical::<f64>(scale), size.to_logical::<f64>(scale), own.to_logical::<f64>(scale));
-        let at = centered(pos.x, pos.y, size.width, size.height, own.width, own.height);
-        let _ = window.set_position(tauri::LogicalPosition::new(at.0, at.1));
+    #[cfg(target_os = "macos")]
+    align_titlebar(app, &window);
+    // Restore runs during build; fit its size to the parent's current display before showing.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = fit_settings_window(&window, &parent) {
+        tracing::warn!("cannot fit settings window: {e}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Err(e) = place_settings_window(&window, &parent) {
+        tracing::warn!("cannot place settings window: {e}");
     }
     focus(&window);
     Ok(())
+}
+
+/// Fit outer bounds, including native decorations, using one monitor's logical coordinate space.
+#[cfg(target_os = "macos")]
+fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+    let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
+        return Ok(());
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(scale);
+    let available = area.size.to_logical::<f64>(scale);
+    // Move to the target display first so native frame metrics use its scale factor.
+    window.set_position(area.position)?;
+    let inner = window.inner_size()?.to_logical::<f64>(scale);
+    let outer = window.outer_size()?.to_logical::<f64>(scale);
+    let frame = (outer.width - inner.width, outer.height - inner.height);
+    let pos = parent.outer_position()?.to_logical::<f64>(scale);
+    let size = parent.outer_size()?.to_logical::<f64>(scale);
+    let bounds = fit_bounds(
+        (pos.x, pos.y, size.width, size.height),
+        (outer.width, outer.height),
+        (origin.x, origin.y, available.width, available.height),
+    );
+    // A small work area takes precedence over the usual minimum window size.
+    window.set_min_size(Some(
+        tauri::LogicalSize::new(
+            SETTINGS_MIN_SIZE.0.min((available.width - frame.0).max(1.0)),
+            SETTINGS_MIN_SIZE.1.min((available.height - frame.1).max(1.0)),
+        )
+        .to_physical::<u32>(scale),
+    ))?;
+    window.set_size(
+        tauri::LogicalSize::new((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0)).to_physical::<u32>(scale),
+    )?;
+    window.set_position(tauri::PhysicalPosition::new(
+        (bounds.0 * scale).round() as i32,
+        (bounds.1 * scale).round() as i32,
+    ))
+}
+
+/// Centres the settings window over its owner, inside the owner's monitor work area. The window
+/// may still be on another display with a different scale, so its size is converted with its own
+/// scale and its position is given in physical pixels.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+    // Placement setters leave maximized mode. Fit the restored frame, then reapply the saved state.
+    // A restored fullscreen window already covers its display and must not be fitted to the work area.
+    if window.is_fullscreen()? {
+        return Ok(());
+    }
+    let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
+        return Ok(());
+    };
+    let maximized = window.is_maximized()?;
+    if maximized {
+        window.unmaximize()?;
+    }
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(scale);
+    let available = area.size.to_logical::<f64>(scale);
+    let pos = parent.outer_position()?.to_logical::<f64>(scale);
+    let size = parent.outer_size()?.to_logical::<f64>(scale);
+    let own_scale = window.scale_factor()?;
+    let own = window.outer_size()?.to_logical::<f64>(own_scale);
+    let inner = window.inner_size()?.to_logical::<f64>(own_scale);
+    let frame = (own.width - inner.width, own.height - inner.height);
+    let bounds = fit_bounds(
+        (pos.x, pos.y, size.width, size.height),
+        (own.width, own.height),
+        (origin.x, origin.y, available.width, available.height),
+    );
+    window.set_position(tauri::PhysicalPosition::new(
+        (bounds.0 * scale).round() as i32,
+        (bounds.1 * scale).round() as i32,
+    ))?;
+    if (bounds.2, bounds.3) != (own.width, own.height) {
+        // Sizes are set on the client area, and even an undecorated window has a resize frame.
+        let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
+        window.set_min_size(Some(tauri::LogicalSize::new(
+            SETTINGS_MIN_SIZE.0.min(width),
+            SETTINGS_MIN_SIZE.1.min(height),
+        )))?;
+        window.set_size(tauri::LogicalSize::new(width, height))?;
+    }
+    if maximized {
+        window.maximize()?;
+    }
+    Ok(())
+}
+
+fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let width = size.0.min(work.2);
+    let height = size.1.min(work.3);
+    let at = centered(parent.0, parent.1, parent.2, parent.3, width, height);
+    (
+        work.0 + (at.0 - work.0).clamp(0.0, work.2 - width),
+        work.1 + (at.1 - work.1).clamp(0.0, work.3 - height),
+        width,
+        height,
+    )
 }
 
 /// Top-left corner that centres a `w`×`h` window over the parent rectangle
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// Reproduce WKWebView's user-font restriction before WKWebView creation. The
+/// private selector and environment override are absent from release builds.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
+        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2_foundation::NSObjectProtocol;
+        let config = unsafe {
+            objc2_web_kit::WKWebViewConfiguration::new(MainThreadMarker::new().expect("window creation on main thread"))
+        };
+        let preferences = unsafe { config.preferences() };
+        if preferences.respondsToSelector(sel!(_setShouldAllowUserInstalledFonts:)) {
+            unsafe {
+                let _: () = msg_send![&preferences, _setShouldAllowUserInstalledFonts: false];
+            }
+            let allowed: bool = unsafe { msg_send![&preferences, _shouldAllowUserInstalledFonts] };
+            tracing::info!(allowed, "Development user-installed fonts override");
+            return builder.with_webview_configuration(config);
+        }
+        tracing::warn!("WKPreferences user-font development selector unavailable");
+    }
+    builder
+}
+
+#[cfg(not(all(debug_assertions, target_os = "macos")))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    builder
 }
 
 #[cfg(test)]
@@ -990,6 +1218,36 @@ mod tests {
         assert_eq!(settings_parent("main"), None);
         assert!(is_settings_window("settings-project-1"));
         assert!(!is_settings_window("project-1"));
+    }
+
+    #[test]
+    fn settings_bounds_fit_current_work_area() {
+        for (parent, size, work, expected) in [
+            // 1920×1080 at 150% scaling, with a 40-physical-pixel taskbar.
+            (
+                (0.0, 0.0, 1280.0, 600.0),
+                (980.0, 720.0),
+                (0.0, 0.0, 1280.0, 1040.0 / 1.5),
+                (150.0, 0.0, 980.0, 1040.0 / 1.5),
+            ),
+            // 3840×2160 at 250% scaling: an owner taller than the work area must not push it off screen.
+            ((100.0, 60.0, 1440.0, 900.0), (980.0, 720.0), (0.0, 0.0, 1536.0, 816.0), (330.0, 96.0, 980.0, 720.0)),
+            // Restored geometry from a larger display.
+            ((100.0, 50.0, 1440.0, 900.0), (2400.0, 1600.0), (0.0, 24.0, 1920.0, 1016.0), (0.0, 24.0, 1920.0, 1016.0)),
+            // Secondary display with a negative origin and reserved top/left space.
+            (
+                (-1800.0, 100.0, 1400.0, 900.0),
+                (980.0, 720.0),
+                (-1870.0, 24.0, 1870.0, 1016.0),
+                (-1590.0, 190.0, 980.0, 720.0),
+            ),
+            // Parent near the lower-right edge.
+            ((1700.0, 900.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 1920.0, 1040.0), (940.0, 320.0, 980.0, 720.0)),
+            // Work area smaller than the normal minimum size.
+            ((0.0, 0.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 600.0, 360.0), (0.0, 0.0, 600.0, 360.0)),
+        ] {
+            assert_eq!(fit_bounds(parent, size, work), expected);
+        }
     }
 
     #[test]

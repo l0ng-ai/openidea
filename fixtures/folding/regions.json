@@ -1,0 +1,74 @@
+{
+  "languages": [
+    "xml",
+    "html",
+    "vue",
+    "svelte",
+    "css",
+    "java",
+    "rust",
+    "typescript",
+    "python",
+    "csharp",
+    "sql",
+    "clojure",
+    "erlang",
+    "bat",
+    "ocaml",
+    "fsharp",
+    "haskell",
+    "lua",
+    "cmake",
+    "powershell",
+    "julia",
+    "ruby"
+  ],
+  "markers": [
+    {
+      "start": "region Name",
+      "end": "endregion",
+      "name": "Name"
+    },
+    {
+      "start": "region要折叠的内容",
+      "end": "endregion",
+      "name": "要折叠的内容"
+    },
+    {
+      "start": "#region \"Quoted name\"",
+      "end": "#endregion",
+      "name": "Quoted name"
+    },
+    {
+      "start": "REGION Mixed case",
+      "end": "ENDREGION",
+      "name": "Mixed case"
+    },
+    {
+      "start": "region",
+      "end": "endregion",
+      "name": ""
+    },
+    {
+      "start": "<editor-fold desc=\"Head 内容\">",
+      "end": "</editor-fold>",
+      "name": "Head 内容"
+    },
+    {
+      "start": "<editor-fold>",
+      "end": "</editor-fold>",
+      "name": ""
+    }
+  ],
+  "invalid": [
+    "regional Name",
+    "regions.push(x)",
+    "endregionFoo",
+    "<editor-folder>",
+    "</editor-folder>",
+    "the region below",
+    "region_name",
+    "<editor-fold",
+    "</editor-fold"
+  ]
+}

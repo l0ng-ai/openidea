@@ -4,6 +4,7 @@
  * shows its full text on the right instead; Enter / double-click / F4 opens
  * its source (as IDEA: selection shows, navigation jumps).
  */
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -219,6 +220,7 @@ function BuildConsole() {
       className={styles.console}
       tabIndex={0}
       role="log"
+      onKeyDown={copySelectionOnKeyDown}
       aria-label={tx("Build output")}
       onScroll={(e) => {
         const el = e.currentTarget;
@@ -253,7 +255,13 @@ function MessageDetail({ message }: { message: BuildMessage }) {
       }`
     : null;
   return (
-    <div className={styles.detail} tabIndex={0} role="document" aria-label={tx("Build message")}>
+    <div
+      className={styles.detail}
+      tabIndex={0}
+      onKeyDown={copySelectionOnKeyDown}
+      role="document"
+      aria-label={tx("Build message")}
+    >
       {location && (
         <button type="button" className={styles.detailLocation} onClick={() => navigateToMessage(message, true)}>
           {location}

@@ -14,7 +14,7 @@
   &nbsp;·&nbsp;
   <a href="#benchmark">Benchmark</a>
   &nbsp;·&nbsp;
-  <a href="#build">Build</a>
+  <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
@@ -44,15 +44,6 @@ Windows 11, 32-core AMD, 62 GB RAM.
 IDEA analyses Python more deeply, so "ready" doesn't mean the same work on
 both sides. Both are measured from the outside, the same way: see
 [`perf/compare`](perf/compare) to run it on your machine and projects.
-
-## Build
-
-```sh
-pnpm install
-pnpm tauri dev
-```
-
-Rust 1.96, Node 22, pnpm and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ## License
 

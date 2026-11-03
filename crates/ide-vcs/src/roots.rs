@@ -20,6 +20,21 @@ pub struct Repos {
 }
 
 impl Repos {
+    /// Discovers repositories in independent project folders of a workspace.
+    pub fn discover_roots(roots: &[PathBuf], skip: &dyn Fn(&Path) -> bool) -> IdeResult<Self> {
+        let mut repos = Vec::new();
+        for root in roots {
+            for repo in Self::discover(root, skip)?.repos {
+                if !repos.iter().any(|r: &Arc<Repo>| r.root() == repo.root()) {
+                    repos.push(repo);
+                }
+            }
+        }
+        repos.sort_by(|a, b| a.root().cmp(b.root()));
+        let primary = (!repos.is_empty()).then_some(0);
+        Ok(Self { repos, primary })
+    }
+
     /// The repository containing `project_root` and every repository whose worktree
     /// root lies below it (up to [`MAX_DEPTH`] levels; hidden and dependency folders and
     /// folders `skip` rejects are not searched).

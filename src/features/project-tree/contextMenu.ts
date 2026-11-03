@@ -152,6 +152,10 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
+  if (single && project?.workspace && project.workspace.projects.includes(single.path)) {
+    push({ kind: "action", action: "workspace.removeProject", arg: single.path }, { kind: "separator" });
+  }
+
   push({ id: "new", label: "New", submenu: newMenuItems(folder) }, { kind: "separator" });
 
   // Cut / Copy / Copy Path/Reference… / Paste
@@ -331,13 +335,17 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           { kind: "separator" },
           singleFile && act("vcs.annotate", singleFile.path, "Annotate with Git Blame"),
           act("vcs.showDiff", arg, "Show Diff"),
-          singleFile && act("vcs.compareWithBranch", { path: singleFile.path }, "Compare with Branch…"),
-          singleFile && act("vcs.showHistory", [singleFile.path], "Show History"),
+          nodes.length > 0 &&
+            nodes.every((n) => !n.placeholder) &&
+            act("vcs.compareWithBranch", arg, "Compare with Branch…"),
+          nodes.length > 0 && nodes.every((n) => !n.placeholder) && act("vcs.showHistory", arg, "Show History"),
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
           act("vcs.push", undefined, "Push…"),
           act("vcs.update", undefined, "Pull…"),
           act("vcs.fetch", undefined, "Fetch"),
+          act("vcs.merge", undefined, "Merge…"),
+          act("vcs.rebase", undefined, "Rebase…"),
           { kind: "separator" },
           act("vcs.branches", undefined, "Branches…"),
           act("vcs.newBranch", undefined, "New Branch…"),
@@ -353,7 +361,17 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  // IDEA: Compare With… (one file) / Compare Files (two files).
+  // Compare selections of the same kind; mixed file/folder selections cannot apply.
+  const compareArg = single?.dir ? { path: single.path, directory: true } : single?.path;
+  if (nodes.length === 2 && nodes.every((n) => n.dir && !n.placeholder))
+    push(
+      delegated(
+        "diff.compareDirectories",
+        nodes.map((n) => n.path),
+        "Compare Directories",
+        { icon: "diff" },
+      ),
+    );
   if (files.length === 2 && nodes.length === 2)
     push(
       delegated(
@@ -363,9 +381,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         { icon: "diff" },
       ),
     );
-  else if (singleFile)
+  else if (single && !single.placeholder)
     push(
-      delegated("diff.compareWith", singleFile.path, "Compare With…", {
+      delegated("diff.compareWith", compareArg, "Compare With…", {
         icon: "diff",
         shortcut: keyLabel("project.compareWith"),
       }),

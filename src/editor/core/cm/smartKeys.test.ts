@@ -8,8 +8,8 @@ import {
   insertTab,
   smartBackspace,
   smartBackspaceApplies,
+  tabOut,
   tabOutOfScope,
-  tabOutScopes,
 } from "./smartKeys";
 
 /** One unit (2) deeper after a (non-blank) line ending in `{`, one less on a line starting with `}`. */
@@ -137,7 +137,7 @@ describe("smart backspace", () => {
 });
 
 describe("tab out of pairs", () => {
-  const ext = [closeBrackets(), tabOutScopes];
+  const ext = [closeBrackets(), tabOut];
   const type = (v: EditorView, ch: string) => {
     const tr = insertBracket(v.state, ch);
     if (tr) v.dispatch(tr);

@@ -7,18 +7,22 @@ import type {
   AgentCommand,
   AgentEntry,
   AgentEvent,
+  AgentImage,
   AgentProvider,
   AgentTask,
   Isolation,
 } from "@/bindings";
+import { useProject } from "@/platform/project";
+import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { editorService, notifications } from "@/workbench/contributions";
-import { canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
+import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
+  TOOL_WINDOW,
   attentionChange,
   entriesKey,
   isBusy,
@@ -28,6 +32,7 @@ import {
 
 /** New Task page settings (its text lives in the `HOME` composer). */
 export interface Draft {
+  projectRoot?: string | null;
   provider: string;
   /** Settings chosen for the next task, by option id (reset when the agent changes). */
   config: Record<string, string>;
@@ -39,6 +44,8 @@ export interface Draft {
 /** Composer key of the New Task page; sessions use their task id. */
 export const HOME = "home";
 
+export type SessionLocation = "editor" | "toolWindow";
+
 interface AgentsState {
   loaded: boolean;
   /** Why the tasks could not be loaded. */
@@ -49,6 +56,8 @@ interface AgentsState {
   /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
   changes: Map<string, AgentChange[]>;
+  /** Scroll position and follow-output preference by conversation, shared by both hosts. */
+  scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
   draft: Draft;
   composers: Map<string, ComposerDraft>;
@@ -58,11 +67,17 @@ interface AgentsState {
   history: string[];
   /** The composer asked to take focus (`seq` tells repeated requests apart). */
   focus: { key: string; seq: number } | null;
+  /** Task shown inside the Agents tool window instead of an editor tab. */
+  docked: string | null;
+  sessionLocation: SessionLocation;
+  lastTask: string | null;
+  homeOpen: boolean;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
 const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
+const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -96,6 +111,11 @@ export const useAgents = create<AgentsState>(() => ({
   lastComposer: HOME,
   history: load<string[]>(HISTORY_KEY, []),
   focus: null,
+  docked: null,
+  sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
+  lastTask: null,
+  homeOpen: false,
+  scrollPositions: new Map(),
 }));
 
 export function updateDraft(patch: Partial<Draft>) {
@@ -161,7 +181,12 @@ export async function connect(): Promise<void> {
   };
   let tasks: AgentTask[], providers: AgentProvider[];
   try {
-    [tasks, providers] = await Promise.all([call(commands.agentSubscribe(channel)), call(commands.agentProviders())]);
+    [tasks, providers] = await Promise.all([
+      call(commands.agentSubscribe(channel)),
+      useProject.getState().project?.trusted === false
+        ? Promise.resolve([] as AgentProvider[])
+        : call(commands.agentProviders()),
+    ]);
   } catch (e) {
     if (gen === generation) useAgents.setState({ loaded: true, error: e instanceof Error ? e.message : String(e) });
     return;
@@ -180,7 +205,7 @@ export async function connect(): Promise<void> {
   for (const t of editors.openTabs?.() ?? []) {
     const task = (t.input.data as { task?: string } | undefined)?.task;
     if (t.input.kind === SESSION_KIND && task && !useAgents.getState().tasks.has(task))
-      editors.closeInput?.(t.input.key);
+      await editors.closeInput?.(t.input.key);
   }
 }
 
@@ -193,6 +218,10 @@ export function disconnect() {
     unread: new Set(),
     entries: new Map(),
     changes: new Map(),
+    docked: null,
+    lastTask: null,
+    homeOpen: false,
+    scrollPositions: new Map(),
   });
 }
 
@@ -218,14 +247,18 @@ function onEvent(e: AgentEvent) {
       composers.delete(e.id);
       const unread = new Set(s.unread);
       unread.delete(e.id);
-      useAgents.setState({ tasks, composers, unread });
-      editorService().closeInput?.(sessionKey(e.id));
+      useAgents.setState({ tasks, composers, unread, ...(s.docked === e.id ? { docked: null } : {}) });
+      void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
     case "truncated": {
       const current = s.entries.get(e.task);
       if (current) useAgents.setState({ entries: new Map(s.entries).set(e.task, current.slice(0, e.length)) });
       scheduleChanges(e.task);
+      break;
+    }
+    case "providers": {
+      void refreshProviders();
       break;
     }
     case "entry": {
@@ -335,28 +368,113 @@ export function useAgentCommands(
 }
 
 export function openTask(task: string) {
+  if (useAgents.getState().sessionLocation === "toolWindow") {
+    showDockedTask(task);
+    return;
+  }
+  useAgents.setState({ lastTask: task, homeOpen: false });
+  openTaskInEditor(task);
+}
+
+function openTaskInEditor(task: string) {
   // The title rides along so a restored tab has it before the tasks load.
   const title = useAgents.getState().tasks.get(task)?.title;
   void editorService().openInput({ kind: SESSION_KIND, key: sessionKey(task), data: { task, title } }, { focus: true });
 }
 
+function showDockedTask(task: string) {
+  useAgents.setState({ docked: task, lastTask: task, homeOpen: false });
+  toolWindowService().show(TOOL_WINDOW, true);
+  void editorService().closeInput?.(sessionKey(task));
+}
+
+function saveSessionLocation(location: SessionLocation) {
+  useAgents.setState({ sessionLocation: location });
+  save(SESSION_LOCATION_KEY, location);
+  if (location === "toolWindow") {
+    for (const { input } of editorService().openTabs?.() ?? []) {
+      if (input.kind === SESSION_KIND || input.kind === HOME_KIND) void editorService().closeInput?.(input.key);
+    }
+  }
+}
+
+/** Conversation placement is an Agents-wide preference, shared by every task. */
+export function setSessionLocation(location: SessionLocation) {
+  const s = useAgents.getState();
+  if (s.sessionLocation === location) return;
+  const active = editorService().activeInput?.();
+  const activeTask = active?.kind === SESSION_KIND ? (active.data as { task: string }).task : null;
+  const home = s.homeOpen || active?.kind === HOME_KIND;
+  const task =
+    s.docked ??
+    activeTask ??
+    (s.lastTask && s.tasks.has(s.lastTask) ? s.lastTask : null) ??
+    [...s.tasks.values()]
+      .filter((t) => t.status !== "archived")
+      .sort((a, b) => (b.updatedMs ?? b.createdMs ?? 0) - (a.updatedMs ?? a.createdMs ?? 0))[0]?.id;
+  saveSessionLocation(location);
+  useAgents.setState({ docked: null, homeOpen: false });
+  if (home) {
+    openHome();
+  } else if (task) {
+    openTask(task);
+  } else if (location === "toolWindow") {
+    openHome();
+  }
+}
+
+/** Dragging a session into the tool window selects the same placement for other tasks. */
+export function dockTask(task: string) {
+  saveSessionLocation("toolWindow");
+  showDockedTask(task);
+}
+
+export function undockTask() {
+  setSessionLocation("editor");
+}
+
+/** An explicit editor drop also updates where subsequent sessions open. */
+export function openTaskInEditorLocation(task: string) {
+  saveSessionLocation("editor");
+  useAgents.setState({ docked: null, homeOpen: false });
+  openTask(task);
+}
+
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
+  const project = useProject.getState().project;
+  if (project?.workspace) {
+    const previous = useAgents.getState().draft.projectRoot;
+    const projectRoot = defaultTaskProject(project, editorService().activePath(), previous);
+    updateDraft({ projectRoot, ...(projectRoot !== previous ? { base: null } : {}) });
+  }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
+  if (useAgents.getState().sessionLocation === "toolWindow") {
+    useAgents.setState({ docked: null, homeOpen: true });
+    toolWindowService().show(TOOL_WINDOW, true);
+    void editorService().closeInput?.(HOME_KEY);
+    return;
+  }
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
 }
 
-export async function startTask(): Promise<void> {
-  const { draft } = useAgents.getState();
+/** `isolation` overrides the draft's (a project without git can only use the local checkout). */
+export async function startTask(
+  isolation: Isolation = useAgents.getState().draft.isolation,
+  projectRoot: string | null = null,
+): Promise<void> {
+  const { draft, providers } = useAgents.getState();
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
+  const config = { ...bypassDefaults(providers.find((p) => p.id === draft.provider)?.config ?? []), ...draft.config };
   const task = await call(
     commands.agentCreate({
+      projectRoot,
       prompt: toPrompt(composer),
       provider: draft.provider,
-      config: Object.entries(draft.config).map(([id, value]) => ({ id, value })),
-      isolation: draft.isolation,
-      base: draft.isolation === "worktree" ? draft.base : null,
+      config: Object.entries(config).map(([id, value]) => ({ id, value })),
+      isolation,
+      base: isolation === "worktree" ? draft.base : null,
     }),
   );
   // Its events can arrive before this reply: keep the newer state they carried.
@@ -364,10 +482,10 @@ export async function startTask(): Promise<void> {
     tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
     entries: new Map(s.entries).set(task.id, s.entries.get(task.id) ?? []),
   }));
+  updateDraft({ projectRoot });
   remember(composer.text.trim());
   updateComposer(HOME, emptyDraft());
-  editorService().closeInput?.(HOME_KEY);
-  openTask(task.id);
+  if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);
 }
 
 function remember(text: string) {
@@ -409,14 +527,14 @@ export async function forkTask(task: string, turns: number | null): Promise<void
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
  * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
  */
-export async function rerunFrom(task: string, turn: number, text: string): Promise<void> {
+export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
   if (isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready")) {
     await cancelTask(task);
     await settled(task);
   }
   await call(commands.agentRollback(task, turn));
   try {
-    await call(commands.agentPrompt(task, { text, files: [], images: [] }, false));
+    await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
     // Rollback removes the inline editor; recover its text in the session composer.
     const current = composerDraft(task);
@@ -490,5 +608,6 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
 export const cancelTask = (task: string, subagent: string | null = null) => call(commands.agentCancel(task, subagent));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
+export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));

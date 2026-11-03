@@ -69,12 +69,6 @@ export function endpointOf(connId: string): DockerEndpoint {
   return connections().find((c) => c.id === connId)?.endpoint ?? { kind: "default" };
 }
 
-/** The docker executable (for run configurations and terminals), from any snapshot. */
-export function dockerExecutable(): string {
-  for (const c of Object.values(useServices.getState().conns)) if (c.snapshot?.executable) return c.snapshot.executable;
-  return "docker";
-}
-
 function patchConn(id: string, patch: Partial<ConnectionState>) {
   useServices.setState((s) => ({ conns: { ...s.conns, [id]: { ...connectionState(id, s), ...patch } } }));
 }

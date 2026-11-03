@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+encoding_rs.workspace = true
+ide-vfs.workspace = true
 ide-core.workspace = true
 ide-jsonrpc.workspace = true
 ide-vcs.workspace = true

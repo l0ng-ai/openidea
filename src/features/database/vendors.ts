@@ -38,6 +38,14 @@ export const VENDORS: readonly DbVendor[] = [
   },
   { id: "greenplum", label: "Greenplum", driver: "postgres", port: 5432, icon: "db-greenplum", scheme: "postgresql" },
   { id: "mariadb", label: "MariaDB", driver: "mysql", port: 3306, icon: "db-mariadb", scheme: "mariadb" },
+  {
+    id: "sqlServer",
+    label: "Microsoft SQL Server",
+    driver: "sqlServer",
+    port: 1433,
+    icon: "db-sqlserver",
+    scheme: "sqlserver",
+  },
   { id: "mysql", label: "MySQL", driver: "mysql", port: 3306, icon: "db-mysql", scheme: "mysql" },
   { id: "neon", label: "Neon", driver: "postgres", port: 5432, icon: "db-neon", scheme: "postgresql", ssl: "require" },
   {
@@ -113,6 +121,8 @@ const SCHEMES: Record<string, string> = {
   singlestore: "singlestore",
   memsql: "singlestore",
   oceanbase: "oceanbase",
+  sqlserver: "sqlServer",
+  mssql: "sqlServer",
 };
 
 export const vendorOfScheme = (scheme: string): DbVendor | undefined => BY_ID.get(SCHEMES[scheme.toLowerCase()] ?? "");

@@ -9,8 +9,10 @@ import {
   LRLanguage,
   LanguageDescription,
   LanguageSupport,
+  StreamLanguage,
   indentService,
   language as languageFacet,
+  type StreamParser,
 } from "@codemirror/language";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
@@ -58,18 +60,130 @@ export function uiModeForPath(path: string): string | null | undefined {
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
 
+/** Frontend modes that extend or replace the bundled parsers. */
+const OWN_MODES = [
+  LanguageDescription.of({
+    name: "CMake",
+    extensions: ["cmake", "cmake.in"],
+    filename: /^(?:CMakeLists\.txt|.*\.cmake(?:\.in)?)$/,
+    load: async () => new LanguageSupport((await import("./cmake")).cmakeLanguage),
+  }),
+  LanguageDescription.of({
+    name: "AsciiDoc",
+    extensions: ["adoc", "asciidoc"],
+    load: () => import("./asciidoc").then((m) => new LanguageSupport(m.asciidocLanguage)),
+  }),
+  LanguageDescription.of({
+    name: "Shell",
+    load: async () => {
+      const { shell } = await import("@codemirror/legacy-modes/mode/shell");
+      const { shellInterpolation } = await import("./shellInterpolation");
+      return new LanguageSupport(StreamLanguage.define(shellInterpolation(shell)));
+    },
+  }),
+  ...(["Kotlin", "Scala", "Dart", "Groovy", "C#"] as const).map((name) =>
+    LanguageDescription.of({
+      name,
+      load: async () => {
+        const { interpolationParser } = await import("./interpolation");
+        const modes = await import("@codemirror/legacy-modes/mode/clike");
+        const base =
+          name === "Groovy"
+            ? (await import("@codemirror/legacy-modes/mode/groovy")).groovy
+            : modes[name === "C#" ? "csharp" : (name.toLowerCase() as "kotlin" | "scala" | "dart")];
+        return new LanguageSupport(StreamLanguage.define(interpolationParser(base, name)));
+      },
+    }),
+  ),
+  LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
+];
+
+const BATCH_KEYWORDS = new Set([
+  "echo",
+  "set",
+  "if",
+  "else",
+  "goto",
+  "call",
+  "for",
+  "in",
+  "do",
+  "exit",
+  "setlocal",
+  "endlocal",
+  "not",
+  "exist",
+  "defined",
+  "errorlevel",
+  "shift",
+  "pushd",
+  "popd",
+  "cd",
+  "start",
+  "pause",
+  "title",
+  "cls",
+]);
+
+const batchParser: StreamParser<null> = {
+  name: "bat",
+  startState: () => null,
+  token(stream) {
+    if (stream.eatSpace()) return null;
+    const lineStart = /^\s*$/.test(stream.string.slice(0, stream.start));
+    if (lineStart) {
+      if (stream.match(/^@?::.*$/)) return "comment";
+      if (stream.match(/^@?rem(?:\s.*|$)/i)) return "comment";
+      if (stream.match(/^:[A-Za-z0-9_.-]+/)) return "labelName";
+    }
+    if (stream.match(/^::.*$/)) return "comment";
+    if (stream.match(/^"(?:[^"]|"")*(?:"|$)/)) return "string";
+    if (
+      stream.match(/^%%(?:~[a-zA-Z]*)?[a-zA-Z0-9_]|^%[^%\s]+%|^%(?:~[a-zA-Z]*[0-9]|\*|[0-9])|^![A-Za-z_][A-Za-z0-9_]*!/)
+    )
+      return "variableName";
+    if ((lineStart || /\s/.test(stream.string[stream.start - 1]!)) && stream.match(/^:[A-Za-z0-9_.-]+/))
+      return "labelName";
+    if (stream.eat("@")) return "punctuation";
+    if (stream.match(/^\d+\b/)) return "number";
+    const word =
+      (stream.start === 0 || !/[A-Za-z0-9_.]/.test(stream.string[stream.start - 1]!)) &&
+      stream.match(/^[A-Za-z_][A-Za-z0-9_]*/);
+    if (word) {
+      const lower = (typeof word === "object" ? word[0] : "").toLowerCase();
+      return BATCH_KEYWORDS.has(lower) ? "keyword" : null;
+    }
+    stream.next();
+    return null;
+  },
+  languageData: { commentTokens: { line: "@REM" } },
+};
+
+export const batchLanguage = StreamLanguage.define(batchParser);
+
+const batchLanguageDescription = LanguageDescription.of({
+  name: "Batch",
+  alias: ["bat", "cmd"],
+  extensions: ["bat", "cmd"],
+  support: new LanguageSupport(batchLanguage),
+});
+
+const BUILTIN_MODES: readonly LanguageDescription[] = [...languageData, batchLanguageDescription];
+
 export function findLanguageDescription(uiMode: string | null, path: string): LanguageDescription | null {
   if (uiMode) {
-    const contributed = _languageMode(uiMode);
+    const contributed = _languageMode(uiMode) ?? OWN_MODES.find((l) => l.name === uiMode);
     if (contributed) return contributed;
-    const exact = languageData.find((l) => l.name === uiMode);
+    const exact = BUILTIN_MODES.find((l) => l.name === uiMode);
     if (exact) return exact;
-    const loose = LanguageDescription.matchLanguageName(languageData, uiMode, false);
-    if (loose) return loose;
+    const loose = LanguageDescription.matchLanguageName(BUILTIN_MODES, uiMode, false);
+    if (loose) return OWN_MODES.find((l) => l.name === loose.name) ?? loose;
   }
-  return uiMode === null && infos
-    ? null
-    : LanguageDescription.matchFilename(languageData, path.slice(path.lastIndexOf("/") + 1));
+  if (uiMode === null && infos) return null;
+  const own = LanguageDescription.matchFilename(OWN_MODES, path.slice(path.lastIndexOf("/") + 1));
+  if (own) return own;
+  const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
+  return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }
 
 /** Loads (once) the CodeMirror language for `desc`. */
@@ -99,8 +213,15 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
+// @lezer/javascript styles `.` as a deref operator, but not `?.`.
+const JS_TAGS: Parameters<typeof styleTags>[0] = { "?.": t.derefOperator };
+
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
+  JavaScript: JS_TAGS,
+  TypeScript: JS_TAGS,
+  JSX: JS_TAGS,
+  TSX: JS_TAGS,
   // @lezer/java tags annotations as plain identifiers.
   Java: { "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation },
   CSS: CSS_TAGS,
@@ -129,7 +250,7 @@ const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;
-const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "log", "diff", "ignore", "gitattributes"]);
+const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "asciidoc", "log", "diff", "ignore", "gitattributes"]);
 
 function opensBlock(code: string, language: string | undefined): boolean {
   if (!code) return false;

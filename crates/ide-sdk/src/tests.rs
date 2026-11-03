@@ -35,6 +35,7 @@ fn server(name: &str) -> LanguageServerConfig {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 
@@ -151,6 +152,8 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("pytest", "uv", &["run", "pytest", "-x"]),
         run("npm", "npm", &["run", "dev"]),
         run("shell", "python3", &["x.py"]),
+        run("django-test", "uv", &["run", "python", "manage.py", "test"]),
+        run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, "/opt/py/bin/python3");
@@ -160,12 +163,22 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
+    // Django tests run on the selected interpreter, like `manage.py runserver`.
+    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].args, ["manage.py", "test"]);
+    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
 fn fake_jdk(dir: &Path) {
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin").join(exe("java")), "").unwrap();
-    std::fs::write(dir.join("release"), "JAVA_VERSION=\"17.0.9\"\n").unwrap();
+    std::fs::write(
+        dir.join("release"),
+        "JAVA_VERSION=\"17.0.9\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("bin").join(crate::exe("javac")), "").unwrap();
 }
 
 #[test]
@@ -209,6 +222,37 @@ fn project_jdk_and_maven_settings() {
 }
 
 #[test]
+fn saved_maven_goal_configs_take_the_configured_launcher() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let maven = tmp.path().join("maven");
+    std::fs::create_dir_all(maven.join("bin")).unwrap();
+    std::fs::write(maven.join("bin/mvn"), "").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.home = maven.to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "/m2/settings.xml".into();
+
+    // A goal configuration saved from the tool window (`mvn -s … clean`):
+    // the bare launcher resolves to the configured Maven home (#328) and its
+    // own args are left alone.
+    let mut saved = run("maven", "mvn", &["-s", "/m2/settings.xml", "clean"]);
+    saved.detected = false;
+    // A custom path / the wrapper stay as configured.
+    let mut custom = run("maven", "/opt/other/bin/mvn", &["package"]);
+    custom.detected = false;
+    let mut wrapper = run("maven", "./mvnw", &["package"]);
+    wrapper.detected = false;
+    let mut configs = vec![saved, custom, wrapper];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, maven.join("bin/mvn").to_string_lossy());
+    assert_eq!(configs[0].args, ["-s", "/m2/settings.xml", "clean"], "saved args are kept");
+    assert_eq!(configs[1].command, "/opt/other/bin/mvn");
+    assert_eq!(configs[2].command, "./mvnw");
+}
+
+#[test]
 fn language_server_settings_disable_add_and_override() {
     use crate::apply::{language_servers, server_launch_overrides, server_protocol_overrides, with_custom_servers};
     use ide_core::settings::LanguageServerSettings;
@@ -217,10 +261,10 @@ fn language_server_settings_disable_add_and_override() {
     let mut s = Settings::default();
     s.language_servers.insert("pylsp".into(), LanguageServerSettings { enabled: false, ..Default::default() });
     s.language_servers.insert(
-        "ruff".into(),
+        "pylyzer".into(),
         LanguageServerSettings {
-            command: "ruff".into(),
-            args: Some(vec!["server".into()]),
+            command: "pylyzer".into(),
+            args: Some(vec!["--server".into()]),
             languages: vec!["python".into()],
             root_markers: vec!["pyproject.toml".into()],
             ..Default::default()
@@ -228,17 +272,42 @@ fn language_server_settings_disable_add_and_override() {
     );
     let defined = [server("basedpyright"), server("pylsp")];
     let names = |v: Vec<LanguageServerConfig>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
-    assert_eq!(names(language_servers("python", &defined, &s)), ["basedpyright", "ruff"]);
+    assert_eq!(names(language_servers("python", &defined, &s)), ["basedpyright", "pylyzer"]);
     assert_eq!(names(language_servers("rust", &[server("rust-analyzer")], &s)), ["rust-analyzer"]);
 
     // Listed with the tools even while disabled.
     let mut langs = ide_language::LanguageRegistry::load(None).unwrap().all();
     with_custom_servers(&mut langs, &s);
     let python = langs.iter().find(|l| l.id.as_str() == "python").unwrap();
+    let mut pylyzer = python.language_servers.iter().find(|c| c.name == "pylyzer").unwrap().clone();
+    assert_eq!(pylyzer.root_markers, ["pyproject.toml"]);
+    server_launch_overrides(&mut pylyzer, &s);
+    assert_eq!((pylyzer.command.as_str(), pylyzer.args.as_slice()), ("pylyzer", &["--server".to_string()][..]));
+
+    // A hand-defined server named like a built-in one only overrides how it
+    // launches: languages and root markers stay the built-in definition's.
+    s.language_servers.insert(
+        "ruff".into(),
+        LanguageServerSettings {
+            command: "/opt/ruff".into(),
+            args: Some(vec!["server".into(), "--preview".into()]),
+            languages: vec!["python".into()],
+            root_markers: vec!["pyproject.toml".into()],
+            ..Default::default()
+        },
+    );
+    let mut langs = ide_language::LanguageRegistry::load(None).unwrap().all();
+    with_custom_servers(&mut langs, &s);
+    let python = langs.iter().find(|l| l.id.as_str() == "python").unwrap();
+    assert_eq!(python.language_servers.iter().filter(|c| c.name == "ruff").count(), 1);
     let mut ruff = python.language_servers.iter().find(|c| c.name == "ruff").unwrap().clone();
-    assert_eq!(ruff.root_markers, ["pyproject.toml"]);
+    assert_eq!(ruff.root_markers, ["ruff.toml", ".ruff.toml", "pyproject.toml#tool.ruff"]);
+    assert!(ruff.require_root_marker);
     server_launch_overrides(&mut ruff, &s);
-    assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", &["server".to_string()][..]));
+    assert_eq!(
+        (ruff.command.as_str(), ruff.args.as_slice()),
+        ("/opt/ruff", &["server".to_string(), "--preview".to_string()][..])
+    );
 
     s.language_servers.insert(
         "rust-analyzer".into(),
@@ -275,9 +344,20 @@ fn jdtls_jdk_setting() {
     assert_eq!(jdtls_jdk(tmp.path(), &s), Ok(None));
     s.languages.java.jdtls_jdk = "jdk17/bin".into();
     assert_eq!(jdtls_jdk(tmp.path(), &s).unwrap().map(|j| j.major), Some(17));
+    std::fs::write(
+        tmp.path().join("jdk17/release"),
+        "JAVA_VERSION=\"25\"\nIMAGE_TYPE=\"JRE\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+    )
+    .unwrap();
+    assert!(jdtls_jdk(tmp.path(), &s).unwrap_err().contains("full JDK"));
     // A chosen path that is not a JDK is an error, not a silent fallback.
-    s.languages.java.jdtls_jdk = "missing".into();
+    std::fs::create_dir(tmp.path().join("not-a-jdk")).unwrap();
+    s.languages.java.jdtls_jdk = "not-a-jdk".into();
     assert!(jdtls_jdk(tmp.path(), &s).unwrap_err().contains("is not a JDK home"));
+    // A JDK removed after it was chosen (a version manager upgraded it) says so.
+    s.languages.java.jdtls_jdk = "jdk17.0.1".into();
+    let err = jdtls_jdk(tmp.path(), &s).unwrap_err();
+    assert!(err.contains("jdk17.0.1 does not exist") && err.contains("Languages & Frameworks › Java"), "{err}");
 }
 
 #[test]
@@ -287,14 +367,40 @@ fn terminal_activation_for_project_venv() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
     fake_venv(tmp.path(), ".venv");
-    let line = terminal_activation(tmp.path(), &s, Some("/bin/zsh")).unwrap();
+    let line = terminal_activation(tmp.path(), &s, "/bin/zsh").unwrap();
     assert!(line.starts_with("source '") && line.ends_with("/activate'"), "{line}");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/usr/bin/fish")), None, "no activate.fish");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("docker")), None, "not a shell");
+    assert_eq!(terminal_activation(tmp.path(), &s, "/usr/bin/fish"), None, "no activate.fish");
+    assert_eq!(terminal_activation(tmp.path(), &s, "docker"), None, "not a shell");
     s.languages.python.activate_virtualenv = false;
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
+}
+
+#[test]
+fn terminal_activation_for_windows_shell_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.python.interpreter = fake_venv(tmp.path(), ".venv with spaces 'quoted'").to_string_lossy().into_owned();
+    let bin = tmp.path().join(".venv with spaces 'quoted'").join(bin_dir());
+    for (shell, script, powershell) in [
+        (r"C:\Program Files\PowerShell\7\pwsh.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\cmd.exe", "activate.bat", false),
+    ] {
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), None, "missing {script}");
+        let path = bin.join(script);
+        std::fs::write(&path, "").unwrap();
+        let expected = if powershell {
+            format!("& '{}'", path.to_string_lossy().replace('\'', "''"))
+        } else {
+            format!("\"{}\"", path.display())
+        };
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), Some(expected), "{shell}");
+        std::fs::remove_file(path).unwrap();
+    }
+    assert_eq!(terminal_activation(tmp.path(), &s, ""), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "   "), None);
 }
 
 #[test]
@@ -482,12 +588,12 @@ fn build_dependencies_resolve_to_local_jars() {
         std::fs::write(&p, "").unwrap();
         p
     };
-    touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
-    let guava_src = touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
+    let guava = touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
+    touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
     let junit = touch(m2.join("junit/junit/4.13/junit-4.13.jar"));
     let files = gradle.join("caches/modules-2/files-2.1/org.slf4j/slf4j-api/2.0.9");
-    touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
-    let slf4j_src = touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
+    let slf4j = touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
+    touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
     let dep = |gradle: bool, g: &str, a: &str, v: &str| BuildDependency {
         gradle,
         group: g.into(),
@@ -508,14 +614,14 @@ fn build_dependencies_resolve_to_local_jars() {
     assert_eq!(
         shown,
         [
-            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0-sources.jar"),
+            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0.jar"),
             ("Maven: junit:junit:4.13", "maven", "junit-4.13.jar"),
-            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9-sources.jar"),
+            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9.jar"),
         ]
     );
-    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava_src)));
+    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava)));
     assert_eq!(groups[1].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&junit)));
-    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j_src)));
+    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j)));
     // A Gradle build also finds jars installed in the Maven local repository (`mavenLocal()`).
     let groups = dependency_libraries(&[dep(true, "junit", "junit", "4.13")], Some(&m2), Some(&gradle));
     assert_eq!(groups[0].name, "Gradle: junit:junit:4.13");
@@ -674,6 +780,160 @@ fn angular_language_server_probes_its_own_package_then_the_project() {
 }
 
 #[test]
+fn angular_language_server_is_found_behind_version_manager_shims() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("app");
+    std::fs::create_dir_all(&project).unwrap();
+    let install = |node_modules: &Path| {
+        let package = node_modules.join("@angular/language-server");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), "{}").unwrap();
+        package
+    };
+    let probes = |command: &Path, s: &Settings, env: &[(&str, &str)]| {
+        let mut cfg = server("angular-language-server");
+        cfg.command = command.to_string_lossy().into_owned();
+        cfg.env.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        configure_server(&mut cfg, &project, &project, s);
+        cfg.args.iter().position(|a| a == "--ngProbeLocations").map(|i| cfg.args[i + 1].clone())
+    };
+    let with_project = |package: &Path| Some(format!("{},{}", package.to_string_lossy(), project.to_string_lossy()));
+
+    // pnpm: the shim script runs the package from pnpm's global directory.
+    let pnpm = tmp.path().join("pnpm");
+    let package = install(&pnpm.join("global/v11/abc/node_modules"));
+    let shim = npm_shim(&pnpm.join("bin"), "ngserver");
+    let script = "exec node \"$basedir/../global/v11/abc/node_modules/@angular/language-server/bin/ngserver\" \"$@\"\n";
+    std::fs::write(&shim, format!("#!/bin/sh\n{script}")).unwrap();
+    assert_eq!(probes(&shim, &Settings::default(), &[]), with_project(&dunce::canonicalize(&package).unwrap()));
+
+    // Volta: the package's image, next to the shim's directory. Joined as the lookup
+    // joins it: the probe locations compare as text, and Windows keeps a `/` as given.
+    let volta = tmp.path().join("volta");
+    let image = volta.join("tools").join("image").join("packages").join("@angular/language-server");
+    let package = install(&image.join("lib").join("node_modules"));
+    let shim = npm_shim(&volta.join("bin"), "ngserver");
+    assert_eq!(probes(&shim, &Settings::default(), &[]), with_project(&package));
+
+    // asdf, mise: the shim names only the command; the manager's npm shim knows
+    // where global packages are, run as the server is: in the project (whose
+    // `.tool-versions` picks the Node), with the login shell's and its own variables.
+    let root_of = |package: &Path| package.parent().unwrap().parent().unwrap().display().to_string();
+    let package = install(&tmp.path().join("asdf/installs/nodejs/24/lib/node_modules"));
+    std::fs::write(project.join(".tool-versions"), "nodejs 24\n").unwrap();
+    // The only writer in this test binary.
+    ide_core::process::set_shell_env(vec![("OPENIDEA_TEST_SHELL".into(), "1".into())]);
+    let shims = tmp.path().join(".asdf/shims");
+    // The manager's npm runs on the first Node on PATH (`#!/usr/bin/env node`).
+    std::fs::write(
+        npm_shim(&shims, "npm"),
+        if cfg!(windows) {
+            "@if exist .tool-versions if \"%OPENIDEA_TEST_SHELL%\"==\"1\" call node\r\n"
+        } else {
+            "#!/bin/sh\n[ -f .tool-versions ] && [ \"$OPENIDEA_TEST_SHELL\" = 1 ] && exec node\n"
+        },
+    )
+    .unwrap();
+    std::fs::write(
+        npm_shim(&shims, "node"),
+        if cfg!(windows) {
+            "@echo %OPENIDEA_TEST_NPM_ROOT%\r\n"
+        } else {
+            "#!/bin/sh\necho \"$OPENIDEA_TEST_NPM_ROOT\"\n"
+        },
+    )
+    .unwrap();
+    // Another installation's npm and Node, first on PATH.
+    let node = tmp.path().join("node/bin");
+    let other = root_of(&install(&tmp.path().join("node/lib/node_modules")));
+    for name in ["npm", "node"] {
+        std::fs::write(
+            npm_shim(&node, name),
+            if cfg!(windows) { format!("@echo {other}\r\n") } else { format!("#!/bin/sh\necho '{other}'\n") },
+        )
+        .unwrap();
+    }
+    let mut s = Settings::default();
+    s.languages.node.interpreter = node.join("node").to_string_lossy().into_owned();
+    let root = root_of(&package);
+    let env = [("OPENIDEA_TEST_NPM_ROOT", root.as_str())];
+    assert_eq!(probes(&npm_shim(&shims, "ngserver"), &s, &env), with_project(&package));
+    // Not without the manager's own npm, nor for an executable elsewhere: the npm
+    // on PATH may be another installation's.
+    assert_eq!(probes(&npm_shim(&tmp.path().join("mise/shims"), "ngserver"), &s, &env), None);
+    assert_eq!(probes(&npm_shim(&tmp.path().join("bin"), "ngserver"), &s, &env), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn query_output_is_read_within_the_deadline() {
+    // Keep process startup outside a tight timing budget even under workspace load.
+    let timeout = std::time::Duration::from_secs(60);
+    let env = [("PATH", "/usr/bin:/bin")];
+    let started = std::time::Instant::now();
+    let out = crate::exec::query_in(Path::new("/bin/sh"), &["-c", "printf /global/root"], None, &env, timeout);
+    assert_eq!(out.as_deref(), Some("/global/root"));
+    // EOF must return promptly, without waiting for the generous deadline.
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+}
+
+#[cfg(unix)]
+#[test]
+fn query_drains_both_pipes_before_the_child_exits() {
+    let out = crate::exec::query_in(
+        Path::new("/bin/sh"),
+        &["-c", "head -c 262144 /dev/zero; head -c 262144 /dev/zero >&2"],
+        None,
+        &[("PATH", "/usr/bin:/bin")],
+        std::time::Duration::from_secs(60),
+    )
+    .unwrap();
+    assert_eq!(out.len(), 262144);
+}
+
+#[cfg(unix)]
+#[test]
+fn query_is_bounded_when_descendants_keep_pipes_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pid = tmp.path().join("pid");
+    // The descendant outlives the query; clean it up even if an assertion fails.
+    struct Descendant(std::path::PathBuf);
+    impl Drop for Descendant {
+        fn drop(&mut self) {
+            if let Ok(pid) = std::fs::read_to_string(&self.0) {
+                let _ = std::process::Command::new("/bin/kill").arg(pid.trim()).status();
+            }
+        }
+    }
+    let _descendant = Descendant(pid.clone());
+    let started = std::time::Instant::now();
+    let out = crate::exec::query_in(
+        Path::new("/bin/sh"),
+        &["-c", "sleep 120 & echo $! > \"$1\"; printf /global/root", "wrapper", pid.to_str().unwrap()],
+        None,
+        &[("PATH", "/usr/bin:/bin")],
+        std::time::Duration::from_secs(30),
+    );
+    assert_eq!(out.as_deref(), Some("/global/root"));
+    // The descendant keeps both pipes open for longer than the query deadline.
+    assert!(started.elapsed() < std::time::Duration::from_secs(90));
+}
+
+#[cfg(unix)]
+#[test]
+fn query_times_out_when_the_child_does_not_exit() {
+    // exec avoids leaving a descendant behind when the timed-out child is killed.
+    let out = crate::exec::query_in(
+        Path::new("/bin/sh"),
+        &["-c", "printf /global/root; exec sleep 120"],
+        None,
+        &[("PATH", "/usr/bin:/bin")],
+        std::time::Duration::from_millis(100),
+    );
+    assert_eq!(out, None);
+}
+
+#[test]
 fn max_java_picks_an_older_jdk() {
     let dir = tempfile::tempdir().unwrap();
     let jdk = |major: u32| {
@@ -697,4 +957,154 @@ fn max_java_picks_an_older_jdk() {
     free.env.insert("JAVA_HOME".into(), j25.home.to_string_lossy().into_owned());
     crate::java::cap_java_home(&mut free, &jdks);
     assert_eq!(free.env["JAVA_HOME"], j25.home.to_string_lossy());
+}
+
+#[test]
+fn gradle_settings_precedence() {
+    use crate::apply::{gradle_command, gradle_env};
+    use ide_core::settings::GradleDistribution;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let plain = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    let wrapper = root.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    let mut settings = Settings::default();
+    assert_eq!(gradle_command(root, root, &settings), std::path::PathBuf::from(plain));
+    std::fs::write(&wrapper, "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+    let fallback = std::collections::BTreeMap::from([("JAVA_HOME".into(), "project-jdk".into())]);
+    assert_eq!(gradle_env(root, &settings, fallback.clone()), fallback);
+    settings.languages.java.gradle.jvm = "gradle-jdk".into();
+    settings.languages.java.gradle.user_home = "gradle-cache".into();
+    settings.languages.java.gradle.home = "local-gradle".into();
+    let env = gradle_env(root, &settings, fallback);
+    assert_eq!(env["JAVA_HOME"], root.join("gradle-jdk").to_string_lossy());
+    assert_eq!(env["GRADLE_USER_HOME"], root.join("gradle-cache").to_string_lossy());
+    // A stored local home is inactive in wrapper mode.
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+    for local in [false, true] {
+        settings.languages.java.gradle.distribution =
+            if local { GradleDistribution::Local } else { GradleDistribution::Wrapper };
+        let expected = if local { root.join("local-gradle").join("bin").join(plain) } else { plain.into() };
+        for explicit_java in [false, true] {
+            for is_test in [false, true] {
+                let mut configs =
+                    [run("gradle", wrapper.to_str().unwrap(), &["test"]), run("gradle", plain, &["test"])];
+                for c in &mut configs {
+                    c.is_test = is_test;
+                    if explicit_java {
+                        c.env.insert("JAVA_HOME".into(), "explicit-jdk".into());
+                    }
+                }
+                apply_to_run_configs(&mut configs, root, &settings);
+                assert_eq!(configs[0].command, wrapper.to_string_lossy());
+                assert_eq!(configs[1].command, expected.to_string_lossy());
+                for c in &configs {
+                    assert_eq!(
+                        c.env["JAVA_HOME"],
+                        if explicit_java {
+                            "explicit-jdk".into()
+                        } else {
+                            root.join("gradle-jdk").to_string_lossy().into_owned()
+                        }
+                    );
+                }
+            }
+        }
+        assert_eq!(gradle_command(root, root, &settings), if local { expected } else { wrapper.clone() });
+    }
+}
+
+/// The reporter of #440 has Node 26 in `~/.local/bin` and an 18 in `/usr/bin`; an SSH
+/// exec channel's PATH puts `/usr/bin` first, so only the system's Node was listed.
+#[test]
+fn node_lists_every_install_on_the_search_path_not_only_the_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (system, user) = (tmp.path().join("usr-bin"), tmp.path().join("local-bin"));
+    for dir in [&system, &user] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::write(dir.join(exe("node")), "").unwrap();
+    }
+    let found = crate::exec::executables_in("node", [system.clone(), user.clone()].into_iter());
+    assert_eq!(found, [system.join(exe("node")), user.join(exe("node"))]);
+    // A directory without the executable contributes nothing.
+    let found = crate::exec::executables_in("node", [tmp.path().join("empty"), user.clone()].into_iter());
+    assert_eq!(found, [user.join(exe("node"))]);
+}
+
+#[test]
+fn node_on_the_search_path_keeps_its_version_manager_as_source() {
+    let home = Path::new("/home/me");
+    let source = |p: &str| crate::discover::node_source(Path::new(p), Some(home));
+    assert_eq!(source("/home/me/.nvm/versions/node/v24.0.0/bin/node"), "nvm");
+    assert_eq!(source("/home/me/.volta/tools/image/node/24.0.0/bin/node"), "volta");
+    assert_eq!(source("/home/me/.local/share/fnm/node-versions/v24/installation/bin/node"), "fnm");
+    assert_eq!(source("/home/me/.local/bin/node"), "path");
+    assert_eq!(source("/usr/bin/node"), "system");
+}
+
+#[test]
+fn go_constraints_change_only_protocol_settings() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    let mut original = server("gopls");
+    original.settings = Some(json!({"analyses":{"unusedparams":true}}));
+    let mut defaults = original.clone();
+    configure_server(&mut defaults, tmp.path(), tmp.path(), &settings);
+    assert_eq!(defaults.settings, Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}})));
+    defaults.settings = original.settings.clone();
+    assert_eq!(defaults, original);
+    settings.languages.go.build_tags.custom = "integration".into();
+    settings.languages.go.build_tags.os = "linux".into();
+    let mut configured = original.clone();
+    configure_server(&mut configured, tmp.path(), tmp.path(), &settings);
+    assert_eq!(
+        configured.settings.take(),
+        Some(json!({
+            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"}
+        }))
+    );
+    configured.settings = original.settings.clone();
+    assert_eq!(configured, original, "launch configuration stays unchanged for in-place reconfiguration");
+    let mut other = server("rust-analyzer");
+    configure_server(&mut other, tmp.path(), tmp.path(), &settings);
+    assert_eq!(other.settings, None);
+}
+
+#[test]
+fn go_empty_constraints_preserve_explicit_server_defaults() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("gopls");
+    cfg.initialization_options =
+        Some(toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})).unwrap());
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})));
+}
+
+#[test]
+fn go_modules_configure_gopls_in_place_and_commands_with_explicit_run_overrides() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.languages.go.modules.env = BTreeMap::from([
+        ("GOPROXY".into(), "https://proxy.example".into()),
+        ("GOPRIVATE".into(), "example.com/private".into()),
+        ("GOFLAGS".into(), "-race".into()),
+    ]);
+    settings.languages.go.modules.auto_vendor = false;
+    let mut cfg = server("gopls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &settings);
+    let protocol = cfg.settings.take().unwrap();
+    assert_eq!(protocol["env"]["GOFLAGS"], "-race -mod=mod");
+    assert_eq!(protocol["env"]["GOPRIVATE"], "example.com/private");
+    assert!(cfg.env.is_empty(), "module environment changes must not restart gopls");
+    let mut run = run("go", "go", &["mod", "tidy"]);
+    run.env.insert("GOPROXY".into(), "off".into());
+    apply_to_run_configs(std::slice::from_mut(&mut run), tmp.path(), &settings);
+    assert_eq!(run.env["GOPROXY"], "off");
+    assert_eq!(run.env["GOPRIVATE"], "example.com/private");
+    let mut cleared = server("gopls");
+    configure_server(&mut cleared, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(cleared.settings.unwrap()["env"], json!({}));
 }

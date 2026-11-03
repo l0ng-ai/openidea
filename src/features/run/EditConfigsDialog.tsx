@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEven
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
+import { letterOf } from "@/platform/keymap";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
 import {
@@ -30,8 +31,6 @@ import { saveUserConfigs, selectConfig, useRun } from "./store";
 import { blankTemplate, COMPOUND, missingParams, newConfigOfType, templateId, typeFor } from "./types";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
-
-export { envFromRows } from "./EnvDialog";
 
 export function EditConfigsOverlay() {
   const open = useRun((s) => s.editorOpen);
@@ -131,6 +130,7 @@ function EditConfigsDialog() {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   // "Modify Run Configuration…": the would-be configuration is saved on OK even when unedited.
   const [dirty, setDirty] = useState(() => useRun.getState().editDirty);
+  const [removedDetectedIds, setRemovedDetectedIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const [adding, setAdding] = useState<{ x: number; y: number } | null>(null);
@@ -210,7 +210,10 @@ function EditConfigsDialog() {
       setDirty(true);
       return;
     }
-    if (!current || current.detected) return;
+    if (!current) return;
+    if (current.detected && !temporary.includes(current.id)) {
+      setRemovedDetectedIds((ids) => [...ids, current.id]);
+    }
     const index = draft.findIndex((c) => c.id === current.id);
     const next = removeConfig(draft, current.id);
     setDraft(next);
@@ -263,8 +266,9 @@ function EditConfigsDialog() {
     }
     setSaving(true);
     try {
-      if (dirty) await saveUserConfigs(userConfigs(draft));
+      if (dirty) await saveUserConfigs(userConfigs(draft), removedDetectedIds);
       if (templatesDirty && templates) await call(commands.runSaveTemplates(templates));
+      setRemovedDetectedIds([]);
       setDirty(false);
       setTemplatesDirty(false);
       if (andClose) {
@@ -312,7 +316,8 @@ function EditConfigsDialog() {
   // IDEA: ⌘N / Alt+Insert adds a configuration, ⌥M opens "Modify options".
   const onKeyDown = (e: KeyboardEvent) => {
     const add =
-      (e.code === "KeyN" && (isMac() ? e.metaKey || e.ctrlKey : e.ctrlKey)) || (e.altKey && e.key === "Insert");
+      (letterOf(e) === "N" && !e.altKey && (isMac() ? e.metaKey || e.ctrlKey : e.ctrlKey)) ||
+      (e.altKey && e.key === "Insert");
     if (add && mode === "configs") {
       e.preventDefault();
       openAdd();
@@ -325,7 +330,7 @@ function EditConfigsDialog() {
   };
 
   const templateTypes = runConfigTypes(types).filter((t) => t.id !== COMPOUND);
-  const canRemove = selection?.type === "folder" || (!!current && !current.detected);
+  const canRemove = selection?.type === "folder" || !!current;
 
   return (
     <Dialog
@@ -423,7 +428,19 @@ function EditConfigsDialog() {
                   onClick={() => move(1)}
                 />
               </div>
-              <div className={styles.editList} role="tree" aria-label={tx("Run configurations")}>
+              <div
+                className={styles.editList}
+                role="tree"
+                tabIndex={0}
+                aria-label={tx("Run configurations")}
+                onKeyDown={(e) => {
+                  if (e.key === "Delete" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && canRemove) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    remove();
+                  }
+                }}
+              >
                 {rows.map((r) => {
                   if (r.type === "group")
                     return (

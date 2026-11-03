@@ -3,6 +3,7 @@ import { MemoryFs, setProjectFsForTests } from "./fs";
 import { visibleInfo } from "./model";
 import {
   applyFsChange,
+  reloadLoadedDirs,
   currentModel,
   expandAll,
   initProjectTree,
@@ -67,11 +68,33 @@ describe("lazy loading", () => {
     expect([...useProjectTree.getState().expanded].sort()).toEqual(["/p", "/p/docs"]);
   });
 
+  it("keeps a collapsed project root collapsed and an expanded node outside it open", async () => {
+    setExpanded(new Set(["/other/lib"]));
+    await new Promise((r) => setTimeout(r, 350));
+    initProjectTree(null);
+    initProjectTree(ROOT, "proj");
+    expect([...useProjectTree.getState().expanded]).toEqual(["/other/lib"]);
+  });
+
   it("drops a folder that vanished and collapses it", async () => {
     await loadDir(ROOT);
     setExpanded(new Set([ROOT, "/p/gone"]));
     await loadDir("/p/gone");
     expect(useProjectTree.getState().expanded.has("/p/gone")).toBe(false);
+  });
+});
+
+describe("refresh of excluded folders", () => {
+  it("reloads only the folders the tree has loaded", async () => {
+    await loadDir(ROOT);
+    await loadDir("/p/docs");
+    const spy = vi.spyOn(fs, "readDir");
+
+    await reloadLoadedDirs(["/p/docs", "/p/target/never-opened"]);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith("/p/docs");
+    spy.mockRestore();
   });
 });
 

@@ -43,12 +43,9 @@ export type {
   Locals,
   LocalSymbol,
   NodeAt,
-  NotLocalReason,
   StructuralRanges,
   StructureSupport,
-  SyntaxError,
   SyntaxErrors,
-  SyntaxNode,
 } from "@/bindings";
 
 export interface QueryOptions {

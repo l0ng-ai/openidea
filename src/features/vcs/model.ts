@@ -78,17 +78,6 @@ export function statusDecorations(status: readonly FileStatus[], propagate = tru
   return new Map(entries.map(([p, d]) => [p, d]));
 }
 
-/** Short letter for change lists ("M", "A", "D", "R", "U", "C"). */
-export const KIND_LETTER: Record<EffectiveKind, string> = {
-  modified: "M",
-  renamed: "R",
-  added: "A",
-  deleted: "D",
-  untracked: "U",
-  ignored: "I",
-  conflicted: "C",
-};
-
 export function relTo(root: string, path: string): string {
   return path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
 }

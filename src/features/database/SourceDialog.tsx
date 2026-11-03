@@ -93,6 +93,10 @@ const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
     names: ["foreign_keys", "busy_timeout", "cache_size", "journal_mode", "synchronous"],
     hint: "Applied as pragmas when opening the file (PRAGMA name = value).",
   },
+  sqlServer: {
+    names: ["connect_timeout"],
+    hint: "Connection settings for SQL Server.",
+  },
 };
 
 const blankSsh = (): DbSsh => ({

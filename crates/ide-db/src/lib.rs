@@ -549,6 +549,7 @@ impl DbManager {
             DbDriver::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
             DbDriver::Postgres => "SELECT version()",
             DbDriver::Mysql => "SELECT CONCAT(@@version_comment, ' ', VERSION())",
+            DbDriver::SqlServer => "SELECT @@VERSION",
         };
         let v = pool.rows(version, 1).await.ok().and_then(|r| r.into_iter().next()?.into_iter().next()?);
         pool.close().await;
@@ -819,6 +820,13 @@ impl DbManager {
             DbDriver::Mysql => {
                 let q = format!("SHOW CREATE TABLE {}", sql::qualified(driver, schema, name));
                 let ddl = cells(pool.rows(&q, 1).await?, 1).into_iter().next();
+                ddl.map(|d| format!("{d};\n")).ok_or_else(missing)
+            }
+            DbDriver::SqlServer => {
+                let obj = format!("{}.{}", schema, name).replace('\'', "''");
+                let ddl = cells(pool.rows(&format!("SELECT OBJECT_DEFINITION(OBJECT_ID('{}'))", obj), 1).await?, 0)
+                    .into_iter()
+                    .next();
                 ddl.map(|d| format!("{d};\n")).ok_or_else(missing)
             }
             DbDriver::Postgres => {

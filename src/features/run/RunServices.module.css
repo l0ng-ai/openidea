@@ -29,3 +29,9 @@
   gap: 6px;
   padding: 0 12px 12px;
 }
+
+.debugConsole {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}

@@ -1,7 +1,7 @@
 /** Recent projects: loading, filtering, opening and removal. */
 import { create } from "zustand";
 import { executeAction, getAction } from "@/platform/actions";
-import { commands, IpcError, isTauri, type RecentProject } from "@/platform/ipc";
+import { commands, IpcError, isCancelled, isTauri, type RecentProject } from "@/platform/ipc";
 import { openProject, useProject } from "@/platform/project";
 import { connectRemote, forgetRemote, parseRemoteLocation, recentRemotes, remoteLocation } from "@/platform/remote";
 import { tx } from "@/platform/i18n";
@@ -113,6 +113,7 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
     await openProject(project.path);
     return true;
   } catch (e) {
+    if (isCancelled(e)) return false;
     const message = e instanceof Error ? e.message : String(e);
     const missing = e instanceof IpcError ? e.kind === "notFound" : /not found|no such/i.test(message);
     notifications().notify({
@@ -138,6 +139,7 @@ async function openRemote(
       await connectRemote(remote.sshConfig, remote.path);
     });
   } catch (e) {
+    if (isCancelled(e)) return false;
     notifications().notify({
       level: "error",
       title: tx`Cannot open ${project.name}`,

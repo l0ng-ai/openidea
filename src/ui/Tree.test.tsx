@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { Tree, type TreeHandle } from "./Tree";
+import { getContext } from "@/platform/context";
 
 interface N {
   id: string;
@@ -44,6 +45,97 @@ const labels = (tree: HTMLElement) =>
   within(tree)
     .queryAllByRole("treeitem")
     .map((el) => el.textContent);
+
+describe("Tree directory context", () => {
+  it("does not contribute virtual document URIs as filesystem directories", () => {
+    const { key } = setup({ getDirectory: () => "jdt://contents/library.jar/package" });
+    key("Home");
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+
+  it("follows the selected lead, clears on non-path rows, blur and unmount", () => {
+    const { tree, key, unmount } = setup({
+      getDirectory: (n) => (n.id === "main" ? null : `/p/${n.id}`),
+    });
+    expect(getContext().focusedDirectory).toBeUndefined();
+    key("ArrowDown");
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    key("End", { shiftKey: true });
+    expect(getContext().focusedDirectory).toBe("/p/README.md");
+    key("Home");
+    key("ArrowRight");
+    key("ArrowRight");
+    expect(getContext().focusedDirectory).toBeUndefined();
+    key("Home");
+    fireEvent.blur(tree);
+    expect(getContext().focusedDirectory).toBeUndefined();
+    fireEvent.focus(tree);
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    unmount();
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+
+  it("updates a controlled selection while focused and clears a removed selection", () => {
+    const view = (selected: Set<string>, roots = data) => (
+      <Tree<N>
+        roots={roots}
+        getKey={(n) => n.id}
+        getLabel={(n) => n.id}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => !!n.children}
+        selected={selected}
+        getDirectory={(n) => `/p/${n.id}`}
+      />
+    );
+    const { rerender } = render(view(new Set(["src"])));
+    screen.getByRole("tree").focus();
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    rerender(view(new Set()));
+    expect(getContext().focusedDirectory).toBeUndefined();
+    rerender(view(new Set(["src"])));
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    rerender(view(new Set(["src"]), []));
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+
+  it("clears on focus transfer and an old tree's unmount does not clear the new owner", () => {
+    const view = (showFirst: boolean) => (
+      <>
+        {showFirst && (
+          <Tree<N>
+            roots={data}
+            getKey={(n) => n.id}
+            getLabel={(n) => n.id}
+            getChildren={() => []}
+            isExpandable={() => false}
+            defaultSelected={["src"]}
+            getDirectory={() => "/first"}
+          />
+        )}
+        <Tree<N>
+          roots={data}
+          getKey={(n) => n.id}
+          getLabel={(n) => n.id}
+          getChildren={() => []}
+          isExpandable={() => false}
+          defaultSelected={["src"]}
+          getDirectory={() => "/second"}
+        />
+        <input aria-label="Editor" />
+      </>
+    );
+    const { rerender } = render(view(true));
+    const [first, second] = screen.getAllByRole("tree");
+    first!.focus();
+    expect(getContext().focusedDirectory).toBe("/first");
+    second!.focus();
+    expect(getContext().focusedDirectory).toBe("/second");
+    rerender(view(false));
+    expect(getContext().focusedDirectory).toBe("/second");
+    screen.getByLabelText("Editor").focus();
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+});
 
 describe("Tree keyboard navigation", () => {
   it("moves with arrows, expands with Right and collapses / goes to parent with Left", () => {
@@ -212,5 +304,165 @@ describe("siblingPositions", () => {
       [2, 2],
       [2, 2],
     ]);
+  });
+});
+
+describe("Tree horizontal scrolling", () => {
+  const spacer = (tree: HTMLElement) => tree.querySelector<HTMLElement>("[data-content-width]");
+
+  it("is off unless asked for", () => {
+    const { tree } = setup();
+    expect(spacer(tree)).toBeNull();
+  });
+
+  it("remeasures mounted rows with the same key, including narrower content", () => {
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(640);
+    try {
+      const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      expect(spacer(tree)?.style.width).toBe("640px");
+      width.mockReturnValue(100);
+      key("ArrowDown");
+      expect(spacer(tree)?.style.width).toBe("100px");
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("removes widths belonging to collapsed descendants", () => {
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.textContent === "util.ts" ? 640 : 100;
+    });
+    try {
+      const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      expect(spacer(tree)?.style.width).toBe("640px");
+      key("Home");
+      key("ArrowLeft");
+      expect(spacer(tree)?.style.width).toBe("100px");
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("measures without the viewport minimum and restores it before returning", () => {
+    const minimums: string[] = [];
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.hasAttribute("data-row")) minimums.push(this.style.minWidth);
+      return parseFloat(this.style.minWidth) === 0 ? 100 : 800;
+    });
+    try {
+      const { tree } = setup({ horizontalScroll: true });
+      expect(spacer(tree)?.style.width).toBe("100px");
+      expect(minimums.length).toBeGreaterThan(0);
+      expect(minimums.every((value) => parseFloat(value) === 0)).toBe(true);
+      for (const row of tree.querySelectorAll<HTMLElement>("[data-row]")) expect(row.style.minWidth).toBe("");
+    } finally {
+      width.mockRestore();
+    }
+  });
+});
+
+describe("Tree scroll following", () => {
+  let scrollTo: ReturnType<typeof vi.fn>;
+  let original: PropertyDescriptor | undefined;
+
+  beforeAll(() => {
+    // jsdom has no Element.scrollTo; virtual-core calls it to write scrollTop.
+    scrollTo = vi.fn();
+    original = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTo");
+    Object.defineProperty(Element.prototype, "scrollTo", { value: scrollTo, configurable: true, writable: true });
+  });
+
+  afterAll(() => {
+    if (original) Object.defineProperty(Element.prototype, "scrollTo", original);
+    else delete (Element.prototype as { scrollTo?: unknown }).scrollTo;
+  });
+
+  it("brings the keyboard lead into view", () => {
+    const { key } = setup();
+    scrollTo.mockClear();
+    key("End");
+    expect(scrollTo).toHaveBeenCalled();
+  });
+
+  it("keeps the viewport when expanding a folder above the selection", () => {
+    // The selected file stays selected while rows inserted above it shift its
+    // index; scrolling then would jump to the selection from the opened folder.
+    const { tree } = setup({ defaultSelected: ["README.md"] });
+    scrollTo.mockClear();
+    const chevron = tree.querySelector("[data-tree-toggle]");
+    expect(chevron).not.toBeNull();
+    fireEvent.mouseDown(chevron!, { button: 0 });
+    expect(scrollTo).not.toHaveBeenCalled();
+    // The folder did open, inserting rows above the selection.
+    expect(within(tree).queryAllByRole("treeitem").length).toBeGreaterThan(2);
+  });
+
+  it.each(["defaultSelected", "selected"] as const)("scrolls a late %s lead once when its row loads", (selection) => {
+    const view = (roots: N[]) => (
+      <Tree<N>
+        roots={roots}
+        getKey={(n) => n.id}
+        getLabel={(n) => n.id}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => n.id === "src" || !!n.children}
+        defaultExpanded={["src"]}
+        {...{ [selection]: new Set(["late.ts"]) }}
+      />
+    );
+    const { rerender } = render(view([{ id: "src" }]));
+    scrollTo.mockClear();
+    // An intermediate load still does not contain the selected row.
+    rerender(view([{ id: "src", children: [{ id: "main", children: [{ id: "App.tsx" }] }] }]));
+    expect(scrollTo).not.toHaveBeenCalled();
+    rerender(view([{ id: "src", children: [{ id: "main", children: [{ id: "App.tsx" }] }, { id: "late.ts" }] }]));
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("treeitem", { name: "late.ts" })).toHaveAttribute("aria-selected", "true");
+    scrollTo.mockClear();
+    const folder = screen.getByRole("treeitem", { name: "main" });
+    fireEvent.mouseDown(folder.querySelector("[data-tree-toggle]")!, { button: 0 });
+    expect(screen.getByRole("treeitem", { name: "App.tsx" })).toBeInTheDocument();
+    expect(scrollTo).not.toHaveBeenCalled();
+    fireEvent.mouseDown(folder.querySelector("[data-tree-toggle]")!, { button: 0 });
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("replaces a pending lead when the user selects another row", () => {
+    const view = (roots: N[]) => (
+      <Tree<N>
+        roots={roots}
+        getKey={(n) => n.id}
+        getLabel={(n) => n.id}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => !!n.children}
+        defaultSelected={["late.ts"]}
+      />
+    );
+    const { rerender } = render(view([{ id: "README.md" }]));
+    fireEvent.keyDown(screen.getByRole("tree"), { key: "End" });
+    scrollTo.mockClear();
+    rerender(view([{ id: "late.ts" }, { id: "README.md" }]));
+    expect(screen.getByRole("treeitem", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("explicitly reveals an unchanged lead", () => {
+    const handle = createRef<TreeHandle>();
+    setup({ handleRef: handle, defaultSelected: ["README.md"] });
+    scrollTo.mockClear();
+    act(() => handle.current!.reveal("README.md"));
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+  });
+
+  it("brings speed search matches into view", () => {
+    const { key, lead } = setup({ defaultExpanded: ["src", "main"] });
+    key("Home");
+    scrollTo.mockClear();
+    key("u");
+    expect(lead()).toBe("util.ts");
+    expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 });

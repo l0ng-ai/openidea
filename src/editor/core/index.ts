@@ -40,20 +40,25 @@ export function activate(): void | (() => void) {
     activePath: () => ctrl.activePath(),
     activeCursor: () => ctrl.activeCursor(),
     saveAll: () => ctrl.saveAll(),
+    dirtyDocumentIds: () => [...ctrl.manager.byId.values()].filter((m) => m.getMeta().dirty).map((m) => m.doc),
     focus: () => ctrl.focus(),
     openPaths: () => ctrl.openPaths(),
     openTabs: () => ctrl.openTabs(),
+    tabInput: (paneId, tabId) => ctrl.tabInput(paneId, tabId),
     activeInput: () => ctrl.activeInput(),
     onActiveInputChange: (fn) => ctrl.onActiveInputChange(fn),
     closePath: (path) => ctrl.closePath(path),
     closeInput: (key) => ctrl.closeInput(key),
+    prepareClose: () => ctrl.prepareClose(),
+    cancelClose: () => ctrl.cancelClose(),
+    documentHistory: (command) => ctrl.documentHistory(command),
     reformat: async (path) => {
       const handle = editorsFor(path)[0];
       return !!handle && (await formatDocument(handle.view, { explicit: false, selectionOnly: false })).applied;
     },
   });
   _provideDocumentAttacher((path) => attachDocument(ctrl.manager, path));
-  _provideCodePreview((path) => previewExtensions(path, ctrl.manager.settings()?.editor));
+  _provideCodePreview((path) => previewExtensions(path, ctrl.manager.settings()?.editor, ctrl.manager.backend));
   const disposers = [
     installColorScheme(),
     provideEditorArea(EditorAreaView),

@@ -4,6 +4,7 @@
  * so `validateSettings` never throws — anything unknown or malformed falls
  * back to the default (mirrors `ide-core::settings` defaults).
  */
+import { validateCMake } from "@/platform/cmakeSettings";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
 import type { LanguageServerSettings, Settings } from "@/platform/ipc";
@@ -62,6 +63,7 @@ export interface ValidSettings extends WorkflowSettings {
   keymap: string;
   files: {
     autoSave: boolean;
+    syncOnFocus: boolean;
     exclude: string[];
     ignoredNames: string[];
     trimTrailingWhitespace: boolean;
@@ -81,6 +83,7 @@ export interface ValidSettings extends WorkflowSettings {
   /** System Settings › HTTP Proxy (global). */
   proxy: ProxySettingsValid;
   languages: LanguagesValid;
+  cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
   inspections: InspectionSettingsValid;
   /** Editor › Natural Languages › Spelling. */
@@ -115,7 +118,7 @@ function validateSpelling(raw: unknown): SpellingValid {
 export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
-  general: { reopenLastProject: true, confirmExit: false, ...DEFAULT_GENERAL_EXTRAS },
+  general: { reopenLastProject: true, confirmExit: true, ...DEFAULT_GENERAL_EXTRAS },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
     fontFamily: "JetBrains Mono",
@@ -134,6 +137,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   keymap: "intellij-macos",
   files: {
     autoSave: true,
+    syncOnFocus: true,
     exclude: ["**/.git", "**/node_modules", "**/target"],
     ignoredNames: [...DEFAULT_IGNORED_NAMES],
     trimTrailingWhitespace: true,
@@ -148,6 +152,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
   languages: DEFAULT_LANGUAGES,
+  cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
@@ -233,6 +238,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     keymap: str(root.keymap, d.keymap),
     files: {
       autoSave: bool(f.autoSave, d.files.autoSave),
+      syncOnFocus: bool(f.syncOnFocus, d.files.syncOnFocus),
       exclude: Array.isArray(f.exclude)
         ? f.exclude.filter((x): x is string => typeof x === "string" && !!x.trim())
         : [...d.files.exclude],
@@ -251,6 +257,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
     languages: validateLanguages(root.languages),
+    cmake: validateCMake(root.cmake),
     projectStructure: validateProjectStructure(root.projectStructure),
     inspections: validateInspections(root.inspections),
     spelling: validateSpelling(root.spelling),

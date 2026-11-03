@@ -4,20 +4,24 @@ import { commitKey, commitRepo } from "./multiRoot";
  * cherry-pick or revert, and the Git Log commit actions (Cherry-Pick, Revert
  * Commit, Reset Current Branch to Here, New Tag, Compare with Local).
  */
-import { useEffect, useState } from "react";
-import type { ChangedFile, Commit, ResetMode } from "@/bindings";
+import { useEffect, useMemo, useState } from "react";
+import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange } from "@/bindings";
 import { executeAction } from "@/platform/actions";
-import { call, commands } from "@/platform/ipc";
-import { Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
+import { call, commands, nextRequestId } from "@/platform/ipc";
+import { Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { openDiff, type DiffSide } from "./diffInput";
+import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
-import { KIND_COLOR, baseName, dirName } from "./model";
+import { KIND_COLOR, fileCount } from "./model";
 import { runGitOperation, runOp } from "./ops";
 import { reloadLog, useGitLog } from "./logStore";
-import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoOf, useVcs } from "./store";
+import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
+import { ComparisonTree } from "./ComparisonTree";
+import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
+import { displayPath } from "./compareData";
+import { repositoryPath } from "./repositoryPaths";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -472,102 +476,214 @@ export function showCompareVersions(older: Commit, newer: Commit) {
   ));
 }
 
+/** Files that differ between two revisions (e.g. two branches from Compare with Current). */
+export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to) {
+  openDialog((close) => (
+    <ChangesBetweenDialog from={{ rev: from, label: fromLabel }} to={{ rev: to, label: toLabel }} onClose={close} />
+  ));
+}
+
+export function showPathComparison(paths: string[], rev: string, repositories: string[] | null) {
+  openDialog((close) => (
+    <ChangesBetweenDialog from={{ rev, label: rev }} to={null} scope={{ paths, repositories }} onClose={close} />
+  ));
+}
+
 interface Revision {
   rev: string;
   label: string;
 }
 
-/** Files that differ between `from` and `to` (`null`: the working tree). */
-function ChangesBetweenDialog({ from, to, onClose }: { from: Revision; to: Revision | null; onClose: () => void }) {
+interface ScopedComparison {
+  paths: string[];
+  repositories: string[] | null;
+}
+
+interface ComparisonFile extends ChangedFile {
+  root: string;
+  revision: string;
+  added?: number;
+  removed?: number;
+}
+
+export function comparisonEmpty(revision: string, repositories: number): string {
+  return repositories === 1
+    ? tx`No changes against ${revision} in 1 repository`
+    : tx`No changes against ${revision} in ${repositories} repositories`;
+}
+
+/** Shared branch/commit comparison surface, also used for directory selections. */
+export function ChangesBetweenDialog({
+  from,
+  to,
+  scope,
+  onClose,
+}: {
+  from: Revision;
+  to: Revision | null;
+  scope?: ScopedComparison;
+  onClose: () => void;
+}) {
   const [root] = useState(currentRepoRoot);
   const [repo] = useState(currentRepo);
-  const [files, setFiles] = useState<ChangedFile[] | null>(null);
+  const [files, setFiles] = useState<ComparisonFile[] | null>(null);
+  const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [active, setActive] = useState(0);
+  const [current, setCurrent] = useState<ComparisonFile | null>(null);
   const fromRev = from.rev;
   const toRev = to?.rev ?? null;
   useEffect(() => {
     let alive = true;
-    call(toRev ? commands.vcsDiffRevisions(repo, fromRev, toRev) : commands.vcsDiffWithWorktree(repo, fromRev))
-      .then((f) => alive && setFiles(f))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    let pending = true;
+    const request = nextRequestId();
+    const load = async () => {
+      if (scope) {
+        const r = await call(commands.vcsComparePaths(scope.paths, fromRev, scope.repositories, request));
+        if (!alive) return;
+        setResult(r);
+        setFiles(
+          r.repositories.flatMap((r) =>
+            r.files.map((f: WorkingTreeChange) => ({ ...f, root: r.root, revision: r.revision! })),
+          ),
+        );
+      } else {
+        const f = await call(
+          toRev ? commands.vcsDiffRevisions(repo, fromRev, toRev) : commands.vcsDiffWithWorktree(repo, fromRev),
+        );
+        if (alive) setFiles(f.map((f) => ({ ...f, root: root ?? "", revision: fromRev })));
+      }
+    };
+    void load()
+      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => {
+        pending = false;
+      });
     return () => {
       alive = false;
+      if (scope && pending) void commands.cancelRequest(request);
     };
-  }, [fromRev, toRev]);
-  const open = (f: ChangedFile) => {
-    const repoRoot = root;
+  }, [fromRev, toRev, repo, root, scope]);
+  const tree = useMemo(() => {
+    if (!scope) return buildFileTree(files ?? [], (f) => f.path);
+    return (result?.repositories ?? []).map((r): FileTreeNode<ComparisonFile> => {
+      const list = (files ?? []).filter((f) => f.root === r.root);
+      const prefix = (nodes: FileTreeNode<ComparisonFile>[]): FileTreeNode<ComparisonFile>[] =>
+        nodes.map((n) => ({ ...n, key: `${r.root}:${n.key}`, children: prefix(n.children) }));
+      return {
+        key: r.root,
+        name: repoName(r.root),
+        file: null,
+        count: list.length,
+        children: prefix(buildFileTree(list, (f) => f.path)),
+      };
+    });
+  }, [files, result, scope]);
+  const diffFor = (f: ComparisonFile): DiffData => {
     const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
-    void openDiff({
-      path: `${repoRoot}/${f.path}`,
+    return {
+      path: repositoryPath(f.root, f.path),
       left:
         f.kind === "added" || f.kind === "untracked"
           ? missing("(does not exist)")
-          : { type: "rev", rev: from.rev, label: from.label, path: f.oldPath ? `${repoRoot}/${f.oldPath}` : undefined },
-      right: !to
-        ? { type: "worktree" }
-        : f.kind === "deleted"
+          : {
+              type: "rev",
+              rev: f.revision,
+              label: from.label,
+              path: f.oldPath ? repositoryPath(f.root, f.oldPath) : undefined,
+            },
+      right:
+        f.kind === "deleted"
           ? missing("(deleted)")
-          : { type: "rev", rev: to.rev, label: to.label },
-    });
+          : !to
+            ? { type: "worktree" }
+            : { type: "rev", rev: to.rev, label: to.label },
+    };
   };
-  const current = files?.[active];
+  const input = current ? diffInput(diffFor(current)) : null;
+  const title = to
+    ? tx`Changes between ${from.label} and ${to.label}`
+    : tx`Changes between ${from.label} and Local Working Tree`;
+  const count = files ? fileCount(files.length) : "";
+  const successful = result?.repositories.filter((r) => !r.error && !r.missingRevision).length ?? 1;
+  const allMissing = !!result?.repositories.length && result.repositories.every((r) => r.missingRevision);
+  const skipped = result?.skippedPaths.map((path) => displayPath(path)) ?? [];
+  const skippedNames = skipped.slice(0, 5).join(", ");
+  const skippedLabel = skipped.length > 5 ? tx`${skippedNames} and ${skipped.length - 5} more` : skippedNames;
   return (
     <Dialog
       open
-      title={
-        to
-          ? tx`Changes between ${from.label} and ${to.label}`
-          : tx`Changes between ${from.label} and Local Working Tree`
-      }
+      title={files ? `${title} — ${count}` : title}
       onClose={onClose}
-      width={620}
+      width={input ? 1100 : 680}
       buttons={[
-        { label: "Show Diff", role: "default", disabled: !current, onClick: () => current && open(current) },
+        {
+          label: "Show Diff",
+          role: "default",
+          disabled: !current,
+          onClick: () => {
+            if (current) {
+              void openDiff(diffFor(current));
+              onClose();
+            }
+          },
+        },
         { label: "Close", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>{files ? `${files.length} file${files.length === 1 ? "" : "s"} differ` : ""}</div>
-      <div style={{ height: 300, display: "flex", flexDirection: "column", padding: "0 14px 14px" }}>
-        {error ? (
-          <div className={styles.error}>{error}</div>
-        ) : !files ? (
-          <div className={styles.empty}>
-            <Spinner size={14} />
-          </div>
-        ) : (
-          <List
-            items={files}
-            getKey={(f) => f.path}
-            activeIndex={Math.min(active, Math.max(0, files.length - 1))}
-            onActiveChange={setActive}
-            rowHeight={22}
-            aria-label="Changed files"
-            className={styles.boxList}
-            empty={
-              <span>
-                <T>No differences</T>
-              </span>
-            }
-            onActivate={(f, _i, e) => {
-              if (e.type === "click" && (e as unknown as MouseEvent).detail < 2) return;
-              open(f);
-            }}
-            renderItem={(f) => (
-              <span className={styles.fileRow} style={{ flex: 1, padding: 0 }}>
-                <Icon name={fileIconName(baseName(f.path))} size={14} />
-                <span
-                  className={styles.fileName}
-                  style={{ color: KIND_COLOR[f.kind === "untracked" ? "added" : f.kind] }}
-                >
-                  {baseName(f.path)}
-                </span>
-                <span className={styles.fileDir}>{dirName(f.path)}</span>
-              </span>
-            )}
-          />
-        )}
-      </div>
+      {error && (
+        <div className={styles.error} role="alert">
+          {error}
+        </div>
+      )}
+      {result?.skippedPaths.length ? (
+        <div className={styles.compareNotice}>{tx`Skipped content outside Git repositories: ${skippedLabel}`}</div>
+      ) : null}
+      {allMissing ? (
+        <div className={styles.empty} role="status">
+          {tx`No repository in the selection has revision ${from.label}`}
+        </div>
+      ) : (
+        result?.repositories
+          .filter((r) => r.error || r.missingRevision)
+          .map((r) => (
+            <div key={r.root} className={styles.compareNotice} role={r.missingRevision ? "status" : "alert"}>
+              {r.missingRevision
+                ? tx`${repoName(r.root)} has no revision ${from.label}`
+                : tx`Cannot compare ${repoName(r.root)} against ${from.label}: ${r.error}`}
+            </div>
+          ))
+      )}
+      {!files && !error ? (
+        <div className={styles.empty}>
+          <Spinner size={14} />
+        </div>
+      ) : null}
+      {files && !files.length && successful > 0 ? (
+        <div className={styles.empty} role="status">
+          {comparisonEmpty(from.label, successful)}
+        </div>
+      ) : null}
+      {files && files.length > 0 ? (
+        <ComparisonTree
+          tree={tree}
+          current={current}
+          onSelect={setCurrent}
+          diffFor={diffFor}
+          getColor={(f) => KIND_COLOR[f.kind === "untracked" ? "added" : f.kind]}
+          ariaLabel="Changed files"
+          renderDetails={(n) =>
+            n.file ? (
+              <>
+                <span className={styles.fileDir}>{tx(n.file.kind)}</span>
+                {n.file.added !== undefined && <span className={styles.compareAdded}>+{n.file.added}</span>}
+                {n.file.removed !== undefined && <span className={styles.compareRemoved}>−{n.file.removed}</span>}
+              </>
+            ) : (
+              <span className={styles.fileDir}>{n.count}</span>
+            )
+          }
+        />
+      ) : null}
     </Dialog>
   );
 }

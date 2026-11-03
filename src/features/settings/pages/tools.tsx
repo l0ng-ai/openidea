@@ -3,6 +3,8 @@
  * terminal feature, the editor save participants and the run feature
  * (External Tools actions).
  */
+
+import { FontPicker } from "../components/FontPicker";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { commands, isTauri } from "@/platform/ipc";
@@ -14,7 +16,6 @@ import {
 } from "@/platform/workflowSettings";
 import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from "@/ui";
 import { NumberInput, Row, SearchLabel, Section, Select } from "../components/Form";
-import { FontSelect } from "../components/FontSelect";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
 import type { PageSpec } from "./spec";
@@ -248,12 +249,12 @@ function TerminalFont() {
       <Indented>
         <Row label="Font">
           <span className={styles.fontFamily}>
-            <FontSelect
+            <FontPicker
               value={family}
               onChange={setFamily}
-              monospacedOnly={monoOnly}
+              monoOnly={monoOnly}
               disabled={useEditor}
-              aria-label="Terminal font"
+              label="Terminal font"
             />
             <span className={monoMatched ? styles.matched : undefined}>
               <Checkbox
@@ -286,7 +287,7 @@ function TerminalFont() {
         />
       </Row>
       <Row label="Fallback font" hint="Used for characters the main font lacks.">
-        <FontSelect value={fallback} onChange={setFallback} none aria-label="Terminal fallback font" />
+        <FontPicker value={fallback} onChange={setFallback} allowEmpty label="Terminal fallback font" />
       </Row>
       <Row label="Column width">
         <NumberInput

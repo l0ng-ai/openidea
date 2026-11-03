@@ -8,7 +8,7 @@
 //! result is cached until the manifests (or the relevant settings) change.
 //!
 //! Archives are listed as browsable roots (`<archive>!`, see `ide_vfs`): the
-//! JDK's `src.zip` and the Maven / Gradle dependency jars (sources jars preferred).
+//! JDK's `src.zip` and the Maven / Gradle dependency jars (source attachments resolved by JDT).
 
 use crate::exe;
 use crate::exec::{query, query_in, which};
@@ -91,6 +91,10 @@ struct Cached {
 }
 
 static CACHE: LazyLock<Mutex<HashMap<(PathBuf, &'static str), Cached>>> = LazyLock::new(Default::default);
+
+pub fn invalidate_go(root: &Path) {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&(root.to_path_buf(), "go"));
+}
 
 fn stamp(files: &[PathBuf]) -> Stamp {
     files
@@ -244,7 +248,7 @@ fn gradle_user_home() -> Option<PathBuf> {
 }
 
 /// One `Maven: g:a:v` / `Gradle: g:a:v` group per dependency whose jar is in a
-/// local repository, its root being the jar (the `-sources.jar` when downloaded).
+/// local repository, its root being the binary jar so Java classes open through JDT's source provider.
 pub(crate) fn dependency_libraries(
     deps: &[BuildDependency],
     maven_repo: Option<&Path>,
@@ -282,7 +286,7 @@ pub(crate) fn maven_jar(repo: &Path, d: &BuildDependency) -> Option<PathBuf> {
         return None;
     }
     let dir = repo.join(d.group.replace('.', "/")).join(&d.artifact).join(&d.version);
-    ["-sources.jar", ".jar"]
+    [".jar", "-sources.jar"]
         .iter()
         .map(|suffix| dir.join(format!("{}-{}{suffix}", d.artifact, d.version)))
         .find(|p| p.is_file())
@@ -296,7 +300,7 @@ pub(crate) fn gradle_jar(home: &Path, d: &BuildDependency) -> Option<PathBuf> {
     let dir = home.join("caches/modules-2/files-2.1").join(&d.group).join(&d.artifact).join(&d.version);
     let mut hashes: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
     hashes.sort();
-    ["-sources.jar", ".jar"].iter().find_map(|suffix| {
+    [".jar", "-sources.jar"].iter().find_map(|suffix| {
         let file = format!("{}-{}{suffix}", d.artifact, d.version);
         hashes.iter().map(|h| h.join(&file)).find(|p| p.is_file())
     })
@@ -410,18 +414,27 @@ pub(crate) fn parse_cargo_metadata(json: &str) -> Vec<(String, PathBuf)> {
 // ------------------------------------------------------------------ go
 
 fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
-    let Some(files) = manifests(root, GO_MANIFESTS) else { return Vec::new() };
+    let Some(mut files) = manifests(root, GO_MANIFESTS) else { return Vec::new() };
     if !root.join("go.mod").is_file() && !root.join("go.work").is_file() {
         return Vec::new();
     }
+    if let Ok(work) = std::fs::read_to_string(root.join("go.work")) {
+        for module in ide_run::go::work_modules(&work) {
+            files.extend([root.join(&module).join("go.mod"), root.join(&module).join("go.sum")]);
+        }
+    }
+    files.extend([root.join("go.work.sum"), root.join("vendor/modules.txt")]);
     let g = &s.languages.go;
-    cached(root, "go", format!("{}\n{}", g.goroot, g.gopath), &files, || {
+    cached(root, "go", serde_json::to_string(g).unwrap_or_default(), &files, || {
         let goroot = crate::apply::goroot(root, s);
         let Some(go) = tool(goroot.as_ref().map(|r| r.join("bin")), "go") else { return Vec::new() };
         let goroot_s = goroot.as_ref().map(|p| p.to_string_lossy().into_owned());
         let gopath = crate::apply::setting_path(root, &g.gopath).map(|p| p.to_string_lossy().into_owned());
         // Never download modules or toolchains just to list libraries.
-        let mut env = vec![("GOPROXY", "off"), ("GOTOOLCHAIN", "local")];
+        let module_env = crate::go::module_environment(root, &g.modules);
+        let mut env: Vec<(&str, &str)> = module_env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        // Listing libraries must stay offline even when module commands use a proxy.
+        env.extend([("GOPROXY", "off"), ("GOTOOLCHAIN", "local")]);
         env.extend(goroot_s.as_deref().map(|v| ("GOROOT", v)));
         env.extend(gopath.as_deref().map(|v| ("GOPATH", v)));
         let mut out = Vec::new();
@@ -436,11 +449,36 @@ fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
                 out.extend(group(name, "go", library_roots(vec![Path::new(dir).join("src")])));
             }
         }
-        if let Some(text) = query_in(&go, &["list", "-m", "-e", "-json", "all"], Some(root), &env, GRAPH_TIMEOUT) {
+        let flags = module_env.get("GOFLAGS").map(String::as_str).unwrap_or("");
+        let vendor = root.join("vendor");
+        let use_vendor = vendor.is_dir()
+            && (flags.split_whitespace().any(|f| f == "-mod=vendor")
+                || (g.modules.auto_vendor && !flags.split_whitespace().any(|f| f.starts_with("-mod="))));
+        if use_vendor {
+            if let Ok(text) = std::fs::read_to_string(vendor.join("modules.txt")) {
+                let modules = vendor_roots(&vendor, &text);
+                out.extend(group("Go Modules", "goModules", named_roots(modules)));
+            }
+        } else if let Some(text) = query_in(&go, &["list", "-m", "-e", "-json", "all"], Some(root), &env, GRAPH_TIMEOUT)
+        {
             out.extend(group("Go Modules", "goModules", named_roots(parse_go_modules(&text))));
         }
         out
     })
+}
+
+fn vendor_roots(vendor: &Path, text: &str) -> Vec<(String, PathBuf)> {
+    let mut seen = std::collections::HashSet::new();
+    text.lines()
+        .filter_map(|line| {
+            let module = line.strip_prefix("# ")?.split_whitespace().next()?;
+            if module == "=>" || !seen.insert(module) {
+                return None;
+            }
+            let path = vendor.join(module);
+            path.is_dir().then(|| (module.to_string(), path))
+        })
+        .collect()
 }
 
 /// `(path@version, dir)` of the downloaded non-main modules in `go list -m -json` output.
@@ -466,4 +504,35 @@ pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
             Some((name, m.dir?))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod go_cache_tests {
+    use super::*;
+    #[test]
+    fn vendor_roots_include_local_replacements_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("example.com/local")).unwrap();
+        let text = "# example.com/local v0.0.0 => ../local\n## explicit; go 1.22\nexample.com/local\n# example.com/local => ../local\n";
+        assert_eq!(
+            vendor_roots(dir.path(), text),
+            vec![("example.com/local".into(), dir.path().join("example.com/local"))]
+        );
+    }
+
+    #[test]
+    fn go_commands_invalidate_the_graph_even_when_manifests_are_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let count = std::cell::Cell::new(0);
+        let detect = || {
+            count.set(count.get() + 1);
+            Vec::new()
+        };
+        cached(dir.path(), "go", "same".into(), &[], detect);
+        cached(dir.path(), "go", "same".into(), &[], detect);
+        assert_eq!(count.get(), 1);
+        invalidate_go(dir.path());
+        cached(dir.path(), "go", "same".into(), &[], detect);
+        assert_eq!(count.get(), 2);
+    }
 }

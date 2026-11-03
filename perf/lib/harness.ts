@@ -152,15 +152,18 @@ export class Harness {
     return this.page.evaluate(() => performance.now());
   }
 
+  /** Seeds a file into the in-memory backend without opening it. */
+  async seed(path: string, text: string) {
+    await this.page.evaluate(
+      ({ path, text }) =>
+        (window as never as { __openideaPerf: { seed(p: string, t: string): void } }).__openideaPerf.seed(path, text),
+      { path, text },
+    );
+  }
+
   /** Seeds a file into the in-memory backend and opens it, returning open → painted ms. */
   async openFile(path: string, text?: string): Promise<number> {
-    if (text !== undefined) {
-      await this.page.evaluate(
-        ({ path, text }) =>
-          (window as never as { __openideaPerf: { seed(p: string, t: string): void } }).__openideaPerf.seed(path, text),
-        { path, text },
-      );
-    }
+    if (text !== undefined) await this.seed(path, text);
     const name = path.slice(path.lastIndexOf("/") + 1);
     return this.page.evaluate(
       async ({ path, name }) => {

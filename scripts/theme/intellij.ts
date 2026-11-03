@@ -14,6 +14,7 @@ export const UI_KEYS: Record<string, string[]> = {
   "--bg-island": ["ToolWindow.background", "Panel.background"],
   "--bg-elev": ["ToolWindow.background", "SidePanel.background"],
   "--bg-popup": ["Popup.background", "PopupMenu.background"],
+  "--bg-floating-toolbar": ["Toolbar.Floating.background"],
   "--bg-backdrop": ["Popup.background"],
   "--bg-hover": ["List.hoverBackground", "Tree.hoverBackground"],
   "--bg-selected": ["List.selectionBackground", "Tree.selectionBackground"],

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { _addEditor, _removeEditor, type TextEditorHandle } from "@/editor/api";
-import { useExecutionPoint } from "../state";
+import { adoptSession, useDebug, useExecutionPoint } from "../state";
 import { useOverlays } from "../ui/popoverStore";
 import {
   calleeName,
@@ -92,6 +92,8 @@ describe("picking in the editor", () => {
   });
 
   function setup() {
+    useDebug.setState({ sessions: {}, active: null });
+    adoptSession(3, { status: "paused", selectedThread: 1, stoppedThread: 1 });
     const ctx = { doc: 1, path: "/p/app.py", language: "python", uiMode: null, readOnly: false };
     const view = new EditorView({
       state: EditorState.create({ doc: "def f():\n    x = parse(str(i))\n", extensions: [smartStepTargets(ctx)] }),

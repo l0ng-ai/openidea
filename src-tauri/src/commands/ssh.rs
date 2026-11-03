@@ -61,11 +61,27 @@ pub fn ssh_disconnect(state: State<'_, AppState>, id: String) {
 /// Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it.
 #[tauri::command]
 #[specta::specta]
-pub fn ssh_askpass_answer(state: State<'_, AppState>, id: u64, answer: Option<String>) {
+pub fn ssh_askpass_answer(state: State<'_, AppState>, id: u64, answer: Option<String>, remember: bool) {
     if let Some(server) = &state.askpass {
-        server.answer(id, answer);
+        server.answer(id, answer, remember);
     }
     state.sink.emit(IdeEvent::AskpassDone { id });
+}
+
+/// Settings › Git › Saved credentials: `scheme://host` of every saved entry.
+#[tauri::command]
+#[specta::specta]
+pub fn git_credentials(_state: State<'_, AppState>) -> Vec<String> {
+    ide_ssh::git_creds::get().map(|s| s.list()).unwrap_or_default()
+}
+
+/// Forgets the credential of `key` (a `git_credentials` entry).
+#[tauri::command]
+#[specta::specta]
+pub fn git_credential_forget(_state: State<'_, AppState>, key: String) {
+    if let Some(store) = ide_ssh::git_creds::get() {
+        store.forget(&key);
+    }
 }
 
 #[derive(Serialize, Deserialize, Type)]

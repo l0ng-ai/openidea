@@ -17,8 +17,10 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { RunConfig } from "@/bindings";
+import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
+import type { DragData } from "@/ui/pointerDrag";
+import type { TreeReorder } from "@/ui/Tree";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
@@ -118,6 +120,53 @@ export interface EditorKindContribution {
    * `data` must be plain JSON). The editor closes tabs whose target is gone itself.
    */
   restorable?: boolean;
+  /**
+   * The editor owns a document with unsaved state (a notebook): it takes part in
+   * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
+   * `input.key` (splits) share one document.
+   */
+  document?: EditorDocumentLifecycle;
+}
+
+/**
+ * Document lifecycle of a custom editor kind, keyed by its tabs' input. The
+ * workbench calls it whatever React has mounted: hidden tabs keep their
+ * document. Call `notifyEditorDocumentChanged` whenever `isDirty` may change.
+ */
+export interface EditorDocumentLifecycle {
+  /** Unsaved changes, pending edits not committed yet included. */
+  isDirty(input: EditorInput): boolean;
+  /** Commits pending edits; rejects when they can't be. */
+  flush(input: EditorInput): Promise<void>;
+  /** Flushes and saves; rejects on failure (the document stays dirty and open). */
+  save(input: EditorInput): Promise<void>;
+  /**
+   * Before a close decision: stops admitting edits and runs, flushes, and
+   * interrupts and drains execution, so `isDirty` holds until `cancelClose`.
+   */
+  prepareClose(input: EditorInput): Promise<void>;
+  /** The close didn't happen (Cancel, a failed save, a tab of it opened again): edits and runs resume. */
+  cancelClose(input: EditorInput): void;
+  /** Don't Save: drops unsaved changes without saving them. */
+  discard(input: EditorInput): Promise<void>;
+  /** Releases the document (and its kernel…) once no tab shows it any more. Called once per open. */
+  close(input: EditorInput): Promise<void>;
+  /** Edit › Undo / Redo while the editor has focus. */
+  undo?(input: EditorInput): Promise<void>;
+  redo?(input: EditorInput): Promise<void>;
+}
+
+/** Bumped by `notifyEditorDocumentChanged`; selectors reading `isDirty` re-run on it. */
+export const useEditorDocuments = create<{ revision: number }>(() => ({ revision: 0 }));
+
+/** A custom editor document's dirty state (or pending edits) may have changed: tab marks and counts refresh. */
+export function notifyEditorDocumentChanged() {
+  useEditorDocuments.setState((s) => ({ revision: s.revision + 1 }));
+}
+
+/** Changes with every `notifyEditorDocumentChanged`, for components that read `isDirty`. */
+export function useEditorDocumentRevision(): number {
+  return useEditorDocuments((s) => s.revision);
 }
 
 /**
@@ -185,6 +234,8 @@ export interface ServiceProviderContribution {
   banner?: ComponentType;
   /** Entries of the "Add Service" (+, ⌘N) menu. */
   addMenu?(): MenuItem[];
+  /** Optional sibling display ordering; does not move services between groups. */
+  reorder?: TreeReorder<ServiceTreeItem>;
 }
 
 export const useServiceProviders = create<{ providers: Map<string, ServiceProviderContribution> }>(() => ({
@@ -214,7 +265,13 @@ export interface EditorInput {
   data?: unknown;
 }
 
+export interface WorkbenchBannerContribution {
+  id: string;
+  component: ComponentType;
+}
+
 interface Contributions {
+  workbenchBanners: Map<string, WorkbenchBannerContribution>;
   toolWindows: Map<string, ToolWindowContribution>;
   statusItems: Map<string, StatusItemContribution>;
   overlays: Map<string, OverlayContribution>;
@@ -224,6 +281,7 @@ interface Contributions {
 }
 
 export const useContributions = create<Contributions>(() => ({
+  workbenchBanners: new Map(),
   toolWindows: new Map(),
   statusItems: new Map(),
   overlays: new Map(),
@@ -251,6 +309,7 @@ function register<K extends keyof Contributions>(
     });
 }
 
+export const registerWorkbenchBanner = (c: WorkbenchBannerContribution) => register("workbenchBanners", c.id, c);
 export const registerToolWindow = (c: ToolWindowContribution) => register("toolWindows", c.id, c);
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
@@ -307,11 +366,23 @@ export const provideProjectPopup = (component: ComponentType<ProjectPopupProps>)
 // editor kind (images, hex view) before the text editor. A provider may probe
 // the file (size, binary content); the first non-null answer wins.
 
+/** Resources acquired while resolving belong to the request until its tab is admitted. */
+export interface FileEditorResolutionContext {
+  /** Commit is synchronous: no close/project transition may interleave with tab insertion. */
+  onAdmission(commit: () => void, rollback: () => Promise<void>): void;
+}
+
+export interface FileEditorResolution {
+  input: EditorInput;
+  admit(): void;
+  rollback(): Promise<void>;
+}
+
 export interface FileEditorProvider {
   id: string;
   /** Lower asks first. Default 100. */
   order?: number;
-  resolve(path: string): EditorInput | null | Promise<EditorInput | null>;
+  resolve(path: string, context: FileEditorResolutionContext): EditorInput | null | Promise<EditorInput | null>;
 }
 
 const fileEditorProviders = new Map<string, FileEditorProvider>();
@@ -324,15 +395,39 @@ export function registerFileEditorProvider(p: FileEditorProvider): () => void {
 }
 
 /** The non-text editor input for `path`, or null for the text editor. Provider failures fall through. */
-export async function resolveFileEditor(path: string): Promise<EditorInput | null> {
+export async function resolveFileEditor(path: string): Promise<FileEditorResolution | null> {
   const providers = [...fileEditorProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
   for (const p of providers) {
+    const acquisitions: Array<{ commit: () => void; rollback: () => Promise<void> }> = [];
+    let admitted = false;
+    const rollback = async () => {
+      if (admitted) return;
+      const results = await Promise.allSettled(acquisitions.splice(0).map((a) => Promise.resolve().then(a.rollback)));
+      const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (errors.length)
+        throw new AggregateError(
+          errors.map((r) => r.reason),
+          "File editor acquisition cleanup failed",
+        );
+    };
     try {
-      const input = await p.resolve(path);
-      if (input) return input;
+      const input = await p.resolve(path, {
+        onAdmission: (commit, release) => acquisitions.push({ commit, rollback: release }),
+      });
+      if (input)
+        return {
+          input,
+          admit: () => {
+            for (const acquisition of acquisitions) acquisition.commit();
+            admitted = true;
+            acquisitions.length = 0;
+          },
+          rollback,
+        };
     } catch (e) {
       console.warn(`file editor provider ${p.id} failed`, e);
     }
+    await rollback();
   }
   return null;
 }
@@ -346,7 +441,9 @@ export async function resolveFileEditor(path: string): Promise<EditorInput | nul
 export interface TextEditorWrapperContribution {
   id: string;
   matches(path: string): boolean;
-  component: ComponentType<{ path: string; tabId: string; children: ReactNode }>;
+  component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
+  /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
+  tabActions?: ComponentType<{ path: string; tabId: string }>;
 }
 
 export const useTextEditorWrappers = create<{ wrappers: Map<string, TextEditorWrapperContribution> }>(() => ({
@@ -405,6 +502,9 @@ export interface OpenEditorTab {
   lastActive: number;
 }
 
+/** MIME of a dragged editor tab: the payload is `{ paneId, tabId }` as JSON. */
+export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
+
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
@@ -412,24 +512,53 @@ export interface EditorService {
   activePath(): string | null;
   /** Doc id + cursor of the focused text editor. */
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
-  /** Save all dirty documents. */
+  /** Save all dirty documents; rejects with the failures once every save was tried. */
   saveAll(): Promise<void>;
+  /** Includes local edits not yet acknowledged by the backend. */
+  dirtyDocumentIds?(): number[];
   /** Move keyboard focus to the active editor (used by Escape from tool windows). */
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */
   openPaths?(): string[];
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
+  /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
+  tabInput?(paneId: string, tabId: string): EditorInput | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
   onActiveInputChange?(fn: (input: EditorInput | null) => void): () => void;
-  /** Closes every tab showing `path`. */
-  closePath?(path: string): void;
-  /** Closes the tab of the input with this `key` (e.g. a merge editor once applied). */
-  closeInput?(key: string): void;
+  /**
+   * Closes every tab showing `path`. Tabs without a custom document close at
+   * once; unsaved custom documents are asked about first. Resolves false when
+   * the user kept them (Cancel, a failed save).
+   */
+  closePath?(path: string): Promise<boolean>;
+  /** Closes the tab of the input with this `key` (e.g. a merge editor once applied), like `closePath`. */
+  closeInput?(key: string): Promise<boolean>;
   /** Reformat Code on the whole open document at `path` (quietly); whether anything changed. */
   reformat?(path: string): Promise<boolean>;
+  /**
+   * Window / project close: prepares every open custom editor document for the
+   * Save / Don't Save / Cancel decision (see `EditorCloseSession`).
+   */
+  prepareClose?(): Promise<EditorCloseSession>;
+  /** Backend project/window transition failed after authorization: resume its prepared documents. */
+  cancelClose?(): void;
+  /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
+  documentHistory?(command: "undo" | "redo"): boolean;
+}
+
+/** Custom editor documents held still for a window / project close decision. */
+export interface EditorCloseSession {
+  /** Documents with unsaved changes. */
+  dirty: number;
+  /** Don't Save: drops their unsaved changes. */
+  discard(): Promise<void>;
+  /** The close didn't happen (Cancel, a failed save): the documents resume. */
+  cancel(): void;
+  /** The close goes ahead: they stay held until their tabs close (they resume if the project stays open). */
+  commit(): void;
 }
 
 export interface ToolWindowService {
@@ -508,6 +637,60 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+
+/**
+ * Handles a pointer drag dropped on the editor content: features register handlers for
+ * their own drag types (e.g. an agent task dragged from the tool window) without the
+ * editor depending on them. The editor shows its center drop-zone for accepted types.
+ */
+export interface EditorDropHandler {
+  accepts(type: string): boolean;
+  drop(data: DragData): void;
+}
+
+const editorDropHandlers: EditorDropHandler[] = [];
+
+/** Registers a handler for drags dropped on editor content; returns the unregister. */
+export function registerEditorDropHandler(handler: EditorDropHandler): () => void {
+  editorDropHandlers.push(handler);
+  return () => {
+    const i = editorDropHandlers.indexOf(handler);
+    if (i >= 0) editorDropHandlers.splice(i, 1);
+  };
+}
+
+/** Whether any registered handler takes this drag type. */
+export function acceptsEditorDrop(type: string): boolean {
+  return editorDropHandlers.some((h) => h.accepts(type));
+}
+
+/** Hands a drag dropped on editor content to its registered handler, if any. */
+export function dropOnEditor(data: DragData): boolean {
+  const handler = editorDropHandlers.find((h) => h.accepts(data.type));
+  if (!handler) return false;
+  handler.drop(data);
+  return true;
+}
+
+/** Editor-backed results, recomputed on rerun without reading files from disk. */
+export interface FindResultsSource {
+  title: string;
+  query: SearchQuery;
+  read(): FileMatches;
+}
+
+let findResultsOpener: ((source: FindResultsSource) => void) | undefined;
+
+export function provideFindResults(opener: (source: FindResultsSource) => void): () => void {
+  findResultsOpener = opener;
+  return () => {
+    if (findResultsOpener === opener) findResultsOpener = undefined;
+  };
+}
+
+export function showFindResults(source: FindResultsSource) {
+  findResultsOpener?.(source);
+}
 
 // ---------------------------------------------------------------------------
 // File decorations: colour / badge / tooltip for a path, shown by the project
@@ -754,6 +937,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** The tab's input, when the menu is for an editor tab without a path. */
+  input?: EditorInput;
 }
 
 export interface MenuGroupContribution {
@@ -1133,6 +1318,41 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
 }
 
 // ---------------------------------------------------------------------------
+// Project endpoints supplied by framework features for request-path search.
+
+export interface EndpointEntry {
+  /** `GET`, `POST`, … */
+  method: string;
+  /** Class-level and method-level mapping joined; `{var}` kept. */
+  url: string;
+  controller: string;
+  methodName: string;
+  path: string;
+  rel: string;
+  line: number;
+  col: number;
+}
+
+export interface EndpointProvider {
+  id: string;
+  endpoints(root: string): Promise<EndpointEntry[]>;
+}
+
+const endpointProviders = new Map<string, EndpointProvider>();
+
+export function registerEndpointProvider(p: EndpointProvider): () => void {
+  endpointProviders.set(p.id, p);
+  return () => {
+    if (endpointProviders.get(p.id) === p) endpointProviders.delete(p.id);
+  };
+}
+
+export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+  if (!root) return [];
+  return (await Promise.all([...endpointProviders.values()].map((p) => p.endpoints(root)))).flat();
+}
+
+// ---------------------------------------------------------------------------
 // Status bar info text (IDEA's status bar message, e.g. "3 of 12" after Next
 // Occurrence). Cleared by the next message or after a while.
 
@@ -1148,3 +1368,33 @@ export function showStatusInfo(text: string, ms = 8000) {
     if (useStatusInfo.getState().seq === seq) useStatusInfo.setState({ text: null });
   }, ms);
 }
+
+/** Live debugger roots exposed to the run toolbar without coupling feature stores. */
+export interface DebugRunSession {
+  id: number;
+  configId: string | null;
+  name: string;
+  startedAt: number;
+  paused: boolean;
+  rerun: (() => void) | null;
+  stop: () => void;
+  resume: () => void;
+}
+
+/** Configured debugger roots retained by the debugger, including finished output. */
+export interface DebugServiceSession {
+  id: number;
+  config: RunConfig;
+  startedAt: number;
+  status: "starting" | "running" | "paused" | "terminated";
+  processId: number | null;
+  rerun: (() => void) | null;
+  stop: (options?: { stopProcess?: boolean }) => Promise<void>;
+  show: () => void;
+}
+
+export const useDebugRunSessions = create<{
+  sessions: DebugRunSession[];
+  serviceSessions: DebugServiceSession[];
+  Console: ComponentType<{ sessionId: number }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null }));

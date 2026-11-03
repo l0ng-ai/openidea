@@ -21,12 +21,14 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
     requests: Mutex<Vec<(String, Value)>>,
     /// uri → text as reconstructed by the mock from didOpen/didChange.
     docs: Mutex<HashMap<String, String>>,
     responses: Mutex<HashMap<String, Value>>,
+    errors: Mutex<HashMap<String, (i64, String)>>,
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
     peer: Mutex<Option<Peer>>,
@@ -122,6 +124,9 @@ impl Handler for MockHandler {
             "initialize" => Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } })),
             "shutdown" => Ok(Value::Null),
             _ => {
+                if let Some(error) = s.errors.lock().get(method).cloned() {
+                    return Err(error);
+                }
                 let responder = s.responder.lock().clone();
                 if let Some(v) = responder.and_then(|f| f(s, method, &params)) {
                     return Ok(v);
@@ -144,6 +149,18 @@ impl MockLauncher {
 }
 
 impl Launcher for MockLauncher {
+    fn launch_resolved(
+        &self,
+        config: &LanguageServerConfig,
+        root: &Path,
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        cancel: &ide_core::CancellationToken,
+    ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
+        self.launch_cancellable(config, root, handler, on_stderr, cancel)
+            .map(|peer| (peer, self.state(&config.name).binary.lock().clone()))
+    }
+
     fn launch(
         &self,
         config: &LanguageServerConfig,
@@ -210,6 +227,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 
@@ -234,7 +252,8 @@ fn harness_configured(
     adjust: impl Fn(&mut LanguageServerConfig),
 ) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    // Edits and references report canonical paths.
+    let root = dunce::canonicalize(dir.path()).unwrap();
     let lang = LanguageConfig {
         id: LanguageId::new(lang_id),
         name: "Mock".into(),
@@ -245,6 +264,8 @@ fn harness_configured(
         block_comment: None,
         indent: None,
         ui_mode: None,
+        framework_ui_modes: Vec::new(),
+        formatter: None,
         tree_sitter: None,
         language_servers: servers
             .iter()
@@ -357,6 +378,29 @@ fn change(range: Range, text: &str) -> AppliedChange {
 }
 
 // ------------------------------------------------------------------ tests
+
+#[tokio::test(flavor = "multi_thread")]
+async fn linked_projects_initialize_separate_language_server_roots() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let roots = vec![first.path().to_path_buf(), second.path().to_path_buf()];
+    h.mgr.set_content_roots(roots.clone());
+    for root in &roots {
+        let file = root.join("same.mk");
+        std::fs::write(&file, "hello").unwrap();
+        h.mgr.did_open(DocId::next(), &file, &h.lang, 1, "hello");
+    }
+    let server = h.launcher.state("mock");
+    eventually(|| server.requested("initialize").len() == 2).await;
+    let mut actual: Vec<_> =
+        server.requested("initialize").iter().map(|r| r["rootUri"].as_str().unwrap().to_owned()).collect();
+    let mut expected: Vec<_> = roots.iter().map(|p| uri_of(p)).collect();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
+    h.mgr.shutdown_all().await;
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn initialize_and_incremental_sync() {
@@ -606,7 +650,7 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(s.requested("codeAction/resolve")[0]["data"], json!({ "id": 7 }));
     let edit = resolved.edit.unwrap();
     assert!(
-        matches!(&edit.files[0], FileEdit::Edit { path: p, edits } if p == &path && edits[0].range == rng(0, 0, 1, 0))
+        matches!(&edit.files[0], FileEdit::Edit { path: p, edits, .. } if p == &path && edits[0].range == rng(0, 0, 1, 0))
     );
 
     h.mgr.execute_command(doc, actions[1].command.clone().unwrap()).await.unwrap();
@@ -651,7 +695,9 @@ async fn apply_edit_hook_and_server_requests() {
     let edits = applied.lock().clone();
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].files[0], FileEdit::Create { path: new_file.into(), overwrite: false });
-    assert!(matches!(&edits[0].files[1], FileEdit::Edit { path: p, edits } if p == &path && edits[0].new_text == "X"));
+    assert!(
+        matches!(&edits[0].files[1], FileEdit::Edit { path: p, edits, .. } if p == &path && edits[0].new_text == "X")
+    );
 
     let peer = s.peer();
     let cfg: Value = peer
@@ -905,6 +951,38 @@ async fn launch_error_fails_without_starting_the_server() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn preparation_refreshes_config_and_survives_unchanged_settings() {
+    use std::sync::atomic::AtomicBool;
+    let h = harness(&[("mock", incremental_caps())]);
+    let prepared = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicUsize::new(0));
+    let (release, wait) = std::sync::mpsc::channel();
+    let wait = Mutex::new(wait);
+    h.mgr.set_config_hook(Box::new({
+        let prepared = prepared.clone();
+        move |cfg, _| {
+            cfg.launch_error = (!prepared.load(Ordering::SeqCst)).then(|| "needs runtime".into());
+        }
+    }));
+    h.mgr.set_prepare_hook(Box::new({
+        let started = started.clone();
+        move |_, _, cancel| {
+            started.fetch_add(1, Ordering::SeqCst);
+            wait.lock().recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!cancel.is_cancelled(), "unchanged settings cancelled preparation");
+            prepared.store(true, Ordering::SeqCst);
+        }
+    }));
+    h.open("a.mk", "x");
+    eventually(|| started.load(Ordering::SeqCst) > 0).await;
+    h.mgr.reconfigure().await;
+    release.send(()).unwrap();
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(h.launcher.state("mock").launches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn settings_changes_reach_servers_without_restarts() {
     let h = harness(&[("mock", incremental_caps()), ("extra", incremental_caps())]);
     let settings: Arc<Mutex<Option<Value>>> = Default::default();
@@ -952,6 +1030,140 @@ async fn settings_changes_reach_servers_without_restarts() {
     h.wait_status("extra", ServerStatus::Ready).await;
     eventually(|| h.launcher.state("extra").notified("textDocument/didOpen").len() == 2).await;
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_formatter_profiles_reach_initialization_and_live_configuration_without_restart() {
+    let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({
+                "settings": {"java": {"autobuild": {"enabled": false}}}
+            }))
+            .unwrap(),
+        );
+    });
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(h.root.join("custom.xml"), "<profiles/>").unwrap();
+    let style = Arc::new(Mutex::new(ide_core::editor_settings::LanguageCodeStyle {
+        formatter: Some("intellij".into()),
+        formatter_path: Some("custom.xml".into()),
+        ..Default::default()
+    }));
+    h.mgr.set_config_hook(Box::new({
+        let style = style.clone();
+        let root = h.root.clone();
+        let data = data.path().to_path_buf();
+        move |cfg, _| ide_lsp::jdtls::configure_formatter(cfg, Some(&style.lock()), &root, &data, None).unwrap()
+    }));
+    h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let init = state.requested("initialize")[0].clone();
+    assert_eq!(
+        init["initializationOptions"]["settings"]["java"]["format"]["settings"]["profile"],
+        "OpenIDEA IntelliJ IDEA"
+    );
+    for mode in ["custom", "default", "intellij", "default"] {
+        style.lock().formatter = Some(mode.into());
+        h.mgr.reconfigure().await;
+        let expected = match mode {
+            "custom" => uri_of(&h.root.join("custom.xml")),
+            "intellij" => uri_of(&data.path().join("lsp/jdtls/intellij.xml")),
+            _ => String::new(),
+        };
+        eventually(|| {
+            state
+                .notified("workspace/didChangeConfiguration")
+                .last()
+                .is_some_and(|p| p["settings"]["java"]["format"]["settings"]["url"] == expected)
+        })
+        .await;
+        let result: Value = state
+            .peer()
+            .request(
+                "workspace/configuration",
+                json!({
+                    "items": [{"section": "java.format.settings"}, {"section": "java.autobuild.enabled"}]
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result[0]["url"], expected);
+        assert_eq!(result[0]["profile"], if mode == "intellij" { "OpenIDEA IntelliJ IDEA" } else { "" });
+        assert_eq!(result[1], false);
+        assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_source_paths_reach_initialization_live_configuration_and_builds() {
+    let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({
+                "bundles": [], "settings": {"java": {"project": {"referencedLibraries": ["lib/**/*.jar"]}}}
+            }))
+            .unwrap(),
+        );
+    });
+    let paths = Arc::new(Mutex::new(Some(vec!["src/main/java".into()])));
+    h.mgr.set_config_hook(Box::new({
+        let paths = paths.clone();
+        move |cfg, _| ide_lsp::jdtls::configure_source_paths(cfg, paths.lock().clone())
+    }));
+    let (_, file) = h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let init = state.requested("initialize")[0].clone();
+    assert_eq!(init["initializationOptions"]["settings"]["java"]["project"]["sourcePaths"], json!(["src/main/java"]));
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    *paths.lock() = Some(vec!["generated".into(), "tests".into()]);
+    h.mgr.reconfigure().await;
+    eventually(|| {
+        state
+            .notified("workspace/didChangeConfiguration")
+            .last()
+            .is_some_and(|p| p["settings"]["java"]["project"]["sourcePaths"] == json!(["generated", "tests"]))
+    })
+    .await;
+    let notification = state.notified("workspace/didChangeConfiguration").pop().unwrap();
+    assert_eq!(notification["settings"]["java"]["project"]["referencedLibraries"], json!(["lib/**/*.jar"]));
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("java/buildWorkspace"), vec![json!(false)]);
+
+    // Removing the last hint restores importer inference. Omitting a setting
+    // in didChangeConfiguration would retain jdtls's previous preference.
+    *paths.lock() = None;
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let init = state.requested("initialize").pop().unwrap();
+    assert!(init["initializationOptions"]["settings"]["java"]["project"].get("sourcePaths").is_none());
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    std::fs::create_dir_all(h.root.join("src/demo")).unwrap();
+    let file = h.root.join("src/demo/Main.java");
+    std::fs::write(&file, "package demo; public class Main {}").unwrap();
+    h.mgr.set_config_hook(Box::new(|cfg, _| {
+        ide_lsp::jdtls::configure_source_paths(cfg, Some(vec!["src".into()]));
+    }));
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("initialize")[0]["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    assert!(state.notified("textDocument/didOpen").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1112,16 +1324,21 @@ async fn navigation_rename_format_and_decorations() {
     s.respond("textDocument/prepareRename", json!({ "range": r(1,0,1,3), "placeholder": "foo" }));
     assert_eq!(h.mgr.prepare_rename(doc, Pos::new(1, 1)).await.unwrap(), Some(rng(1, 0, 1, 3)));
     s.respond("textDocument/rename", json!({ "changes": { uri.clone(): [{ "range": r(0,3,0,6), "newText": "bar" }, { "range": r(1,0,1,3), "newText": "bar" }] } }));
-    let edit = h.mgr.rename(doc, Pos::new(1, 1), "bar".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(1, 1), "bar".into(), Default::default()).await.unwrap().edit;
     assert!(matches!(&edit.files[0], FileEdit::Edit { edits, .. } if edits.len() == 2));
     assert_eq!(s.requested("textDocument/rename")[0]["newName"], "bar");
 
+    assert!(h.mgr.can_format(doc).await.unwrap());
     s.respond("textDocument/formatting", json!([{ "range": r(0,10,0,11), "newText": "\n}" }]));
-    let edits = h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true }).await.unwrap();
+    let edits =
+        h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
     assert!(
-        h.mgr.format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true }).await.is_err()
+        h.mgr
+            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+            .await
+            .is_err()
     );
 
     s.respond("textDocument/semanticTokens/full", json!({ "data": [0, 3, 3, 0, 1, 1, 0, 3, 0, 0] }));
@@ -1149,13 +1366,19 @@ async fn navigation_rename_format_and_decorations() {
 
     // Nothing to prepare at the position: NotFound, so the UI can retry at the enclosing declaration.
     s.respond("textDocument/prepareCallHierarchy", json!(null));
-    let err = h.mgr.call_hierarchy(doc, Pos::new(0, 1), HierarchyDirection::Incoming).await.unwrap_err();
+    let err =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 1), HierarchyDirection::Incoming, Default::default()).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
 
     let item = json!({ "name": "foo", "kind": 12, "uri": uri, "range": r(0,0,0,11), "selectionRange": r(0,3,0,6), "data": "id" });
     s.respond("textDocument/prepareCallHierarchy", json!([item]));
     s.respond("callHierarchy/incomingCalls", json!([{ "from": { "name": "main", "kind": 12, "uri": uri, "range": r(1,0,1,6), "selectionRange": r(1,0,1,3) }, "fromRanges": [r(1,0,1,3)] }]));
-    let calls = h.mgr.call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming).await.unwrap();
+    let calls = h
+        .mgr
+        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default())
+        .await
+        .unwrap()
+        .items;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "main");
     assert_eq!(calls[0].from_ranges, vec![rng(1, 0, 1, 3)]);
@@ -1170,7 +1393,7 @@ fn edits_in(edit: &WorkspaceEdit, path: &Path) -> Vec<(Range, String)> {
     edit.files
         .iter()
         .filter_map(|f| match f {
-            FileEdit::Edit { path: p, edits } if p.to_path_buf() == path => {
+            FileEdit::Edit { path: p, edits, .. } if p.to_path_buf() == path => {
                 Some(edits.iter().map(|e| (e.range, e.new_text.clone())))
             }
             _ => None,
@@ -1200,7 +1423,7 @@ async fn rename_merges_the_servers_that_can_rename_there() {
     );
 
     assert_eq!(h.mgr.prepare_rename(doc, Pos::new(0, 15)).await.unwrap(), Some(rng(0, 14, 0, 19)));
-    let edit = h.mgr.rename(doc, Pos::new(0, 15), "heading".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(0, 15), "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edits_in(&edit, &path).len(), 2);
     assert!(h.launcher.state("ts").requested("textDocument/rename").is_empty());
 
@@ -1212,7 +1435,7 @@ async fn rename_merges_the_servers_that_can_rename_there() {
         "textDocument/rename",
         json!({ "changes": { uri: [{ "range": r(1, 0, 5), "newText": "heading: x" }] } }),
     );
-    let edit = h.mgr.rename(doc, Pos::new(1, 2), "heading".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(1, 2), "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edits_in(&edit, &path), [(rng(0, 14, 0, 19), "heading".into()), (rng(1, 0, 1, 5), "heading: x".into())]);
     assert_eq!(edits_in(&edit, &html), [(rng(0, 3, 0, 8), "heading".into())]);
 }
@@ -1479,6 +1702,61 @@ async fn jdt_class_file_contents() {
     assert_eq!(vd.title, "Lib.class");
     assert_eq!(vd.language_id.as_str(), "java");
     assert_eq!(vd.description.as_deref(), Some("/m2/lib-1.0.jar"));
+    let source_uri = jdt.replace("Lib.class", "WithSources.class");
+    s.respond(
+        "java/classFileContents",
+        json!("/* Copyright library author */\npackage org.example;\npublic class WithSources {}"),
+    );
+    let source = h.mgr.virtual_document(&source_uri).await.unwrap();
+    assert!(!source.decompiled);
+    assert_eq!(source.title, "WithSources.java");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn class_file_opening_routes_sources_and_binary_documents() {
+    let mut caps = incremental_caps();
+    caps["workspaceSymbolProvider"] = json!(true);
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Outer.java?=demo/%5C/m2%5C/lib.jar%3Cp%28Outer.class";
+    s.respond("workspace/symbol", json!([
+        {"name":"Outer", "kind":5, "location":{"uri":jdt,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}}
+    ]));
+    let archive = Some((PathBuf::from("/m2/lib.jar"), "p/Outer$1.class".into()));
+    assert_eq!(h.mgr.java_class_file(Path::new("/m2/lib.jar!/p/Outer$1.class"), archive).await.unwrap(), jdt);
+    assert!(
+        h.mgr
+            .java_class_file(
+                Path::new("/other/lib.jar!/p/Outer.class"),
+                Some(("/other/lib.jar".into(), "p/Outer.class".into()))
+            )
+            .await
+            .is_err()
+    );
+
+    let sources = h.root.join("src/main/java");
+    std::fs::create_dir_all(sources.join("p")).unwrap();
+    let source = sources.join("p/Outer.java");
+    std::fs::write(&source, "package p; class Outer {} ").unwrap();
+    s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
+    s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
+    for class in ["Outer", "Outer$Nested", "Outer$1"] {
+        let path = h.root.join(format!("target/classes/p/{class}.class"));
+        let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
+        // Compare as paths: the manager joins the relative source path with std::path, so
+        // separators can differ from the literal "p/Outer.java" used to build `source` on Windows.
+        assert_eq!(Path::new(&resolved), source.as_path());
+    }
+    let path = h.root.join("build/classes/java/main/p/Missing.class");
+    let uri = uri_of(&path);
+    assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), uri);
+    let vd = h.mgr.virtual_document(&uri).await.unwrap();
+    assert!(vd.decompiled);
+    assert_eq!(vd.language_id.as_str(), "java");
+    assert_eq!(vd.title, "Missing.class");
+    assert!(s.requested("java/classFileContents").iter().any(|p| p["uri"] == uri));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1512,7 +1790,7 @@ async fn will_and_did_rename_files_honour_filters() {
     assert_eq!(result.servers, vec!["mock".to_owned()]);
     assert!(result.errors.is_empty());
     match &result.edit.files[..] {
-        [FileEdit::Edit { path, edits }] => {
+        [FileEdit::Edit { path, edits, .. }] => {
             assert_eq!(path, &main);
             assert_eq!(edits[0].range, rng(0, 4, 0, 7));
             assert_eq!(edits[0].new_text, "lib");
@@ -1748,7 +2026,7 @@ fn occurrences(uri: &str, text: &str) -> Vec<Value> {
 /// A server that only analyses its open documents (minus `blind` URIs), like
 /// Pyright for files outside its `include`.
 fn open_files_only(blind: Vec<String>) -> Responder {
-    Arc::new(move |s, method, _| {
+    Arc::new(move |s, method, params| {
         let docs: Vec<(String, String)> =
             s.docs.lock().iter().filter(|(u, _)| !blind.contains(u)).map(|(u, t)| (u.clone(), t.clone())).collect();
         let locs = || docs.iter().flat_map(|(u, t)| occurrences(u, t));
@@ -1762,6 +2040,19 @@ fn open_files_only(blind: Vec<String>) -> Responder {
                 }
                 Some(json!({ "changes": changes }))
             }
+            "textDocument/prepareCallHierarchy" => {
+                let uri = &params["textDocument"]["uri"];
+                let at = json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } });
+                Some(json!([{ "name": WORD, "kind": 12, "uri": uri, "range": at, "selectionRange": at }]))
+            }
+            "callHierarchy/incomingCalls" => Some(Value::Array(
+                locs()
+                    .map(|l| {
+                        let from = json!({ "name": "caller", "kind": 12, "uri": l["uri"], "range": l["range"], "selectionRange": l["range"] });
+                        json!({ "from": from, "fromRanges": [l["range"]] })
+                    })
+                    .collect(),
+            )),
             _ => None,
         }
     })
@@ -1881,6 +2172,262 @@ async fn references_report_a_capped_candidate_search() {
     let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
+}
+
+/// The Java command must participate in the same widening contract as standard LSP.
+#[tokio::test(flavor = "multi_thread")]
+async fn classified_java_references_widen_without_losing_metadata() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    *s.responder.lock() = Some(Arc::new(|s, method, _| {
+        (method == "workspace/executeCommand").then(|| {
+            let docs = s.docs.lock();
+            let access = if docs.len() == 1 { "read" } else { "readWrite" };
+            Value::Array(
+                docs.iter()
+                    .flat_map(|(uri, text)| {
+                        occurrences(uri, text)
+                            .into_iter()
+                            .map(|location| json!({"location": location, "kind": "field", "access": access}))
+                    })
+                    .collect(),
+            )
+        })
+    }));
+    let b = h.root.join("b.java");
+    std::fs::write(&b, "target++;").unwrap();
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let seen = grep_candidates(&h);
+    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    assert_eq!(scoped.locations.len(), 1);
+    assert!(seen.lock().is_empty());
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert_eq!(refs.classified.len(), 2);
+    assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
+    assert!(refs.classified.iter().all(|r| matches!(r.kind, ReferenceKind::Field)));
+    assert_eq!(refs.incomplete, None);
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    assert!(s.requested("textDocument/references").is_empty());
+    eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
+    for limit_hit in [true, false] {
+        let skipped = h.root.join("large.java");
+        std::fs::write(&skipped, " ".repeat((1 << 20) + 1)).unwrap();
+        h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+            files: vec![skipped.clone()],
+            limit_hit,
+        }));
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        assert_eq!(
+            refs.incomplete,
+            Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_java_command_falls_back_to_unclassified_native_references() {
+    for project_wide in [false, true] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+        let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+        let s = h.launcher.state("jdtls");
+        s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "NoSuchMethodError".into()));
+        *s.responder.lock() = Some(open_files_only(Vec::new()));
+        let (doc, path) = h.open("a.java", "int target;");
+        h.wait_status("jdtls", ServerStatus::Ready).await;
+        eventually(|| s.docs.lock().len() == 1).await;
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, project_wide, Default::default()).await.unwrap();
+        assert_eq!(refs.locations.len(), 1);
+        assert_eq!(refs.locations[0].path, path);
+        assert!(refs.classified.is_empty());
+        assert_eq!(s.requested("workspace/executeCommand").len(), 1);
+        assert_eq!(s.requested("textDocument/references").len(), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_widened_java_command_retries_with_native_references() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let native = open_files_only(Vec::new());
+    *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+        if method == "workspace/executeCommand" {
+            // The initial query succeeds, but the next extension query fails.
+            s.errors.lock().insert(method.into(), (-32603, "reflection failed".into()));
+            return Some(Value::Array(
+                s.docs
+                    .lock()
+                    .iter()
+                    .flat_map(|(uri, text)| {
+                        occurrences(uri, text)
+                            .into_iter()
+                            .map(|location| json!({"location": location, "kind": "field", "access": "read"}))
+                    })
+                    .collect(),
+            ));
+        }
+        native(s, method, params)
+    }));
+    std::fs::write(h.root.join("b.java"), "target++;").unwrap();
+    grep_candidates(&h);
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert!(refs.classified.is_empty());
+    assert_eq!(s.requested("workspace/executeCommand").len(), 2);
+    assert_eq!(s.requested("textDocument/references").len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn superseded_java_command_does_not_fall_back() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let mgr = Arc::downgrade(&h.mgr);
+    *s.responder.lock() = Some(Arc::new(move |_, method, _| {
+        if method != "workspace/executeCommand" {
+            return None;
+        }
+        mgr.upgrade().unwrap().did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+        // Invalid extension response after the source version changed.
+        Some(json!({"failed": true}))
+    }));
+    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(s.requested("textDocument/references").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_java_command_does_not_fall_back() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32800, "cancelled".into()));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(s.requested("textDocument/references").is_empty());
+}
+
+/// What each search widened with candidate files reports for the symbol at the start of `doc`.
+async fn incomplete_reports(h: &Harness, doc: DocId) -> Vec<(&'static str, Option<ReferencesIncomplete>)> {
+    let at = Pos::new(0, 5);
+    let cancel = ide_core::CancellationToken::new;
+    vec![
+        ("references", h.mgr.references(doc, at, true, true, cancel()).await.unwrap().incomplete),
+        ("rename", h.mgr.rename(doc, at, "renamed".into(), cancel()).await.unwrap().incomplete),
+        ("callers", h.mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, cancel()).await.unwrap().incomplete),
+    ]
+}
+
+fn expect_all(reports: Vec<(&'static str, Option<ReferencesIncomplete>)>, want: Option<ReferencesIncomplete>) {
+    for (search, got) in reports {
+        assert_eq!(got, want, "{search}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_widened_search_reports_a_capped_candidate_search() {
+    let (h, s) = scope_harness();
+    h.mgr.set_candidates_hook(Box::new(|q, _| ide_lsp::CandidateFiles {
+        files: vec![q.root.join("b.mk")],
+        limit_hit: true,
+    }));
+    std::fs::write(h.root.join("b.mk"), "target\n").unwrap();
+    let (doc, _) = h.open("a.mk", "def target\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    expect_all(incomplete_reports(&h, doc).await, Some(ReferencesIncomplete::TooManyFiles));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_widened_search_reports_candidates_it_could_not_open() {
+    let oversized = "target\n".repeat(200_000);
+    // Name, content (`None`: not on disk), whether the search misses it.
+    let cases: [(&str, Option<&[u8]>, bool); 4] = [
+        ("large.mk", Some(oversized.as_bytes()), true),
+        ("binary.mk", Some(b"target \xff\xfe\n"), true),
+        ("deleted.mk", None, false),
+        ("small.mk", Some(b"target\n"), false),
+    ];
+    for (name, content, missed) in cases {
+        let (h, s) = scope_harness();
+        let file = h.root.join(name);
+        if let Some(content) = content {
+            std::fs::write(&file, content).unwrap();
+        }
+        let listed = file.clone();
+        h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+            files: vec![listed.clone()],
+            limit_hit: false,
+        }));
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        eventually(|| s.docs.lock().len() == 1).await;
+        let want = missed.then_some(ReferencesIncomplete::FilesSkipped);
+        for (search, got) in incomplete_reports(&h, doc).await {
+            assert_eq!(got, want, "{name}: {search}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_file_the_user_has_open_is_not_reported_as_skipped() {
+    let (h, s) = scope_harness();
+    let large = "target\n".repeat(200_000);
+    let (_, path) = h.open("large.mk", &large);
+    let (doc, _) = h.open("a.mk", "def target\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 2).await;
+    h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+        files: vec![path.clone()],
+        limit_hit: false,
+    }));
+    // `covered` would hide the file: answer as if the server had not listed it.
+    *s.responder.lock() = Some(open_files_only(vec![uri_of(&h.root.join("large.mk"))]));
+    expect_all(incomplete_reports(&h, doc).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_and_callers_can_be_cancelled() {
+    let (h, s) = scope_harness();
+    h.mgr.set_candidates_hook(Box::new(|_, cancel| {
+        while !cancel.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        ide_lsp::CandidateFiles::default()
+    }));
+    let (doc, _) = h.open("a.mk", "def target\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let cancel_later = || {
+        let cancel = ide_core::CancellationToken::new();
+        let later = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            later.cancel();
+        });
+        cancel
+    };
+    let err = h.mgr.rename(doc, Pos::new(0, 5), "renamed".into(), cancel_later()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    let err =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, cancel_later()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2063,7 +2610,7 @@ async fn rename_edits_files_outside_the_analysis_scope() {
     let (doc, a) = h.open("a.mk", "def target\n");
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let edit = h.mgr.rename(doc, Pos::new(0, 5), "renamed".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(0, 5), "renamed".into(), Default::default()).await.unwrap().edit;
     let mut paths: Vec<PathBuf> = edit
         .files
         .iter()
@@ -2075,4 +2622,386 @@ async fn rename_edits_files_outside_the_analysis_scope() {
     paths.sort();
     assert_eq!(paths, vec![a, b.clone()]);
     eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
+}
+
+#[tokio::test]
+async fn external_projects_are_capability_gated_and_follow_lifecycle() {
+    for capable in [false, true] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"] = json!({ "commands": if capable {
+            vec!["typescript.tsserverRequest"]
+        } else { vec!["_typescript.organizeImports"] } });
+        let h = harness_configured("typescript", "ts", &[("arbitrary-name", caps)], |cfg| {
+            cfg.tsserver_project = true;
+        });
+        let s = h.launcher.state("arbitrary-name");
+        s.respond("workspace/executeCommand", json!({ "success": true, "body": true }));
+        std::fs::write(h.root.join("unopened.ts"), "export const helper = 1;").unwrap();
+        h.open("main.ts", "helper");
+        h.wait_status("arbitrary-name", ServerStatus::Ready).await;
+        if !capable {
+            assert!(s.requested("workspace/executeCommand").is_empty());
+            h.mgr.shutdown_all().await;
+            assert!(s.requested("workspace/executeCommand").is_empty());
+            continue;
+        }
+        let requests = s.requested("workspace/executeCommand");
+        assert_eq!(requests[0]["arguments"][0], "openExternalProject");
+        assert_eq!(requests[0]["arguments"][1]["rootFiles"].as_array().unwrap().len(), 2);
+        assert_eq!(s.docs.lock().len(), 1, "registration must not open source documents");
+        std::fs::write(h.root.join("new.ts"), "export const newHelper = 1;").unwrap();
+        h.mgr.project_files_changed([&h.root.join("new.ts")]);
+        eventually(|| s.requested("workspace/executeCommand").len() >= 2).await;
+        assert_eq!(
+            s.requested("workspace/executeCommand")[1]["arguments"][1]["rootFiles"].as_array().unwrap().len(),
+            3
+        );
+        std::fs::rename(h.root.join("new.ts"), h.root.join("renamed.ts")).unwrap();
+        h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
+        eventually(|| s.requested("workspace/executeCommand").len() >= 3).await;
+        assert!(s.requested("workspace/executeCommand")[2].to_string().contains("renamed.ts"));
+        std::fs::remove_file(h.root.join("renamed.ts")).unwrap();
+        h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
+        eventually(|| s.requested("workspace/executeCommand").len() >= 4).await;
+        let id = h.mgr.servers()[0].id;
+        h.mgr.restart(id).await.unwrap();
+        h.wait_status("arbitrary-name", ServerStatus::Ready).await;
+        eventually(|| {
+            s.requested("workspace/executeCommand")
+                .iter()
+                .filter(|r| r["arguments"][0] == "openExternalProject")
+                .count()
+                >= 5
+        })
+        .await;
+        std::fs::write(h.root.join("tsconfig.json"), "{}").unwrap();
+        h.mgr.project_files_changed([&h.root.join("tsconfig.json")]);
+        eventually(|| {
+            s.requested("workspace/executeCommand")
+                .iter()
+                .filter(|r| r["arguments"][0] == "closeExternalProject")
+                .count()
+                >= 2
+        })
+        .await;
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gopls_interactive_command_validates_before_execution_and_applies_edits() {
+    let mut caps = incremental_caps();
+    caps["experimental"] = json!({"interactiveResolveProvider": {"kinds": ["command"]}});
+    caps["executeCommandProvider"] = json!({"commands": ["gopls.implement_interface", "gopls.add_test"]});
+    let h = harness(&[("gopls", caps)]);
+    let (doc, path) = h.open("probe.mk", "type T struct{}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let s = h.launcher.state("gopls");
+    let server = h.mgr.servers()[0].id;
+    assert_eq!(
+        s.requested("initialize")[0]["capabilities"]["experimental"]["interactiveResolve"],
+        json!({"inputTypes": ["string"]})
+    );
+    let new_file = h.root.join("probe_test.go");
+    let edit = json!({"documentChanges": [{"kind": "create", "uri": uri_of(&new_file)}, {
+        "textDocument": {"uri": uri_of(&path), "version": 1},
+        "edits": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// generated\n"}]
+    }]});
+    *s.responder.lock() = Some(Arc::new(move |s, method, p| {
+        if method == "command/resolve" {
+            let valid = p["formAnswers"][0]["value"] == "pkg.I";
+            return Some(if valid {
+                json!({"command": p["command"], "arguments": p["arguments"], "formAnswers": p["formAnswers"]})
+            } else {
+                json!({"command": p["command"], "arguments": p["arguments"], "formFields": [{"id": "interface", "description": "Enter interface", "required": true, "type": {"kind": "string"}, "error": if p["formAnswers"].as_array().is_some_and(|a| !a.is_empty()) { "Unknown interface" } else { "" }}]})
+            });
+        }
+        if method == "workspace/executeCommand" {
+            if p["command"] != "gopls.add_test" {
+                assert_eq!(p["formAnswers"], json!([{"id": "interface", "value": "pkg.I"}]));
+            }
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({"edit": edit}),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            return Some(Value::Null);
+        }
+        None
+    }));
+    let applied = Arc::new(Mutex::new(Vec::new()));
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |edit| {
+        received.lock().push(edit);
+        true
+    }));
+    let command = Command {
+        title: "Implement".into(),
+        command: "gopls.implement_interface".into(),
+        arguments: vec![json!({"location": 1})],
+    };
+    let token = ide_core::CancellationToken::new;
+    let initial = h.mgr.resolve_command(doc, server, command.clone(), vec![], token()).await.unwrap().unwrap();
+    assert_eq!(initial.form_fields[0].description, "Enter interface");
+    let invalid = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command.clone(),
+            vec![FormAnswer { id: "interface".into(), value: "bad".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(invalid.form_fields[0].error.as_deref(), Some("Unknown interface"));
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.resolve_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.execute_action_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let validated = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command,
+            vec![FormAnswer { id: "interface".into(), value: "pkg.I".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(validated.form_fields.is_empty());
+    h.mgr.execute_action_command(doc, server, validated.command, validated.form_answers, token()).await.unwrap();
+    assert_eq!(applied.lock().len(), 1);
+    let created = h
+        .mgr
+        .execute_action_command(
+            doc,
+            server,
+            Command { title: "Test".into(), command: "gopls.add_test".into(), arguments: vec![] },
+            vec![],
+            token(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created, vec![new_file]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interactive_capability_is_scoped_to_gopls() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("probe.mk", "x\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"], json!({}));
+    let form = h
+        .mgr
+        .resolve_command(
+            doc,
+            h.mgr.servers()[0].id,
+            Command { title: "Run".into(), command: "mock.run".into(), arguments: vec![json!(1)] },
+            vec![],
+            ide_core::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(form.is_none());
+    assert!(s.requested("command/resolve").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn formatting_provider_selection_tracks_dynamic_registration() {
+    let h = harness(&[("mock", json!({ "textDocumentSync": 1, "documentRangeFormattingProvider": true }))]);
+    let (doc, _) = h.open("a.mk", "hello\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(!h.mgr.can_format(doc).await.unwrap(), "a range provider alone cannot format the whole document");
+    let peer = h.launcher.state("mock").peer();
+    peer.request::<_, Value>(
+        "client/registerCapability",
+        json!({"registrations": [
+            {"id": "formatter", "method": "textDocument/formatting"}
+        ]}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(h.mgr.can_format(doc).await.unwrap());
+    peer.request::<_, Value>(
+        "client/unregisterCapability",
+        json!({"unregisterations": [
+            {"id": "formatter", "method": "textDocument/formatting"}
+        ]}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!h.mgr.can_format(doc).await.unwrap());
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_clangd_warns_for_tidy_config_once_across_languages_and_restarts() {
+    for language in ["c", "cpp", "objective-c", "objective-cpp"] {
+        let h = harness_for(language, "src", &[("clangd", incremental_caps())], &[]);
+        *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from("/usr/bin/clangd"));
+        std::fs::write(h.root.join(".clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+        h.open("main.src", "int *p = 0;");
+        eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. }))).await;
+        let id = h.mgr.servers()[0].id;
+        h.mgr.restart(id).await.unwrap();
+        h.wait_status("clangd", ServerStatus::Ready).await;
+        h.open("other.src", "int *p = 0;");
+        h.mgr.shutdown_all().await;
+        let events = h.events.lock();
+        let warnings: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::LanguageServerWarning { name, message, install_tool } => Some((name, message, install_tool)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1, "{language}");
+        assert_eq!(warnings[0].0, "clangd");
+        assert!(warnings[0].1.contains(".clang-tidy"));
+        assert_eq!(warnings[0].2, "clangd");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn clang_tidy_warning_requires_apple_binary_and_a_config() {
+    for (binary, config) in [
+        ("/usr/bin/clangd", false),
+        ("/opt/homebrew/opt/llvm/bin/clangd", true),
+        ("/Users/me/Library/Application Support/openidea/tools/clangd/bin/clangd", true),
+    ] {
+        let h = harness_for("cpp", "cpp", &[("clangd", incremental_caps())], &[]);
+        *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from(binary));
+        if config {
+            std::fs::write(h.root.join(".clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+        }
+        h.open("main.cpp", "int *p = 0;");
+        h.wait_status("clangd", ServerStatus::Ready).await;
+        h.mgr.shutdown_all().await;
+        assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. })), "{binary}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn clang_tidy_config_for_a_later_opened_file_warns_on_a_running_server() {
+    let h = harness_for("cpp", "cpp", &[("clangd", incremental_caps())], &[]);
+    *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from("/usr/bin/clangd"));
+    h.open("main.cpp", "int *p = 0;");
+    h.wait_status("clangd", ServerStatus::Ready).await;
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. })));
+    std::fs::create_dir(h.root.join("nested")).unwrap();
+    std::fs::write(h.root.join("nested/.clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+    h.open("nested/other.cpp", "int *p = 0;");
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. }))).await;
+    assert_eq!(h.mgr.servers().len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_definition_uses_java_without_yaml_definition_capability() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Settings.java"));
+    s.respond("workspace/executeCommand", json!({
+        "locations": [{"uri": target, "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 11}}}],
+        "keys": [{"name": "app.timeOut", "relaxed": true}], "roots": []
+    }));
+    let path = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &path, &LanguageId::new("yaml"), 1, "app:\n  time-out: 5\n");
+    let locations = h.mgr.goto(doc, Pos::new(1, 4), GotoKind::Definition).await.unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].range.start, Pos::new(2, 4));
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "app.time-out");
+    assert!(s.requested("textDocument/definition").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_usages_merge_native_and_unsaved_profiles_without_sibling_modules() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let (doc, path) = h.open("Settings.java", "int timeOut;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let root = uri_of(&h.root);
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [], "keys": [{"name": "app.timeOut", "relaxed": true}], "roots": [root]
+        }),
+    );
+    s.respond(
+        "textDocument/references",
+        json!([{"uri": uri_of(&path), "range": {
+            "start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 7}
+        }}]),
+    );
+    std::fs::write(h.root.join("application.yml"), "app:\n  time-out: 1\n").unwrap();
+    std::fs::write(h.root.join("application-prod.properties"), "app.time-out=2\n").unwrap();
+    let overlay = h.root.join("application-dev.yml");
+    std::fs::write(&overlay, "app:\n  old: 3\n").unwrap();
+    h.mgr.did_open(DocId::next(), &overlay, &LanguageId::new("yaml"), 1, "app:\n  time-out: 3\n");
+    let sibling = h.root.join("other");
+    std::fs::create_dir(&sibling).unwrap();
+    std::fs::write(sibling.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(sibling.join("application.yml"), "app:\n  time-out: wrong\n").unwrap();
+    h.mgr.did_open(
+        DocId::next(),
+        &sibling.join("application.yml"),
+        &LanguageId::new("yaml"),
+        1,
+        "app:\n  time-out: still-wrong\n",
+    );
+    let scoped = h.mgr.references(doc, Pos::new(0, 6), false, false, Default::default()).await.unwrap();
+    assert_eq!(scoped.locations.len(), 1);
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let refs = h.mgr.references(doc, Pos::new(0, 6), false, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 4, "{refs:?}");
+    assert!(refs.locations.iter().all(|l| !l.path.to_path_buf().starts_with(&sibling)));
+    assert!(refs.locations.iter().any(|l| l.path.to_path_buf() == overlay));
+    assert_eq!(refs.incomplete, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_extension_failure_preserves_native_java_navigation() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let (doc, path) = h.open("Settings.java", "@Value(\"${app.port}\") int port;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "old server".into()));
+    s.respond(
+        "textDocument/definition",
+        json!({"uri": uri_of(&path), "range": {
+            "start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 6}
+        }}),
+    );
+    let result = h.mgr.goto(doc, Pos::new(0, 2), GotoKind::Definition).await.unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(s.requested("textDocument/definition").len(), 1);
 }

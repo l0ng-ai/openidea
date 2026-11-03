@@ -1,10 +1,17 @@
+import { showShelfDiff } from "./shelf";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
 import { registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { Menu, type MenuItem } from "@/ui";
-import { editorService, maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
+import {
+  editorService,
+  maybeEditorService,
+  notifications,
+  projectViewSelection,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { annotationsShown, toggleAnnotations } from "./blame";
 import { showBranchesPopup } from "./BranchWidget";
 import { checkoutRevision, newBranch, newBranchInRepos } from "./branchOps";
@@ -28,7 +35,7 @@ import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
 import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
 import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
-import { chooseRevision } from "./RevisionChooser";
+import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
 import {
   showManageRemotes,
@@ -102,6 +109,7 @@ const OPERATIONS: MenuItem[] = [
   { kind: "action", action: "vcs.showHistory" },
   { kind: "action", action: "vcs.annotate" },
   { kind: "action", action: "vcs.showDiff" },
+  { kind: "action", action: "vcs.compareWithBranch" },
   { kind: "separator" },
   { kind: "action", action: "vcs.branches" },
   { kind: "action", action: "vcs.push" },
@@ -306,14 +314,17 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       keyWhen: "!editorTextFocus",
-      run: async ({ arg }) => {
+      run: async ({ arg, ctx }) => {
+        if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
-        const paths = contextPaths(arg).filter((p) => !p.endsWith("/"));
+        const selection = arg === undefined ? projectViewSelection() : [];
+        const paths = selection.length ? selection : contextPaths(arg);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
         }
+        if (await showDirectoryWorkingDiff(paths)) return;
         for (const p of paths.slice(0, 5)) await openDiff(workingDiffData(p, line), { preview: paths.length === 1 });
       },
     },
@@ -324,14 +335,13 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       run: async ({ arg }) => {
-        const path = contextPaths(arg)[0];
-        if (!path) {
-          notifications().notify({ group: "vcs", level: "info", title: "Open or select a file to compare" });
+        const selection = arg === undefined ? projectViewSelection() : [];
+        const paths = selection.length ? selection : contextPaths(arg);
+        if (!paths.length) {
+          notifications().notify({ group: "vcs", level: "info", title: "Open or select a file or folder to compare" });
           return;
         }
-        const rev = await chooseRevision("Compare with Branch or Revision");
-        if (!rev) return;
-        await openDiff({ path, left: { type: "rev", rev, label: rev }, right: { type: "worktree" } });
+        await comparePathsWithRevision(paths);
       },
     },
     {

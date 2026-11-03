@@ -201,7 +201,11 @@ describe("distraction free shell", () => {
     disposers.push(
       registerStatusItem({ id: "t.status", align: "left", priority: 0, component: () => <span>status-x</span> }),
     );
-    act(() => useProject.setState({ project: { root: "/work/df", name: "df-demo", isGit: false, settings: {} } }));
+    act(() =>
+      useProject.setState({
+        project: { root: "/work/df", name: "df-demo", trusted: true, isGit: false, settings: {} },
+      }),
+    );
     const { unmount } = render(<Workbench />);
     expect(await screen.findByText("df-demo")).toBeInTheDocument();
     expect(screen.getByText("status-x")).toBeInTheDocument();

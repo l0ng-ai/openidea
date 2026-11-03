@@ -355,6 +355,28 @@ export function toggledCheck(current: CheckState): CheckState {
   return current === "none" ? "all" : "none";
 }
 
+/**
+ * Paths of the selection to add to an ignore file: unversioned files, and a directory
+ * whose files are all unversioned (one rule for it instead of a rule per file).
+ */
+export function ignoreTargets(nodes: readonly ChangeNode[], repos: readonly string[]): string[] {
+  const roots = new Set(repos.map(stripSlash));
+  const out = new Set<string>();
+  const add = (n: ChangeNode) => {
+    const untracked = n.files.filter((f) => f.unstaged === "untracked");
+    if (!untracked.length) return;
+    // A repository node's path is the root itself, which cannot be ignored.
+    if (n.type === "dir" && n.path && n.files.length === untracked.length && !roots.has(stripSlash(n.path))) {
+      out.add(stripSlash(n.path));
+      return;
+    }
+    if (n.children?.length) n.children.forEach(add);
+    else for (const f of untracked) out.add(stripSlash(f.path));
+  };
+  nodes.forEach(add);
+  return [...out];
+}
+
 /** File paths (absolute) under the given tree nodes. */
 export function filesOf(nodes: readonly ChangeNode[]): FileStatus[] {
   const seen = new Set<string>();

@@ -1,3 +1,4 @@
+import { confirmProjectTrust } from "./projectTrust";
 /**
  * Remote development: in a window whose project lives on another machine, the
  * commands that machine's `openidea-server` answers are routed to it (through
@@ -8,6 +9,8 @@ import { Channel, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/co
 import { invokeLocal, setInvokeRoute, type InvokeRoute } from "./tauriCore";
 import { create } from "zustand";
 import { call, commands, isTauri, type ChannelFrame, type RemoteProgress, type RemoteSession } from "./ipc";
+import { isClientSetting, overlayClientSettings } from "./clientSettings";
+import type { Settings } from "./ipc";
 import { useProject } from "./project";
 
 interface RemoteState {
@@ -51,24 +54,52 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
 /**
  * Where a command of a remote window runs. Local always: opening a project (a
  * local folder; leaving the remote one) and closing it (that drops the
- * connection, which ends the server's session). Both: a global setting, which
+ * connection, which ends the server's session). Client UI settings stay local.
+ * Both: a global tooling setting, which
  * the server's language servers and the local windows read.
  */
 export function remoteRouting(cmd: string, args: InvokeArgs | undefined, served: ReadonlySet<string>) {
+  if (cmd === "system_font_families" || cmd === "settings_get_global") return "local";
+  if (cmd === "settings_set" && isClientSetting((args as { key?: string } | undefined)?.key ?? "")) return "local";
   if (!served.has(cmd) || cmd === "open_project" || cmd === "close_project") return "local";
   if (cmd === "settings_set" && (args as { scope?: string } | undefined)?.scope === "global") return "both";
   return "remote";
 }
 
+/** All effective settings responses use the same client overlay, including writes and project snapshots. */
+async function clientSettings<T extends Settings>(settings: T): Promise<T> {
+  return overlayClientSettings(settings, await invokeLocal<Settings>("settings_get_global"));
+}
+
 const route: InvokeRoute = (cmd, args, options) => {
-  switch (remoteRouting(cmd, args, routed)) {
-    case "local":
-      return null;
-    case "remote":
-      return remoteInvoke(cmd, args, options);
-    case "both":
-      return invokeLocal(cmd, args, options).then(() => remoteInvoke(cmd, args, options));
+  if (cmd === "open_project" || cmd === "light_edit_open") {
+    return invokeLocal(cmd, args, options).then((result) => {
+      disableRemote();
+      return result;
+    });
   }
+  const destination = remoteRouting(cmd, args, routed);
+  if (cmd === "settings_set") {
+    const setting = args as { scope: string; key: string; value: string };
+    return (async () => {
+      if (isClientSetting(setting.key)) {
+        await invokeLocal(cmd, { ...setting, scope: "global" }, options);
+        return clientSettings((await remoteInvoke("settings_get")) as Settings);
+      }
+      if (destination === "local") return invokeLocal(cmd, args, options);
+      if (destination === "both") await invokeLocal(cmd, args, options);
+      return clientSettings((await remoteInvoke(cmd, args, options)) as Settings);
+    })();
+  }
+  if (destination === "local") return null;
+  return remoteInvoke(cmd, args, options).then(async (result) => {
+    if (cmd === "settings_get") return clientSettings(result as Settings);
+    if (cmd === "project_current" && result) {
+      const project = result as { settings: Settings };
+      return { ...project, settings: await clientSettings(project.settings) };
+    }
+    return result;
+  });
 };
 
 /** Routes the commands the server answers (`session.commands`) to it from now on. */
@@ -114,6 +145,20 @@ export async function connectRemote(sshConfig: string, path: string) {
   try {
     const r = await call(commands.remoteConnect(sshConfig, path, onProgress));
     enableRemote({ sshConfig: r.sshConfig, root: r.root, host: r.host, commands: r.commands });
+    if (takeLegacyRemoteTrust(r.sshConfig, path, r.host)) {
+      const status = await call(commands.projectTrustStatus(r.root));
+      if (!status.decided) await call(commands.projectTrustSet(r.root, true, false));
+    }
+    try {
+      await confirmProjectTrust(r.root);
+    } catch (error) {
+      await commands.closeProject();
+      disableRemote();
+      throw error;
+    }
+    const current = await commands.projectCurrent();
+    if (current) r.project = current;
+    r.project.settings = await clientSettings(r.project.settings);
     useProject.setState({ project: r.project, settings: r.project.settings });
     rememberRemote({
       sshConfig: r.sshConfig,
@@ -172,6 +217,32 @@ export interface RecentRemote {
 
 const RECENT_KEY = "openidea.remote.recent";
 const RECENT_MAX = 20;
+const TRUST_MIGRATION_KEY = "openidea.remote.trustMigration";
+
+/** Snapshot existing user-owned recents before any new connection is remembered. */
+export function initializeRemoteTrustMigration() {
+  try {
+    if (localStorage.getItem(TRUST_MIGRATION_KEY) === null) {
+      localStorage.setItem(TRUST_MIGRATION_KEY, JSON.stringify(recentRemotes()));
+    }
+  } catch {
+    /* Unavailable storage never grants trust. */
+  }
+}
+
+export function takeLegacyRemoteTrust(sshConfig: string, path: string, host: string): boolean {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(TRUST_MIGRATION_KEY) ?? "[]");
+    if (!Array.isArray(value)) return false;
+    const matches = (entry: RecentRemote) =>
+      entry?.sshConfig === sshConfig && entry.path === path && entry.host === host;
+    const found = value.some(matches);
+    localStorage.setItem(TRUST_MIGRATION_KEY, JSON.stringify(value.filter((entry) => !matches(entry))));
+    return found;
+  } catch {
+    return false;
+  }
+}
 
 export function recentRemotes(): RecentRemote[] {
   try {

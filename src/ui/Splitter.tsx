@@ -6,9 +6,6 @@ import { Group, Panel, Separator, type GroupProps, type PanelProps, type Separat
 import clsx from "clsx";
 import styles from "./Splitter.module.css";
 
-export type { PanelImperativeHandle, Layout } from "react-resizable-panels";
-export { usePanelRef, useGroupRef } from "react-resizable-panels";
-
 export function SplitGroup({ className, ...rest }: GroupProps) {
   return <Group className={clsx(styles.group, className)} {...rest} />;
 }

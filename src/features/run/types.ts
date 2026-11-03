@@ -3,14 +3,11 @@
  * Application, Spring Boot, Compound) and the helpers that turn a type's params into the launched
  * command line. Other features contribute types with `registerRunConfigType`.
  */
+import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import type { RunConfig } from "@/platform/ipc";
-import {
-  registerRunConfigType,
-  runConfigTypes,
-  useRunConfigTypes,
-  type RunConfigTypeContribution,
-} from "@/workbench/contributions";
+import { registerRunConfigType, useRunConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
+import { commandName } from "./commandName";
 import {
   applicationType,
   gradleForkedJvm,
@@ -20,11 +17,17 @@ import {
   type ForkedJvm,
 } from "./jvmTypes";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
+
+import { tomcatType } from "./tomcat";
+import { goBuildType, goTestType } from "./goTypes";
+
+import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
+import { djangoTestType } from "./djangoTypes";
 
 export const COMPOUND = "compound";
 
 const on = (v: string | undefined) => v === "true";
-const baseName = (p: string) => p.replace(/\\/g, "/").split("/").pop() ?? p;
 const dirOf = (cwd: string | null | undefined) => cwd ?? "";
 
 /** Values of `args[index]` across detected configurations of `kind`. */
@@ -120,7 +123,7 @@ const program: RunConfigTypeContribution = {
 };
 
 const isScene = (a: string) => /\.t?scn$/i.test(a);
-const isGodot = (cmd: string) => /^godot([-.\w]*)$/i.test(baseName(cmd).replace(/\.exe$/i, ""));
+const isGodot = (cmd: string) => /^godot([-.\w]*)$/i.test(commandName(cmd));
 
 /**
  * Godot: `godot --path <project>` runs the main scene, `… <scene>` one scene. The
@@ -153,7 +156,7 @@ const godot: RunConfigTypeContribution = {
     },
   ],
   commandLine: (p) => ({
-    command: "godot",
+    command: p.executable || "godot",
     args: ["--path", ".", ...(p.scene?.trim() ? [p.scene.trim()] : []), ...parseArgs(p.arguments ?? "")],
     cwd: p.projectDir?.trim() || null,
   }),
@@ -163,7 +166,12 @@ const godot: RunConfigTypeContribution = {
     const path = rest.indexOf("--path");
     if (path >= 0) rest.splice(path, 2);
     const scene = rest.find(isScene) ?? "";
-    return { projectDir: dirOf(c.cwd), scene, arguments: formatArgs(rest.filter((a) => a !== scene)) };
+    return {
+      projectDir: dirOf(c.cwd),
+      scene,
+      arguments: formatArgs(rest.filter((a) => a !== scene)),
+      ...(c.command !== "godot" ? { executable: c.command } : {}),
+    };
   },
 };
 
@@ -199,13 +207,22 @@ const npm: RunConfigTypeContribution = {
   commandLine(p) {
     const command = p.command || "run";
     const args = [command, ...(command === "run" ? [p.script ?? ""] : []), ...parseArgs(p.arguments ?? "")];
-    return { command: p.packageManager || "npm", args, cwd: p.packageDir?.trim() || null };
+    const manager = p.packageManager || "npm";
+    const executable = p.executable && commandName(p.executable) === manager ? p.executable : manager;
+    return { command: executable, args, cwd: p.packageDir?.trim() || null };
   },
   paramsFrom(c) {
     const [command, ...rest] = c.args;
-    if (!PACKAGE_MANAGERS.includes(c.command) || !command || !NPM_COMMANDS.includes(command)) return null;
+    if (!PACKAGE_MANAGERS.includes(commandName(c.command)) || !command || !NPM_COMMANDS.includes(command)) return null;
     const script = command === "run" ? (rest.shift() ?? "") : "";
-    return { packageManager: c.command, command, script, arguments: formatArgs(rest), packageDir: dirOf(c.cwd) };
+    return {
+      packageManager: commandName(c.command),
+      command,
+      script,
+      arguments: formatArgs(rest),
+      packageDir: dirOf(c.cwd),
+      ...(c.command !== commandName(c.command) ? { executable: c.command } : {}),
+    };
   },
 };
 
@@ -243,16 +260,20 @@ function buildToolType(
       { key: "wrapper", label: wrapper.label, control: "checkbox" },
     ],
     commandLine: (p) => ({
-      command: wrapperCommand(wrapper.unix, wrapper.windows, wrapper.plain, on(p.wrapper)),
+      command:
+        p.executable && commandName(p.executable) === (on(p.wrapper) ? wrapper.unix : wrapper.plain)
+          ? p.executable
+          : wrapperCommand(wrapper.unix, wrapper.windows, wrapper.plain, on(p.wrapper)),
       args: [...parseArgs(p.tasks ?? ""), ...parseArgs(p.arguments ?? ""), ...jvm.args(p)],
       cwd: p.projectDir?.trim() || null,
     }),
     ...(jvm.prepareLaunch ? { prepareLaunch: jvm.prepareLaunch } : {}),
     paramsFrom(c) {
-      const name = baseName(c.command);
-      const usesWrapper = name === wrapper.unix || name === wrapper.windows;
+      const name = commandName(c.command);
+      const usesWrapper = name === wrapper.unix;
       if (!usesWrapper && name !== wrapper.plain) return null;
       return {
+        executable: c.command,
         projectDir: dirOf(c.cwd),
         tasks: formatArgs(c.args),
         arguments: "",
@@ -301,6 +322,75 @@ const compound: RunConfigTypeContribution = {
   commandLine: () => null,
 };
 
+/**
+ * pytest: what comes after the `pytest` invocation — a target (directory, file,
+ * test id) and options. The command itself is one word (`pytest`, `uv`,
+ * `.venv/bin/pytest`, `python`), the runner args its leading arguments
+ * (`run pytest`, `-m pytest`, none).
+ */
+const pytest: RunConfigTypeContribution = {
+  id: "pytest",
+  label: "pytest",
+  icon: "file-python",
+  description: "Run pytest tests",
+  defaults: { command: "pytest" },
+  debugAdapter: "debugpy",
+  fields: [
+    {
+      key: "command",
+      label: "Command",
+      mono: true,
+      placeholder: "pytest",
+      required: true,
+      hint: "e.g. pytest, uv, poetry, .venv/bin/pytest, python",
+    },
+    {
+      key: "runnerArgs",
+      label: "Runner arguments",
+      mono: true,
+      placeholder: "run pytest",
+      hint: "e.g. `run pytest` for uv/poetry, `-m pytest` for python; empty calls the command itself",
+    },
+    {
+      key: "target",
+      label: "Target",
+      mono: true,
+      placeholder: "tests",
+      hint: "Directory, file or test id; empty runs the whole suite",
+    },
+    { key: "options", label: "pytest options", mono: true, placeholder: "e.g. -x -q --tb=short" },
+  ],
+  commandLine(p) {
+    const args = parseArgs(p.runnerArgs ?? "");
+    if (p.target?.trim()) args.push(...parseArgs(p.target.trim()));
+    args.push(...parseArgs(p.options ?? ""));
+    return { command: p.command?.trim() || "pytest", args };
+  },
+  paramsFrom(c) {
+    if (c.kind !== "pytest") return null;
+    // The runner part (`run pytest`, `-m pytest`, none when the command is
+    // pytest itself); what follows is the target and pytest options.
+    const m = c.args.indexOf("-m");
+    const runner =
+      c.args[0] === "run" && c.args[1] === "pytest"
+        ? 2
+        : m >= 0 && c.args[m + 1] === "pytest"
+          ? m + 2
+          : commandName(c.command) === "pytest"
+            ? 0
+            : null;
+    if (runner === null) return null;
+    const rest = c.args.slice(runner);
+    const [target, ...options] = rest;
+    return {
+      command: c.command,
+      runnerArgs: formatArgs(c.args.slice(0, runner)),
+      target: target && !target.startsWith("-") ? formatArgs([target]) : "",
+      options: formatArgs(target && !target.startsWith("-") ? options : rest),
+    };
+  },
+};
+
 export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   shell,
   program,
@@ -308,8 +398,15 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   gradle,
   maven,
   godot,
+  pytest,
+  djangoTestType,
+  dotnetProjectType,
+  dotnetTestType,
+  goBuildType,
+  goTestType,
   applicationType,
   springBootType,
+  tomcatType,
   compound,
 ];
 
@@ -322,10 +419,6 @@ export function typeFor(kind: string): RunConfigTypeContribution | undefined {
   return useRunConfigTypes.getState().types.get(kind);
 }
 
-export { runConfigTypes };
-
-export const isCompound = (c: Pick<RunConfig, "kind">) => c.kind === COMPOUND;
-
 /** Only Debug applies to `c` (Remote JVM Debug, Go Remote…): it attaches and launches no process. */
 export const isDebugOnly = (c: Pick<RunConfig, "kind">, type = typeFor(c.kind)) => !!type?.debugOnly;
 
@@ -335,13 +428,15 @@ export const isDebugOnly = (c: Pick<RunConfig, "kind">, type = typeFor(c.kind)) 
  */
 export function formParams(config: RunConfig, type = typeFor(config.kind)): Record<string, string> | null {
   if (!type) return null;
-  if (config.params && Object.keys(config.params).length) return { ...config.params };
+  if (config.params && Object.keys(config.params).length && (type.id !== "go" || config.params.goKind))
+    return { ...config.params };
   if (type.id === COMPOUND) return {};
   const derived = type.paramsFrom?.(config);
   if (!derived) return null;
   // Only when the form reproduces exactly what runs today.
   const line = type.commandLine(derived);
   if (!line) return null;
+  if (type.id === "go") return derived;
   const sameCwd = !type.ownsWorkingDirectory || (line.cwd ?? null) === (config.cwd ?? null);
   return line.command === config.command && formatArgs(line.args) === formatArgs(config.args) && sameCwd
     ? derived
@@ -355,9 +450,18 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
   if (!line) return { ...rest, params, command: "", args: [] };
   return {
     ...rest,
-    params,
+    ...(config.kind === "dotnet" && config.beforeLaunch === undefined
+      ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
+      : {}),
+    ...(config.kind === "dotnet-test" || config.kind === "django-test" ? { isTest: true } : {}),
+    params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
+    ...(config.kind === "go-test" && !config.id.startsWith("template:") ? { kind: "go" } : {}),
+    ...(params.goKind ? { isTest: params.goKind === "test" } : {}),
     command: line.command,
     args: line.args,
+    ...(isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass
+      ? { module: undefined }
+      : {}),
     ...(type?.ownsWorkingDirectory ? { cwd: line.cwd ?? null } : {}),
     ...(line.stop ? { stopCommand: line.stop } : {}),
   };
@@ -422,9 +526,17 @@ export function blankTemplate(type: RunConfigTypeContribution): RunConfig {
       isTest: false,
       debugAdapter: type.debugAdapter ?? null,
     },
-    { ...type.defaults },
+    newConfigDefaults(type),
     type,
   );
+}
+
+function newConfigDefaults(type: RunConfigTypeContribution): Record<string, string> {
+  const defaults = { ...type.defaults };
+  if (type.id === "gradle" && useProject.getState().settings?.languages?.java?.gradle?.distribution === "local") {
+    defaults.wrapper = "false";
+  }
+  return defaults;
 }
 
 /** A new configuration of `type`, with the type's defaults and then its template applied. */
@@ -455,7 +567,7 @@ export function newConfigOfType(
       if (v !== undefined) (copied as Record<string, unknown>)[key] = structuredClone(v);
     }
   }
-  const params = { ...type.defaults, ...(template?.params ?? {}) };
+  const params = { ...newConfigDefaults(type), ...(template?.params ?? {}) };
   const next = withParams({ ...base, ...copied }, params, type);
   return type.debugAdapter ? { ...next, debugAdapter: type.debugAdapter } : next;
 }

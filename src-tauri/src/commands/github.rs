@@ -3,7 +3,7 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_github::{
-    CreatePullRequest, GhAvailability, PrDiffRevisions, PrListQuery, PrReviewComment, PullRequestDetails,
+    CreatePullRequest, GhApiRequest, GhAvailability, PrDiffRevisions, PrListQuery, PrReviewComment, PullRequestDetails,
     PullRequestSummary, ReviewEvent,
 };
 use std::path::PathBuf;
@@ -126,6 +126,14 @@ pub async fn gh_pr_review(
 pub async fn gh_pr_comment(window: Window, state: State<'_, AppState>, number: u32, body: String) -> IdeResult<()> {
     let root = root(&window, &state)?;
     blocking(move || ide_github::add_comment(&root, number, &body)).await
+}
+
+/// A GitHub GraphQL / REST call through `gh api`; returns the response body.
+#[tauri::command]
+#[specta::specta]
+pub async fn gh_api(window: Window, state: State<'_, AppState>, request: GhApiRequest) -> IdeResult<String> {
+    let root = root(&window, &state)?;
+    blocking(move || ide_github::api(&root, &request)).await
 }
 
 /// Fetches what is missing to diff a pull request locally; returns the revisions to compare.

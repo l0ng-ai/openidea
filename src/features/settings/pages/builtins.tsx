@@ -4,8 +4,6 @@ import { useSetting } from "../components/context";
 import { KeymapPage, keymapSearchLabels } from "../keymap/KeymapPage";
 import { RecognizedFileTypes } from "./FileTypes";
 import type { PageSpec } from "./spec";
-
-export { APPEARANCE_GROUP } from "./behavior";
 export const EDITOR_GROUP = "Editor";
 
 function ExcludeRow() {

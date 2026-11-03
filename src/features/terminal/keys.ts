@@ -3,7 +3,7 @@
  * (IDEA's "Override IDE shortcuts"): Ctrl+letter goes to the shell (Ctrl+R
  * reverse search, Ctrl+D EOF…), plus the macOS conveniences ⌘C / ⌘V / ⌘K /
  * ⌘W, ⌘F (find) and ⌘/⌥ arrow navigation, and Ctrl+Shift+C / V (copy / paste
- * on Windows and Linux, where Ctrl+C must reach the shell).
+ * on Windows and Linux, where Ctrl+C also copies a selection and otherwise interrupts the shell).
  *
  * With "Override IDE shortcuts" on, a Ctrl or Escape stroke still reaches the IDE when the
  * keymap binds it to one of IDEA's terminal-allowed actions (Find Action, Go to
@@ -15,7 +15,7 @@
  * there is no terminal, so there is nothing to handle.
  */
 import { executeAction } from "@/platform/actions";
-import { effectiveBindings, strokeOf } from "@/platform/keymap";
+import { effectiveBindings, isMacHost, letterOf, registerKeyClaim, strokeOf } from "@/platform/keymap";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { terminalRuntime } from "./loader";
 import { isImeKey } from "@/platform/ime";
@@ -53,16 +53,17 @@ export function terminalKeyAction(e: KeyLike, hasSelection: boolean): TerminalKe
     if (e.key === "Backspace") return { kind: "send", data: "\x17" };
     return { kind: "pass" };
   }
+  const letter = letterOf(e);
+  if (ctrl && !meta && !alt && letter === "C" && hasSelection && !isMacHost()) return { kind: "copy" };
   if (ctrl && shift && !meta && !alt) {
-    if (e.code === "KeyC") return hasSelection ? { kind: "copy" } : { kind: "pass" };
-    if (e.code === "KeyV") return { kind: "paste" };
+    if (letter === "C") return hasSelection ? { kind: "copy" } : { kind: "pass" };
+    if (letter === "V") return { kind: "paste" };
     // New Tab on Windows / Linux (IDEA keymap); plain Ctrl+T still reaches the shell.
-    if (e.code === "KeyT") return { kind: "pass" };
+    if (letter === "T") return { kind: "pass" };
   }
   if (ctrl && !meta && !alt) {
-    // Use the physical key so layouts and Shift don't change the control code.
-    const m = /^Key([A-Z])$/.exec(e.code);
-    if (m) return { kind: "send", data: String.fromCharCode(m[1]!.charCodeAt(0) - 64) };
+    // The letter the key types, so Shift doesn't change the control code and AZERTY's Ctrl+Z is ^Z, not ^W.
+    if (letter) return { kind: "send", data: String.fromCharCode(letter.charCodeAt(0) - 64) };
     if (e.code === "BracketLeft") return { kind: "send", data: "\x1b" };
     if (e.code === "Backslash") return { kind: "send", data: "\x1c" };
     if (e.code === "BracketRight") return { kind: "send", data: "\x1d" };
@@ -127,6 +128,12 @@ export function isAllowedIdeShortcut(stroke: string, bindings: ReadonlyArray<rea
 }
 
 export function installTerminalKeys(target: Window = window): () => void {
+  // Embedded terminals and sessions with shortcut overrides disabled still own copy/interrupt.
+  const releaseCopyClaim = registerKeyClaim(
+    (e, stroke) =>
+      !!(e.target as Element | null)?.closest?.(".xterm") &&
+      ["Ctrl+C", "Ctrl+Insert", "Ctrl+Shift+C", "Meta+C"].includes(stroke),
+  );
   const onKeyDown = (e: KeyboardEvent) => {
     const rt = terminalRuntime();
     if (isImeKey(e) || !rt) return;
@@ -183,5 +190,8 @@ export function installTerminalKeys(target: Window = window): () => void {
     e.stopImmediatePropagation();
   };
   target.addEventListener("keydown", onKeyDown, true);
-  return () => target.removeEventListener("keydown", onKeyDown, true);
+  return () => {
+    releaseCopyClaim();
+    target.removeEventListener("keydown", onKeyDown, true);
+  };
 }

@@ -22,14 +22,24 @@ import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from 
 import { loadHomeDir } from "./home";
 import { selectedNodes } from "./operations";
 import { ProjectView } from "./ProjectView";
-import { applyFsChange, initProjectTree, reloadAll, setChangedFiles, setOpenFiles, useProjectTree } from "./store";
+import {
+  applyFsChange,
+  dropOutlines,
+  initProjectTree,
+  reloadAll,
+  reloadLoadedDirs,
+  setChangedFiles,
+  setOpenFiles,
+  useProjectTree,
+} from "./store";
 
 export function activate(): () => void {
   loadHomeDir();
   const sync = () => {
     const p = useProject.getState().project;
     const s = useProjectTree.getState();
-    if ((p?.root ?? null) !== s.root) initProjectTree(p?.root ?? null, p?.name ?? "");
+    if ((p?.root ?? null) !== s.root || p?.workspace?.projects !== (s.members ?? undefined))
+      initProjectTree(p?.root ?? null, p?.name ?? "", p?.workspace?.projects ?? null);
     else if (p && p.name !== s.name) useProjectTree.setState({ name: p.name });
   };
   sync();
@@ -60,7 +70,8 @@ export function activate(): () => void {
   let shownRoots = "";
   const syncContentRoots = () => {
     const { project, settings } = useProject.getState();
-    const paths = project ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
+    const paths =
+      project && !project.workspace ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
     const key = JSON.stringify(paths);
     if (key === shownRoots) return;
     shownRoots = key;
@@ -96,6 +107,7 @@ export function activate(): () => void {
   syncOpenFiles();
   const unsubEditor = onEditorEvent((e) => {
     if (e.type === "docOpened" || e.type === "docClosed" || e.type === "activeEditorChanged") syncOpenFiles();
+    if (e.type === "docSaved") dropOutlines([e.path]);
   });
   // "All Changed Files": change-list files still on disk (IDEA leaves out unversioned, ignored and deleted ones).
   const syncChanged = () => setChangedFiles(localChangedPaths(useLocalChanges.getState().lists, null, true));
@@ -136,6 +148,7 @@ export function activate(): () => void {
         .map((n) => n.path),
     ),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
+    onIdeEvent("excludedDirsChanged", (e) => void reloadLoadedDirs(e.dirs)),
   ];
   return () => {
     disposers.reverse().forEach((d) => d());

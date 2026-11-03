@@ -11,21 +11,6 @@
   max-width: 680px;
   color: var(--fg-secondary);
 }
-.pythonAnalyzer {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.pythonAnalyzerRow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.pythonAnalyzerHint {
-  margin: 0;
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-}
 .body {
   display: flex;
   flex: 1;

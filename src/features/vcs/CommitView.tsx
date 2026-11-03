@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, typ
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
+import { dirname } from "@/platform/project";
 import {
   Button,
   Checkbox,
@@ -31,11 +32,13 @@ import {
   T,
 } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   aggregateCheck,
   buildChangeTree,
   checkOf,
   filesOf,
+  ignoreTargets,
   isPartiallyStaged,
   planCommit,
   toggledCheck,
@@ -45,12 +48,14 @@ import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges }
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
-import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
+import { messageHistory, setAmend, setDiffPreview, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
-import { openDiff, withChain, workingDiffData } from "./diffInput";
+import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
+import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
+import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
@@ -171,7 +176,9 @@ function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
   void openDiff(withChain(items, Math.max(0, paths.indexOf(n.path))), { preview: true });
 }
 
-function listMenu(id: string, active: boolean, paths: string[]): MenuItem[] {
+/** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
+export function listMenu(id: string, active: boolean, files: readonly FileStatus[]): MenuItem[] {
+  const paths = files.map((f) => stripSlash(f.path));
   const count = paths.length;
   return [
     ...(count ? [{ kind: "action" as const, action: "vcs.changelist.commit", arg: id, label: "Commit…" }] : []),
@@ -185,6 +192,22 @@ function listMenu(id: string, active: boolean, paths: string[]): MenuItem[] {
           { kind: "action" as const, action: "vcs.changelist.delete", arg: id },
         ]),
     { kind: "separator" },
+    // The whole list's files, as IDEA offers on a change list's header and as file
+    // and directory nodes below it already offer (issue #473).
+    { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…", disabled: !count },
+    {
+      label: "Stage",
+      icon: "plus",
+      disabled: !files.some((f) => f.unstaged),
+      run: () => void call(commands.vcsStage(paths)).finally(() => void refreshNow()),
+    },
+    {
+      label: "Unstage",
+      icon: "minus",
+      disabled: !files.some((f) => f.staged),
+      run: () => void call(commands.vcsUnstage(paths)).finally(() => void refreshNow()),
+    },
+    { kind: "separator" },
     ...(count
       ? [
           { kind: "action" as const, action: "vcs.shelve", arg: paths },
@@ -194,11 +217,12 @@ function listMenu(id: string, active: boolean, paths: string[]): MenuItem[] {
   ];
 }
 
-function nodeMenu(nodes: ChangeNode[]): MenuItem[] {
+function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   const files = filesOf(nodes);
   const paths = files.map((f) => f.path);
   const first = nodes.find((n) => n.type === "file");
   const untracked = files.filter((f) => f.unstaged === "untracked");
+  const toIgnore = ignoreTargets(nodes, repos);
   const conflicted = files.filter((f) => f.unstaged === "conflicted");
   const items: MenuItem[] = [
     { kind: "action", action: "vcs.showDiff", arg: first?.path },
@@ -216,6 +240,16 @@ function nodeMenu(nodes: ChangeNode[]): MenuItem[] {
     { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
     ...(untracked.length
       ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
+      : []),
+    ...(toIgnore.length
+      ? [
+          {
+            kind: "action" as const,
+            action: "vcs.ignoreShared",
+            arg: toIgnore,
+            label: "Add to .gitignore",
+          },
+        ]
       : []),
     {
       label: "Stage",
@@ -313,6 +347,37 @@ function ChangesPanel() {
 }
 
 /**
+ * The Git window's Local Changes tab: a diff preview beside the tree when
+ * bottom-docked, below it when side-docked (off via View Options › Show Diff Preview).
+ */
+export function LocalChangesView() {
+  const preview = useCommit((s) => s.diffPreview);
+  const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
+  return (
+    <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
+      <SplitPanel defaultSize="50%" minSize="20%">
+        <ChangesTree mode="local" />
+      </SplitPanel>
+      {preview && (
+        <>
+          <SplitHandle />
+          <SplitPanel defaultSize="50%" minSize="120px">
+            {path ? (
+              <DiffEditor input={diffInput(workingDiffData(path))} />
+            ) : (
+              <EmptyState>
+                <T>Select a file to preview its changes</T>
+              </EmptyState>
+            )}
+          </SplitPanel>
+        </>
+      )}
+    </SplitGroup>
+  );
+}
+
+/**
  * The change tree with its toolbar. `commit`: the Commit tool window's (inclusion
  * checkboxes); `local`: the Git tool window's Local Changes tab of the modal commit
  * interface (no checkboxes, a Commit… button); `dialog`: the Commit dialog's.
@@ -321,6 +386,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
+  const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
   const checkboxes = mode !== "local";
@@ -393,6 +459,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
         {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
         <IconButton icon="undo" action="vcs.rollback" size="small" />
+        {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
         {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
         <IconButton
           ref={viewRef}
@@ -405,6 +472,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              ...(mode === "local"
+                ? [
+                    { kind: "separator" } as const,
+                    { label: "Show Diff Preview", checked: diffPreview, run: () => setDiffPreview(!diffPreview) },
+                  ]
+                : []),
             ])
           }
         />
@@ -449,6 +522,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeText}
+          getDirectory={(n) => (n.path && n.type !== "group" ? (n.type === "dir" ? n.path : dirname(n.path)) : null)}
           getChildren={(n) => n.children}
           isExpandable={(n) => n.type !== "file"}
           expanded={expanded}
@@ -473,12 +547,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
-              const paths = node.files.map((f) => stripSlash(f.path));
-              showContextMenu(e, listMenu(node.changelist, !!node.active, paths));
+              showContextMenu(e, listMenu(node.changelist, !!node.active, node.files));
               return;
             }
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node]));
+            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos));
           }}
           aria-label="Changes"
           empty={

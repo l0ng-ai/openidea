@@ -7,6 +7,27 @@ afterEach(cleanup);
 const action = { id: "my.action", title: "My Action", category: "Test" };
 
 describe("Mouse Shortcut dialog", () => {
+  it("records and submits Option+Command+left click", () => {
+    const onSubmit = vi.fn();
+    render(
+      <RecordShortcutDialog
+        mouse
+        action={action}
+        actions={[action]}
+        draft={{ preset: "intellij-macos", overrides: {} }}
+        onCancel={() => {}}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByRole("textbox", { name: "Mouse shortcut" }), {
+      button: 0,
+      altKey: true,
+      metaKey: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(onSubmit).toHaveBeenCalledWith("Alt+Meta+Button1", [], false);
+  });
+
   it("records a side-button click with modifiers and submits it", () => {
     const onSubmit = vi.fn();
     render(

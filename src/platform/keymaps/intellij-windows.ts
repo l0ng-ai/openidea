@@ -20,7 +20,7 @@ export const intellijWindows: Record<string, string[]> = {
   "navigate.forward": ["Ctrl+Alt+Right", "Button5"],
   "navigate.gotoLine": ["Ctrl+G"],
   "navigate.declaration": ["Ctrl+B"],
-  "navigate.implementation": ["Ctrl+Alt+B"],
+  "navigate.implementation": ["Ctrl+Alt+B", "Ctrl+Alt+Button1"],
   "navigate.typeDeclaration": ["Ctrl+Shift+B"],
   "navigate.fileStructure": ["Ctrl+F12"],
   "navigate.nextError": ["F2"],
@@ -187,6 +187,8 @@ export const intellijWindows: Record<string, string[]> = {
   "editor.nextSplitter": ["Alt+Tab"],
   "editor.prevSplitter": ["Alt+Shift+Tab"],
   "window.toggleFullScreen": [],
+  "window.nextTab": ["Ctrl+Alt+PageDown"],
+  "window.previousTab": ["Ctrl+Alt+PageUp"],
   "window.next": ["Ctrl+Alt+]"],
   "window.previous": ["Ctrl+Alt+["],
   "file.reloadFromDisk": ["Ctrl+Alt+Y"],
@@ -249,6 +251,7 @@ export const intellijWindows: Record<string, string[]> = {
   "run.stop": ["Ctrl+F2"],
   "workbench.stopBackgroundProcesses": ["Ctrl+Shift+F2"],
   // Rerun in the Run / Debug tool window only (when / keyWhen); Ctrl+F5 stays with the editor elsewhere.
+  "run.updateApplication": ["Ctrl+F10"],
   "run.rerun": ["Ctrl+F5"],
   "coverage.manageReports": ["Ctrl+Alt+F6"],
   "debug.rerun": ["Ctrl+F5"],
@@ -275,7 +278,7 @@ export const intellijWindows: Record<string, string[]> = {
   "debug.setValue": ["F2"],
   "debug.jumpToSource": ["F4"],
   "debug.evaluate": ["Alt+F8"],
-  "debug.quickEvaluate": ["Ctrl+Alt+F8"],
+  "debug.quickEvaluate": ["Ctrl+Alt+F8", "Alt+Button1"],
   "debug.browseConsoleHistory": ["Ctrl+Alt+E"],
 
   // VCS
@@ -352,6 +355,12 @@ export const intellijWindows: Record<string, string[]> = {
   "db.newDataSource": [],
   "db.new": ["Alt+Insert"],
   "services.addService": ["Alt+Insert"],
+  // Pull Requests tool window (Create in its title bar, Refresh per tab) and the review's viewed toggle.
+  "github.createPullRequest": ["Alt+Insert"],
+  "github.refresh": ["Ctrl+F5"],
+  "github.pullRequest.refresh": ["Ctrl+F5"],
+  "github.pullRequest.timeline.refresh": ["Ctrl+F5"],
+  "github.pullRequest.toggleViewed": ["Ctrl+Shift+S"],
   "db.properties": ["Shift+Enter"],
   "db.refresh": ["Ctrl+F5"],
   "db.disconnect": ["Ctrl+F2"],
@@ -385,6 +394,7 @@ export const intellijWindows: Record<string, string[]> = {
   "find.popup.openResult": ["F4"],
   "find.popup.recentSearches": ["Alt+Down"],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
+  "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Ctrl+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],
 };

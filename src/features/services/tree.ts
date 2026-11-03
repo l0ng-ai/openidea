@@ -13,12 +13,14 @@ interface TreeState {
   /** Root nodes per provider id (reported by each provider's `useRoots`). */
   roots: Record<string, ServiceTreeItem[]>;
   selectedKey: string | null;
+  selectedKeys: Set<string>;
   expanded: Set<string>;
 }
 
 export const useServicesTree = create<TreeState>(() => ({
   roots: {},
   selectedKey: null,
+  selectedKeys: new Set(),
   expanded: new Set(["docker:default", "docker:default:group:containers"]),
 }));
 
@@ -54,16 +56,17 @@ export function clearProviderRoots(provider: string) {
 export interface Located {
   item: ServiceTreeItem;
   provider: string;
+  parent: ServiceTreeItem | null;
 }
 
 /** Every node by key, with the provider owning it. */
 export function indexTree(roots: Record<string, readonly ServiceTreeItem[]>): Map<string, Located> {
   const out = new Map<string, Located>();
-  const visit = (provider: string, item: ServiceTreeItem) => {
-    out.set(item.key, { item, provider });
-    item.children?.forEach((c) => visit(provider, c));
+  const visit = (provider: string, item: ServiceTreeItem, parent: ServiceTreeItem | null) => {
+    out.set(item.key, { item, provider, parent });
+    item.children?.forEach((c) => visit(provider, c, item));
   };
-  for (const [provider, items] of Object.entries(roots)) items.forEach((i) => visit(provider, i));
+  for (const [provider, items] of Object.entries(roots)) items.forEach((i) => visit(provider, i, null));
   return out;
 }
 
@@ -92,13 +95,4 @@ export function expandableKeys(items: readonly ServiceTreeItem[]): string[] {
 export function addServiceMenu(providers = serviceProviders()): MenuItem[] {
   const groups = providers.map((p) => p.addMenu?.() ?? []).filter((g) => g.length > 0);
   return groups.flatMap((g, i) => (i === 0 ? g : [{ kind: "separator" } as MenuItem, ...g]));
-}
-
-/** The selected node and its provider. */
-export function selectedService(): (Located & { contribution: ServiceProviderContribution | undefined }) | null {
-  const { roots, selectedKey } = useServicesTree.getState();
-  if (!selectedKey) return null;
-  const found = indexTree(roots).get(selectedKey);
-  if (!found) return null;
-  return { ...found, contribution: serviceProviders().find((p) => p.id === found.provider) };
 }

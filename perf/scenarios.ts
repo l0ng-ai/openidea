@@ -31,6 +31,32 @@ function tsSource(lines: number, tag: string): string {
   return out.join("\n");
 }
 
+/** ~`lines` lines of an Angular template: bindings, interpolations and control-flow blocks. */
+function angularTemplate(lines: number, tag: string): string {
+  const out = [`<!-- ${tag} -->`];
+  for (let i = 0; out.length < lines; i++) {
+    out.push(
+      `<section class="card" [class.active]="selected() === ${i}">`,
+      `  <h2 (click)="select(${i})">{{ title${i}() | titlecase }}</h2>`,
+      `  @if (items${i}().length) {`,
+      `    <ul>`,
+      `      @for (item of items${i}(); track item.id; let last = $last) {`,
+      `        <li [title]="item.label" (keydown.enter)="open(item)">{{ item.name }} &amp; {{ item.count }}</li>`,
+      `      } @empty {`,
+      `        <li>None</li>`,
+      `      }`,
+      `    </ul>`,
+      `  } @else {`,
+      `    <p>Loading</p>`,
+      `  }`,
+      `</section>`,
+      `@let total${i} = items${i}().length + ${i};`,
+      ``,
+    );
+  }
+  return out.join("\n");
+}
+
 const TYPED = 'val total = orders.sumOf { it.amount * (1 + rate) }\nif (total > limit) log("over limit")\n';
 
 /** Typing at a brisk pace (~12 keys/s) in the small Kotlin sample. */
@@ -62,6 +88,25 @@ const typingLarge: Scenario = {
     await h.page.keyboard.press("End");
     await h.page.keyboard.press("Enter");
     return { openMs, ...(await typeAndMeasure(h, "const total = items.reduce((a, b) => a + b.id, 0);\n", 80)) };
+  },
+};
+
+/**
+ * The same typing in the middle of a ~12k-line Angular template (an
+ * `angular.json` above it): its text, attributes and blocks are nested parses.
+ */
+const typingAngular: Scenario = {
+  id: "typingAngular",
+  title: "Type into a 12k-line Angular template",
+  async run(h) {
+    await h.seed(`${ROOT}/web/angular.json`, "{}");
+    const openMs = await h.openFile(`${ROOT}/web/src/app/big.component.html`, angularTemplate(12_000, "big"));
+    const st = await h.editorState();
+    await h.setCursor(Math.floor((st?.length ?? 0) / 2));
+    await h.parserIdle();
+    await h.page.keyboard.press("End");
+    await h.page.keyboard.press("Enter");
+    return { openMs, ...(await typeAndMeasure(h, "@if (open()) { {{ total + 1 }} items }\n", 80)) };
   },
 };
 
@@ -323,6 +368,7 @@ export const SCENARIOS: Scenario[] = [
   startup,
   typing,
   typingLarge,
+  typingAngular,
   keyRepeat,
   scroll,
   tabs,

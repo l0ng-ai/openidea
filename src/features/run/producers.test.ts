@@ -173,6 +173,17 @@ describe("single-file producers (scratches)", () => {
       "js-debug",
     );
     expect(run(scratch("tool", "#!/usr/bin/env python3\n"))).toMatchObject({ command: "/bin/python3", args: ["tool"] });
+    expect(run(scratch("build.bat"), { ...ALL, windows: true })).toMatchObject({
+      command: "cmd.exe",
+      args: ["/c", "build.bat"],
+      cwd: SCRATCH,
+    });
+    expect(run({ path: `${ROOT}/scripts/run.cmd`, root: ROOT, configs: [] }, { ...ALL, windows: true })).toMatchObject({
+      command: "cmd.exe",
+      args: ["/c", "run.cmd"],
+      cwd: "scripts",
+    });
+    expect(produceContext(scratch("build.bat"), ALL)).toBeNull();
     expect(produceContext(scratch("notes", "just text"), ALL)).toBeNull();
     expect(shebang("#!/usr/bin/env node")).toEqual(["node"]);
   });
@@ -374,7 +385,8 @@ describe("single-file producers (scratches)", () => {
     );
     const cpp = produceContext(scratch("a.cpp", "int main() {}"), env({ "g++": null }))!;
     expect(cpp.config!.command).toMatch(/\/bin\/g\+\+ -g -std=c\+\+17 -o/);
-    expect(cpp.debug!.config.debugAdapter).toBe("codelldb");
+    expect(cpp.debug!.config.debugAdapter).toBe("lldb-dap");
+    expect(c.debug!.config.debugAdapter).toBe("lldb-dap");
     expect(produceContext(scratch("lib.c", "int add(int a, int b);"), ALL)).toBeNull();
   });
 
@@ -444,6 +456,20 @@ describe("project producers", () => {
     expect(at(7)).toMatchObject({ name: "m.test.ts", scope: "file" });
   });
 
+  it("does not offer configurations produced by an earlier run as choices", () => {
+    const earlier = cfg({
+      id: "context:target:npm:test:src/m.test.ts:other",
+      name: "other",
+      kind: "npm",
+      command: "npm",
+      args: ["run", "test", "--", "src/m.test.ts"],
+      isTest: true,
+    });
+    const src = "describe('math', () => {\n  it('adds', () => {\n  });\n});\n";
+    const input = { path: `${ROOT}/src/m.test.ts`, root: ROOT, configs: [...configs, earlier], content: src, line: 1 };
+    expect(produceContextChoices(input, ALL).map((c) => c.name)).toEqual(["math > adds"]);
+  });
+
   it("several equally close test configurations: one choice each, the default first", () => {
     const withUnit = [
       ...configs,
@@ -470,6 +496,56 @@ describe("project producers", () => {
       "npm run test:unit",
     ]);
     expect(produceContextChoices({ ...input, configs }, ALL)).toHaveLength(1);
+  });
+
+  it("django: tests.py, TestCase classes and test packages run through manage.py test", () => {
+    const django = [
+      cfg({ id: "django:runserver", kind: "python", command: ".venv/bin/python", args: ["manage.py", "runserver"] }),
+      cfg({
+        id: "django:test",
+        kind: "django-test",
+        command: ".venv/bin/python",
+        args: ["manage.py", "test", "--keepdb"],
+        isTest: true,
+      }),
+    ];
+    const src = [
+      "from django.test import TestCase",
+      "",
+      "class QuestionTests(TestCase):",
+      "    def test_recent(self):",
+      "        pass",
+    ].join("\n");
+    const input = { path: `${ROOT}/polls/tests.py`, root: ROOT, configs: django, content: src };
+    expect(produceContext({ ...input, line: 4 }, ALL)).toMatchObject({
+      name: "QuestionTests.test_recent",
+      config: { kind: "django-test", args: ["manage.py", "test", "polls.tests.QuestionTests.test_recent", "--keepdb"] },
+    });
+    expect(produceContext({ ...input, line: 2 }, ALL)!.config!.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.QuestionTests",
+      "--keepdb",
+    ]);
+    expect(produceContext(input, ALL)).toMatchObject({
+      name: "tests.py",
+      config: { args: ["manage.py", "test", "polls.tests", "--keepdb"] },
+    });
+    expect(produceDirectory({ path: `${ROOT}/polls/tests`, root: ROOT, configs: django })).toMatchObject({
+      name: "Tests in 'tests'",
+      config: { args: ["manage.py", "test", "polls.tests", "--keepdb"] },
+    });
+    expect(produceDirectory({ path: `${ROOT}/polls/migrations`, root: ROOT, configs: django })).toBeNull();
+    // Outside Django projects `tests.py` is a script: no test targets, and the file runs as one.
+    const plain = { ...input, configs: [configs[1]!] };
+    expect(fileTargets(plain, src)).toEqual([]);
+    expect(produceContext(plain, ALL)).toMatchObject({ name: "tests.py", config: { kind: "python", isTest: false } });
+    // pytest detected as well (pytest-django): the user chooses, pytest first.
+    const both = [configs[1]!, ...django];
+    expect(produceContextChoices({ ...input, configs: both, line: 4 }, ALL).map((c) => c.detail)).toEqual([
+      "pytest",
+      "django:test",
+    ]);
   });
 
   it("python: test function > test class > file; __main__ runs the file", () => {
@@ -734,5 +810,46 @@ describe("Go test names (GoLand)", () => {
     )!;
     expect(p.name).toBe("TestAdd in example.com/api");
     expect(p.config!.args).toEqual(["test", ".", "-run", "^TestAdd$"]);
+  });
+});
+
+describe("CMake file context", () => {
+  const configure = cfg({
+    id: "cmake:build:configure",
+    kind: "cmake",
+    command: "cmake",
+    args: ["-S", ".", "-B", "build"],
+  });
+  const native = cfg({
+    id: "cmake:build:Debug:app",
+    name: "app",
+    kind: "native",
+    command: "/p/build/app",
+    debugAdapter: "lldb-dap",
+    params: { cmakeSources: "main.cpp\nmath.cpp" },
+    beforeLaunch: [{ kind: "run", target: "cmake:build:Debug:app:build" }],
+  });
+  const input = { path: "/p/main.cpp", root: "/p", configs: [configure, native], content: "int main() {}", line: 0 };
+  it("runs the owning executable and keeps its build task", () => {
+    expect(produceContext(input, OPTIMISTIC)?.config).toEqual(native);
+  });
+  it("matches absolute source paths from a linked workspace member", () => {
+    const target = { ...native, params: { cmakeSources: "/workspace/native/main.cpp" } };
+    const p = produceContext(
+      { ...input, path: "/workspace/native/main.cpp", root: "/workspace", configs: [configure, target] },
+      OPTIMISTIC,
+    );
+    expect(p?.config).toEqual(target);
+  });
+  it("offers all executable targets sharing the source", () => {
+    const second = { ...native, id: "other", name: "other" };
+    expect(
+      produceContextChoices({ ...input, configs: [configure, native, second] }, OPTIMISTIC).map((p) => p.config?.id),
+    ).toEqual([native.id, second.id]);
+  });
+  it("never compiles a CMake source as a standalone file when the target is unknown", () => {
+    const p = produceContext({ ...input, configs: [configure] }, OPTIMISTIC);
+    expect(p?.config).toBeUndefined();
+    expect(p?.missing?.body).toContain("CMake Configure");
   });
 });

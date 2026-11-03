@@ -8,9 +8,20 @@ import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
+import { nativeDropPoint } from "@/platform/nativeDrop";
 import { editorService, OWNS_FILE_DROP } from "./contributions";
 
 const OWNER_ATTR = Object.keys(OWNS_FILE_DROP)[0]!;
+
+type FileDropHandler = (paths: readonly string[], x: number, y: number) => boolean;
+const fileDropHandlers = new Set<FileDropHandler>();
+
+export function registerFileDropHandler(handler: FileDropHandler): () => void {
+  fileDropHandlers.add(handler);
+  return () => {
+    fileDropHandlers.delete(handler);
+  };
+}
 
 export interface FileDropDeps {
   isDir(path: string): Promise<boolean>;
@@ -46,6 +57,7 @@ export function handleFileDrop(
   y: number,
   deps: FileDropDeps = defaultDeps,
 ): Promise<void> | null {
+  for (const handler of fileDropHandlers) if (paths.length && handler(paths, x, y)) return Promise.resolve();
   const { project, lightEdit } = useProject.getState();
   if (!paths.length || !(project || lightEdit) || isRemoteWindow() || dropOwnedAt(x, y)) return null;
   return openDropped(paths, deps);
@@ -60,8 +72,8 @@ export function installFileDrop(): () => void {
       .onDragDropEvent((event) => {
         const p = event.payload;
         if (p.type !== "drop") return;
-        const ratio = window.devicePixelRatio || 1;
-        void handleFileDrop(p.paths, p.position.x / ratio, p.position.y / ratio);
+        const { x, y } = nativeDropPoint(p.position);
+        void handleFileDrop(p.paths, x, y);
       })
       .then((u) => {
         if (disposed) u();

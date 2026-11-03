@@ -10,7 +10,7 @@ import type { EditorDocContext } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
-import { iconMarkup, showContextMenu, type MenuItem } from "@/ui";
+import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
 import { choiceItems, executeContext, launchProduced, modifyContext, produceResolved } from "./contextRun";
 import { goModulePath, loadGoModules } from "./goModules";
@@ -81,6 +81,7 @@ async function launch(target: RunTarget, path: string, debug: boolean, content: 
 }
 
 export function targetTitle(t: RunTarget): string {
+  if (t.kind === "generate") return tx`Run Go Generate`;
   if (t.kind === "main") return "Run";
   if (t.kind === "suite") return "Run tests";
   return "Run test";
@@ -133,7 +134,7 @@ const fileRootedResults = (path: string) => /\.(py|[cm]?[jt]sx?)$/.test(path);
 
 /** Last test result of a gutter target (IDEA: green / red run icons after a test run). */
 export function gutterTestState(target: RunTarget, path: string): TestState | null {
-  if (target.kind === "main") return null;
+  if (target.kind === "main" || target.kind === "generate") return null;
   return testState({ path: target.path, file: fileRootedResults(path) ? path : undefined });
 }
 
@@ -166,7 +167,7 @@ class RunMarker extends GutterMarker {
     el.title = `${targetTitle(this.target)} '${label(this.target)}'`;
     el.setAttribute("role", "button");
     el.setAttribute("aria-label", el.title);
-    el.innerHTML = iconMarkup(markerIcon(this.target.kind, this.state), 14) ?? "";
+    el.innerHTML = gutterIconMarkup(markerIcon(this.target.kind, this.state)) ?? "";
     return el;
   }
 }

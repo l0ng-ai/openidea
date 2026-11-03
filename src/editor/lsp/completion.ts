@@ -56,6 +56,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
+import { phpConstructDocumentation } from "./phpConstructs";
 
 interface RequestContext {
   doc: number;
@@ -87,6 +88,8 @@ function resolveItem(doc: number, item: CompletionItem): Promise<CompletionItem>
   if (!p) {
     p = lspRequest(() => commands.lspResolveCompletion(doc, item)).then(
       (r) => {
+        if (isEmptyMarkup(r.documentation) && !isEmptyMarkup(item.documentation))
+          r = { ...r, documentation: item.documentation };
         resolvedItems.set(item, r);
         return r;
       },
@@ -201,13 +204,17 @@ export function applyLspCompletion(
   const item = completion.resolved ?? resolvedItems.get(completion.lsp) ?? completion.lsp;
   const state = view.state;
   const delta = to - req.pos;
-  const mapOld = (offset: number) =>
-    Math.max(0, Math.min(state.doc.length, offset < req.pos ? offset : offset + delta));
+  const mapOld = (offset: number, assoc = 1) =>
+    Math.max(
+      0,
+      Math.min(state.doc.length, offset < req.pos || (offset === req.pos && assoc < 0) ? offset : offset + delta),
+    );
 
   let start = from;
   let end = to;
   if (item.replaceRange) {
-    start = Math.min(mapOld(posToOffset(req.text, item.replaceRange.start)), to);
+    // An edit requested just after a trigger must include the prefix typed since then.
+    start = Math.min(mapOld(posToOffset(req.text, item.replaceRange.start), -1), to);
     end = Math.max(mapOld(posToOffset(req.text, item.replaceRange.end)), to);
   }
   if (mode === "replace") {
@@ -361,6 +368,10 @@ async function fallback(ctx: CompletionContext): Promise<CompletionResult | null
 }
 
 export function makeCompletion(item: CompletionItem, req: RequestContext): LspCompletion {
+  if (item.kind === "keyword" && isEmptyMarkup(item.documentation)) {
+    const value = phpConstructDocumentation(req.language, item.label);
+    if (value) item = { ...item, documentation: { kind: "markdown", value } };
+  }
   // The lookup handles commit characters itself (focused lookups only, see `lookupKeys`).
   const { commitCharacters: _server, ...cm } = toCmCompletion(item);
   return Object.assign(cm, {

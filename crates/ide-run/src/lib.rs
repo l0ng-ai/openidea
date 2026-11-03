@@ -2,12 +2,15 @@
 
 mod config;
 mod detect;
+pub mod dotnet;
 pub mod envfile;
+pub mod go;
 pub mod gradle_jvm;
 pub mod java_cmdline;
 pub mod junit;
 mod process;
 pub mod python_path;
+pub mod tomcat;
 mod utf8;
 pub mod which;
 pub mod wrap;
@@ -69,6 +72,10 @@ fn is_true(b: &bool) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunExtras {
+    /// Module supplying a JVM application's classpath; empty means the project root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub module: Option<String>,
     /// Values of the configuration type's own form fields (the command line derives from them).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(optional)]
@@ -136,6 +143,7 @@ pub struct RunExtras {
 impl Default for RunExtras {
     fn default() -> Self {
         Self {
+            module: None,
             params: BTreeMap::new(),
             folder: None,
             local: false,
@@ -189,6 +197,20 @@ pub fn detect(root: &Path) -> Vec<RunConfig> {
     detect::detect(root)
 }
 
+/// Detects configurations excluding the supplied project-relative Maven POM paths.
+pub fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
+    detect::detect_excluding(root, excluded_poms)
+}
+
+/// Detects configurations with explicit CMake profiles, or legacy discovery when absent.
+pub fn detect_with_profiles(
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    profiles: Option<&[ide_core::settings::CMakeProfile]>,
+) -> Vec<RunConfig> {
+    detect::detect_with_profiles(root, excluded_poms, profiles)
+}
+
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
 pub fn load_user_configs(root: &Path) -> IdeResult<Vec<RunConfig>> {
     config::load(root)
@@ -197,7 +219,22 @@ pub fn load_user_configs(root: &Path) -> IdeResult<Vec<RunConfig>> {
 /// Writes `<root>/.openidea/run.toml` (and the workspace-local `run.local.toml` for
 /// configurations not stored as project files), preserving unrelated content.
 pub fn save_user_configs(root: &Path, configs: &[RunConfig]) -> IdeResult<()> {
-    config::save(root, configs)
+    config::save(root, configs, &[])
+}
+
+/// Detected ids explicitly removed in this workspace.
+pub fn load_suppressed_config_ids(root: &Path) -> IdeResult<Vec<String>> {
+    config::load_suppressed(root)
+}
+
+/// Saves user configurations and suppresses explicitly removed detections.
+/// Saving a configuration with a suppressed id restores that id.
+pub fn save_user_configs_with_removals(
+    root: &Path,
+    configs: &[RunConfig],
+    removed_detected_ids: &[String],
+) -> IdeResult<()> {
+    config::save(root, configs, removed_detected_ids)
 }
 
 /// Configuration templates (per-type defaults for new configurations) from `run.toml`.
@@ -214,7 +251,32 @@ pub fn system_env() -> BTreeMap<String, String> {
     ide_core::process::host_vars().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
 }
 
+/// Complete environment for a preparatory tool belonging to this run configuration.
+pub fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
+    process::resolved_env(root, config)
+}
+
 /// Path of the user run configuration file for `root`.
 pub fn user_configs_path(root: &Path) -> PathBuf {
     config::config_path(root)
+}
+
+#[cfg(test)]
+mod linkage_tests {
+    #[test]
+    fn detection_skips_unlinked_maven_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            std::fs::create_dir(tmp.path().join(name)).unwrap();
+            std::fs::write(tmp.path().join(name).join("pom.xml"), "<project/>").unwrap();
+        }
+        let configs = super::detect_excluding(tmp.path(), &["a/pom.xml".into()]);
+        assert!(configs.iter().any(|c| c.kind == "maven"));
+        assert!(
+            configs
+                .iter()
+                .filter(|c| c.kind == "maven")
+                .all(|c| c.cwd.as_ref().is_some_and(|d| d.as_ref() == std::path::Path::new("b")))
+        );
+    }
 }

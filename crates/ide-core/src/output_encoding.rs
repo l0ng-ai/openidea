@@ -18,6 +18,60 @@
 
 use std::collections::BTreeMap;
 
+/// Decodes complete lines or collected output from IDE-managed tools, preferring UTF-8.
+/// Windows launcher/native diagnostics fall back to the system ANSI code page.
+/// Callers must buffer incomplete lines so multibyte characters are never split.
+/// Run consoles and protocol streams have their own encoding contracts.
+pub fn decode_tool_output(bytes: &[u8]) -> String {
+    #[cfg(windows)]
+    // SAFETY: GetACP is an argument-less query with no preconditions.
+    let code_page = unsafe { windows_sys::Win32::Globalization::GetACP() };
+    #[cfg(not(windows))]
+    let code_page = 65001;
+    decode_tool_output_with_code_page(bytes, code_page)
+}
+
+fn decode_tool_output_with_code_page(bytes: &[u8], code_page: u32) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    let encoding = encoding_for_code_page(code_page).unwrap_or(encoding_rs::UTF_8);
+    // Collected output can mix UTF-8 JVM lines with native launcher diagnostics.
+    let mut text = String::new();
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        match std::str::from_utf8(line) {
+            Ok(line) => text.push_str(line),
+            Err(_) => text.push_str(&encoding.decode_without_bom_handling(line).0),
+        }
+    }
+    text
+}
+
+fn encoding_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
+    Some(match cp {
+        65001 => encoding_rs::UTF_8,
+        936 => encoding_rs::GBK,
+        54936 => encoding_rs::GB18030,
+        950 => encoding_rs::BIG5,
+        932 => encoding_rs::SHIFT_JIS,
+        949 => encoding_rs::EUC_KR,
+        866 => encoding_rs::IBM866,
+        874 => encoding_rs::WINDOWS_874,
+        1250 => encoding_rs::WINDOWS_1250,
+        1251 => encoding_rs::WINDOWS_1251,
+        1252 => encoding_rs::WINDOWS_1252,
+        1253 => encoding_rs::WINDOWS_1253,
+        1254 => encoding_rs::WINDOWS_1254,
+        1255 => encoding_rs::WINDOWS_1255,
+        1256 => encoding_rs::WINDOWS_1256,
+        1257 => encoding_rs::WINDOWS_1257,
+        1258 => encoding_rs::WINDOWS_1258,
+        20866 => encoding_rs::KOI8_R,
+        21866 => encoding_rs::KOI8_U,
+        _ => return None,
+    })
+}
+
 const STD_PROPERTIES: &[&str] = &["stdout.encoding", "stderr.encoding", "sun.stdout.encoding", "sun.stderr.encoding"];
 const FILE_ENCODING: &str = "file.encoding";
 const TOOL_OPTIONS: &str = "JAVA_TOOL_OPTIONS";
@@ -161,13 +215,21 @@ fn fix_kind(
 }
 
 /// `vmArgs` of a launch by java-debug, which decodes the JVM's output as `encoding`
-/// (its launch attribute, UTF-8 when unset) and sets `file.encoding` itself.
-pub fn java_debug_vm_args(vm_args: &str, encoding: Option<&str>, windows: bool) -> Option<String> {
+/// (its launch attribute, UTF-8 when unset). java-debug sets `file.encoding` only
+/// when that attribute is nonblank; use the same defaults and user overrides as [`fix`].
+pub fn java_debug_vm_args(
+    vm_args: &str,
+    vars: &BTreeMap<String, String>,
+    inherited: impl Fn(&str) -> Option<String>,
+    encoding: Option<&str>,
+    windows: bool,
+) -> Option<String> {
     let encoding = encoding.map(str::trim).filter(|e| !e.is_empty()).unwrap_or("UTF-8");
-    if (!windows && is_utf8(encoding)) || sets(vm_args, STD_PROPERTIES) {
+    let added = fix_kind(Kind::Java, Some(&[vm_args.to_owned()]), vars, inherited, encoding, windows).java_args;
+    if added.is_empty() {
         return None;
     }
-    let added = options(STD_PROPERTIES, encoding).join(" ");
+    let added = added.join(" ");
     Some(match vm_args.trim() {
         "" => added,
         own => format!("{own} {added}"),
@@ -236,6 +298,29 @@ impl NoticeFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_output_prefers_utf8() {
+        for cp in [936, 1252, 65001, 0] {
+            for text in ["", "plain ASCII\r\n", "中文 café 🦀\n"] {
+                assert_eq!(decode_tool_output_with_code_page(text.as_bytes(), cp), text);
+            }
+        }
+    }
+
+    #[test]
+    fn tool_output_decodes_native_diagnostics_and_mixed_lines() {
+        const GBK: &[u8] = b"\xcf\xb5\xcd\xb3\xd5\xd2\xb2\xbb\xb5\xbd\xd6\xb8\xb6\xa8\xb5\xc4\xc2\xb7\xbe\xb6\xa1\xa3";
+        assert_eq!(decode_tool_output_with_code_page(GBK, 936), "系统找不到指定的路径。");
+        let mut mixed = "JVM: 中文\r\n".as_bytes().to_vec();
+        mixed.extend_from_slice(GBK);
+        mixed.extend_from_slice(b"\r\nlast");
+        assert_eq!(decode_tool_output_with_code_page(&mixed, 936), "JVM: 中文\r\n系统找不到指定的路径。\r\nlast");
+        assert_eq!(decode_tool_output_with_code_page(b"caf\xe9", 1252), "café");
+        for cp in [65001, 0] {
+            assert_eq!(decode_tool_output_with_code_page(b"a\xffb", cp), "a�b");
+        }
+    }
 
     const STD_UTF8: [&str; 4] = [
         "-Dstdout.encoding=UTF-8",
@@ -369,12 +454,53 @@ mod tests {
 
     #[test]
     fn java_debug_launches_write_what_java_debug_decodes() {
-        assert_eq!(java_debug_vm_args("", None, true).as_deref(), Some(TOOL_UTF8));
-        assert_eq!(java_debug_vm_args("-Xmx1g", Some(""), true), Some(format!("-Xmx1g {TOOL_UTF8}")));
-        assert_eq!(java_debug_vm_args("", Some("GBK"), true).unwrap().split(' ').next(), Some("-Dstdout.encoding=GBK"));
-        assert_eq!(java_debug_vm_args("-Dstdout.encoding=GBK", None, true), None);
-        assert_eq!(java_debug_vm_args("-Xmx1g", None, false), None);
-        assert!(java_debug_vm_args("", Some("GBK"), false).is_some());
+        let debug =
+            |args: &str, encoding, windows| java_debug_vm_args(args, &BTreeMap::new(), |_| None, encoding, windows);
+        for encoding in [None, Some(""), Some("  "), Some("UTF-8"), Some("utf8")] {
+            let streams = encoding.filter(|e| !e.trim().is_empty()).unwrap_or("UTF-8");
+            let utf8 = format!("{} -Dfile.encoding=UTF-8", options(STD_PROPERTIES, streams).join(" "));
+            assert_eq!(debug("", encoding, true), Some(utf8.clone()));
+            assert_eq!(debug("-Xmx1g", encoding, true), Some(format!("-Xmx1g {utf8}")));
+            assert_eq!(debug("-Xmx1g", encoding, false), None);
+        }
+        for windows in [true, false] {
+            assert_eq!(debug("", Some("GBK"), windows), Some(options(STD_PROPERTIES, "GBK").join(" ")));
+        }
+    }
+
+    #[test]
+    fn java_debug_preserves_user_options_independently() {
+        let debug = |args: &str| java_debug_vm_args(args, &BTreeMap::new(), |_| None, None, true);
+        assert_eq!(debug("-Dfile.encoding=GBK"), Some(format!("-Dfile.encoding=GBK {TOOL_UTF8}")));
+        for property in STD_PROPERTIES {
+            let args = format!("-D{property}=GBK");
+            assert_eq!(debug(&args), Some(format!("{args} -Dfile.encoding=UTF-8")));
+            assert_eq!(debug(&format!("{args} -Dfile.encoding=GBK")), None);
+        }
+        for key in ["JDK_JAVA_OPTIONS", TOOL_OPTIONS] {
+            for (own, expected) in [
+                ("-Dfile.encoding=GBK", Some(TOOL_UTF8.to_owned())),
+                ("-Dstdout.encoding=GBK", Some("-Dfile.encoding=UTF-8".to_owned())),
+                ("-Dstdout.encoding=GBK -Dfile.encoding=GBK", None),
+            ] {
+                assert_eq!(java_debug_vm_args("", &vars(&[(key, own)]), |_| None, None, true), expected);
+                assert_eq!(
+                    java_debug_vm_args("", &BTreeMap::new(), |k| (k == key).then(|| own.to_owned()), None, true),
+                    expected
+                );
+            }
+            // A launch environment value overrides the inherited one, as in Run.
+            assert_eq!(
+                java_debug_vm_args(
+                    "",
+                    &vars(&[(key, "")]),
+                    |k| (k == key).then(|| "-Dfile.encoding=GBK".into()),
+                    None,
+                    true
+                ),
+                Some(format!("{TOOL_UTF8} -Dfile.encoding=UTF-8"))
+            );
+        }
     }
 
     fn filtered(chunks: &[&str]) -> String {

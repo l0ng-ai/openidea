@@ -1,9 +1,11 @@
 /** Actions of the LSP editor layer (ids from keymaps/intellij-macos.ts). */
+import { isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { activeEditor, editorsFor, registerSaveParticipant, type TextEditorHandle } from "@/editor/api";
 import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
+import { validateLanguages } from "@/platform/languageSettings";
 import { explicitCompletion } from "./completion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
@@ -121,8 +123,15 @@ export function registerFormatOnSave(): () => void {
     id: "lsp.formatOnSave",
     order: 50,
     beforeSave: async (ctx, handle) => {
-      if (!handle || ctx.readOnly || !useProject.getState().settings?.editor?.formatOnSave) return;
-      await formatDocument(handle.view, { explicit: false, selectionOnly: false });
+      const settings = useProject.getState().settings;
+      const prettier = validateLanguages(settings?.languages).prettier;
+      if (
+        !handle ||
+        ctx.readOnly ||
+        (!settings?.editor?.formatOnSave && !(prettier.runOnSave && prettier.languages.includes(ctx.language)))
+      )
+        return;
+      await formatDocument(handle.view, { explicit: false, selectionOnly: false, onSave: true });
     },
   });
 }
@@ -281,8 +290,7 @@ export function registerLspActions(): () => void {
       "Code",
       (v) =>
         runKindAction(v, "", {
-          title:
-            /^(generate|implement|override|add (missing|derive|impl|getter|setter|constructor)|create (constructor|getter|setter))/i,
+          predicate: isGenerateAction,
           none: "Nothing to generate here",
           label: "Generate",
         }),

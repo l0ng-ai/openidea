@@ -2,13 +2,13 @@ import { useRef, useState } from "react";
 import clsx from "clsx";
 import { BarButton, Icon, IconButton, Menu, type MenuItem } from "@/ui";
 import { executeAction } from "@/platform/actions";
-import { useContextKeys } from "@/platform/context";
 import { useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
-import { runExecutors, useRunExecutors } from "@/workbench/contributions";
+import { runExecutors, useRunExecutors, useDebugRunSessions } from "@/workbench/contributions";
 import { configIcon } from "./configs";
 import { useRemoteLabel } from "./remote";
-import { CURRENT_FILE, rerunSession, sessionsOf, startRun, stopSession, useRun } from "./store";
+import { CURRENT_FILE, useRun } from "./store";
+import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { isDebugOnly } from "./types";
 import styles from "./Run.module.css";
 
@@ -25,15 +25,15 @@ export function RunWidget() {
   // Remote JVM Debug and the like: only Debug applies, as in IDEA.
   const debugOnly = !!selected && isDebugOnly(selected);
   const running = sessions.filter((s) => s.status === "running" || s.status === "starting");
-  // A compound is running while any of its configurations is; Stop stops them all.
-  const compoundRunning = selected?.kind === "compound" ? sessionsOf(selected, running) : [];
-  const runningSelected = compoundRunning[0] ?? running.find((s) => s.config.id === selectedId) ?? null;
-  const target = runningSelected ?? running[running.length - 1] ?? null;
-  // Debug sessions belong to the debugger feature; like IDEA the widget offers their Rerun / Stop.
-  const debugging = useContextKeys((c) => !!c.debugSessionActive);
-  const canRerunDebug = useContextKeys((c) => !!c.debugCanRerun);
-  const debugPaused = useContextKeys((c) => !!c.debugSessionPaused);
-  const active = !!runningSelected || debugging;
+  const debug = useDebugRunSessions((s) => s.sessions);
+  const compoundRunning = compoundTargets(selected, running, debug);
+  const target = selectedTarget(selectedId, running, debug);
+  const debugging = !!target?.debug;
+  const active = !!target || compoundRunning.length > 0;
+  const count = running.length + debug.length;
+  const stopName = compoundRunning.length
+    ? selected?.name
+    : (target?.name ?? running[0]?.config.name ?? debug[0]?.name);
   const moreRef = useRef<HTMLButtonElement>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const executors = useRunExecutors((s) => s.executors);
@@ -80,43 +80,9 @@ export function RunWidget() {
         <Icon name="chevron-down" size={14} className={styles.widgetChevron} />
       </BarButton>
       <span className={styles.widgetButtons}>
-        {target ? (
+        {active ? (
           <>
-            <IconButton
-              icon="rerun-filled"
-              size="large"
-              iconSize={16}
-              className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledRun)}
-              title={tx`Rerun '${compoundRunning.length && selected ? selected.name : target.config.name}'`}
-              shortcut={shortcutLabel("run.run")}
-              onClick={() => (compoundRunning.length && selected ? void startRun(selected) : rerunSession(target.id))}
-            />
-            <IconButton
-              icon="stop-filled"
-              size="large"
-              iconSize={16}
-              className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
-              title={
-                compoundRunning.length && selected
-                  ? tx`Stop '${selected.name}'`
-                  : running.length > 1
-                    ? tx`Stop (${running.length} running)`
-                    : tx`Stop '${target.config.name}'`
-              }
-              shortcut={shortcutLabel("run.stop")}
-              onClick={() =>
-                compoundRunning.length
-                  ? compoundRunning.forEach((s) => void stopSession(s.id))
-                  : running.length > 1
-                    ? void executeAction("run.stop")
-                    : void stopSession(target.id)
-              }
-            />
-          </>
-        ) : debugging ? (
-          // IDEA while debugging: Resume (when paused), Rerun Debug and Stop as filled buttons.
-          <>
-            {debugPaused && (
+            {target?.paused && (
               <IconButton
                 icon="resume"
                 size="large"
@@ -124,27 +90,18 @@ export function RunWidget() {
                 className={styles.widgetButton}
                 title="Resume Program"
                 shortcut={shortcutLabel("debug.resume")}
-                onClick={() => void executeAction("debug.resume")}
+                onClick={() => target.resume()}
               />
             )}
             <IconButton
-              icon="restart-debug-filled"
+              icon={debugging ? "restart-debug-filled" : "rerun-filled"}
               size="large"
               iconSize={16}
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledRun)}
-              title="Rerun Debug Session"
-              shortcut={shortcutLabel("debug.rerun")}
-              disabled={!canRerunDebug}
-              onClick={() => void executeAction("debug.rerun")}
-            />
-            <IconButton
-              icon="stop-filled"
-              size="large"
-              iconSize={16}
-              className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
-              title="Stop Debug Session"
-              shortcut={shortcutLabel("debug.stop")}
-              onClick={() => void executeAction("debug.stop")}
+              title={tx`Rerun '${selected?.name ?? target?.name ?? ""}'`}
+              shortcut={shortcutLabel("run.run")}
+              disabled={!!target && !target.rerun}
+              onClick={() => void executeAction("run.run")}
             />
           </>
         ) : (
@@ -178,6 +135,17 @@ export function RunWidget() {
               onClick={() => void executeAction("run.debug")}
             />
           </>
+        )}
+        {count > 0 && (
+          <IconButton
+            icon="stop-filled"
+            size="large"
+            iconSize={16}
+            className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
+            title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
+            shortcut={shortcutLabel("run.stop")}
+            onClick={() => void executeAction("run.stop")}
+          />
         )}
         <IconButton
           ref={moreRef}

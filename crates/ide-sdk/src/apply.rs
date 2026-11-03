@@ -78,7 +78,7 @@ fn jdk_setting(root: &Path, value: &str) -> Option<Result<crate::java::Jdk, Path
 /// The project JDK (`languages.java.jdk`), else the JDK the project pins for mise / asdf.
 pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
     match jdk_setting(root, &s.languages.java.jdk) {
-        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("project JDK {} is not a JDK home", p.display())).ok(),
+        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("project JDK {}", not_a_jdk(p))).ok(),
         None => pinned::pinned_install(root, Tool::Java).and_then(|(dir, _)| pinned::jdk_in_install(&dir)),
     }
 }
@@ -88,11 +88,23 @@ pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
 pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, String> {
     match jdk_setting(root, &s.languages.java.jdtls_jdk) {
         None => Ok(None),
+        Some(Ok(jdk)) if !ide_core::java_runtime::supports_java_bundles(&jdk.home) => {
+            Err(crate::java::server_jdk_incomplete_message(&jdk, jdk.major.max(crate::java::JDTLS_MIN_JAVA)))
+        }
         Some(Ok(jdk)) => Ok(Some(jdk)),
-        Some(Err(p)) => Err(format!(
-            "The language server JDK {} is not a JDK home (Settings › Languages & Frameworks › Java).",
-            p.display()
-        )),
+        Some(Err(p)) => {
+            Err(format!("The language server JDK {} (Settings › Languages & Frameworks › Java).", not_a_jdk(&p)))
+        }
+    }
+}
+
+/// Why the configured JDK path `p` is not used: gone (e.g. a version manager removed
+/// it on upgrade) or not a JDK.
+fn not_a_jdk(p: &Path) -> String {
+    if p.exists() {
+        format!("{} is not a JDK home", p.display())
+    } else {
+        format!("{} does not exist; choose another JDK or clear the setting to detect one", p.display())
     }
 }
 
@@ -114,6 +126,43 @@ pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
         tracing::warn!("Maven home {} has no {name}", p.display());
     }
     found
+}
+
+/// Project launcher policy for sync and tool-window tasks.
+pub fn gradle_command(root: &Path, build_dir: &Path, s: &Settings) -> PathBuf {
+    resolve_gradle_command(root, build_dir, s, true)
+}
+
+fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapper: bool) -> PathBuf {
+    let g = &s.languages.java.gradle;
+    let name = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    if g.distribution == ide_core::settings::GradleDistribution::Local
+        && let Some(home) = setting_path(root, &g.home)
+    {
+        return home.join("bin").join(name);
+    }
+    let wrapper = build_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    if use_wrapper && wrapper.is_file() {
+        return wrapper;
+    }
+    pinned::pinned_install(build_dir, Tool::Gradle)
+        .map(|(home, _)| home.join("bin").join(name))
+        .unwrap_or_else(|| name.into())
+}
+
+/// Gradle JVM overrides Project JDK; model callers supply the module's fallback environment.
+pub fn gradle_env(
+    root: &Path,
+    s: &Settings,
+    mut env: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    if let Some(home) = setting_path(root, &s.languages.java.gradle.jvm) {
+        env.insert("JAVA_HOME".into(), home.to_string_lossy().into_owned());
+    }
+    if let Some(home) = setting_path(root, &s.languages.java.gradle.user_home) {
+        env.insert("GRADLE_USER_HOME".into(), home.to_string_lossy().into_owned());
+    }
+    env
 }
 
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`
@@ -173,6 +222,60 @@ fn merge(base: &mut Value, layer: Value) {
     }
 }
 
+/// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
+pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, excluded_poms: &[PathBuf]) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let mut options =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    if let Some(settings) = &cfg.settings {
+        merge(&mut options, settings.clone());
+    }
+    let mut exclusions = options
+        .pointer("/java/import/exclusions")
+        .or_else(|| options.pointer("/settings/java/import/exclusions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| {
+            vec![
+                json!("**/node_modules/**"),
+                json!("**/.metadata/**"),
+                json!("**/archetype-resources/**"),
+                json!("**/META-INF/maven/**"),
+            ]
+        });
+    for pom in excluded_poms {
+        let directory = root.join(pom).parent().unwrap_or(root).to_path_buf();
+        let directory = directory.to_string_lossy().replace('\\', "/");
+        // Java NIO glob syntax treats these characters specially even in literal paths.
+        let escaped: String =
+            directory.chars().flat_map(|c| if "*?[]{}\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+        exclusions.push(json!(escaped));
+    }
+    if !excluded_poms.is_empty() {
+        merge_init_options(cfg, json!({"settings": {"java": {"import": {"exclusions": exclusions}}}}));
+        if let Some(settings) = &mut cfg.settings {
+            merge(
+                settings,
+                json!({"java": {"import": {"exclusions": exclusions}}, "settings": {"java": {"import": {"exclusions": exclusions}}}}),
+            );
+        }
+        // A fresh workspace cannot retain Maven projects imported before unlinking.
+        if let Some(index) = cfg.args.iter().position(|arg| arg == "-data")
+            && let Some(workspace) = cfg.args.get_mut(index + 1)
+        {
+            let mut hash = 0xcbf29ce484222325u64;
+            for pom in excluded_poms {
+                for byte in pom.to_string_lossy().bytes().chain([0]) {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
+            }
+            *workspace = format!("{workspace}-maven-{hash:016x}");
+        }
+    }
+}
+
 pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
@@ -183,6 +286,32 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     match toml::Value::try_from(current) {
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
+    }
+}
+
+/// Workspace compiler defaults; Eclipse project preferences still take precedence.
+pub(crate) fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path) {
+    let file = data_dir.join("lsp/jdtls/compiler-defaults.prefs");
+    const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
+org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
+    let write = || -> ide_core::IdeResult<()> {
+        std::fs::create_dir_all(file.parent().expect("compiler preferences directory"))?;
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(DEFAULTS) {
+            ide_vfs::write_atomic(&file, DEFAULTS.as_bytes())?;
+        }
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::warn!("jdtls: cannot write compiler defaults: {e}");
+        return;
+    }
+    // jdtls accepts absolute filesystem paths as well as URLs (including paths
+    // containing spaces and Windows backslashes). Explicit server settings win later.
+    let defaults = json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}});
+    let existing = cfg.initialization_options.clone();
+    merge_init_options(cfg, defaults);
+    if let Some(existing) = existing {
+        merge_init_options(cfg, serde_json::to_value(existing).expect("TOML initialization options"));
     }
 }
 
@@ -267,6 +396,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     }
 
     if name == "gopls" {
+        let mut build = crate::go::build_settings(&s.languages.go.build_tags);
+        let module_env = crate::go::module_environment(server_root, &s.languages.go.modules);
+        for (key, value) in module_env {
+            build["env"][key] = json!(value);
+        }
+        let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+        // gopls retains omitted keys on reconfiguration. Explicit empty values
+        // restore defaults when the last project constraint is cleared.
+        let init = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
+        for (key, default) in [("buildFlags", json!([])), ("env", json!({}))] {
+            if settings.get(key).is_none() {
+                settings[key] = init.as_ref().and_then(|v| v.get(key)).cloned().unwrap_or(default);
+            }
+        }
+        merge(&mut settings, build);
+        cfg.settings = Some(settings);
         if let Some(goroot) = goroot(root, s) {
             path_dirs.push(goroot.join("bin"));
             cfg.env.insert("GOROOT".into(), goroot.to_string_lossy().into_owned());
@@ -371,6 +516,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 
@@ -428,8 +574,8 @@ fn configure_vue_typescript(cfg: &mut LanguageServerConfig, root: &Path, server_
 fn configure_angular(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
     // Found as the launcher finds it; missing, it asks to be installed.
     let path = cfg.env.get("PATH").map_or_else(search_path, OsString::from);
-    let Ok(bin) = which::which_in(&cfg.command, Some(path), server_root) else { return };
-    let Some(package) = angular::server_package(&bin) else {
+    let Some(bin) = ide_core::tool_path::find_command(&cfg.command, &path, server_root) else { return };
+    let Some(package) = angular::server_package(&bin, &path, server_root, &cfg.env) else {
         cfg.launch_error = Some(angular::missing_package_message(&bin));
         return;
     };
@@ -478,16 +624,15 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
-    let gradle = pinned::pinned_install(root, Tool::Gradle).map(|(dir, _)| dir.join("bin"));
 
     for c in configs.iter_mut() {
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" => {
+            "python" | "pytest" | "django-test" => {
                 if let Some(py) = &explicit_python {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
-                    if c.kind == "python" && (runner || is_python_command(&c.command)) {
+                    if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };
@@ -534,6 +679,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "go" => {
+                for (key, value) in crate::go::module_environment(root, &s.languages.go.modules) {
+                    c.env.entry(key).or_insert(value);
+                }
                 if let Some(goroot) = &go {
                     let bin = goroot.join("bin");
                     if c.command == "go" && bin.join(exe("go")).is_file() {
@@ -546,14 +694,24 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry("GOPATH".into()).or_insert_with(|| gopath.to_string_lossy().into_owned());
                 }
             }
-            "maven" | "gradle" => {
+            "gradle" => {
+                let build_dir = c.cwd.as_ref().map(|p| root.join(p.as_ref())).unwrap_or_else(|| root.to_path_buf());
+                if matches!(c.command.as_str(), "gradle" | "gradle.bat") {
+                    c.command = resolve_gradle_command(root, &build_dir, s, false).to_string_lossy().into_owned();
+                }
+                let defaults = jdk
+                    .as_ref()
+                    .map(|j| {
+                        std::collections::BTreeMap::from([("JAVA_HOME".into(), j.home.to_string_lossy().into_owned())])
+                    })
+                    .unwrap_or_default();
+                for (key, value) in gradle_env(root, s, defaults) {
+                    c.env.entry(key).or_insert(value);
+                }
+            }
+            "maven" | "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
-                }
-                if c.kind == "gradle"
-                    && let Some(bin) = gradle.as_ref().filter(|b| b.is_dir())
-                {
-                    path_dirs.push(bin.clone());
                 }
                 if c.kind == "maven" && c.detected {
                     if let Some(mvn) = &mvn {
@@ -562,6 +720,17 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     if !c.args.starts_with(&mvn_options) {
                         c.args.splice(0..0, mvn_options.iter().cloned());
                     }
+                } else if c.kind == "maven"
+                    && matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat")
+                    && let Some(mvn) = &mvn
+                {
+                    // A goal configuration saved from the tool window keeps the
+                    // literal `mvn` / `mvn.cmd` the launcher resolved to; without a
+                    // wrapper it cannot start when Maven lives on a version
+                    // manager's shims or a configured home (#328). Detected configs
+                    // take the Maven options too, but the saved ones already baked
+                    // them into `args`.
+                    c.command = mvn.to_string_lossy().into_owned();
                 }
             }
             _ => {}
@@ -578,8 +747,8 @@ fn sh_quote(s: &str) -> String {
 }
 
 /// Command typed into a new terminal to activate the project virtualenv
-/// (PyCharm's Tools › Terminal › "Activate virtualenv"), for the given shell.
-pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Option<String> {
+/// (Tools › Terminal › "Activate virtualenv"). `shell` must be the resolved PTY shell.
+pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<String> {
     if !s.languages.python.activate_virtualenv {
         return None;
     }
@@ -587,12 +756,8 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Op
     if std::env::var_os("VIRTUAL_ENV").is_some_and(|v| Path::new(&v) == venv) {
         return None;
     }
-    let shell = shell
-        .map(str::to_owned)
-        .or_else(|| std::env::var("SHELL").ok())
-        .or_else(|| std::env::var("COMSPEC").ok())
-        .unwrap_or_default();
-    let name = Path::new(&shell).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    let name = Path::new(name).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let script = |file: &str| venv.join(bin_dir()).join(file);
     let line = match name.as_str() {
         "fish" => format!("source {}", sh_quote(&script("activate.fish").to_string_lossy())),
@@ -615,4 +780,92 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Op
         _ => "activate",
     };
     script(target).is_file().then_some(line)
+}
+
+#[cfg(test)]
+mod java_compiler_tests {
+    use super::*;
+
+    fn options(cfg: &LanguageServerConfig) -> Value {
+        serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn compiler_defaults_live_in_the_cache_and_preserve_other_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache with spaces 测试");
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        merge_init_options(&mut cfg, json!({"settings": {"java": {"format": {"tabSize": 4}}}}));
+        configure_java_compiler(&mut cfg, &cache);
+        let options = options(&cfg);
+        let path = PathBuf::from(options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap());
+        assert!(path.starts_with(&cache));
+        let prefs = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(prefs.lines().count(), 2);
+        for problem in ["forbiddenReference", "discouragedReference"] {
+            assert!(prefs.contains(&format!("org.eclipse.jdt.core.compiler.problem.{problem}=warning\n")));
+        }
+        assert_eq!(options.pointer("/settings/java/format/tabSize"), Some(&json!(4)));
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        configure_java_compiler(&mut cfg, &cache);
+        assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), modified);
+        assert_eq!(self::options(&cfg), options);
+    }
+
+    #[test]
+    fn explicit_compiler_settings_keep_priority() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        merge_init_options(&mut cfg, json!({"settings": {"java": {"settings": {"url": "own.prefs"}}}}));
+        configure_java_compiler(&mut cfg, tmp.path());
+        assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("own.prefs")));
+
+        for settings in [
+            json!({"java": {"settings": {"url": "custom.prefs"}}}),
+            json!({"settings": {"java": {"settings": {"url": "custom.prefs"}}}}),
+        ] {
+            cfg.settings = None;
+            let mut s = Settings::default();
+            s.language_servers.insert(
+                "jdtls".into(),
+                LanguageServerSettings { settings: Some(settings.clone()), ..Default::default() },
+            );
+            server_protocol_overrides(&mut cfg, &s);
+            assert_eq!(cfg.settings, Some(settings));
+        }
+        let mut s = Settings::default();
+        s.language_servers.insert(
+            "jdtls".into(),
+            LanguageServerSettings {
+                initialization_options: Some(json!({"settings": {"java": {"settings": {"url": "user.prefs"}}}})),
+                ..Default::default()
+            },
+        );
+        server_protocol_overrides(&mut cfg, &s);
+        assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("user.prefs")));
+    }
+}
+
+#[cfg(test)]
+mod maven_linkage_tests {
+    use super::*;
+
+    #[test]
+    fn import_excludes_unlinked_modules_and_changes_persistent_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/child")).unwrap();
+        std::fs::write(tmp.path().join("a/pom.xml"), "<project><modules><module>child</module></modules></project>")
+            .unwrap();
+        std::fs::write(tmp.path().join("a/child/pom.xml"), "<project/>").unwrap();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+        merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()]);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
+        assert!(exclusions.contains(&json!("**/custom")));
+        assert!(exclusions.contains(&json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));
+        assert!(exclusions.contains(&json!(tmp.path().join("a/child").to_string_lossy().replace('\\', "/"))));
+        assert!(cfg.args[1].starts_with("/cache/jdtls-maven-"));
+    }
 }

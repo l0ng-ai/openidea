@@ -6,6 +6,7 @@ import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
 import { renamedFromPath } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
+import { repositoryPath } from "./repositoryPaths";
 
 export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
@@ -34,8 +35,10 @@ export interface DiffData {
   path: string;
   left: DiffSide;
   right: DiffSide;
-  /** Reveal this 0-based line of the right side. */
+  /** Reveal this 0-based line (of the right side, unless `lineSide` says otherwise). */
   line?: number;
+  /** The side `line` is on. */
+  lineSide?: "left" | "right";
   /** Tab title instead of the default "name (left ↔ right)". */
   title?: string;
   /** Notes shown under lines (unified mode shows the right side's only). */
@@ -47,6 +50,11 @@ export interface DiffData {
   chain?: DiffData[];
   /** Select the first or last difference once shown (moving along the chain). */
   reveal?: "first" | "last";
+  /**
+   * What the diff shows, for diff viewer providers (`registerDiffViewerProvider`), e.g. a
+   * pull request's file: `{ kind: "github.pullRequest", number: 12, path: "src/a.ts" }`. Plain JSON.
+   */
+  context?: { kind: string; [key: string]: unknown };
 }
 
 export const DIFF_KIND = "diff";
@@ -137,7 +145,7 @@ export function workingDiffData(path: string, line?: number): DiffData {
 
 /** A path of the selected repository's log (repository-relative) made absolute. */
 function joinRoot(rel: string, root = currentRepoRoot()): string {
-  return root ? `${root}/${rel}` : rel;
+  return repositoryPath(root, rel);
 }
 
 /** Diff of one file changed by `commit` (first parent ↔ commit). */

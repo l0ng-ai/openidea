@@ -53,6 +53,8 @@ pub struct TerminalInfo {
 }
 
 struct Session {
+    /// The window that opened it: closing that window's project closes its terminals.
+    key: String,
     info: TerminalInfo,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -83,6 +85,7 @@ impl TerminalManager {
     pub fn spawn(
         &self,
         options: TerminalOptions,
+        key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
     ) -> IdeResult<TerminalInfo> {
@@ -121,6 +124,7 @@ impl TerminalManager {
         let info = TerminalInfo { id, title: shell_title(&shell), pid: child.process_id() };
         let exited = Arc::new(AtomicBool::new(false));
         let session = Arc::new(Session {
+            key,
             info: info.clone(),
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
@@ -160,6 +164,15 @@ impl TerminalManager {
             .map_err(|e| IdeError::internal(format!("resize failed: {e}")))
     }
 
+    /// Closes the terminals `key` opened: the project of that window is closing.
+    pub fn kill_key(&self, key: &str) {
+        let ids: Vec<TerminalId> =
+            self.sessions.lock().iter().filter(|(_, s)| s.key == key).map(|(id, _)| *id).collect();
+        for id in ids {
+            let _ = self.kill(id);
+        }
+    }
+
     pub fn kill(&self, id: TerminalId) -> IdeResult<()> {
         let session = self.sessions.lock().remove(&id).ok_or_else(|| not_found(id))?;
         terminate(&session);
@@ -177,6 +190,10 @@ impl TerminalManager {
         }
         let Some(pid) = session.info.pid else { return Ok(false) };
         Ok(foreground_busy(&session, pid))
+    }
+    /// Whether a terminal session is still registered.
+    pub fn contains(&self, id: TerminalId) -> bool {
+        self.sessions.lock().contains_key(&id)
     }
 
     pub fn list(&self) -> Vec<TerminalInfo> {
@@ -497,7 +514,7 @@ pub fn available_shells() -> Vec<String> {
 
 /// Picks the shell binary and its arguments. A default (or explicitly chosen but
 /// argument-less) POSIX shell is started as a login shell, like Terminal.app/IDEA.
-fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
+pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
     let shell = shell.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(default_shell);
     if !args.is_empty() {
         return (shell, args.to_vec());
@@ -632,6 +649,7 @@ mod tests {
             .manager
             .spawn(
                 opts,
+                "test".into(),
                 h.sink.clone(),
                 Box::new(move |s| {
                     let _ = tx.send(s);
@@ -789,7 +807,7 @@ mod tests {
         let h = harness();
         let (other_sink, other_events) = channel_sink();
         let (mine, _rx) = spawn_collect(&h, sh("exit 1"));
-        let theirs = h.manager.spawn(sh("exit 2"), other_sink, Box::new(|_| {})).expect("spawn");
+        let theirs = h.manager.spawn(sh("exit 2"), "other".into(), other_sink, Box::new(|_| {})).expect("spawn");
         match h.events.recv_timeout(Duration::from_secs(10)).expect("exit event") {
             IdeEvent::TerminalExited { terminal, code } => assert_eq!((terminal, code), (mine.id, Some(1))),
             e => panic!("unexpected {e:?}"),
@@ -808,8 +826,12 @@ mod tests {
         assert_eq!((shell.as_str(), args), ("/bin/zsh", vec!["-l".to_owned()]));
         let (_, args) = resolve_shell(Some("/usr/bin/python3"), &[]);
         assert!(args.is_empty());
-        let (_, args) = resolve_shell(None, &[]);
-        assert_eq!(args, vec!["-l".to_owned()]);
+        for configured in [None, Some(""), Some(" \t ")] {
+            let (shell, args) = resolve_shell(configured, &[]);
+            assert_eq!(shell, default_shell_path());
+            assert_eq!(args, vec!["-l".to_owned()]);
+        }
+        assert_eq!(resolve_shell(Some(" /bin/bash "), &["-i".into()]), ("/bin/bash".into(), vec!["-i".into()]));
         assert_eq!(shell_title("C:\\Program Files\\PowerShell\\7\\pwsh.exe"), "pwsh");
         let env = terminal_env(&BTreeMap::from([("TERM".into(), "dumb".into())]));
         assert_eq!(env["TERM"], "dumb");

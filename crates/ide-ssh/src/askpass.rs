@@ -16,6 +16,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 pub const PORT_ENV: &str = "OPENIDEA_ASKPASS_PORT";
+pub const COMMAND_ENV: &str = "OPENIDEA_GIT_COMMAND_ID";
 pub const TOKEN_ENV: &str = "OPENIDEA_ASKPASS_TOKEN";
 /// An unanswered prompt fails after this long.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
@@ -40,8 +41,16 @@ pub fn classify(prompt: &str) -> AskpassKind {
     }
 }
 
+/// Whether the UI's credential dialog should offer to remember the answer:
+/// git's HTTPS password prompts only (the user name travels inside them).
+pub fn remembers(prompt: &str) -> bool {
+    crate::git_creds::prompt_key(prompt).is_some() && classify(prompt) == AskpassKind::Secret
+}
+
 #[derive(Serialize, Deserialize)]
 struct Request {
+    #[serde(default)]
+    command_id: Option<u64>,
     token: String,
     prompt: String,
 }
@@ -51,7 +60,13 @@ struct Response {
     answer: Option<String>,
 }
 
-type Pending = Arc<Mutex<HashMap<u64, mpsc::Sender<Option<String>>>>>;
+type Pending = Arc<Mutex<HashMap<u64, PendingPrompt>>>;
+
+struct PendingPrompt {
+    command_id: Option<u64>,
+    prompt: String,
+    tx: mpsc::Sender<Option<String>>,
+}
 
 /// Serves prompts to `on_prompt`; answers come back through [`AskpassServer::answer`].
 pub struct AskpassServer {
@@ -85,10 +100,17 @@ impl AskpassServer {
         Ok(Self { port, token, exe, pending })
     }
 
-    /// Answers prompt `id` (`None`: cancelled).
-    pub fn answer(&self, id: u64, answer: Option<String>) {
-        if let Some(tx) = self.pending.lock().remove(&id) {
-            let _ = tx.send(answer);
+    /// Answers prompt `id` (`None`: cancelled). `remember` asks the git
+    /// credential store to keep the answer once the command succeeds.
+    pub fn answer(&self, id: u64, answer: Option<String>, remember: bool) {
+        if let Some(p) = self.pending.lock().remove(&id) {
+            if let Some(a) = answer.as_deref()
+                && let Some(command_id) = p.command_id
+                && let Some(store) = crate::git_creds::get()
+            {
+                store.answered(command_id, &p.prompt, a, remember);
+            }
+            let _ = p.tx.send(answer);
         }
     }
 
@@ -123,9 +145,20 @@ fn serve(
     let answer = if req.token != token {
         None
     } else {
-        let (tx, rx) = mpsc::channel();
-        pending.lock().insert(id, tx);
         let prompt = req.prompt.trim().to_owned();
+        // A saved git HTTPS credential answers silently; a rejected one is
+        // forgotten by `git_creds::command_finished`, not here (the command
+        // may still be running and could retry).
+        if let Some(command_id) = req.command_id
+            && let Some(store) = crate::git_creds::get()
+            && let Some(answer) = store.answer_saved(command_id, &prompt)
+        {
+            let mut out = stream;
+            let _ = writeln!(out, "{}", serde_json::to_string(&Response { answer: Some(answer) }).unwrap_or_default());
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        pending.lock().insert(id, PendingPrompt { command_id: req.command_id, prompt: prompt.clone(), tx });
         on_prompt(AskpassPrompt { id, kind: classify(&prompt), prompt });
         let answer = rx.recv_timeout(ANSWER_TIMEOUT).ok().flatten();
         pending.lock().remove(&id);
@@ -156,9 +189,10 @@ pub fn run_helper() -> Option<i32> {
     let port: u16 = std::env::var(PORT_ENV).ok()?.parse().ok()?;
     let token = std::env::var(TOKEN_ENV).unwrap_or_default();
     let prompt = std::env::args().nth(1).unwrap_or_else(|| "Password:".into());
+    let command_id = std::env::var(COMMAND_ENV).ok().and_then(|id| id.parse().ok());
     let ask = || -> std::io::Result<Option<String>> {
         let mut stream = TcpStream::connect(("127.0.0.1", port))?;
-        writeln!(stream, "{}", serde_json::to_string(&Request { token, prompt }).unwrap_or_default())?;
+        writeln!(stream, "{}", serde_json::to_string(&Request { command_id, token, prompt }).unwrap_or_default())?;
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line)?;
         Ok(serde_json::from_str::<Response>(&line).ok().and_then(|r| r.answer))
@@ -196,8 +230,12 @@ mod tests {
         let token = server.token.clone();
         let client = std::thread::spawn(move || {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            writeln!(stream, "{}", serde_json::to_string(&Request { token, prompt: "Password: ".into() }).unwrap())
-                .unwrap();
+            writeln!(
+                stream,
+                "{}",
+                serde_json::to_string(&Request { command_id: Some(42), token, prompt: "Password: ".into() }).unwrap()
+            )
+            .unwrap();
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).unwrap();
             serde_json::from_str::<Response>(&line).unwrap().answer
@@ -209,7 +247,8 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        server.answer(id, Some("hunter2".into()));
+        assert_eq!(server.pending.lock().get(&id).unwrap().command_id, Some(42));
+        server.answer(id, Some("hunter2".into()), false);
         assert_eq!(client.join().unwrap().as_deref(), Some("hunter2"));
         assert!(server.env().iter().any(|(k, v)| k == "SSH_ASKPASS" && v == "helper"));
     }

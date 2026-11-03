@@ -35,3 +35,27 @@ test("opening several files creates tabs and ⌘W closes the active one", async 
   await expect(tabs).toHaveCount(1);
   await expect(tabs.first()).toHaveText(/build\.gradle\.kts/);
 });
+
+test("breadcrumbs follow the caret into the symbol under it", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const status = page.getByRole("navigation", { name: "Breadcrumbs", exact: true });
+  const code = page.getByRole("navigation", { name: "Code breadcrumbs" });
+  await editor.locator(".cm-line", { hasText: "service.find(status" }).click();
+  await expect(status).toContainText("list()");
+  await expect(code).toContainText("OrderController");
+  await expect(code).toContainText("list()");
+  // Typing inside the method keeps its crumb.
+  await page.keyboard.press("Home");
+  await page.keyboard.type("checked ");
+  await expect(code).toContainText("list()");
+  await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+  await expect(code).toContainText("create()");
+  await expect(code).not.toContainText("list()");
+  await expect(status).toContainText("create()");
+  // ⌘↑ opens the navigation bar at the caret's symbol.
+  await page.keyboard.press("Meta+ArrowUp");
+  const bar = page.getByRole("toolbar", { name: "Navigation bar" });
+  await expect(bar).toContainText("create()");
+  await page.keyboard.press("Escape");
+  await expect(bar).toBeHidden();
+});

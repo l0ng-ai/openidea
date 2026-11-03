@@ -8,7 +8,7 @@ import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@
 import type { EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { iconMarkup, showContextMenu, type MenuItem } from "@/ui";
+import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { fileTargets, isComposeFile, isDockerfile, targetTitle, type DockerTarget } from "./compose";
 import { gutterActions } from "./runTypes";
 import styles from "./Services.module.css";
@@ -64,7 +64,7 @@ class Marker extends GutterMarker {
     el.title = targetTitle(this.target, this.path);
     el.setAttribute("role", "button");
     el.setAttribute("aria-label", el.title);
-    el.innerHTML = iconMarkup(this.target.kind === "composeAll" ? "gutter-run-all" : "gutter-run", 14) ?? "";
+    el.innerHTML = gutterIconMarkup(this.target.kind === "composeAll" ? "gutter-run-all" : "gutter-run") ?? "";
     return el;
   }
 }

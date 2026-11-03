@@ -1,5 +1,6 @@
 id = "vue"
 name = "Vue"
+formatter = { tool = "prettier", parser = "vue", range = true }
 extensions = ["vue"]
 block-comment = ["<!--", "-->"]
 indent = { tab-size = 2, insert-spaces = true }
@@ -10,7 +11,7 @@ name = "vue-language-server"
 command = "vue-language-server"
 args = ["--stdio"]
 root-markers = ["package.json", "vite.config.ts", "vite.config.js", "nuxt.config.ts", "tsconfig.json"]
-install-hint = "npm i -g @vue/language-server typescript@\"<7\""
+install-hint = "npm i -g @vue/language-server typescript@6"
 
 # Hybrid mode: TypeScript in `.vue` files comes from tsserver with
 # `@vue/typescript-plugin` (configured by the settings hook); vue-language-server
@@ -21,3 +22,11 @@ command = "vtsls"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
 install-hint = "npm i -g @vtsls/language-server"
+
+[[language-servers]]
+name = "oxlint"
+command = "oxlint"
+args = ["--lsp"]
+root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
+require-root-marker = true
+install-hint = "npm i -D oxlint"

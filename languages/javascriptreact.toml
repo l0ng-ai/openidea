@@ -1,5 +1,6 @@
 id = "javascriptreact"
 name = "JavaScript JSX"
+formatter = { tool = "prettier", parser = "babel", range = true }
 extensions = ["jsx"]
 line-comment = "//"
 block-comment = ["/*", "*/"]
@@ -9,6 +10,7 @@ tree-sitter = "javascript"
 
 [[language-servers]]
 name = "vtsls"
+tsserver-project = true
 command = "vtsls"
 args = ["--stdio"]
 root-markers = ["jsconfig.json", "tsconfig.json", "package.json"]
@@ -16,12 +18,21 @@ install-hint = "npm i -g @vtsls/language-server"
 
 [[language-servers]]
 name = "typescript-language-server"
+tsserver-project = true
 # Alternative: used only when the server above is not installed.
 fallback = true
 command = "typescript-language-server"
 args = ["--stdio"]
 root-markers = ["jsconfig.json", "tsconfig.json", "package.json"]
-install-hint = "npm i -g typescript@\"<7\" typescript-language-server"
+install-hint = "npm i -g typescript@6 typescript-language-server"
+
+[[language-servers]]
+name = "oxlint"
+command = "oxlint"
+args = ["--lsp"]
+root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
+require-root-marker = true
+install-hint = "npm i -D oxlint"
 
 [debugger]
 adapter = "js-debug"

@@ -70,8 +70,10 @@ pub async fn build(
     let on_output = std::sync::Arc::new(on_output);
     let err_out = on_output.clone();
     let err_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        let mut lines = BufReader::new(stderr).split(b'\n');
+        while let Ok(Some(line)) = lines.next_segment().await {
+            let line = ide_core::output_encoding::decode_tool_output(&line);
+            let line = line.trim_end_matches('\r');
             err_out(format!("{line}\n"));
         }
     });

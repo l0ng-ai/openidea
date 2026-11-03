@@ -11,6 +11,7 @@ pub mod ids;
 pub mod ignored;
 pub mod inspection_settings;
 pub mod ipc_path;
+pub mod java_runtime;
 pub mod jsonc;
 pub mod output_encoding;
 pub mod process;
@@ -20,6 +21,7 @@ pub mod remote_settings;
 pub mod settings;
 pub mod task;
 pub mod text;
+pub mod tool_path;
 pub mod version_managers;
 pub mod workflow_settings;
 

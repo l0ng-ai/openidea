@@ -1,0 +1,220 @@
+.root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-editor, var(--bg-app));
+  color: var(--fg);
+  outline: none;
+}
+.toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+  font-size: var(--fs-small);
+}
+.separator {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+.spacer {
+  flex: 1;
+}
+.interpreter {
+  min-width: 120px;
+  max-width: 260px;
+}
+.kernel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  color: var(--fg-muted);
+}
+.error {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 12px;
+  color: var(--danger, var(--fg));
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.errorMessage {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+}
+.errorMessage pre {
+  max-height: 200px;
+  overflow: auto;
+}
+.kernelHelp {
+  display: block;
+  margin-top: 6px;
+}
+.scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overflow-anchor: none;
+}
+.cellList {
+  position: relative;
+  width: 100%;
+}
+.virtualCell {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding: 6px 12px;
+  box-sizing: border-box;
+}
+.cell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small, 4px);
+  min-width: 0;
+  overflow: hidden;
+}
+.selected {
+  border-color: var(--accent);
+}
+.cellToolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+  padding: 2px 6px;
+  background: var(--bg-elev, var(--bg-app));
+  border-bottom: 1px solid var(--border);
+}
+.executionCount {
+  min-width: 32px;
+  text-align: right;
+  font: var(--fs-small) var(--font-mono);
+  color: var(--fg-muted);
+  margin-right: 6px;
+}
+.cellEditor {
+  min-height: 48px;
+}
+.outputs {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  overflow: auto;
+  max-height: 640px;
+  user-select: text;
+}
+.textOutput,
+.errorOutput,
+.rawCell pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: var(--fs-code) / var(--lh-code, 1.5) var(--font-mono);
+  margin: 0;
+  user-select: text;
+}
+.errorOutput {
+  color: var(--danger, var(--fg));
+}
+.outputImage {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 4px 0;
+}
+.outputFrame {
+  display: block;
+  width: 100%;
+  height: 280px;
+  min-height: 80px;
+  max-height: 600px;
+  border: 1px solid var(--border);
+  background: white;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.notice {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  padding: 4px 0;
+  margin: 0;
+  user-select: text;
+}
+.rawCell {
+  padding: 8px 12px;
+  max-height: 480px;
+  overflow: auto;
+}
+.markdown {
+  padding: 8px 14px;
+  min-height: 32px;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  user-select: text;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown img {
+  max-width: 100%;
+  height: auto;
+}
+.markdown pre {
+  overflow: auto;
+  padding: 8px;
+  background: var(--bg-elev);
+  font-family: var(--font-mono);
+}
+.markdown code {
+  font-family: var(--font-mono);
+}
+.markdown a {
+  color: var(--link);
+  cursor: pointer;
+}
+.markdown table {
+  border-collapse: collapse;
+  display: block;
+  overflow: auto;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+.addBar {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px 32px;
+}
+@media (max-width: 600px) {
+  .virtualCell {
+    padding: 5px;
+  }
+  .toolbar {
+    gap: 2px;
+  }
+  .interpreter {
+    max-width: 180px;
+  }
+  .cellToolbar {
+    flex-wrap: wrap;
+  }
+}

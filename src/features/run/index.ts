@@ -11,6 +11,7 @@ import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
+  useDebugRunSessions,
   notifications,
   registerMenuGroup,
   registerOverlay,
@@ -34,13 +35,17 @@ import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
+import { registerGoActions } from "./goActions";
+import { invalidateGoModules } from "./goModules";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { runServiceProvider } from "./services";
+import { recordRun, runServiceProvider } from "./services";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
+import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
@@ -50,7 +55,7 @@ import {
   CURRENT_FILE,
   currentFileSelected,
   prepareLaunch,
-  sessionsOf,
+  rescheduleConsoleFlushes,
   setBeforeLaunchRunner,
   loadConfigs,
   failedTests,
@@ -66,6 +71,7 @@ import {
   stopSession,
   useRun,
 } from "./store";
+import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
 
 function hasProject() {
@@ -84,6 +90,11 @@ async function runSelected() {
     useRun.setState({ chooserOpen: true, chooserMode: "run" });
     return;
   }
+  const target = selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
+  if (target) {
+    target.rerun?.();
+    return;
+  }
   await startRun(config);
 }
 
@@ -96,6 +107,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   }
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain))) return;
+  recordRun(config.id);
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
     await executeAction("debug.startConfig", config);
@@ -172,9 +184,8 @@ function configFromArg(arg: unknown): RunConfig | undefined {
 }
 
 /**
- * IDEA's Stop: in the Run or Debug tool window, the selected tab's process; otherwise the
- * only running process, or a chooser of every running one (run sessions and the
- * `stopProcess` items other features contribute, e.g. debug sessions).
+ * Stop: in the Run or Debug tool window, the selected tab's process; otherwise the selected
+ * configuration's session, or a chooser of every running process.
  */
 function stopAction() {
   const ctx = getContext();
@@ -183,22 +194,24 @@ function stopAction() {
     return;
   }
   const running = runningSessions();
-  const { activeSession } = useRun.getState();
   if (ctx.toolWindowFocus && ctx.activeToolWindow === "run") {
-    const active = running.find((s) => s.id === activeSession);
+    const active = running.find((s) => s.id === useRun.getState().activeSession);
     if (active) {
       void stopSession(active.id);
       return;
     }
   }
-  // A selected compound stops all of its configurations.
+  const debug = useDebugRunSessions.getState().sessions;
   const selected = selectedConfig();
-  if (selected?.kind === "compound") {
-    const own = sessionsOf(selected, running);
-    if (own.length) {
-      own.forEach((s) => void stopSession(s.id));
-      return;
-    }
+  const compound = compoundTargets(selected, running, debug);
+  if (compound.length) {
+    compound.forEach((s) => s.stop());
+    return;
+  }
+  const target = selectedTarget(useRun.getState().selectedId, running, debug);
+  if (target) {
+    target.stop();
+    return;
   }
   const items = [
     ...running.map((s): MenuItem => ({
@@ -236,7 +249,7 @@ function useRunningCount(): number | null {
 }
 
 const CONFIG_FILES =
-  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.mod|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile)$/;
+  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
 
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleReload() {
@@ -260,6 +273,7 @@ export function activate(): () => void {
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
+    registerGoActions(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
@@ -267,7 +281,10 @@ export function activate(): () => void {
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    listenForApplicationDeactivation(),
+    useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
+    registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
     registerMenuGroup({
       id: "run.context",
       menus: ["editor", "projectView", "editorTab"],
@@ -275,6 +292,14 @@ export function activate(): () => void {
       prepare: prepareMenu,
     }),
     registerActions([
+      {
+        id: "run.updateApplication",
+        title: "Update Application",
+        category: "Run",
+        icon: "refresh",
+        when: "run.updatableRunning",
+        run: () => showApplicationUpdate(),
+      },
       {
         id: "run.run",
         title: "Run",
@@ -487,9 +512,12 @@ export function activate(): () => void {
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
-    useRun.subscribe((s) => setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "")),
+    useRun.subscribe((s) => {
+      setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "");
+      setContext("run.updatableRunning", updatableSessions().length > 0);
+    }),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root) return;
+      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       resetRuns();
       useStackTraces.setState({ tabs: [], dialog: null });
       if (s.project) void loadConfigs();
@@ -504,13 +532,30 @@ export function activate(): () => void {
   disposers.push(
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
+      if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
+    }),
+    onIdeEvent("runExited", (e) => {
+      if (useRun.getState().sessions.some((s) => s.runId === e.run && s.config.kind === "cmake")) scheduleReload();
     }),
     // Detected configs carry the selected toolchains (interpreter, JDK, Maven home and options).
     onIdeEvent("settingsChanged", (e) => {
-      if (e.key === "languages" || e.key.startsWith("languages.")) scheduleReload();
+      if (
+        !e.key ||
+        e.key === "languages" ||
+        e.key.startsWith("languages.") ||
+        e.key === "cmake" ||
+        e.key.startsWith("cmake.")
+      )
+        scheduleReload();
     }),
   );
+
+  // Hidden tabs pause rAF: move pending console flushes to timeouts (and back on
+  // return) so output keeps draining while a run continues in the background.
+  const onVisibility = () => rescheduleConsoleFlushes();
+  document.addEventListener("visibilitychange", onVisibility);
+  disposers.push(() => document.removeEventListener("visibilitychange", onVisibility));
 
   return () => {
     clearTimeout(reloadTimer);

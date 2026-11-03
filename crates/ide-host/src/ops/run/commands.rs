@@ -5,6 +5,95 @@ use crate::rpc::Dispatcher;
 use ide_core::{IdeError, IdeResult};
 use ide_run::RunConfig;
 
+pub async fn run_dotnet_resolve(host: &Host, window: &str, config: RunConfig, debug: bool) -> IdeResult<RunConfig> {
+    host.require_trust(window)?;
+    if !matches!(config.kind.as_str(), "dotnet" | "dotnet-test")
+        || config.extras.target.as_ref().is_some_and(|s| !s.is_empty())
+    {
+        return Err(IdeError::invalid(".NET Project requires the local machine"));
+    }
+    let project = host.project(window)?;
+    let mut config = host.blocking(move || ide_run::dotnet::resolve(&project.root, config)).await?;
+    if debug {
+        let root = host.project(window)?.root.clone();
+        let target = ide_run::dotnet::target_path(&root, &config).await?;
+        config.extras.params.insert("targetPath".into(), target);
+    }
+    Ok(config)
+}
+
+fn application_cache(project: &crate::project::Project, id: &str) -> std::path::PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hash);
+    project.cache_dir.join("application-update").join(format!("{:x}", hash.finish()))
+}
+
+pub async fn run_application_build(
+    host: &Host,
+    window: &str,
+    config: RunConfig,
+    module: std::path::PathBuf,
+) -> IdeResult<RunConfig> {
+    host.require_trust(window)?;
+    if config.kind != "spring-boot" || config.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+        return Err(IdeError::invalid("Application resource updates require a local Spring Boot configuration"));
+    }
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
+        let plan = ide_build::application_update::plan(
+            &project.root,
+            &model,
+            &module,
+            &application_cache(&project, &config.id),
+        )?;
+        let mut env = plan.env;
+        env.extend(config.env);
+        Ok(RunConfig {
+            id: format!("application-build:{}", config.id),
+            name: format!("Update {}", config.name),
+            kind: plan.kind.into(),
+            command: plan.command,
+            args: plan.args,
+            cwd: Some(project.root.join(plan.cwd).into()),
+            env,
+            detected: false,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: ide_run::RunExtras {
+                include_system_env: config.extras.include_system_env,
+                env_files: config.extras.env_files,
+                ..Default::default()
+            },
+        })
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+pub async fn run_application_publish(
+    host: &Host,
+    window: &str,
+    config: RunConfig,
+    class_paths: Vec<String>,
+    main_class: String,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        ide_build::application_update::publish(
+            &project.root,
+            &application_cache(&project, &config.id),
+            &class_paths,
+            &main_class,
+        )
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Configuration templates: per-type defaults applied to new configurations.
 pub fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let root = host.project(window)?.root.clone();
@@ -49,8 +138,106 @@ pub async fn run_test_reports(
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResult<ide_run::tomcat::TomcatHome> {
+    host.require_trust(window)?;
+    let root = host.project(window)?.root.clone();
+    tokio::task::spawn_blocking(move || ide_run::tomcat::validate_home(&root.join(home)))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
+        ide_build::web::artifacts(&project.root, &model)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))
+}
+
+pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> IdeResult<Option<RunConfig>> {
+    host.require_trust(window)?;
+    if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
+        return Ok(None);
+    }
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
+        let artifacts = ide_build::web::artifacts(&project.root, &model);
+        let id = config
+            .extras
+            .params
+            .get("artifact")
+            .filter(|s| !s.is_empty())
+            .or_else(|| artifacts.first().map(|a| &a.id))
+            .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
+        let mut plan = ide_build::web::build(
+            &project.root,
+            &model,
+            id,
+            &ide_run::tomcat::base_dir(&project.cache_dir, &config.id),
+        )?;
+        plan.env.extend(config.env.clone());
+        let mut build = RunConfig {
+            id: format!("tomcat-build:{}", config.id),
+            name: format!("Build {}", config.name),
+            kind: if id.starts_with("maven:") { "maven" } else { "gradle" }.into(),
+            command: plan.command.clone(),
+            args: vec![],
+            cwd: Some(std::path::PathBuf::from(&plan.cwd).into()),
+            env: plan.env.clone(),
+            detected: false,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: ide_run::RunExtras {
+                include_system_env: config.extras.include_system_env,
+                env_files: config.extras.env_files,
+                ..Default::default()
+            },
+        };
+        plan.resolve_project(
+            &project.root,
+            &ide_run::resolved_env(&project.root, &build)?,
+            &ide_core::CancellationToken::new(),
+        )?;
+        build.args = plan.args;
+        Ok(Some(build))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mode: String) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
+        return Err(IdeError::invalid("Start this Tomcat configuration before updating it"));
+    }
+    tokio::task::spawn_blocking(move || ide_run::tomcat::update(&project.root, &project.cache_dir, &config, &mode))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
+    d.add("run_dotnet_resolve", |c| async move {
+        run_dotnet_resolve(&c.host, &c.window, c.arg("config")?, c.arg("debug")?).await
+    });
+    d.add("run_application_build", |c| async move {
+        run_application_build(&c.host, &c.window, c.arg("config")?, c.arg("module")?).await
+    });
+    d.add("run_application_publish", |c| async move {
+        run_application_publish(&c.host, &c.window, c.arg("config")?, c.arg("classPaths")?, c.arg("mainClass")?).await
+    });
+    d.add("run_tomcat_home", |c| async move { run_tomcat_home(&c.host, &c.window, c.arg("home")?).await });
+    d.add("run_tomcat_artifacts", |c| async move { run_tomcat_artifacts(&c.host, &c.window).await });
+    d.add("run_tomcat_build", |c| async move { run_tomcat_build(&c.host, &c.window, c.arg("config")?).await });
+    d.add("run_tomcat_update", |c| async move {
+        run_tomcat_update(&c.host, &c.window, c.arg("config")?, c.arg("mode")?).await
+    });
     d.add("run_templates", |c| async move { run_templates(&c.host, &c.window) });
     d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?) });
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });

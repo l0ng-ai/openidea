@@ -116,9 +116,20 @@ fn mise_and_asdf_installs_are_detected_and_pinned_versions_used() {
     assert_eq!(path_of(&configs[0])[0], installs.join("node/20.11.1/bin"));
     assert_eq!(configs[1].command, goroot.join("bin/go").to_string_lossy());
     assert_eq!(configs[1].env["GOROOT"], goroot.to_string_lossy());
-    assert_eq!(path_of(&configs[2])[0], installs.join("gradle/8.7/bin"));
+    assert_eq!(configs[2].command, installs.join("gradle/8.7/bin/gradle").to_string_lossy());
     assert_eq!(configs[2].env["JAVA_HOME"], jdk.home.to_string_lossy());
     assert_eq!(configs[3].command, maven.join("bin/mvn").to_string_lossy());
+
+    assert_eq!(ide_sdk::apply::gradle_command(&project, &project, &s), installs.join("gradle/8.7/bin/gradle"));
+    script(&project.join("gradlew"), "");
+    assert_eq!(ide_sdk::apply::gradle_command(&project, &project, &s), project.join("gradlew"));
+    let mut local = s.clone();
+    local.languages.java.gradle.distribution = ide_core::settings::GradleDistribution::Local;
+    local.languages.java.gradle.home = "local-gradle".into();
+    assert_eq!(ide_sdk::apply::gradle_command(&project, &project, &local), project.join("local-gradle/bin/gradle"));
+    let mut plain = [run("gradle", "gradle")];
+    ide_sdk::apply::apply_to_run_configs(&mut plain, &project, &s);
+    assert_eq!(plain[0].command, installs.join("gradle/8.7/bin/gradle").to_string_lossy());
 
     // The project's Maven wrapper keeps precedence over a pinned Maven.
     script(&project.join("mvnw"), "");

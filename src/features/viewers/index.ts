@@ -5,7 +5,7 @@
  * Editor / Editor and Preview / Preview layouts around the text editor.
  */
 import { registerActions, type Action } from "@/platform/actions";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, type FileProbe } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
 import { basename } from "@/platform/project";
 import { fileIconName, lazyComponent } from "@/ui";
@@ -28,6 +28,7 @@ import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
 import { HexViewer } from "./HexViewer";
 import { registerMarkdownLiveSource } from "./markdown/live";
 import { setMarkdownMode, type MarkdownMode } from "./markdown/modes";
+import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
 
 const titleOf = (input: EditorInput) => basename(input.path ?? input.key);
 const iconOf = (input: EditorInput) => fileIconName(titleOf(input));
@@ -70,13 +71,14 @@ function markdownActions(): Action[] {
     },
   });
   return [
-    mode("markdown.editorOnly", "Editor Only", "editor", "edit"),
-    mode("markdown.editorAndPreview", "Editor and Preview", "split", "split"),
-    mode("markdown.previewOnly", "Preview Only", "preview", "eye"),
+    mode("markdown.editorOnly", "Editor Only", "editor", "editor-only"),
+    mode("markdown.editorAndPreview", "Editor and Preview", "split", "editor-preview"),
+    mode("markdown.previewOnly", "Preview Only", "preview", "preview-only"),
   ];
 }
 
 export function activate(): () => void {
+  const probes = new Map<string, Promise<FileProbe>>();
   const disposers = [
     registerEditorKind({ kind: IMAGE_KIND, component: ImageViewer, title: titleOf, icon: iconOf }),
     registerEditorKind({ kind: BINARY_KIND, component: HexViewer, title: titleOf, icon: iconOf }),
@@ -89,7 +91,12 @@ export function activate(): () => void {
       id: "viewers.hex",
       order: 50,
       resolve: async (path) => {
-        const probe = await call(commands.fsProbe(path));
+        let pending = probes.get(path);
+        if (!pending) {
+          pending = call(commands.fsProbe(path)).finally(() => probes.delete(path));
+          probes.set(path, pending);
+        }
+        const probe = await pending;
         return wantsHexView(probe) ? binaryInput(path, probe) : null;
       },
     }),
@@ -97,6 +104,7 @@ export function activate(): () => void {
       id: "viewers.markdown",
       matches: isMarkdownPath,
       component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
+      tabActions: MarkdownLayoutActions,
     }),
     registerMarkdownLiveSource(),
     registerActions([...imageActions(), ...markdownActions()]),

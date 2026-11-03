@@ -1,0 +1,26 @@
+[advisories]
+version = 2
+unmaintained = "workspace"
+yanked = "warn"
+ignore = [
+    # SQLx MySQL uses RSA public-key encryption; russh/ssh-key use signatures.
+    # No RSA private-key decryption is exposed to attacker-controlled ciphertext.
+    { id = "RUSTSEC-2023-0071", reason = "RSA is used for MySQL password encryption and SSH signatures, not RSA decryption" },
+]
+
+[licenses]
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause",
+    "BSD-3-Clause", "ISC", "Zlib", "0BSD", "CC0-1.0", "Unlicense",
+    # File-level copyleft, used unmodified as dependencies.
+    "MPL-2.0",
+    "Unicode-3.0", "Unicode-DFS-2016", "CDLA-Permissive-2.0", "OpenSSL",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

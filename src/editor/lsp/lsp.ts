@@ -3,7 +3,8 @@ import { Facet } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { whenAllSynced, type EditorDocContext } from "@/editor/api";
 import { IpcError, call, isCancelled, isTauri, unavailableText } from "@/platform/ipc";
-import type { IdeError } from "@/bindings";
+import { tx } from "@/platform/i18n";
+import type { IdeError, ReferencesIncomplete } from "@/bindings";
 import { showHint } from "./hint";
 
 /** The backend document an editor shows (provided by this module's contribution). */
@@ -33,6 +34,22 @@ export async function lspRequest<T>(run: () => Promise<Result<T>>, wanted?: () =
   } catch (e) {
     if (e instanceof IpcError) throw e;
     throw new IpcError({ kind: "internal", message: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** Why a project-wide search may have missed usages of `word`, for a note beside its results. */
+export function incompleteNote(reason: ReferencesIncomplete, word: string | null): string {
+  switch (reason) {
+    case "indexing":
+      return tx("May be incomplete: the language server is still indexing");
+    case "tooManyFiles":
+      return word
+        ? tx`May be incomplete: too many files mention '${word}' to search them all`
+        : tx("May be incomplete: too many files mention the name to search them all");
+    case "filesSkipped":
+      return word
+        ? tx`May be incomplete: some files that mention '${word}' are too large or unreadable`
+        : tx("May be incomplete: some files that mention the name are too large or unreadable");
   }
 }
 

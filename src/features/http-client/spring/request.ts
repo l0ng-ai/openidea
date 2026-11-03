@@ -6,8 +6,6 @@
 import type { Endpoint } from "./endpoints";
 import { allClasses, parseSource, type ClassDecl, type SourceFile } from "./source";
 
-export const DEFAULT_HOST = "http://localhost:8080";
-
 /** Flat `key → value` of a `.properties` file (`=`, `:` or space separated; `#` / `!` comments). */
 export function parseProperties(text: string): Map<string, string> {
   const out = new Map<string, string>();

@@ -8,6 +8,7 @@ import { EditorView, highlightSpecialChars, lineNumbers } from "@codemirror/view
 import { syntaxHighlighting } from "@codemirror/language";
 import { editorsFor } from "@/editor/api";
 import type { EditorSettings } from "@/platform/ipc";
+import type { DocBackend } from "../backend";
 import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
 import { findLanguageDescription, loadSupport, loadedSupport, uiModeForPath } from "./languages";
@@ -15,9 +16,15 @@ import { fontExtension } from "./setup";
 import { tx } from "@/platform/i18n";
 import { selectableText } from "@/ui";
 
-export async function previewExtensions(path: string, settings: EditorSettings | undefined): Promise<Extension> {
+export async function previewExtensions(
+  path: string,
+  settings: EditorSettings | undefined,
+  backend?: DocBackend,
+): Promise<Extension> {
   const open = editorsFor(path)[0]?.ctx;
-  const desc = findLanguageDescription(open ? open.uiMode : (uiModeForPath(path) ?? null), path);
+  // A closed file: its own mode (an Angular project's templates) like an editor would show it.
+  const own = open ? null : await backend?.uiModeOf?.(path).catch(() => null);
+  const desc = findLanguageDescription(open ? open.uiMode : (own ?? uiModeForPath(path) ?? null), path);
   const support = desc ? (loadedSupport(desc) ?? (await loadSupport(desc))) : null;
   return [
     fontExtension(settings),

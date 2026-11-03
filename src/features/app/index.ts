@@ -17,6 +17,8 @@ import { NewProjectOverlay } from "./NewProject";
 import { projectActions, registerPowerSaveBanner } from "./projectActions";
 import { installWindowTitle } from "./title";
 import { installLaunchHandling, installLightEditAutoClose, windowActions } from "./windows";
+import { WorkspaceDialogHost } from "./WorkspaceDialog";
+import { installWindowGroups } from "@/platform/windowGroups";
 
 /** The UI locale of a secondary (Settings) window. */
 export const activateLocale = installLocaleSync;
@@ -43,6 +45,8 @@ export function activate(): () => void {
     installWindowTitle(),
     installCloseGuard(),
     installLaunchHandling(),
+    installWindowGroups(),
+    registerOverlay({ id: "app.workspace", component: WorkspaceDialogHost }),
     installLightEditAutoClose(),
   ];
   let disposed = false;

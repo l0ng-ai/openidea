@@ -3,6 +3,9 @@
 //!
 //! Detection never fails: unreadable or malformed files simply contribute nothing.
 
+pub(crate) mod cmake;
+mod dotnet;
+
 use crate::RunConfig;
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, HashSet};
@@ -10,14 +13,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn detect(root: &Path) -> Vec<RunConfig> {
+    detect_excluding(root, &[])
+}
+
+pub(crate) fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
+    detect_with_profiles(root, excluded_poms, None)
+}
+
+pub(crate) fn detect_with_profiles(
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    profiles: Option<&[ide_core::settings::CMakeProfile]>,
+) -> Vec<RunConfig> {
     let mut out = Vec::new();
     detect_node(root, &mut out);
     detect_deno(root, &mut out);
     detect_cargo(root, &mut out);
     detect_gradle(root, &mut out);
-    detect_maven(root, &mut out);
+    detect_maven(root, excluded_poms, &mut out);
     detect_go(root, &mut out);
     detect_python(root, &mut out);
+    cmake::detect(root, profiles, &mut out);
+    dotnet::detect(root, &mut out);
     detect_make(root, &mut out);
     detect_just(root, &mut out);
     detect_godot(root, &mut out);
@@ -489,9 +506,13 @@ fn collect_texts_from_subdirs(root: &Path, names: &[&str]) -> String {
     text
 }
 
-fn detect_maven(root: &Path, out: &mut Vec<RunConfig>) {
+fn detect_maven(root: &Path, excluded_poms: &[PathBuf], out: &mut Vec<RunConfig>) {
     for dir in build_dirs(root, &["pom.xml"]) {
-        detect_maven_build(root, &dir, out);
+        let pom = dir.join("pom.xml");
+        let relative = pom.strip_prefix(root).unwrap_or(&pom);
+        if !excluded_poms.iter().any(|excluded| excluded == relative) {
+            detect_maven_build(root, &dir, out);
+        }
     }
 }
 
@@ -540,11 +561,11 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
                 Some(m) => format!("application:{m}:{class}"),
                 None => format!("application:{class}"),
             };
-            out.push(
-                config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class])
-                    .in_dir(module_rel.as_ref().map(PathBuf::from))
-                    .debug("java-debug"),
-            );
+            let mut app = config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class])
+                .in_dir(module_rel.as_ref().map(PathBuf::from))
+                .debug("java-debug");
+            app.extras.module = Some(module_rel.clone().unwrap_or_default());
+            out.push(app);
         }
     }
 }
@@ -672,6 +693,19 @@ fn is_go_main_package(dir: &Path) -> bool {
 }
 
 fn detect_go(root: &Path, out: &mut Vec<RunConfig>) {
+    if let Some(work) = read(&root.join("go.work")) {
+        let mut seen = HashSet::new();
+        for member in crate::go::work_modules(&work) {
+            let dir = root.join(member);
+            let dir = dunce::canonicalize(&dir).unwrap_or(dir);
+            if dir.join("go.mod").is_file() && seen.insert(dir.clone()) {
+                let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                let rel = dir.strip_prefix(&canonical_root).unwrap_or(&dir).to_path_buf();
+                detect_go_module(&dir, (!rel.as_os_str().is_empty()).then_some(rel), out);
+            }
+        }
+        return;
+    }
     if root.join("go.mod").is_file() {
         detect_go_module(root, None, out);
         return;
@@ -855,6 +889,19 @@ fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
     }
     if uses_pytest(root) || env.has_tool(root, "pytest") {
         out.push(py_config("pytest".into(), "pytest".into(), "pytest", env.tool(root, "pytest"), &[]).test());
+    }
+    // After pytest: a project set up for pytest (pytest-django) keeps it as the default test runner.
+    if root.join("manage.py").is_file() {
+        out.push(
+            py_config(
+                "django:test".into(),
+                "manage.py test".into(),
+                "django-test",
+                env.python(),
+                &["manage.py", "test"],
+            )
+            .test(),
+        );
     }
 }
 

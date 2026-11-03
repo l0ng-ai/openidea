@@ -17,6 +17,17 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Window};
 
+/// Browse before connecting, using the desktop's SSH configuration even in a remote window.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_bootstrap_list(
+    state: State<'_, AppState>,
+    ssh: String,
+    path: String,
+) -> IdeResult<Vec<ide_ssh::RemoteEntry>> {
+    state.remote.list(&ide_ssh::FsConnection::Sftp { ssh }, &path).await
+}
+
 /// Where the server is installed on the remote host (per version).
 fn install_dir(version: &str) -> String {
     format!("~/.openidea/server/{version}")
@@ -41,6 +52,28 @@ type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
 
 #[derive(Default)]
 pub struct Connections(Mutex<HashMap<String, Arc<Connection>>>);
+
+impl Connection {
+    pub async fn authorize_command(&self, window: &str, command: &str) -> IdeResult<()> {
+        if ide_host::trust::restricted_command_allowed(command) {
+            return Ok(());
+        }
+        let project: Option<ide_host::ops::project::ProjectInfo> = self
+            .peer
+            .request(
+                "invoke",
+                Invoke { window: window.to_owned(), cmd: "project_current".into(), args: serde_json::json!({}) },
+                None,
+            )
+            .await
+            .map_err(ide_host::rpc::error_from_reply)?;
+        if project.is_some_and(|p| p.trusted) {
+            Ok(())
+        } else {
+            Err(IdeError::unavailable("Project is in Restricted Mode"))
+        }
+    }
+}
 
 impl Connections {
     pub fn get(&self, window: &str) -> Option<Arc<Connection>> {
@@ -149,7 +182,7 @@ fn local_server_binary(state: &AppState, os: &str, arch: &str) -> Option<std::pa
     if let Some(p) = std::env::var_os("OPENIDEA_SERVER_BINARY").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
-    let bundled = state.data_dir.join("server").join(format!("{os}-{arch}")).join("openidea-server");
+    let bundled = state.local_data_dir.join("server").join(format!("{os}-{arch}")).join("openidea-server");
     if bundled.is_file() {
         return Some(bundled);
     }
@@ -172,7 +205,7 @@ async fn download_server(
     arch: &str,
     progress: Arc<Progress>,
 ) -> IdeResult<std::path::PathBuf> {
-    let (data, version, os, arch) = (state.data_dir.clone(), version.to_owned(), os.to_owned(), arch.to_owned());
+    let (data, version, os, arch) = (state.local_data_dir.clone(), version.to_owned(), os.to_owned(), arch.to_owned());
     tokio::task::spawn_blocking(move || {
         ide_tools::server::fetch(&data, &version, &os, &arch, &ide_core::CancellationToken::new(), &|e| match e {
             ide_tools::InstallEvent::Line { text } => tracing::info!("openidea-server download: {text}"),
@@ -226,7 +259,12 @@ async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: A
                          `cargo build --release -p ide-host --bin openidea-server` for that platform and put it at {} \
                          (or set OPENIDEA_SERVER_BINARY)",
                         e.message,
-                        state.data_dir.join("server").join(format!("{os}-{arch}")).join("openidea-server").display()
+                        state
+                            .local_data_dir
+                            .join("server")
+                            .join(format!("{os}-{arch}"))
+                            .join("openidea-server")
+                            .display()
                     ))
                 });
             }
@@ -433,6 +471,31 @@ pub async fn remote_invoke(
     let call = Invoke { window: label, cmd, args };
     let result: Value = c.peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
     Ok(result.to_string())
+}
+
+/// A client OS file belongs to this machine even when its destination is remote.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_import_local(
+    window: Window,
+    state: State<'_, AppState>,
+    from: std::path::PathBuf,
+    to: String,
+    request: ide_core::RequestId,
+) -> IdeResult<Vec<String>> {
+    let label = AppState::owner_window(window.label());
+    let c = state.remote_dev.get(label).ok_or_else(|| IdeError::unavailable("Remote project is disconnected"))?;
+    c.authorize_command(label, "fs_copy").await?;
+    let cancel = state.host.begin_request(request);
+    let result = async {
+        let fs = ide_ssh::RemoteFs::new(c._session.sftp().await?);
+        let result = ide_remote::import::import_local(&fs, &from, &to, &cancel).await;
+        fs.close().await;
+        result
+    }
+    .await;
+    state.host.end_request(request);
+    result
 }
 
 #[cfg(test)]

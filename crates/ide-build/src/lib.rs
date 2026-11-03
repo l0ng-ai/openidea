@@ -5,12 +5,15 @@
 //! and merges what the last sync ([`sync_maven`] / [`sync_gradle`], which run
 //! Maven / Gradle in the background) cached for the project.
 
+pub mod application_update;
 pub mod compile;
 pub mod gradle;
+pub mod kotlin_bridge;
 pub mod maven;
 pub mod pom_edit;
 mod process;
 mod sync;
+pub mod web;
 mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};
@@ -39,8 +42,19 @@ pub struct BuildModel {
 /// Static model of the builds under `root`, merged with the sync results cached in `cache_dir`.
 /// Parent POMs are looked up in `maven_repo` (the configured local repository), else the default one.
 pub fn load(root: &Path, cache_dir: &Path, maven_repo: Option<PathBuf>) -> BuildModel {
+    load_linked(root, cache_dir, maven_repo, &ide_core::settings::MavenSettings::default())
+}
+
+/// Loads only linked Maven reactors, retaining an empty model so projects can be re-added.
+pub fn load_linked(
+    root: &Path,
+    cache_dir: &Path,
+    maven_repo: Option<PathBuf>,
+    settings: &ide_core::settings::MavenSettings,
+) -> BuildModel {
     let maven = maven::is_maven_project(root).then(|| {
         let mut m = maven::load_with_repo(root, maven_repo.or_else(maven::default_local_repo));
+        maven::UnlinkedProjects::from_model(&m, settings).filter(&mut m);
         sync::apply_maven_cache(root, cache_dir, &mut m);
         m
     });

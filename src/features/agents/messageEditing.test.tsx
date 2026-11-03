@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AgentEntry, AgentTask } from "@/bindings";
@@ -64,7 +64,70 @@ async function edit() {
   return { user, box, send: screen.getAllByRole("button", { name: "Send" })[0]! };
 }
 
+describe("a sent message with images", () => {
+  afterEach(() => {
+    entries[0] = { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false };
+  });
+
+  it("shows the images and lists only the files as chips", async () => {
+    entries[0] = {
+      type: "user",
+      text: "Look",
+      attachments: ["a.ts", "shot.png"],
+      images: [{ mimeType: "image/png", data: "AAA", name: "shot.png" }],
+      sentMs: 1,
+      doneMs: 2,
+      steered: false,
+    };
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const img = await screen.findByRole("img", { name: "shot.png" });
+    expect(img).toHaveAttribute("src", "data:image/png;base64,AAA");
+    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.queryByText("shot.png")).not.toBeInTheDocument();
+    entries[0] = { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false };
+  });
+
+  it("opens an image in a dialog and keeps the images when editing, minus the removed ones", async () => {
+    entries[0] = {
+      type: "user",
+      text: "Look",
+      attachments: ["a.png", "b.png"],
+      images: [
+        { mimeType: "image/png", data: "AAA", name: "a.png" },
+        { mimeType: "image/png", data: "BBB", name: "b.png" },
+      ],
+      sentMs: 1,
+      doneMs: 2,
+      steered: false,
+    };
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "a.png" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: "a.png" })).toHaveLength(2);
+    await user.click(screen.getAllByRole("button", { name: "Close" })[0]!);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getAllByRole("button", { name: "Remove Image" })).toHaveLength(2);
+    await user.click(screen.getAllByRole("button", { name: "Remove Image" })[0]!);
+    expect(screen.getAllByRole("button", { name: "Remove Image" })).toHaveLength(1);
+    expect(screen.queryByRole("img", { name: "a.png" })).not.toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "Send" })[0]!);
+    await waitFor(() => expect(ipc.prompt).toHaveBeenCalledTimes(1));
+    expect(ipc.prompt.mock.calls[0]![1].images).toEqual([{ mimeType: "image/png", data: "BBB", name: "b.png" }]);
+    entries[0] = { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false };
+  });
+});
+
 describe("editing a sent agent message", () => {
+  it("names the icon-only edit-and-resend action and disables empty edits", async () => {
+    const { box, send } = await edit();
+    expect(send.textContent).toBe("");
+    expect(send).toHaveAttribute("data-tooltip", "Send");
+    expect(send).toBeEnabled();
+    fireEvent.change(box, { target: { value: "" } });
+    expect(send).toBeDisabled();
+  });
+
   it("keeps Enter, Shift+Enter and IME confirmation for editing", async () => {
     const { box } = await edit();
     fireEvent.keyDown(box, { key: "Enter" });
@@ -102,6 +165,9 @@ describe("editing a sent agent message", () => {
     expect(ipc.rollback).toHaveBeenCalledWith(task.id, 0);
     expect(ipc.prompt).not.toHaveBeenCalled();
     expect(send).toBeDisabled();
+    expect(send).toHaveAccessibleName("Send");
+    expect(send.textContent).toBe("");
+    expect(send.querySelector('[role="status"]')).toBeInTheDocument();
     fireEvent.keyDown(box, { key: "Enter", metaKey: true });
     expect(ipc.rollback).toHaveBeenCalledTimes(1);
     await act(async () => finish({ status: "ok", data: null }));
@@ -168,4 +234,36 @@ describe("editing a sent agent message", () => {
       expect(screen.getAllByRole("textbox", { name: "Message" })[0]).toHaveValue("Original message");
     },
   );
+});
+
+describe("session composer submission", () => {
+  it.each(["click", "Enter"])("keeps an accessible icon-only Send action with %s submission", async (method) => {
+    let finish!: (value: unknown) => void;
+    ipc.prompt.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send.textContent).toBe("");
+    expect(send).toHaveAttribute("data-tooltip", "Send");
+    expect(send).toBeDisabled();
+    const box = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(box, { target: { value: "Follow up" } });
+    expect(send).toBeEnabled();
+    if (method === "click") fireEvent.click(send);
+    else fireEvent.keyDown(box, { key: "Enter" });
+    expect(ipc.prompt).toHaveBeenCalledExactlyOnceWith(task.id, { text: "Follow up", files: [], images: [] }, false);
+    expect(send).toBeDisabled();
+    await act(async () => finish({ status: "ok", data: null }));
+    expect(box).toHaveValue("");
+  });
+
+  it("keeps Queue named and leaves Stop unchanged while the agent works", async () => {
+    useAgents.setState({ tasks: new Map([[task.id, { ...task, status: "running" }]]) });
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const queue = screen.getByRole("button", { name: "Queue" });
+    expect(queue.textContent).toBe("");
+    expect(queue).toHaveAttribute("data-tooltip", "Queue");
+    expect(queue).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "Stop" }).some((button) => button.textContent === "Stop")).toBe(true);
+    await screen.findByText("Original message");
+  });
 });

@@ -2,24 +2,7 @@
 //! `PATHEXT` (`kotlinc` → `kotlinc.bat`, `npx` → `npx.cmd`), which
 //! `std::process::Command` does not do (it only appends `.exe`).
 
-use std::ffi::OsStr;
-use std::path::PathBuf;
-
-pub use ide_core::process::executable_names;
-
-/// First `search` directory holding `name` (see [`executable_names`]).
-pub fn find_executable_in(name: &str, search: &OsStr, windows: bool, pathext: Option<&str>) -> Option<PathBuf> {
-    let names = executable_names(name, windows, pathext);
-    std::env::split_paths(search)
-        .filter(|d| !d.as_os_str().is_empty())
-        .find_map(|dir| names.iter().map(|n| dir.join(n)).find(|p| p.is_file()))
-}
-
-/// [`find_executable_in`] for this platform (`PATHEXT` from the environment).
-pub fn find_executable(name: &str, search: &OsStr) -> Option<PathBuf> {
-    let pathext = std::env::var("PATHEXT").ok();
-    find_executable_in(name, search, cfg!(windows), pathext.as_deref())
-}
+pub use ide_core::process::{executable_names, find_executable, find_executable_in};
 
 #[cfg(test)]
 mod tests {

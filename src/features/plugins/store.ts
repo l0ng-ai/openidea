@@ -124,25 +124,25 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** Asks for a plugin folder (containing plugin.toml) and installs it. Returns the new plugin id. */
+/** Asks for a plugin package (a `.zip` or a `plugin.toml`) and installs it. Returns the new plugin id. */
 export async function installFromDisk(path?: string): Promise<string | null> {
   const backend = pluginsBackend();
-  let dir: string | null = path ?? null;
+  let source: string | null = path ?? null;
   try {
-    dir ??= await backend.pickFolder();
+    source ??= await backend.pickPackage();
   } catch (e) {
     notifications().notify({
       group: "plugins",
       level: "error",
-      title: "Could not open the folder picker",
+      title: "Could not open the file picker",
       body: errorText(e),
     });
     return null;
   }
-  if (!dir) return null;
+  if (!source) return null;
   usePlugins.setState({ installing: true });
   try {
-    const info = await backend.installDir(dir);
+    const info = await backend.installDir(source);
     notifications().notify({
       group: "plugins",
       level: info.status === "failed" ? "warning" : "info",
@@ -183,6 +183,3 @@ export async function runPluginCommand(pluginId: string, commandId: string, arg:
     return null;
   }
 }
-
-/** Plugins whose contributions are live (enabled and running, or contribution-only). */
-export const isLive = (p: PluginInfo) => p.status === "active" || p.status === "static";

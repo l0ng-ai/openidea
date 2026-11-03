@@ -13,6 +13,7 @@
     "src-tauri",
     "crates",
     "src/bindings.ts",
+    "src/editor/core/cm/angular/parser*.ts",
     "fixtures",
     "plugins",
     "test-results",

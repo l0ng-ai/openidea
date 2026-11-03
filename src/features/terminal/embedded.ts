@@ -4,10 +4,14 @@
  * and size go to the owner instead of a terminal PTY (a Run console emulating
  * a terminal feeds its process).
  */
+import { installTerminalDrop } from "./drop";
+import { installTerminalPaste } from "./paste";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/contributions";
+import { isImeKey } from "@/platform/ime";
+import { terminalKeyAction } from "./keys";
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
@@ -47,6 +51,12 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     convertEol: false,
     theme: readTerminalTheme(),
   });
+  term.attachCustomKeyEventHandler((e) => {
+    if (isImeKey(e) || terminalKeyAction(e, term.hasSelection()).kind !== "copy") return true;
+    if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+    e.preventDefault();
+    return false;
+  });
   const fit = new FitAddon();
   term.loadAddon(fit);
   live.add(term);
@@ -75,6 +85,8 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       },
     }),
   ];
+  const removePaste = installTerminalPaste(host, (text) => term.paste(text));
+  const removeDrop = installTerminalDrop(host, (text) => term.paste(text));
   term.open(host);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
 
@@ -101,6 +113,8 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       fitter.cancel();
       processResize.cancel();
       observer.disconnect();
+      removePaste();
+      removeDrop();
       for (const d of disposables) d.dispose();
       live.delete(term);
       term.dispose();

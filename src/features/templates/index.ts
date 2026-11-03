@@ -24,8 +24,6 @@ import { tagAtCaret, updateTag } from "./emmet/editor";
 import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog";
 import { tx } from "@/platform/i18n";
 
-export { EXTRA_COMPLETION_KEY } from "./editor";
-
 const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || popupOpen || !toolWindowFocus)";
 const MARKUP_PATH = /\.(html?|xhtml|shtml|vue|svelte|xml)$/i;
 

@@ -13,7 +13,12 @@ function normalize(os: string): HostOs {
 let info: Promise<BuildInfo | null> | null = null;
 
 export function buildInfo(): Promise<BuildInfo | null> {
-  info ??= isTauri() ? commands.appBuildInfo().catch(() => null) : Promise.resolve(null);
+  info ??= isTauri()
+    ? commands.appBuildInfo().catch(() => {
+        info = null;
+        return null;
+      })
+    : Promise.resolve(null);
   return info;
 }
 

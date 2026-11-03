@@ -59,7 +59,10 @@ export function activate(): () => void {
         when: WHEN,
         keywords: ["compile", "make", "mvn", "gradle", "cargo", "tsc", "go build"],
         // Awaitable: Run's "Build" before launch task waits for the result.
-        run: async () => void (await startBuild("build")),
+        run: async ({ arg }) => {
+          const activate = !(typeof arg === "object" && arg !== null && "activate" in arg && arg.activate === false);
+          await startBuild("build", null, activate);
+        },
       },
       {
         id: "build.buildModule",

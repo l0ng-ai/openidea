@@ -1,0 +1,35 @@
+.picker {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 420px;
+  min-width: 200px;
+}
+.controls {
+  display: flex;
+  gap: 6px;
+}
+.controls input {
+  min-width: 0;
+  flex: 1;
+}
+.hint {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.list {
+  max-height: 260px;
+  overflow-y: auto;
+  min-width: 250px;
+  padding: 4px;
+}
+.option {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 5px 8px;
+  cursor: default;
+}
+.option[aria-selected="true"] {
+  background: var(--bg-tree-selected);
+}

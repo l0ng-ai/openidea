@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HierarchyItem, OutlineItem, SymbolKind } from "@/bindings";
+import type { HierarchyItem, OutlineItem, ReferencesIncomplete, SymbolKind } from "@/bindings";
 
 const hint = vi.fn();
 vi.mock("@/workbench/contributions", async (orig) => ({
@@ -49,6 +49,12 @@ const item = (name: string, fromRanges: HierarchyItem["fromRanges"] = []): Hiera
   fromRanges,
 });
 
+const callHierarchy = vi.fn((): { items: HierarchyItem[]; incomplete: ReferencesIncomplete | null } => ({
+  items: [item("main", [range(12, 4, 12, 8)])],
+  incomplete: null,
+}));
+const cancelRequest = vi.fn(async () => undefined);
+
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return {
@@ -57,10 +63,11 @@ vi.mock("@/platform/ipc", async (orig) => {
     commands: {
       ...real.commands,
       docOutline: async () => OUTLINE,
-      lspCallHierarchy: async (_doc: number, pos: { line: number; col: number }) => {
+      cancelRequest,
+      lspCallHierarchy: async (_request: number, _doc: number, pos: { line: number; col: number }) => {
         // The server prepares a hierarchy only on the method name.
         if (pos.line !== 2 || pos.col !== 7) throw new real.IpcError({ kind: "notFound", message: "No symbol" });
-        return [item("main", [range(12, 4, 12, 8)])];
+        return callHierarchy();
       },
     },
   };
@@ -73,7 +80,15 @@ vi.mock("./ipc", async (orig) => ({
   hint: (...a: unknown[]) => hint(...a),
 }));
 
-const { enclosingDeclaration, hierarchyTarget, showHierarchy, useHierarchy, ROOT_ID } = await import("./hierarchy");
+const {
+  enclosingDeclaration,
+  hierarchyTarget,
+  refreshHierarchy,
+  resetHierarchy,
+  showHierarchy,
+  useHierarchy,
+  ROOT_ID,
+} = await import("./hierarchy");
 
 describe("hierarchy", () => {
   it("finds the innermost enclosing declaration of the wanted kinds", () => {
@@ -99,6 +114,33 @@ describe("hierarchy", () => {
     expect(s.root).toEqual({ name: "list", path: "/p/Orders.java", line: 2, col: 7 });
     expect(s.children.get(ROOT_ID)?.map((n) => n.item.name)).toEqual(["main"]);
     expect(s.failed.size).toBe(0);
+    expect(s.notes.size).toBe(0);
     expect(hint).not.toHaveBeenCalled();
+  });
+
+  it("notes a level whose callers may be incomplete, until it is loaded again", async () => {
+    useHierarchy.setState({ mode: "call", direction: "incoming" });
+    callHierarchy.mockReturnValueOnce({ items: [item("main")], incomplete: "tooManyFiles" });
+    await showHierarchy("call");
+    expect(useHierarchy.getState().notes.get(ROOT_ID)).toBe(
+      "May be incomplete: too many files mention 'list' to search them all",
+    );
+    refreshHierarchy();
+    await vi.waitFor(() => expect(useHierarchy.getState().children.get(ROOT_ID)).toBeDefined());
+    expect(useHierarchy.getState().notes.size).toBe(0);
+  });
+
+  it("cancels the requests of a tree that is replaced", async () => {
+    useHierarchy.setState({ mode: "call", direction: "incoming" });
+    await showHierarchy("call");
+    cancelRequest.mockClear();
+    let answer: (v: ReturnType<typeof callHierarchy>) => void = () => {};
+    callHierarchy.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)) as never);
+    refreshHierarchy();
+    await vi.waitFor(() => expect(callHierarchy).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve));
+    resetHierarchy();
+    expect(cancelRequest).toHaveBeenCalledTimes(1);
+    answer({ items: [item("stale")], incomplete: null });
   });
 });

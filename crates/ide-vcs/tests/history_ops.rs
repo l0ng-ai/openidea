@@ -113,7 +113,7 @@ fn merge_versions_put_the_users_work_on_the_left() {
     let repo = fx.repo();
     let topic = fx.git(&["rev-parse", "topic"]);
     assert!(repo.rebase("main").is_err());
-    let v = repo.merge_versions(&fx.path("f.txt")).unwrap();
+    let v = repo.merge_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(v.ours.as_deref(), Some("topic\n"));
     assert_eq!(v.theirs.as_deref(), Some("main\n"));
     assert_eq!(v.base.as_deref(), Some("base\n"));
@@ -129,7 +129,7 @@ fn merge_versions_put_the_users_work_on_the_left() {
 
     // Merge: not swapped; the merged branch is named.
     assert!(repo.merge("main").is_err());
-    let v = repo.merge_versions(&fx.path("f.txt")).unwrap();
+    let v = repo.merge_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(v.ours.as_deref(), Some("topic\n"));
     assert_eq!(v.theirs.as_deref(), Some("main\n"));
     assert!(!v.sides.reversed);
@@ -140,7 +140,7 @@ fn merge_versions_put_the_users_work_on_the_left() {
     // Cherry-pick: not swapped; the picked commit is named.
     let main = fx.git(&["rev-parse", "main"]);
     assert!(repo.cherry_pick(std::slice::from_ref(&main), &cancel, &out).is_err());
-    let v = repo.merge_versions(&fx.path("f.txt")).unwrap();
+    let v = repo.merge_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(v.ours.as_deref(), Some("topic\n"));
     assert!(!v.sides.reversed);
     assert_eq!(v.sides.operation.as_deref(), Some("cherry-pick"));
@@ -374,7 +374,7 @@ fn unshelve_with_conflict_leaves_merge_state() {
     assert_eq!(outcome.conflicts, vec!["f.txt".to_string()]);
     let text = fx.read("f.txt");
     assert!(text.contains("<<<<<<<") && text.contains("SHELVED") && text.contains("COMMITTED"), "{text}");
-    let (base, ours, theirs) = repo.conflict_versions(&fx.path("f.txt")).unwrap();
+    let (base, ours, theirs) = repo.conflict_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert!(base.is_some() && ours.unwrap().contains("COMMITTED") && theirs.unwrap().contains("SHELVED"));
     // Kept on the shelf when not removing.
     assert_eq!(shelf::list(&shelf).unwrap().len(), 1);
@@ -468,6 +468,32 @@ fn push_with_tags() {
 }
 
 #[test]
+fn push_goes_to_an_upstream_with_another_name() {
+    let fx = Fixture::new();
+    let bare = fx._tmp.path().join("origin.git");
+    git_in(fx._tmp.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
+    fx.write("a.txt", "1\n");
+    fx.commit_all("one");
+    fx.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+    fx.git(&["push", "-q", "origin", "main:release/one"]);
+    fx.git(&["fetch", "-q", "origin"]);
+    fx.git(&["checkout", "-q", "-b", "local-name", "--track", "origin/release/one"]);
+    fx.write("a.txt", "2\n");
+    let c2 = fx.commit_all("two");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+
+    repo.push(false, false, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "release/one"]), c2);
+    assert_eq!(git_in(&bare, &["branch", "--list", "local-name"]), "");
+
+    fx.write("a.txt", "3\n");
+    let c3 = fx.commit_all("three");
+    repo.push_with_tags(false, false, Some(ide_vcs::PushTags::CurrentBranch), &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "release/one"]), c3);
+}
+
+#[test]
 fn push_branch_and_up_to_revision() {
     let fx = Fixture::new();
     let bare = fx._tmp.path().join("origin.git");
@@ -498,10 +524,21 @@ fn push_branch_and_up_to_revision() {
     assert!(repo.push_branch("nope", None, false, &cancel, &out).is_err());
 
     // An edited target: same remote, another branch name; the upstream stays as it was.
-    repo.push_branch_to("main", None, "review/main", false, &cancel, &out).unwrap();
+    fn opts<'a>(target: Option<&'a str>, remote: Option<&'a str>) -> PushBranchOptions<'a> {
+        PushBranchOptions { target, remote, ..Default::default() }
+    }
+    repo.push_branch_to("main", opts(Some("review/main"), None), &cancel, &out).unwrap();
     assert_eq!(git_in(&bare, &["rev-parse", "review/main"]), c3);
     assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]), "origin/main");
-    assert!(repo.push_branch_to("main", None, "bad..name", false, &cancel, &out).is_err());
+    assert!(repo.push_branch_to("main", opts(Some("bad..name"), None), &cancel, &out).is_err());
+
+    // A chosen remote: same branch name, pushed to the other remote.
+    let bare2 = fx._tmp.path().join("backup.git");
+    git_in(fx._tmp.path(), &["init", "-q", "--bare", bare2.to_str().unwrap()]);
+    fx.git(&["remote", "add", "backup", bare2.to_str().unwrap()]);
+    repo.push_branch_to("main", opts(None, Some("backup")), &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare2, &["rev-parse", "main"]), c3);
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]), "origin/main");
 }
 
 #[test]
@@ -529,4 +566,99 @@ fn update_branch_fast_forwards_a_branch_not_checked_out() {
     assert_eq!(fx.git(&["rev-parse", "origin/main"]), tip);
     // The checked-out branch and branches without upstream are refused.
     assert!(repo.update_branch("work", &cancel, &out).is_err());
+}
+
+/// `"` and tabs are illegal in Windows file names, and only they make Git quote a path.
+const QUOTED: &str = if cfg!(windows) { "quote '.txt" } else { "quote\"\t.txt" };
+
+#[test]
+fn shelf_diff_and_scoped_operations_preserve_siblings() {
+    let fx = Fixture::new();
+    for path in ["a.txt", "b.txt", QUOTED, "gone.txt"] {
+        fx.write(path, "base\n");
+    }
+    fx.commit_all("base");
+    for path in ["a.txt", "b.txt", QUOTED] {
+        fx.write(path, "shelved\n");
+    }
+    std::fs::remove_file(fx.path("gone.txt")).unwrap();
+    fx.write("new.txt", "new\n");
+    std::fs::write(fx.path("binary.dat"), [0, 1, 255]).unwrap();
+    let repo = fx.repo();
+    let shelf = fx._tmp.path().join("shelf");
+    let paths = ["a.txt", "b.txt", QUOTED, "gone.txt", "new.txt", "binary.dat"].map(|p| fx.path(p));
+    let entry = repo.shelve(&shelf, "work", &paths).unwrap();
+    fx.write("a.txt", "new head\n");
+    fx.commit_all("advance head");
+    fx.write("a.txt", "local edits\n");
+    let status = fx.git(&["status", "--porcelain"]);
+    let index = fx.git(&["ls-files", "--stage"]);
+    let diffs = shelf::diff_files(&repo, &shelf, &entry.id).unwrap();
+    for path in ["a.txt", "b.txt", QUOTED] {
+        let f = diffs.iter().find(|f| f.path == path).unwrap();
+        assert_eq!(f.before.as_deref(), Some("base\n"), "{path}");
+        assert_eq!(f.after.as_deref(), Some("shelved\n"), "{path}");
+    }
+    assert_eq!(diffs.iter().find(|f| f.path == "new.txt").unwrap().before.as_deref(), Some(""));
+    assert_eq!(diffs.iter().find(|f| f.path == "gone.txt").unwrap().after.as_deref(), Some(""));
+    assert!(diffs.iter().find(|f| f.path == "binary.dat").unwrap().before.is_none());
+    assert_eq!(fx.git(&["status", "--porcelain"]), status);
+    assert_eq!(fx.git(&["ls-files", "--stage"]), index);
+    assert_eq!(fx.read("a.txt"), "local edits\n");
+    let patch = shelf::selected_patch(&shelf, &entry.id, Some("b.txt")).unwrap();
+    assert!(patch.contains("b/b.txt"));
+    assert!(!patch.contains("b/a.txt"));
+    assert!(shelf::selected_patch(&shelf, &entry.id, Some("missing")).is_err());
+    shelf::unshelve_path(&repo, &shelf, &entry.id, true, Some("b.txt")).unwrap();
+    assert_eq!(fx.read("b.txt"), "shelved\n");
+    assert!(!shelf::list(&shelf).unwrap()[0].files.iter().any(|f| f.path == "b.txt"));
+    shelf::delete_path(&shelf, &entry.id, Some(QUOTED)).unwrap();
+    assert!(shelf::selected_patch(&shelf, &entry.id, Some("a.txt")).is_ok());
+    shelf::import_patch(&shelf, "imported", &patch, None).unwrap();
+    assert_eq!(shelf::list(&shelf).unwrap().len(), 2);
+    assert_eq!(fx.read("a.txt"), "local edits\n");
+}
+
+#[test]
+fn shelf_imported_rename_diff_and_last_file_delete() {
+    let fx = Fixture::new();
+    fx.write("old.txt", "same\n");
+    fx.commit_all("base");
+    fx.git(&["mv", "old.txt", "new.txt"]);
+    let patch = fx.git(&["diff", "--cached", "--binary", "--full-index", "-M"]) + "\n";
+    fx.git(&["reset", "--hard", "HEAD"]);
+    let repo = fx.repo();
+    let shelf = fx._tmp.path().join("shelf");
+    shelf::import_patch(&shelf, "rename", &patch, None).unwrap();
+    let id = &shelf::list(&shelf).unwrap()[0].id;
+    let diffs = shelf::diff_files(&repo, &shelf, id).unwrap();
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].path, "new.txt");
+    // A rename-only imported patch has no embedded blob ids: do not guess from HEAD.
+    assert!(diffs[0].before.is_none());
+    assert!(diffs[0].patch.contains("rename from old.txt"));
+    shelf::delete_path(&shelf, id, Some("new.txt")).unwrap();
+    assert!(shelf::list(&shelf).unwrap().is_empty());
+}
+
+#[test]
+fn shelf_new_renames_keep_self_contained_sides_and_plain_imports_keep_scope() {
+    let fx = Fixture::new();
+    fx.write("old.txt", "renamed content\n");
+    fx.commit_all("base");
+    fx.git(&["mv", "old.txt", "new.txt"]);
+    let repo = fx.repo();
+    let shelf = fx._tmp.path().join("shelf");
+    let entry = repo.shelve(&shelf, "rename", &[fx.path("old.txt"), fx.path("new.txt")]).unwrap();
+    let diffs = shelf::diff_files(&repo, &shelf, &entry.id).unwrap();
+    assert_eq!(diffs.len(), 2);
+    assert_eq!(diffs.iter().find(|f| f.path == "old.txt").unwrap().before.as_deref(), Some("renamed content\n"));
+    assert_eq!(diffs.iter().find(|f| f.path == "new.txt").unwrap().after.as_deref(), Some("renamed content\n"));
+    let plain = "--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n--- removed\n+++ added\n--- a/two.txt\n+++ b/two.txt\n@@ -1 +1 @@\n-old\n+new\n";
+    shelf::import_patch(&shelf, "plain", plain, None).unwrap();
+    let selected = shelf::selected_patch(&shelf, "plain", Some("one.txt")).unwrap();
+    assert!(selected.contains("--- removed\n+++ added"));
+    assert!(!selected.contains("two.txt"));
+    shelf::delete_path(&shelf, "plain", Some("one.txt")).unwrap();
+    assert_eq!(shelf::list(&shelf).unwrap().iter().find(|s| s.id == "plain").unwrap().files[0].path, "two.txt");
 }

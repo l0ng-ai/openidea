@@ -240,11 +240,11 @@ export function JavaPage() {
           label="JDK"
           kind="jdk"
           emptyLabel="Auto"
-          emptyDetail="the project JDK if new enough, else the first installed JDK that is"
+          emptyDetail="auto-managed; uses an installed JDK or downloads a runtime when needed"
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Language server JDK"
-          hint="Runs jdtls only, like IDEA's JDK for importer; the project keeps compiling and running with the Project JDK. jdtls needs JDK 21 or newer (recent releases 25); Download JDK… in the list fetches one. The jdtls executable itself is set in Language Servers."
+          hint="Runs jdtls only; the project keeps its Project JDK. When empty, a suitable installed JDK is used first, otherwise Eclipse Temurin is downloaded automatically into a separate language-server folder. The jdtls executable itself is set in Language Servers."
         />
         <Row
           label="JVM options"
@@ -266,7 +266,57 @@ export function JavaPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Build Tools › Maven
+// Build Tools › Gradle / Maven
+
+export function GradlePage() {
+  const [distribution, setDistribution] = useSetting<string>("languages.java.gradle.distribution");
+  return (
+    <div className={styles.page}>
+      <Section>
+        <SdkRow
+          k="languages.java.gradle.jvm"
+          label="Gradle JVM"
+          kind="jdk"
+          emptyLabel="Project JDK"
+          directory
+          browseTitle="Select JDK Home Directory"
+          aria-label="Gradle JVM"
+          hint="JDK used for Gradle sync, tasks, run configurations and tests. An explicit JAVA_HOME in a run configuration takes precedence."
+        />
+        <Row
+          label="Distribution"
+          hint="Uses the Gradle wrapper when present, otherwise the project-pinned mise/asdf Gradle, then Gradle on PATH."
+        >
+          <Select
+            value={distribution}
+            onChange={setDistribution}
+            aria-label="Distribution"
+            options={[
+              { value: "wrapper", label: "Gradle wrapper" },
+              { value: "local", label: "Local installation" },
+            ]}
+          />
+        </Row>
+        {distribution === "local" && (
+          <PathInput
+            k="languages.java.gradle.home"
+            label="Gradle home"
+            placeholder="Gradle installation directory"
+            title="Select Gradle Home Directory"
+            hint="Uses bin/gradle (bin/gradle.bat on Windows) instead of the wrapper or pinned toolchain."
+          />
+        )}
+        <PathInput
+          k="languages.java.gradle.userHome"
+          label="Gradle user home"
+          placeholder="~/.gradle"
+          title="Select Gradle User Home Directory"
+          hint="Sets GRADLE_USER_HOME. Empty uses Gradle's default."
+        />
+      </Section>
+    </div>
+  );
+}
 
 export function MavenPage() {
   return (

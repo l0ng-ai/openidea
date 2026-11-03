@@ -1,4 +1,6 @@
 /** POSIX path helpers for backend paths (the backend always reports `/`-separated absolute paths). */
+import { isSameOrInside } from "@/platform/paths";
+export { isSameOrInside } from "@/platform/paths";
 
 export function joinPath(dir: string, name: string): string {
   if (!name) return dir;
@@ -13,11 +15,6 @@ export function parentOf(path: string): string {
 export function nameOf(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? path : path.slice(i + 1);
-}
-
-/** True when `path` equals `ancestor` or lies below it. */
-export function isSameOrInside(path: string, ancestor: string): boolean {
-  return path === ancestor || path.startsWith(ancestor.endsWith("/") ? ancestor : ancestor + "/");
 }
 
 export function isInside(path: string, ancestor: string): boolean {

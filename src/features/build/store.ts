@@ -5,8 +5,8 @@
  * Compiler messages reach the Problems view and editors as `build`
  * diagnostics, published (and cleared on the next build) by the backend.
  *
- * Like IDEA, the tool window is not shown when a build starts; a failed build
- * shows it, selects the first error and opens its location in the editor.
+ * Explicit builds show the tool window without taking focus. A failed build
+ * also selects the first error and opens its location in the editor.
  */
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
@@ -123,7 +123,11 @@ export function isBuilding(): boolean {
  * Builds the project (`file` null) or the module containing `file`. Saves all
  * documents first; a second build while one runs is ignored (IDEA disables the actions).
  */
-export async function startBuild(kind: BuildKind, file: string | null = null): Promise<BuildResult | null> {
+export async function startBuild(
+  kind: BuildKind,
+  file: string | null = null,
+  activate = true,
+): Promise<BuildResult | null> {
   if (isBuilding() || !useProject.getState().project) return null;
   const request = nextRequestId();
   const taskTitle = TITLES[kind];
@@ -131,6 +135,13 @@ export async function startBuild(kind: BuildKind, file: string | null = null): P
   const previous = useBuildRun.getState().files;
   useBuildRun.setState({ ...INITIAL, request, kind, file, title: taskTitle, status: "running", files: previous });
   setContext(BUILD_RUNNING, true);
+  if (activate) {
+    try {
+      toolWindowService().show("build", false);
+    } catch {
+      // No workbench (tests / settings window).
+    }
+  }
   upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: null, fraction: null, done: false, cancel });
   await maybeEditorService()
     ?.saveAll()

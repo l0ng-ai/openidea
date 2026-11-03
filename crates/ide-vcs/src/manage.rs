@@ -210,6 +210,7 @@ pub(crate) fn parse_worktrees(text: &str) -> Vec<Worktree> {
 impl Repo {
     /// Merges `branches` into the current branch (Git › Merge…).
     pub fn merge_with(&self, branches: &[String], options: &MergeOptions) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let args = merge_args(branches, options)?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         run(self.root(), &args, None).map(|_| ())
@@ -217,6 +218,7 @@ impl Repo {
 
     /// Rebases the current branch onto `upstream` (or `upstream..HEAD` onto `options.onto`).
     pub fn rebase_with(&self, upstream: &str, options: &RebaseOptions) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let args = rebase_args(upstream, options)?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         run(self.root(), &args, None).map(|_| ())
@@ -232,6 +234,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let args = pull_args(remote, branches, rebase, options)?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         cli::run_streaming(self.root(), &args, cancel, on_output)
@@ -239,6 +242,7 @@ impl Repo {
 
     /// Manage Remotes: adds, removes or edits a remote.
     pub fn edit_remote(&self, edit: &RemoteEdit) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         match edit {
             RemoteEdit::Add { name, url } => {
                 let (name, url) = (arg(name, "remote name")?, arg(url, "URL")?);
@@ -262,6 +266,7 @@ impl Repo {
 
     /// Working trees of the repository, the main one first.
     pub fn worktrees(&self) -> IdeResult<Vec<Worktree>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let out = run(self.root(), &["worktree", "list", "--porcelain"], None)?;
         Ok(parse_worktrees(&out.stdout_str()))
     }
@@ -269,6 +274,7 @@ impl Repo {
     /// Git › New Worktree…: checks out `commitish` at `path`, on a new branch `new_branch`
     /// when given (otherwise `commitish` must be a branch not checked out elsewhere).
     pub fn add_worktree(&self, path: &Path, commitish: &str, new_branch: Option<&str>) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let path = path.to_string_lossy().into_owned();
         let commitish = arg(commitish, "revision")?;
         let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
@@ -281,6 +287,7 @@ impl Repo {
     }
 
     pub fn remove_worktree(&self, path: &Path, force: bool) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let path = path.to_string_lossy().into_owned();
         let mut args = vec!["worktree", "remove"];
         if force {

@@ -1,7 +1,7 @@
 /** The oldest pending askpass prompt as a modal: password / text field, or Yes / No for a host key. */
 import { useState } from "react";
 import { useTx } from "@/platform/i18n";
-import { Dialog, Input } from "@/ui";
+import { Checkbox, Dialog, Input } from "@/ui";
 import { answerAskpass, askpassAnswer, useAskpass, type AskpassPrompt } from "./askpass";
 import styles from "./Ssh.module.css";
 
@@ -13,7 +13,9 @@ export function AskpassHost() {
 function AskpassDialog({ prompt: p }: { prompt: AskpassPrompt }) {
   const tx = useTx();
   const [text, setText] = useState("");
-  const done = (choice: Parameters<typeof askpassAnswer>[1]) => answerAskpass(p.id, askpassAnswer(p.kind, choice));
+  const [remember, setRemember] = useState(true);
+  const done = (choice: Parameters<typeof askpassAnswer>[1]) =>
+    answerAskpass(p, askpassAnswer(p.kind, choice), remember);
   const cancel = () => done(null);
 
   if (p.kind === "confirm")
@@ -62,6 +64,7 @@ function AskpassDialog({ prompt: p }: { prompt: AskpassPrompt }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
+        {p.remember && <Checkbox checked={remember} onChange={setRemember} label={tx("Remember for this host")} />}
       </form>
     </Dialog>
   );

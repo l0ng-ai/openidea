@@ -17,6 +17,7 @@ pub fn subscribe(host: &Host, window: &str, on_event: Emit<AgentEvent>) -> IdeRe
 }
 
 pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
+    host.require_trust(window)?;
     let mut providers = host.project(window)?.agents.providers();
     ide_agent::registry::mark_updates(&registry_paths(host), &mut providers);
     Ok(providers)
@@ -24,7 +25,7 @@ pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
 
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
 pub(crate) fn registry_paths(host: &Host) -> RegistryPaths {
-    RegistryPaths::new(&host.config_dir, &host.data_dir)
+    RegistryPaths::new(&host.config_dir, &host.local_data_dir)
 }
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {
@@ -62,13 +63,21 @@ pub async fn registry_install(
     .await
     .map_err(join_err);
     host.end_request(request);
-    result?
+    result??;
+    for project in host.projects() {
+        project.agents.reload_providers();
+    }
+    Ok(())
 }
 
 /// Removes a registry agent: its agent file and installed files.
 pub async fn registry_remove(host: &Host, _window: &str, id: String) -> IdeResult<()> {
     let paths = registry_paths(host);
-    tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)?
+    tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)??;
+    for project in host.projects() {
+        project.agents.reload_providers();
+    }
+    Ok(())
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
@@ -87,12 +96,20 @@ pub fn entries(host: &Host, window: &str, task: String, subagent: Option<String>
     host.project(window)?.agents.entries(&task, subagent)
 }
 
-pub async fn create(host: &Host, window: &str, request: NewAgentTask) -> IdeResult<AgentTask> {
-    host.project(window)?.agents.create(request).await
+pub async fn create(host: &Host, window: &str, mut request: NewAgentTask) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let root = project.root.clone();
+    let requested = request.project_root.take();
+    request.project_root = Some(IpcPath(
+        host.blocking(move || validate_project_root(&root, requested.as_ref().map(|p| p.0.as_path()))).await?,
+    ));
+    project.agents.create(request).await
 }
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.
 pub async fn prompt(host: &Host, window: &str, task: String, prompt: AgentPrompt, now: bool) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.prompt(&task, prompt, now).await
 }
 
@@ -103,26 +120,31 @@ pub fn unqueue(host: &Host, window: &str, task: String, queued: String) -> IdeRe
 
 /// Sends a queued message now, interrupting the current turn.
 pub fn send_queued_now(host: &Host, window: &str, task: String, queued: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.send_queued_now(&task, &queued)
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
 pub async fn set_config(host: &Host, window: &str, task: String, option: String, value: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.set_config(&task, &option, value).await
 }
 
 /// Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`).
 pub async fn fork(host: &Host, window: &str, task: String, turns: Option<u32>) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
     host.project(window)?.agents.fork(&task, turns).await
 }
 
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
 pub async fn rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
+    host.require_trust(window)?;
     host.project(window)?.agents.rollback(&task, turns).await
 }
 
 /// What the agent reports about itself when it starts, without opening a session.
 pub async fn probe(host: &Host, window: &str, provider: String, refresh: bool) -> IdeResult<AgentProbe> {
+    host.require_trust(window)?;
     host.project(window)?.agents.probe(&provider, refresh).await
 }
 
@@ -133,6 +155,7 @@ pub fn cancel(host: &Host, window: &str, task: String, subagent: Option<String>)
 
 /// Answers a permission request; `option: None` cancels it.
 pub fn respond(host: &Host, window: &str, task: String, permission: u32, option: Option<String>) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.respond(&task, permission, option)
 }
 
@@ -140,16 +163,23 @@ pub fn archive(host: &Host, window: &str, task: String) -> IdeResult<()> {
     host.project(window)?.agents.archive(&task)
 }
 
+pub fn unarchive(host: &Host, window: &str, task: String) -> IdeResult<()> {
+    host.project(window)?.agents.unarchive(&task)
+}
+
 pub async fn delete(host: &Host, window: &str, task: String, remove_worktree: bool) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.delete(&task, remove_worktree).await
 }
 
 pub async fn changes(host: &Host, window: &str, task: String) -> IdeResult<Vec<AgentChange>> {
+    host.require_trust(window)?;
     host.project(window)?.agents.changes(&task).await
 }
 
 /// Content of `path` when the task started (left side of its diff).
 pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -> IdeResult<Option<String>> {
+    host.require_trust(window)?;
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
 }
 
@@ -183,6 +213,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
     });
+    d.add("agent_unarchive", |c| async move { unarchive(&c.host, &c.window, c.arg("task")?) });
     d.add("agent_archive", |c| async move { archive(&c.host, &c.window, c.arg("task")?) });
     d.add(
         "agent_delete",
@@ -190,4 +221,44 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("agent_changes", |c| async move { changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
+}
+
+fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {
+    let Some(requested) = requested else {
+        return Ok(root.to_path_buf());
+    };
+    if !requested.is_absolute() {
+        return Err(IdeError::invalid("Choose an absolute project root"));
+    }
+    let requested = dunce::canonicalize(requested)?;
+    let window_root = dunce::canonicalize(root)?;
+    if requested == window_root
+        || ide_workspace::workspace::Workspace::load(root)?.is_some_and(|w| w.projects.contains(&requested))
+    {
+        return Ok(requested);
+    }
+    Err(IdeError::invalid("Agent project must be the window project or a workspace member"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn agent_roots_are_exact_window_or_workspace_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspace");
+        let member = tmp.path().join("member");
+        let other = tmp.path().join("other");
+        for dir in [&root, &member, &other, &member.join("child")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        assert_eq!(validate_project_root(&root, None).unwrap(), root);
+        assert_eq!(validate_project_root(&root, Some(&root)).unwrap(), dunce::canonicalize(&root).unwrap());
+        assert!(validate_project_root(&root, Some(&member)).is_err());
+        ide_workspace::workspace::Workspace::save(&root, "Workspace", vec![member.clone()], true).unwrap();
+        assert_eq!(validate_project_root(&root, Some(&member)).unwrap(), dunce::canonicalize(&member).unwrap());
+        for rejected in [other, member.join("child"), member.join("../other"), "relative".into()] {
+            assert!(validate_project_root(&root, Some(&rejected)).is_err(), "{rejected:?}");
+        }
+    }
 }

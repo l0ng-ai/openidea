@@ -58,6 +58,43 @@ pub struct Settings {
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
+    pub cmake: CMakeSettings,
+}
+
+/// Absent profiles retain automatic discovery for existing projects.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub profiles: Option<Vec<CMakeProfile>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeProfile {
+    pub name: String,
+    pub build_type: String,
+    pub generator: String,
+    pub cmake_args: Vec<String>,
+    /// Empty uses cmake-build-<lowercase build type>.
+    pub build_dir: String,
+    pub build_args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for CMakeProfile {
+    fn default() -> Self {
+        Self {
+            name: "Debug".into(),
+            build_type: "Debug".into(),
+            generator: String::new(),
+            cmake_args: Vec::new(),
+            build_dir: String::new(),
+            build_args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -154,6 +191,7 @@ impl Default for Settings {
             ssh: SshSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
+            cmake: CMakeSettings::default(),
         }
     }
 }
@@ -178,7 +216,7 @@ pub struct CustomKeymap {
 pub struct GeneralSettings {
     pub reopen_last_project: bool,
     pub confirm_exit: bool,
-    /// Where Open… puts a project while one is open: `ask` | `new` | `same`.
+    /// Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`.
     pub open_project_in: String,
     /// Initial folder of the Open / Clone dialogs; empty = the OS default.
     pub default_project_directory: String,
@@ -197,7 +235,7 @@ impl Default for GeneralSettings {
     fn default() -> Self {
         Self {
             reopen_last_project: true,
-            confirm_exit: false,
+            confirm_exit: true,
             open_project_in: "ask".into(),
             default_project_directory: String::new(),
             save_on_idle: false,
@@ -276,6 +314,8 @@ pub struct AppearanceSettings {
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
     pub use_custom_font: bool,
     pub ui_font_family: String,
+    /// Font tried when `ui_font_family` lacks a glyph; empty = none.
+    pub ui_font_fallback: String,
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
@@ -285,11 +325,14 @@ pub struct AppearanceSettings {
     pub project_colors_in_toolbar: bool,
     pub dnd_with_alt_only: bool,
     pub menu_icons: bool,
+    /// `hamburger` | `merged`: main menu presentation in the frameless title bar.
+    pub main_menu_style: String,
     /// `subpixel` | `greyscale` | `none`
     pub ide_antialiasing: String,
     pub editor_antialiasing: String,
     pub show_tool_window_bars: bool,
     pub show_tool_window_names: bool,
+    pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
@@ -323,6 +366,7 @@ impl Default for AppearanceSettings {
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
+            ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
             different_tool_window_background: false,
@@ -331,15 +375,26 @@ impl Default for AppearanceSettings {
             project_colors_in_toolbar: true,
             dnd_with_alt_only: false,
             menu_icons: true,
+            main_menu_style: "hamburger".into(),
             ide_antialiasing: "greyscale".into(),
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
             show_tool_window_names: false,
+            show_tool_window_badges: true,
             widescreen_tool_windows: false,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }
     }
+}
+
+/// Imported editor colour scheme on top of a built-in base.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomColorScheme {
+    pub name: String,
+    pub parent: String,
+    pub attributes: BTreeMap<String, TextAttributesOverride>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -357,6 +412,8 @@ pub struct EditorSettings {
     pub format_on_save: bool,
     /// Editor colour scheme id; `theme-default` follows the IDE theme.
     pub color_scheme: String,
+    /// Imported editor schemes, stored in user settings.
+    pub custom_schemes: BTreeMap<String, CustomColorScheme>,
     /// Color Scheme edits: scheme id → attribute id → override.
     pub color_overrides: BTreeMap<String, BTreeMap<String, TextAttributesOverride>>,
     /// Color Scheme › Language Defaults › Semantic highlighting: local variables and
@@ -404,6 +461,7 @@ impl Default for EditorSettings {
             format_on_save: false,
             color_scheme: "theme-default".into(),
             color_overrides: BTreeMap::new(),
+            custom_schemes: BTreeMap::new(),
             semantic_highlighting: false,
             rainbow_brackets: false,
             ligatures: false,
@@ -434,6 +492,8 @@ impl Default for EditorSettings {
 pub struct FileSettings {
     /// Save on focus loss / tab switch, like IDEA.
     pub auto_save: bool,
+    /// Re-check open files against disk when the IDE window gains focus.
+    pub sync_on_focus: bool,
     pub exclude: Vec<String>,
     /// Ignored Files and Folders: name patterns hidden everywhere; see [`crate::ignored`].
     pub ignored_names: Vec<String>,
@@ -465,6 +525,7 @@ impl Default for FileSettings {
     fn default() -> Self {
         Self {
             auto_save: true,
+            sync_on_focus: true,
             exclude: vec!["**/.git".into(), "**/node_modules".into(), "**/target".into()],
             ignored_names: crate::ignored::DEFAULT_IGNORED_NAMES.iter().map(|s| (*s).into()).collect(),
             trim_trailing_whitespace: true,
@@ -485,7 +546,48 @@ pub struct LanguagesSettings {
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
+    pub prettier: PrettierSettings,
     pub java: JavaSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PrettierSettings {
+    /// Empty path: project node_modules, managed installation, then PATH.
+    pub path: String,
+    pub languages: Vec<String>,
+    /// Prefer Prettier even when a language server offers formatting.
+    pub prefer: bool,
+    pub run_on_save: bool,
+}
+
+impl Default for PrettierSettings {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            languages: [
+                "markdown",
+                "yaml",
+                "css",
+                "scss",
+                "less",
+                "html",
+                "graphql",
+                "javascript",
+                "javascriptreact",
+                "typescript",
+                "typescriptreact",
+                "json",
+                "jsonc",
+                "vue",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            prefer: false,
+            run_on_save: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -546,6 +648,35 @@ pub struct GoSettings {
     pub goroot: String,
     /// Empty = `go env GOPATH`.
     pub gopath: String,
+    pub build_tags: GoBuildTags,
+    pub modules: GoModules,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GoModules {
+    pub env: BTreeMap<String, String>,
+    pub auto_vendor: bool,
+}
+
+impl Default for GoModules {
+    fn default() -> Self {
+        Self { env: BTreeMap::new(), auto_vendor: true }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GoBuildTags {
+    /// Empty values inherit the selected toolchain's defaults.
+    pub os: String,
+    pub arch: String,
+    pub version: String,
+    pub compiler: String,
+    /// Empty = automatic, "1" = enabled, "0" = disabled.
+    pub cgo: String,
+    pub custom: String,
+    pub experiments: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -563,12 +694,37 @@ pub struct JavaSettings {
     pub jdtls_vm_args: String,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
+    /// Build Tools › Gradle.
+    pub gradle: GradleSettings,
+}
+
+/// Build Tools › Gradle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GradleSettings {
+    /// Empty = Project JDK; otherwise a JDK home.
+    pub jvm: String,
+    pub distribution: GradleDistribution,
+    /// Used only for the local distribution.
+    pub home: String,
+    /// Empty = Gradle's default user home.
+    pub user_home: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GradleDistribution {
+    #[default]
+    Wrapper,
+    Local,
 }
 
 /// Build Tools › Maven.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MavenSettings {
+    /// Project-relative root POMs removed from the Maven project model.
+    pub unlinked_projects: Vec<String>,
     /// Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`.
     pub home: String,
     /// User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`.
@@ -648,6 +804,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cmake_profile_argument_arrays_round_trip() {
+        let mut settings = Settings::default();
+        assert!(settings.cmake.profiles.is_none());
+        assert!(CMakeProfile::default().cmake_args.is_empty());
+        assert!(CMakeProfile::default().build_args.is_empty());
+        let profile = CMakeProfile {
+            cmake_args: ["-DMESSAGE=two words", "-DQUOTE=\"hello\"", ""].map(String::from).into(),
+            build_args: ["-j", "8", "--", "LABEL=it's a build"].map(String::from).into(),
+            ..Default::default()
+        };
+        settings.cmake.profiles = Some(vec![profile.clone()]);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["cmake"]["profiles"][0]["cmakeArgs"], serde_json::json!(profile.cmake_args));
+        assert_eq!(value["cmake"]["profiles"][0]["buildArgs"], serde_json::json!(profile.build_args));
+        assert_eq!(serde_json::from_value::<Settings>(value).unwrap(), settings);
+    }
+
+    #[test]
+    fn ui_font_fallback_defaults_empty_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"useCustomFont":true}}"#).unwrap();
+        assert!(old.appearance.ui_font_fallback.is_empty());
+        for family in ["", "Songti SC", "Maple Mono NF CN"] {
+            let mut settings = Settings::default();
+            settings.appearance.ui_font_fallback = family.into();
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["appearance"]["uiFontFallback"], family);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.appearance.ui_font_fallback, family);
+        }
+    }
+
+    #[test]
+    fn tool_window_badges_default_on_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"showToolWindowNames":true}}"#).unwrap();
+        assert!(old.appearance.show_tool_window_badges);
+        assert!(Settings::default().appearance.show_tool_window_badges);
+        for enabled in [false, true] {
+            let mut settings = Settings::default();
+            settings.appearance.show_tool_window_badges = enabled;
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["appearance"]["showToolWindowBadges"], enabled);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.appearance.show_tool_window_badges, enabled);
+        }
+    }
+
+    #[test]
+    fn main_menu_style_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
+        assert_eq!(old.appearance.main_menu_style, "hamburger");
+        let merged: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuStyle":"merged"}}"#).unwrap();
+        assert_eq!(merged.appearance.main_menu_style, "merged");
+        assert_eq!(serde_json::to_value(merged).unwrap()["appearance"]["mainMenuStyle"], "merged");
+    }
+
+    #[test]
     fn editor_font_weights_default_to_regular_and_bold() {
         let json = serde_json::to_value(Settings::default()).unwrap();
         assert_eq!(json["editor"]["fontWeight"], 400);
@@ -689,5 +901,59 @@ mod tests {
         assert_eq!(s.project_structure.exclude_file_patterns(), vec!["*.log", "tmp*"]);
         assert_eq!(s.file_excludes(), vec!["*.log", "tmp*"]);
         assert!(Settings::default().files.file_types.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod maven_linkage_tests {
+    use super::*;
+
+    #[test]
+    fn maven_linkage_defaults_and_round_trips() {
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(old.unlinked_projects.is_empty());
+        let settings =
+            MavenSettings { unlinked_projects: vec!["pom.xml".into(), "services/api/pom.xml".into()], ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains("unlinkedProjects"));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
+}
+
+#[cfg(test)]
+mod gradle_settings_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_and_round_trip() {
+        let old: JavaSettings = serde_json::from_str(r#"{"jdk":"/jdk"}"#).unwrap();
+        assert_eq!(old.gradle, GradleSettings::default());
+        for distribution in [GradleDistribution::Wrapper, GradleDistribution::Local] {
+            let mut settings = Settings::default();
+            settings.languages.java.gradle = GradleSettings {
+                jvm: "/jdk21".into(),
+                distribution,
+                home: "/gradle".into(),
+                user_home: "/cache/gradle".into(),
+            };
+            let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);
+        }
+    }
+}
+
+#[cfg(test)]
+mod go_module_tests {
+    use super::*;
+    #[test]
+    fn old_go_settings_inherit_module_defaults() {
+        let old: GoSettings = serde_json::from_str(r#"{"goroot":"/go"}"#).unwrap();
+        assert!(old.modules.auto_vendor);
+        assert!(old.modules.env.is_empty());
+        let configured: GoSettings =
+            serde_json::from_str(r#"{"modules":{"autoVendor":false,"env":{"GOPRIVATE":"example.com/private"}}}"#)
+                .unwrap();
+        assert!(!configured.modules.auto_vendor);
+        assert_eq!(configured.modules.env["GOPRIVATE"], "example.com/private");
     }
 }

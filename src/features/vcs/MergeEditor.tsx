@@ -8,12 +8,17 @@ import { keymap } from "@codemirror/view";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { MergeSides } from "@/bindings";
 import { embeddedEditorExtensions } from "@/editor/api";
+import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { Button, IconButton, Spinner, T } from "@/ui";
+import { shortcutLabel } from "@/platform/keymap";
+import { Button, IconButton, showContextMenu, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
+import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
 import { confirmDialog } from "./dialogs";
+import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
+import { syncMergeScroll } from "./mergeScroll";
 import { initialResult, mergeTitles, resolutionText, type Resolution, type ResultConflict } from "./conflicts";
 import { baseName } from "./model";
 import { errorMessage, readWorkingText, runOp, writeFileText } from "./ops";
@@ -152,6 +157,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const resultRef = useRef<HTMLDivElement>(null);
   const theirsRef = useRef<HTMLDivElement>(null);
   const resultView = useRef<EditorView | null>(null);
+  const oursView = useRef<EditorView | null>(null);
+  const theirsView = useRef<EditorView | null>(null);
   const txt = useTxTemplate();
   const titles = mergeTitles(state?.sides);
 
@@ -188,6 +195,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     const side = () => [
       viewerBase({ readOnly: true }),
       lang,
+      blameSlot(),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
     ];
     const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side() });
@@ -214,11 +222,18 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     });
     resultView.current = result;
     setLeft(result.state.field(conflictField).conflicts.length);
+    oursView.current = ours;
+    theirsView.current = theirs;
+    // Scroll the three panes together, lined up through their changes.
+    const stopSync = syncMergeScroll({ ours, result, theirs });
     return () => {
+      stopSync();
       ours.destroy();
       theirs.destroy();
       result.destroy();
       resultView.current = null;
+      oursView.current = null;
+      theirsView.current = null;
     };
   }, [state, lang, path]);
 
@@ -280,8 +295,47 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       setResolved(true);
       await refreshNow();
       // Like IDEA, applying the result closes the merge editor.
-      editorService().closeInput?.(input.key);
+      await editorService().closeInput?.(input.key);
     }
+  };
+
+  // Next / Previous Difference (F7 / Shift+F7 by default) jump between conflicts through
+  // the keymap, as in the diff viewer.
+  // `goto` reads only refs, so the first render's one stays valid.
+  const [nav] = useState<DiffNavigator>(() => ({
+    next: () => goto(1),
+    prev: () => goto(-1),
+    jumpToSource: () => void editorService().openFile(path, { focus: true }),
+    applyChange: () => false,
+    file: () => {},
+    showSettings: () => {},
+  }));
+  useEffect(
+    () => () => {
+      if (focusedDiffNavigator() === nav) {
+        setFocusedDiffNavigator(null);
+        setContext("diffEditorFocus", false);
+      }
+    },
+    [nav],
+  );
+
+  // Each side pane can annotate its version with Git Blame from the context menu, on
+  // the branch it belongs to, so lines that only exist on the other branch show their
+  // real history instead of "Not Committed Yet".
+  const otherRev = state?.sides.commit ?? "HEAD";
+
+  const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string, revision?: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+    e.preventDefault();
+    showContextMenu(e.nativeEvent, [
+      {
+        label: "Annotate with Git Blame",
+        icon: "changelist",
+        run: () => void toggleAnnotations(view, path, text, revision),
+      },
+    ]);
   };
 
   if (error)
@@ -304,10 +358,34 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     );
 
   return (
-    <div className={styles.root}>
+    <div
+      className={styles.root}
+      onFocusCapture={() => {
+        setFocusedDiffNavigator(nav);
+        setContext("diffEditorFocus", true);
+      }}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedDiffNavigator() === nav) {
+          setFocusedDiffNavigator(null);
+          setContext("diffEditorFocus", false);
+        }
+      }}
+    >
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Merge")}>
-        <IconButton icon="arrow-up" title="Previous Conflict" size="small" onClick={() => goto(-1)} />
-        <IconButton icon="arrow-down" title="Next Conflict" size="small" onClick={() => goto(1)} />
+        <IconButton
+          icon="arrow-up"
+          title="Previous Conflict"
+          shortcut={shortcutLabel("diff.prevDifference")}
+          size="small"
+          onClick={() => goto(-1)}
+        />
+        <IconButton
+          icon="arrow-down"
+          title="Next Conflict"
+          shortcut={shortcutLabel("diff.nextDifference")}
+          size="small"
+          onClick={() => goto(1)}
+        />
         <span className={styles.sep} />
         <Button size="small" onClick={() => acceptAll("ours")}>
           <T>Accept All Yours</T>
@@ -336,9 +414,21 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         </div>
       ) : null}
       <div className={styles.panes} hidden={!state || lang === null}>
-        <div ref={oursRef} className={styles.pane} aria-label={tx("Your version")} role="region" />
+        <div
+          ref={oursRef}
+          className={styles.pane}
+          aria-label={tx("Your version")}
+          role="region"
+          onContextMenu={(e) => sideMenu(e, oursView, state?.ours ?? "", state?.sides.reversed ? otherRev : "HEAD")}
+        />
         <div ref={resultRef} className={styles.pane} aria-label={tx("Result")} role="region" />
-        <div ref={theirsRef} className={styles.pane} aria-label={tx("Their version")} role="region" />
+        <div
+          ref={theirsRef}
+          className={styles.pane}
+          aria-label={tx("Their version")}
+          role="region"
+          onContextMenu={(e) => sideMenu(e, theirsView, state?.theirs ?? "", state?.sides.reversed ? "HEAD" : otherRev)}
+        />
       </div>
     </div>
   );

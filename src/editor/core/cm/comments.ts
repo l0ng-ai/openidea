@@ -96,13 +96,15 @@ export const commentLine: Command = (view) => {
   const changes: ChangeSpec[] = [];
   blocks.forEach((b, bi) => {
     const token = tokens[bi]!;
+    // A word token (Batch `@REM`) needs a separator even when comment spacing is off.
+    const addSpace = style.addSpace || /\w$/.test(token);
     if (allCommented) {
       for (let n = b.startLine; n <= b.endLine; n++) {
         const line = doc.line(n);
         const start = line.from + leadingWs(line.text);
         if (!doc.sliceString(start, line.to).startsWith(token) || !line.text.trim()) continue;
         let end = start + token.length;
-        if (style.addSpace && doc.sliceString(end, end + 1) === " ") end++;
+        if (addSpace && doc.sliceString(end, end + 1) === " ") end++;
         // Nothing but whitespace left: the line is emptied.
         if (!doc.sliceString(end, line.to).trim()) changes.push({ from: line.from, to: line.to });
         else changes.push({ from: start, to: end });
@@ -111,7 +113,7 @@ export const commentLine: Command = (view) => {
     }
     const commentStart = b.caretUpdate === "commentStart";
     const prefixFor = (shifted: number, line: { to: number }) =>
-      token + (style.addSpace && (shifted < line.to || (commentStart && shifted < doc.length)) ? " " : "");
+      token + (addSpace && (shifted < line.to || (commentStart && shifted < doc.length)) ? " " : "");
     if (style.atFirstColumn) {
       for (let n = b.startLine; n <= b.endLine; n++) {
         const line = doc.line(n);

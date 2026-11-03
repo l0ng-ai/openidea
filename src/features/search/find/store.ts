@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ContextKeys } from "@/platform/context";
 import type { ProjectFileSet, SearchContext, SearchQuery, SearchScope } from "@/platform/ipc";
 import { SEARCH_CONTEXTS, customScopes, findCustomScope, rememberSearch, searchHistory } from "@/platform/search";
 import { loadJson, saveJson } from "../common/open";
@@ -37,7 +38,7 @@ export interface FindOptions {
   maskEnabled: boolean;
   mask: string;
   scopeTab: ScopeTab;
-  /** Module tab: project-relative folder of the module (`""`: the project's root module). */
+  /** Module tab: relative module folder or absolute workspace member (`""`: plain project root). */
   module: string;
   directory: string;
   namedScope: NamedScope;
@@ -103,11 +104,17 @@ export interface FindArg {
   query?: string;
 }
 
-export function parseFindArg(arg: unknown): FindArg {
-  if (!arg || typeof arg !== "object") return {};
-  const a = arg as Record<string, unknown>;
+export function parseFindArg(arg: unknown, ctx: ContextKeys = {}): FindArg {
+  const a = (arg && typeof arg === "object" ? arg : {}) as Record<string, unknown>;
   return {
-    directory: typeof a.directory === "string" ? a.directory : typeof a.path === "string" ? a.path : undefined,
+    directory:
+      typeof a.directory === "string"
+        ? a.directory
+        : typeof a.path === "string"
+          ? a.path
+          : typeof ctx.focusedDirectory === "string"
+            ? ctx.focusedDirectory
+            : undefined,
     query: typeof a.query === "string" ? a.query : undefined,
   };
 }
@@ -186,7 +193,9 @@ export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchSco
   if (o.scopeTab === "directory" && o.directory.trim())
     return { kind: "directory", path: resolveDirectory(o.directory, root) };
   if (o.scopeTab === "module")
-    return o.module && root ? { kind: "directory", path: `${root}/${o.module}` } : { kind: "project" };
+    return o.module && root
+      ? { kind: "directory", path: o.module.startsWith("/") ? o.module : `${root}/${o.module}` }
+      : { kind: "project" };
   if (o.scopeTab !== "scope") return { kind: "project" };
   const custom = customScopeName(o.namedScope);
   if (custom !== null) {

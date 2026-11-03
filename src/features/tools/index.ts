@@ -9,7 +9,7 @@ import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
 import { registerSettingsPage } from "@/workbench/contributions";
 import { installJdkPrompts, registerJdkActions } from "./jdk";
-import { installMissingServerPrompts } from "./missing";
+import { installMissingServerPrompts, installServerWarningPrompts, promptInstall } from "./missing";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
 
 /** The Language Servers page (also used by the Settings window). */
@@ -41,6 +41,16 @@ export function activate(): () => void {
     activateSettingsPages(),
     registerActions([
       {
+        id: "tools.promptInstall",
+        title: "Install Missing Tool",
+        hidden: true,
+        run: async ({ arg }) => {
+          if (arg && typeof arg === "object" && "name" in arg && typeof arg.name === "string") {
+            await promptInstall(arg.name, !("sticky" in arg) || arg.sticky !== false);
+          }
+        },
+      },
+      {
         id: "tools.languageServers",
         title: "Language Servers…",
         category: "Tools",
@@ -69,6 +79,7 @@ export function activate(): () => void {
       },
     ]),
     installMissingServerPrompts(),
+    installServerWarningPrompts(),
     registerJdkActions(),
     installJdkPrompts(),
   ];

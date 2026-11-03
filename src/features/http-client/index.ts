@@ -8,6 +8,7 @@
 import { activeEditor, registerEditorContribution, registerLanguageMode } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { call, commands, emitLocalIdeEvent, IpcError, isTauri } from "@/platform/ipc";
+import { ipcPath } from "@/platform/paths";
 import { useProject } from "@/platform/project";
 import {
   editorService,
@@ -27,6 +28,7 @@ import {
   menuGroupItems,
   springEditorExtension,
 } from "./spring/editor";
+import { registerSpringEndpointProvider } from "./spring/routeIndex";
 
 const SPRING_WHEN = "editorLangId == java || editorLangId == kotlin";
 
@@ -84,7 +86,8 @@ function directoryArg(arg: unknown): string | null {
 async function newRequest(directory?: string) {
   try {
     const { appDataDir } = await import("@tauri-apps/api/path");
-    const dir = directory ?? `${(await appDataDir()).replace(/\/+$/, "")}/scratches`;
+    // `appDataDir()` is native (`C:\…`): the UI holds paths `/`-separated.
+    const dir = directory ?? `${ipcPath(await appDataDir()).replace(/\/+$/, "")}/scratches`;
     try {
       await call(commands.fsCreateDir(dir));
     } catch (e) {
@@ -110,6 +113,7 @@ async function newRequest(directory?: string) {
 
 export function activate(): () => void {
   const disposers = [
+    registerSpringEndpointProvider(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetHttpClient();
     }),

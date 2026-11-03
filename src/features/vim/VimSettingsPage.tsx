@@ -61,15 +61,16 @@ export function VimSettingsPage() {
         </p>
         <p className={styles.hint}>
           <T>
-            Supported: set options, map / nmap / imap / vmap / noremap variants, let mapleader, and :action /
+            Supported: set options, map / nmap / imap / vmap / noremap variants, let mapleader, source, and :action /
             &lt;Action&gt;() mappings that run IDE actions. :w saves, :q closes the editor tab.
           </T>
         </p>
         {rc.ignored.length > 0 && (
           <ul className={styles.ignored} aria-label={tx("Ignored lines")}>
             {rc.ignored.map((i) => (
-              <li key={i.line}>
+              <li key={`${i.file ?? ""}:${i.line}`}>
                 <span className={styles.mono}>
+                  {i.file ? `${i.file}:` : ""}
                   {i.line}: {i.text}
                 </span>{" "}
                 — {i.reason}

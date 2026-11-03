@@ -8,6 +8,7 @@ import {
   layoutPanes,
   nextTabName,
   removeFromLayout,
+  reorderTabs,
   splitLayout,
   tabFullTitle,
   tabTitle,
@@ -15,6 +16,7 @@ import {
   type TerminalTab,
 } from "./store";
 import type { SessionSnapshot } from "./session";
+import { usePlatform } from "@/platform/platformInfo";
 import { buildTheme, mix, parseColor, terminalFont, toHex } from "./theme";
 
 describe("theme", () => {
@@ -95,6 +97,14 @@ describe("terminal links", () => {
     expect(resolvePath("/abs/c.ts", "/p")).toBe("/abs/c.ts");
     expect(resolvePath("~/d.ts", "/p", "/Users/me")).toBe("/Users/me/d.ts");
   });
+
+  it("resolves paths against a Windows cwd (#705)", () => {
+    expect(resolvePath("a/main.php", "C:\\Users\\me\\proj")).toBe("C:/Users/me/proj/a/main.php");
+    expect(resolvePath("a\\main.php", "C:/Users/me/proj")).toBe("C:/Users/me/proj/a/main.php");
+    expect(resolvePath("C:\\abs\\d.ts", "C:/p")).toBe("C:/abs/d.ts");
+    expect(resolvePath("~/e.ts", "C:/p", "C:\\Users\\me")).toBe("C:/Users/me/e.ts");
+    expect(resolvePath("../f.ts", "C:/p/web")).toBe("C:/p/f.ts");
+  });
 });
 
 describe("terminal keys", () => {
@@ -110,7 +120,7 @@ describe("terminal keys", () => {
       kind: "send",
       data: "\x04",
     });
-    expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).toEqual({
+    expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), false)).toEqual({
       kind: "send",
       data: "\x03",
     });
@@ -128,6 +138,44 @@ describe("terminal keys", () => {
       kind: "send",
       data: "\x14",
     });
+    // AZERTY: the key typing "z" is physically KeyW; Ctrl+Z must send ^Z (SIGTSTP), not ^W.
+    expect(terminalKeyAction(key({ key: "z", code: "KeyW", ctrlKey: true }), false)).toEqual({
+      kind: "send",
+      data: "\x1a",
+    });
+    // Non-QWERTY Ctrl+Shift+C / V / T match the typed letter, not the physical key.
+    expect(terminalKeyAction(key({ key: "C", code: "KeyI", ctrlKey: true, shiftKey: true }), true)).toEqual({
+      kind: "copy",
+    });
+    expect(terminalKeyAction(key({ key: "V", code: "KeyPeriod", ctrlKey: true, shiftKey: true }), false)).toEqual({
+      kind: "paste",
+    });
+    expect(terminalKeyAction(key({ key: "T", code: "KeyK", ctrlKey: true, shiftKey: true }), false)).toEqual({
+      kind: "pass",
+    });
+    expect(terminalKeyAction(key({ key: "J", code: "KeyC", ctrlKey: true, shiftKey: true }), true)).toEqual({
+      kind: "send",
+      data: "\x0a",
+    });
+  });
+
+  it.each([
+    { key: "c", code: "KeyC", ctrlKey: true },
+    { key: "c", code: "KeyI", ctrlKey: true },
+    { key: "C", code: "KeyC", ctrlKey: true, shiftKey: true },
+    { key: "c", code: "KeyC", metaKey: true },
+  ])("copies terminal selections with %o", (stroke) => {
+    usePlatform.setState({ os: "windows" });
+    try {
+      expect(terminalKeyAction(key(stroke), true)).toEqual({ kind: "copy" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+  });
+
+  it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
+    usePlatform.setState({ os: "macos" });
+    expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).not.toEqual({ kind: "copy" });
   });
 
   it("implements macOS conveniences", () => {
@@ -181,6 +229,21 @@ describe("tab names", () => {
     expect(nextTabName(["Local", "Local (2)"])).toBe("Local (3)");
     expect(nextTabName(["Local"], "api")).toBe("api");
   });
+});
+
+describe("tab order", () => {
+  const ids = (tabs: { id: string }[]) => tabs.map((t) => t.id).join("");
+  const tabs = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+  it("moves a dragged tab to the insertion index", () => {
+    expect(ids(reorderTabs(tabs, "a", 3))).toBe("bca");
+    expect(ids(reorderTabs(tabs, "a", 2))).toBe("bac");
+    expect(ids(reorderTabs(tabs, "c", 0))).toBe("cab");
+    expect(ids(reorderTabs(tabs, "b", 1))).toBe("abc");
+    expect(ids(reorderTabs(tabs, "b", 2))).toBe("abc");
+  });
+
+  it("ignores unknown tabs", () => expect(ids(reorderTabs(tabs, "x", 0))).toBe("abc"));
 });
 
 describe("terminal find", () => {
@@ -279,6 +342,17 @@ describe("terminalFont", () => {
     expect(font.family).not.toContain("var(");
   });
 
+  it("resolves bundled Inter in inherited, independent and fallback selections", () => {
+    expect(terminalFont(t, { ...editor, fontFamily: "Inter" }, BASE).family).toMatch(/^"Inter Variable", "Inter",/);
+    expect(terminalFont({ ...t, useEditorFont: false, fontFamily: "Inter" }, editor, BASE).family).toMatch(
+      /^"Inter Variable", "Inter",/,
+    );
+    expect(terminalFont({ ...t, fallbackFontFamily: "Inter" }, editor, BASE).family).toContain(
+      '"Inter Variable", "Inter"',
+    );
+    expect(terminalFont(t, { ...editor, fallbackFont: "Inter" }, BASE).family).toContain('"Inter Variable", "Inter"');
+  });
+
   it("prefers the terminal's fallback over the editor's", () => {
     const font = terminalFont(
       { ...t, fallbackFontFamily: "Sarasa Mono SC" },
@@ -315,7 +389,7 @@ describe("terminalFont", () => {
 describe("terminal tab titles", () => {
   const tab: TerminalTab = { id: "t1", name: "Local", customName: null, panes: ["s1"], layout: "s1", activePane: "s1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p" },
+    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p", follow: true },
   });
 
   it("shows the default name at the prompt, whatever title the shell sets", () => {

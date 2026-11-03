@@ -9,17 +9,26 @@ import {
   call,
   commands,
   isTauri,
+  isCancelled,
+  nextRequestId,
+  type RequestId,
   type OutputChunk,
   type RunConfig,
   type RunId,
   type TestCaseReport,
 } from "@/platform/ipc";
-import { formatCompileErrors, isJvmApplication, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
+import {
+  consoleVmArgs,
+  findJavaModule,
+  isJvmApplication,
+  parseJavaArgs,
+  prepareJavaLaunch,
+} from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
 import { ConsoleModel } from "./console";
 import { jvmFrameTarget } from "./links";
 import { confirmRerun, confirmTerminate } from "./dialogs";
@@ -31,13 +40,17 @@ import {
   type TestEvent,
   type TestOutputParser,
 } from "./testing";
+import { GoTestOutput } from "./testing/go";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
+import { tomcatBrowserUrl } from "./tomcat";
+import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -65,11 +78,14 @@ export interface RunSession {
 }
 
 interface SessionRuntime {
+  resolveRequest?: { id: RequestId; controller: AbortController };
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
+  goOutput: GoTestOutput | null;
   queue: OutputChunk[];
-  flushHandle: number | null;
+  /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
+  flushHandle: { raf: number } | { timeout: number } | null;
   /** Bumped per start so output from a previous run in the same tab is ignored. */
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
@@ -154,6 +170,7 @@ function writeSelected(root: string, id: string | null) {
 }
 
 export async function loadConfigs(): Promise<void> {
+  if (useProject.getState().project?.trusted === false) return;
   const root = useProject.getState().project?.root;
   if (!root) {
     useRun.setState({ configs: [], loaded: false, selectedId: null });
@@ -245,8 +262,11 @@ function persistTemporary() {
   );
 }
 
-export function isTemporary(id: string | null | undefined): boolean {
-  return !!id && useRun.getState().temporary.includes(id);
+/** IDEA's `isConfigurationFromContext` for an Application: the same main class of the same module. */
+function sameApplication(a: RunConfig, b: RunConfig): boolean {
+  if (!isJvmApplication(a) || !isJvmApplication(b)) return false;
+  const main = parseJavaArgs(a.args).mainClass;
+  return main !== null && main === parseJavaArgs(b.args).mainClass && (a.module ?? a.cwd) === (b.module ?? b.cwd);
 }
 
 /**
@@ -256,7 +276,10 @@ export function isTemporary(id: string | null | undefined): boolean {
  */
 export function adoptTemporary(config: RunConfig): RunConfig {
   const state = useRun.getState();
-  const existing = state.configs.find((c) => c.id === config.id);
+  // IDEA's `findExistingConfiguration`: a configuration the user keeps for this context wins.
+  const existing =
+    state.configs.find((c) => c.id === config.id) ??
+    state.configs.find((c) => !state.temporary.includes(c.id) && sameApplication(c, config));
   if (existing && !state.temporary.includes(config.id)) {
     selectConfig(existing.id);
     return existing;
@@ -265,6 +288,7 @@ export function adoptTemporary(config: RunConfig): RunConfig {
   const busy = new Set(
     state.sessions.filter((x) => x.status === "running" || x.status === "starting").map((x) => x.config.id),
   );
+  for (const session of useDebugRunSessions.getState().sessions) if (session.configId) busy.add(session.configId);
   while (temporary.length > MAX_TEMPORARY) {
     const evict = temporary.find((id) => id !== config.id && !busy.has(id)) ?? temporary[0]!;
     temporary = temporary.filter((id) => id !== evict);
@@ -291,14 +315,12 @@ export async function saveTemporary(id: string): Promise<void> {
   selectConfig(id);
 }
 
-/** Whether the chooser's Delete may remove `id` (user and temporary configurations; detected ones come back). */
+/** Whether the chooser's Delete may remove `id`. */
 export function canDeleteConfig(id: string): boolean {
-  const { configs, temporary } = useRun.getState();
-  const config = configs.find((c) => c.id === id);
-  return !!config && (temporary.includes(id) || !config.detected);
+  return useRun.getState().configs.some((c) => c.id === id);
 }
 
-/** Deletes a user or temporary configuration. */
+/** Deletes a configuration, suppressing detections and preserving temporary behavior. */
 export async function deleteConfig(id: string): Promise<void> {
   if (!canDeleteConfig(id)) return;
   const { configs, temporary, selectedId } = useRun.getState();
@@ -308,12 +330,25 @@ export async function deleteConfig(id: string): Promise<void> {
     persistTemporary();
     return;
   }
-  await saveUserConfigs(configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id));
+  await saveUserConfigs(
+    configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id),
+    configs.find((c) => c.id === id)?.detected ? [id] : [],
+  );
 }
 
 /** Persists user configurations and reloads the merged list. */
-export async function saveUserConfigs(user: RunConfig[]): Promise<void> {
-  await call(commands.runSaveConfigs(user.map((c) => ({ ...c, detected: false }))));
+export async function saveUserConfigs(user: RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  user = await Promise.all(
+    user.map(async (config) =>
+      isJvmApplication(config) && config.module == null ? { ...config, module: await findJavaModule(config) } : config,
+    ),
+  );
+  await call(
+    commands.runSaveConfigs(
+      user.map((c) => ({ ...c, detected: false })),
+      removedDetectedIds,
+    ),
+  );
   await loadConfigs();
 }
 
@@ -335,13 +370,13 @@ function getSession(id: string): RunSession | undefined {
 function flush(sessionId: string) {
   const rt = runtimes.get(sessionId);
   if (!rt) return;
-  if (rt.flushHandle !== null) {
-    cancelAnimationFrame(rt.flushHandle);
-    rt.flushHandle = null;
-  }
+  cancelFlush(rt);
   if (rt.queue.length === 0) return;
   const chunks = rt.queue.splice(0);
-  for (const c of chunks) rt.console.append(c);
+  for (const c of chunks) {
+    const text = c.kind === "stdout" && rt.goOutput ? rt.goOutput.feed(c.text) : c.text;
+    if (text) rt.console.append({ ...c, text });
+  }
   bump(sessionId);
 }
 
@@ -353,7 +388,39 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     return;
   }
   rt.queue.push(chunk);
-  if (rt.flushHandle === null) rt.flushHandle = requestAnimationFrame(() => flush(sessionId));
+  if (rt.flushHandle === null) {
+    // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
+    // pile up until the console is shown again (issue #319: the console "kept
+    // scrolling" the previous run's backlog after switching back to it).
+    rt.flushHandle = document.hidden
+      ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
+      : { raf: requestAnimationFrame(() => flush(sessionId)) };
+  }
+}
+
+function cancelFlush(rt: SessionRuntime) {
+  if (rt.flushHandle === null) return;
+  if ("raf" in rt.flushHandle) cancelAnimationFrame(rt.flushHandle.raf);
+  else clearTimeout(rt.flushHandle.timeout);
+  rt.flushHandle = null;
+}
+
+/**
+ * `visibilitychange`: rAF stops firing while the page is hidden, so any pending
+ * rAF flush is moved to a timeout (and back on return) — otherwise output that
+ * arrives while a background tab is hidden would only land when it is shown.
+ */
+export function rescheduleConsoleFlushes() {
+  for (const [id, rt] of runtimes) {
+    if (rt.flushHandle === null) continue;
+    const hidden = document.hidden;
+    const isTimeout = "timeout" in rt.flushHandle;
+    if (hidden === isTimeout) continue;
+    cancelFlush(rt);
+    rt.flushHandle = hidden
+      ? { timeout: window.setTimeout(() => flush(id), 100) }
+      : { raf: requestAnimationFrame(() => flush(id)) };
+  }
 }
 
 /** Settings › Console › Override console cycle buffer size, in characters (null = line cap only). */
@@ -374,13 +441,18 @@ export function applyConsoleSettings() {
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
   const parser = config.isTest ? createTestParser(config) : null;
+  const goOutput =
+    tests && parser && frameworkFor(config) === "go"
+      ? new GoTestOutput((line) => tests.apply(parser.feed(line)))
+      : null;
   const runtime: SessionRuntime = {
+    goOutput,
     tests,
     parser,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
-        if (parser && tests && kind !== "system") tests.apply(parser.feed(text));
+        if (parser && tests && kind !== "system" && !(kind === "stdout" && goOutput)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
       },
     }),
@@ -499,7 +571,7 @@ export async function startRun(
     const prev = runtimes.get(session.id);
     const rt = newRuntime(config);
     rt.generation = (prev?.generation ?? 0) + 1;
-    if (prev?.flushHandle != null) cancelAnimationFrame(prev.flushHandle);
+    if (prev) cancelFlush(prev);
     runtimes.set(session.id, rt);
     session = {
       ...session,
@@ -536,11 +608,21 @@ export async function startRun(
     useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
   }
   bump(session.id);
+  // The Services tool window lists the configuration again after a restart.
+  recordRun(config.id);
   const sessionId = session.id;
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
   if (options.onLine) rt.lineListeners.push(options.onLine);
+  let browserOpened = false;
   rt.lineListeners.push((line) => {
+    if (config.kind === "tomcat" && /Server startup in/.test(line)) {
+      patchSession(sessionId, { httpPort: Number(config.params?.httpPort || "8080") });
+      if (!browserOpened && config.params?.openBrowser === "true") {
+        browserOpened = true;
+        void openUrl(tomcatBrowserUrl(config));
+      }
+    }
     const port = startedPort(line);
     if (port !== null && runtimes.get(sessionId)?.generation === generation && getSession(sessionId)?.httpPort !== port)
       patchSession(sessionId, { httpPort: port });
@@ -574,7 +656,10 @@ export async function startRun(
       const resolved = await resolveJvmApplication(sessionId, launch);
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
       if (!resolved) {
-        patchSession(sessionId, { status: "failed", endedAt: Date.now() });
+        patchSession(sessionId, {
+          status: getSession(sessionId)?.stopped ? "finished" : "failed",
+          endedAt: Date.now(),
+        });
         return getSession(sessionId) ?? null;
       }
       launch = resolved;
@@ -582,6 +667,7 @@ export async function startRun(
     const prepare = typeFor(launch.kind)?.prepareLaunch;
     if (prepare) {
       launch = await prepare(launch);
+      if (launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     }
     // Debug launches read the agent's output lines: never through a terminal.
@@ -589,7 +675,9 @@ export async function startRun(
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
     const started = launch.isTest ? withTestReporting(launch) : launch;
+    const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
+    console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
     // The process may already have exited (fast commands) before we got its id.
@@ -625,8 +713,6 @@ function revealSession(sessionId: string) {
   }
 }
 
-const pathSeparator = () => (typeof navigator !== "undefined" && /win/i.test(navigator.platform) ? ";" : ":");
-
 /**
  * Builds the module (jdtls workspace build) and resolves `${classpath}` and the
  * project JDK of a Java application configuration. Null (and a console message) on failure.
@@ -641,15 +727,16 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     say(`No main class in '${config.name}': expected java [options] -cp \${classpath} <main class> [args]\n`, "stderr");
     return null;
   }
-  if (!parsed.classpath) return config;
-  say(`Building and resolving the classpath of ${parsed.mainClass}…\n`);
+  if (!parsed.classpath) return { ...config, args: [...consoleVmArgs(config), ...config.args] };
+  const rt = runtime(sessionId)!;
+  const request = { id: nextRequestId(), controller: new AbortController() };
+  rt.resolveRequest = request;
   try {
-    const info = await call(commands.javaResolveLaunch(config.cwd ?? "", parsed.classpath === "test", true));
-    if (info.build === "withErrors")
-      say("Build completed with errors; launching with the last compiled classes.\n", "stderr");
-    if (info.build === "failed") say("Build failed; launching with the last compiled classes.\n", "stderr");
-    const compileReport = formatCompileErrors(info);
-    if (compileReport) say(compileReport, "stderr");
+    const { info, resolved } = await prepareJavaLaunch(config, {
+      request: request.id,
+      signal: request.controller.signal,
+      report: say,
+    });
     // No installed JDK is new enough for the module: offer to download one.
     const jdkHint = info.hints.find((h) => downloadJdkActions(h).length);
     if (jdkHint)
@@ -661,13 +748,13 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
         body: jdkHint,
         actions: downloadJdkActions(jdkHint),
       });
-    if (!info.classPaths.length) {
-      say("The classpath is empty: is the module imported by the Java language server?\n", "stderr");
-      return null;
-    }
-    return resolveJavaCommand(config, info, pathSeparator());
+    return resolved;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    if (request.controller.signal.aborted || isCancelled(e)) {
+      if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
+      return null;
+    }
     say(`Cannot resolve the classpath: ${message}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
@@ -679,6 +766,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       actions,
     });
     return null;
+  } finally {
+    if (rt.resolveRequest === request) delete rt.resolveRequest;
   }
 }
 
@@ -694,6 +783,10 @@ function finishSession(sessionId: string, code: number | null) {
     void (async () => {
       if (runtimes.get(sessionId) !== rt) return;
       flush(sessionId);
+      if (rt.goOutput) {
+        const text = rt.goOutput.end();
+        if (text) rt.console.append({ kind: "stdout", text });
+      }
       rt.console.flush();
       if (rt.tests && rt.parser) {
         rt.tests.apply(rt.parser.end?.() ?? []);
@@ -788,7 +881,15 @@ export function onRunExited(runId: RunId, code: number | null) {
 
 export async function stopSession(sessionId: string): Promise<void> {
   const session = getSession(sessionId);
-  if (!session || session.runId === null || session.status !== "running") return;
+  if (!session) return;
+  const request = runtimes.get(sessionId)?.resolveRequest;
+  if (session.status === "starting" && request) {
+    request.controller.abort();
+    patchSession(sessionId, { stopped: true, status: "finished", endedAt: Date.now() });
+    await commands.cancelRequest(request.id);
+    return;
+  }
+  if (session.runId === null || session.status !== "running") return;
   patchSession(sessionId, { stopped: true });
   try {
     await call(commands.runStop(session.runId));
@@ -803,7 +904,7 @@ export async function stopSession(sessionId: string): Promise<void> {
 }
 
 /** Resolves once the given sessions' processes exited (or after `timeoutMs`). */
-function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
   const live = () =>
     sessionIds.some((id) => {
       const s = getSession(id);
@@ -948,9 +1049,9 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
 export function closeSession(sessionId: string) {
   const session = getSession(sessionId);
   if (!session) return;
-  if (session.status === "running") void stopSession(sessionId);
+  if (session.status === "running" || session.status === "starting") void stopSession(sessionId);
   const rt = runtimes.get(sessionId);
-  if (rt?.flushHandle != null) cancelAnimationFrame(rt.flushHandle);
+  if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);
   useRun.setState((s) => {
     const index = s.sessions.findIndex((x) => x.id === sessionId);
@@ -970,7 +1071,7 @@ export function runningSessions(): RunSession[] {
 /** Stops everything and forgets sessions (project closed). */
 export function resetRuns() {
   for (const s of runningSessions()) void stopSession(s.id);
-  for (const rt of runtimes.values()) if (rt.flushHandle != null) cancelAnimationFrame(rt.flushHandle);
+  for (const rt of runtimes.values()) cancelFlush(rt);
   runtimes.clear();
   pendingExits.clear();
   useRun.setState({

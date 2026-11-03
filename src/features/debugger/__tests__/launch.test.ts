@@ -242,6 +242,20 @@ describe("run config → launch config", () => {
     expect(extra(dap)).toEqual({ env: ["K=v"] });
   });
 
+  it("maps CMake debug-info paths to the editor's canonical source root", () => {
+    const config = rc({
+      kind: "native",
+      command: "/private/tmp/project/build/app",
+      debugAdapter: "lldb-dap",
+      env: { K: "v" },
+      params: { cmakeSourceRoot: "/tmp/project", cmakeCanonicalSourceRoot: "/private/tmp/project" },
+    });
+    expect(extra(launchConfigFor(config, "/private/tmp/project")!)).toEqual({
+      env: ["K=v"],
+      sourceMap: [["/tmp/project", "/private/tmp/project"]],
+    });
+  });
+
   it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
     const project = rc({
       kind: "godot",
@@ -258,4 +272,72 @@ describe("run config → launch config", () => {
     const relative = launchConfigFor({ ...project, cwd: null, args: ["--path", "game", "menu.tscn"] }, "/p")!;
     expect(extra(relative)).toEqual({ project: "/p/game", scene: "res://menu.tscn" });
   });
+});
+
+describe("Go build configuration fields", () => {
+  it("separates split build flags from program args for legacy run and test configs", () => {
+    for (const sub of ["run", "test"]) {
+      const launch = launchConfigFor(
+        rc({
+          kind: "go",
+          command: "go",
+          args: [sub, "-tags", "demo", "-gcflags", "all=-N -l", "./cmd/app", "--", "hello"],
+          debugAdapter: "delve",
+        }),
+        "/p",
+      )!;
+      expect(launch.program).toBe("/p/cmd/app");
+      expect(launch.args).toEqual(["hello"]);
+      expect(JSON.parse(launch.extraJson!).buildFlags).toBe("-tags demo -gcflags 'all=-N -l'");
+    }
+  });
+  it("uses the selected module for building and the working directory for execution", () => {
+    const launch = launchConfigFor(
+      rc({
+        kind: "go",
+        command: "go",
+        args: ["build", "."],
+        cwd: "runtime",
+        debugAdapter: "delve",
+        params: {
+          goKind: "build",
+          scope: "directory",
+          target: "cmd/app",
+          module: "backend",
+          toolArgs: "-tags demo",
+          programArgs: 'hello "two words"',
+          useTags: "true",
+        },
+      }),
+      "/p",
+    )!;
+    expect(launch.program).toBe("/p/backend/cmd/app");
+    expect(launch.cwd).toBe("/p/runtime");
+    expect(launch.args).toEqual(["hello", "two words"]);
+    expect(JSON.parse(launch.extraJson!)).toMatchObject({
+      mode: "debug",
+      __goToolArgs: ["-tags", "demo"],
+      __goUseTags: true,
+    });
+  });
+});
+
+it("netcoredbg launches the evaluated DLL with resolved profile arguments, env and cwd", () => {
+  const c = rc({
+    kind: "dotnet",
+    command: "dotnet",
+    debugAdapter: "netcoredbg",
+    cwd: "/repo/work",
+    env: { ASPNETCORE_URLS: "http://localhost:5165", DEMO: "override" },
+    params: { targetPath: "/repo/custom/Renamed.dll", programArgs: "--name 'hello world'", profileArgs: "--profile" },
+  });
+  expect(launchConfigFor(c, "/repo")).toMatchObject({
+    adapter: "netcoredbg",
+    program: "/repo/custom/Renamed.dll",
+    args: ["--name", "hello world"],
+    cwd: "/repo/work",
+    env: c.env,
+  });
+  expect(launchConfigFor({ ...c, params: { ...c.params, programArgs: "" } }, "/repo")?.args).toEqual(["--profile"]);
+  expect(launchConfigFor({ ...c, params: {} }, "/repo")).toBeNull();
 });

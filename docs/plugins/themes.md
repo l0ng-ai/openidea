@@ -109,8 +109,8 @@ There is no build step. The package *is* the folder.
 1. Copy `templates/theme-plugin` and rename `id`, `name` and the theme files.
 2. Edit the colours. Keep `kind` truthful (`light` for light backgrounds).
 3. **Install:** *Settings › Plugins › ⚙ › Install Plugin from Disk…* (or the
-   *Install Plugin from Disk…* action) and pick the package folder. The
-   manifest and the files it references are copied to
+   *Install Plugin from Disk…* action) and pick the package's `plugin.toml`, or
+   a `.zip` of the folder. The manifest and the files it references are copied to
    `<app-data>/plugins/<id>/`.
 4. **Apply:** in *Settings › Plugins*, select the plugin and press *Apply* next
    to the theme. *Use Default Theme* switches back.
@@ -295,7 +295,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-222 themeable tokens: 116 in the UI theme file, 106 in the editor colour scheme file.
+223 themeable tokens: 117 in the UI theme file, 106 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -304,6 +304,7 @@ a token.
 | `--bg-app` | `#191a1c` | `#ffffff` |
 | `--bg-elev` | `#212326` | `#f7f8f9` |
 | `--bg-popup` | `#26282c` | `#ffffff` |
+| `--bg-floating-toolbar` | `#33353b` | `#ffffff` |
 | `--bg-hover` | `#2e2f30` | `#ededed` |
 | `--bg-selected` | `#2a4371` | `#d0dffe` |
 | `--bg-selected-strong` | `#2e4d89` | `#bdd3ff` |

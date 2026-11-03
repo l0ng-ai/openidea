@@ -13,11 +13,21 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    /// Project window membership or selection changed.
+    WindowGroupsChanged,
+    ProjectTrustChanged {
+        root: crate::IpcPath,
+        trusted: bool,
+    },
     /// Files or directories changed on disk (after debouncing, ignore rules applied).
     FsChanged {
         created: Vec<crate::IpcPath>,
         modified: Vec<crate::IpcPath>,
         removed: Vec<crate::IpcPath>,
+    },
+    /// Excluded or ignored folders whose contents changed; they stay out of `FsChanged`.
+    ExcludedDirsChanged {
+        dirs: Vec<crate::IpcPath>,
     },
     /// The backend changed a document (reload from disk, formatting, refactoring).
     /// The UI applies `changes` on top of `base_version`, yielding `version`.
@@ -26,16 +36,28 @@ pub enum IdeEvent {
         base_version: u32,
         version: u32,
         changes: Vec<TextChange>,
+        /// Part of a grouped transaction; the editor must not record a file-local undo.
+        #[serde(default)]
+        #[specta(optional)]
+        workspace_edit: bool,
     },
     /// A document's dirty flag changed (saved / modified externally).
     DocDirty {
         doc: DocId,
         dirty: bool,
     },
-    /// An open document's language changed (Settings › File Types, Override File Type).
+    /// A complete workspace edit can be undone as one operation.
+    WorkspaceEditApplied {
+        id: u32,
+        paths: Vec<crate::IpcPath>,
+    },
+    /// An open document's language changed (Settings › File Types, Override File
+    /// Type), or its UI mode (a framework's root marker appeared or went).
     DocLanguage {
         doc: DocId,
         language: crate::LanguageId,
+        /// See `DocumentInfo::ui_mode`.
+        ui_mode: Option<String>,
     },
     /// Full replacement of diagnostics for one file from one producer.
     Diagnostics {
@@ -68,6 +90,12 @@ pub enum IdeEvent {
         name: String,
         status: ServerStatus,
         message: Option<String>,
+    },
+    /// A running server lacks a capability; the UI offers the managed tool as a replacement.
+    LanguageServerWarning {
+        name: String,
+        message: String,
+        install_tool: String,
     },
     /// A stopped language server left the project's list (disabled in settings, or a
     /// fallback that a preferred server took over from again).
@@ -112,10 +140,21 @@ pub enum IdeEvent {
         id: u64,
         prompt: String,
         kind: AskpassKind,
+        /// The dialog offers "Remember" for the answer (git HTTPS passwords).
+        remember: bool,
     },
     /// Prompt `id` was answered (in any window) or gave up.
     AskpassDone {
         id: u64,
+    },
+    /// The kernel of an open notebook changed state (`starting`, `idle`, `busy`,
+    /// `dead`); `message` says why it failed to start or died.
+    NotebookKernel {
+        /// Backend document incarnation; stale queued events cannot target a reopen.
+        id: String,
+        path: crate::IpcPath,
+        state: String,
+        message: Option<String>,
     },
 }
 

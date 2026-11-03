@@ -10,7 +10,7 @@ import { editorsFor, activeEditor, type EditorDocContext, type TextEditorHandle 
 import { call, commands, type DebugSessionId, type StepInTarget } from "@/platform/ipc";
 import { suspendKeyboardDispatch } from "@/platform/keymap";
 import { notifications } from "@/workbench/contributions";
-import { useExecutionPoint } from "../state";
+import { useExecutionPoint, resumeExecution } from "../state";
 import { useOverlays, type InlineStepTarget } from "../ui/popoverStore";
 import styles from "./editor.module.css";
 
@@ -139,7 +139,7 @@ export function chooseStepTarget(id?: number) {
   const target = id ?? s.inline?.ranges[s.inline.index]?.id;
   cancelSmartStep();
   if (target == null) return;
-  void call(commands.debugStepInTarget(s.session, s.thread, target)).catch((e) =>
+  void resumeExecution(s.session, () => call(commands.debugStepInTarget(s.session, s.thread, target))).catch((e) =>
     notifications().notify({
       group: "run",
       level: "error",

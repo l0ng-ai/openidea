@@ -75,6 +75,18 @@
   flex: 0 1 260px;
   min-width: 100px;
 }
+.filterGroup {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+.filterHidden {
+  visibility: hidden;
+}
 .filterButton {
   flex: none;
   height: 24px;
@@ -144,7 +156,7 @@
   top: 0;
   left: 0;
   width: 100%;
-  height: 22px;
+  height: 26px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -153,19 +165,21 @@
   cursor: default;
   font-size: var(--fs-ui);
 }
-/* View Options › Highlight › Current Branch (before .row:hover / .selected so they win). */
+/* View Options › Highlight › Current Branch: commits reachable from HEAD are tinted. */
 .currentBranch {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  --log-row-bg: var(--bg-log-current-branch);
+  background: var(--log-row-bg);
 }
 .row:hover {
   background: var(--bg-tree-hover);
 }
 .selected,
 .selected:hover {
-  background: var(--bg-tree-selected-inactive);
+  --log-row-bg: var(--bg-tree-selected-inactive);
+  background: var(--log-row-bg);
 }
 .list:focus-within .selected {
-  background: var(--bg-tree-selected);
+  --log-row-bg: var(--bg-tree-selected);
 }
 .colSubject {
   flex: 1;
@@ -173,8 +187,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  /* Let graph endpoints overlap adjacent rows; text is clipped by .subject. */
-  overflow: visible;
+  /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 .colAuthor {
   flex: none;
@@ -220,7 +235,9 @@
   overflow: visible;
 }
 .refs {
-  flex: none;
+  flex: 0 1 auto;
+  /* Shrinks to the first label's icon when the graph leaves no room. */
+  min-width: 11px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -232,6 +249,7 @@
   margin-left: 0;
 }
 .ref {
+  --tag-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.5 1.5h4.2l4.8 4.8-4.2 4.2-4.8-4.8z' fill='none' stroke='black' stroke-width='1.1' stroke-linejoin='round'/%3E%3Ccircle cx='4' cy='4' r='.9'/%3E%3C/svg%3E");
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -240,16 +258,18 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
   max-width: 180px;
 }
-/* IDEA's branch label: a small flag in the ref's colour. */
+/* Outlined tag glyph in the ref's colour. */
 .ref::before {
   content: "";
   flex: none;
-  width: 7px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
   background: var(--ref-color);
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+  -webkit-mask: var(--tag-glyph) center / contain no-repeat;
+  mask: var(--tag-glyph) center / contain no-repeat;
 }
 .refHead {
   --ref-color: var(--warning);

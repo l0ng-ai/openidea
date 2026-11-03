@@ -54,6 +54,8 @@ pub(crate) struct Session {
     /// Resolved path → the path as the IDE knows it, for adapters given resolved paths.
     resolved_paths: Mutex<HashMap<PathBuf, PathBuf>>,
     progress: Mutex<HashMap<String, TaskId>>,
+    pub kotlin_relay: Mutex<Option<crate::kotlin_jdwp::StartupRelay>>,
+    pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
 }
 
 /// Adapters that only match files by their resolved path: Godot maps a script to
@@ -95,6 +97,8 @@ impl Session {
             breakpoint_ids: Mutex::new(HashMap::new()),
             resolved_paths: Mutex::new(HashMap::new()),
             progress: Mutex::new(HashMap::new()),
+            kotlin_relay: Mutex::new(None),
+            kotlin_mirror: Mutex::new(None),
         }
     }
 
@@ -104,6 +108,14 @@ impl Session {
 
     /// `path` as sent to the adapter (resolved for [`RESOLVES_PATHS`] adapters).
     pub fn adapter_path(&self, path: &Path) -> PathBuf {
+        if let Some(path) = self.kotlin_mirror.lock().as_ref().and_then(|m| m.adapter_path(path)) {
+            return path;
+        }
+        if self.adapter == "java-debug" {
+            let native = java_source_path(&path.to_string_lossy());
+            self.resolved_paths.lock().insert(native.clone(), path.to_path_buf());
+            return native;
+        }
         if !RESOLVES_PATHS.contains(&self.adapter.as_str()) {
             return path.to_path_buf();
         }
@@ -118,7 +130,14 @@ impl Session {
 
     /// A path from the adapter as the IDE knows it (undoes [`Session::adapter_path`]).
     pub fn client_path(&self, path: &str) -> Option<PathBuf> {
-        self.resolved_paths.lock().get(Path::new(path)).cloned()
+        if let Some(real) = self.kotlin_mirror.lock().as_ref().and_then(|m| m.client_path(Path::new(path))) {
+            return Some(real);
+        }
+        let key = if self.adapter == "java-debug" { java_source_path(path) } else { PathBuf::from(path) };
+        self.resolved_paths.lock().get(&key).cloned().or_else(|| {
+            (self.adapter == "java-debug" && is_windows_source_path(path))
+                .then(|| PathBuf::from(path.replace('\\', "/")))
+        })
     }
 
     pub fn supports(&self, cap: &str) -> bool {
@@ -236,6 +255,7 @@ impl Session {
 
     /// Kills the adapter and every debuggee we started.
     pub fn kill_processes(&self) {
+        self.kotlin_relay.lock().take();
         if let Some(mut c) = self.adapter_process.lock().take() {
             let _ = c.start_kill();
         }
@@ -243,6 +263,19 @@ impl Session {
             let _ = c.start_kill();
         }
     }
+}
+
+// java-debug treats a forward-slash drive path as a URI (scheme "C").
+// Keep DAP path mode, but use native Windows separators for Java source lookup.
+fn is_windows_source_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'/' | b'\\'))
+        || path.starts_with("//")
+        || path.starts_with(r"\\")
+}
+
+fn java_source_path(path: &str) -> PathBuf {
+    if is_windows_source_path(path) { PathBuf::from(path.replace('/', r"\")) } else { PathBuf::from(path) }
 }
 
 fn with_conditions(v: &mut Value, condition: Option<&str>, hit_condition: Option<&str>) {
@@ -297,7 +330,10 @@ pub(crate) async fn event_loop(
     }
 }
 
-async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, body: Value) {
+async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut body: Value) {
+    if let Some(mirror) = s.kotlin_mirror.lock().as_ref() {
+        mirror.translate(&mut body);
+    }
     let int = |k: &str| body.get(k).and_then(Value::as_i64);
     let str_ = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_owned);
     match event {
@@ -485,4 +521,75 @@ fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream
             sink.emit(IdeEvent::Debug { session, event: DebugEvent::Output { category: category.into(), output } });
         }
     });
+}
+
+/// Launch with the IDE's resolved runtime and classpath; the adapter only attaches.
+pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) -> ide_core::IdeResult<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let port = crate::adapter::free_port()?;
+    let java = args.get("javaExec").and_then(Value::as_str).unwrap_or("java");
+    let strings = |key: &str| -> Vec<String> {
+        args.get(key)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default()
+    };
+    let classpath =
+        std::env::join_paths(strings("classPaths")).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+    let mut cmd = tokio::process::Command::new(java);
+    ide_core::process::prepare(cmd.as_std_mut());
+    cmd.args(strings("vmArguments"))
+        .arg(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}"))
+        .arg("-cp")
+        .arg(classpath);
+    let modules = strings("modulePaths");
+    if !modules.is_empty() {
+        cmd.arg("--module-path")
+            .arg(std::env::join_paths(modules).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?);
+    }
+    cmd.arg(
+        args.get("mainClass")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ide_core::IdeError::invalid("Missing Kotlin main class"))?,
+    )
+    .args(strings("programArgs"))
+    .current_dir(&s.spec.cwd)
+    .envs(ide_core::process::shell_env())
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
+    if let Some(env) = args.get("env").and_then(Value::as_object) {
+        for (k, v) in env {
+            if let Some(v) = v.as_str() {
+                cmd.env(k, v);
+            }
+        }
+    }
+    let mut child = cmd.spawn()?;
+    if let Some(err) = child.stderr.take() {
+        forward_output(s, err, "stderr");
+    }
+    let mut stdout =
+        BufReader::new(child.stdout.take().ok_or_else(|| ide_core::IdeError::internal("Missing JVM stdout"))?);
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let mut line = String::new();
+            if stdout.read_line(&mut line).await? == 0 {
+                return Err(ide_core::IdeError::unavailable("JVM exited before starting its debug listener"));
+            }
+            if line.contains("Listening for transport dt_socket") {
+                return Ok(());
+            }
+            s.emit(DebugEvent::Output { category: "stdout".into(), output: line });
+        }
+    })
+    .await
+    .map_err(|_| ide_core::IdeError::unavailable("JVM did not start its debug listener"))??;
+    forward_output(s, stdout, "stdout");
+    s.debuggees.lock().push(child);
+    args["hostName"] = json!("127.0.0.1");
+    args["port"] = json!(port);
+    args["timeout"] = json!(10000);
+    Ok(())
 }

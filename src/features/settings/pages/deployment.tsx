@@ -5,10 +5,10 @@
  */
 import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { call, commands, IpcError, type RemoteEntry } from "@/platform/ipc";
-import { useTx, tx } from "@/platform/i18n";
-import type { DeploymentServerValid } from "@/platform/remoteSettings";
-import { Badge, Button, Checkbox, Dialog, Icon, IconButton, Input, Spinner, T, Tabs } from "@/ui";
+import { call, commands, IpcError, type FsConnection, type RemoteEntry } from "@/platform/ipc";
+import { useTx, tx, txTemplate } from "@/platform/i18n";
+import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
+import { Badge, Button, Checkbox, Dialog, Icon, IconButton, Input, Select, Spinner, T, Tabs } from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
 import { useSetting } from "../components/context";
@@ -29,7 +29,7 @@ import { PageLink } from "./workflowControls";
 import workflow from "./Workflow.module.css";
 import styles from "./Deployment.module.css";
 
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : String(e));
 
 // ---------------------------------------------------------------------------
 // Connection problems: trust an unknown host key or enter the password.
@@ -96,12 +96,12 @@ function ConnectionProblem({ ssh, error, onRetry }: { ssh: string; error: unknow
 // Remote folder chooser (Root path › Browse…)
 
 function RemoteFolderDialog({
-  ssh,
+  connection,
   initial,
   onChoose,
   onClose,
 }: {
-  ssh: string;
+  connection: FsConnection;
   initial: string;
   onChoose: (path: string) => void;
   onClose: () => void;
@@ -111,6 +111,7 @@ function RemoteFolderDialog({
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<{ key: string; folders?: RemoteEntry[]; error?: unknown } | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const connectionKey = JSON.stringify(connection);
   const key = `${path}\n${attempt}`;
   const current = result?.key === key ? result : null;
   const folders = current ? (current.folders ?? []) : null;
@@ -118,7 +119,7 @@ function RemoteFolderDialog({
 
   useEffect(() => {
     let live = true;
-    call(commands.remoteList(ssh, path)).then(
+    call(commands.remoteList(JSON.parse(connectionKey) as FsConnection, path)).then(
       (entries) => {
         if (!live) return;
         // `~` lists the login folder: name it by the absolute path the entries report.
@@ -136,7 +137,7 @@ function RemoteFolderDialog({
     return () => {
       live = false;
     };
-  }, [ssh, path, key]);
+  }, [connectionKey, path, key]);
 
   const go = (next: string) => {
     setDraft(next);
@@ -166,7 +167,7 @@ function RemoteFolderDialog({
   return (
     <Dialog
       open
-      title="Choose Remote Folder"
+      title={connection.kind === "local" ? "Choose Folder" : "Choose Remote Folder"}
       onClose={onClose}
       width={520}
       buttons={[
@@ -193,7 +194,7 @@ function RemoteFolderDialog({
           <IconButton icon="refresh" size="small" title="Refresh" onClick={reload} />
         </form>
         {error ? (
-          <ConnectionProblem ssh={ssh} error={error} onRetry={reload} />
+          <ConnectionProblem ssh={connection.kind === "sftp" ? connection.ssh : ""} error={error} onRetry={reload} />
         ) : (
           <ul
             className={styles.folderList}
@@ -277,15 +278,17 @@ function ConnectionTab({
 }) {
   const [browsing, setBrowsing] = useState(false);
   const [result, setTest] = useState<TestState | null>(null);
-  const test = result?.ssh === server.sshConfig ? result : null;
+  const connection = deploymentConnection(server);
+  const testKey = `${server.kind}:${server.sshConfig}:${server.rootPath}`;
+  const test = result?.ssh === testKey ? result : null;
   const rootId = useId();
 
   const runTest = async () => {
-    const ssh = server.sshConfig;
+    const ssh = testKey;
     setTest({ ssh, kind: "busy" });
     try {
-      const entries = await call(commands.remoteList(ssh, server.rootPath.trim() || "~"));
-      setTest({ ssh, kind: "ok", count: entries.length });
+      await call(commands.deployTestConnection(connection, server.rootPath.trim() || "~"));
+      setTest({ ssh, kind: "ok", count: 0 });
     } catch (e) {
       setTest({ ssh, kind: "error", error: e });
     }
@@ -294,12 +297,25 @@ function ConnectionTab({
   return (
     <div className={styles.panel}>
       <TextField label="Name" value={server.name} onChange={(name) => update({ name })} />
-      <Row label="SSH configuration">
-        <SshConfigSelect value={server.sshConfig} onChange={(sshConfig) => update({ sshConfig })} />
-        <PageLink page="tools.sshConfigurations">
-          <T>Configure…</T>
-        </PageLink>
+      <Row label="Type">
+        <Select
+          aria-label="Type"
+          value={server.kind}
+          options={[
+            { value: "sftp", label: "SFTP" },
+            { value: "local", label: "Local or mounted folder" },
+          ]}
+          onChange={(kind) => update({ kind })}
+        />
       </Row>
+      {server.kind === "sftp" && (
+        <Row label="SSH configuration">
+          <SshConfigSelect value={server.sshConfig} onChange={(sshConfig) => update({ sshConfig })} />
+          <PageLink page="tools.sshConfigurations">
+            <T>Configure…</T>
+          </PageLink>
+        </Row>
+      )}
       <Row label="Root path" htmlFor={rootId} hint="Mappings' deployment paths are relative to this folder.">
         <span className={styles.field}>
           <Input
@@ -307,10 +323,10 @@ function ConnectionTab({
             mono
             className={styles.wide}
             value={server.rootPath}
-            placeholder="Login folder"
+            placeholder={server.kind === "local" ? tx("Folder path") : tx("Login folder")}
             onChange={(e) => update({ rootPath: e.target.value })}
           />
-          <Button size="small" disabled={!server.sshConfig} onClick={() => setBrowsing(true)}>
+          <Button size="small" disabled={server.kind === "sftp" && !server.sshConfig} onClick={() => setBrowsing(true)}>
             <T>Browse…</T>
           </Button>
         </span>
@@ -322,7 +338,11 @@ function ConnectionTab({
         placeholder="http://example.com"
       />
       <div className={styles.testRow}>
-        <Button size="small" disabled={!server.sshConfig || test?.kind === "busy"} onClick={() => void runTest()}>
+        <Button
+          size="small"
+          disabled={(server.kind === "sftp" ? !server.sshConfig : !server.rootPath.trim()) || test?.kind === "busy"}
+          onClick={() => void runTest()}
+        >
           <T>Test Connection</T>
         </Button>
         {test?.kind === "busy" && <Spinner />}
@@ -332,12 +352,15 @@ function ConnectionTab({
           </span>
         )}
       </div>
-      {test?.kind === "error" && (
-        <ConnectionProblem ssh={server.sshConfig} error={test.error} onRetry={() => void runTest()} />
-      )}
+      {test?.kind === "error" &&
+        (server.kind === "sftp" ? (
+          <ConnectionProblem ssh={server.sshConfig} error={test.error} onRetry={() => void runTest()} />
+        ) : (
+          <span className={styles.error}>{errorText(test.error)}</span>
+        ))}
       {browsing && (
         <RemoteFolderDialog
-          ssh={server.sshConfig}
+          connection={connection}
           initial={server.rootPath}
           onClose={() => setBrowsing(false)}
           onChoose={(rootPath) => {
@@ -608,7 +631,18 @@ export const DEPLOYMENT_PAGES: PageSpec[] = [
     order: 365,
     projectScope: true,
     defaultScope: "project",
-    keywords: ["sftp", "ssh", "server", "upload", "remote host", "mappings", "web server", "deploy"],
+    keywords: [
+      "local",
+      "mounted",
+      "sftp",
+      "ssh",
+      "server",
+      "upload",
+      "remote host",
+      "mappings",
+      "web server",
+      "deploy",
+    ],
     sections: [
       {
         options: [

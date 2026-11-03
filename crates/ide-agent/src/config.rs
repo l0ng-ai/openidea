@@ -37,6 +37,16 @@ pub(crate) fn bypass_approvals(provider: &str, config: &[AgentConfigOption]) -> 
     provider == "cursor" && config.iter().any(|o| o.id == CURSOR_APPROVAL && o.current.as_deref() == Some("bypass"))
 }
 
+/// The mode that approves everything without asking (`bypassPermissions`, `yolo`, `full-access`…), if the agent has one.
+pub(crate) fn bypass_mode(options: &[AgentConfigOption]) -> Option<(&AgentConfigOption, &AgentConfigValue)> {
+    let option = options.iter().find(|o| o.category.as_deref() == Some("mode"))?;
+    let value = option.values.iter().find(|v| {
+        let m: String = v.value.to_lowercase().chars().filter(char::is_ascii_lowercase).collect();
+        m.contains("bypass") || m == "yolo" || m.contains("fullaccess") || m == "dangerous"
+    })?;
+    Some((option, value))
+}
+
 /// The settings in a `session/new` or `session/load` result: its select `configOptions`,
 /// plus the older `modes` / `models` fields for what those don't cover.
 pub(crate) fn options_of(result: &Value) -> Vec<AgentConfigOption> {

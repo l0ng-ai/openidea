@@ -41,6 +41,20 @@ const ICONS = {
   "folder-library": "nodes/libraryFolder",
   "folder-github": "nodes/folderGithub",
   module: "nodes/module",
+  "folder-generated-source": "nodes/generatedSource",
+  "folder-generated-test": "nodes/generatedTestRoot",
+  "folder-compiled": "nodes/compiledClassesFolder",
+  "folder-javadoc": "nodes/javaDocFolder",
+  "class-abstract": "nodes/classAbstract",
+  record: "nodes/record",
+  annotation: "nodes/annotation",
+  exception: "nodes/exception",
+  "jvm-test": "nodes/test",
+  "runnable-mark": "nodes/runnableMark",
+  "kotlin-object": "kotlin/objectKotlin",
+  "spring-config": "openidea/runConfigurations/springBoot",
+  "gradle-project": "gradle/gradle",
+  "gradle-module": "gradle/gradleSubproject",
   "spring-boot": "openidea/runConfigurations/springBoot",
   file: "fileTypes/text",
   "file-unknown": "fileTypes/unknown",
@@ -107,14 +121,17 @@ const ICONS = {
   "file-go": "openidea/fileTypes/go",
   "file-gomod": "openidea/fileTypes/goMod",
   "file-gowork": "openidea/fileTypes/goWork",
-  "file-rust": "openidea/fileTypes/rust",
-  "file-cargo": "openidea/fileTypes/cargo",
+  "file-rust": "fileTypes/rust",
+  "file-cargo": "fileTypes/cargo",
+  "file-cargo-lock": "fileTypes/cargoLock",
   "file-ruby": "openidea/fileTypes/ruby",
   "file-lua": "openidea/fileTypes/lua",
   "file-zig": "openidea/fileTypes/zig",
   "file-gdscript": "openidea/fileTypes/gdscript",
   "file-godot": "openidea/fileTypes/godot",
   "file-gdshader": "openidea/fileTypes/gdshader",
+  "file-asciidoc": "openidea/fileTypes/asciidoc",
+  "file-d": "openidea/fileTypes/d",
   "file-dart": "openidea/fileTypes/dart",
   "file-elixir": "openidea/fileTypes/elixir",
   "file-erlang": "openidea/fileTypes/erlang",
@@ -207,6 +224,9 @@ const ICONS = {
   layout: "general/layout",
   split: "general/splitVertically",
   "split-horizontal": "general/splitHorizontally",
+  "editor-only": "general/editorOnly",
+  "editor-preview": "general/editorPreview",
+  "preview-only": "general/previewOnly",
   maximize: "image/fitContent",
   "zoom-in": "openidea/general/zoomIn",
   "zoom-out": "openidea/general/zoomOut",
@@ -221,6 +241,8 @@ const ICONS = {
   hide: "general/hide",
   pin: "general/pin",
   eye: "general/show",
+  "show-read-access": "actions/showReadAccess",
+  "show-write-access": "actions/showWriteAccess",
   lock: "general/locked",
   unlock: "openidea/general/unlocked",
   scratches: "fileTypes/scratches",
@@ -280,6 +302,7 @@ const ICONS = {
   "db-sqlite": "openidea/database/sqlite",
   "db-postgres": "openidea/database/postgres",
   "db-mysql": "openidea/database/mysql",
+  "db-sqlserver": "openidea/database/sqlserver",
   "db-mariadb": "openidea/database/mariadb",
   "db-aurora": "openidea/database/aurora",
   "db-redshift": "openidea/database/redshift",
@@ -393,6 +416,43 @@ const ICONS = {
   "star-outline": "openidea/vcs/notFavorite",
   tag: "openidea/vcs/tag",
   "current-branch": "openidea/vcs/currentBranch",
+  // Code review / GitHub pull requests (collaboration-tools, GitHub plugin, DVCS)
+  "branch-label": "vcs/branchLabel",
+  "current-branch-label": "vcs/currentBranchLabel",
+  "github-pr-open": "github/pullRequestOpen",
+  "github-pr-closed": "github/pullRequestClosed",
+  "github-pr-draft": "github/pullRequestDraft",
+  "github-pr-merged": "github/pullRequestMerged",
+  "github-review": "github/review",
+  "github-review-accepted": "github/reviewAccepted",
+  "github-review-rejected": "github/reviewRejected",
+  "github-timeline": "github/timeline",
+  "github-issue-open": "github/issueOpened",
+  "github-issue-closed": "github/issueClosed",
+  "github-local-branch": "github/localBranch",
+  "github-warning": "github/githubWarning",
+  "add-emoji": "github/addEmoji",
+  "add-emoji-hovered": "github/addEmojiHovered",
+  send: "github/send",
+  "send-hovered": "github/sendHovered",
+  "review-comment": "github/comment",
+  "review-comment-unread": "github/review/commentUnread",
+  "review-comment-hovered": "github/review/commentHovered",
+  "review-comment-read-many": "github/review/commentReadMany",
+  "review-comment-unread-many": "github/review/commentUnreadMany",
+  "review-file-unread": "github/review/fileUnread",
+  "review-default-avatar": "github/review/defaultAvatar",
+  "review-non-mergeable": "github/review/nonMergeable",
+  "review-branch-current": "github/review/branchCurrent",
+  "inline-add": "inline/inlineAdd",
+  "inline-add-hover": "inline/inlineAddHover",
+  "edit-source": "actions/editSource",
+  "green-checkmark": "general/greenCheckmark",
+  // CI / code review status (`CIBuildStatusIcons`)
+  "ci-pending": "run/testNotRunYet",
+  "ci-failed": "run/testError",
+  "ci-skipped": "run/testSkipped",
+  "ci-failed-in-progress": "status/failedInProgress",
   // Symbols (also used by `symbol-<kind>`)
   class: "nodes/class",
   interface: "nodes/interface",
@@ -598,6 +658,15 @@ export function iconMarkup(name: string, size = 16, className?: string): string 
 }
 
 /**
+ * Gutter icon markup in the 14px gutter column. The plain play glyph fills its canvas, so it is
+ * drawn smaller; the other gutter icons (run-all, status badges, inheritance arrows, file types)
+ * carry padding or compose several shapes and need the full 14px to look the same size.
+ */
+export function gutterIconMarkup(name: string): string | null {
+  return iconMarkup(name, name === "gutter-run" ? 12 : 14);
+}
+
+/**
  * Like `iconMarkup`, but never `null`: what `<Icon>` renders for unknown names
  * (a symbol letter badge, else the generic file icon). Plain strings, so
  * CodeMirror callers need no React renderer.
@@ -691,9 +760,9 @@ const FILE_NAMES = table({
   "file-makefile": "makefile gnumakefile bsdmakefile makefile.am makefile.in kbuild",
   "file-cmake": "cmakelists.txt cmakecache.txt",
   "file-perl": "makefile.pl build.pl cpanfile",
-  "file-git": ".gitignore .gitignore_global .gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
+  "file-git": ".gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
   "file-ignored":
-    ".dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
+    ".gitignore .gitignore_global .dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
     ".fdignore .helmignore .vscodeignore .gcloudignore .slugignore .cfignore .bzrignore .containerignore",
   "file-config":
     ".editorconfig justfile procfile .npmrc .nvmrc .yarnrc .node-version .python-version .ruby-version " +
@@ -703,6 +772,7 @@ const FILE_NAMES = table({
   "file-lock":
     "package-lock.json npm-shrinkwrap.json pnpm-lock.yaml bun.lockb deno.lock go.sum go.work.sum " + "package.resolved",
   "file-cargo": "cargo.toml",
+  "file-cargo-lock": "cargo.lock",
   "file-gomod": "go.mod",
   "file-gowork": "go.work",
   "file-pyproject": "pyproject.toml",
@@ -757,7 +827,7 @@ const EXT_ICONS = table({
   "file-rst": "rst",
   "file-yaml": "yaml yml",
   "file-toml": "toml",
-  "file-text": "txt text adoc",
+  "file-text": "txt text",
   "file-log": "log",
   "file-csv": "csv tsv",
   "file-html": "html htm shtml html.tmpl",
@@ -781,8 +851,7 @@ const EXT_ICONS = table({
   "file-config": "ini cfg conf cnf inf reg url desktop service socket timer config",
   "file-dotenv": "env",
   "file-lock": "lock lockb",
-  "file-git": "gitignore",
-  "file-ignored": "dockerignore",
+  "file-ignored": "dockerignore gitignore",
   "file-properties": "properties prefs",
   "file-font": "ttf otf woff woff2",
   "file-patch": "patch diff rej",
@@ -811,6 +880,8 @@ const EXT_ICONS = table({
   "file-gdscript": "gd",
   "file-godot": "tscn tres godot import",
   "file-gdshader": "gdshader gdshaderinc",
+  "file-asciidoc": "adoc asciidoc",
+  "file-d": "d di",
   "file-dart": "dart",
   "file-elixir": "ex exs",
   "file-erlang": "erl hrl escript app.src",
@@ -870,7 +941,12 @@ export type FolderKind =
   | "excluded"
   | "library"
   | "github"
-  | "module";
+  | "module"
+  | "package"
+  | "generatedSource"
+  | "generatedTest"
+  | "compiled"
+  | "javadoc";
 
 /** Folder icon by role (expui has no separate "open" folder glyph). */
 export function folderIconName(kind: FolderKind = "plain"): IconName {
@@ -891,6 +967,16 @@ export function folderIconName(kind: FolderKind = "plain"): IconName {
       return "folder-github";
     case "module":
       return "module";
+    case "package":
+      return "package";
+    case "generatedSource":
+      return "folder-generated-source";
+    case "generatedTest":
+      return "folder-generated-test";
+    case "compiled":
+      return "folder-compiled";
+    case "javadoc":
+      return "folder-javadoc";
     default:
       return "folder";
   }

@@ -11,7 +11,7 @@ import type { EditorDocContext } from "@/editor/api";
 import { shortcutLabel } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import type { HttpRequestBlock } from "@/platform/ipc";
-import { IconButton, Select, iconMarkup, T } from "@/ui";
+import { IconButton, Select, gutterIconMarkup, T } from "@/ui";
 import {
   cancelRunning,
   loadEnvironments,
@@ -84,7 +84,7 @@ class RequestMarker extends GutterMarker {
     el.title = `Run '${label}'`;
     el.setAttribute("role", "button");
     el.setAttribute("aria-label", el.title);
-    el.innerHTML = iconMarkup("gutter-run", 14) ?? "";
+    el.innerHTML = gutterIconMarkup("gutter-run") ?? "";
     return el;
   }
 }

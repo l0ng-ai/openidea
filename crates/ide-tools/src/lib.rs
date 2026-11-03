@@ -10,6 +10,8 @@
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
 
 pub mod archive;
+mod bundled;
+pub mod formatter;
 pub mod jdk;
 pub mod platform;
 mod process;
@@ -28,11 +30,13 @@ use process::{run_collect, run_quiet};
 pub use registry::{Method, ReleaseSource, TOOLS, ToolKind, ToolSpec};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
@@ -77,6 +81,9 @@ pub struct ToolInfo {
     pub default_args: Vec<String>,
     /// A language server's `initializationOptions` from its language definition, as JSON text.
     pub default_initialization_options: Option<String>,
+    /// The interchangeable servers this one belongs to, in preference order: a
+    /// server and the `fallback` ones after it. Empty when it has none.
+    pub alternatives: Vec<String>,
 }
 
 /// Streamed install progress.
@@ -97,7 +104,7 @@ struct Manifest {
 
 const MANIFEST: &str = ".openidea-tool.json";
 
-/// `typescript@<7` → `typescript`, `@vue/language-server` unchanged.
+/// `typescript@6` → `typescript`, `@vue/language-server` unchanged.
 fn npm_name(spec: &str) -> &str {
     match spec[1..].find('@') {
         Some(i) => &spec[..i + 1],
@@ -133,7 +140,7 @@ fn bin_dirs_in(root: &Path, platform: Platform) -> Vec<PathBuf> {
 }
 
 fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<PathBuf> {
-    match spec.method {
+    match spec.fallback.unwrap_or(spec.method) {
         Method::Npm { .. } => Some(root.join("node_modules").join(".bin")),
         Method::Go { .. } | Method::Gem { .. } | Method::DotnetTool { .. } | Method::Release { .. } => {
             Some(root.join(spec.name).join("bin"))
@@ -141,16 +148,18 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
         Method::PipVenv { .. } => {
             Some(root.join(spec.name).join("venv").join(if platform.os == Os::Windows { "Scripts" } else { "bin" }))
         }
-        Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
+        Method::Bundled { .. } | Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
     }
 }
 
 /// Prepends [`tools_bin_dirs`] to this process's `PATH` so language servers,
-/// debug adapters and terminals find managed tools. Call once at startup,
-/// before other threads start (it mutates the process environment).
+/// debug adapters and terminals find managed tools, and appends the Windows user
+/// `PATH` entries a process may not inherit, for agent detection and for what the
+/// tools found there run in turn. Call once at startup, before other threads start
+/// (it mutates the process environment).
 pub fn extend_process_path(app_data: &Path) {
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let extended = path_with_tools(app_data, &current);
+    let extended = path_with_tools(app_data, &ide_core::process::with_user_path(&current));
     if extended != current {
         // SAFETY: documented to run at startup before any other thread reads the environment.
         unsafe { std::env::set_var("PATH", extended) };
@@ -171,35 +180,39 @@ pub fn path_with_tools(app_data: &Path, path: &std::ffi::OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
 }
 
-/// `PATH` plus the usual per-user tool locations (GUI apps on macOS start with a minimal `PATH`).
-pub fn default_search_path() -> OsString {
-    let mut dirs: Vec<PathBuf> =
-        ide_core::process::host_var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) {
-        for rel in [".cargo/bin", ".local/bin", "go/bin", ".bun/bin", ".volta/bin", ".npm-global/bin", "Library/pnpm"] {
-            dirs.push(home.join(rel));
-        }
-        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
-            let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("bin")).collect();
-            versions.sort();
-            dirs.extend(versions.into_iter().rev());
-        }
-    }
-    for d in ["/opt/homebrew/bin", "/usr/local/go/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-        dirs.push(PathBuf::from(d));
-    }
-    let mut seen = HashSet::new();
-    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
-    std::env::join_paths(dirs).unwrap_or_default()
+/// An in-flight install another request can join: extra callers subscribe to
+/// its event stream, share its cancellation (any caller cancels it) and wait
+/// for the same result instead of failing with "already being installed".
+/// A second Settings window (its own JS state) hits this when it re-installs
+/// while a first window's install is still running.
+struct InstallSlot {
+    cancel: CancellationToken,
+    listeners: Mutex<Vec<mpsc::SyncSender<InstallEvent>>>,
+    result: std::sync::OnceLock<IdeResult<ToolInfo>>,
 }
 
-static INSTALLING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+impl InstallSlot {
+    fn broadcast(&self, e: InstallEvent) {
+        self.listeners.lock().retain(|tx| tx.try_send(e.clone()).is_ok());
+    }
 
-struct InstallGuard(String);
+    fn finish(&self, result: IdeResult<ToolInfo>) {
+        let _ = self.result.set(result);
+        self.listeners.lock().clear();
+    }
+}
+
+static INSTALLING: Mutex<Option<HashMap<String, Arc<InstallSlot>>>> = Mutex::new(None);
+
+/// Mutual exclusion for work that cannot be joined (JDK downloads, uninstalls):
+/// a second caller while the name is busy fails fast.
+static EXCLUSIVE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+pub(crate) struct InstallGuard(String);
 
 impl InstallGuard {
-    fn acquire(name: &str) -> IdeResult<Self> {
-        let mut set = INSTALLING.lock();
+    pub(crate) fn acquire(name: &str) -> IdeResult<Self> {
+        let mut set = EXCLUSIVE.lock();
         if !set.get_or_insert_with(HashSet::new).insert(name.to_string()) {
             return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{name} is already being installed")));
         }
@@ -209,10 +222,80 @@ impl InstallGuard {
 
 impl Drop for InstallGuard {
     fn drop(&mut self) {
-        if let Some(set) = INSTALLING.lock().as_mut() {
+        if let Some(set) = EXCLUSIVE.lock().as_mut() {
             set.remove(&self.0);
         }
     }
+}
+
+/// Marks `name` as installing (the slot is removed when the owner finishes) or
+/// returns the existing slot to join.
+fn install_slot(name: &str, cancel: &CancellationToken) -> Result<Arc<InstallSlot>, Arc<InstallSlot>> {
+    let mut map = INSTALLING.lock();
+    let map = map.get_or_insert_with(HashMap::new);
+    match map.get(name) {
+        Some(slot) => Err(slot.clone()),
+        None => {
+            let slot = Arc::new(InstallSlot {
+                // The owner's token: its own Cancel and a joined caller's both stop the run.
+                cancel: cancel.clone(),
+                listeners: Mutex::new(Vec::new()),
+                result: std::sync::OnceLock::new(),
+            });
+            map.insert(name.to_string(), slot.clone());
+            Ok(slot)
+        }
+    }
+}
+
+fn release_install_slot(name: &str, slot: &Arc<InstallSlot>) {
+    let mut map = INSTALLING.lock();
+    // Only the owner removes its slot (a replaced one is not ours).
+    if let Some(map) = map.as_mut()
+        && map.get(name).is_some_and(|s| Arc::ptr_eq(s, slot))
+    {
+        map.remove(name);
+    }
+}
+
+/// Follows a running install: forwards its events to `emit`, lets `cancel`
+/// cancel it, and waits for its result.
+fn join_install(slot: &Arc<InstallSlot>, cancel: &CancellationToken, emit: Emit) -> IdeResult<ToolInfo> {
+    // Fast path: already done.
+    if let Some(r) = slot.result.get() {
+        return r.clone();
+    }
+    let (tx, rx) = mpsc::sync_channel::<InstallEvent>(256);
+    slot.listeners.lock().push(tx);
+    emit(InstallEvent::Line { text: "Joined the install already in progress…".into() });
+    // Re-check: the install may have finished between the fast path and subscribing.
+    if let Some(r) = slot.result.get() {
+        // Drain whatever was queued so the listener vector drops our sender.
+        while let Ok(e) = rx.try_recv() {
+            emit(e);
+        }
+        return r.clone();
+    }
+    loop {
+        // Events wake the loop; a timeout wakes it for cancellation/result checks.
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(e) => emit(e),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // `finish` cleared the listeners: the channel closed, the result is up.
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if cancel.is_cancelled() {
+            slot.cancel.cancel();
+        }
+        if let Some(r) = slot.result.get() {
+            // Drain events emitted before the result landed so the log stays ordered.
+            while let Ok(e) = rx.try_recv() {
+                emit(e);
+            }
+            return r.clone();
+        }
+    }
+    slot.result.get().cloned().unwrap_or_else(|| Err(IdeError::internal("install finished without a result")))
 }
 
 /// Which languages use which tool, from the language definitions.
@@ -224,6 +307,7 @@ struct Usage {
     install_hint: Option<String>,
     args: Vec<String>,
     initialization_options: Option<String>,
+    alternatives: Vec<String>,
 }
 
 fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
@@ -240,6 +324,9 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
         }
     };
     for l in langs {
+        if let Some(f) = &l.formatter {
+            add(&f.tool, &f.tool, ToolKind::Formatter, None, &l.name);
+        }
         for s in &l.language_servers {
             add(&s.name, &s.command, ToolKind::LanguageServer, s.install_hint.as_ref(), &l.name);
         }
@@ -266,6 +353,23 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
                 s.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).map(|v| v.to_string());
         }
     }
+    for l in langs {
+        let servers = &l.language_servers;
+        for (i, head) in servers.iter().enumerate().filter(|(_, s)| !s.fallback) {
+            let chain: Vec<String> = std::iter::once(head)
+                .chain(servers[i + 1..].iter().take_while(|s| s.fallback))
+                .map(|s| s.name.clone())
+                .collect();
+            if chain.len() < 2 {
+                continue;
+            }
+            for name in &chain {
+                if let Some(u) = map.get_mut(name).filter(|u| u.alternatives.is_empty()) {
+                    u.alternatives = chain.clone();
+                }
+            }
+        }
+    }
     map
 }
 
@@ -290,9 +394,12 @@ fn is_bundle(command: &str) -> bool {
     command.ends_with(".jar")
 }
 
-/// Path of an installed plugin bundle (`<tools>/<name>/bin/<jar>`), if present.
+/// Path of an app-provided or installed plugin jar. Embedded jars are materialized on demand.
 pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
     let spec = registry::find(name)?;
+    if matches!(spec.method, Method::Bundled { .. }) {
+        return bundled::install(&tools_dir(app_data), spec).ok();
+    }
     let jar = spec.commands.first().filter(|c| is_bundle(c))?;
     let path = tools_dir(app_data).join(spec.name).join("bin").join(jar);
     path.is_file().then_some(path)
@@ -310,12 +417,13 @@ pub struct Tools {
     custom: BTreeMap<String, PathBuf>,
     /// Executables found outside the search path (app bundles), by command.
     found: BTreeMap<String, PathBuf>,
+    version_timeout: Duration,
 }
 
 impl Tools {
-    /// Tools under `<app_data>/tools` using [`default_search_path`].
+    /// Tools under `<app_data>/tools` using [`ide_core::tool_path::search_path`].
     pub fn new(app_data: &Path) -> Self {
-        Self::with_paths(tools_dir(app_data), default_search_path(), Platform::current())
+        Self::with_paths(tools_dir(app_data), ide_core::tool_path::search_path(), Platform::current())
     }
 
     pub fn with_paths(root: PathBuf, search_path: OsString, platform: Platform) -> Self {
@@ -323,7 +431,15 @@ impl Tools {
         let system: Vec<PathBuf> = std::env::split_paths(&search_path).filter(|d| !ours.contains(d)).collect();
         let system_path = std::env::join_paths(&system).unwrap_or_default();
         let child_path = std::env::join_paths(ours.iter().chain(system.iter())).unwrap_or_default();
-        Self { root, system_path, child_path, platform, custom: BTreeMap::new(), found: BTreeMap::new() }
+        Self {
+            root,
+            system_path,
+            child_path,
+            platform,
+            custom: BTreeMap::new(),
+            found: BTreeMap::new(),
+            version_timeout: Duration::from_secs(4),
+        }
     }
 
     /// Reports the executables chosen in settings (command → path) as the tools' location.
@@ -343,7 +459,7 @@ impl Tools {
     }
 
     fn which(&self, cmd: &str) -> Option<PathBuf> {
-        which::which_in(cmd, Some(&self.system_path), &self.root).ok()
+        ide_core::tool_path::find_command(cmd, &self.system_path, &self.root)
     }
 
     fn which_any(&self, cmds: &[&str]) -> Option<PathBuf> {
@@ -407,23 +523,34 @@ impl Tools {
         let program = sibling.or_else(|| self.which(cmd))?;
         let mut c = self.command(program);
         c.args(args);
-        let (ok, out) = run_quiet(c, Duration::from_secs(4))?;
+        let (ok, out) = run_quiet(c, self.version_timeout)?;
         if !ok {
             return None;
         }
         parse_version(&out)
     }
 
+    /// The installer that owns this tool: a managed copy is refreshed and removed by the
+    /// fallback that made it, even if the primary installer has appeared since.
+    fn install_method(&self, spec: &ToolSpec) -> Method {
+        let Some(fallback) = spec.fallback else { return spec.method };
+        let managed = managed_bin_dir(&self.root, spec, self.platform)
+            .and_then(|dir| self.exe_in(&dir, spec.commands[0]))
+            .is_some();
+        if managed || self.method_missing(spec.method).is_some() { fallback } else { spec.method }
+    }
+
     /// Requirement check for installing `spec` right now.
     fn unavailable_reason(&self, spec: &ToolSpec) -> Option<String> {
-        self.installer_missing(spec)
+        self.method_missing(self.install_method(spec))
             .or_else(|| spec.needs.iter().find(|(cmd, _)| self.which(cmd).is_none()).map(|(_, why)| why.to_string()))
     }
 
     /// What the install method itself lacks (npm, a build for this platform, …).
-    fn installer_missing(&self, spec: &ToolSpec) -> Option<String> {
+    fn method_missing(&self, method: Method) -> Option<String> {
         let need = |ok: bool, msg: &str| (!ok).then(|| msg.to_string());
-        match spec.method {
+        match method {
+            Method::Bundled { .. } => None,
             Method::Rustup { .. } => need(self.which("rustup").is_some(), "rustup is required (https://rustup.rs)"),
             Method::Npm { .. } => need(
                 self.which_any(&["npm", "pnpm"]).is_some(),
@@ -480,12 +607,14 @@ impl Tools {
                 custom_error: None,
                 default_args: u.args.clone(),
                 default_initialization_options: u.initialization_options.clone(),
+                alternatives: u.alternatives.clone(),
             })
             .map(|info| self.apply_custom(info, None));
         };
         let (status, path, version) = self.detect(spec);
         let unavailable_reason = self.unavailable_reason(spec);
-        let can_uninstall = status == ToolStatus::Installed;
+        let bundled = matches!(spec.method, Method::Bundled { .. });
+        let can_uninstall = status == ToolStatus::Installed && !bundled;
         Some(ToolInfo {
             name: spec.name.to_string(),
             display_name: spec.display.to_string(),
@@ -495,8 +624,8 @@ impl Tools {
             status,
             path: path.map(Into::into),
             version,
-            install_method: Some(spec.method.label().to_string()),
-            can_install: unavailable_reason.is_none(),
+            install_method: Some(self.install_method(spec).label().to_string()),
+            can_install: unavailable_reason.is_none() && !bundled,
             unavailable_reason,
             can_uninstall,
             install_hint,
@@ -504,6 +633,7 @@ impl Tools {
             custom_error: None,
             default_args: usage.map(|u| u.args.clone()).unwrap_or_default(),
             default_initialization_options: usage.and_then(|u| u.initialization_options.clone()),
+            alternatives: usage.map(|u| u.alternatives.clone()).unwrap_or_default(),
         })
         .map(|info| self.apply_custom(info, Some(spec)))
     }
@@ -525,7 +655,7 @@ impl Tools {
                 if cmd == spec.commands[0] { path.clone() } else { path.parent().and_then(|d| self.exe_in(d, cmd))? };
             let mut c = self.command(program);
             c.args(args);
-            let (ok, out) = run_quiet(c, Duration::from_secs(4))?;
+            let (ok, out) = run_quiet(c, self.version_timeout)?;
             if ok { parse_version(&out) } else { None }
         });
         info.status = ToolStatus::Custom;
@@ -534,8 +664,23 @@ impl Tools {
     }
 
     fn detect(&self, spec: &ToolSpec) -> (ToolStatus, Option<PathBuf>, Option<String>) {
+        if let Method::Bundled { version, .. } = spec.method {
+            return match bundled::install(&self.root, spec) {
+                Ok(path) => (ToolStatus::Installed, Some(path), Some(version.to_owned())),
+                Err(_) => (ToolStatus::Missing, None, None),
+            };
+        }
         let main = spec.commands[0];
-        match spec.method {
+        let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
+        if let Some(path) = managed {
+            let version = match spec.method {
+                Method::Npm { packages } => self.npm_package_version(npm_name(packages[0])),
+                _ => self.manifest(spec.name).and_then(|m| m.version),
+            }
+            .or_else(|| self.query_version(spec, &path));
+            return (ToolStatus::Installed, Some(path), version);
+        }
+        match self.install_method(spec) {
             Method::Rustup { .. } => {
                 let Some(path) = self.which(main) else { return (ToolStatus::Missing, None, None) };
                 // The rustup proxy exists even without the component; it only answers when installed.
@@ -570,24 +715,13 @@ impl Tools {
                     _ => (ToolStatus::Missing, None, None),
                 }
             }
-            _ => {
-                let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
-                if let Some(path) = managed {
-                    let version = match spec.method {
-                        Method::Npm { packages } => self.npm_package_version(npm_name(packages[0])),
-                        _ => self.manifest(spec.name).and_then(|m| m.version),
-                    }
-                    .or_else(|| self.query_version(spec, &path));
-                    return (ToolStatus::Installed, Some(path), version);
+            _ => match self.which(main) {
+                Some(path) => {
+                    let version = self.query_version(spec, &path);
+                    (ToolStatus::OnPath, Some(path), version)
                 }
-                match self.which(main) {
-                    Some(path) => {
-                        let version = self.query_version(spec, &path);
-                        (ToolStatus::OnPath, Some(path), version)
-                    }
-                    None => (ToolStatus::Missing, None, None),
-                }
-            }
+                None => (ToolStatus::Missing, None, None),
+            },
         }
     }
 
@@ -627,6 +761,9 @@ impl Tools {
     }
 
     /// Installs (or reinstalls / updates) `name`, streaming output to `emit`.
+    /// A second call for a name already installing joins that run: it gets the
+    /// same live events and result instead of an "already installing" error,
+    /// and cancelling either request cancels the shared run.
     pub fn install(
         &self,
         name: &str,
@@ -644,37 +781,58 @@ impl Tools {
         if let Some(reason) = self.unavailable_reason(spec) {
             return Err(IdeError::unavailable(reason));
         }
-        let _guard = InstallGuard::acquire(name)?;
-        std::fs::create_dir_all(&self.root)?;
-        emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, spec.method.label()) });
-        match spec.method {
-            Method::Rustup { component } => {
-                let mut c = self.command(self.which("rustup").expect("checked"));
-                c.args(["component", "add", component]);
-                run_streamed(c, cancel, emit)?;
+        let slot = match install_slot(name, cancel) {
+            Ok(slot) => slot,
+            Err(slot) => return join_install(&slot, cancel, emit),
+        };
+        // The install uses the slot's token: every caller's cancel reaches it.
+        let cancel = &slot.cancel;
+        // Fan the events out to joined callers as well as this request's emit.
+        let fan = |e: InstallEvent| {
+            emit(e.clone());
+            slot.broadcast(e);
+        };
+        let emit = &fan as Emit;
+        let result = (|| {
+            std::fs::create_dir_all(&self.root)?;
+            let method = self.install_method(spec);
+            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, method.label()) });
+            match method {
+                Method::Bundled { .. } => {
+                    bundled::install(&self.root, spec)?;
+                }
+                Method::Rustup { component } => {
+                    let mut c = self.command(self.which("rustup").expect("checked"));
+                    c.args(["component", "add", component]);
+                    run_streamed(c, cancel, emit)?;
+                }
+                Method::Npm { packages } => self.install_npm(packages, cancel, emit)?,
+                Method::Go { module } => self.install_go(spec, module, cancel, emit)?,
+                Method::Gem { gem } => self.install_gem(spec, gem, cancel, emit)?,
+                Method::DotnetTool { package } => self.install_dotnet_tool(spec, package, cancel, emit)?,
+                Method::PipVenv { package } => self.install_venv(spec, package, cancel, emit)?,
+                Method::PipUser { package, .. } => self.install_pip_user(package, cancel, emit)?,
+                Method::PipTarget { package, .. } => self.install_pip_target(spec, package, cancel, emit)?,
+                Method::Release { source, assets, locate } => {
+                    self.install_release(spec, source, assets, locate, cancel, emit)?
+                }
             }
-            Method::Npm { packages } => self.install_npm(packages, cancel, emit)?,
-            Method::Go { module } => self.install_go(spec, module, cancel, emit)?,
-            Method::Gem { gem } => self.install_gem(spec, gem, cancel, emit)?,
-            Method::DotnetTool { package } => self.install_dotnet_tool(spec, package, cancel, emit)?,
-            Method::PipVenv { package } => self.install_venv(spec, package, cancel, emit)?,
-            Method::PipUser { package, .. } => self.install_pip_user(package, cancel, emit)?,
-            Method::PipTarget { package, .. } => self.install_pip_target(spec, package, cancel, emit)?,
-            Method::Release { source, assets, locate } => {
-                self.install_release(spec, source, assets, locate, cancel, emit)?
+            let info = self.info(name, langs)?;
+            if info.status == ToolStatus::Missing {
+                return Err(IdeError::new(
+                    ErrorKind::Io,
+                    format!("installer finished but `{}` was not found afterwards", spec.commands[0]),
+                ));
             }
-        }
-        let info = self.info(name, langs)?;
-        if info.status == ToolStatus::Missing {
-            return Err(IdeError::new(
-                ErrorKind::Io,
-                format!("installer finished but `{}` was not found afterwards", spec.commands[0]),
-            ));
-        }
-        emit(InstallEvent::Line {
-            text: format!("{} {} installed", spec.display, info.version.as_deref().unwrap_or("")).replace("  ", " "),
-        });
-        Ok(info)
+            emit(InstallEvent::Line {
+                text: format!("{} {} installed", spec.display, info.version.as_deref().unwrap_or(""))
+                    .replace("  ", " "),
+            });
+            Ok(info)
+        })();
+        release_install_slot(name, &slot);
+        slot.finish(result.clone());
+        result
     }
 
     fn npm_manager(&self) -> IdeResult<(PathBuf, bool)> {
@@ -944,6 +1102,10 @@ impl Tools {
             }
             ReleaseSource::OpenVsx { namespace, extension } => {
                 let json = http.get_text(&sources::openvsx_latest_url(namespace, extension), cancel)?;
+                let json = match sources::openvsx_platform_url(&json, assets, self.platform)? {
+                    Some(url) => http.get_text(&url, cancel)?,
+                    None => json,
+                };
                 sources::openvsx_pick(&json, assets, self.platform)
             }
             ReleaseSource::MavenCentral { group, artifact } => {
@@ -1037,10 +1199,16 @@ impl Tools {
     /// Removes a tool the IDE installed.
     pub fn uninstall(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
         let spec = registry::find(name).ok_or_else(|| IdeError::not_found(format!("unknown tool `{name}`")))?;
-        let _guard = InstallGuard::acquire(name)?;
+        // Uninstalling mid-install would tear down the directory under the running installer.
+        if INSTALLING.lock().as_ref().is_some_and(|m| m.contains_key(name)) {
+            return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{name} is already being installed")));
+        }
+        let _guard = InstallGuard::acquire(&format!("uninstall-{name}"))?;
         let cancel = CancellationToken::new();
         let quiet = |_: InstallEvent| {};
-        match spec.method {
+        match self.install_method(spec) {
+            // App-owned resources remain available for every project/window.
+            Method::Bundled { .. } => {}
             Method::Rustup { component } => {
                 let rustup = self.which("rustup").ok_or_else(|| IdeError::unavailable("rustup not found"))?;
                 let mut c = self.command(rustup);

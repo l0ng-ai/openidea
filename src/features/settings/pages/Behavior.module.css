@@ -24,7 +24,7 @@
   padding: 8px 14px;
 }
 
-/* "[x] Use custom font: [Inter] Size: [13]" */
+/* Inline option groups, with custom font controls wrapping together. */
 .fontRow {
   display: flex;
   align-items: center;
@@ -37,8 +37,17 @@
 .fontInput {
   width: 220px;
 }
-.sizeLabel {
-  margin-left: 8px;
+.customFontRow {
+  flex-wrap: wrap;
+}
+.fontOption {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.fontOption > label {
+  flex-shrink: 0;
 }
 .sizeInput {
   width: 64px;

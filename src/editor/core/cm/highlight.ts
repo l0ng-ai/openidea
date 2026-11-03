@@ -66,6 +66,7 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token([t.variableName, t.definition(t.variableName), t.local(t.variableName)], "variable"),
   token([t.propertyName, t.definition(t.propertyName)], "property"),
   token(t.attributeName, "attribute"),
+  token(t.special(t.brace), "decorator"),
   token([t.tagName, t.angleBracket], "tag"),
   token([t.punctuation, t.bracket, t.separator, t.operator, t.derefOperator], "punct"),
   token(t.invalid, "invalid"),

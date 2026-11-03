@@ -45,6 +45,7 @@ describe("inspections tree", () => {
 
   it("groups servers by language with seen and configured codes, built-ins by category", () => {
     expect(tree.map((g) => g.name)).toEqual([
+      "Cargo",
       "General",
       "JavaScript",
       "Other",

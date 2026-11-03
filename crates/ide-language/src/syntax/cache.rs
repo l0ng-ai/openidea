@@ -209,8 +209,9 @@ impl SyntaxCache {
             |m| &mut m.folding,
             || {
                 self.with_tree(doc, lang, version, text, |g, tree, text| {
-                    Some(folding::folding(g.spec, g.kinds(), tree, text))
+                    Some(folding::folding(g.spec, g.kinds(), tree, text, self.syntax.comment_tokens(lang)))
                 })
+                .or_else(|| Some(self.syntax.custom_folding(lang, text)))
             },
         )
     }

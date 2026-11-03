@@ -15,6 +15,7 @@
 //! (dev plugins, loaded by [`PluginHost::sync_project`]).
 
 mod manifest;
+mod package;
 mod runtime;
 mod sandbox;
 mod theme;
@@ -92,7 +93,10 @@ impl LoadedPlugin {
     }
 }
 
+type ProjectPolicy = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+
 pub struct PluginHost {
+    project_policy: RwLock<ProjectPolicy>,
     engine: PluginEngine,
     plugins_dir: PathBuf,
     sink: Arc<dyn PluginEventSink>,
@@ -116,6 +120,7 @@ impl PluginHost {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         Ok(Self {
+            project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,
             plugins_dir,
             sink,
@@ -159,7 +164,30 @@ impl PluginHost {
     }
 
     /// Loads new dev plugins from `<root>/.openidea/plugins/` and unloads vanished ones.
+    pub fn set_project_policy(&self, policy: ProjectPolicy) {
+        *self.project_policy.write() = policy;
+    }
+
+    pub fn restrict_project(&self, root: &Path) {
+        let _guard = self.lifecycle.lock();
+        let ids: Vec<_> = self
+            .plugins
+            .read()
+            .iter()
+            .filter(|(_, p)| p.dev_root.as_deref() == Some(root))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.unload(&id);
+        }
+        self.emit(None, PluginEvent::CommandsChanged);
+    }
+
     pub fn sync_project(&self, root: &Path) {
+        if !(self.project_policy.read())(root) {
+            self.restrict_project(root);
+            return;
+        }
         let _guard = self.lifecycle.lock();
         let dirs = package_dirs(&ide_core::project_dir::path(root, "plugins"));
         let stale: Vec<String> = self
@@ -234,6 +262,20 @@ impl PluginHost {
         self.emit(None, PluginEvent::CommandsChanged);
         self.emit_theme_if_owned(&new_id);
         self.info_of(&new_id)
+    }
+
+    /// Installs the package at `path`: a folder, its `plugin.toml`, or a `.zip` of the folder.
+    pub fn install_from_path(&self, path: &Path) -> IdeResult<PluginInfo> {
+        if package::is_zip(path) && path.is_file() {
+            // Outside the plugins directory: a crash must not leave a package that loads.
+            let unpacked = tempfile::Builder::new().prefix("openidea-plugin-").tempdir()?;
+            let root = package::unpack_zip(path, unpacked.path())?;
+            return self.install_from_dir(&root);
+        }
+        if path.file_name().is_some_and(|name| name == MANIFEST_FILE) && path.is_file() {
+            return self.install_from_dir(path.parent().unwrap_or(path));
+        }
+        self.install_from_dir(path)
     }
 
     /// Copies a plugin package (manifest + referenced files) into the plugins
@@ -448,7 +490,12 @@ impl PluginHost {
     // ---- internals ----
 
     fn get(&self, id: &str) -> IdeResult<Arc<LoadedPlugin>> {
-        self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("no plugin {id:?}")))
+        let plugin =
+            self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("no plugin {id:?}")))?;
+        if plugin.dev_root.as_deref().is_some_and(|root| !(self.project_policy.read())(root)) {
+            return Err(IdeError::unavailable("Project is in Restricted Mode"));
+        }
+        Ok(plugin)
     }
 
     fn is_loaded_from(&self, dir: &Path) -> bool {

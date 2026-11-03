@@ -57,6 +57,37 @@ fn fixture() -> Fixture {
     Fixture { _tmp: tmp, root, docs, events, rec }
 }
 
+#[test]
+fn own_disk_changes_preserve_the_open_documents_encoding() {
+    let f = fixture();
+    let path = f.root.join("query.sql");
+    let original = "SELECT '中文';\r\n";
+    fs::write(&path, ide_vfs::encode(original, "gbk", false).unwrap()).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults.clone());
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "gbk");
+    defaults.project_fallback = "windows-1252".into();
+    f.docs.set_file_defaults(defaults);
+    f.docs.sync_after_disk_change();
+    let unchanged = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(unchanged.text, doc.text);
+    assert_eq!(unchanged.encoding, "gbk");
+    assert!(!unchanged.dirty);
+    let changed = "SELECT '世界';\r\n";
+    let bytes = ide_vfs::encode(changed, "gbk", false).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    f.docs.sync_after_disk_change();
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(reloaded.text, changed.replace("\r\n", "\n"));
+    assert_eq!(reloaded.encoding, "gbk");
+    assert_eq!(reloaded.line_ending, LineEnding::CrLf);
+    assert!(!reloaded.dirty);
+    f.docs.save_all().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
 fn change(from: u32, to: u32, insert: &str) -> ChangeSet {
     ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] }
 }
@@ -102,8 +133,95 @@ fn redetect_reopens_documents_whose_language_changed() {
     let log = rec.log.lock().clone();
     assert_eq!(log[log.len() - 2..], ["close".to_owned(), "open v0 python".to_owned()]);
     assert!(events.lock().iter().any(
-        |e| matches!(e, IdeEvent::DocLanguage { doc, language } if *doc == a.id && language.as_str() == "python")
+        |e| matches!(e, IdeEvent::DocLanguage { doc, language, .. } if *doc == a.id && language.as_str() == "python")
     ));
+}
+
+#[test]
+fn ui_modes_are_detected_with_the_language() {
+    let tmp = tempfile::tempdir().unwrap();
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let sink: SharedSink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let tpl_is_html = Arc::new(Mutex::new(false));
+    let docs = {
+        let tpl_is_html = tpl_is_html.clone();
+        Documents::new(
+            sink,
+            Box::new(move |p: &Path, _: Option<&str>| match p.extension().and_then(|e| e.to_str()) {
+                Some("html") => LanguageId::new("html"),
+                Some("tpl") if *tpl_is_html.lock() => LanguageId::new("html"),
+                _ => LanguageId::plain_text(),
+            }),
+        )
+        .with_ui_mode_detection(Box::new(|p: &Path, lang: &LanguageId| {
+            (lang.as_str() == "html" && p.parent().is_some_and(|d| d.ends_with("ng")))
+                .then(|| "Angular Template".into())
+        }))
+    };
+    fs::create_dir_all(tmp.path().join("ng")).unwrap();
+    let (template, page, tpl) =
+        (tmp.path().join("ng/app.html"), tmp.path().join("index.html"), tmp.path().join("ng/a.tpl"));
+    for p in [&template, &page, &tpl] {
+        fs::write(p, "<p></p>\n").unwrap();
+    }
+    assert_eq!(docs.open(&template).unwrap().ui_mode.as_deref(), Some("Angular Template"));
+    assert_eq!(docs.open(&page).unwrap().ui_mode, None);
+    let a = docs.open(&tpl).unwrap();
+    assert_eq!(a.ui_mode, None);
+
+    *tpl_is_html.lock() = true;
+    assert_eq!(docs.redetect_languages(), vec![a.id]);
+    assert_eq!(docs.snapshot(a.id).unwrap().ui_mode.as_deref(), Some("Angular Template"));
+    assert!(events.lock().iter().any(|e| matches!(
+        e,
+        IdeEvent::DocLanguage { doc, ui_mode: Some(mode), .. } if *doc == a.id && mode == "Angular Template"
+    )));
+}
+
+#[test]
+fn ui_modes_are_redetected_without_a_language_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let sink: SharedSink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let docs = Documents::new(sink, Box::new(|_: &Path, _: Option<&str>| LanguageId::new("html")))
+        .with_ui_mode_detection(Box::new(|p: &Path, _: &LanguageId| {
+            p.parent().is_some_and(|d| d.join("angular.json").exists()).then(|| "Angular Template".into())
+        }));
+    let rec = Arc::new(Recorder::default());
+    docs.add_observer(rec.clone());
+    let (template, marker) = (tmp.path().join("app.html"), tmp.path().join("angular.json"));
+    fs::write(&template, "<p></p>\n").unwrap();
+    let a = docs.open(&template).unwrap();
+    assert_eq!(a.ui_mode, None);
+    let opened = rec.log.lock().len();
+
+    fs::write(&marker, "{}").unwrap();
+    assert_eq!(docs.ui_mode_of(&template).as_deref(), Some("Angular Template"));
+    assert_eq!(docs.redetect_languages(), vec![a.id]);
+    assert_eq!(docs.snapshot(a.id).unwrap().ui_mode.as_deref(), Some("Angular Template"));
+    assert!(docs.redetect_languages().is_empty());
+    fs::remove_file(&marker).unwrap();
+    assert_eq!(docs.redetect_languages(), vec![a.id]);
+    assert_eq!(docs.snapshot(a.id).unwrap().ui_mode, None);
+
+    let modes: Vec<Option<String>> = events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::DocLanguage { doc, language, ui_mode } if *doc == a.id && language.as_str() == "html" => {
+                Some(ui_mode.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(modes, [Some("Angular Template".to_owned()), None]);
+    assert_eq!(rec.log.lock().len(), opened, "language servers keep the document");
 }
 
 fn dirty_events(events: &[IdeEvent]) -> Vec<bool> {
@@ -510,5 +628,157 @@ fn archive_entries_open_read_only_without_observers() {
     assert_eq!((info.text.as_str(), info.language.as_str(), info.read_only), ("fn main() {}\n", "rust", true));
     assert_eq!(*info.path, *path);
     assert!(f.rec.log.lock().is_empty(), "language servers / history never see archive entries");
+    fs::remove_file(&jar).unwrap();
+    f.docs.sync_from_disk();
+    assert_eq!(f.docs.snapshot(info.id).unwrap().version, info.version);
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, info.text);
     f.docs.close(info.id);
+}
+
+#[test]
+fn properties_conversion_uses_displayed_utf16_and_survives_reload() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    let original = "greeting=\\u4f60\\u597d\\uD83D\\uDE00!\r\nliteral=\\\\u0041\r\nbad=\\u12xz\r\n";
+    fs::write(&path, original).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.native_to_ascii = true;
+    f.docs.set_file_defaults(defaults);
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.text, "greeting=你好😀!\nliteral=\\\\u0041\nbad=\\u12xz\n");
+    assert!(!doc.dirty);
+    assert_eq!(f.docs.text_snapshot(doc.id).unwrap().text, doc.text);
+    f.docs.save(doc.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
+    // Two BMP characters + one surrogate pair put ! at UTF-16 offset 13.
+    f.docs.edit(doc.id, doc.version, change(13, 14, "界")).unwrap();
+    f.docs.save(doc.id).unwrap();
+    let expected = "greeting=\\u4F60\\u597D\\uD83D\\uDE00\\u754C\r\nliteral=\\\\u0041\r\nbad=\\u12xz\r\n";
+    assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
+    assert!(f.rec.log.lock().iter().any(|line| line.contains("greeting=你好😀界")));
+    let saved = f.docs.snapshot(doc.id).unwrap();
+    f.docs.set_encoding(doc.id, "iso-8859-1", true).unwrap();
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().version, saved.version);
+    // Force a watcher event even though the serialized contents are identical.
+    fs::File::options().write(true).open(&path).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(reloaded.text, saved.text);
+    assert_eq!(reloaded.version, saved.version);
+    assert!(!reloaded.dirty);
+    fs::write(&path, "greeting=\\u4E16\\u754C\r\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "greeting=世界\n");
+    assert!(!f.docs.is_dirty(doc.id).unwrap());
+}
+
+#[test]
+fn properties_pasted_escapes_survive_save_and_decode_on_reload() {
+    let pasted = "test.key1=Hello\ntest.key2=\\u4F60\\u597D\ntest.key3=\\u4f60\\u597d\n";
+    let displayed = "test.key1=Hello\ntest.key2=你好\ntest.key3=你好\n";
+    for encoding in ["utf-8", "iso-8859-1", "utf-16le"] {
+        for eol in ["\n", "\r\n"] {
+            let f = fixture();
+            let path = f.root.join("test_zh_CN.properties");
+            let source = pasted.replace('\n', eol);
+            fs::write(&path, ide_vfs::encode(&source, encoding, encoding == "utf-16le").unwrap()).unwrap();
+            let mut defaults = f.docs.file_defaults();
+            defaults.native_to_ascii = true;
+            defaults.properties_fallback = encoding.into();
+            f.docs.set_file_defaults(defaults.clone());
+            let doc = f.docs.open(&path).unwrap();
+            assert_eq!(doc.text, displayed);
+
+            f.docs.replace_all(doc.id, pasted).unwrap();
+            f.docs.save(doc.id).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), source.as_bytes(), "{encoding} {eol:?}");
+            assert_eq!(f.docs.snapshot(doc.id).unwrap().text, pasted);
+            assert!(!f.docs.is_dirty(doc.id).unwrap());
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+            assert_eq!(f.docs.snapshot(doc.id).unwrap().text, pasted, "own saves do not reload");
+
+            f.docs.close(doc.id);
+            let reopened = f.docs.open(&path).unwrap();
+            assert_eq!(reopened.text, displayed);
+            // An edit followed by its inverse preserves the original escape casing.
+            f.docs.replace_all(reopened.id, pasted).unwrap();
+            f.docs.replace_all(reopened.id, displayed).unwrap();
+            f.docs.save(reopened.id).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), source.as_bytes());
+
+            let external = format!("{source}test.key4=\\uD83D\\uDE00{eol}");
+            fs::write(&path, &external).unwrap();
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+            assert_eq!(f.docs.snapshot(reopened.id).unwrap().text, format!("{displayed}test.key4=😀\n"));
+            defaults.native_to_ascii = false;
+            f.docs.set_file_defaults(defaults.clone());
+            f.docs.reload_properties();
+            assert_eq!(f.docs.snapshot(reopened.id).unwrap().text, external.replace("\r\n", "\n"));
+            defaults.native_to_ascii = true;
+            f.docs.set_file_defaults(defaults);
+            f.docs.reload_properties();
+            assert_eq!(f.docs.snapshot(reopened.id).unwrap().text, format!("{displayed}test.key4=😀\n"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), external);
+        }
+    }
+}
+
+#[test]
+fn properties_toggle_reloads_only_clean_properties_and_pins_dirty_codec() {
+    let f = fixture();
+    let paths = ["clean.properties", "dirty.properties", "other.txt"].map(|name| f.root.join(name));
+    for path in &paths {
+        fs::write(path, r"value=\u4F60").unwrap();
+    }
+    let [clean, dirty, other] = paths.each_ref().map(|p| f.docs.open(p).unwrap());
+    f.docs.edit(dirty.id, dirty.version, change(12, 12, "!")).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.native_to_ascii = true;
+    f.docs.set_file_defaults(defaults.clone());
+    f.docs.reload_properties();
+    assert_eq!(f.docs.snapshot(clean.id).unwrap().text, "value=你");
+    assert!(!f.docs.is_dirty(clean.id).unwrap());
+    assert_eq!(f.docs.snapshot(dirty.id).unwrap().text, r"value=\u4F60!");
+    assert!(!f.docs.native_to_ascii_for(&paths[1]));
+    assert_eq!(f.docs.snapshot(other.id).unwrap().text, r"value=\u4F60");
+    f.docs.save(dirty.id).unwrap();
+    assert_eq!(fs::read_to_string(&paths[1]).unwrap(), r"value=\u4F60!");
+    f.docs.reload_properties();
+    assert_eq!(f.docs.snapshot(dirty.id).unwrap().text, "value=你!");
+    f.docs.edit(dirty.id, f.docs.snapshot(dirty.id).unwrap().version, change(7, 8, "好")).unwrap();
+    defaults.native_to_ascii = false;
+    f.docs.set_file_defaults(defaults);
+    f.docs.reload_properties();
+    assert_eq!(f.docs.snapshot(clean.id).unwrap().text, r"value=\u4F60");
+    assert!(f.docs.native_to_ascii_for(&paths[1]));
+    f.docs.save(dirty.id).unwrap();
+    assert_eq!(fs::read_to_string(&paths[1]).unwrap(), r"value=\u4F60\u597D");
+}
+
+#[test]
+fn properties_ascii_noop_and_charset_conversion() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.native_to_ascii = true;
+    f.docs.set_file_defaults(defaults);
+    for (i, source) in ["a=b\r\n# comment\r\n", r"a=\u0041", r"a=\\u0041", r"a=\uD800"].iter().enumerate() {
+        let path = f.root.join(format!("{i}.properties"));
+        fs::write(&path, source).unwrap();
+        let doc = f.docs.open(&path).unwrap();
+        f.docs.edit(doc.id, doc.version, change(0, 0, "x")).unwrap();
+        f.docs.edit(doc.id, doc.version + 1, change(0, 1, "")).unwrap();
+        f.docs.save(doc.id).unwrap();
+        f.docs.set_encoding(doc.id, "utf-8", true).unwrap();
+        f.docs.save(doc.id).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), *source);
+    }
+    let path = f.root.join("utf16.properties");
+    fs::write(&path, ide_vfs::encode("a=你好😀", "utf-16le", true).unwrap()).unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.replace_all(doc.id, "a=世界😀").unwrap();
+    f.docs.save(doc.id).unwrap();
+    assert!(fs::read(&path).unwrap().is_ascii());
+    f.docs.set_encoding(doc.id, "utf-16le", true).unwrap();
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "a=世界😀");
+    assert!(!f.docs.is_dirty(doc.id).unwrap());
 }

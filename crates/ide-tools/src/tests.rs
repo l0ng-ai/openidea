@@ -24,7 +24,10 @@ impl Env {
     fn tools(&self) -> Tools {
         let mut dirs = vec![self.sys.clone()];
         dirs.extend(bin_dirs_in(&self.root, Platform::current()));
-        Tools::with_paths(self.root.clone(), std::env::join_paths(dirs).unwrap(), Platform::current())
+        let mut tools = Tools::with_paths(self.root.clone(), std::env::join_paths(dirs).unwrap(), Platform::current());
+        // These fixtures test detection and version parsing, not process startup latency.
+        tools.version_timeout = Duration::from_secs(60);
+        tools
     }
 
     #[cfg(unix)]
@@ -38,6 +41,61 @@ impl Env {
 
 fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
     list.iter().find(|t| t.name == name).unwrap_or_else(|| panic!("{name} not listed"))
+}
+
+#[test]
+fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads() {
+    for os in [Os::Mac, Os::Linux, Os::Windows] {
+        for arch in [platform::Arch::Arm64, platform::Arch::X64] {
+            let env = Env::new();
+            let legacy = env.root.join("lombok/bin/lombok.jar");
+            fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            fs::write(&legacy, b"old official agent").unwrap();
+            fs::write(env.root.join("lombok").join(MANIFEST), r#"{"version":"1.18.48"}"#).unwrap();
+            let tools = Tools::with_paths(env.root.clone(), OsString::new(), Platform { os, arch });
+            let info = tools.info("lombok", &[]).unwrap();
+            let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
+            assert_eq!(info.status, ToolStatus::Installed);
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.1"));
+            assert_eq!(info.path, Some(path.clone().into()));
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.1.jar");
+            assert!(!info.can_install && !info.can_uninstall);
+            assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
+            assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
+        }
+    }
+}
+
+#[test]
+fn bundled_lombok_is_available_offline_and_repairs_missing_or_corrupt_files() {
+    let env = Env::new();
+    let data = env.root.parent().unwrap();
+    let agent = managed_bundle(data, "lombok").unwrap();
+    let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+    assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
+    for contents in [None, Some(b"incomplete jar".as_slice())] {
+        if let Some(contents) = contents {
+            fs::write(&agent, contents).unwrap();
+        } else {
+            fs::remove_file(&agent).unwrap();
+        }
+        assert_eq!(managed_bundle(data, "lombok"), Some(agent.clone()));
+        assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
+    }
+    assert_eq!(fs::read_dir(agent.parent().unwrap()).unwrap().count(), 1, "no temporary jars left behind");
+}
+
+#[test]
+fn concurrent_windows_get_the_same_complete_bundled_lombok() {
+    let env = Env::new();
+    let data = env.root.parent().unwrap();
+    std::thread::scope(|scope| {
+        let windows: Vec<_> = (0..8).map(|_| scope.spawn(|| managed_bundle(data, "lombok").unwrap())).collect();
+        let paths: Vec<_> = windows.into_iter().map(|window| window.join().unwrap()).collect();
+        assert!(paths.iter().all(|path| path == &paths[0]));
+        let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+        assert_eq!(sources::sha256_file(&paths[0]).unwrap(), checksum);
+    });
 }
 
 #[test]
@@ -62,8 +120,8 @@ fn everything_missing_on_an_empty_system() {
     let ra = find(&list, "rust-analyzer");
     assert_eq!(ra.status, ToolStatus::Missing);
     assert_eq!(ra.languages, vec!["Rust".to_string()]);
-    assert!(!ra.can_install, "rustup is not on the fake PATH");
-    assert!(ra.unavailable_reason.as_deref().unwrap().contains("rustup"));
+    assert!(!ra.can_install, "curl is not on the fake PATH");
+    assert!(ra.unavailable_reason.as_deref().unwrap().contains("curl"));
     let vtsls = find(&list, "vtsls");
     assert!(vtsls.languages.iter().any(|l| l == "TypeScript"));
     assert!(vtsls.unavailable_reason.as_deref().unwrap().contains("npm"));
@@ -86,6 +144,21 @@ fn everything_missing_on_an_empty_system() {
     // Shared npm package: each server is its own row.
     assert_eq!(find(&list, "vscode-css-language-server").install_method.as_deref(), Some("npm"));
     assert!(find(&list, "delve").kind == ToolKind::Debugger);
+}
+
+#[test]
+fn interchangeable_servers_list_their_alternatives() {
+    let env = Env::new();
+    let list = env.tools().list(&langs());
+    let python = ["basedpyright", "pyright", "ty"];
+    for name in python {
+        assert_eq!(find(&list, name).alternatives, python);
+    }
+    assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
+    // A regular server after a fallback starts no group with it.
+    assert!(find(&list, "angular-language-server").alternatives.is_empty());
+    assert!(find(&list, "ruff").alternatives.is_empty());
+    assert!(find(&list, "rust-analyzer").alternatives.is_empty());
 }
 
 #[cfg(unix)]
@@ -178,6 +251,80 @@ fn concurrent_installs_of_one_tool_are_rejected() {
     assert_eq!(InstallGuard::acquire("x-tool").err().unwrap().kind, ErrorKind::AlreadyExists);
     drop(a);
     assert!(InstallGuard::acquire("x-tool").is_ok());
+}
+
+/// A second caller mid-install joins the run (the other Settings window's
+/// duplicate install) and shares the result instead of `AlreadyExists`.
+#[test]
+fn second_install_joins_the_running_one() {
+    let slot = match install_slot("sqls", &CancellationToken::new()) {
+        Ok(slot) => slot,
+        Err(_) => panic!("no install is running"),
+    };
+    let owner = {
+        let slot = slot.clone();
+        std::thread::spawn(move || {
+            for i in 0..3 {
+                slot.broadcast(InstallEvent::Line { text: format!("line {i}") });
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            release_install_slot("sqls", &slot);
+            slot.finish(Err(IdeError::new(ErrorKind::Io, "compile failed")));
+        })
+    };
+    let events = Mutex::new(Vec::new());
+    let err = join_install(&slot, &CancellationToken::new(), &|e| events.lock().push(e)).unwrap_err();
+    owner.join().unwrap();
+    assert_eq!(err.kind, ErrorKind::Io);
+    assert_eq!(err.message, "compile failed");
+    let texts: Vec<String> = events
+        .into_inner()
+        .into_iter()
+        .filter_map(|e| match e {
+            InstallEvent::Line { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.contains(&"Joined the install already in progress…".to_string()), "{texts:?}");
+    assert!(texts.iter().any(|l| l == "line 2"), "{texts:?}");
+    // The slot is released: a fresh install can start.
+    match install_slot("sqls", &CancellationToken::new()) {
+        Ok(fresh) => release_install_slot("sqls", &fresh),
+        Err(_) => panic!("the finished install still holds its slot"),
+    }
+}
+
+/// A late caller gets the finished result without waiting.
+#[test]
+fn install_joined_after_it_finished_returns_the_result() {
+    let slot = match install_slot("marksman", &CancellationToken::new()) {
+        Ok(slot) => slot,
+        Err(_) => panic!("no install is running"),
+    };
+    let ok = ToolInfo {
+        name: "marksman".into(),
+        display_name: "Marksman".into(),
+        kind: ToolKind::LanguageServer,
+        command: "marksman".into(),
+        languages: vec![],
+        status: ToolStatus::Installed,
+        path: None,
+        version: Some("1.0".into()),
+        install_method: None,
+        can_install: true,
+        unavailable_reason: None,
+        can_uninstall: true,
+        install_hint: None,
+        homepage: None,
+        custom_error: None,
+        default_args: vec![],
+        default_initialization_options: None,
+        alternatives: vec![],
+    };
+    release_install_slot("marksman", &slot);
+    slot.finish(Ok(ok));
+    let info = join_install(&slot, &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.version.as_deref(), Some("1.0"));
 }
 
 /// Full release install through a fake `curl` that serves a local release JSON and archive.
@@ -318,7 +465,7 @@ done"#,
     }
     let installs = fs::read_to_string(&log).unwrap();
     for line in installs.lines() {
-        assert!(line.contains("typescript@<7") && !line.contains("typescript@latest"), "{line}");
+        assert!(line.contains("typescript@6") && !line.contains("typescript@latest"), "{line}");
     }
     assert!(installs.contains("@vue/language-server@latest"), "{installs}");
 
@@ -438,4 +585,97 @@ exit 0"#,
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/opt/dotnet");
+}
+
+#[test]
+fn kotlin_debugger_uses_existing_release_recipe_and_language_definition() {
+    let spec = registry::find("kotlin-debug-adapter").unwrap();
+    assert!(matches!(
+        spec.method,
+        Method::Release { source: ReleaseSource::GitHub { repo: "fwcd/kotlin-debug-adapter" }, .. }
+    ));
+    assert!(langs().iter().any(|l| l.debugger.as_ref().is_some_and(|d| d.adapter == spec.name)));
+}
+
+#[test]
+fn the_installing_request_can_still_cancel_its_shared_install() {
+    let owner = CancellationToken::new();
+    let slot = match install_slot("taplo", &owner) {
+        Ok(slot) => slot,
+        Err(_) => panic!("slot already taken"),
+    };
+    owner.cancel();
+    assert!(slot.cancel.is_cancelled());
+    release_install_slot("taplo", &slot);
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_analyzer_selects_openvsx_without_rustup() {
+    let env = Env::new();
+    env.script(&env.sys, "curl", "exit 0");
+    let tools = env.tools();
+    let spec = registry::find("rust-analyzer").unwrap();
+    assert!(matches!(
+        tools.install_method(spec),
+        Method::Release { source: ReleaseSource::OpenVsx { namespace: "rust-lang", extension: "rust-analyzer" }, .. }
+    ));
+    let info = tools.info("rust-analyzer", &langs()).unwrap();
+    assert_eq!(info.status, ToolStatus::Missing);
+    assert_eq!(info.install_method.as_deref(), Some("Open VSX"));
+    assert!(info.can_install);
+    assert!(info.unavailable_reason.is_none());
+    assert!(bin_dirs_in(&env.root, Platform::current()).contains(&env.root.join("rust-analyzer/bin")));
+}
+
+#[cfg(unix)]
+static RUST_ANALYZER_INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+#[cfg(unix)]
+#[test]
+fn rust_analyzer_prefers_rustup_and_installs_component() {
+    let _guard = RUST_ANALYZER_INSTALL.lock();
+    let env = Env::new();
+    env.script(&env.sys, "rustup", "test \"$*\" = 'component add rust-analyzer'");
+    env.script(&env.sys, "rust-analyzer", "echo 'rust-analyzer 1.0.0'");
+    let tools = env.tools();
+    assert!(matches!(
+        tools.install_method(registry::find("rust-analyzer").unwrap()),
+        Method::Rustup { component: "rust-analyzer" }
+    ));
+    let info = tools.info("rust-analyzer", &langs()).unwrap();
+    assert_eq!(info.install_method.as_deref(), Some("rustup"));
+    assert!(info.can_install, "rustup does not require curl");
+    let mut lines = Vec::new();
+    let emit = parking_lot::Mutex::new(&mut lines);
+    tools
+        .install("rust-analyzer", &langs(), &CancellationToken::new(), &|event| {
+            if let InstallEvent::Line { text } = event {
+                emit.lock().push(text);
+            }
+        })
+        .unwrap();
+    assert!(lines.iter().any(|line| line.contains("via rustup")));
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
+    let _guard = RUST_ANALYZER_INSTALL.lock();
+    let env = Env::new();
+    let bin = env.root.join("rust-analyzer/bin");
+    env.script(&bin, "rust-analyzer", "echo 'rust-analyzer 1.0.0'");
+    for with_rustup in [false, true] {
+        if with_rustup {
+            env.script(&env.sys, "rustup", "exit 1");
+            env.script(&env.sys, "rust-analyzer", "exit 1");
+        }
+        let info = env.tools().info("rust-analyzer", &langs()).unwrap();
+        assert_eq!(info.status, ToolStatus::Installed);
+        assert_eq!(info.path.as_deref(), Some(bin.join("rust-analyzer").as_path()));
+        assert_eq!(info.install_method.as_deref(), Some("Open VSX"), "Reinstall refreshes the copy in use");
+        assert!(info.can_uninstall);
+    }
+    env.tools().uninstall("rust-analyzer", &langs()).unwrap();
+    assert!(!env.root.join("rust-analyzer").exists());
 }

@@ -131,6 +131,7 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
       ) : (
         <IconButton icon="refresh" size="small" iconSize={16} action={`${tool}.reload`} />
       )}
+      {maven && <IconButton icon="plus" size="small" iconSize={16} action="maven.addProjects" />}
       <span className={styles.sep} />
       <IconButton
         icon="run"
@@ -166,6 +167,9 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
       <span className={styles.sep} />
       <IconButton icon="expand-all" size="small" iconSize={16} action={`${tool}.expandAll`} />
       <IconButton icon="collapse-all" size="small" iconSize={16} action={`${tool}.collapseAll`} />
+      {maven && (
+        <IconButton icon="settings" size="small" iconSize={16} action="maven.settings" title="Maven Settings…" />
+      )}
     </div>
   );
 }
@@ -302,6 +306,8 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
       else items.push({ label: "Create Run Configuration…", icon: "edit", run: () => void createRunConfig(config) });
     }
     if (node.kind === "mavenProject") {
+      if (!node.project.aggregated)
+        items.push({ kind: "action", action: "maven.unlinkProjects", arg: { pom: node.project.pom } });
       items.push(
         {
           label: "Open pom.xml",

@@ -1,9 +1,12 @@
 //! Operations delegated to the git CLI (all writes, plus blame and textual diffs).
 
+use crate::TextEncoding;
 use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
+use crate::text_encoding::{decode, encode, has_bom, is_binary};
 use crate::{
-    BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal, Repo,
+    BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal,
+    PushBranchOptions, Repo,
 };
 use gix::bstr::{BStr, ByteSlice};
 use ide_core::{CancellationToken, IdeError, IdeResult};
@@ -13,6 +16,7 @@ const UNCOMMITTED_AUTHOR: &str = "Not Committed Yet";
 
 impl Repo {
     pub(crate) fn rel_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<String>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         paths
             .iter()
             .map(|p| {
@@ -23,47 +27,104 @@ impl Repo {
     }
 
     pub(crate) fn has_head(&self) -> IdeResult<bool> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let repo = self.gix()?;
         Ok(!repo.head().map_err(gx)?.is_unborn())
     }
 }
 
-/// Runs a path-taking git command with literal pathspecs.
+/// Runs a path-taking git command with literal pathspecs, in as many invocations as
+/// the platform's command-line limit needs (a large rollback would otherwise fail with
+/// `os error 206` on Windows).
 fn run_paths(r: &Repo, args: &[&str], paths: &[String]) -> IdeResult<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut full: Vec<&str> = vec!["--literal-pathspecs"];
-    full.extend_from_slice(args);
-    full.push("--");
-    full.extend(paths.iter().map(String::as_str));
-    run(r.root(), &full, None).map(|_| ())
+    let mut base: Vec<&str> = vec!["--literal-pathspecs"];
+    base.extend_from_slice(args);
+    base.push("--");
+    cli::run_paths(r.root(), &base, paths).map(|_| ())
 }
 
-pub(crate) fn blame(r: &Repo, path: &Path, current_text: Option<&str>) -> IdeResult<Vec<BlameLine>> {
+pub(crate) fn blame(
+    r: &Repo,
+    path: &Path,
+    current_text: Option<&str>,
+    revision: Option<&str>,
+    encoding: TextEncoding,
+) -> IdeResult<Vec<BlameLine>> {
     let rel = r.rel_path(path)?;
-    let text: String = match current_text {
-        Some(t) => t.to_string(),
-        None => String::from_utf8_lossy(&std::fs::read(r.abs_path(&rel))?).into_owned(),
+    let revision = match revision {
+        Some(rev) => check_rev(rev)?,
+        None => "HEAD",
+    };
+    let disk = match std::fs::read(r.abs_path(&rel)) {
+        Ok(bytes) => bytes,
+        Err(_) if current_text.is_some() => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let text = current_text.map(str::to_owned).unwrap_or_else(|| decode(&disk, encoding).into_owned());
+    if encoding.has_ascii_conversion() {
+        return converted_blame(r, path, &rel, &text, revision, encoding);
+    }
+    let contents = match current_text {
+        Some(_) if crate::diff::normalize_eol(&text) == crate::diff::normalize_eol(&decode(&disk, encoding)) => disk,
+        Some(_) => {
+            let disk_text = decode(&disk, encoding);
+            let eol = if disk_text.contains("\r\n") {
+                "\r\n"
+            } else if disk_text.contains('\r') {
+                "\r"
+            } else {
+                "\n"
+            };
+            let contents = crate::diff::normalize_eol(&text).replace('\n', eol);
+            encode(&contents, encoding, has_bom(&disk, encoding))?
+        }
+        None => disk,
     };
     let line_count = text.split_inclusive('\n').count();
     let tracked_in_head = {
         let repo = r.gix()?;
-        crate::repo::blob_at(&repo, &rel, "HEAD")?.is_some()
+        crate::repo::blob_at(&repo, &rel, revision)?.is_some()
     };
     if !tracked_in_head {
         return Ok(uncommitted_lines(line_count));
     }
-    let out = run(
-        r.root(),
-        &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", "--", &rel],
-        Some(text.as_bytes()),
-    )?;
+    // Restricted blame reads committed blobs only. Feeding working-tree bytes to
+    // Git's --contents path would run configured clean filters, so it blames the
+    // revision plain. Git learned to combine `--contents` with a revision in 2.41;
+    // older releases reject the pair (`fatal: cannot use --contents with final
+    // commit object name`) and take the same plain path — the edited lines are
+    // marked uncommitted below either way (issue #755).
+    let contents_args = ["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel];
+    let plain_args: &[&str] = if crate::execution_allowed() {
+        &["--literal-pathspecs", "blame", "--porcelain", revision, "--", &rel]
+    } else {
+        &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", &rel]
+    };
+    let (out, contents_blame) = if crate::execution_allowed() {
+        let out = cli::run_raw(r.root(), &contents_args, Some(&contents))?;
+        if out.code == Some(0) {
+            (out, true)
+        } else if String::from_utf8_lossy(&out.stderr).contains("cannot use --contents") {
+            (run(r.root(), plain_args, None)?, false)
+        } else {
+            return Err(cli::failure(&contents_args, &out.stderr, &out.stdout, out.code));
+        }
+    } else {
+        (run(r.root(), plain_args, None)?, false)
+    };
     let mut lines = crate::blame::parse_porcelain(&out.stdout_str());
     for line in &mut lines {
         if line.commit.bytes().all(|b| b == b'0') {
             line.author = UNCOMMITTED_AUTHOR.to_string();
             line.summary = String::new();
+        }
+    }
+    if !contents_blame {
+        let base = r.file_at(path, Some(revision), encoding)?.unwrap_or_default();
+        for hunk in crate::diff::line_hunks(&base, &text).into_iter().rev() {
+            let start = (hunk.old_start as usize).min(lines.len());
+            let end = (start + hunk.old_lines as usize).min(lines.len());
+            lines.splice(start..end, uncommitted_lines(hunk.lines as usize));
         }
     }
     // Defensive: always exactly one entry per line.
@@ -72,6 +133,46 @@ pub(crate) fn blame(r: &Repo, path: &Path, current_text: Option<&str>) -> IdeRes
         lines.extend(uncommitted_lines(1));
     }
     Ok(lines)
+}
+
+fn converted_blame(
+    r: &Repo,
+    path: &Path,
+    rel: &str,
+    text: &str,
+    revision: &str,
+    encoding: TextEncoding,
+) -> IdeResult<Vec<BlameLine>> {
+    let current = crate::diff::normalize_eol(text);
+    let mut result = uncommitted_lines(current.split_inclusive('\n').count());
+    let Some(base) = r.file_bytes_at(path, Some(revision))? else { return Ok(result) };
+    let out = run(r.root(), &["--literal-pathspecs", "blame", "--porcelain", revision, "--", rel], None)?;
+    let physical = crate::blame::parse_porcelain(&out.stdout_str());
+    let raw = crate::text_encoding::decode_raw(&base, encoding);
+    let raw = crate::diff::normalize_eol(&raw);
+    let mut logical = Vec::new();
+    for (line, metadata) in raw.split_inclusive('\n').zip(physical) {
+        let displayed = encoding.display_text(line);
+        let displayed = crate::diff::normalize_eol(&displayed);
+        logical.extend(std::iter::repeat_n(metadata, displayed.split_inclusive('\n').count()));
+    }
+    let base = decode(&base, encoding);
+    let hunks = crate::diff::line_hunks(&base, &current);
+    let (mut old, mut new) = (0usize, 0usize);
+    for h in hunks {
+        let unchanged = h.start as usize - new;
+        for i in 0..unchanged {
+            if let Some(metadata) = logical.get(old + i) {
+                result[new + i] = metadata.clone();
+            }
+        }
+        old = (h.old_start + h.old_lines) as usize;
+        new = (h.start + h.lines) as usize;
+    }
+    for (line, metadata) in result[new..].iter_mut().zip(&logical[old.min(logical.len())..]) {
+        *line = metadata.clone();
+    }
+    Ok(result)
 }
 
 fn uncommitted_lines(n: usize) -> Vec<BlameLine> {
@@ -87,8 +188,18 @@ fn uncommitted_lines(n: usize) -> Vec<BlameLine> {
         .collect()
 }
 
-pub(crate) fn diff_text(r: &Repo, path: &Path, staged: bool) -> IdeResult<String> {
+pub(crate) fn diff_text(r: &Repo, path: &Path, staged: bool, encoding: TextEncoding) -> IdeResult<String> {
     let rel = r.rel_path(path)?;
+    if !crate::execution_allowed() {
+        let old = r.file_at(path, Some(if staged { "HEAD" } else { ":0" }), encoding)?.unwrap_or_default();
+        let new = if staged {
+            r.file_at(path, Some(":0"), encoding)?.unwrap_or_default()
+        } else {
+            std::fs::read(r.abs_path(&rel)).map(|b| decode(&b, encoding).into_owned()).unwrap_or_default()
+        };
+        let selected: Vec<_> = (0..crate::diff::line_hunks(&old, &new).len()).collect();
+        return Ok(crate::diff::build_partial_patch(&rel, &old, &new, &selected));
+    }
     let base =
         ["-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.external=", "--literal-pathspecs"];
     let in_index = {
@@ -102,7 +213,7 @@ pub(crate) fn diff_text(r: &Repo, path: &Path, staged: bool) -> IdeResult<String
         args.extend(["diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", &rel]);
         let out = cli::run_raw(r.root(), &args, None)?;
         return match out.code {
-            Some(0) | Some(1) => Ok(out.stdout_str()),
+            Some(0) | Some(1) => Ok(decode_diff(&out.stdout, encoding)),
             code => Err(cli::failure(&args, &out.stderr, &out.stdout, code)),
         };
     }
@@ -111,7 +222,7 @@ pub(crate) fn diff_text(r: &Repo, path: &Path, staged: bool) -> IdeResult<String
         args.push("--cached");
     }
     args.extend(["--", &rel]);
-    Ok(run(r.root(), &args, None)?.stdout_str())
+    Ok(decode_diff(&run(r.root(), &args, None)?.stdout, encoding))
 }
 
 pub(crate) fn stage(r: &Repo, paths: &[PathBuf]) -> IdeResult<()> {
@@ -128,7 +239,7 @@ pub(crate) fn unstage(r: &Repo, paths: &[PathBuf]) -> IdeResult<()> {
     }
 }
 
-pub(crate) fn stage_patch(r: &Repo, patch: &str) -> IdeResult<()> {
+pub(crate) fn stage_patch(r: &Repo, patch: &str, encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>) -> IdeResult<()> {
     if patch.trim().is_empty() {
         return Ok(());
     }
@@ -136,17 +247,24 @@ pub(crate) fn stage_patch(r: &Repo, patch: &str) -> IdeResult<()> {
     if !patch.ends_with('\n') {
         patch.push('\n');
     }
-    run(
-        r.root(),
-        &["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "--recount", "-"],
-        Some(patch.as_bytes()),
-    )
-    .map(|_| ())
+    if crate::patch::parse_patch(&patch)
+        .iter()
+        .any(|file| encoding(&r.abs_path(&file.path)).is_ok_and(TextEncoding::has_ascii_conversion))
+    {
+        return crate::patch::stage_converted_patch(r, &patch, encoding);
+    }
+    let bytes = crate::patch::encode_text_patch(r, &patch, encoding)?;
+    run(r.root(), &["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "--recount", "-"], Some(&bytes))
+        .map(|_| ())
 }
 
 /// Paths with unresolved conflicts (index stages 1–3).
 pub(crate) fn unmerged_paths(r: &Repo) -> IdeResult<Vec<String>> {
-    let out = run(r.root(), &["diff", "--name-only", "--diff-filter=U", "-z"], None)?;
+    let out = run(
+        r.root(),
+        &["diff", "--cached", "--no-ext-diff", "--no-textconv", "--name-only", "--diff-filter=U", "-z"],
+        None,
+    )?;
     Ok(out.stdout_str().split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
 
@@ -224,7 +342,12 @@ pub(crate) fn discard(r: &Repo, paths: &[PathBuf]) -> IdeResult<()> {
     Ok(())
 }
 
-pub(crate) fn commit(r: &Repo, message: &str, options: &CommitOptions) -> IdeResult<String> {
+pub(crate) fn commit(
+    r: &Repo,
+    message: &str,
+    options: &CommitOptions,
+    encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
+) -> IdeResult<String> {
     let mut args = vec!["commit", "-q", "--cleanup=whitespace"];
     if options.amend {
         args.push("--amend");
@@ -252,7 +375,7 @@ pub(crate) fn commit(r: &Repo, message: &str, options: &CommitOptions) -> IdeRes
     if options.partial.is_empty() {
         run(r.root(), &args, stdin)?;
     } else {
-        commit_partial(r, &args, stdin, &options.partial)?;
+        commit_partial(r, &args, stdin, &options.partial, encoding)?;
     }
     let repo = r.gix()?;
     Ok(repo.head_id().map_err(gx)?.detach().to_string())
@@ -277,6 +400,7 @@ fn commit_partial(
     commit_args: &[&str],
     stdin: Option<&[u8]>,
     partial: &[crate::PartialCommitFile],
+    encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
 ) -> IdeResult<()> {
     let tmp = TempIndex(r.git_dir.join("openidea-partial-index"));
     let index = r.git_dir.join("index");
@@ -295,10 +419,12 @@ fn commit_partial(
             IdeError::invalid(format!("{rel}: only changes of a file in HEAD can be committed partially"))
         })?;
         let disk = std::fs::read(r.abs_path(&rel))?;
-        if head.contains(&0) || disk.contains(&0) {
+        let encoding = encoding(&file.path.0)?;
+        let bom = has_bom(&head, encoding);
+        if is_binary(&head, encoding) || is_binary(&disk, encoding) {
             return Err(IdeError::invalid(format!("{rel}: binary files cannot be committed partially")));
         }
-        let (head, disk) = (String::from_utf8_lossy(&head), String::from_utf8_lossy(&disk));
+        let (head, disk) = (decode(&head, encoding), decode(&disk, encoding));
         let hunks = crate::diff::line_hunks(&head, &disk);
         let mut selected = Vec::new();
         for want in &file.hunks {
@@ -311,15 +437,9 @@ fn commit_partial(
             }
         }
         cli::run_env(r.root(), &["--literal-pathspecs", "reset", "-q", "HEAD", "--", &rel], None, &env)?;
-        let patch = crate::diff::build_partial_patch(&rel, &head, &disk, &selected);
-        if !patch.is_empty() {
-            cli::run_env(
-                r.root(),
-                &["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "--recount", "-"],
-                Some(patch.as_bytes()),
-                &env,
-            )?;
-        }
+        let text = crate::diff::selected_text(&head, &disk, &selected);
+        let bytes = encode(&text, encoding, bom)?;
+        write_index_blob(r, &rel, &bytes, &env)?;
         rels.push(rel);
     }
     cli::run_env(r.root(), commit_args, stdin, &env)?;
@@ -692,6 +812,8 @@ pub(crate) fn push(
             })
             .ok_or_else(|| IdeError::invalid("no remote configured"))?;
         args.extend(["--set-upstream".into(), remote, short]);
+    } else if let Some((remote, target)) = renamed_upstream(r)? {
+        args.extend([remote, format!("HEAD:{target}")]);
     }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     cli::run_streaming(r.root(), &argv, cancel, on_output)?;
@@ -723,22 +845,25 @@ fn check_local_branch(r: &Repo, branch: &str) -> IdeResult<()> {
         .map_err(|_| IdeError::invalid(format!("'{branch}' is not a local branch")))
 }
 
-/// Pushes local `branch` (or only up to `revision`) to its upstream; a branch without
-/// one goes to the default remote under the same name and, when pushed whole, gets it
-/// as upstream.
+/// Pushes local `branch` (or only up to `opts.revision`) to its upstream; a branch
+/// without one goes to the default remote under the same name and, when pushed whole,
+/// gets it as upstream.
 pub(crate) fn push_branch(
     r: &Repo,
     branch: &str,
-    revision: Option<&str>,
-    target: Option<&str>,
-    force_with_lease: bool,
+    opts: PushBranchOptions<'_>,
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<()> {
+    let PushBranchOptions { revision, target, remote: remote_override, force_with_lease } = opts;
     check_local_branch(r, branch)?;
-    let (remote, mut name, set_upstream) = match branch_upstream(r, branch) {
-        Some((remote, name)) => (remote, name, false),
-        None => (push_remote(r)?, branch.to_string(), revision.is_none()),
+    let remote_override = remote_override.map(str::trim).filter(|s| !s.is_empty());
+    let (remote, mut name, set_upstream) = match (remote_override, branch_upstream(r, branch)) {
+        // An explicit remote keeps the upstream's branch name but pushes elsewhere.
+        (Some(remote), Some((_, name))) => (check_rev(remote)?.to_string(), name, false),
+        (Some(remote), None) => (check_rev(remote)?.to_string(), branch.to_string(), revision.is_none()),
+        (None, Some((remote, name))) => (remote, name, false),
+        (None, None) => (push_remote(r)?, branch.to_string(), revision.is_none()),
     };
     if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
         let valid =
@@ -780,6 +905,23 @@ pub(crate) fn update_branch(
 }
 
 /// The remote the current branch pushes to (`origin`, or the only remote, by default).
+/// The remote and ref HEAD's branch tracks when the ref has another name: a plain
+/// `git push` refuses that under the default `push.default=simple`.
+fn renamed_upstream(r: &Repo) -> IdeResult<Option<(String, String)>> {
+    let repo = r.gix()?;
+    let Some(head) = repo.head_name().map_err(gx)? else { return Ok(None) };
+    let direction = gix::remote::Direction::Fetch;
+    let Some(Ok(merge)) = repo.branch_remote_ref_name(head.as_ref(), direction) else { return Ok(None) };
+    if merge.as_ref() == head.as_ref() {
+        return Ok(None);
+    }
+    let target = merge.as_bstr().to_str_lossy().into_owned();
+    let short = head.as_ref().shorten().to_str_lossy().into_owned();
+    Ok(repo
+        .branch_remote_name(short.as_str(), direction)
+        .map(|remote| (remote.as_bstr().to_str_lossy().into_owned(), target)))
+}
+
 fn push_remote(r: &Repo) -> IdeResult<String> {
     let repo = r.gix()?;
     let from_branch = repo.head_name().map_err(gx)?.and_then(|head| {
@@ -797,4 +939,58 @@ fn push_remote(r: &Repo) -> IdeResult<String> {
             }
         })
         .ok_or_else(|| IdeError::invalid("no remote configured"))
+}
+
+pub(crate) fn write_index_blob(r: &Repo, rel: &str, bytes: &[u8], env: &[(&str, &std::ffi::OsStr)]) -> IdeResult<()> {
+    let entry =
+        cli::run_env(r.root(), &["--literal-pathspecs", "ls-files", "--stage", "--", rel], None, env)?.stdout_str();
+    let mode = entry.split_whitespace().next().unwrap_or("100644");
+    let id = run(r.root(), &["hash-object", "-w", "--stdin"], Some(bytes))?.stdout_str();
+    cli::run_env(r.root(), &["update-index", "--add", "--cacheinfo", mode, id.trim(), rel], None, env)?;
+    Ok(())
+}
+
+pub(crate) fn stage_hunks(
+    r: &Repo,
+    path: &Path,
+    current: &str,
+    selected: &[usize],
+    encoding: TextEncoding,
+) -> IdeResult<()> {
+    if selected.is_empty() {
+        return Ok(());
+    }
+    let rel = r.rel_path(path)?;
+    let base = r.file_bytes_at(path, Some(":0"))?.unwrap_or_default();
+    if is_binary(&base, encoding) {
+        return Err(IdeError::invalid("binary files cannot be staged partially"));
+    }
+    let old = decode(&base, encoding);
+    let hunks = crate::diff::line_hunks(&old, current);
+    if selected.iter().any(|&i| i >= hunks.len()) {
+        return Err(IdeError::invalid("hunk no longer exists"));
+    }
+    let text = crate::diff::selected_text(&old, current, selected);
+    let bytes = encode(&text, encoding, has_bom(&base, encoding))?;
+    write_index_blob(r, &rel, &bytes, &[])
+}
+
+// Git headers contain UTF-8 paths; only source lines use the file's encoding.
+fn decode_diff(bytes: &[u8], encoding: TextEncoding) -> String {
+    let mut hunks = false;
+    let mut text = String::new();
+    for line in bytes.split_inclusive(|&b| b == b'\n') {
+        if line.starts_with(b"diff --git ") {
+            hunks = false;
+        }
+        if line.starts_with(b"@@ ") {
+            hunks = true;
+        }
+        if hunks {
+            text.push_str(&crate::text_encoding::decode_raw(line, encoding));
+        } else {
+            text.push_str(&String::from_utf8_lossy(line));
+        }
+    }
+    text
 }

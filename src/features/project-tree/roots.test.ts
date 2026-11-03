@@ -9,7 +9,7 @@ import { MemoryFs, setProjectFsForTests } from "./fs";
 import { beginNewPackage, checkEditingName, commitEditing } from "./operations";
 import { packageKindAt } from "./packages";
 import { packageSegments } from "./paths";
-import { initProjectTree, loadDir } from "./store";
+import { initProjectTree, loadDir, selectModel, useProjectTree } from "./store";
 
 const root = (path: string, kind: RootFolder["kind"], detectedFrom: string | null): RootFolder => ({
   path,
@@ -69,7 +69,7 @@ describe("creating packages", () => {
     setProjectFsForTests(fs, "/p");
     initProjectTree("/p", "p");
     useProject.setState({
-      project: { name: "p", root: "/p", isGit: false, settings: {} } as never,
+      project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never,
       settings: {} as never,
     });
     useProjectRoots.setState({ root: "/p", detected: MAVEN });
@@ -102,4 +102,21 @@ describe("creating packages", () => {
     expect(fs.nodes.has("/p/pkg/api/__init__.py")).toBe(true);
     expect(fs.nodes.has("/p/pkg/api/v1/__init__.py")).toBe(true);
   });
+});
+
+it("uses only manifest members in order in workspace Project and Project Files views", () => {
+  for (const mode of ["project", "projectFiles"] as const) {
+    initProjectTree("/workspace", "Workspace", ["/z", "/a"]);
+    useProjectTree.setState({ mode });
+    const model = selectModel(useProjectTree.getState());
+    expect(model.roots.map((r) => r.path)).toEqual(["/z", "/a"]);
+    expect(model.byKey.has("/workspace")).toBe(false);
+    initProjectTree("/workspace", "Workspace", ["/a"]);
+    expect(selectModel(useProjectTree.getState()).roots.map((r) => r.path)).toEqual(["/a"]);
+    initProjectTree("/workspace", "Workspace", []);
+    expect(selectModel(useProjectTree.getState()).roots).toEqual([]);
+  }
+  initProjectTree("/a", "A");
+  expect(selectModel(useProjectTree.getState()).roots.map((r) => r.path)).toEqual(["/a"]);
+  initProjectTree(null);
 });

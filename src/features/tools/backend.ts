@@ -70,6 +70,7 @@ function tool(partial: Partial<ToolInfo> & Pick<ToolInfo, "name" | "languages">)
     customError: null,
     defaultArgs: [],
     defaultInitializationOptions: null,
+    alternatives: [],
     ...partial,
   };
 }
@@ -93,7 +94,15 @@ export function sampleTools(): ToolInfo[] {
       version: "4.3.3",
       path: "/opt/homebrew/bin/typescript-language-server",
     }),
-    tool({ name: "basedpyright", languages: ["Python"], installMethod: "pip (virtualenv)" }),
+    ...["basedpyright", "pyright", "ty"].map((name) =>
+      tool({
+        name,
+        displayName: name === "pyright" ? "Pyright" : name === "ty" ? "ty (Python)" : name,
+        languages: ["Python"],
+        installMethod: "pip (virtualenv)",
+        alternatives: ["basedpyright", "pyright", "ty"],
+      }),
+    ),
     tool({ name: "gopls", languages: ["Go"], installMethod: "go install" }),
     tool({
       name: "delve",

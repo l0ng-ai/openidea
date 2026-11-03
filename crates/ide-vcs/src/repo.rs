@@ -47,7 +47,13 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let common_dir = absolute(repo.common_dir())?;
     let files = config_files(&git_dir, &common_dir);
     let cache = Cache { config_stamp: stamp(&files), config_files: files, repo: ts };
-    Ok(Some(Repo { root, git_dir, inner: std::sync::Mutex::new(cache), ignored: Default::default() }))
+    Ok(Some(Repo {
+        execution_allowed: std::sync::atomic::AtomicBool::new(true),
+        root,
+        git_dir,
+        inner: std::sync::Mutex::new(cache),
+        ignored: Default::default(),
+    }))
 }
 
 pub(crate) fn absolute(p: &Path) -> IdeResult<PathBuf> {
@@ -70,6 +76,11 @@ impl Repo {
     /// A thread-local gitoxide handle; reopened when the git configuration changed
     /// on disk (e.g. after `push --set-upstream` or `git config` in a terminal).
     pub(crate) fn gix(&self) -> IdeResult<gix::Repository> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            return gix::open_opts(&self.git_dir, gix::open::Options::default().filter_config_section(|_| false))
+                .map_err(gx);
+        }
         let mut cache = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = stamp(&cache.config_files);
         if now != cache.config_stamp {
@@ -89,6 +100,7 @@ impl Repo {
     /// Repository-relative path with `/` separators. Accepts absolute paths inside the
     /// worktree or paths already relative to it.
     pub(crate) fn rel_path(&self, path: &Path) -> IdeResult<String> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let rel = if path.is_absolute() {
             self.strip_root(path)
                 .ok_or_else(|| IdeError::invalid(format!("{} is outside the repository", path.display())))?
@@ -140,6 +152,7 @@ impl Repo {
 
     /// Absolute path for a repository-relative path.
     pub(crate) fn abs_path(&self, rel: &str) -> PathBuf {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let mut p = self.root.clone();
         for part in rel.split('/').filter(|s| !s.is_empty()) {
             p.push(part);

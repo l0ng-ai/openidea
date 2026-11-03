@@ -4,7 +4,7 @@ use ide_core::error::ErrorKind;
 use ide_core::event::NotifyLevel;
 use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink, TextEdit};
 use ide_text::{AppliedChange, ByteEdit, Document, LineEnding};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, ReentrantMutex, RwLock};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
@@ -35,6 +35,10 @@ pub struct DocumentInfo {
     /// provides, e.g. `jdt://…`); `path` then holds the same URI.
     #[specta(optional)]
     pub uri: Option<String>,
+    /// CodeMirror mode replacing the language's own one (an Angular project's
+    /// HTML templates).
+    #[specta(optional)]
+    pub ui_mode: Option<String>,
 }
 
 /// Current text and identity of a document, for analyses (outline, folding).
@@ -49,16 +53,25 @@ pub struct TextSnapshot {
 /// Language of a file from its path and first line (hashbangs).
 pub type DetectLanguage = dyn Fn(&Path, Option<&str>) -> LanguageId + Send + Sync;
 
+/// CodeMirror mode of a file replacing its language's own one; `None` keeps it.
+pub type DetectUiMode = dyn Fn(&Path, &LanguageId) -> Option<String> + Send + Sync;
+
 /// Registry of open documents keyed by path, with ref-counting so split
 /// editors on the same file share one buffer.
 ///
 /// Every document has its own lock; operations on one document are serialized
 /// and observers see them in version order.
 pub struct Documents {
+    /// Workspace transactions hold this across preflight/commit/rollback; ordinary
+    /// operations re-enter it while accessing the individual document locks.
+    operations: ReentrantMutex<()>,
+    workspace_edits: Arc<Mutex<workspace_edit::History>>,
+    workspace_edit_active: std::sync::atomic::AtomicBool,
     registry: Mutex<Registry>,
     observers: RwLock<Vec<Arc<dyn DocumentObserver>>>,
     sink: SharedSink,
     detect_language: Box<DetectLanguage>,
+    detect_ui_mode: Box<DetectUiMode>,
     editorconfig: EditorConfig,
     defaults: RwLock<FileDefaults>,
 }
@@ -88,6 +101,8 @@ pub trait DocumentObserver: Send + Sync {
     fn closed(&self, _doc: DocId, _path: &Path) {}
 }
 
+mod workspace_edit;
+
 type Slot = Arc<Mutex<DocState>>;
 
 #[derive(Default)]
@@ -103,12 +118,15 @@ struct RegEntry {
     keys: Vec<PathBuf>,
 }
 
+#[derive(Clone)]
 struct DocState {
     path: PathBuf,
     doc: Document,
     language: LanguageId,
+    ui_mode: Option<String>,
     encoding: String,
     has_bom: bool,
+    native_to_ascii: bool,
     read_only: bool,
     large: bool,
     editorconfig: Option<EditorConfigProps>,
@@ -153,18 +171,100 @@ fn read_only_error(path: &Path) -> IdeError {
 impl Documents {
     pub fn new(sink: SharedSink, detect_language: Box<DetectLanguage>) -> Self {
         Self {
+            operations: ReentrantMutex::new(()),
+            workspace_edits: Arc::default(),
+            workspace_edit_active: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::default(),
             observers: RwLock::default(),
             sink,
             detect_language,
+            detect_ui_mode: Box::new(|_, _| None),
             editorconfig: EditorConfig::new(),
             defaults: RwLock::default(),
         }
     }
 
+    /// Detects per-file CodeMirror modes (framework templates) besides languages.
+    pub fn with_ui_mode_detection(mut self, detect_ui_mode: Box<DetectUiMode>) -> Self {
+        self.detect_ui_mode = detect_ui_mode;
+        self
+    }
+
+    /// The `DocumentInfo::ui_mode` `path` gets when opened, without opening it
+    /// (previews of other files).
+    pub fn ui_mode_of(&self, path: &Path) -> Option<String> {
+        (self.detect_ui_mode)(path, &(self.detect_language)(path, None))
+    }
+
     /// Settings-derived defaults for new files, fallback decoding and EditorConfig support.
     pub fn set_file_defaults(&self, defaults: FileDefaults) {
         *self.defaults.write() = defaults;
+    }
+
+    /// Re-decode only clean properties buffers after the conversion setting changes.
+    /// Runs on the host's blocking pool; dirty documents retain their current codec.
+    pub fn reload_properties(&self) {
+        for id in self.open_documents() {
+            let result = self.with_doc(id, |st| {
+                let enabled = self.file_defaults().native_to_ascii_for(&st.path);
+                if st.dirty || st.uri.is_some() || st.binary || enabled == st.native_to_ascii {
+                    return Ok(());
+                }
+                let loaded = Self::load_as(&st.path, &st.encoding, enabled)?;
+                self.replace_locked(id, st, &loaded.text)?;
+                st.native_to_ascii = enabled;
+                st.disk_mtime = loaded.mtime_ms;
+                st.disk_len = disk_len(&st.path);
+                Ok(())
+            });
+            if let Err(e) = result {
+                tracing::warn!("reload properties {id}: {e}");
+            }
+        }
+    }
+
+    pub fn native_to_ascii_for(&self, path: &Path) -> bool {
+        if let Some(id) = self.by_path(path)
+            && let Ok(enabled) = self.with_doc(id, |st| Ok(st.native_to_ascii))
+        {
+            return enabled;
+        }
+        self.file_defaults().native_to_ascii_for(path)
+    }
+
+    fn load_as(path: &Path, encoding: &str, native_to_ascii: bool) -> IdeResult<ide_vfs::LoadedText> {
+        let mut loaded = if native_to_ascii {
+            let detected = ide_vfs::load_text(path)?;
+            // Converted files are ASCII even when the selected source charset is UTF-16.
+            if detected.text.is_ascii() && !detected.binary && detected.encoding == "utf-8" {
+                detected
+            } else {
+                ide_vfs::load_text_as(path, encoding)?
+            }
+        } else {
+            ide_vfs::load_text_as(path, encoding)?
+        };
+        if native_to_ascii {
+            loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
+        }
+        Ok(loaded)
+    }
+
+    /// Closed-file readers use the same decoding as document opening.
+    pub fn load_file(&self, path: &Path) -> IdeResult<ide_vfs::LoadedText> {
+        Self::load_with_defaults(path, &self.file_defaults())
+    }
+
+    pub fn load_file_as(&self, path: &Path, encoding: &str) -> IdeResult<ide_vfs::LoadedText> {
+        Self::load_as(path, encoding, self.native_to_ascii_for(path))
+    }
+
+    fn load_with_defaults(path: &Path, defaults: &FileDefaults) -> IdeResult<ide_vfs::LoadedText> {
+        let mut loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(&absolute(path)))?;
+        if !loaded.binary && defaults.native_to_ascii_for(path) {
+            loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
+        }
+        Ok(loaded)
     }
 
     pub fn file_defaults(&self) -> FileDefaults {
@@ -190,6 +290,7 @@ impl Documents {
 
     /// Locks a document, failing if it was closed concurrently.
     fn with_doc<T>(&self, doc: DocId, f: impl FnOnce(&mut DocState) -> IdeResult<T>) -> IdeResult<T> {
+        let _operation = self.operations.lock();
         let slot = self.slot(doc)?;
         let mut st = slot.lock();
         if st.closed {
@@ -221,6 +322,7 @@ impl Documents {
             large: st.large,
             editorconfig: st.editorconfig.clone(),
             uri: st.uri.clone(),
+            ui_mode: st.ui_mode.clone(),
         }
     }
 
@@ -236,12 +338,14 @@ impl Documents {
 
     /// Opens (or re-references) the document at `path`.
     pub fn open(&self, path: &Path) -> IdeResult<DocumentInfo> {
+        let _operation = self.operations.lock();
         if let Some(info) = self.reopen(path) {
             return Ok(info);
         }
         let defaults = self.file_defaults();
-        let loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(&absolute(path)))?;
+        let loaded = Self::load_with_defaults(path, &defaults)?;
         let language = (self.detect_language)(path, loaded.text.lines().next());
+        let ui_mode = (self.detect_ui_mode)(path, &language);
         // Archive entries (`<jar>!/<entry>`) are read-only and kept from language
         // servers and Local History, which only know real files.
         let in_archive = ide_vfs::is_archive_path(path);
@@ -278,8 +382,10 @@ impl Documents {
             path: path.to_path_buf(),
             doc,
             language,
+            ui_mode,
             encoding,
             has_bom,
+            native_to_ascii: !loaded.binary && defaults.native_to_ascii_for(path),
             read_only: !observed || !writable,
             large: loaded.large,
             editorconfig,
@@ -325,6 +431,7 @@ impl Documents {
     /// language server provides for a non-`file:` URI. It is keyed by the URI,
     /// never touches the disk and cannot be edited or saved.
     pub fn open_virtual(&self, uri: &str, language: LanguageId, text: &str) -> IdeResult<DocumentInfo> {
+        let _operation = self.operations.lock();
         let key = PathBuf::from(uri);
         if let Some(info) = self.reopen(&key) {
             return Ok(info);
@@ -334,8 +441,10 @@ impl Documents {
             path: key.clone(),
             doc: Document::new(text),
             language,
+            ui_mode: None,
             encoding: "utf-8".into(),
             has_bom: false,
+            native_to_ascii: false,
             read_only: true,
             large,
             editorconfig: None,
@@ -381,6 +490,7 @@ impl Documents {
     }
 
     pub fn close(&self, doc: DocId) {
+        let _operation = self.operations.lock();
         let slot = {
             let mut reg = self.registry.lock();
             let Some(entry) = reg.docs.get_mut(&doc) else { return };
@@ -463,7 +573,13 @@ impl Documents {
         edits: &[ByteEdit],
     ) {
         self.notify_changed(doc, st, applied, edits);
-        self.sink.emit(IdeEvent::DocPatched { doc, base_version, version: st.doc.version(), changes: set.changes });
+        self.sink.emit(IdeEvent::DocPatched {
+            doc,
+            base_version,
+            version: st.doc.version(),
+            changes: set.changes,
+            workspace_edit: self.workspace_edit_active.load(std::sync::atomic::Ordering::Relaxed),
+        });
     }
 
     /// Minimal-diff replacement; no event when the text is unchanged.
@@ -498,7 +614,12 @@ impl Documents {
             if !st.dirty || st.uri.is_some() {
                 return Ok(());
             }
-            let mtime = ide_vfs::save_text(&st.path, &st.doc.text_for_save(), &st.encoding, st.has_bom)?;
+            let text = st.doc.text_for_save();
+            let mtime = if st.native_to_ascii {
+                ide_vfs::save_properties_text(&st.path, &text)?
+            } else {
+                ide_vfs::save_text(&st.path, &text, &st.encoding, st.has_bom)?
+            };
             st.disk_mtime = mtime;
             st.disk_len = disk_len(&st.path);
             self.set_dirty(doc, st, false);
@@ -556,6 +677,18 @@ impl Documents {
         self.with_doc(id, |st| Ok(st.doc.text())).ok()
     }
 
+    /// Search overlays include closed properties files when their disk spelling
+    /// differs from the text that opening the document would display.
+    pub fn search_text_of(&self, path: &Path) -> Option<String> {
+        self.text_of(path).or_else(|| {
+            if !self.native_to_ascii_for(path) {
+                return None;
+            }
+            let loaded = self.load_file(path).ok()?;
+            (!loaded.binary && !loaded.too_large).then(|| ide_text::normalize_line_endings(&loaded.text).into_owned())
+        })
+    }
+
     /// Toggle Read-only Attribute: sets the file's writable bit and, when the
     /// file is open, whether its document accepts edits. Returns the resulting
     /// read-only state.
@@ -581,16 +714,24 @@ impl Documents {
         self.with_doc(doc, |st| Ok(st.dirty))
     }
 
+    /// Current generation without copying the document text.
+    pub fn version(&self, doc: DocId) -> IdeResult<u32> {
+        self.with_doc(doc, |st| Ok(st.doc.version()))
+    }
+
     /// Ids of all open documents.
     pub fn open_documents(&self) -> Vec<DocId> {
         self.registry.lock().docs.keys().copied().collect()
     }
 
-    /// Detects the language of every open file again (file type associations
-    /// changed). A document whose language changes is reopened for the
-    /// observers, so it moves to the matching language servers and syntax tree,
-    /// and reported as [`IdeEvent::DocLanguage`]. Returns the changed documents.
+    /// Detects the language and UI mode of every open file again (file type
+    /// associations changed, a framework's root marker appeared or went). A
+    /// document whose language or mode changes is reported as
+    /// [`IdeEvent::DocLanguage`]; one whose language changes is also reopened
+    /// for the observers, so it moves to the matching language servers and
+    /// syntax tree. Returns the changed documents.
     pub fn redetect_languages(&self) -> Vec<DocId> {
+        let _operation = self.operations.lock();
         let slots: Vec<(DocId, Slot)> = self.registry.lock().docs.iter().map(|(id, e)| (*id, e.slot.clone())).collect();
         let mut changed = Vec::new();
         for (id, slot) in slots {
@@ -600,18 +741,22 @@ impl Documents {
             }
             let text = st.doc.text();
             let language = (self.detect_language)(&st.path, text.lines().next());
-            if language == st.language {
+            let ui_mode = (self.detect_ui_mode)(&st.path, &language);
+            if language == st.language && ui_mode == st.ui_mode {
                 continue;
             }
-            st.language = language.clone();
-            if st.observed {
-                let info = Self::info_with_text(id, &st, text);
-                for o in self.observers() {
-                    o.closed(id, &st.path);
-                    o.opened(&info);
+            st.ui_mode = ui_mode;
+            if language != st.language {
+                st.language = language.clone();
+                if st.observed {
+                    let info = Self::info_with_text(id, &st, text);
+                    for o in self.observers() {
+                        o.closed(id, &st.path);
+                        o.opened(&info);
+                    }
                 }
             }
-            self.sink.emit(IdeEvent::DocLanguage { doc: id, language });
+            self.sink.emit(IdeEvent::DocLanguage { doc: id, language, ui_mode: st.ui_mode.clone() });
             changed.push(id);
         }
         changed
@@ -640,14 +785,18 @@ impl Documents {
             if st.uri.is_some() {
                 return Err(read_only_error(&st.path));
             }
+            ide_vfs::encode("", encoding, false)?;
             if reload {
                 if st.dirty {
                     return Err(IdeError::invalid("save or revert the unsaved changes before reloading"));
                 }
-                let loaded = ide_vfs::load_text_as(&st.path, encoding)?;
+                let enabled = self.file_defaults().native_to_ascii_for(&st.path);
+                let loaded = Self::load_as(&st.path, encoding, enabled)?;
+                st.native_to_ascii = enabled;
                 st.encoding = loaded.encoding.clone();
                 st.has_bom = loaded.has_bom;
                 st.disk_mtime = loaded.mtime_ms;
+                st.disk_len = disk_len(&st.path);
                 self.replace_locked(doc, st, &loaded.text)?;
                 // Reloading is not an edit: the buffer matches the file again.
                 self.set_dirty(doc, st, false);
@@ -659,7 +808,9 @@ impl Documents {
             let utf16 = encoding.starts_with("utf-16");
             let has_bom = utf16 || (st.has_bom && encoding == "utf-8");
             // Fails (with the offending character) when the text is not representable.
-            ide_vfs::encode(&st.doc.text_for_save(), encoding, has_bom)?;
+            if !st.native_to_ascii {
+                ide_vfs::encode(&st.doc.text_for_save(), encoding, has_bom)?;
+            }
             st.encoding = encoding.to_owned();
             st.has_bom = has_bom;
             self.set_dirty(doc, st, true);
@@ -667,16 +818,49 @@ impl Documents {
         })
     }
 
+    /// Re-checks open file buffers, including files outside the watched roots.
+    /// Call from a blocking worker; unchanged files only need their metadata.
+    pub fn sync_from_disk(&self) {
+        self.sync_open_documents(false);
+    }
+
+    /// Refreshes clean buffers after an IDE operation rewrites files. Such an
+    /// operation can preserve both file length and the timestamp's millisecond.
+    /// The open document's selected codec is retained.
+    pub fn sync_after_disk_change(&self) {
+        self.sync_open_documents(true);
+    }
+
+    fn sync_open_documents(&self, force_clean: bool) {
+        let slots: Vec<Slot> = self.registry.lock().docs.values().map(|e| e.slot.clone()).collect();
+        let paths: Vec<PathBuf> = slots
+            .iter()
+            .filter_map(|slot| {
+                let st = slot.lock();
+                (!st.closed && st.uri.is_none() && !st.binary && !ide_vfs::is_archive_path(&st.path))
+                    .then(|| st.path.clone())
+            })
+            .collect();
+        self.reload_from_disk(&paths, force_clean);
+    }
+
     /// Re-reads from disk after an external change. Clean documents reload
     /// silently; dirty ones are left alone and reported via `IdeEvent::Notify`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
+        self.reload_from_disk(paths, false);
+    }
+
+    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool) {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
+                if st.uri.is_some() || st.binary || ide_vfs::is_archive_path(&st.path) {
+                    return Ok(());
+                }
                 let Ok(meta) = std::fs::metadata(&st.path) else { return Ok(()) };
                 let mtime = ide_vfs::mtime_ms(&meta);
-                if mtime == st.disk_mtime && meta.len() == st.disk_len {
+                if mtime == st.disk_mtime && meta.len() == st.disk_len && (!force_clean || st.dirty) {
                     return Ok(());
                 }
                 if st.dirty {
@@ -694,7 +878,14 @@ impl Documents {
                     });
                     return Ok(());
                 }
-                let loaded = ide_vfs::load_text(&st.path)?;
+                let loaded = if force_clean {
+                    Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
+                } else {
+                    let defaults = self.file_defaults();
+                    let loaded = Self::load_with_defaults(&st.path, &defaults)?;
+                    st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
+                    loaded
+                };
                 st.disk_mtime = loaded.mtime_ms;
                 st.disk_len = disk_len(&st.path);
                 if loaded.binary || st.binary {

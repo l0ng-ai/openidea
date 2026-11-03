@@ -5,6 +5,8 @@
  * choices (per project, in localStorage) and running goals through the run
  * feature's actions.
  */
+import { confirm } from "@/workbench/messages";
+import { tx } from "@/platform/i18n";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import { executeAction } from "@/platform/actions";
@@ -140,6 +142,41 @@ export function pushHistory(tool: BuildTool, line: string) {
 // Model
 
 let generation = 0;
+let externalChange = false;
+
+/**
+ * A build file changed outside the editor (VCS update, another tool): the next model load
+ * reloads a build it finds stale, IDEA's default "Reload after external changes". Edits in
+ * the editor only show "Load … Changes".
+ */
+export function noteExternalBuildChange() {
+  externalChange = true;
+}
+
+/** How long after the IDE saves a build file its file-system events still count as that save. */
+const IDE_SAVE_WINDOW_MS = 5000;
+/** Build files the IDE saved, with when: their file-system events are edits made in the IDE. */
+const savedByIde = new Map<string, number>();
+
+/** The IDE saved `path` (an editor save, not a tool rewriting it). */
+export function noteIdeSave(path: string, now = Date.now()) {
+  savedByIde.set(path, now);
+}
+
+/**
+ * Whether any of the changed build files was written by something other than the IDE's own
+ * save: a VCS update or a tool, also when the file is open in an editor tab.
+ */
+export function changedOutsideIde(paths: readonly string[], now = Date.now()): boolean {
+  let external = false;
+  for (const path of paths) {
+    const at = savedByIde.get(path);
+    if (at !== undefined && now - at <= IDE_SAVE_WINDOW_MS) continue;
+    savedByIde.delete(path);
+    external = true;
+  }
+  return external;
+}
 
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
@@ -156,7 +193,7 @@ export async function loadModel(): Promise<void> {
       current: {},
     });
   }
-  if (!root || !isTauri()) return;
+  if (!root || useProject.getState().project?.trusted === false || !isTauri()) return;
   useBuild.setState({ loading: true });
   try {
     const [model, configs] = await Promise.all([
@@ -165,9 +202,62 @@ export async function loadModel(): Promise<void> {
     ]);
     if (gen !== generation) return;
     useBuild.setState({ model, configs, loading: false, error: null });
+    if (externalChange) {
+      externalChange = false;
+      const maven = model.maven;
+      if (maven?.stale && maven.syncedAt !== null && !useBuild.getState().syncing.maven) void syncTool("maven");
+    }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });
   }
+}
+
+const UNLINKED_PROJECTS = "languages.java.maven.unlinkedProjects";
+
+async function setLinked(root: string, pom: string, linked: boolean) {
+  if (useProject.getState().project?.root !== root) return;
+  const settings = await commands.settingsGet();
+  if (useProject.getState().project?.root !== root) return;
+  const previous = settings.languages.java?.maven?.unlinkedProjects ?? [];
+  const next = linked ? previous.filter((p) => p !== pom) : [...new Set([...previous, pom])];
+  if (JSON.stringify(next) === JSON.stringify(previous)) return;
+  await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(next)));
+  await loadModel();
+}
+
+export async function unlinkProjects(pom: string | null) {
+  const { root, model } = useBuild.getState();
+  if (!root || !pom || !model?.maven?.projects.some((p) => p.pom === pom && !p.aggregated)) return;
+  if (
+    !(await confirm({
+      title: "Unlink Maven projects?",
+      message: "Remove this project and its modules from Maven? Files will remain in the Project view.",
+      ok: "Unlink",
+    }))
+  )
+    return;
+  cancelSync("maven");
+  await setLinked(root, pom, false);
+}
+
+export async function addProjects() {
+  const root = useProject.getState().project?.root;
+  if (!root || !isTauri()) return;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    title: tx`Add Maven Projects`,
+    directory: false,
+    multiple: false,
+    defaultPath: root,
+    filters: [{ name: "pom.xml", extensions: ["xml"] }],
+  });
+  if (typeof picked !== "string") return;
+  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
+  const path = picked.replace(/\\/g, "/");
+  if (!path.startsWith(`${base}/`)) return;
+  const pom = path.slice(base.length + 1);
+  if (pom.split("/").some((part) => part === ".." || part === ".") || pom.split("/").pop() !== "pom.xml") return;
+  await setLinked(root, pom, true);
 }
 
 /** Tree keys expanded on first show: the top-level projects. */
@@ -182,6 +272,7 @@ const TITLES: Record<BuildTool, string> = { maven: "Syncing Maven projects", gra
 /** Reloads all projects of `tool` from the build tool itself (effective POM, dependency tree, task list). */
 export async function syncTool(tool: BuildTool): Promise<void> {
   const state = useBuild.getState();
+  const gen = generation;
   const root = state.root;
   if (!root || !isTauri() || state.syncing[tool]) return;
   const request = nextRequestId();
@@ -201,7 +292,7 @@ export async function syncTool(tool: BuildTool): Promise<void> {
   const offline = tool === "maven" ? settings.maven.offline : settings.gradle.offline;
   try {
     const next = await call(commands.buildSync(tool, request, offline, profiles, channel));
-    if (useBuild.getState().root !== root) return;
+    if (useBuild.getState().root !== root || gen !== generation) return;
     const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);
     useBuild.setState({ model: next, configs });
     const error = tool === "maven" ? next.maven?.syncError : next.gradle?.syncError;

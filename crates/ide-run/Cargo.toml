@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 ide-core.workspace = true
+dunce.workspace = true
 encoding_rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,10 +18,12 @@ tokio.workspace = true
 portable-pty.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
-zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
+zip.workspace = true
+quick-xml = "0.42"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
+ide-build = { path = "../ide-build" }
 tempfile.workspace = true

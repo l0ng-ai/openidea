@@ -111,6 +111,17 @@ fn discover_outside_and_inside() {
 }
 
 #[test]
+fn discover_sha256_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("work");
+    std::fs::create_dir(&dir).unwrap();
+    git_in(&dir, &["init", "-q", "--object-format=sha256"]);
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    assert_eq!(std::fs::canonicalize(repo.root()).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert!(repo.status().unwrap().is_empty());
+}
+
+#[test]
 fn repository_without_commits() {
     let fx = Fixture::new();
     fx.write("new.txt", "hello\n");
@@ -121,11 +132,11 @@ fn repository_without_commits() {
     assert!(repo.log(&LogQuery::default()).unwrap().is_empty());
     assert!(repo.branches().unwrap().is_empty());
     assert!(repo.stashes().unwrap().is_empty());
-    assert_eq!(repo.file_at(Path::new("new.txt"), None).unwrap(), None);
+    assert_eq!(repo.file_at(Path::new("new.txt"), None, encoding_rs::UTF_8).unwrap(), None);
 
     let st = repo.status().unwrap();
     assert_eq!(status_of(&st, "new.txt").unstaged, Some(ChangeKind::Untracked));
-    let hunks = repo.line_hunks(&fx.path("new.txt"), "hello\n", false).unwrap();
+    let hunks = repo.line_hunks(&fx.path("new.txt"), "hello\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!(hunks.len(), 1);
     assert_eq!(hunks[0].kind, HunkKind::Added);
 
@@ -175,6 +186,9 @@ fn status_matrix() {
     fx.write("staged_del.txt", "a\n");
     fx.write("rename_me.txt", "some longer content\nthat is stable\nfor rename detection\n");
     fx.write("both.txt", "a\n");
+    // A committed file the IDE ignores keeps its history but drops out of the change list.
+    fx.write("tracked.pyc", "a\n");
+    fx.git(&["add", "-f", "tracked.pyc"]);
     fx.commit_all("base");
 
     fx.write("modified.txt", "b\n");
@@ -195,6 +209,10 @@ fn status_matrix() {
     fx.write(".DS_Store", "junk");
     fx.write("dir/.DS_Store", "junk");
     fx.write("pkg/__pycache__/m.pyc", "junk");
+    fx.write("tracked.pyc", "b\n");
+    // Contents differ from `staged_del.txt` so rename detection cannot pair them.
+    fx.write("staged_ignored.pyc", "cached\nbytecode\n");
+    fx.git(&["add", "-f", "staged_ignored.pyc"]);
 
     let repo = fx.repo();
     repo.set_ignored_names(ide_core::settings::Settings::default().ignored_names());
@@ -217,6 +235,10 @@ fn status_matrix() {
     assert_eq!(status_of(&st, "renamed.txt").renamed_from.as_deref(), Some("rename_me.txt"));
     assert!(!st.iter().any(|s| s.rel_path == "rename_me.txt"), "rename source listed: {st:#?}");
     assert!(!st.iter().any(|s| s.rel_path.contains("debug.log") || s.rel_path.contains("build")));
+    assert!(
+        !st.iter().any(|s| s.rel_path.contains("tracked.pyc") || s.rel_path.contains("staged_ignored.pyc")),
+        "{st:#?}"
+    );
     assert!(!st.iter().any(|s| s.rel_path.contains(".DS_Store") || s.rel_path.contains("pkg")), "{st:#?}");
     // Sorted by path.
     let paths: Vec<_> = st.iter().map(|s| s.rel_path.clone()).collect();
@@ -244,7 +266,7 @@ fn merge_conflict_and_versions() {
     let st = repo.status().unwrap();
     let s = status_of(&st, "c.txt");
     assert_eq!((s.staged, s.unstaged), (None, Some(ChangeKind::Conflicted)));
-    let (base, ours, theirs) = repo.conflict_versions(&fx.path("c.txt")).unwrap();
+    let (base, ours, theirs) = repo.conflict_versions(&fx.path("c.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(base.as_deref(), Some("base\n"));
     assert_eq!(ours.as_deref(), Some("ours\n"));
     assert_eq!(theirs.as_deref(), Some("theirs\n"));
@@ -378,36 +400,36 @@ fn line_hunks_against_head_and_index() {
     let repo = fx.repo();
     let p = fx.path("f.txt");
 
-    assert!(repo.line_hunks(&p, "1\n2\n3\n4\n5\n", false).unwrap().is_empty());
-    assert!(repo.line_hunks(&p, "1\r\n2\r\n3\r\n4\r\n5\r\n", false).unwrap().is_empty());
+    assert!(repo.line_hunks(&p, "1\n2\n3\n4\n5\n", false, encoding_rs::UTF_8).unwrap().is_empty());
+    assert!(repo.line_hunks(&p, "1\r\n2\r\n3\r\n4\r\n5\r\n", false, encoding_rs::UTF_8).unwrap().is_empty());
 
-    let h = repo.line_hunks(&p, "0\n1\n2\n3\n4\n5\n", false).unwrap();
+    let h = repo.line_hunks(&p, "0\n1\n2\n3\n4\n5\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!((h.len(), h[0].kind, h[0].start, h[0].lines), (1, HunkKind::Added, 0, 1));
 
-    let h = repo.line_hunks(&p, "1\n2\n3\n4\n5\n6\n", false).unwrap();
+    let h = repo.line_hunks(&p, "1\n2\n3\n4\n5\n6\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!((h[0].kind, h[0].start, h[0].lines), (HunkKind::Added, 5, 1));
 
-    let h = repo.line_hunks(&p, "1\nX\n3\n4\n5\n", false).unwrap();
+    let h = repo.line_hunks(&p, "1\nX\n3\n4\n5\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!((h[0].kind, h[0].start, h[0].lines, h[0].old_text.as_str()), (HunkKind::Modified, 1, 1, "2\n"));
 
-    let h = repo.line_hunks(&p, "1\n4\n5\n", false).unwrap();
+    let h = repo.line_hunks(&p, "1\n4\n5\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!((h[0].kind, h[0].start, h[0].lines, h[0].old_start, h[0].old_lines), (HunkKind::Deleted, 1, 0, 1, 2));
-    let h = repo.line_hunks(&p, "2\n3\n4\n5\n", false).unwrap();
+    let h = repo.line_hunks(&p, "2\n3\n4\n5\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!((h[0].kind, h[0].start), (HunkKind::Deleted, 0));
-    let h = repo.line_hunks(&p, "1\n2\n3\n4\n", false).unwrap();
+    let h = repo.line_hunks(&p, "1\n2\n3\n4\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!((h[0].kind, h[0].start, h[0].old_start), (HunkKind::Deleted, 4, 4));
 
     // Against the index: staged changes are not reported.
     fx.write("f.txt", "1\nX\n3\n4\n5\n");
     fx.git(&["add", "f.txt"]);
-    assert!(repo.line_hunks(&p, "1\nX\n3\n4\n5\n", true).unwrap().is_empty());
-    assert_eq!(repo.line_hunks(&p, "1\nX\n3\n4\n5\n", false).unwrap().len(), 1);
+    assert!(repo.line_hunks(&p, "1\nX\n3\n4\n5\n", true, encoding_rs::UTF_8).unwrap().is_empty());
+    assert_eq!(repo.line_hunks(&p, "1\nX\n3\n4\n5\n", false, encoding_rs::UTF_8).unwrap().len(), 1);
 
     // New and ignored files.
-    let h = repo.line_hunks(&fx.path("new.txt"), "a\nb\n", false).unwrap();
+    let h = repo.line_hunks(&fx.path("new.txt"), "a\nb\n", false, encoding_rs::UTF_8).unwrap();
     assert_eq!((h.len(), h[0].kind, h[0].start, h[0].lines), (1, HunkKind::Added, 0, 2));
-    assert!(repo.line_hunks(&fx.path("ignored.txt"), "a\n", false).unwrap().is_empty());
-    assert!(repo.line_hunks(Path::new("/definitely/outside"), "a\n", false).unwrap().is_empty());
+    assert!(repo.line_hunks(&fx.path("ignored.txt"), "a\n", false, encoding_rs::UTF_8).unwrap().is_empty());
+    assert!(repo.line_hunks(Path::new("/definitely/outside"), "a\n", false, encoding_rs::UTF_8).unwrap().is_empty());
 }
 
 #[test]
@@ -419,7 +441,7 @@ fn blame_with_unsaved_edits() {
     let second = fx.commit_all("second");
     let repo = fx.repo();
 
-    let lines = repo.blame(&fx.path("b.txt"), None).unwrap();
+    let lines = repo.blame(&fx.path("b.txt"), None, None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0].commit, first);
     assert_eq!(lines[1].commit, second);
@@ -427,7 +449,7 @@ fn blame_with_unsaved_edits() {
     assert_eq!(lines[0].author, "Test User");
     assert!(lines[0].time_ms > 1.0e12);
 
-    let lines = repo.blame(&fx.path("b.txt"), Some("one\nedited\nthree\nfour")).unwrap();
+    let lines = repo.blame(&fx.path("b.txt"), Some("one\nedited\nthree\nfour"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 4);
     assert_eq!(lines[0].commit, first);
     assert!(lines[1].commit.bytes().all(|b| b == b'0'));
@@ -435,9 +457,38 @@ fn blame_with_unsaved_edits() {
     assert_eq!(lines[2].commit, first);
     assert_eq!(lines[3].author, "Not Committed Yet");
 
-    let lines = repo.blame(&fx.path("untracked.txt"), Some("x\ny\n")).unwrap();
+    let lines = repo.blame(&fx.path("untracked.txt"), Some("x\ny\n"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 2);
     assert!(lines.iter().all(|l| l.author == "Not Committed Yet"));
+}
+
+#[test]
+fn blame_against_another_revision() {
+    // The merge view blames each side pane on the branch it belongs to: lines that
+    // only exist on the merged branch show their real history, not "Not Committed Yet".
+    let fx = Fixture::new();
+    fx.write("b.txt", "one\nthree\n");
+    let first = fx.commit_all("first");
+    fx.write("b.txt", "one\nTWO\nthree\n");
+    fx.commit_all("second");
+    fx.git(&["checkout", "-q", "-b", "feature", &first]);
+    fx.write("b.txt", "one\nfeature\nthree\n");
+    let feature = fx.commit_all("feature line");
+    fx.git(&["checkout", "-q", "main"]);
+    let repo = fx.repo();
+
+    // Blaming the feature content against HEAD marks its extra line uncommitted…
+    let text = "one\nfeature\nthree\n";
+    let lines = repo.blame(&fx.path("b.txt"), Some(text), Some("HEAD"), encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].commit, first);
+    assert_eq!(lines[1].author, "Not Committed Yet");
+    assert_eq!(lines[2].commit, first);
+    // …while blaming it against the feature commit resolves its real history.
+    let lines = repo.blame(&fx.path("b.txt"), Some(text), Some(&feature), encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines[1].commit, feature);
+    assert_eq!(lines[1].summary, "feature line");
+    assert!(repo.blame(&fx.path("b.txt"), Some(text), Some("no-such-ref"), encoding_rs::UTF_8).is_err());
 }
 
 #[test]
@@ -615,12 +666,12 @@ fn file_at_revisions_and_index() {
     fx.git(&["add", "f.txt"]);
     let repo = fx.repo();
     let p = fx.path("f.txt");
-    assert_eq!(repo.file_at(&p, None).unwrap().as_deref(), Some("v2\n"));
-    assert_eq!(repo.file_at(&p, Some(&c1)).unwrap().as_deref(), Some("v1\n"));
-    assert_eq!(repo.file_at(&p, Some("HEAD~1")).unwrap().as_deref(), Some("v1\n"));
-    assert_eq!(repo.file_at(&p, Some(":0")).unwrap().as_deref(), Some("v3\n"));
-    assert_eq!(repo.file_at(Path::new("missing.txt"), None).unwrap(), None);
-    assert_eq!(repo.file_at(&p, Some("no-such-rev")).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(repo.file_at(&p, None, encoding_rs::UTF_8).unwrap().as_deref(), Some("v2\n"));
+    assert_eq!(repo.file_at(&p, Some(&c1), encoding_rs::UTF_8).unwrap().as_deref(), Some("v1\n"));
+    assert_eq!(repo.file_at(&p, Some("HEAD~1"), encoding_rs::UTF_8).unwrap().as_deref(), Some("v1\n"));
+    assert_eq!(repo.file_at(&p, Some(":0"), encoding_rs::UTF_8).unwrap().as_deref(), Some("v3\n"));
+    assert_eq!(repo.file_at(Path::new("missing.txt"), None, encoding_rs::UTF_8).unwrap(), None);
+    assert_eq!(repo.file_at(&p, Some("no-such-rev"), encoding_rs::UTF_8).unwrap_err().kind, ErrorKind::NotFound);
 }
 
 #[test]
@@ -636,7 +687,7 @@ fn file_at_in_a_blobless_clone() {
     git_in(fx.dir.parent().unwrap(), &["clone", "-q", "--filter=blob:none", &url, "clone"]);
     let repo = Repo::discover(&clone).unwrap().unwrap();
     // v1's blob was never fetched; reading it fetches it on demand.
-    assert_eq!(repo.file_at(&clone.join("f.txt"), Some(&c1)).unwrap().as_deref(), Some("v1\n"));
+    assert_eq!(repo.file_at(&clone.join("f.txt"), Some(&c1), encoding_rs::UTF_8).unwrap().as_deref(), Some("v1\n"));
 }
 
 #[test]
@@ -850,9 +901,12 @@ fn commit_with_author_and_without_hooks() {
     fx.write("a", "2\n");
     repo.stage(&[fx.path("a")]).unwrap();
     let hooked = CommitOptions { run_hooks: true, ..Default::default() };
-    assert!(repo.commit_with("blocked", &hooked).is_err(), "the failing pre-commit hook runs");
+    assert!(
+        repo.commit_with("blocked", &hooked, &|_| Ok(encoding_rs::UTF_8)).is_err(),
+        "the failing pre-commit hook runs"
+    );
     let options = CommitOptions { author: Some(" Other <other@example.com> ".into()), ..Default::default() };
-    repo.commit_with("by other", &options).unwrap();
+    repo.commit_with("by other", &options, &|_| Ok(encoding_rs::UTF_8)).unwrap();
     assert_eq!(fx.git(&["log", "-1", "--format=%an <%ae>"]), "Other <other@example.com>");
 }
 
@@ -932,7 +986,7 @@ fn smart_and_force_checkout_with_local_changes_in_the_way() {
     assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("other"));
     assert_eq!(repo.stashes().unwrap().len(), 1, "git keeps the stash after a conflicting pop");
     // The stashed edit is the user's side of the merge, the checked-out branch the other.
-    let v = repo.merge_versions(&fx.path("f.txt")).unwrap();
+    let v = repo.merge_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(v.sides.operation.as_deref(), Some("unstash"));
     assert!(v.sides.reversed);
     assert_eq!(v.ours.as_deref(), Some("1\nmine\n3\n4\n5\n"));
@@ -1049,7 +1103,7 @@ fn partial_commit_of_chosen_hunks_leaves_worktree_and_index_alone() {
         partial: vec![PartialCommitFile { path: fx.path("f.txt").into(), hunks: vec![range(&hunks[0])] }],
         ..Default::default()
     };
-    repo.commit_with("partial", &options).unwrap();
+    repo.commit_with("partial", &options, &|_| Ok(encoding_rs::UTF_8)).unwrap();
 
     assert_eq!(fx.git(&["show", "HEAD:f.txt"]), "A\nb\nc\nd\ne\nf\ng\nh\ni\nj");
     assert_eq!(fx.git(&["show", "HEAD:other.txt"]), "o2");
@@ -1070,21 +1124,21 @@ fn partial_commit_of_chosen_hunks_leaves_worktree_and_index_alone() {
         partial: vec![PartialCommitFile { path: fx.path("f.txt").into(), hunks: vec![range(&hunks[0])] }],
         ..Default::default()
     };
-    let err = repo.commit_with("stale", &stale).unwrap_err();
+    let err = repo.commit_with("stale", &stale, &|_| Ok(encoding_rs::UTF_8)).unwrap_err();
     assert!(err.message.contains("changed"), "{}", err.message);
     assert_eq!(fx.git(&["rev-parse", "HEAD"]), before);
     assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "");
     assert!(!fx.dir.join(".git/openidea-partial-index").exists());
 
     // The remaining hunk commits on its own; then nothing is left.
-    let rest = diff_hunks(&repo.file_at(&fx.path("f.txt"), None).unwrap().unwrap(), edited);
+    let rest = diff_hunks(&repo.file_at(&fx.path("f.txt"), None, encoding_rs::UTF_8).unwrap().unwrap(), edited);
     assert_eq!(rest.len(), 1);
     let options = CommitOptions {
         partial: vec![PartialCommitFile { path: fx.path("f.txt").into(), hunks: vec![range(&rest[0])] }],
         ..Default::default()
     };
-    repo.commit_with("rest", &options).unwrap();
-    assert_eq!(repo.file_at(&fx.path("f.txt"), None).unwrap().as_deref(), Some(edited));
+    repo.commit_with("rest", &options, &|_| Ok(encoding_rs::UTF_8)).unwrap();
+    assert_eq!(repo.file_at(&fx.path("f.txt"), None, encoding_rs::UTF_8).unwrap().as_deref(), Some(edited));
     assert!(repo.status().unwrap().iter().all(|f| f.rel_path != "f.txt"));
     assert_eq!(fx.read("staged.txt"), "s2\n");
 
@@ -1105,7 +1159,7 @@ fn partial_commit_of_chosen_hunks_leaves_worktree_and_index_alone() {
         partial: vec![PartialCommitFile { path: fx.path("f.txt").into(), hunks: vec![range(&hunks[0])] }],
         ..Default::default()
     };
-    assert!(repo.commit_with("hooked", &options).is_err());
+    assert!(repo.commit_with("hooked", &options, &|_| Ok(encoding_rs::UTF_8)).is_err());
     assert_eq!(fx.git(&["rev-parse", "HEAD"]), head);
     assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "");
     assert_eq!(fx.read("f.txt"), "Z\nb\nc\nd\ne\nf\ng\nh\ni\nJ\nk\nl\n");
@@ -1121,13 +1175,13 @@ fn partial_staging_with_built_patch() {
     let new = "l0\nl1\nl2\nCHANGED\nl4\nl5\nl6\nl8\nl9\nl10\n";
     fx.write("p.txt", new);
 
-    let index_text = repo.file_at(&fx.path("p.txt"), Some(":0")).unwrap().unwrap();
+    let index_text = repo.file_at(&fx.path("p.txt"), Some(":0"), encoding_rs::UTF_8).unwrap().unwrap();
     let hunks = ide_vcs::diff_hunks(&index_text, new);
     assert_eq!(hunks.len(), 4, "{hunks:#?}");
     // Stage the modification and the trailing addition only.
     let patch = build_partial_patch("p.txt", &index_text, new, &[1, 3]);
-    repo.stage_patch(&patch).unwrap();
-    let staged = repo.file_at(&fx.path("p.txt"), Some(":0")).unwrap().unwrap();
+    repo.stage_patch(&patch, &|_| Ok(encoding_rs::UTF_8)).unwrap();
+    let staged = repo.file_at(&fx.path("p.txt"), Some(":0"), encoding_rs::UTF_8).unwrap().unwrap();
     assert_eq!(staged, "l1\nl2\nCHANGED\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
     let st = repo.status().unwrap();
     let s = status_of(&st, "p.txt");
@@ -1135,21 +1189,21 @@ fn partial_staging_with_built_patch() {
 
     // Then the rest, one hunk at a time against the updated index.
     loop {
-        let index_text = repo.file_at(&fx.path("p.txt"), Some(":0")).unwrap().unwrap();
+        let index_text = repo.file_at(&fx.path("p.txt"), Some(":0"), encoding_rs::UTF_8).unwrap().unwrap();
         if ide_vcs::diff_hunks(&index_text, new).is_empty() {
             break;
         }
-        repo.stage_patch(&build_partial_patch("p.txt", &index_text, new, &[0])).unwrap();
+        repo.stage_patch(&build_partial_patch("p.txt", &index_text, new, &[0]), &|_| Ok(encoding_rs::UTF_8)).unwrap();
     }
-    assert_eq!(repo.file_at(&fx.path("p.txt"), Some(":0")).unwrap().unwrap(), new);
+    assert_eq!(repo.file_at(&fx.path("p.txt"), Some(":0"), encoding_rs::UTF_8).unwrap().unwrap(), new);
 
     // Patches also apply to files without a trailing newline and CRLF files.
     fx.write("n.txt", "a\r\nb\r\nc");
     fx.commit_all("crlf");
     let new = "a\nB\nc\nd";
-    let old = repo.file_at(&fx.path("n.txt"), Some(":0")).unwrap().unwrap();
-    repo.stage_patch(&build_partial_patch("n.txt", &old, new, &[0, 1])).unwrap();
-    assert_eq!(repo.file_at(&fx.path("n.txt"), Some(":0")).unwrap().unwrap(), "a\r\nB\r\nc\r\nd");
+    let old = repo.file_at(&fx.path("n.txt"), Some(":0"), encoding_rs::UTF_8).unwrap().unwrap();
+    repo.stage_patch(&build_partial_patch("n.txt", &old, new, &[0, 1]), &|_| Ok(encoding_rs::UTF_8)).unwrap();
+    assert_eq!(repo.file_at(&fx.path("n.txt"), Some(":0"), encoding_rs::UTF_8).unwrap().unwrap(), "a\r\nB\r\nc\r\nd");
 }
 
 #[test]
@@ -1170,13 +1224,13 @@ fn discard_and_diff_text() {
     fx.write("keep/new.txt", "n\n");
     fx.write("keep/k.txt", "changed\n");
 
-    let unstaged = repo.diff_text(&fx.path("both.txt"), false).unwrap();
+    let unstaged = repo.diff_text(&fx.path("both.txt"), false, encoding_rs::UTF_8).unwrap();
     assert!(unstaged.contains("-staged\n+unstaged"), "{unstaged}");
-    let staged = repo.diff_text(&fx.path("both.txt"), true).unwrap();
+    let staged = repo.diff_text(&fx.path("both.txt"), true, encoding_rs::UTF_8).unwrap();
     assert!(staged.contains("-one\n+staged"), "{staged}");
-    let untracked = repo.diff_text(&fx.path("u.txt"), false).unwrap();
+    let untracked = repo.diff_text(&fx.path("u.txt"), false, encoding_rs::UTF_8).unwrap();
     assert!(untracked.contains("+untracked"), "{untracked}");
-    assert!(repo.diff_text(&fx.path("t.txt"), true).unwrap().is_empty());
+    assert!(repo.diff_text(&fx.path("t.txt"), true, encoding_rs::UTF_8).unwrap().is_empty());
 
     repo.discard(&[fx.path("t.txt"), fx.path("both.txt"), fx.path("u.txt"), fx.path("udir"), fx.path("keep")]).unwrap();
     assert_eq!(fx.read("t.txt"), "one\n");
@@ -1321,4 +1375,221 @@ fn path_log_simplifies_merges() {
         .map(|c| c.id)
         .collect();
     assert_eq!(ids, vec![base]);
+}
+
+#[test]
+fn gbk_java_unchanged_has_no_hunks() {
+    let fx = Fixture::new();
+    let text = "// 中文注释\nclass Example {\n    // 保持不变\n}\n";
+    std::fs::write(fx.path("Example.java"), encoding_rs::GBK.encode(text).0).unwrap();
+    fx.commit_all("GBK Java");
+    for against_index in [false, true] {
+        assert!(
+            fx.repo().line_hunks(&fx.path("Example.java"), text, against_index, encoding_rs::GBK).unwrap().is_empty()
+        );
+    }
+}
+
+#[test]
+fn encoded_java_hunks_staging_blame_and_partial_commit_preserve_bytes() {
+    for encoding in [encoding_rs::GBK, encoding_rs::SHIFT_JIS, encoding_rs::UTF_8] {
+        for eol in ["\n", "\r\n"] {
+            let fx = Fixture::new();
+            let path = fx.path("中文.java");
+            let old = "// 中文注釈\nclass Example {\n    // 保存\n    int value = 1;\n}\n".replace('\n', eol);
+            let changed = old.replace("中文注釈", "中文変更").replace("value = 1", "value = 2");
+            let bytes = |text: &str| {
+                let (bytes, _, errors) = encoding.encode(text);
+                assert!(!errors);
+                bytes.into_owned()
+            };
+            std::fs::write(&path, bytes(&old)).unwrap();
+            fx.commit_all("encoded Java");
+            let repo = fx.repo();
+            assert_eq!(repo.file_at(&path, None, encoding).unwrap().as_deref(), Some(old.as_str()));
+            assert!(
+                repo.blame(&path, Some(&old.replace("\r\n", "\n")), None, encoding)
+                    .unwrap()
+                    .iter()
+                    .all(|line| line.author == "Test User")
+            );
+            let hunks = repo.line_hunks(&path, &old.replace("value = 1", "value = 2"), false, encoding).unwrap();
+            assert_eq!(hunks.len(), 1);
+            assert_eq!((hunks[0].start, hunks[0].lines, hunks[0].kind), (3, 1, HunkKind::Modified));
+            std::fs::write(&path, bytes(&changed)).unwrap();
+            let hunks = repo.line_hunks(&path, &changed, false, encoding).unwrap();
+            assert_eq!(hunks.len(), 2);
+            repo.stage_hunks(&path, &changed, &[0], encoding).unwrap();
+            let selected = old.replace("中文注釈", "中文変更");
+            assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), bytes(&selected));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes(&changed));
+            assert!(repo.diff_text(&path, true, encoding).unwrap().contains("中文変更"));
+            repo.unstage(std::slice::from_ref(&path)).unwrap();
+            let options = CommitOptions {
+                partial: vec![PartialCommitFile {
+                    path: path.clone().into(),
+                    hunks: vec![HunkRange {
+                        start: hunks[0].start,
+                        lines: hunks[0].lines,
+                        old_start: hunks[0].old_start,
+                        old_lines: hunks[0].old_lines,
+                    }],
+                }],
+                ..Default::default()
+            };
+            repo.commit_with("selected hunk", &options, &|_| Ok(encoding)).unwrap();
+            assert_eq!(repo.file_bytes_at(&path, None).unwrap().unwrap(), bytes(&selected));
+            assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), bytes(&selected));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes(&changed));
+        }
+    }
+}
+
+#[test]
+fn gbk_patches_round_trip_even_with_text_attributes() {
+    let fx = Fixture::new();
+    let path = fx.path("Example.java");
+    let old = encoding_rs::GBK.encode("// 中文注释\nclass Example {}\n").0.into_owned();
+    let new = encoding_rs::GBK.encode("// 修改注释\nclass Example {}\n").0.into_owned();
+    fx.write(".gitattributes", "*.java diff\n");
+    std::fs::write(&path, &old).unwrap();
+    fx.commit_all("base");
+    std::fs::write(&path, &new).unwrap();
+    let repo = fx.repo();
+    let patch = repo.create_patch(std::slice::from_ref(&path), false).unwrap();
+    assert!(patch.contains("GIT binary patch"));
+    repo.discard(std::slice::from_ref(&path)).unwrap();
+    repo.apply_patch(&patch).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), new);
+    let commit = fx.commit_all("change");
+    let reverse = repo.create_commits_patch(&[commit], true).unwrap();
+    repo.apply_patch(&reverse).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), old);
+}
+
+#[test]
+fn gbk_conflict_stages_are_readable() {
+    let fx = Fixture::new();
+    let path = fx.path("Example.java");
+    let write = |text: &str| std::fs::write(&path, encoding_rs::GBK.encode(text).0).unwrap();
+    write("// 原始注释\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-b", "other"]);
+    write("// 分支注释\n");
+    fx.commit_all("other");
+    fx.git(&["checkout", "main"]);
+    write("// 当前注释\n");
+    fx.commit_all("ours");
+    let out = Command::new("git").current_dir(&fx.dir).args(["merge", "other"]).output().unwrap();
+    assert!(!out.status.success());
+    let versions = fx.repo().merge_versions(&path, encoding_rs::GBK).unwrap();
+    assert_eq!(versions.base.as_deref(), Some("// 原始注释\n"));
+    assert_eq!(versions.ours.as_deref(), Some("// 当前注释\n"));
+    assert_eq!(versions.theirs.as_deref(), Some("// 分支注释\n"));
+}
+
+#[test]
+fn utf16_and_utf8_boms_survive_partial_staging() {
+    for encoding in [encoding_rs::UTF_8, encoding_rs::UTF_16LE, encoding_rs::UTF_16BE] {
+        let fx = Fixture::new();
+        let path = fx.path("Example.java");
+        let old = "// 中文注释\r\nclass Example {}\r\n";
+        let changed = old.replace("中文", "修改");
+        let bytes = |text: &str| {
+            if encoding == encoding_rs::UTF_8 {
+                let mut bytes = vec![0xef, 0xbb, 0xbf];
+                bytes.extend_from_slice(text.as_bytes());
+                bytes
+            } else {
+                let le = encoding == encoding_rs::UTF_16LE;
+                let mut bytes = if le { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+                for unit in text.encode_utf16() {
+                    bytes.extend_from_slice(&if le { unit.to_le_bytes() } else { unit.to_be_bytes() });
+                }
+                bytes
+            }
+        };
+        std::fs::write(&path, bytes(old)).unwrap();
+        fx.commit_all("BOM");
+        let repo = fx.repo();
+        assert!(repo.line_hunks(&path, old, false, encoding).unwrap().is_empty());
+        repo.stage_hunks(&path, &changed, &[0], encoding).unwrap();
+        assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), bytes(&changed));
+    }
+}
+
+#[test]
+fn gbk_text_patch_keeps_utf8_paths_and_encoded_payload() {
+    let fx = Fixture::new();
+    let path = fx.path("中文.java");
+    let old = "// 中文注释\n";
+    let new = "// 修改注释\n";
+    std::fs::write(&path, encoding_rs::GBK.encode(old).0).unwrap();
+    fx.commit_all("GBK");
+    let repo = fx.repo();
+    let patch = build_partial_patch("中文.java", old, new, &[0]);
+    repo.stage_patch(&patch, &|_| Ok(encoding_rs::GBK)).unwrap();
+    assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), encoding_rs::GBK.encode(new).0.as_ref());
+    let patch = build_partial_patch("中文.java", new, "// 😀\n", &[0]);
+    assert!(repo.stage_patch(&patch, &|_| Ok(encoding_rs::GBK)).is_err());
+    assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), encoding_rs::GBK.encode(new).0.as_ref());
+}
+
+#[cfg(unix)]
+#[test]
+fn restricted_reads_ignore_executable_repository_configuration() {
+    let f = Fixture::new();
+    f.write("a.txt", "one\ntwo\n");
+    f.commit_all("initial");
+    f.write(".gitattributes", "*.txt filter=evil diff=evil\n");
+    f.write("a.txt", "one\nchanged\n");
+    for key in ["filter.evil.clean", "diff.evil.textconv", "diff.external", "core.fsmonitor"] {
+        f.git(&["config", key, "touch execution.marker; cat"]);
+    }
+    let repo = f.repo();
+    repo.set_execution_allowed(false);
+    assert!(!repo.status().unwrap().is_empty());
+    assert!(repo.diff_text(&f.path("a.txt"), false, encoding_rs::UTF_8).unwrap().contains("changed"));
+    assert_eq!(repo.blame(&f.path("a.txt"), None, None, encoding_rs::UTF_8).unwrap().len(), 2);
+    assert!(!repo.diff_with_worktree("HEAD").unwrap().is_empty());
+    assert!(!repo.log(&LogQuery::default()).unwrap().is_empty());
+    repo.merge_versions(&f.path("a.txt"), encoding_rs::UTF_8).unwrap();
+    assert!(!f.path("execution.marker").exists());
+    let repos = ide_vcs::Repos::discover(&f.dir, &|_| false).unwrap();
+    for r in repos.all() {
+        r.set_execution_allowed(false);
+    }
+    let compared =
+        repos.compare_paths(std::slice::from_ref(&f.dir), "HEAD", None, &ide_core::CancellationToken::new()).unwrap();
+    assert!(compared.repositories.iter().all(|r| r.error.is_none()));
+    assert!(!f.path("execution.marker").exists());
+    // Positive control: the same filter really executes without restriction.
+    f.git(&["-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"]);
+    assert!(f.path("execution.marker").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn restricted_conflict_preview_uses_host_owned_temporary_files() {
+    let f = Fixture::new();
+    f.write("a.txt", "base\n");
+    f.commit_all("base");
+    f.git(&["checkout", "-b", "other"]);
+    f.write("a.txt", "other\n");
+    f.commit_all("other");
+    f.git(&["checkout", "main"]);
+    f.write("a.txt", "mine\n");
+    f.commit_all("mine");
+    let output = Command::new("git").current_dir(&f.dir).args(["merge", "other"]).output().unwrap();
+    assert!(!output.status.success());
+    let trap = f.path(&format!(".git/openidea-merge-{}", std::process::id()));
+    std::fs::create_dir_all(&trap).unwrap();
+    let marker = f._tmp.path().join("user-data");
+    std::fs::write(&marker, "untouched").unwrap();
+    std::os::unix::fs::symlink(&marker, trap.join("ours")).unwrap();
+    let repo = f.repo();
+    repo.set_execution_allowed(false);
+    let versions = repo.merge_versions(&f.path("a.txt"), encoding_rs::UTF_8).unwrap();
+    assert!(versions.merged.unwrap().contains("<<<<<<<"));
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "untouched");
 }

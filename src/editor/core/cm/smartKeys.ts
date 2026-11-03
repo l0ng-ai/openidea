@@ -105,7 +105,7 @@ interface Scope {
 const leaveScopes = StateEffect.define<readonly number[]>();
 
 /** Inside each pair the editor inserted itself; Tab at a scope's end steps over the closing character. */
-export const tabOutScopes = StateField.define<readonly Scope[]>({
+const tabOutScopes = StateField.define<readonly Scope[]>({
   create: () => [],
   update(scopes, tr) {
     for (const e of tr.effects) if (e.is(leaveScopes)) scopes = scopes.filter((s) => !e.value.includes(s.to));

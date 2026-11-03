@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 dunce.workspace = true
+encoding_rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
@@ -16,3 +17,9 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_Security", "Win32_System_Registry", "Win32_Foundation"] }

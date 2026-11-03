@@ -1,10 +1,25 @@
+import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
 import { editorsFor, getNavigationHistory } from "@/editor/api";
 import { call, commands, type OutlineItem } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
-import { Checkbox, Dialog, HighlightedText, Icon, List, fileIconName, listNavigate, T } from "@/ui";
+import {
+  Checkbox,
+  Dialog,
+  HighlightedText,
+  Icon,
+  List,
+  fileIconName,
+  listNavigate,
+  selectRow,
+  selectedRows,
+  rowSelectionMode,
+  SINGLE_FIRST,
+  type RowSelection,
+  T,
+} from "@/ui";
 import {
   maybeEditorService,
   toolWindowService,
@@ -14,7 +29,7 @@ import {
   type ToolWindowContribution,
 } from "@/workbench/contributions";
 import { highlightTokens, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
-import { basename, openLocation } from "../common/open";
+import { basename, openInListOrder, openLocation } from "../common/open";
 import { outlinePathAt } from "../structure/outline";
 import { fromNavigationHistory, isDismissed, mergeLocations, type RecentLocation } from "../common/locations";
 import { dismissLocation, useTracking } from "../common/tracking";
@@ -72,6 +87,14 @@ function RecentFilesDialog() {
   const [column, setColumn] = useState<"files" | "tools">("files");
   const [fileIndex, setFileIndex] = useState<number | null>(null);
   const [toolIndex, setToolIndex] = useState(0);
+  const opening = useRef(false);
+  const [previousEditedOnly, setPreviousEditedOnly] = useState(editedOnly);
+  const [fileSelection, setFileSelection] = useState<RowSelection>(SINGLE_FIRST);
+  if (previousEditedOnly !== editedOnly) {
+    setPreviousEditedOnly(editedOnly);
+    setFileSelection(SINGLE_FIRST);
+    setFileIndex(null);
+  }
   const inputRef = useRef<HTMLInputElement>(null);
   // The current editor: a file path, or the key of a non-file editor (Switcher lists those too).
   const activePath = useMemo(() => {
@@ -105,6 +128,7 @@ function RecentFilesDialog() {
           ),
     [paths, tabs, removed, query, root, edited, editedOnly],
   );
+  const fileRows = useMemo(() => files.map((f) => ({ ...f, key: f.path })), [files]);
   const tools = useMemo(() => switcherToolWindows(toolWindows.values(), !!root, query), [toolWindows, root, query]);
   const fIndex = files.length
     ? Math.min(fileIndex ?? initialFileIndex(files, activePath, query), files.length - 1)
@@ -122,12 +146,37 @@ function RecentFilesDialog() {
     );
   };
 
+  const selectFile = (index: number, e?: KeyboardEvent | ReactMouseEvent) => {
+    const next = selectRow(
+      fileRows,
+      { ...fileSelection, lead: fIndex, anchor: fileSelection.keys ? fileSelection.anchor : fIndex },
+      index,
+      switcher ? "single" : rowSelectionMode(e),
+    );
+    setFileSelection(next);
+    setFileIndex(next.lead);
+    setColumn("files");
+  };
+  const openFiles = (side = false) => {
+    if (opening.current) return;
+    const chosen = selectedRows(fileRows, { ...fileSelection, lead: fIndex });
+    if (chosen.length <= 1) return openFile(chosen[0], side);
+    opening.current = true;
+    void openInListOrder(
+      chosen,
+      fileRows[fIndex],
+      (f, options) => openLocation(f.path, null, options),
+      side,
+      () => new Promise((resolve) => afterClose(resolve)),
+    );
+  };
+
   const openTool = (tw: ToolWindowContribution | undefined) => {
     if (tw) afterClose(() => toolWindowService().show(tw.id, true));
   };
 
   // IDEA: Delete closes the selected editor (and drops it from the list) or hides the tool window.
-  const removeSelected = () => {
+  const removeSelected = async () => {
     if (effectiveColumn === "tools") {
       const tw = tools[tIndex]?.tw;
       if (tw) toolWindowService().hide(tw.id);
@@ -135,11 +184,14 @@ function RecentFilesDialog() {
     }
     const item = files[fIndex];
     if (!item) return;
-    if (item.editor) maybeEditorService()?.closeInput?.(item.path);
-    else maybeEditorService()?.closePath?.(item.path);
+    const closed = item.editor
+      ? await maybeEditorService()?.closeInput?.(item.path)
+      : await maybeEditorService()?.closePath?.(item.path);
+    if (closed === false) return;
     if (!switcher) void call(commands.removeRecent(item.path)).catch(() => {});
     setRemoved((r) => new Set(r).add(item.path));
     setFileIndex(fIndex);
+    setFileSelection({ lead: fIndex, anchor: fIndex, keys: null });
   };
 
   // Switcher: each ⌃⇥ moves one row, past the end into the other column; releasing Ctrl opens the selection.
@@ -179,7 +231,7 @@ function RecentFilesDialog() {
         // Nothing recent matches: carry the text over to Go to File.
         const text = query.trim();
         afterClose(() => showSearchEverywhere("files", { query: text }));
-      } else if (effectiveColumn === "files") openFile(files[fIndex], e.shiftKey);
+      } else if (effectiveColumn === "files") openFiles(e.shiftKey);
       else openTool(tools[tIndex]?.tw);
       return;
     }
@@ -192,12 +244,13 @@ function RecentFilesDialog() {
     // In Recent Files Backspace edits the speed search text first.
     if (e.key === "Delete" || (e.key === "Backspace" && !query)) {
       e.preventDefault();
-      removeSelected();
+      void removeSelected();
       return;
     }
     if (e.key === "Tab" || ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !query)) {
       e.preventDefault();
       e.stopPropagation();
+      setFileSelection(SINGLE_FIRST);
       setColumn(
         e.key === "ArrowLeft"
           ? "tools"
@@ -212,8 +265,8 @@ function RecentFilesDialog() {
     if (!NAV_KEYS.includes(e.key)) return;
     e.preventDefault();
     if (effectiveColumn === "files") {
-      const next = listNavigate(e.key, { items: files, active: fIndex, wrap: true });
-      if (next !== null) setFileIndex(next);
+      const next = listNavigate(e.key, { items: files, active: fIndex, wrap: switcher || !e.shiftKey });
+      if (next !== null) selectFile(next, e);
     } else {
       const next = listNavigate(e.key, { items: tools, active: tIndex, wrap: true });
       if (next !== null) setToolIndex(next);
@@ -245,6 +298,7 @@ function RecentFilesDialog() {
                 onChange={(e) => {
                   setQuery(e.target.value);
                   setFileIndex(null);
+                  setFileSelection(SINGLE_FIRST);
                   setToolIndex(0);
                 }}
                 onKeyDown={onKeyDown}
@@ -277,6 +331,7 @@ function RecentFilesDialog() {
             getKey={(t) => t.tw.id}
             activeIndex={effectiveColumn === "tools" ? tIndex : -1}
             onActiveChange={(i) => {
+              setFileSelection(SINGLE_FIRST);
               setToolIndex(i);
               setColumn("tools");
             }}
@@ -304,10 +359,9 @@ function RecentFilesDialog() {
             items={files}
             getKey={(f) => f.path}
             activeIndex={effectiveColumn === "files" ? fIndex : -1}
-            onActiveChange={(i) => {
-              setFileIndex(i);
-              setColumn("files");
-            }}
+            onActiveChange={switcher ? (i) => selectFile(i) : undefined}
+            onSelect={switcher ? undefined : selectFile}
+            isSelected={(f) => effectiveColumn === "files" && !!fileSelection.keys?.has(f.path)}
             onActivate={(f, _i, e) => openFile(f, e.shiftKey)}
             focusable={false}
             rowHeight={24}
@@ -351,9 +405,10 @@ function ToolRow({ tw, indices }: { tw: ToolWindowContribution; indices: number[
 
 function RecentFileRow({ item, current }: { item: RecentFileItem; current: boolean }) {
   const deco = useFileDecoration(item.editor ? "" : item.path);
+  const { icon } = useFilePresentation(item.editor ? "" : item.path);
   return (
     <>
-      <Icon name={item.editor?.icon ?? fileIconName(item.name)} size={16} className={styles.icon} />
+      <Icon name={item.editor?.icon ?? icon} size={16} className={styles.icon} />
       <span
         className={clsx(styles.name, current && styles.current)}
         style={deco.color ? { color: deco.color } : undefined}

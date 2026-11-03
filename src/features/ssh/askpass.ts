@@ -9,6 +9,8 @@ export interface AskpassPrompt {
   id: number;
   prompt: string;
   kind: AskpassKind;
+  /** The dialog offers "Remember" (git HTTPS passwords). */
+  remember: boolean;
 }
 
 export const useAskpass = create<{ queue: AskpassPrompt[] }>(() => ({ queue: [] }));
@@ -32,7 +34,14 @@ export function askpassAnswer(
   return kind === "confirm" ? null : choice.text;
 }
 
-export function answerAskpass(id: number, answer: string | null, send = commands.sshAskpassAnswer) {
-  dropAskpass(id);
-  void send(id, answer).catch(() => {});
+export function answerAskpass(
+  p: AskpassPrompt,
+  answer: string | null,
+  remember: boolean,
+  send = commands.sshAskpassAnswer,
+) {
+  dropAskpass(p.id);
+  // The backend ties `remember` to this prompt; the git command saves it only
+  // on success and drops it again when authentication fails.
+  void send(p.id, answer, remember).catch(() => {});
 }

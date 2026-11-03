@@ -494,7 +494,7 @@ mod tests {
     fn pathing_jar_runs_with_a_local_jdk() {
         let Some(home) = std::env::var_os("JAVA_HOME").map(PathBuf::from).or_else(|| {
             let java = crate::which::find_executable("java", &std::env::var_os("PATH").unwrap_or_default())?;
-            std::fs::canonicalize(java).ok()?.parent()?.parent().map(Path::to_path_buf)
+            dunce::canonicalize(java).ok()?.parent()?.parent().map(Path::to_path_buf)
         }) else {
             return;
         };

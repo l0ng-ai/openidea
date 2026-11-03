@@ -5,7 +5,8 @@
  */
 import { registerActions } from "@/platform/actions";
 import { disconnectRemote } from "@/platform/remote";
-import { registerOverlay } from "@/workbench/contributions";
+import { maybeEditorService, registerOverlay } from "@/workbench/contributions";
+import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
 import { reloadEnvironment } from "./environment";
 import { closeConnectDialog, openConnectDialog } from "./model";
@@ -29,7 +30,15 @@ export function activate(): () => void {
         category: "File",
         keywords: ["ssh", "remote", "close"],
         when: "projectOpen",
-        run: () => disconnectRemote(),
+        run: async () => {
+          if (!(await confirmLeaveProject())) return;
+          try {
+            await disconnectRemote();
+          } catch (e) {
+            maybeEditorService()?.cancelClose?.();
+            throw e;
+          }
+        },
       },
       {
         id: "remote.reloadEnvironment",

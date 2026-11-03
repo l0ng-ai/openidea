@@ -10,7 +10,6 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
 } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
@@ -323,17 +322,6 @@ export function showContextMenu(
 
 export function hideContextMenu() {
   useContextMenuStore.setState({ menu: null });
-}
-
-/** Returns an `onContextMenu` handler showing `items` (or the result of `items(e)`). */
-export function useContextMenu(items: MenuItem[] | ((e: ReactMouseEvent) => MenuItem[] | null)) {
-  return (e: ReactMouseEvent) => {
-    const list = typeof items === "function" ? items(e) : items;
-    if (!list || !list.length) return;
-    e.preventDefault();
-    e.stopPropagation();
-    showContextMenu(e, list);
-  };
 }
 
 /** Renders the active context menu; mount once (the workbench does). */

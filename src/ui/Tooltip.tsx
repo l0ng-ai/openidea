@@ -3,7 +3,7 @@
  * `data-tooltip-shortcut`) gets one, shown by the single `<TooltipHost/>` after
  * 600ms of hover. Hidden on scroll, key press, pointer down or leave.
  */
-import { cloneElement, isValidElement, useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import styles from "./Tooltip.module.css";
@@ -17,18 +17,6 @@ export function tooltipAttrs(text: string | undefined, shortcut?: string): Recor
   const attrs: Record<string, string> = { "data-tooltip": text };
   if (shortcut) attrs["data-tooltip-shortcut"] = shortcut;
   return attrs;
-}
-
-export interface TooltipProps {
-  content: string;
-  shortcut?: string;
-  children: ReactElement;
-}
-
-/** Attaches a tooltip to its single child element. */
-export function Tooltip({ content, shortcut, children }: TooltipProps) {
-  if (!isValidElement(children)) return children;
-  return cloneElement(children, tooltipAttrs(content, shortcut));
 }
 
 interface Shown {

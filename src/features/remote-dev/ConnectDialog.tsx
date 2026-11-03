@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
-import { call, commands, type RemoteEntry } from "@/platform/ipc";
+import { call, commands, isCancelled, type RemoteEntry } from "@/platform/ipc";
 import { useRemoteProgress } from "@/platform/remote";
 import { sshLabel } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -38,7 +38,7 @@ function ConnectDialog() {
     setError(null);
     setBusy(true);
     try {
-      const entries = await call(commands.remoteList(ssh, dir));
+      const entries = await call(commands.remoteBootstrapList(ssh, dir));
       const shown = listedDirectory(dir, entries);
       setBrowse({ dir: shown, folders: browsableFolders(entries) });
       setPath(shown);
@@ -57,7 +57,7 @@ function ConnectDialog() {
       if (await openRemoteProject(ssh, target)) closeConnectDialog();
       else setBusy(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!isCancelled(e)) setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };

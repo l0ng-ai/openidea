@@ -28,7 +28,7 @@ import type { EditorConfigProps } from "@/bindings";
 import type { EditorSettings } from "@/platform/ipc";
 import { editorPrefs, lineCommentStyleFor, type EditorExtras } from "@/platform/editorSettings";
 import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
-import { editorContributions, type EditorDocContext } from "@/editor/api";
+import { editorContributions, HEAVY_LIMIT, type EditorDocContext } from "@/editor/api";
 import { distractionFreeWidth, isDistractionFree } from "@/workbench/distractionFree";
 import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
@@ -51,6 +51,7 @@ import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
 import { overwriteField } from "./overwrite";
+import { clipboardDocumentPath, clipboardFilesExtension } from "./clipboard";
 import { clipboardHistoryExtension } from "../clipboardHistory";
 import type { LanguageInfo } from "../backend";
 import { tx } from "@/platform/i18n";
@@ -77,8 +78,7 @@ export function prefsOf(settings: EditorSettings | undefined): EditorExtras {
   return editorPrefs({ editor: settings });
 }
 
-/** Documents above this size (UTF-16 units) skip per-line decorations. */
-export const HEAVY_LIMIT = 8_000_000;
+export { HEAVY_LIMIT } from "@/editor/api";
 
 export interface EffectiveIndent {
   tabSize: number;
@@ -336,6 +336,8 @@ export function baseExtensions(o: SetupOptions): Extension {
     overwriteField,
     gutterLineDrag,
     clipboardHistoryExtension,
+    clipboardDocumentPath.of(o.ctx.path),
+    clipboardFilesExtension,
     indentOnInput(),
     syntaxHighlighting(openideaHighlightStyle),
     syntaxHighlightField,

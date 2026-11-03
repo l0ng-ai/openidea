@@ -3,7 +3,7 @@ import { EditorView } from "@codemirror/view";
 import type { Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
 import { quitApp } from "./closeGuard";
 import { guessOs } from "./host";
@@ -35,6 +35,12 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
   return () => {
     if (command === "undo" || command === "redo") {
       const focused = document.activeElement;
+      if (
+        focused instanceof Element &&
+        focused.closest("[data-editor-area], [data-pane-id]") &&
+        maybeEditorService()?.documentHistory?.(command)
+      )
+        return;
       const view = focused instanceof HTMLElement ? EditorView.findFromDOM(focused) : null;
       if (view) {
         (command === "undo" ? undo : redo)(view);

@@ -27,10 +27,50 @@ describe("file editor providers", () => {
         resolve: (p) => (p.endsWith(".png") ? { kind: "image", key: p, path: p } : null),
       }),
     ];
-    expect((await resolveFileEditor("/a.png"))?.kind).toBe("image");
-    expect((await resolveFileEditor("/a.txt"))?.kind).toBe("late");
+    expect((await resolveFileEditor("/a.png"))?.input.kind).toBe("image");
+    expect((await resolveFileEditor("/a.txt"))?.input.kind).toBe("late");
     disposers.forEach((d) => d());
     expect(await resolveFileEditor("/a.png")).toBeNull();
+  });
+
+  it("releases a failed provider's acquisition before trying the next provider", async () => {
+    const live = new Set(["failed", "winner"]);
+    const disposers = [
+      registerFileEditorProvider({
+        id: "acquired-failure",
+        order: 1,
+        resolve: (_path, context) => {
+          context.onAdmission(
+            () => {},
+            async () => {
+              live.delete("failed");
+            },
+          );
+          throw new Error("probe failed after acquisition");
+        },
+      }),
+      registerFileEditorProvider({
+        id: "acquired-winner",
+        order: 2,
+        resolve: (_path, context) => {
+          context.onAdmission(
+            () => {},
+            async () => {
+              live.delete("winner");
+            },
+          );
+          return { kind: "viewer", key: "winner" };
+        },
+      }),
+    ];
+    try {
+      const resolution = (await resolveFileEditor("/a"))!;
+      expect(live).toEqual(new Set(["winner"]));
+      await resolution.rollback();
+      expect(live).toEqual(new Set());
+    } finally {
+      disposers.forEach((dispose) => dispose());
+    }
   });
 
   it("finds the text editor wrapper of a path", () => {

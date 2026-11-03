@@ -22,6 +22,86 @@ pub(crate) fn encoding_label(enc: &'static Encoding) -> String {
     enc.name().to_ascii_lowercase()
 }
 
+fn unicode_escape(text: &str) -> Option<u16> {
+    let digits = text.strip_prefix("\\u")?.as_bytes().get(..4)?;
+    digits.iter().try_fold(0u16, |n, b| Some(n * 16 + (*b as char).to_digit(16)? as u16))
+}
+
+fn unicode_character(text: &str) -> Option<(char, usize)> {
+    let unit = unicode_escape(text)?;
+    if (0xD800..=0xDBFF).contains(&unit) {
+        let low = unicode_escape(&text[6..]).filter(|low| (0xDC00..=0xDFFF).contains(low))?;
+        char::from_u32(0x10000 + ((unit as u32 - 0xD800) << 10) + low as u32 - 0xDC00).map(|c| (c, 12))
+    } else {
+        // A decoded line terminator would save as a real line break and split the property.
+        char::from_u32(unit as u32).filter(|c| !matches!(c, '\n' | '\r')).map(|c| (c, 6))
+    }
+}
+
+/// Decodes eligible Java properties Unicode escapes once. Backslash pairs,
+/// malformed escapes and unpaired surrogates retain their literal spelling.
+pub fn decode_properties_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if rest.starts_with("\\\\") {
+            out.push_str("\\\\");
+            rest = &rest[2..];
+            continue;
+        }
+        if let Some((c, len)) = unicode_character(rest) {
+            out.push(c);
+            rest = &rest[len..];
+            continue;
+        }
+        let c = rest.chars().next().expect("nonempty");
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+/// Serializes displayed properties text as ASCII, using uppercase UTF-16 units.
+/// Existing ASCII Unicode escapes retain their spelling and meaning on disk.
+pub fn encode_properties_ascii(text: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        rest = &rest[c.len_utf8()..];
+        if c == '\\' {
+            if rest.starts_with('\\') {
+                out.push_str("\\\\");
+                rest = &rest[1..];
+            } else if rest.chars().next().is_some_and(|next| !next.is_ascii()) {
+                // Keep a literal backslash from swallowing a generated escape.
+                out.push_str("\\u005C");
+            } else {
+                out.push(c);
+            }
+        } else if c.is_ascii() && c != '\0' {
+            out.push(c);
+        } else {
+            for unit in c.encode_utf16(&mut [0; 2]) {
+                write!(out, "\\u{unit:04X}").expect("write to string");
+            }
+        }
+    }
+    out
+}
+
+/// Preserve an ASCII file's exact escape spelling when edits were undone or
+/// replaced with identical displayed text. Otherwise serialize the new buffer.
+pub fn save_properties_text(path: &Path, text: &str) -> IdeResult<f64> {
+    if let Ok(bytes) = fs::read(path)
+        && bytes.is_ascii()
+        && decode_properties_escapes(std::str::from_utf8(&bytes).expect("ASCII")) == text
+    {
+        return Ok(mtime_ms(&fs::metadata(path)?));
+    }
+    write_atomic(path, encode_properties_ascii(text).as_bytes())
+}
+
 /// Detects BOM-less UTF-16 from the distribution of NUL bytes in mostly-ASCII text.
 fn sniff_utf16(sample: &[u8]) -> Option<&'static Encoding> {
     if sample.len() < 4 {
@@ -226,6 +306,17 @@ pub(crate) fn is_atomic_temp(path: &Path) -> bool {
 /// writes through symlinks. Falls back to an in-place write when the directory
 /// does not allow creating files. Returns the new mtime in ms.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
+    write_atomic_impl(path, bytes, true)
+}
+
+/// Replaces a file atomically without falling back to truncating it in place.
+/// Preserves existing permissions and writes through symlinks; if a sibling
+/// temporary file cannot be created, leaves the existing file untouched.
+pub fn write_atomic_strict(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
+    write_atomic_impl(path, bytes, false)
+}
+
+fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool) -> IdeResult<f64> {
     let target = match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => fs::canonicalize(path)?,
         _ => path.to_path_buf(),
@@ -235,10 +326,19 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
         return Err(IdeError::invalid(format!("{} is a directory", target.display())));
     }
     let tmp = temp_path_for(&target);
-    let file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if existing.is_some() || !allow_in_place {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Replacement bytes must not become readable before the final
+        // permissions are restored, even when the directory has a loose umask.
+        options.mode(0o600);
+    }
+    let file = options.open(&tmp);
     let mut file = match file {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && existing.is_some() => {
+        Err(e) if allow_in_place && e.kind() == std::io::ErrorKind::PermissionDenied && existing.is_some() => {
             tracing::debug!("cannot create temp file next to {}: {e}; writing in place", target.display());
             fs::write(&target, bytes)?;
             return Ok(mtime_ms(&fs::metadata(&target)?));
@@ -264,6 +364,116 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn properties_unicode_escapes() {
+        for (source, displayed) in [
+            (r"test.key1=Hello", "test.key1=Hello"),
+            (r"test.key2=\u4F60\u597D", "test.key2=你好"),
+            (r"test.key3=\u4f60\u597d", "test.key3=你好"),
+            (r"\u0041\uD83D\uDE00!", "A😀!"),
+            (r"\\u0041", r"\\u0041"),
+            (r"\\\u0041", r"\\A"),
+            (r"\\\\u0041", r"\\\\u0041"),
+            (r"\u005Cu0041", r"\u0041"),
+            (r"\u123 \u12xz \uu0041 \uD800 \uDC00", r"\u123 \u12xz \uu0041 \uD800 \uDC00"),
+            (r"\uD800\u0041", r"\uD800A"),
+            (r"\uD800\uD83D\uDE00", "\\uD800😀"),
+        ] {
+            assert_eq!(decode_properties_escapes(source), displayed, "{source}");
+        }
+        assert_eq!(encode_properties_ascii("你好😀"), r"\u4F60\u597D\uD83D\uDE00");
+        for text in ["plain=ASCII\r\n", r"escaped=\\u0041", r"bad=\u12xz", r"bad=\uD800"] {
+            assert_eq!(encode_properties_ascii(text), text);
+        }
+        for text in ["你好😀", "\0", "\\中", "\\\\中", "\\\\\\😀", r"\\u0041"] {
+            let ascii = encode_properties_ascii(text);
+            assert!(ascii.is_ascii());
+            assert_eq!(decode_properties_escapes(&ascii), text, "{ascii}");
+        }
+    }
+
+    #[test]
+    fn properties_ascii_escapes_are_not_escaped_again() {
+        for text in [
+            r"test.key2=\u4F60\u597D",
+            r"test.key3=\u4f60\u597d",
+            r"ascii=\u0041\u005C\u000A",
+            r"emoji=\uD83D\uDE00",
+            r"slashes=\\u4F60 \\\u4F60 \\\\u4F60",
+            r"bad=\u123 \u12xz \uu0041 \uD800 \uDC00",
+        ] {
+            assert_eq!(encode_properties_ascii(text), text, "{text}");
+        }
+        let mixed = "raw=\\u4f60\\u597d; native=你好😀";
+        let expected = r"raw=\u4f60\u597d; native=\u4F60\u597D\uD83D\uDE00";
+        assert_eq!(encode_properties_ascii(mixed), expected);
+        assert_eq!(encode_properties_ascii(expected), expected);
+        assert_eq!(decode_properties_escapes(expected), "raw=你好; native=你好😀");
+    }
+
+    #[test]
+    fn properties_line_terminator_escapes_survive_an_edit() {
+        let source = r"key=one\u000Atwo\u000Dthree";
+        let displayed = decode_properties_escapes(source);
+        assert_eq!(displayed, source);
+        assert_eq!(encode_properties_ascii(&displayed.replace("three", "3")), r"key=one\u000Atwo\u000D3");
+    }
+
+    #[test]
+    fn strict_write_replaces_complete_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebook.ipynb");
+        fs::write(&path, b"original, longer contents").unwrap();
+
+        write_atomic_strict(&path, b"{\"cells\":[]}").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"{\"cells\":[]}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_write_preserves_symlink_and_target_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.ipynb");
+        let link = dir.path().join("link.ipynb");
+        fs::write(&target, b"old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        write_atomic_strict(&link, b"new notebook").unwrap();
+
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"new notebook");
+        assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_write_does_not_truncate_when_sibling_creation_is_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebook.ipynb");
+        fs::write(&path, b"original notebook").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        // Privileged test runners can bypass directory permissions.
+        let probe = dir.path().join("probe");
+        if fs::File::create(&probe).is_ok() {
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            fs::remove_file(probe).unwrap();
+            return;
+        }
+
+        let result = write_atomic_strict(&path, b"replacement");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&path).unwrap(), b"original notebook");
+    }
 
     #[test]
     fn decode_variants() {
