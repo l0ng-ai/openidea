@@ -17,6 +17,8 @@ export interface ConflictBlock {
   oursTo: number;
   theirsFrom: number;
   theirsTo: number;
+  /** The marker lines (`<<<<<<<`, `|||||||` when there is a base, `=======`, `>>>>>>>`), without their terminators. */
+  markers: Array<{ from: number; to: number }>;
 }
 
 const START = "<<<<<<<";
@@ -70,6 +72,9 @@ export function parseConflicts(text: string): ConflictBlock[] {
       oursTo: lines[oursEnd]!.from,
       theirsFrom: lines[sepAt]!.end,
       theirsTo: lines[endAt]!.from,
+      markers: [i, baseAt, sepAt, endAt]
+        .filter((j) => j >= 0)
+        .map((j) => ({ from: lines[j]!.from, to: lines[j]!.from + lines[j]!.text.replace(/\r?\n$/, "").length })),
     });
     i = endAt;
   }

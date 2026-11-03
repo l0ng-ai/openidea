@@ -400,6 +400,8 @@ const ICONS = {
   library: "nodes/library",
   // VCS
   commit: "vcs/commit",
+  "resolve-continue": "vcs/resolveContinue",
+  "vcs-abort": "vcs/abort",
   branch: "general/vcs",
   "git-pull": "vcs/update",
   "git-push": "vcs/push",

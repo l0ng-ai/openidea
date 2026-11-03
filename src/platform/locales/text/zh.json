@@ -5656,5 +5656,12 @@
   "Exit without applying the changes made in the result?": "不应用对结果所做的更改并退出吗？",
   "Apply Merge Result": "应用合并结果",
   "Merge Settings": "合并设置",
-  "Resolve Merge Change": "解决合并更改"
+  "Resolve Merge Change": "解决合并更改",
+  "File has unresolved merge conflicts": "文件存在未解决的合并冲突",
+  "Resolve conflicts…": "解决冲突…",
+  "Unresolved merge conflict marker": "未解决的合并冲突标记",
+  "Unresolved merge conflicts": "未解决的合并冲突",
+  "Reports the <<<<<<<, ======= and >>>>>>> lines a merge leaves in a file, whatever its language and whether or not a language server is installed.": "报告合并在文件中留下的 <<<<<<<、======= 和 >>>>>>> 行，与文件语言以及是否安装了语言服务器无关。",
+  "Merge/Rebase Widget": "合并/变基微件",
+  "Unresolved merge conflict markers": "未解决的合并冲突标记"
 }
