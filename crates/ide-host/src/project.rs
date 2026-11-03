@@ -664,7 +664,14 @@ fn scan_repositories(
     build_cache: &Path,
 ) {
     let ignored = settings.effective().ignored_names();
-    let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
+    let skip = |p: &Path| {
+        p.file_name().is_some_and(|n| {
+            let name = n.to_string_lossy();
+            ignored.is_ignored_name(&name)
+                || (ide_workspace::unity::GENERATED_DIRS.contains(&name.as_ref())
+                    && p.parent().is_some_and(ide_workspace::unity::is_project))
+        })
+    };
     let mut roots = vec![root.to_path_buf()];
     roots.extend(content_roots(&settings.effective(), root, build_cache));
     match Repos::discover_roots(&roots, &skip) {

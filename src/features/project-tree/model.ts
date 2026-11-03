@@ -8,6 +8,8 @@ import { isIgnoredName } from "@/platform/ignoredNames";
 import { ancestorsWithin, isInside, isSameOrInside, nameOf, parentOf, relativeTo } from "./paths";
 
 export interface TreeOptions {
+  /** Applied only by the Unity pane, never persisted as a user preference. */
+  unityRoot?: string;
   /** Show ignored names (`files.ignoredNames`: `.git`, `.DS_Store`, …). Dotfiles are always shown. */
   showHidden: boolean;
   /** Show entries matched by .gitignore / exclude settings (dimmed). */
@@ -69,7 +71,19 @@ export interface TreeModel {
 
 export type Listings = ReadonlyMap<string, readonly FileEntry[]>;
 
+export function unityPathVisible(path: string, opts: TreeOptions): boolean {
+  if (opts.unityRoot && path.startsWith(opts.unityRoot + "/")) {
+    const relative = path.slice(opts.unityRoot.length + 1);
+    // The full Project / Project Files panes retain access to generated files.
+    if (/^(Library|Temp|Obj|obj|Logs|Build|Builds|UserSettings)(\/|$)/.test(relative)) return false;
+    if (!opts.showHidden && /\.meta$/i.test(relative)) return false;
+    if (!relative.includes("/") && /\.(csproj|sln|slnx)$/i.test(relative)) return false;
+  }
+  return true;
+}
+
 export function isVisible(entry: FileEntry, opts: TreeOptions): boolean {
+  if (!unityPathVisible(entry.path, opts)) return false;
   // Ignored names are also excluded on the backend; only "Show Hidden" brings them back.
   if (isIgnoredName(entry.name)) return opts.showHidden;
   if (!opts.showExcluded && entry.ignored) return false;
