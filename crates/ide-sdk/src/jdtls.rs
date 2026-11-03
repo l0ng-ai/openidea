@@ -218,17 +218,31 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
     args
 }
 
-/// The launch target of a scoop shim: `shims\<name>.exe` is driven by a
-/// `shims\<name>.shim` text file whose `path` entry names the wrapped script.
+/// Scoop shims either point at the release script or run Python with the
+/// script in `args`. Paths may be quoted and contain spaces and backslashes.
 fn shim_target(shim_exe: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(shim_exe.with_extension("shim")).ok()?;
-    text.lines().find_map(|line| match line.split_once('=') {
-        Some((key, value)) if key.trim().eq_ignore_ascii_case("path") => {
-            let target = value.trim();
-            (!target.is_empty()).then(|| PathBuf::from(target))
-        }
-        _ => None,
-    })
+    let entry = |name: &str| {
+        text.trim_start_matches('\u{feff}').lines().find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            if !key.trim().eq_ignore_ascii_case(name) {
+                return None;
+            }
+            let value = value.trim();
+            let value = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(value);
+            (!value.is_empty()).then_some(value)
+        })
+    };
+    let name = |path: &str| path.rsplit(['/', '\\']).next().unwrap_or(path).to_ascii_lowercase();
+    let path = entry("path")?;
+    if SCRIPTS.contains(&name(path).as_str()) {
+        return Some(PathBuf::from(path));
+    }
+    if !matches!(name(path).as_str(), "python.exe" | "python3.exe" | "pythonw.exe") {
+        return None;
+    }
+    let script = entry("args")?;
+    SCRIPTS.contains(&name(script).as_str()).then(|| PathBuf::from(script))
 }
 
 /// Rewrites a jdtls launch (`command` = the release's script, `JAVA_HOME` chosen by
@@ -554,6 +568,30 @@ mod tests {
         assert_eq!(shim_target(&dir.path().join("other.exe")), None, "no shim file");
     }
 
+    #[test]
+    fn reads_real_scoop_python_shims_and_quoted_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim_exe = dir.path().join("jdtls.exe");
+        let script = r"C:\Users\张 三\scoop\apps\jdtls\current\bin\jdtls";
+        for descriptor in [
+            format!("path = \"C:\\Python313\\python.exe\"\r\nargs = {script}\r\n"),
+            format!("\u{feff}path = \"C:\\Python313\\python.exe\"\r\nargs = \"{script}\"\r\n"),
+            format!("PATH = \"{script}\"\n"),
+        ] {
+            std::fs::write(shim_exe.with_extension("shim"), &descriptor).unwrap();
+            assert_eq!(shim_target(&shim_exe), Some(PathBuf::from(script)), "{descriptor}");
+        }
+        for descriptor in [
+            "path = \"C:\\Python313\\python.exe\"\n",
+            "path = \"C:\\Python313\\python.exe\"\nargs = C:\\custom.py\n",
+            "path = C:\\custom.exe\nargs = C:\\bin\\jdtls\n",
+            "path = C:\\python.exe\nargs = C:\\bin\\jdtls --jvm-arg=-Xmx1g\n",
+        ] {
+            std::fs::write(shim_exe.with_extension("shim"), descriptor).unwrap();
+            assert_eq!(shim_target(&shim_exe), None, "{descriptor}");
+        }
+    }
+
     /// Issue #794: scoop puts a `jdtls.exe` shim (plus its `.shim` descriptor) on
     /// PATH, hiding the release layout — the launch must follow the shim to the
     /// release script so the configured JDK applies.
@@ -562,11 +600,11 @@ mod tests {
     fn follows_a_scoop_shim_to_the_release_script() {
         let dir = tempfile::tempdir().unwrap();
         let shims = dir.path().join("shims");
-        let home = dir.path().join("apps").join("jdtls").join("current");
+        let home = dir.path().join("scoop with spaces").join("apps").join("jdtls").join("current");
         std::fs::create_dir_all(&shims).unwrap();
         std::fs::write(shims.join("jdtls.exe"), "shim binary").unwrap();
         std::fs::create_dir_all(home.join("bin")).unwrap();
-        std::fs::write(home.join("bin").join("jdtls.cmd"), "@echo off\n").unwrap();
+        std::fs::write(home.join("bin").join("jdtls"), "# Python launcher\n").unwrap();
         std::fs::create_dir_all(home.join("plugins")).unwrap();
         std::fs::write(home.join("plugins/org.eclipse.equinox.launcher_1.7.0.jar"), "").unwrap();
         for config in config_dir_names(std::env::consts::OS, std::env::consts::ARCH) {
@@ -582,7 +620,10 @@ mod tests {
         .unwrap();
         std::fs::write(jdk.join("bin").join(crate::exe("javac")), "").unwrap();
         std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
-        let target = format!("path = {}\n", home.join("bin").join("jdtls.cmd").to_string_lossy());
+        let target = format!(
+            "path = \"C:\\Python313\\python.exe\"\nargs = {}\n",
+            home.join("bin").join("jdtls").to_string_lossy()
+        );
         std::fs::write(shims.join("jdtls.shim"), target).unwrap();
 
         let cfg = || -> LanguageServerConfig {
