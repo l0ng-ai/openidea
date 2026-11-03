@@ -8,10 +8,10 @@
 //! result is cached until the manifests (or the relevant settings) change.
 //!
 //! Archives are listed as browsable roots (`<archive>!`, see `ide_vfs`): the
-//! JDK's `src.zip` and the Maven / Gradle dependency jars (sources jars preferred).
+//! JDK's `src.zip` and the Maven / Gradle dependency jars (source attachments resolved by JDT).
 
 use crate::exe;
-use crate::exec::{query, query_in, which};
+use crate::exec::{query_in, which};
 use ide_core::settings::Settings;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -54,6 +54,7 @@ const JAVA_MANIFESTS: &[&str] =
 const NODE_MANIFESTS: &[&str] = &["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"];
 const CARGO_MANIFESTS: &[&str] = &["Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"];
 const GO_MANIFESTS: &[&str] = &["go.mod", "go.sum", "go.work"];
+const RUBY_MANIFESTS: &[&str] = &["Gemfile", "Gemfile.lock", ".ruby-version", ".tool-versions", "mise.toml"];
 
 /// A Maven / Gradle dependency of the project, from the build model.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -70,7 +71,7 @@ pub struct BuildDependency {
 /// `dependencies` (from the build model) are listed when their jars are in the local repositories.
 pub fn project_libraries(root: &Path, settings: &Settings, dependencies: &[BuildDependency]) -> Vec<LibraryGroup> {
     type Detect = fn(&Path, &Settings) -> Vec<LibraryGroup>;
-    let detectors: [Detect; 5] = [python_groups, jdk_groups, node_groups, rust_groups, go_groups];
+    let detectors: [Detect; 6] = [python_groups, jdk_groups, node_groups, rust_groups, go_groups, ruby_groups];
     std::thread::scope(|s| {
         let handles: Vec<_> = detectors.iter().map(|d| s.spawn(move || d(root, settings))).collect();
         let deps = s.spawn(|| dependency_groups(root, settings, dependencies));
@@ -156,7 +157,9 @@ fn python_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
 
 /// Standard library and site-packages folders of a Python interpreter.
 pub fn python_libraries(python: &Path, root: Option<&Path>) -> Option<LibraryGroup> {
-    let out = query(python, &["-c", PYTHON_PATHS], QUERY_TIMEOUT)?;
+    // In a neutral directory: the working directory comes first on `sys.path` for `-c`.
+    let dir = crate::python::neutral_dir();
+    let out = query_in(python, &["-c", PYTHON_PATHS], dir.as_ref().map(|d| d.path()), &[], QUERY_TIMEOUT)?;
     let name = crate::discover::python_sdk(python, "system", root).map(|s| s.name).unwrap_or_else(|| "Python".into());
     group(name, "python", library_roots(parse_python_paths(&out)))
 }
@@ -191,6 +194,24 @@ pub(crate) fn named_roots(roots: Vec<(String, PathBuf)>) -> Vec<LibraryRoot> {
         .filter(|(_, p)| p.is_dir() && seen.insert(dunce::canonicalize(p).unwrap_or_else(|_| p.clone())))
         .map(|(name, p)| LibraryRoot { name, path: p.into() })
         .collect()
+}
+
+// ------------------------------------------------------------------ ruby
+
+fn ruby_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+    let Some(files) = manifests(root, RUBY_MANIFESTS) else { return Vec::new() };
+    if !root.join("Gemfile").is_file() && !root.join(".ruby-version").is_file() {
+        return Vec::new();
+    }
+    let Some(ruby) = crate::apply::ruby_interpreter(root, s) else { return Vec::new() };
+    cached(root, "ruby", ruby.display().to_string(), &files, || {
+        let name = crate::ruby::ruby_sdk(&ruby, "system").map(|s| s.name).unwrap_or_else(|| "Ruby".into());
+        let (stdlib, gems) = crate::ruby::library_roots(&ruby, Some(root));
+        let mut out = Vec::new();
+        out.extend(group(name, "ruby", named_roots(stdlib)));
+        out.extend(group("Gems", "gems", named_roots(gems)));
+        out
+    })
 }
 
 // ------------------------------------------------------------------ jdk
@@ -248,7 +269,7 @@ fn gradle_user_home() -> Option<PathBuf> {
 }
 
 /// One `Maven: g:a:v` / `Gradle: g:a:v` group per dependency whose jar is in a
-/// local repository, its root being the jar (the `-sources.jar` when downloaded).
+/// local repository, its root being the binary jar so Java classes open through JDT's source provider.
 pub(crate) fn dependency_libraries(
     deps: &[BuildDependency],
     maven_repo: Option<&Path>,
@@ -286,7 +307,7 @@ pub(crate) fn maven_jar(repo: &Path, d: &BuildDependency) -> Option<PathBuf> {
         return None;
     }
     let dir = repo.join(d.group.replace('.', "/")).join(&d.artifact).join(&d.version);
-    ["-sources.jar", ".jar"]
+    [".jar", "-sources.jar"]
         .iter()
         .map(|suffix| dir.join(format!("{}-{}{suffix}", d.artifact, d.version)))
         .find(|p| p.is_file())
@@ -300,7 +321,7 @@ pub(crate) fn gradle_jar(home: &Path, d: &BuildDependency) -> Option<PathBuf> {
     let dir = home.join("caches/modules-2/files-2.1").join(&d.group).join(&d.artifact).join(&d.version);
     let mut hashes: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
     hashes.sort();
-    ["-sources.jar", ".jar"].iter().find_map(|suffix| {
+    [".jar", "-sources.jar"].iter().find_map(|suffix| {
         let file = format!("{}-{}{suffix}", d.artifact, d.version);
         hashes.iter().map(|h| h.join(&file)).find(|p| p.is_file())
     })

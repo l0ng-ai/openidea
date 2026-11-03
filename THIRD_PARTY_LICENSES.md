@@ -1,5 +1,14 @@
 # Third-party licenses
 
+## Project Lombok
+
+`plugins/lombok/lombok-1.18.48-openidea.2.jar` contains Project Lombok v1.18.48 with the Equinox
+classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059)
+and the ECJ constructor-call fix from [projectlombok/lombok#4089](https://github.com/projectlombok/lombok/pull/4089).
+Copyright (C) 2009-2021 The Project Lombok Authors. MIT license and bundled component
+notices are retained in [plugins/lombok/LICENSE](plugins/lombok/LICENSE) and inside the jar.
+Source tag, patch commits and build instructions: [plugins/lombok/README.md](plugins/lombok/README.md).
+
 ## JetBrains IntelliJ Platform icons
 
 `src/ui/expui/**` contains SVG icons from the IntelliJ Platform "new UI" (expui)
@@ -27,6 +36,20 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
   `fileTypes/hashiCorp`, Apache-2.0); `makefile` (`expui/makefile` →
   `fileTypes/makefile`, MIT, Copyright (c) 2016 Victor Kropp — full text below).
 
+The read/write usage filter assets (`actions/showReadAccess{,_dark}.svg` and
+`actions/showWriteAccess{,_dark}.svg`) are copied unmodified from
+`platform/icons/src/expui/actions/` at intellij-community commit
+[`e992ff4750b4c36afe2caadfa8b191a8f36fb7a2`](https://github.com/JetBrains/intellij-community/tree/e992ff4750b4c36afe2caadfa8b191a8f36fb7a2/platform/icons/src/expui/actions).
+Their original copyright headers and Apache-2.0 licensing are retained.
+
+- [intellij-rust](https://github.com/intellij-rust/intellij-rust) (MIT):
+  `src/main/resources/icons/expui/rustFile{,_dark}.svg` →
+  `src/ui/expui/fileTypes/rust{,_dark}.svg`;
+  `src/main/resources/icons/expui/cargo{,_dark}.svg` and `cargoLock{,_dark}.svg` →
+  `src/ui/expui/fileTypes/cargo{,_dark}.svg` and `cargoLock{,_dark}.svg`.
+  Copyright (c) 2015 Aleksey Kladov, Evgeny Kurbatsky, Alexey Kudinkin and contributors;
+  Copyright (c) 2016 JetBrains. MIT licence, full text below.
+
 At render time `src/ui/icons.tsx` may recolour monochrome icons to `currentColor`.
 
 ## JetBrains IntelliJ Platform diff algorithm
@@ -42,8 +65,13 @@ from its tests (`LineComparisonUtilTest`, `WordComparisonUtilTest`,
 `SplitComparisonUtilTest`). Modified from the originals. Copyright 2000-2026
 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
 
+`src/features/vcs/mergeDiff3.ts`, `chunkOptimizer.ts` and `mergeModel.ts` also adapt
+the IntelliJ Platform merge implementation (`MergeRangeUtil`, `MergeResolveUtil`,
+`ChunkOptimizer.LineChunkOptimizer` and `MergeConflictModel`). Modified from the
+originals. Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
+
 `src/ui/openidea/**` holds OpenIDEA's own file-type icons drawn in the expui style for
-languages whose JetBrains icons are not open source (Go, Rust, Ruby, Dart, Lua, Zig,
+languages whose JetBrains icons are not open source (Go, Ruby, Dart, Lua, Zig,
 Svelte, …). Those using the page-with-corner-badge layout (`goMod`, `goWork`,
 `dotenv`, `readme`, `lock`, `license`) reuse the page outline of the Apache-2.0
 expui `fileTypes/h.svg`; that outline is modified from the original by JetBrains.
@@ -53,6 +81,31 @@ leaf) is OpenIDEA's own drawing.
 The lettering in `src-tauri/icons/source/openidea-wordmark*.svg` is outlined from
 Inter Tight (Copyright 2022 The Inter Project Authors, SIL Open Font License 1.1,
 https://github.com/rsms/inter-tight).
+
+### MIT License (Rust and Cargo icons)
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Aleksey Kladov, Evgeny Kurbatsky, Alexey Kudinkin and contributors
+Copyright (c) 2016 JetBrains
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ### MIT License (makefile icon)
 

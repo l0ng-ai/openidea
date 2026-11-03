@@ -4,22 +4,25 @@
  * `ide-core::settings` defaults; validation never throws.
  */
 
-import { BUILTIN_THEME_IDS, type BuiltinThemeId } from "@/platform/themes";
+import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
 export type OpenProjectIn = "ask" | "new" | "same" | "attach";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 /** Themes selectable as "preferred" when syncing with the OS. */
-export type ConcreteTheme = BuiltinThemeId;
+export type ConcreteTheme = ThemeChoiceId;
 
 export interface AppearanceExtras {
   syncWithOs: boolean;
   preferredLightTheme: ConcreteTheme;
   preferredDarkTheme: ConcreteTheme;
+  /** A plugin's file icon theme (`<pluginId>/<themeId>`); empty for the built-in icons. */
+  fileIconTheme: string;
   zoom: number;
   useCustomFont: boolean;
   uiFontFamily: string;
+  uiFontFallback: string;
   contrastScrollbars: boolean;
   redGreenVision: boolean;
   differentToolWindowBackground: boolean;
@@ -33,6 +36,7 @@ export interface AppearanceExtras {
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
   showToolWindowNames: boolean;
+  showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
 }
 
@@ -68,9 +72,11 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   syncWithOs: false,
   preferredLightTheme: "light",
   preferredDarkTheme: "dark",
+  fileIconTheme: "",
   zoom: 100,
   useCustomFont: false,
   uiFontFamily: "Inter",
+  uiFontFallback: "",
   contrastScrollbars: false,
   redGreenVision: false,
   differentToolWindowBackground: false,
@@ -84,6 +90,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
   showToolWindowNames: false,
+  showToolWindowBadges: true,
   widescreenToolWindows: false,
 };
 
@@ -106,7 +113,7 @@ const int = (v: unknown, d: number, { min, max }: { min: number; max: number }) 
   typeof v === "number" && Number.isFinite(v) ? Math.round(Math.min(max, Math.max(min, v))) : d;
 
 const AA: readonly Antialiasing[] = ["subpixel", "greyscale", "none"];
-const CONCRETE = BUILTIN_THEME_IDS;
+const concrete = (v: unknown, d: ConcreteTheme): ConcreteTheme => (isThemeChoiceId(v) ? v : d);
 const DISPLAYS: readonly NotificationDisplay[] = ["balloon", "sticky", "none"];
 
 export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
@@ -116,11 +123,14 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
   return {
     // A legacy `theme = "system"` means syncing too.
     syncWithOs: bool(a.syncWithOs, d.syncWithOs) || a.theme === "system",
-    preferredLightTheme: oneOf(a.preferredLightTheme, CONCRETE, d.preferredLightTheme),
-    preferredDarkTheme: oneOf(a.preferredDarkTheme, CONCRETE, d.preferredDarkTheme),
+    preferredLightTheme: concrete(a.preferredLightTheme, d.preferredLightTheme),
+    preferredDarkTheme: concrete(a.preferredDarkTheme, d.preferredDarkTheme),
+    fileIconTheme:
+      typeof a.fileIconTheme === "string" && /^[^/\s]+\/[^/\s]+$/.test(a.fileIconTheme) ? a.fileIconTheme : "",
     zoom: int(a.zoom, d.zoom, ZOOM_LIMITS),
     useCustomFont: b("useCustomFont"),
     uiFontFamily: typeof a.uiFontFamily === "string" && a.uiFontFamily.trim() ? a.uiFontFamily.trim() : d.uiFontFamily,
+    uiFontFallback: typeof a.uiFontFallback === "string" ? a.uiFontFallback.trim() : d.uiFontFallback,
     contrastScrollbars: b("contrastScrollbars"),
     redGreenVision: b("redGreenVision"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
@@ -134,6 +144,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
     showToolWindowNames: b("showToolWindowNames"),
+    showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
   };
 }

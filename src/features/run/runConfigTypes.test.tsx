@@ -16,7 +16,7 @@ import {
 import { typeRows } from "./AddConfigPopup";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { buildRows } from "./ConfigChooser";
-import { memberRows } from "./ConfigForm";
+import { ConfigForm, memberRows } from "./ConfigForm";
 import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } from "./configs";
 import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
@@ -70,6 +70,22 @@ beforeEach(() => {
 afterEach(() => disposeTypes());
 
 describe("configuration types", () => {
+  it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
+    const type = typeFor(kind)!;
+    const original = newConfigOfType(type, []);
+    const config =
+      kind === "spring-boot" ? withParams(original, { ...original.params, mainClass: "a.Main" }) : original;
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    expect(screen.getByRole("button", { name: "On 'Update' action" }).textContent).toContain("Show chooser");
+    expect(screen.getByRole("button", { name: "On frame deactivation" }).textContent).toContain("Do nothing");
+    fireEvent.click(screen.getByRole("button", { name: "On frame deactivation" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Update resources" }));
+    expect(changed).toHaveBeenCalledWith(
+      expect.objectContaining({ params: expect.objectContaining({ onDeactivation: "resources" }) }),
+    );
+  });
+
   it("are contributed through the registry", () => {
     expect(runConfigTypes().map((t) => t.id)).toEqual(expect.arrayContaining(BUILTIN_TYPES.map((t) => t.id)));
   });
@@ -87,6 +103,12 @@ describe("configuration types", () => {
     ["pytest", "pytest.exe", ["tests/test_app.py", "-q"]],
     ["pytest", String.raw`C:\project\.venv\Scripts\PYTEST.EXE`, ["-q"]],
     ["pytest", "PYTHON.EXE", ["-m", "pytest", "tests"]],
+    ["ruby", String.raw`C:\Ruby33\bin\ruby.exe`, ["-Ilib", "bin/app", "--port", "3000"]],
+    ["rake", "bundle", ["exec", "rake", "--trace", "db:migrate"]],
+    ["rspec", "/home/me/.rbenv/versions/3.3.1/bin/rspec", ["--fail-fast", "spec/a_spec.rb:12"]],
+    ["rspec", "bundle", ["exec", "rspec", "--format", "documentation", "--fail-fast", "spec/foo_spec.rb"]],
+    ["ruby", "ruby", ["-I", "lib", "-w", "bin/app", "--port", "3000"]],
+    ["rake", "bundle", ["exec", "rake", "-f", "lib/tasks.rake", "--trace", "db:migrate"]],
     ["npm", String.raw`C:\Program Files\nodejs\NPM.CMD`, ["run", "test", "--", "two words"]],
     ["npm", "pnpm.COM", ["test"]],
     ["application", String.raw`C:\jdk\bin\JAVA.EXE`, ["-cp", "lib/*", "a.Main"]],
@@ -154,6 +176,129 @@ describe("configuration types", () => {
       executable: detected.command,
     });
     expect(godot.paramsFrom!(cfg("x", { command: "cargo" }))).toBeNull();
+  });
+
+  it("ruby types default to Bundler for rake and rspec and mark rspec as tests", () => {
+    expect(newConfigOfType(typeFor("rake")!, [])).toMatchObject({ command: "bundle", args: ["exec", "rake"] });
+    const ruby = newConfigOfType(typeFor("ruby")!, []);
+    expect(ruby).toMatchObject({ command: "ruby", args: [] });
+    expect(formParams(ruby)).toEqual({ command: "", bundler: "", rubyArgs: "", script: "", scriptArgs: "" });
+    const rspec = newConfigOfType(typeFor("rspec")!, []);
+    expect(rspec).toMatchObject({ command: "bundle", args: ["exec", "rspec"], isTest: true });
+    expect(withParams(rspec, { bundler: "", target: "spec/a_spec.rb", options: "-fd" })).toMatchObject({
+      command: "rspec",
+      args: ["-fd", "spec/a_spec.rb"],
+      isTest: true,
+    });
+    expect(formParams(cfg("r", { kind: "ruby", command: "ruby", args: ["app.rb", "-v"] }))).toEqual({
+      command: "",
+      bundler: "",
+      rubyArgs: "",
+      script: "app.rb",
+      scriptArgs: "-v",
+    });
+  });
+
+  it("ruby types keep option values with their options and the argument order as written", () => {
+    const ruby = (args: string[]) => formParams(cfg("r", { kind: "ruby", command: "ruby", args }));
+    expect(ruby(["-I", "lib", "-w", "bin/app", "--port", "3000"])).toEqual({
+      command: "",
+      bundler: "",
+      rubyArgs: "-I lib -w",
+      script: "bin/app",
+      scriptArgs: "--port 3000",
+    });
+    expect(ruby(["-W0", "--", "-weird.rb", "x"])).toMatchObject({
+      rubyArgs: "-W0 --",
+      script: "-weird.rb",
+      scriptArgs: "x",
+    });
+    expect(ruby(["-e", "puts 1"])).toBeNull();
+    expect(ruby(["-v"])).toBeNull();
+
+    const rspec = (args: string[]) =>
+      formParams(cfg("s", { kind: "rspec", command: "bundle", args: ["exec", "rspec", ...args] }));
+    expect(rspec(["--format", "documentation", "--fail-fast", "spec/foo_spec.rb"])).toEqual({
+      command: "",
+      bundler: "true",
+      options: "--format documentation --fail-fast",
+      target: "spec/foo_spec.rb",
+    });
+    expect(rspec(["--tag", "~slow", "-fd", "spec/a_spec.rb:12", "spec/b_spec.rb"])).toMatchObject({
+      options: "--tag ~slow -fd",
+      target: "spec/a_spec.rb:12 spec/b_spec.rb",
+    });
+    expect(rspec(["--format", "documentation"])).toMatchObject({ options: "--format documentation", target: "" });
+    expect(rspec(["--new-option", "value", "spec"])).toMatchObject({ options: "--new-option value", target: "spec" });
+    expect(rspec([])).toMatchObject({ options: "", target: "" });
+
+    const rake = (args: string[]) =>
+      formParams(cfg("k", { kind: "rake", command: "bundle", args: ["exec", "rake", ...args] }));
+    expect(rake(["-f", "lib/tasks.rake", "--trace", "db:migrate"])).toEqual({
+      command: "",
+      bundler: "true",
+      options: "-f lib/tasks.rake --trace",
+      task: "db:migrate",
+    });
+    expect(rake(["--trace", "test", "TEST=test/a_test.rb"])).toMatchObject({
+      options: "--trace",
+      task: "test TEST=test/a_test.rb",
+    });
+    expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });
+  });
+
+  it("Django tests round-trip commandLine / paramsFrom and always report to the test tree", () => {
+    const django = typeFor("django-test")!;
+    expect(django.debugAdapter).toBe("debugpy");
+    expect(newConfigOfType(django, [])).toMatchObject({
+      kind: "django-test",
+      command: "python3",
+      args: ["manage.py", "test"],
+      env: {},
+      isTest: true,
+      debugAdapter: "debugpy",
+    });
+    // No settings module: neither `--settings` nor DJANGO_SETTINGS_MODULE, manage.py's default applies.
+    expect(django.commandLine({ command: "python3", settings: " " })).toEqual({
+      command: "python3",
+      args: ["manage.py", "test"],
+    });
+
+    const cases: Array<{ command: string; args: string[]; params: Record<string, string> }> = [
+      {
+        command: ".venv/bin/python",
+        args: ["manage.py", "test"],
+        params: { command: ".venv/bin/python", runnerArgs: "", target: "", settings: "", options: "" },
+      },
+      {
+        command: "uv",
+        args: ["run", "python", "manage.py", "test", "polls", "blog.tests.PostTests", "--settings", "mysite.test"],
+        params: {
+          command: "uv",
+          runnerArgs: "run python",
+          target: "polls blog.tests.PostTests",
+          settings: "mysite.test",
+          options: "",
+        },
+      },
+      {
+        command: "python3",
+        args: ["manage.py", "test", "--keepdb", "--parallel", "4"],
+        params: { command: "python3", runnerArgs: "", target: "", settings: "", options: "--keepdb --parallel 4" },
+      },
+    ];
+    for (const { command, args, params } of cases) {
+      const c = cfg("django:test", { kind: "django-test", command, args, detected: true });
+      expect(django.paramsFrom!(c)).toEqual(params);
+      expect(formParams(c)).toEqual(params);
+      expect(django.commandLine(params)).toEqual({ command, args });
+    }
+    // Saved from the form, a plain command line becomes a test configuration.
+    expect(withParams(cfg("d", { kind: "django-test" }), cases[1]!.params).isTest).toBe(true);
+    // Not `manage.py test`: edited as a plain command.
+    expect(
+      django.paramsFrom!(cfg("d", { kind: "django-test", command: "python3", args: ["manage.py", "check"] })),
+    ).toBeNull();
   });
 
   it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {

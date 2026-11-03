@@ -1,8 +1,8 @@
 /**
- * Go to declaration / implementation / type declaration (⌘B, ⌥⌘B, ⇧⌘B and
- * ⌘-click with a link underline while ⌘ is held), the multiple-targets
- * chooser, and document highlights (occurrences of the symbol at the caret,
- * plus the sticky find.highlightUsages variant).
+ * Go to declaration / implementation / type declaration (⌘B, ⌥⌘B, ⇧⌘B,
+ * ⌘-click with a link underline while ⌘ is held, and a plain middle-button
+ * click), the multiple-targets chooser, and document highlights (occurrences
+ * of the symbol at the caret, plus the sticky find.highlightUsages variant).
  */
 import { EditorSelection, Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import {
@@ -47,8 +47,9 @@ import {
   type DeclarationTarget,
 } from "./syntaxFallback";
 import { showHint, showPendingHint } from "./hint";
+import { outsideProjectReason } from "./outsideProject";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
-import { identifierAt, readManyFileLines } from "./files";
+import { readManyFileLines, targetLabel } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
@@ -111,7 +112,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         run: () => navigateTo(l),
       };
     // Server targets: the declared name (speed search matches it), file and line after it.
-    const name = identifierAt(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
+    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
@@ -198,7 +199,16 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
       ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset)))
     )
       return;
-    showHint(view, serverDown ? `${NOT_FOUND[kind]}: no language server is running for this file` : NOT_FOUND[kind]);
+    // The server only checks this file's syntax: say why instead of just "not found".
+    const reason = serverDown ? null : outsideProjectReason(doc.path);
+    showHint(
+      view,
+      serverDown
+        ? `${NOT_FOUND[kind]}: no language server is running for this file`
+        : reason
+          ? `${tx(NOT_FOUND[kind])}. ${tx(reason)}`
+          : NOT_FOUND[kind],
+    );
     return;
   }
   // IDEA: ⌘B on a declaration shows its usages.
@@ -489,7 +499,7 @@ const linkPlugin = ViewPlugin.fromClass(
         this.show(false);
       },
       mousedown(e, view) {
-        if (e.button !== 0) return false;
+        if (e.button !== 0 && e.button !== 1) return false;
         if (
           dispatchMouseShortcut(e, () => {
             const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
@@ -502,7 +512,8 @@ const linkPlugin = ViewPlugin.fromClass(
           e.preventDefault();
           return true;
         }
-        if (!isNavigationGesture(e)) return false;
+        // IDEA parity: middle button navigates on a plain click, without the modifier.
+        if (e.button === 1 ? e.metaKey || e.ctrlKey || e.altKey || e.shiftKey : !isNavigationGesture(e)) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
         if (pos == null) return false;
         e.preventDefault();

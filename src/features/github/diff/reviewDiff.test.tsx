@@ -14,7 +14,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       fsProbe: () => Promise.resolve({ status: "error", error: "none" }),
       vcsFileAt: (_path: string, rev: string) => Promise.resolve({ status: "ok", data: texts[rev] ?? "" }),
-      ghApi: (req: unknown) => ghApi(req),
+      ghApi: (_repo: unknown, req: unknown) => ghApi(req),
     },
   };
 });
@@ -158,6 +158,8 @@ beforeEach(() => {
       coordinates: { owner: "o", name: "r" },
       repository: { id: "R1", viewerPermission: "READ" } as GHRepository,
       currentUser: me,
+      root: null,
+      remotes: [],
     },
   });
   setPullRequestData(
@@ -216,7 +218,8 @@ describe("review threads in a pull request diff", () => {
     expect(right.contains(t1)).toBe(true);
     expect(t1.closest(".cm-lineInlay")!.previousElementSibling?.textContent).toBe("line three");
     expect(right.querySelectorAll(".cm-reviewControl-toggle")).toHaveLength(2);
-    expect(inlay("T2")).not.toBeNull();
+    // Each thread's inlay mounts in its own effect, so T2 may land a tick after T1.
+    await waitFor(() => expect(inlay("T2")).not.toBeNull());
 
     act(() => setReviewDiffSettings({ threadsView: "unresolved" }));
     await waitFor(() => expect(inlay("T2")).toBeNull());

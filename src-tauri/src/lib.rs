@@ -3,13 +3,19 @@
 //! This crate is glue only. Each `commands/<domain>.rs` is a thin, typed
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
+mod application_focus;
 mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+#[cfg(any(target_os = "linux", test))]
+mod linux_window_state;
 mod logging;
+#[cfg(target_os = "macos")]
+mod macos;
 mod mcp;
 mod menu;
+mod plugin_web;
 mod remote_dev;
 
 mod state;
@@ -17,6 +23,8 @@ mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
 mod window_groups;
+#[cfg(any(windows, test))]
+mod window_work_area;
 mod windows;
 
 use parking_lot::Mutex;
@@ -51,7 +59,7 @@ pub fn run() {
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
-    if let Some(data) = dirs::data_dir() {
+    if let Some(data) = dirs::data_local_dir() {
         ide_tools::extend_process_path(&data.join(&context.config().identifier));
         ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data.join(&context.config().identifier)));
         ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data.join(&context.config().identifier)));
@@ -68,18 +76,25 @@ pub fn run() {
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
+    // Install before window-state restores maximized geometry during window creation.
+    #[cfg(windows)]
+    let app = app.plugin(window_work_area::init());
+    let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
+    #[cfg(target_os = "linux")]
+    let app = app.plugin(linux_window_state::plugin());
+    #[cfg(not(target_os = "linux"))]
+    let app = app.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(window_state_flags())
+            // One remembered geometry shared by every project's settings window.
+            .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
+            .build(),
+    );
     let app = app
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state_flags())
-                // One remembered geometry shared by every project's settings window.
-                .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
-                .build(),
-        )
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Files of plugins' web views, for their sandboxed frames.
+    let app = app.register_asynchronous_uri_scheme_protocol(plugin_web::SCHEME, plugin_web::handle);
     // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
     #[cfg(debug_assertions)]
     let app = app.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
@@ -87,7 +102,12 @@ pub fn run() {
     // Paths macOS asked to open (Finder's Open With, the Dock) before setup ran: the first window takes them.
     let early_opens: Arc<Mutex<Option<Vec<PathBuf>>>> = Arc::default();
     let setup_opens = early_opens.clone();
-    let invoke = Arc::new(builder.invoke_handler());
+    let typed_invoke = builder.invoke_handler();
+    // Raw Response is not a JSON/Specta type; keep the binary command out of generated bindings.
+    let raw_invoke: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![commands::fonts::user_font_data];
+    let invoke = Arc::new(move |request: tauri::ipc::Invoke| {
+        if request.message.command() == "user_font_data" { raw_invoke(request) } else { typed_invoke(request) }
+    });
     app.invoke_handler(move |request| {
         let webview = request.message.webview_ref();
         if let Some(state) = webview.try_state::<AppState>() {
@@ -96,10 +116,19 @@ pub fn run() {
                 let label = label.to_owned();
                 let command = request.message.command().to_owned();
                 let invoke = invoke.clone();
+                let app = webview.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
                     match connection.authorize_command(&label, &command).await {
                         Ok(()) => {
-                            invoke(request);
+                            let resolver = request.resolver.clone();
+                            // Sync commands must run on the main thread, as they do in local windows.
+                            if let Err(error) = app.run_on_main_thread(move || {
+                                invoke(request);
+                            }) {
+                                resolver.reject(ide_core::IdeError::internal(format!(
+                                    "failed to dispatch command on the main thread: {error}"
+                                )));
+                            }
                         }
                         Err(error) => request.resolver.reject(error),
                     }
@@ -126,6 +155,9 @@ pub fn run() {
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
         app.manage(windows);
+        app.manage(application_focus::ApplicationFocus::default());
+        #[cfg(target_os = "macos")]
+        application_focus::observe(app.handle());
         app.manage(menu_state);
         mcp::apply_settings(app.handle());
         mcp::offer_to_agents(app.handle());
@@ -137,14 +169,21 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
+        #[cfg(target_os = "linux")]
+        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
         tauri::WindowEvent::Focused(true) => {
+            application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.focused(window.label());
             }
         }
+        tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
-            titlebar::forget(window);
+            {
+                titlebar::forget(window);
+                macos::forget_fullscreen(window.label());
+            }
             window_groups::destroyed(window.app_handle(), window.label());
             if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
                 let _ = settings.destroy();
@@ -179,6 +218,7 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
                 state.mcp.shutdown();
+                state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }
             // Cleanup must finish before update/restart replaces this process.
@@ -189,6 +229,7 @@ pub fn run() {
     });
 }
 
+#[cfg(not(target_os = "linux"))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN

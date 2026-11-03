@@ -1,5 +1,6 @@
 id = "typescript"
 name = "TypeScript"
+formatter = { tool = "prettier", parser = "typescript", range = true }
 extensions = ["ts", "mts", "cts"]
 line-comment = "//"
 block-comment = ["/*", "*/"]
@@ -35,6 +36,14 @@ args = ["--stdio", "--includeCompletionsWithSnippetText", "--includeAutomaticOpt
 root-markers = ["angular.json", "node_modules/@angular/core"]
 require-root-marker = true
 install-hint = "npm i -g @angular/language-server"
+
+[[language-servers]]
+name = "oxlint"
+command = "oxlint"
+args = ["--lsp"]
+root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
+require-root-marker = true
+install-hint = "npm i -D oxlint"
 
 [debugger]
 adapter = "js-debug"

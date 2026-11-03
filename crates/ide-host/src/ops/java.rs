@@ -1,11 +1,13 @@
 //! Java launch support: classpath / JDK resolution and the java-debug server (jdtls).
+pub(crate) mod cache;
+
 use crate::Host;
 use crate::rpc::Dispatcher;
 
 use super::build::load;
 use ide_build::compile;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
-use ide_lsp::jdtls::JavaLaunchInfo;
+use ide_lsp::jdtls::{JavaBuildStatus, JavaLaunchInfo};
 use std::path::PathBuf;
 
 /// Cancellable with `cancel_request(request)`.
@@ -39,26 +41,52 @@ async fn resolve_launch(
     let project = host.project(window)?;
     let module = project.root.join(module);
     let settings = project.settings.effective();
-    // Let jdtls finish its build before the external compiler writes Kotlin/Scala classes.
-    let mut info = project.lsp.java_launch(&module, test, build, cancel).await?;
+    let (model, external, delegated) = {
+        let project = project.clone();
+        let settings = settings.clone();
+        let module = module.clone();
+        tokio::task::spawn_blocking(move || {
+            project.java_launch_snapshots.lock().initialize();
+            let model = load(&project.root, &project.build_cache_dir(), &settings);
+            let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
+            let delegated = build
+                && model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module))
+                && (non_java || cache::has_record(&project.root, &project.build_cache_dir(), &module));
+            let external = non_java || delegated;
+            (model, external, delegated)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
+    let mut info = project.lsp.java_launch(&module, test, build && !delegated, delegated, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
-    let data_dir = host.data_dir.clone();
+    let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
-        let built = if build && compile::has_non_java_sources(&module) {
-            compile::build_for_launch(
+        let _external_build = external_build;
+        let built = if delegated {
+            let outputs = project.java_launch_snapshots.lock().build(
                 &project.root,
-                &load(&project.root, &project.build_cache_dir(), &settings),
+                &model,
                 &module,
                 test,
+                ide_sdk::apply::maven_local_repository(&project.root, &settings),
                 &cancel,
-            )?
+            )?;
+            let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
+            info.build = Some(JavaBuildStatus::Succeeded);
+            info.errors.clear();
+            info.error_count = 0;
+            copies
+        } else if external {
+            compile::build_for_launch(&project.root, &model, &module, test, &cancel)?
         } else {
             Vec::new()
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         for p in std::mem::take(&mut info.class_paths) {
-            if !class_paths.contains(&p) {
+            if !class_paths.iter().any(|c| same_entry(c, &p, cfg!(windows))) {
                 class_paths.push(p);
             }
         }
@@ -68,7 +96,13 @@ async fn resolve_launch(
         let project_jdk = ide_sdk::apply::project_jdk(&project.root, &settings);
         let from_jdtls = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
         let java = project_jdk.map(|j| ide_sdk::java::java_executable(&j.home)).or(from_jdtls).or_else(|| {
-            let release = ide_sdk::java::project_java_version(&module);
+            // The build model's level includes what the module inherits from its parent POMs.
+            let release = model
+                .maven
+                .as_ref()
+                .and_then(|m| m.projects.iter().find(|p| project.root.join(&p.dir) == module))
+                .and_then(|p| p.java_version)
+                .or_else(|| ide_sdk::java::project_java_version(&module));
             let jdks = ide_sdk::java::installed_jdks();
             info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
             ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
@@ -103,6 +137,55 @@ async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// A classpath entry as a comparable key. Entries come from JDT LS and from our own
+/// build model, which spell one directory differently on Windows (`\\?\` prefix,
+/// `/` or `\\`, drive-letter case); compared as text, a module output stayed on the
+/// classpath next to its launch snapshot and every resource was found twice.
+fn entry_key(path: &str, windows: bool) -> String {
+    let path = match path.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_owned(),
+    };
+    let mut key = if windows { path.replace('\\', "/") } else { path };
+    while key.len() > 1 && key.ends_with('/') {
+        key.pop();
+    }
+    if windows { key.to_lowercase() } else { key }
+}
+
+fn same_entry(a: &str, b: &str, windows: bool) -> bool {
+    a == b || entry_key(a, windows) == entry_key(b, windows)
+}
+
+fn use_snapshot(info: &mut JavaLaunchInfo, built: &[PathBuf], snapshot: &std::path::Path) -> Vec<PathBuf> {
+    use_snapshot_on(info, built, snapshot, cfg!(windows))
+}
+
+fn use_snapshot_on(
+    info: &mut JavaLaunchInfo,
+    built: &[PathBuf],
+    snapshot: &std::path::Path,
+    windows: bool,
+) -> Vec<PathBuf> {
+    let mut copies = Vec::new();
+    for (index, source) in built.iter().enumerate() {
+        let dest = snapshot.join(index.to_string());
+        let original = source.to_string_lossy();
+        info.class_paths.retain(|p| !same_entry(p, &original, windows));
+        let mut modular = false;
+        for path in &mut info.module_paths {
+            if same_entry(path, &original, windows) {
+                *path = dest.to_string_lossy().into_owned();
+                modular = true;
+            }
+        }
+        if !modular {
+            copies.push(dest);
+        }
+    }
+    copies
+}
+
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
 pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> IdeResult<u16> {
     host.require_trust(window)?;
@@ -131,4 +214,74 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });
     d.add("java_build_workspace", |c| async move { java_build_workspace(&c.host, &c.window, c.arg("module")?).await });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// JDT LS and our build model spell a module output differently on Windows; the
+    /// snapshot must still replace it, or resources (MyBatis mapper XML) load twice.
+    #[test]
+    fn snapshots_replace_outputs_however_windows_spells_them() {
+        let built = PathBuf::from(r"D:\workspace\arm\arm-web\target/classes");
+        let jdtls = [
+            r"D:\workspace\arm\arm-web\target\classes",
+            r"d:\workspace\arm\arm-web\target\classes",
+            r"D:/workspace/arm/arm-web/target/classes/",
+            r"\\?\D:\workspace\arm\arm-web\target\classes",
+        ];
+        for spelled in jdtls {
+            let mut info = JavaLaunchInfo {
+                class_paths: vec![spelled.into(), r"D:\m2\mybatis.jar".into()],
+                module_paths: vec![spelled.into()],
+                ..Default::default()
+            };
+            use_snapshot_on(&mut info, std::slice::from_ref(&built), std::path::Path::new(r"C:\cache\launch-x"), true);
+            assert_eq!(info.class_paths, [r"D:\m2\mybatis.jar"], "{spelled}");
+            assert_eq!(
+                info.module_paths,
+                [std::path::Path::new(r"C:\cache\launch-x").join("0").to_string_lossy()],
+                "{spelled}"
+            );
+        }
+        assert!(same_entry(r"\\?\UNC\server\share\app\target\classes", r"\\server\share\app\target/classes", true));
+        // Different directories stay different, and other platforms keep case and `\`.
+        assert!(!same_entry(r"D:\a\target\classes", r"D:\a\target\test-classes", true));
+        assert!(!same_entry("/work/App/target/classes", "/work/app/target/classes", false));
+        assert!(!same_entry(r"/work/a\b", "/work/a/b", false));
+        assert!(same_entry("/work/app/target/classes/", "/work/app/target/classes", false));
+    }
+
+    #[test]
+    fn launch_snapshots_survive_jdt_overwrites_and_replace_module_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app/target/classes");
+        let lib = root.path().join("lib/target/classes");
+        for dir in [&app, &lib] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("Channel.class"), "Maven bytecode").unwrap();
+        }
+        let mut info = JavaLaunchInfo {
+            class_paths: vec![app.to_string_lossy().into_owned(), "stdlib.jar".into()],
+            module_paths: vec![lib.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let snapshot = tempfile::tempdir().unwrap();
+        for (i, source) in [&app, &lib].iter().enumerate() {
+            ide_vfs::copy(source, &snapshot.path().join(i.to_string())).unwrap();
+        }
+        let paths = use_snapshot(&mut info, &[app.clone(), lib.clone()], snapshot.path());
+        assert_eq!(paths, [snapshot.path().join("0")]);
+        assert_eq!(info.class_paths, ["stdlib.jar"]);
+        assert_eq!(info.module_paths, [snapshot.path().join("1").to_string_lossy().into_owned()]);
+        std::fs::write(app.join("Channel.class"), "JDT error stub").unwrap();
+        std::fs::remove_dir_all(lib).unwrap();
+        for index in ["0", "1"] {
+            assert_eq!(
+                std::fs::read_to_string(snapshot.path().join(index).join("Channel.class")).unwrap(),
+                "Maven bytecode"
+            );
+        }
+    }
 }

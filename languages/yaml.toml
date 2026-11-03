@@ -1,5 +1,6 @@
 id = "yaml"
 name = "YAML"
+formatter = { tool = "prettier", parser = "yaml", range = false }
 extensions = ["yaml", "yml"]
 filenames = [".clang-format", ".clang-tidy", ".clangd", ".gemrc", "pnpm-lock.yaml", "CITATION.cff"]
 first-line = "^%YAML"

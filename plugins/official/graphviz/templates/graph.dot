@@ -1,0 +1,11 @@
+digraph G {
+    rankdir=LR;
+    node [shape=box, style=rounded];
+
+    start [label="Start"];
+    work [label="Do the work"];
+    done [label="Done", shape=doublecircle];
+
+    start -> work -> done;
+    work -> work [label="again"];
+}

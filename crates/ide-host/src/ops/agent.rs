@@ -23,9 +23,16 @@ pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
     Ok(providers)
 }
 
+/// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+/// built-in's driver and arguments), or returns it to auto-detection with `None`.
+pub fn set_command(host: &Host, window: &str, id: String, command: Option<String>) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.set_builtin_command(&id, command)
+}
+
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
 pub(crate) fn registry_paths(host: &Host) -> RegistryPaths {
-    RegistryPaths::new(&host.config_dir, &host.data_dir)
+    RegistryPaths::new(&host.config_dir, &host.local_data_dir)
 }
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {
@@ -63,13 +70,21 @@ pub async fn registry_install(
     .await
     .map_err(join_err);
     host.end_request(request);
-    result?
+    result??;
+    for project in host.projects() {
+        project.agents.reload_providers();
+    }
+    Ok(())
 }
 
 /// Removes a registry agent: its agent file and installed files.
 pub async fn registry_remove(host: &Host, _window: &str, id: String) -> IdeResult<()> {
     let paths = registry_paths(host);
-    tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)?
+    tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)??;
+    for project in host.projects() {
+        project.agents.reload_providers();
+    }
+    Ok(())
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
@@ -179,6 +194,7 @@ pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
     d.add("agent_providers", |c| async move { providers(&c.host, &c.window) });
+    d.add("agent_set_command", |c| async move { set_command(&c.host, &c.window, c.arg("id")?, c.arg("command")?) });
     d.add("agent_registry_list", |c| async move { registry_list(&c.host, &c.window, c.arg("request")?).await });
     d.add("agent_registry_install", |c| async move {
         registry_install(&c.host, &c.window, c.arg("id")?, c.arg("request")?, c.sender("onEvent")?).await

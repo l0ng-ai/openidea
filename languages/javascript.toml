@@ -1,5 +1,6 @@
 id = "javascript"
 name = "JavaScript"
+formatter = { tool = "prettier", parser = "babel", range = true }
 extensions = ["js", "mjs", "cjs"]
 first-line = "^#!.*\\b(node|nodejs|deno|bun)\\b"
 line-comment = "//"
@@ -25,6 +26,14 @@ command = "typescript-language-server"
 args = ["--stdio"]
 root-markers = ["jsconfig.json", "tsconfig.json", "package.json"]
 install-hint = "npm i -g typescript@6 typescript-language-server"
+
+[[language-servers]]
+name = "oxlint"
+command = "oxlint"
+args = ["--lsp"]
+root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
+require-root-marker = true
+install-hint = "npm i -D oxlint"
 
 [debugger]
 adapter = "js-debug"

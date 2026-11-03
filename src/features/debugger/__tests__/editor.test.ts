@@ -53,6 +53,32 @@ describe("breakpoint gutter", () => {
   });
 });
 
+describe("output class gutter", () => {
+  it("disables ordinary, temporary and logging breakpoints and explains why", () => {
+    loadBreakpoints("/proj");
+    const path = "file:///proj/target/classes/C.class";
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "class C {}",
+        extensions: [
+          lineNumbers(),
+          breakpointGutter({ ...ctx, path, language: "java", readOnly: true, virtual: true }),
+        ],
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    const cell = view.dom.querySelector(".cm-lineNumbers .cm-gutterElement")!;
+    cell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(cell.closest(".cm-gutters")?.getAttribute("title")).toMatch(/output classes without source code/);
+    for (const modifier of [{}, { altKey: true }, { shiftKey: true }]) {
+      cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ...modifier }));
+      cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, ...modifier }));
+    }
+    expect(breakpointsOf(path)).toHaveLength(0);
+  });
+});
+
 describe("breakpoint look", () => {
   it("shows the verified icon only while a session has bound it", () => {
     const b = { id: "1", line: 0, enabled: true, condition: null, logMessage: null, hitCondition: null };
@@ -140,6 +166,60 @@ describe("breakpoint gutter clicks", () => {
 });
 
 describe("execution point", () => {
+  it("keeps the execution line synchronized if inline rendering throws", async () => {
+    useExecutionPoint.setState({ path: null, values: {} });
+    const errors: unknown[] = [];
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "x\nx\nx",
+        extensions: [executionPoint(ctx), EditorView.exceptionSink.of((e) => errors.push(e))],
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    const values: Record<string, string> = Object.defineProperty({}, "x", {
+      enumerable: true,
+      get() {
+        throw new Error("inline rendering failed");
+      },
+    });
+    useExecutionPoint.setState({ path: ctx.path, line: 0, top: true, values });
+    await flush();
+    expect(errors).toHaveLength(1);
+    useExecutionPoint.setState({ line: 2, values: {} });
+    await flush();
+    expect(view.dom.querySelectorAll(".cm-line")[2]!.className).toContain(styles.execLine);
+    useExecutionPoint.setState({ path: null });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.execLine}`)).toBeNull();
+  });
+
+  it("keeps refreshing the execution line around Object.prototype names", async () => {
+    useExecutionPoint.setState({ path: null, values: {} });
+    const view = makeView("String text = Integer.toString(40);\nint count = 40;\ncount++;\ncount++;");
+    useExecutionPoint.setState({ path: ctx.path, line: 1, top: true, values: { text: "40" } });
+    await flush();
+    useExecutionPoint.setState({ line: 3, values: { text: "40", count: "42" } });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.execLine}`)?.textContent).toContain("count++");
+    useExecutionPoint.setState({ path: null, values: {} });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.execLine}`)).toBeNull();
+  });
+
+  it.each([2, null])("refreshes a cached editor state when remounted at %s", async (line) => {
+    useExecutionPoint.setState({ path: ctx.path, line: 0, top: true, values: {} });
+    const view = makeView("first\nsecond\nthird");
+    const state = view.state;
+    view.destroy();
+    views.splice(views.indexOf(view), 1);
+    useExecutionPoint.setState({ path: line == null ? null : ctx.path, line: line ?? 0, values: {} });
+    const restored = new EditorView({ state, parent: document.body });
+    views.push(restored);
+    await flush();
+    expect(restored.dom.querySelector(`.${styles.execLine}`)?.textContent ?? null).toBe(line == null ? null : "third");
+  });
+
   it("highlights the suspended line and shows inline values", async () => {
     const view = makeView("x = 1\ny = x + 1\nprint(y)");
     useExecutionPoint.setState({ path: ctx.path, line: 1, top: true, values: { x: "1", y: "2" } });

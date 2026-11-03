@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { create } from "zustand";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import type { NotificationService } from "./contributions";
 
@@ -117,8 +118,8 @@ export const STICKY_BALLOON_TIMEOUT = 5 * 60 * 1000;
 
 /** Fade-out delay of a balloon, or null when it stays until dismissed. */
 export function balloonTimeout(n: Pick<IdeNotification, "level" | "sticky" | "logged">): number | null {
-  if (n.sticky || BALLOON_TIMEOUT[n.level] === null) return n.logged ? STICKY_BALLOON_TIMEOUT : null;
-  return BALLOON_TIMEOUT[n.level];
+  if (n.sticky) return n.logged ? STICKY_BALLOON_TIMEOUT : null;
+  return BALLOON_TIMEOUT[n.level] ?? BALLOON_TIMEOUT.info;
 }
 const MAX_HISTORY = 200;
 let seq = 0;
@@ -175,6 +176,11 @@ export function clearNotifications() {
   useNotifications.setState({ items: [] });
 }
 
+/** A project switch drops the previous project's notifications; app-wide ones (updates) stay. */
+export function clearProjectNotifications() {
+  useNotifications.setState((s) => ({ items: s.items.filter((x) => x.group === "updates") }));
+}
+
 /** The list was seen: everything is read and no longer shown as a balloon. */
 export function markAllNotificationsRead() {
   useNotifications.setState((s) => ({
@@ -190,5 +196,9 @@ export const notificationServiceImpl: NotificationService = {
 };
 
 export function installNotifyEvents(): () => void {
-  return onIdeEvent("notify", (e) => void notify({ level: e.level, title: e.title, body: e.body ?? undefined }));
+  return onIdeEvent(
+    "notify",
+    // Backend text may carry values (paths, names); `{name}` catalog templates translate it.
+    (e) => void notify({ level: e.level, title: txTemplate(e.title), body: e.body ? txTemplate(e.body) : undefined }),
+  );
 }

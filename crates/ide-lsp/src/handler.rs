@@ -59,7 +59,7 @@ impl ClientHandler {
                         .get("title")
                         .and_then(Value::as_str)
                         .filter(|t| !t.is_empty())
-                        .map(str::to_owned)
+                        .map(ide_core::task::display_title)
                         .unwrap_or_else(|| self.server.name.clone());
                     let task = TaskId::next();
                     let cancel = (cancellable == Some(true)).then(|| self.cancel_handle(task, &params["token"]));
@@ -189,9 +189,12 @@ impl ClientHandler {
         // Convert before calling the hook: it re-enters document sync.
         let edit = convert::workspace_edit(&mgr.conv(self.encoding()), edit);
         let applied = match mgr.apply_edit_hook() {
-            Some(hook) => hook(edit),
+            Some(hook) => hook(edit.clone()),
             None => false,
         };
+        if applied {
+            let _ = mgr.applied_edits.send((self.server.id, edit));
+        }
         let mut reply = json!({ "applied": applied });
         if !applied {
             reply["failureReason"] = json!("edit could not be applied");
@@ -225,6 +228,10 @@ impl Handler for ClientHandler {
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 match params.get("type").and_then(Value::as_u64) {
+                    Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
+                        tracing::warn!("[{}] {text}", self.server.name);
+                        mgr.report_import_failure(self.server.root.clone(), text.to_owned());
+                    }
                     Some(1) => tracing::warn!("[{}] {text}", self.server.name),
                     Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
                     _ => tracing::debug!("[{}] {text}", self.server.name),
@@ -233,6 +240,9 @@ impl Handler for ClientHandler {
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
                 mgr.java_import_ready(self.server.clone(), self.generation);
+            }
+            "language/status" if self.server.name == "jdtls" && params["type"] == "ProjectStatus" => {
+                mgr.java_projects_updated(self.server.clone(), self.generation);
             }
             // The Angular server's project loading, shown like `$/progress`; one
             // task while several projects load.
@@ -291,6 +301,21 @@ impl Handler for ClientHandler {
 /// `initializationOptions` with its `settings` merged over them.
 pub(crate) fn all_settings(cfg: &ide_language::LanguageServerConfig) -> Value {
     let mut out = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+    if cfg.name == "jdtls" {
+        out = out.get("settings").cloned().unwrap_or_else(|| json!({}));
+        if let Some(settings) = &cfg.settings {
+            // Accept the initialization-options wrapper as well as LSP settings.
+            if let Some(nested) = settings.get("settings") {
+                merge(&mut out, nested.clone());
+            }
+            let mut direct = settings.clone();
+            if let Some(direct) = direct.as_object_mut() {
+                direct.remove("settings");
+            }
+            merge(&mut out, direct);
+        }
+        return out;
+    }
     if let Some(settings) = &cfg.settings {
         merge(&mut out, settings.clone());
     }

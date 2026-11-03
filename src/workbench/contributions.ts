@@ -19,6 +19,7 @@ import {
 } from "react";
 import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
+import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
@@ -501,6 +502,9 @@ export interface OpenEditorTab {
   lastActive: number;
 }
 
+/** MIME of a dragged editor tab: the payload is `{ paneId, tabId }` as JSON. */
+export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
+
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
@@ -518,6 +522,8 @@ export interface EditorService {
   openPaths?(): string[];
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
+  /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
+  tabInput?(paneId: string, tabId: string): EditorInput | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
@@ -631,6 +637,40 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+
+/**
+ * Handles a pointer drag dropped on the editor content: features register handlers for
+ * their own drag types (e.g. an agent task dragged from the tool window) without the
+ * editor depending on them. The editor shows its center drop-zone for accepted types.
+ */
+export interface EditorDropHandler {
+  accepts(type: string): boolean;
+  drop(data: DragData): void;
+}
+
+const editorDropHandlers: EditorDropHandler[] = [];
+
+/** Registers a handler for drags dropped on editor content; returns the unregister. */
+export function registerEditorDropHandler(handler: EditorDropHandler): () => void {
+  editorDropHandlers.push(handler);
+  return () => {
+    const i = editorDropHandlers.indexOf(handler);
+    if (i >= 0) editorDropHandlers.splice(i, 1);
+  };
+}
+
+/** Whether any registered handler takes this drag type. */
+export function acceptsEditorDrop(type: string): boolean {
+  return editorDropHandlers.some((h) => h.accepts(type));
+}
+
+/** Hands a drag dropped on editor content to its registered handler, if any. */
+export function dropOnEditor(data: DragData): boolean {
+  const handler = editorDropHandlers.find((h) => h.accepts(data.type));
+  if (!handler) return false;
+  handler.drop(data);
+  return true;
+}
 
 /** Editor-backed results, recomputed on rerun without reading files from disk. */
 export interface FindResultsSource {
@@ -773,6 +813,17 @@ export interface SettingsForm {
   useValue(key: string): unknown;
   /** Stages a value; `null` removes the key on Apply. */
   set(key: string, value: unknown): void;
+  /** Values stored outside settings JSON; the writer runs on Apply / OK and returns the saved value. */
+  useExternal<T>(
+    key: string,
+    base: T,
+    apply: (value: T) => Promise<T>,
+  ): {
+    value: T;
+    current: T;
+    set(value: T): void;
+    saving: boolean;
+  };
 }
 
 export const SettingsFormContext = createContext<SettingsForm | null>(null);
@@ -845,6 +896,8 @@ export interface ProjectViewRootContribution extends ProjectViewRootEntry {
   order?: number;
   /** Which project view mode lists it besides "Project" ("Scratches and Consoles"). */
   scope?: "scratches";
+  /** Listed above the project folder (IDEA's module group of the build). */
+  beforeProject?: boolean;
 }
 
 export const useProjectViewRoots = create<{ roots: Map<string, ProjectViewRootContribution> }>(() => ({
@@ -888,6 +941,26 @@ export type ContextMenuId =
   | "selectIn"
   | "new";
 
+/**
+ * Entries of the native main menu's open slots (src-tauri/src/menu.rs
+ * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ */
+export interface MenuSlotItem {
+  action: string;
+  arg?: string | null;
+  label: string;
+}
+
+export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));
+
+export function registerMenuSlotItem(slot: string, item: MenuSlotItem): () => void {
+  useMenuSlotItems.setState((s) => ({ slots: { ...s.slots, [slot]: [...(s.slots[slot] ?? []), item] } }));
+  return () =>
+    useMenuSlotItems.setState((s) => ({
+      slots: { ...s.slots, [slot]: (s.slots[slot] ?? []).filter((i) => i !== item) },
+    }));
+}
+
 export interface MenuGroupContext {
   /** Files / directories the menu is for (absolute paths; a virtual URI for virtual documents). */
   paths: string[];
@@ -897,6 +970,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** The tab's input, when the menu is for an editor tab without a path. */
+  input?: EditorInput;
 }
 
 export interface MenuGroupContribution {
@@ -1273,6 +1348,41 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
   return [...runAnythingProviders.values()].sort(
     (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Project endpoints supplied by framework features for request-path search.
+
+export interface EndpointEntry {
+  /** `GET`, `POST`, … */
+  method: string;
+  /** Class-level and method-level mapping joined; `{var}` kept. */
+  url: string;
+  controller: string;
+  methodName: string;
+  path: string;
+  rel: string;
+  line: number;
+  col: number;
+}
+
+export interface EndpointProvider {
+  id: string;
+  endpoints(root: string): Promise<EndpointEntry[]>;
+}
+
+const endpointProviders = new Map<string, EndpointProvider>();
+
+export function registerEndpointProvider(p: EndpointProvider): () => void {
+  endpointProviders.set(p.id, p);
+  return () => {
+    if (endpointProviders.get(p.id) === p) endpointProviders.delete(p.id);
+  };
+}
+
+export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+  if (!root) return [];
+  return (await Promise.all([...endpointProviders.values()].map((p) => p.endpoints(root)))).flat();
 }
 
 // ---------------------------------------------------------------------------

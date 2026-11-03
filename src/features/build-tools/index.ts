@@ -3,6 +3,7 @@
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
+import { onEditorEvent } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
@@ -25,6 +26,9 @@ import {
   unlinkProjects,
   cancelSync,
   loadModel,
+  changedOutsideIde,
+  noteExternalBuildChange,
+  noteIdeSave,
   openAnalyzer,
   resetBuild,
   setExpanded,
@@ -39,7 +43,8 @@ export const MAVEN_WHEN = "projectOpen && build.maven";
 export const GRADLE_WHEN = "projectOpen && build.gradle";
 
 /** Build files whose creation / change / removal re-reads the model. */
-const BUILD_FILE = /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/;
+const BUILD_FILE =
+  /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|gradle\.properties|gradle-wrapper\.properties|[^/]+\.versions\.toml)$/;
 
 function expandAll(tool: BuildTool) {
   const { model, configs } = useBuild.getState();
@@ -158,8 +163,16 @@ export function activate(): () => void {
       resetBuild();
       if (s.project) void loadModel();
     }),
+    onEditorEvent((e) => {
+      if (e.type === "docSaved" && BUILD_FILE.test(e.path)) noteIdeSave(e.path);
+    }),
     onIdeEvent("fsChanged", (e) => {
-      if ([...e.created, ...e.modified, ...e.removed].some((p) => BUILD_FILE.test(p))) scheduleLoad();
+      const changed = [...e.created, ...e.modified, ...e.removed].filter((p) => BUILD_FILE.test(p));
+      if (!changed.length) return;
+      // Changes the IDE's own saves didn't make came from outside (a VCS update, another tool),
+      // also for a build file open in a tab.
+      if (changedOutsideIde(changed)) noteExternalBuildChange();
+      scheduleLoad();
     }),
     onIdeEvent("projectRootsChanged", scheduleLoad),
     // Project JDK / Maven home and options are applied to the model's launchers.

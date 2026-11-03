@@ -14,10 +14,12 @@ export type * from "@/bindings";
 
 export class IpcError extends Error {
   readonly kind: IdeError["kind"];
+  readonly data: IdeError["data"];
   constructor(error: IdeError) {
     super(error.message);
     this.name = "IpcError";
     this.kind = error.kind;
+    this.data = error.data;
   }
 }
 
@@ -44,6 +46,11 @@ const LACKS_FEATURE = /^\S.* doesn't support \S.*$/;
  */
 export function unavailableText(e: unknown, fallback = "No language server available"): string {
   return e instanceof IpcError && e.kind === "unavailable" && LACKS_FEATURE.test(e.message) ? e.message : fallback;
+}
+
+/** True when `unavailable` means no server is running for the file, rather than a running server lacking the feature. */
+export function isNoServer(e: unknown): boolean {
+  return e instanceof IpcError && e.kind === "unavailable" && !LACKS_FEATURE.test(e.message);
 }
 
 // Ids are shared by every window of the backend and outlive a reload there (a cancel that

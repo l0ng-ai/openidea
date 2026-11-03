@@ -679,7 +679,11 @@ impl Walk {
     /// Collects matching files under `dir` (inside the walked root `base`) depth first in
     /// name order; true when it stopped early: more than `limit` match or the time ran out.
     fn dir(&self, dir: &Path, base: &Path, found: &mut Vec<String>) -> bool {
-        let Ok(mut entries) = ide_host::ops::fs::read_dir(&self.host, &self.window, dir.to_path_buf()) else {
+        let Ok(mut entries) = tokio::runtime::Handle::current().block_on(ide_host::ops::fs::read_dir(
+            &self.host,
+            &self.window,
+            dir.to_path_buf(),
+        )) else {
             return false;
         };
         entries.sort_by(|a, b| a.name.cmp(&b.name));

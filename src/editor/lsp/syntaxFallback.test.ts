@@ -30,6 +30,13 @@ vi.mock("@/platform/ipc", async (orig) => {
   return { ...actual, isTauri: () => true, commands: { ...actual.commands, ...cmd } };
 });
 
+const executeAction = vi.hoisted(() => vi.fn());
+vi.mock("@/platform/actions", async (orig) => {
+  const actual = await orig<typeof import("@/platform/actions")>();
+  executeAction.mockImplementation(actual.executeAction);
+  return { ...actual, executeAction };
+});
+
 const openFile = vi.fn(async () => {});
 const { provideEditorService } = await import("@/workbench/contributions");
 provideEditorService({ openFile } as never);
@@ -296,6 +303,29 @@ describe("navigation wiring", () => {
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
   });
 
+  it("says why when the server only checks the file's syntax", async () => {
+    const { setFileDiagnostics } = await import("./diagnostics");
+    setFileDiagnostics("/p/a.ts", "jdtls", [
+      {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+        severity: "warning",
+        message: "a.ts is not on the classpath of project app, only syntax errors are reported",
+        source: "Java",
+        code: "32",
+      },
+    ]);
+    try {
+      cmd.lspGoto.mockReturnValueOnce(ok([]));
+      const view = editor("const x = 1;\nx;", "typescript", 13);
+      await gotoTargets(view, "definition");
+      expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe(
+        "Cannot find declaration to go to. This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.",
+      );
+    } finally {
+      setFileDiagnostics("/p/a.ts", "jdtls", []);
+    }
+  });
+
   it("falls back to the local definition when the server is not ready", async () => {
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [r(1, 0, 1)] })));
     const view = editor("const x = 1;\nx;", "typescript", 13);
@@ -410,6 +440,29 @@ describe("rename wiring", () => {
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("only local variables");
   });
 
+  it.each(["typescript", "java"])("previews a %s multi-file rename and retains version guards", async (language) => {
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 3)));
+    const edit = {
+      files: ["/p/Main.java", "/p/Use.java"].map((path) => ({
+        kind: "edit",
+        path,
+        version: 7,
+        edits: [{ range: r(0, 0, 3), new_text: "new" }],
+      })),
+      preconditions: [{ path: "/p/Main.java", hash: "original" }],
+    };
+    cmd.lspRename.mockReturnValueOnce(ok({ edit, incomplete: null }));
+    const view = editor("old", language, 0);
+    await renameNamePart(view, { from: 0, to: 3 }, "new");
+    const preview = useLspPopup.getState().popup;
+    expect(preview?.kind).toBe("preview");
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+    if (preview?.kind !== "preview") throw new Error("missing rename preview");
+    expect(preview.summary.files).toBe(2);
+    preview.onConfirm();
+    await vi.waitFor(() => expect(cmd.applyWorkspaceEdit).toHaveBeenCalledExactlyOnceWith(edit));
+  });
+
   describe("Typo: Rename to (issue #42)", () => {
     it("renames the whole name through the server, references included", async () => {
       cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));
@@ -486,6 +539,34 @@ describe("rename wiring", () => {
       expect(view.state.doc.toString()).toBe("mesage = 'hello'\nprint(mesage)");
       expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("Cannot rename safely");
     });
+  });
+
+  it("renames the file itself when no server covers it (a plain text file)", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "unavailable", message: "no running language server supports rename" } as IdeError,
+      }),
+    );
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: false, locals: false }));
+    executeAction.mockResolvedValueOnce(true);
+    const view = editor("# notes", "markdown", 2);
+    await startRename(view);
+    expect(executeAction).toHaveBeenCalledWith("project.rename");
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+  });
+
+  it("keeps the hint when a server runs but lacks rename (no file fallback)", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "unavailable", message: "jdtls doesn't support rename" } as IdeError,
+      }),
+    );
+    const view = editor("class A {}", "java", 6);
+    await startRename(view);
+    expect(executeAction).not.toHaveBeenCalledWith("project.rename");
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("jdtls doesn't support rename");
   });
 
   it("respects a server refusal over valid code, but falls back over broken code", async () => {

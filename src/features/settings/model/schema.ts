@@ -4,9 +4,10 @@
  * so `validateSettings` never throws — anything unknown or malformed falls
  * back to the default (mirrors `ide-core::settings` defaults).
  */
+import { validateCMake } from "@/platform/cmakeSettings";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
-import type { LanguageServerSettings, Settings } from "@/platform/ipc";
+import type { AgentSettings, LanguageServerSettings, Settings } from "@/platform/ipc";
 import {
   DEFAULT_LANGUAGES,
   DEFAULT_PROJECT_STRUCTURE,
@@ -31,9 +32,10 @@ import {
   type GeneralExtras,
   type NotificationsValid,
 } from "./behaviorSchema";
-import { BUILTIN_THEME_IDS, type BuiltinThemeId } from "@/platform/themes";
+import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
 
-export type ThemeId = BuiltinThemeId | "system";
+/** A built-in theme, a plugin's (`plugin:<id>/<theme>`) or the legacy `"system"`. */
+export type ThemeId = ThemeChoiceId | "system";
 export type LocaleId = "en" | "zh";
 
 /** A user keymap (Keymap › Duplicate…): its own overrides on top of a bundled preset. */
@@ -85,6 +87,7 @@ export interface ValidSettings extends WorkflowSettings {
   /** Tools › MCP Server (global). */
   mcp: McpSettingsValid;
   languages: LanguagesValid;
+  cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
   inspections: InspectionSettingsValid;
   /** Editor › Natural Languages › Spelling. */
@@ -93,6 +96,8 @@ export interface ValidSettings extends WorkflowSettings {
   tools: Record<string, { path: string }>;
   /** Settings › Language Servers, by server name (as the backend sends them). */
   languageServers: Record<string, LanguageServerEntry>;
+  /** Tools › Agents › Chat: the meters in an agent task's header. */
+  agents: Required<AgentSettings>;
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -119,7 +124,7 @@ function validateSpelling(raw: unknown): SpellingValid {
 export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
-  general: { reopenLastProject: true, confirmExit: false, ...DEFAULT_GENERAL_EXTRAS },
+  general: { reopenLastProject: true, confirmExit: true, ...DEFAULT_GENERAL_EXTRAS },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
     fontFamily: "JetBrains Mono",
@@ -154,11 +159,13 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   proxy: DEFAULT_PROXY,
   mcp: DEFAULT_MCP,
   languages: DEFAULT_LANGUAGES,
+  cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
   tools: {},
   languageServers: {},
+  agents: { showContextUsage: true, showWorkTime: true, showUsageLimits: true, showCost: false },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -171,7 +178,7 @@ export const LIMITS = {
   localHistoryMaxMb: { min: 16, max: 16384 },
 } as const;
 
-const THEMES: readonly ThemeId[] = [...BUILTIN_THEME_IDS, "system"];
+const theme = (v: unknown, d: ThemeId): ThemeId => (v === "system" || isThemeChoiceId(v) ? v : d);
 const LOCALES: readonly LocaleId[] = ["en", "zh"];
 export const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
@@ -202,6 +209,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
   const a = obj(root.appearance);
   const e = obj(root.editor);
   const f = obj(root.files);
+  const agents = obj(root.agents);
   const overrides = bindingMap(root.keymapOverrides);
   const customKeymaps: Record<string, CustomKeymapSettings> = {};
   for (const [id, raw] of Object.entries(obj(root.customKeymaps))) {
@@ -217,7 +225,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     },
     appearance: {
       ...validateAppearanceExtras(a),
-      theme: oneOf(a.theme, THEMES, d.appearance.theme),
+      theme: theme(a.theme, d.appearance.theme),
       accent: typeof a.accent === "string" && HEX_COLOR.test(a.accent) ? a.accent.toLowerCase() : d.appearance.accent,
       uiFontSize: num(a.uiFontSize, d.appearance.uiFontSize, LIMITS.uiFontSize, true),
       locale: oneOf(a.locale, LOCALES, d.appearance.locale),
@@ -259,6 +267,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     proxy: validateProxy(root.proxy),
     mcp: validateMcp(root.mcp),
     languages: validateLanguages(root.languages),
+    cmake: validateCMake(root.cmake),
     projectStructure: validateProjectStructure(root.projectStructure),
     inspections: validateInspections(root.inspections),
     spelling: validateSpelling(root.spelling),
@@ -271,6 +280,12 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     languageServers: Object.fromEntries(
       Object.entries(obj(root.languageServers)).map(([name, ls]) => [name, obj(ls) as LanguageServerEntry]),
     ),
+    agents: {
+      showContextUsage: bool(agents.showContextUsage, d.agents.showContextUsage),
+      showWorkTime: bool(agents.showWorkTime, d.agents.showWorkTime),
+      showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
+      showCost: bool(agents.showCost, d.agents.showCost),
+    },
     ...validateWorkflow(root),
   };
 }

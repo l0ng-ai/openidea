@@ -23,6 +23,7 @@ import { registerHistoryActions, trackOperationContext } from "./historyActions"
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
+import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, useBranchesPopup } from "./BranchWidget";
 import { showConflictsDialog } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
@@ -33,14 +34,46 @@ import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
+import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
 import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
+import { activate as activateConflictBanner } from "./conflictBanner";
+import { activate as activateConflictMarkers } from "./conflictMarkers";
+import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
+
+/** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
+function trackMergeRebaseItem(): () => void {
+  let dispose: (() => void) | null = null;
+  const sync = () => {
+    const s = useVcs.getState();
+    const needed =
+      s.available && (!!inProgress(s.branch?.operation) || s.status.some((f) => f.unstaged === "conflicted"));
+    if (needed && !dispose) {
+      dispose = registerTitleItem({
+        id: "vcs.mergeRebase",
+        title: "Merge/Rebase Widget",
+        align: "left",
+        priority: 11,
+        component: MergeRebaseWidget,
+      });
+    } else if (!needed && dispose) {
+      dispose();
+      dispose = null;
+    }
+  };
+  sync();
+  const unsub = useVcs.subscribe(sync);
+  return () => {
+    unsub();
+    dispose?.();
+  };
+}
 
 function trackTitleItem(): () => void {
   let dispose: (() => void) | null = null;
@@ -178,9 +211,13 @@ export function activate(): () => void {
     installChangelists(),
     trackOperationContext(),
     registerCompareActions(),
+    registerMergeActions(),
     trackTitleItem(),
+    trackMergeRebaseItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
+    activateConflictBanner(),
+    activateConflictMarkers(),
     trackCommitWindow(),
     registerToolWindow({
       id: "git",
@@ -193,7 +230,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: DIFF_KIND,
-      component: lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor)),
+      component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
       title: (input) => diffTitle(input.data as DiffData),
       icon: () => "diff",
     }),
@@ -212,7 +249,7 @@ export function activate(): () => void {
     registerEditorContribution({
       id: "vcs.changeMarkers",
       order: 60,
-      extensions: (ctx) => [changeMarkers(ctx), blameSlot()],
+      extensions: (ctx) => [changeMarkers(ctx), blameSlot(), inlineBlame(ctx)],
     }),
     registerMenuGroup({
       id: "vcs.gutter",

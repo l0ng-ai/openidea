@@ -1,5 +1,7 @@
 /* A framed text area (IDEA text field frame), with the pickers in its bottom row. */
 .composer {
+  container: agent-composer / inline-size;
+  min-width: 0;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -44,8 +46,84 @@
   padding: 4px 6px 6px;
   cursor: default;
 }
+.toolbar {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
 .spacer {
   flex: 1;
+}
+.configPicker {
+  display: flex;
+  min-width: 0;
+}
+.configPicker > button {
+  max-width: 100%;
+}
+.settingsMenu {
+  display: none;
+}
+.settingsPopup {
+  width: min(320px, calc(100vw - 24px));
+  padding: 12px;
+}
+.settingsTitle {
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+.settingsRow {
+  display: grid;
+  grid-template-columns: minmax(0, 80px) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.settingsLabel {
+  min-width: 0;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+@container agent-composer (max-width: 600px) {
+  .bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .toolbar {
+    flex-wrap: nowrap;
+  }
+  .toolbar > button,
+  .toolbar > .configPicker {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: calc((100% - 28px) / 2);
+  }
+  .configPicker > button {
+    width: 100%;
+  }
+  .inlineSetting {
+    display: none;
+  }
+  .settingsMenu {
+    display: flex;
+    flex: none;
+    margin-left: auto;
+  }
+  .actions {
+    width: 100%;
+    margin-left: 0;
+  }
 }
 .pickerValue {
   display: inline-flex;

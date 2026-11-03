@@ -4,12 +4,13 @@
  * code). Locations into them carry the URI as their `path`; the editor opens
  * them as `virtual` editor inputs instead of files.
  */
+import { isClassFile } from "./classFiles";
 import { call, commands, type VirtualDocument } from "./ipc";
 
-/** True for `scheme:…` URIs other than `file:` (scheme of 2+ chars, so `C:\…` is a path). */
+/** Server document URIs, including decompiled disk classes; drive letters remain paths. */
 export function isVirtualUri(s: string | null | undefined): boolean {
   const m = /^([a-zA-Z][a-zA-Z0-9+.-]+):/.exec(s ?? "");
-  return !!m && m[1]!.toLowerCase() !== "file";
+  return !!m && (m[1]!.toLowerCase() !== "file" || isClassFile(s!));
 }
 
 /** Last path segment of a URI (without query / fragment), e.g. `SpringApplication.class`. */
@@ -36,6 +37,20 @@ export function virtualParent(uri: string): string {
  */
 export function virtualContainer(uri: string): string {
   const scheme = uri.slice(0, uri.indexOf(":"));
+  // `jar:///…/spring-boot-3.5.16.jar!/org/springframework/boot/X.class` → `spring-boot-3.5.16.jar › org.springframework.boot`
+  const jar = scheme === "jar" ? /^jar:(?:file:)?(?:\/\/)?(.*?)!\/(.*)$/.exec(uri.split(/[?#]/)[0]!) : null;
+  if (jar) {
+    const decode = (s: string) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    };
+    const archive = decode(jar[1]!.split("/").pop() ?? jar[1]!);
+    const pkg = jar[2]!.split("/").slice(0, -1).map(decode).join(".");
+    return pkg ? `${archive} › ${pkg}` : archive;
+  }
   const rest = uri.replace(/^[^:]+:(\/\/)?/, "").split(/[?#]/)[0]!;
   const segs = rest
     .split("/")

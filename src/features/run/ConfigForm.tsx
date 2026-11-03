@@ -48,11 +48,12 @@ import styles from "./Run.module.css";
 
 /**
  * Debug adapters with a real launch template (`debugger/launch.ts`, `debugger/java.ts`),
- * verified against small programs. Others (netcoredbg, dart, php-debug, …) only got
+ * verified against small programs. Others (dart, php-debug, …) only got
  * generic launch arguments and are left out until they have one; a configuration that
  * already names one keeps it.
  */
 const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "netcoredbg", label: "netcoredbg (.NET)" },
   { id: "java-debug", label: "java-debug (Java)" },
   { id: "kotlin-debug-adapter", label: "kotlin-debug-adapter (Kotlin)" },
   { id: "debugpy", label: "debugpy (Python)" },
@@ -254,6 +255,9 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       })),
     },
     { label: TASK_LABELS.build, icon: "build-project", run: () => addTask("build") },
+    ...(config.kind === "dotnet"
+      ? [{ label: TASK_LABELS.dotnetBuild, icon: "build-project", run: () => addTask("dotnetBuild") }]
+      : []),
     {
       label: TASK_LABELS.tool,
       disabled: !externalTools.length,

@@ -66,7 +66,10 @@ fn scan_manifests(host: &ide_host::Host, window: &str, root: PathBuf) -> Vec<Pat
         if visited > SCAN_MAX_DIRS {
             break;
         }
-        let Ok(entries) = ide_host::ops::fs::read_dir(host, window, dir) else { continue };
+        let Ok(entries) = tokio::runtime::Handle::current().block_on(ide_host::ops::fs::read_dir(host, window, dir))
+        else {
+            continue;
+        };
         for e in entries {
             if e.ignored || e.excluded {
                 continue;

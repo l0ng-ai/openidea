@@ -1,8 +1,7 @@
 //! The font families installed on this machine, for the font pickers in
 //! Settings (editor, typography fallback, terminal, UI font).
 //!
-//! Each platform asks the font system the WebView itself resolves CSS
-//! `font-family` names against, so every listed name renders: CoreText on
+//! Each platform asks the native font system for installed families: CoreText on
 //! macOS, DirectWrite on Windows, fontconfig (`fc-list`) on Linux and the BSDs.
 //! The list is read on first use and cached until explicitly refreshed; the
 //! query can take a few hundred milliseconds, so callers run it off the UI and
@@ -84,13 +83,163 @@ pub fn parse_fc_list(output: &str) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// Binary font bundle: little-endian u32 JSON-header length, a face metadata
+/// array, then raw font bytes. Paths never cross IPC; only CoreText-enumerated
+/// files under user font directories can be read, selected by family name.
+/// Includes only the nearest regular/bold faces and their optional italics.
+pub fn user_font_data(family: &str) -> std::io::Result<Vec<u8>> {
+    #[cfg(target_os = "macos")]
+    {
+        let entries = imp::user_faces();
+        bundle_family(family, &entries)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = family;
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "User font loading is macOS only"))
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug)]
+struct UserFace {
+    family: String,
+    path: std::path::PathBuf,
+    weight: u16,
+    italic: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn user_font_path(path: &std::path::Path, roots: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    let path = path.canonicalize().ok()?;
+    roots.iter().any(|root| path.starts_with(root)).then_some(path)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn family_faces<'a>(family: &str, entries: &'a [UserFace]) -> Vec<&'a UserFace> {
+    let mut selected: Vec<&UserFace> = Vec::new();
+    for italic in [false, true] {
+        for weight in [400u16, 700] {
+            let closest = entries
+                .iter()
+                .filter(|e| e.family.eq_ignore_ascii_case(family.trim()) && e.italic == italic)
+                .min_by_key(|e| (e.weight.abs_diff(weight), e.weight, &e.path));
+            if let Some(face) = closest
+                && !selected.iter().any(|f| std::ptr::eq(*f, face))
+            {
+                selected.push(face);
+            }
+        }
+    }
+    selected
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn bundle_family(family: &str, entries: &[UserFace]) -> std::io::Result<Vec<u8>> {
+    #[derive(Serialize)]
+    struct Face {
+        weight: u16,
+        style: &'static str,
+        offset: usize,
+        length: usize,
+    }
+    let mut faces = Vec::new();
+    let mut data = Vec::new();
+    let mut files = BTreeMap::new();
+    // Bound large CJK families to regular/bold and their nearest italic faces.
+    for entry in family_faces(family, entries) {
+        // Reject a file replaced by a symlink after enumeration.
+        if entry.path.canonicalize()? != entry.path {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Font file changed"));
+        }
+        let (offset, length) = if let Some(range) = files.get(&entry.path) {
+            *range
+        } else {
+            let bytes = std::fs::read(&entry.path)?;
+            let range = (data.len(), bytes.len());
+            data.extend(bytes);
+            files.insert(entry.path.clone(), range);
+            range
+        };
+        faces.push(Face {
+            weight: entry.weight,
+            style: if entry.italic { "italic" } else { "normal" },
+            offset,
+            length,
+        });
+    }
+    if faces.is_empty() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No installed user font family"));
+    }
+    let header = serde_json::to_vec(&faces)?;
+    let mut out = (header.len() as u32).to_le_bytes().to_vec();
+    out.extend(header);
+    out.extend(data);
+    Ok(out)
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
-    use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFString, CFType};
+    use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFString, CFType, CFURL};
     use objc2_core_text::{
         CTFontCollection, CTFontDescriptor, CTFontSymbolicTraits, kCTFontFamilyNameAttribute, kCTFontSymbolicTrait,
-        kCTFontTraitsAttribute,
+        kCTFontTraitsAttribute, kCTFontURLAttribute, kCTFontWeightTrait,
     };
+
+    pub(crate) fn user_faces() -> Vec<super::UserFace> {
+        let mut roots = vec![std::path::PathBuf::from("/Library/Fonts")];
+        if let Some(home) = std::env::var_os("HOME") {
+            roots.push(std::path::PathBuf::from(home).join("Library/Fonts"));
+        }
+        let roots: Vec<_> = roots.into_iter().filter_map(|r| r.canonicalize().ok()).collect();
+        // SAFETY: CoreText descriptors carry documented CFString, CFURL and trait dictionary values.
+        unsafe {
+            let collection = CTFontCollection::from_available_fonts(None);
+            let Some(descriptors) = collection.matching_font_descriptors() else { return Vec::new() };
+            let mut seen = std::collections::BTreeSet::new();
+            descriptors
+                .cast_unchecked::<CTFontDescriptor>()
+                .iter()
+                .filter_map(|d| {
+                    let family = d.attribute(kCTFontFamilyNameAttribute)?.downcast::<CFString>().ok()?.to_string();
+                    let path = d.attribute(kCTFontURLAttribute)?.downcast::<CFURL>().ok()?.to_file_path()?;
+                    let path = super::user_font_path(&path, &roots)?;
+                    let traits = d.attribute(kCTFontTraitsAttribute)?.downcast::<CFDictionary>().ok()?;
+                    let traits = traits.cast_unchecked::<CFString, CFType>();
+                    let symbolic = traits
+                        .get(kCTFontSymbolicTrait)
+                        .and_then(|n| n.downcast::<CFNumber>().ok())
+                        .and_then(|n| n.as_i64())
+                        .unwrap_or(0) as u32;
+                    let weight = traits
+                        .get(kCTFontWeightTrait)
+                        .and_then(|n| n.downcast::<CFNumber>().ok())
+                        .and_then(|n| n.as_f64())
+                        .unwrap_or(0.0);
+                    // CoreText's normalized weight values corresponding to CSS's nine standard weights.
+                    let weight = [
+                        (-0.8, 100),
+                        (-0.6, 200),
+                        (-0.4, 300),
+                        (0.0, 400),
+                        (0.23, 500),
+                        (0.3, 600),
+                        (0.4, 700),
+                        (0.56, 800),
+                        (0.62, 900),
+                    ]
+                    .into_iter()
+                    .min_by(|(a, _), (b, _)| (weight - a).abs().total_cmp(&(weight - b).abs()))?
+                    .1;
+                    let italic = symbolic & CTFontSymbolicTraits::TraitItalic.0 != 0;
+                    if !seen.insert((family.clone(), path.clone(), weight, italic)) {
+                        return None;
+                    }
+                    Some(super::UserFace { family, path, weight, italic })
+                })
+                .collect()
+        }
+    }
 
     /// Every face CoreText makes available to this process, as (family, fixed pitch).
     pub(crate) fn list(_refresh: bool) -> Vec<(String, bool)> {
@@ -209,6 +358,92 @@ mod imp {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn selects_only_regular_bold_and_matching_italics_from_dense_families() {
+        let entries: Vec<_> = [false, true]
+            .into_iter()
+            .flat_map(|italic| {
+                (100..=900).step_by(100).map(move |weight| UserFace {
+                    family: "CJK".into(),
+                    path: format!("{weight}-{italic}.ttf").into(),
+                    weight,
+                    italic,
+                })
+            })
+            .collect();
+        let selected = family_faces(" cjk ", &entries);
+        assert_eq!(
+            selected.iter().map(|f| (f.weight, f.italic)).collect::<Vec<_>>(),
+            [(400, false), (700, false), (400, true), (700, true),]
+        );
+        assert!(family_faces("unknown", &entries).is_empty());
+    }
+
+    #[test]
+    fn selects_nearest_available_weights_once_with_optional_italics() {
+        let entries: Vec<_> = [(300, false), (500, false), (800, false), (500, true)]
+            .into_iter()
+            .map(|(weight, italic)| UserFace {
+                family: "Sparse".into(),
+                path: format!("{weight}-{italic}.ttf").into(),
+                weight,
+                italic,
+            })
+            .collect();
+        let selected = family_faces("Sparse", &entries);
+        assert_eq!(
+            selected.iter().map(|f| (f.weight, f.italic)).collect::<Vec<_>>(),
+            [(300, false), (800, false), (500, true),]
+        );
+        assert_eq!(family_faces("Sparse", &entries[..1]).len(), 1);
+    }
+
+    #[test]
+    fn bundle_only_reads_enumerated_family_faces() {
+        let root = std::env::current_dir().unwrap().join(format!("../../.font-bundle-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let regular = root.join("regular.ttf");
+        let bold = root.join("bold.ttf");
+        std::fs::write(&regular, [1, 2, 3]).unwrap();
+        std::fs::write(&bold, [4, 5]).unwrap();
+        let entries = [
+            UserFace { family: "Test Nerd Font".into(), path: regular.clone(), weight: 400, italic: false },
+            UserFace { family: "Test Nerd Font".into(), path: bold, weight: 700, italic: false },
+            // A non-selected face is never opened, even if its file has disappeared.
+            UserFace { family: "Test Nerd Font".into(), path: root.join("thin.ttf"), weight: 100, italic: false },
+        ];
+        let result = bundle_family("test nerd font", &entries).unwrap();
+        let len = u32::from_le_bytes(result[..4].try_into().unwrap()) as usize;
+        let faces: serde_json::Value = serde_json::from_slice(&result[4..4 + len]).unwrap();
+        assert_eq!(faces[0]["weight"], 400);
+        assert_eq!(faces[1]["weight"], 700);
+        assert_eq!(faces.as_array().unwrap().len(), 2);
+        assert_eq!(&result[4 + len..], &[1, 2, 3, 4, 5]);
+        // Existing files are not inputs: neither paths nor unenumerated families grant access.
+        assert!(bundle_family(regular.to_str().unwrap(), &entries).is_err());
+        assert!(bundle_family("Unenumerated", &entries).is_err());
+        assert!(user_font_path(&regular, &[]).is_none());
+        assert!(user_font_path(&regular, std::slice::from_ref(&root)).is_some());
+        // Multiple selected descriptors in a collection still transfer the file only once.
+        let shared = [
+            UserFace { family: "Collection".into(), path: regular.clone(), weight: 400, italic: false },
+            UserFace { family: "Collection".into(), path: regular, weight: 700, italic: false },
+        ];
+        let result = bundle_family("Collection", &shared).unwrap();
+        let len = u32::from_le_bytes(result[..4].try_into().unwrap()) as usize;
+        let faces: serde_json::Value = serde_json::from_slice(&result[4..4 + len]).unwrap();
+        assert_eq!(faces[0]["offset"], faces[1]["offset"]);
+        assert_eq!(&result[4 + len..], &[1, 2, 3]);
+        #[cfg(unix)]
+        {
+            let link = root.join("outside.ttf");
+            std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &link).unwrap();
+            assert!(user_font_path(&link, std::slice::from_ref(&root)).is_none());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn fam(name: &str, monospaced: bool) -> FontFamily {
         FontFamily { name: name.into(), monospaced }

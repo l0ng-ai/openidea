@@ -8,6 +8,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
+import { nativeDropPoint } from "@/platform/nativeDrop";
 import { editorService, OWNS_FILE_DROP } from "./contributions";
 
 const OWNER_ATTR = Object.keys(OWNS_FILE_DROP)[0]!;
@@ -71,8 +72,8 @@ export function installFileDrop(): () => void {
       .onDragDropEvent((event) => {
         const p = event.payload;
         if (p.type !== "drop") return;
-        const ratio = window.devicePixelRatio || 1;
-        void handleFileDrop(p.paths, p.position.x / ratio, p.position.y / ratio);
+        const { x, y } = nativeDropPoint(p.position);
+        void handleFileDrop(p.paths, x, y);
       })
       .then((u) => {
         if (disposed) u();

@@ -15,9 +15,16 @@ import {
   type OutputChunk,
   type RunConfig,
   type RunId,
+  type RunImportSource,
   type TestCaseReport,
 } from "@/platform/ipc";
-import { findJavaModule, isJvmApplication, parseJavaArgs, prepareJavaLaunch } from "@/platform/javaLaunch";
+import {
+  consoleVmArgs,
+  findJavaModule,
+  isJvmApplication,
+  parseJavaArgs,
+  prepareJavaLaunch,
+} from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -35,6 +42,8 @@ import {
   type TestOutputParser,
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
+import { TeamcityOutput } from "./testing/phpunit";
+import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
 import { compoundChildren } from "./configs";
@@ -44,6 +53,7 @@ import { typeFor } from "./types";
 import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
+import { gradleDelegation } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -76,7 +86,8 @@ interface SessionRuntime {
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
-  goOutput: GoTestOutput | null;
+  /** Machine-readable stdout (`go test -json`, `--teamcity`): fed to the parser, shown decoded. */
+  stdout: TestStdout | null;
   queue: OutputChunk[];
   /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
   flushHandle: { raf: number } | { timeout: number } | null;
@@ -116,6 +127,8 @@ interface RunState {
   editTarget: string | null;
   /** The edit dialog opens with unsaved changes (a temporary configuration to make permanent on OK). */
   editDirty: boolean;
+  /** The edit dialog opens by importing from this project file ("Import Run Configurations from…"). */
+  editImport: RunImportSource | null;
 }
 
 export const useRun = create<RunState>(() => ({
@@ -132,6 +145,7 @@ export const useRun = create<RunState>(() => ({
   editorOpen: false,
   editTarget: null,
   editDirty: false,
+  editImport: null,
 }));
 
 const runtimes = new Map<string, SessionRuntime>();
@@ -256,6 +270,13 @@ function persistTemporary() {
   );
 }
 
+/** IDEA's `isConfigurationFromContext` for an Application: the same main class of the same module. */
+function sameApplication(a: RunConfig, b: RunConfig): boolean {
+  if (!isJvmApplication(a) || !isJvmApplication(b)) return false;
+  const main = parseJavaArgs(a.args).mainClass;
+  return main !== null && main === parseJavaArgs(b.args).mainClass && (a.module ?? a.cwd) === (b.module ?? b.cwd);
+}
+
 /**
  * Selects the configuration for a gutter / context run: a saved or detected
  * configuration with the same id is reused, otherwise `config` becomes a
@@ -263,7 +284,10 @@ function persistTemporary() {
  */
 export function adoptTemporary(config: RunConfig): RunConfig {
   const state = useRun.getState();
-  const existing = state.configs.find((c) => c.id === config.id);
+  // IDEA's `findExistingConfiguration`: a configuration the user keeps for this context wins.
+  const existing =
+    state.configs.find((c) => c.id === config.id) ??
+    state.configs.find((c) => !state.temporary.includes(c.id) && sameApplication(c, config));
   if (existing && !state.temporary.includes(config.id)) {
     selectConfig(existing.id);
     return existing;
@@ -358,7 +382,7 @@ function flush(sessionId: string) {
   if (rt.queue.length === 0) return;
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
-    const text = c.kind === "stdout" && rt.goOutput ? rt.goOutput.feed(c.text) : c.text;
+    const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
     if (text) rt.console.append({ ...c, text });
   }
   bump(sessionId);
@@ -425,18 +449,20 @@ export function applyConsoleSettings() {
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
   const parser = config.isTest ? createTestParser(config) : null;
-  const goOutput =
-    tests && parser && frameworkFor(config) === "go"
-      ? new GoTestOutput((line) => tests.apply(parser.feed(line)))
-      : null;
+  const feed = (line: string) => {
+    if (tests && parser) tests.apply(parser.feed(line));
+  };
+  const framework = tests && parser ? frameworkFor(config) : null;
+  const stdout =
+    framework === "go" ? new GoTestOutput(feed) : framework === "phpunit" ? new TeamcityOutput(feed) : null;
   const runtime: SessionRuntime = {
-    goOutput,
+    stdout,
     tests,
     parser,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
-        if (parser && tests && kind !== "system" && !(kind === "stdout" && goOutput)) tests.apply(parser.feed(text));
+        if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
       },
     }),
@@ -636,7 +662,11 @@ export async function startRun(
   };
   try {
     let launch = options.launch ?? config;
-    if (isJvmApplication(launch)) {
+    // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
+    const delegated = isJvmApplication(launch) ? await gradleDelegation(launch) : null;
+    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+    if (delegated) launch = delegated;
+    else if (isJvmApplication(launch)) {
       const resolved = await resolveJvmApplication(sessionId, launch);
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
       if (!resolved) {
@@ -711,7 +741,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     say(`No main class in '${config.name}': expected java [options] -cp \${classpath} <main class> [args]\n`, "stderr");
     return null;
   }
-  if (!parsed.classpath) return config;
+  if (!parsed.classpath) return { ...config, args: [...consoleVmArgs(config), ...config.args] };
   const rt = runtime(sessionId)!;
   const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
@@ -767,8 +797,8 @@ function finishSession(sessionId: string, code: number | null) {
     void (async () => {
       if (runtimes.get(sessionId) !== rt) return;
       flush(sessionId);
-      if (rt.goOutput) {
-        const text = rt.goOutput.end();
+      if (rt.stdout) {
+        const text = rt.stdout.end();
         if (text) rt.console.append({ kind: "stdout", text });
       }
       rt.console.flush();
@@ -1072,6 +1102,7 @@ export function resetRuns() {
     editorOpen: false,
     editTarget: null,
     editDirty: false,
+    editImport: null,
   });
 }
 

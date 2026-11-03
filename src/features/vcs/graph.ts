@@ -133,10 +133,9 @@ export function computeGraph(
  * no references) so that only branch points, merges, tips and referenced commits stay,
  * linked by dashed edges. Commits in `keep` (HEAD) stay visible.
  */
-export function collapseLinear<C extends { id: string; parents: readonly string[]; refs: readonly string[] }>(
-  commits: readonly C[],
-  keep: ReadonlySet<string>,
-): { commits: C[]; graph: GraphCommit[] } {
+export function collapseLinear<
+  C extends { id: string; parents: readonly string[]; refs: readonly string[]; dashed?: readonly boolean[] },
+>(commits: readonly C[], keep: ReadonlySet<string>): { commits: C[]; graph: GraphCommit[] } {
   const byId = new Map(commits.map((c) => [c.id, c]));
   const children = new Map<string, number>();
   for (const c of commits) for (const p of c.parents) children.set(p, (children.get(p) ?? 0) + 1);
@@ -149,9 +148,10 @@ export function collapseLinear<C extends { id: string; parents: readonly string[
     if (hidden(c)) continue;
     const dashed: boolean[] = [];
     const parents: string[] = [];
-    for (const p of c.parents) {
+    for (const [i, p] of c.parents.entries()) {
       let cur = p;
-      let skipped = false;
+      // A filter may already link past hidden commits.
+      let skipped = c.dashed?.[i] ?? false;
       for (let next = byId.get(cur), guard = 0; next && guard < commits.length && hidden(next); guard++) {
         cur = next.parents[0]!;
         next = byId.get(cur);

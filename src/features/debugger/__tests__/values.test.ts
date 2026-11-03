@@ -52,6 +52,12 @@ describe("value classification", () => {
     );
     expect(inlineValuesFor("return 1", values)).toBeNull();
   });
+
+  it.each(Object.getOwnPropertyNames(Object.prototype))("only displays an own local named %s", (name) => {
+    expect(inlineValuesFor(name, { count: "40" })).toBeNull();
+    expect(inlineValuesFor(name, Object.fromEntries([[name, "known"]]))).toBe(`${name}: known`);
+    expect(inlineValuesFor(name, Object.create({ [name]: "inherited" }))).toBeNull();
+  });
 });
 
 const frame = (id: number, path: string | null, hint: string | null = null, line = 9): StackFrame => ({

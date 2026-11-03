@@ -18,11 +18,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { useEditorRegistry } from "@/editor/api";
+import { revealRange, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
+import { nativeDropPoint } from "@/platform/nativeDrop";
 import type { RootFolder } from "@/platform/languageSettings";
 import { useDetectedRoots, useEffectiveRoots } from "@/platform/projectRoots";
 import { macStroke, strokeOf } from "@/platform/keymap";
@@ -36,20 +37,29 @@ import {
   Tree,
   acquirePopup,
   fileIconName,
+  useFileIconRevision,
   folderIconName,
+  themedFolderIconName,
   showContextMenu,
+  SymbolBadge,
   type DragSession,
   type TreeHandle,
   type TreeRowState,
 } from "@/ui";
+import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
-import { moduleFolderIcon, useProjectPresentation, type BuildPresentation } from "@/platform/projectPresentation";
+import {
+  isModuleFolder,
+  moduleFolderIcon,
+  useProjectPresentation,
+  type BuildPresentation,
+} from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
 import { useHomeDir } from "./home";
-import { keyLike, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
+import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
   cancelEditing,
@@ -74,6 +84,7 @@ import {
   autoExpand,
   clearRevealRequest,
   loadDir,
+  loadOutline,
   revealPath,
   selectModel,
   setDropTarget,
@@ -109,8 +120,6 @@ export function showNewPopup(): boolean {
 
 const getKey = (n: ProjectNode) => n.key;
 const getLabel = (n: ProjectNode) => n.label;
-const isExpandable = (n: ProjectNode) => n.dir && !n.placeholder;
-const loadChildren = (n: ProjectNode) => loadDir(n.path);
 
 function iconFor(
   node: ProjectNode,
@@ -118,6 +127,7 @@ function iconFor(
   root: string | null,
   build: BuildPresentation,
   detected: readonly RootFolder[],
+  expanded: boolean,
 ): string {
   if (node.placeholder) return node.placeholder === "dir" ? "folder" : "file";
   if (node.icon) return node.icon;
@@ -125,9 +135,11 @@ function iconFor(
     const kind = folderKind(node, roots, root, build, detected);
     if (kind !== "plain") return folderIconName(kind);
     const rel = root ? (node.path === root ? "" : relativePath(root, node.path)) : null;
-    const module = rel === null ? null : moduleFolderIcon(rel, node.root, build.modules);
+    // Modules outside the project are keyed by their absolute folder.
+    const key = rel !== null && build.modules.has(rel) ? rel : node.path;
+    const module = root ? moduleFolderIcon(key, node.root, build.modules) : null;
     if (module) return module;
-    return node.root ? "module" : "folder";
+    return node.root ? "module" : (themedFolderIconName(node.label, expanded) ?? "folder");
   }
   return fileIconName(node.label);
 }
@@ -258,16 +270,21 @@ const Row = memo(function Row({
   onDoubleClick,
   onPointerDown,
 }: RowProps) {
+  // Memoised: redraw this row itself when the file icon theme changes.
+  useFileIconRevision();
   const deco = useFileDecoration(node.path);
   const roots = useEffectiveRoots();
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
+  const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const icon =
     node.dir || node.placeholder || node.icon
-      ? iconFor(node, roots, root, build, detected)
+      ? iconFor(node, roots, root, build, detected, expanded)
       : presentationIcon(node.path, file, roots, root, build.spring);
+  const moduleFolder =
+    node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
   const isEditing =
     !!editing && (node.placeholder ? editing.kind === "new" : editing.kind === "rename" && editing.key === node.key);
   const faded = node.ignored || deco.faded;
@@ -308,6 +325,8 @@ const Row = memo(function Row({
               node.root && styles.rootName,
               // Only the project itself is bold (IDEA); contributed roots like Scratches are not.
               node.root && !node.icon && styles.rootLabel,
+              // Maven / Gradle module folders are bold too, as in IDEA.
+              moduleFolder && styles.moduleLabel,
               faded && !deco.color && styles.excluded,
               deco.error && styles.error,
             )}
@@ -320,6 +339,31 @@ const Row = memo(function Row({
           {deco.badge && <span className={styles.badge}>{deco.badge}</span>}
         </>
       )}
+    </span>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Member rows ("Show Members")
+
+/** A declaration of the file above: navigates to the symbol, no file operations. */
+const MemberRow = memo(function MemberRow({
+  node,
+  matches,
+  onClick,
+  onPointerDown,
+}: Pick<RowProps, "node" | "matches" | "onClick" | "onPointerDown">) {
+  const item = node.member!;
+  return (
+    <span
+      className={styles.content}
+      data-project-key={node.key}
+      onClick={(e) => onClick(node, e)}
+      onPointerDown={(e) => onPointerDown(node, e)}
+    >
+      <SymbolBadge kind={badgeKind(item.kind)} className={styles.icon} />
+      <HighlightedText className={styles.label} text={item.name} indices={matches} tone="accent" />
+      {item.detail && <span className={styles.detail}>{item.detail}</span>}
     </span>
   );
 });
@@ -358,6 +402,8 @@ function folderAt(container: HTMLElement | null, x: number, y: number): { key: s
 
 export function ProjectView() {
   const txTemplate = useTxTemplate();
+  // Rows compute their file icons while rendering: redraw when the icon theme changes.
+  useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
   const expanded = useProjectTree((s) => s.expanded);
@@ -375,6 +421,15 @@ export function ProjectView() {
 
   const info = useMemo(() => visibleInfo(model, expanded), [model, expanded]);
   const mode = useProjectTree((s) => s.mode);
+  const outlines = useProjectTree((s) => s.outlines);
+  const showMembers = options.showMembers;
+
+  // Member rows per file, rebuilt only when an outline loads or drops.
+  const outlineRows = useMemo(() => {
+    const map = new Map<string, ProjectNode[]>();
+    for (const [p, items] of outlines) map.set(p, memberNodes(p, items));
+    return map;
+  }, [outlines]);
 
   // Open Files / All Changed Files: show new files' folders expanded.
   useEffect(() => autoExpand(model), [model]);
@@ -383,6 +438,16 @@ export function ProjectView() {
   useEffect(() => {
     for (const p of info.pending) void loadDir(p);
   }, [info.pending]);
+
+  // Restored file expansion and enabling Show Members also need outlines.
+  useEffect(() => {
+    if (!showMembers) return;
+    for (const key of expanded) {
+      const node = model.byKey.get(key);
+      if (node && !node.dir && !node.placeholder && !node.group && !outlines.has(node.path))
+        void loadOutline(node.path);
+    }
+  }, [showMembers, expanded, model, outlines]);
 
   const setTreeHandle = useCallback((h: TreeHandle | null) => {
     handle.current = h;
@@ -411,7 +476,27 @@ export function ProjectView() {
     if (options.autoscrollFromSource && activePath) revealPath(activePath, false);
   }, [activePath, options.autoscrollFromSource]);
 
-  const getChildren = useCallback((n: ProjectNode) => model.children.get(n.key), [model]);
+  const isExpandable = useCallback(
+    (n: ProjectNode) =>
+      n.dir
+        ? !n.placeholder
+        : n.member
+          ? n.member.children.length > 0
+          : // A file whose outline came back empty (unsupported or no members) has nothing to show.
+            showMembers && !n.placeholder && (outlines.get(n.path)?.length ?? 1) > 0,
+    [showMembers, outlines],
+  );
+
+  const loadChildren = useCallback(
+    (n: ProjectNode) => (n.member ? Promise.resolve() : n.dir ? loadDir(n.path) : loadOutline(n.path)),
+    [],
+  );
+
+  const getChildren = useCallback(
+    (n: ProjectNode) =>
+      n.member ? memberNodes(n.path, n.member.children) : n.dir ? model.children.get(n.key) : outlineRows.get(n.path),
+    [model, outlineRows],
+  );
 
   const onExpandedChange = useCallback((next: Set<string>, node: ProjectNode, open: boolean) => {
     // Expanding a compacted chain opens every folder in it, so it stays open if the chain breaks.
@@ -422,12 +507,20 @@ export function ProjectView() {
   const onSelectionChange = useCallback((next: Set<string>, lead: ProjectNode | null) => {
     setSelection(next, lead?.key ?? null);
     const { options: o } = useProjectTree.getState();
-    if (!revealing.current && o.autoscrollToSource && lead && !lead.dir && !lead.placeholder && next.size === 1)
-      void openFile(lead.path, { preview: o.previewTab, focus: false });
+    if (revealing.current || !o.autoscrollToSource || !lead || lead.dir || lead.placeholder || next.size !== 1) return;
+    if (lead.member) {
+      void revealRange(
+        lead.path,
+        { start: lead.member.selection_range.start },
+        { preview: o.previewTab, focus: false },
+      );
+    } else void openFile(lead.path, { preview: o.previewTab, focus: false });
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {
-    if (!node.dir && !node.placeholder) void openFile(node.path, { focus: true });
+    if (node.member) {
+      void revealRange(node.path, { start: node.member.selection_range.start }, { focus: true });
+    } else if (!node.dir && !node.placeholder) void openFile(node.path, { focus: true });
   }, []);
 
   const onContextMenu = useCallback((node: ProjectNode | null, sel: Set<string>, e: ReactMouseEvent) => {
@@ -441,7 +534,7 @@ export function ProjectView() {
     }
     const nodes = [...sel].map((k) => m.byKey.get(k)).filter((n): n is ProjectNode => !!n && !n.placeholder);
     const target = nodes.length ? nodes : [node];
-    if (target.every((n) => n.group)) return;
+    if (target.every((n) => n.group) || target.some((n) => n.member)) return;
     // Contributed groups may read the file first (bounded wait).
     const at = { x: e.clientX, y: e.clientY };
     void prepareMenuGroups("projectView", menuGroupContext(target)).then(() =>
@@ -455,16 +548,19 @@ export function ProjectView() {
   const dragged = useRef(false);
 
   const onRowClick = useCallback((node: ProjectNode, e: ReactMouseEvent) => {
-    if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.detail > 1) return;
+    if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
     if (node.placeholder || dragged.current) return;
     const { options: o, editing: ed } = useProjectTree.getState();
     if (ed) return;
+    if (e.detail > 1 && !(node.dir && o.singleClickExpand && e.detail % 2 === 1)) return;
     if (node.dir) {
       if (o.singleClickExpand) toggleExpanded(node);
       return;
     }
-    if (o.singleClickOpen) void openFile(node.path, { focus: false });
-    else if (o.previewTab) void openFile(node.path, { preview: true, focus: false });
+    if (!o.singleClickOpen && !o.previewTab) return;
+    const opts = { preview: o.singleClickOpen ? undefined : true, focus: false };
+    if (node.member) void revealRange(node.path, { start: node.member.selection_range.start }, opts);
+    else void openFile(node.path, opts);
   }, []);
 
   // Pointer-driven drag & drop (HTML5 DnD is unreliable inside the Tauri webview).
@@ -475,7 +571,15 @@ export function ProjectView() {
 
   const onRowPointerDown = useCallback((node: ProjectNode, e: ReactPointerEvent) => {
     if (e.button === 0) dragged.current = false;
-    if (e.button !== 0 || node.root || node.placeholder || node.readOnly || useProjectTree.getState().editing) return;
+    if (
+      e.button !== 0 ||
+      node.member ||
+      node.root ||
+      node.placeholder ||
+      node.readOnly ||
+      useProjectTree.getState().editing
+    )
+      return;
     const before = useProjectTree.getState().selected;
     const lead = useProjectTree.getState().lead;
     const startX = e.clientX,
@@ -485,6 +589,11 @@ export function ProjectView() {
     // Files (not folders) can also be dropped on an editor to open them there.
     let files: DragSession | null = null;
     const move = (ev: PointerEvent) => {
+      // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
+      if (!(ev.buttons & 1)) {
+        if (!active) cleanup();
+        return;
+      }
       if (!active) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
@@ -530,6 +639,7 @@ export function ProjectView() {
     const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
       setDropTarget(null);
@@ -537,6 +647,7 @@ export function ProjectView() {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cleanup);
     window.addEventListener("keydown", key, true);
   }, []);
 
@@ -550,9 +661,7 @@ export function ProjectView() {
         .onDragDropEvent((event) => {
           const p = event.payload;
           if (p.type === "leave") return setDropTarget(null);
-          const ratio = window.devicePixelRatio || 1;
-          const x = p.position.x / ratio,
-            y = p.position.y / ratio;
+          const { x, y } = nativeDropPoint(p.position);
           const target = folderAt(containerRef.current, x, y);
           if (p.type === "drop") {
             setDropTarget(null);
@@ -572,8 +681,7 @@ export function ProjectView() {
     };
   }, []);
 
-  // Files copied in Explorer keep Paste usable: the OS clipboard can change
-  // while this window is in the background, so re-ask whenever it comes back.
+  // Reconcile external files and expired Copy/Cut state when returning from another app.
   useEffect(() => {
     void refreshOsClipboard();
     const refresh = () => void refreshOsClipboard();
@@ -633,20 +741,23 @@ export function ProjectView() {
   const cutPaths = useMemo(() => new Set(clipboard?.cut ? clipboard.paths : []), [clipboard]);
 
   const renderNode = useCallback(
-    (node: ProjectNode, state: TreeRowState) => (
-      <Row
-        node={node}
-        matches={state.matches}
-        editing={editing}
-        cut={cutPaths.has(node.path)}
-        dropTarget={dropTarget === node.key}
-        detail={node.root && !node.icon ? tildify(node.path, home) : (node.detail ?? null)}
-        onEditDone={focusTree}
-        onClick={onRowClick}
-        onDoubleClick={onRowDoubleClick}
-        onPointerDown={onRowPointerDown}
-      />
-    ),
+    (node: ProjectNode, state: TreeRowState) =>
+      node.member ? (
+        <MemberRow node={node} matches={state.matches} onClick={onRowClick} onPointerDown={onRowPointerDown} />
+      ) : (
+        <Row
+          node={node}
+          matches={state.matches}
+          editing={editing}
+          cut={cutPaths.has(node.path)}
+          dropTarget={dropTarget === node.key}
+          detail={node.root && !node.icon ? tildify(node.path, home) : (node.detail ?? null)}
+          onEditDone={focusTree}
+          onClick={onRowClick}
+          onDoubleClick={onRowDoubleClick}
+          onPointerDown={onRowPointerDown}
+        />
+      ),
     [editing, cutPaths, dropTarget, home, focusTree, onRowClick, onRowDoubleClick, onRowPointerDown],
   );
 

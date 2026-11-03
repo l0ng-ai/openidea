@@ -1,7 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { NotebookCell } from "@/bindings";
 import { tx } from "@/platform/i18n";
+import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
 import { Button, Dialog, EmptyState, IconButton, Select, Spinner } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { CellEditor } from "./CellEditor";
@@ -56,6 +66,14 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
     return () => element.removeEventListener("beforeinput", history, true);
   }, [session, invoke]);
 
+  // Markdown cells follow the Markdown preview size, code cells and outputs the editor font, not the UI font.
+  const markdownFontSize = useMarkdownPreviewFontSize();
+  const editor = useProject((s) => s.settings?.editor as { fontSize?: number; lineHeight?: number } | undefined);
+  const fontVars = {
+    "--markdown-preview-font-size": `${markdownFontSize}px`,
+    ...(editor?.fontSize ? { "--openidea-editor-font-size": `${editor.fontSize}px` } : {}),
+    ...(editor?.lineHeight ? { "--openidea-editor-line-height": `${editor.lineHeight}px` } : {}),
+  } as CSSProperties;
   const disabled = state.frozen || !state.snapshot;
   const historyDisabled = disabled || state.running;
   const options = state.environments.map((sdk) => ({ value: sdk.path, label: sdk.name, detail: sdk.path }));
@@ -69,6 +87,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
     <div
       ref={root}
       className={styles.root}
+      style={fontVars}
       tabIndex={-1}
       onKeyDownCapture={(event) => {
         if (event.nativeEvent.isComposing || event.defaultPrevented) return;

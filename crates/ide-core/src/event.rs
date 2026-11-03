@@ -36,11 +36,20 @@ pub enum IdeEvent {
         base_version: u32,
         version: u32,
         changes: Vec<TextChange>,
+        /// Part of a grouped transaction; the editor must not record a file-local undo.
+        #[serde(default)]
+        #[specta(optional)]
+        workspace_edit: bool,
     },
     /// A document's dirty flag changed (saved / modified externally).
     DocDirty {
         doc: DocId,
         dirty: bool,
+    },
+    /// A complete workspace edit can be undone as one operation.
+    WorkspaceEditApplied {
+        id: u32,
+        paths: Vec<crate::IpcPath>,
     },
     /// An open document's language changed (Settings › File Types, Override File
     /// Type), or its UI mode (a framework's root marker appeared or went).
@@ -81,6 +90,12 @@ pub enum IdeEvent {
         name: String,
         status: ServerStatus,
         message: Option<String>,
+    },
+    /// A running server lacks a capability; the UI offers the managed tool as a replacement.
+    LanguageServerWarning {
+        name: String,
+        message: String,
+        install_tool: String,
     },
     /// A stopped language server left the project's list (disabled in settings, or a
     /// fallback that a preferred server took over from again).

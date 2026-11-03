@@ -8,6 +8,7 @@ import type {
   AgentEntry,
   AgentEvent,
   AgentImage,
+  AgentLimit,
   AgentProvider,
   AgentTask,
   Isolation,
@@ -15,13 +16,14 @@ import type {
 import { useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
 import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
+  TOOL_WINDOW,
   attentionChange,
   entriesKey,
   isBusy,
@@ -36,12 +38,16 @@ export interface Draft {
   /** Settings chosen for the next task, by option id (reset when the agent changes). */
   config: Record<string, string>;
   isolation: Isolation;
+  /** The user picked `isolation`: otherwise a task runs in the local checkout. */
+  isolationChosen?: boolean;
   /** `null`: the current branch. */
   base: string | null;
 }
 
 /** Composer key of the New Task page; sessions use their task id. */
 export const HOME = "home";
+
+export type SessionLocation = "editor" | "toolWindow";
 
 interface AgentsState {
   loaded: boolean;
@@ -53,7 +59,11 @@ interface AgentsState {
   /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
   changes: Map<string, AgentChange[]>;
+  /** Scroll position and follow-output preference by conversation, shared by both hosts. */
+  scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
+  /** The usage limits each agent last reported for its account, by provider. */
+  limits: Map<string, AgentLimit[]>;
   draft: Draft;
   composers: Map<string, ComposerDraft>;
   /** The composer typed in last: where "Send to Agent" adds references. */
@@ -62,11 +72,17 @@ interface AgentsState {
   history: string[];
   /** The composer asked to take focus (`seq` tells repeated requests apart). */
   focus: { key: string; seq: number } | null;
+  /** Task shown inside the Agents tool window instead of an editor tab. */
+  docked: string | null;
+  sessionLocation: SessionLocation;
+  lastTask: string | null;
+  homeOpen: boolean;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
 const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
+const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -85,7 +101,16 @@ function save(key: string, value: unknown) {
   }
 }
 
-const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "worktree", base: null };
+const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "local", base: null };
+
+/**
+ * The saved New Task settings. A worktree is used only when the user picked it: drafts
+ * saved before that choice was recorded carried the old default (`worktree`) instead.
+ */
+export function savedDraft(saved: Partial<Draft>): Draft {
+  const draft = { ...fallbackDraft, ...saved };
+  return draft.isolationChosen ? draft : { ...draft, isolation: "local" };
+}
 
 export const useAgents = create<AgentsState>(() => ({
   loaded: false,
@@ -95,11 +120,17 @@ export const useAgents = create<AgentsState>(() => ({
   entries: new Map(),
   changes: new Map(),
   providers: [],
-  draft: { ...fallbackDraft, ...load<Partial<Draft>>(DRAFT_KEY, {}) },
+  limits: new Map(),
+  draft: savedDraft(load<Partial<Draft>>(DRAFT_KEY, {})),
   composers: new Map(),
   lastComposer: HOME,
   history: load<string[]>(HISTORY_KEY, []),
   focus: null,
+  docked: null,
+  sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
+  lastTask: null,
+  homeOpen: false,
+  scrollPositions: new Map(),
 }));
 
 export function updateDraft(patch: Partial<Draft>) {
@@ -202,6 +233,10 @@ export function disconnect() {
     unread: new Set(),
     entries: new Map(),
     changes: new Map(),
+    docked: null,
+    lastTask: null,
+    homeOpen: false,
+    scrollPositions: new Map(),
   });
 }
 
@@ -227,7 +262,7 @@ function onEvent(e: AgentEvent) {
       composers.delete(e.id);
       const unread = new Set(s.unread);
       unread.delete(e.id);
-      useAgents.setState({ tasks, composers, unread });
+      useAgents.setState({ tasks, composers, unread, ...(s.docked === e.id ? { docked: null } : {}) });
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
@@ -235,6 +270,14 @@ function onEvent(e: AgentEvent) {
       const current = s.entries.get(e.task);
       if (current) useAgents.setState({ entries: new Map(s.entries).set(e.task, current.slice(0, e.length)) });
       scheduleChanges(e.task);
+      break;
+    }
+    case "providers": {
+      void refreshProviders();
+      break;
+    }
+    case "limits": {
+      useAgents.setState({ limits: new Map(s.limits).set(e.provider, e.limits) });
       break;
     }
     case "entry": {
@@ -344,9 +387,76 @@ export function useAgentCommands(
 }
 
 export function openTask(task: string) {
+  if (useAgents.getState().sessionLocation === "toolWindow") {
+    showDockedTask(task);
+    return;
+  }
+  useAgents.setState({ lastTask: task, homeOpen: false });
+  openTaskInEditor(task);
+}
+
+function openTaskInEditor(task: string) {
   // The title rides along so a restored tab has it before the tasks load.
   const title = useAgents.getState().tasks.get(task)?.title;
   void editorService().openInput({ kind: SESSION_KIND, key: sessionKey(task), data: { task, title } }, { focus: true });
+}
+
+function showDockedTask(task: string) {
+  useAgents.setState({ docked: task, lastTask: task, homeOpen: false });
+  toolWindowService().show(TOOL_WINDOW, true);
+  void editorService().closeInput?.(sessionKey(task));
+}
+
+function saveSessionLocation(location: SessionLocation) {
+  useAgents.setState({ sessionLocation: location });
+  save(SESSION_LOCATION_KEY, location);
+  if (location === "toolWindow") {
+    for (const { input } of editorService().openTabs?.() ?? []) {
+      if (input.kind === SESSION_KIND || input.kind === HOME_KIND) void editorService().closeInput?.(input.key);
+    }
+  }
+}
+
+/** Conversation placement is an Agents-wide preference, shared by every task. */
+export function setSessionLocation(location: SessionLocation) {
+  const s = useAgents.getState();
+  if (s.sessionLocation === location) return;
+  const active = editorService().activeInput?.();
+  const activeTask = active?.kind === SESSION_KIND ? (active.data as { task: string }).task : null;
+  const home = s.homeOpen || active?.kind === HOME_KIND;
+  const task =
+    s.docked ??
+    activeTask ??
+    (s.lastTask && s.tasks.has(s.lastTask) ? s.lastTask : null) ??
+    [...s.tasks.values()]
+      .filter((t) => t.status !== "archived")
+      .sort((a, b) => (b.updatedMs ?? b.createdMs ?? 0) - (a.updatedMs ?? a.createdMs ?? 0))[0]?.id;
+  saveSessionLocation(location);
+  useAgents.setState({ docked: null, homeOpen: false });
+  if (home) {
+    openHome();
+  } else if (task) {
+    openTask(task);
+  } else if (location === "toolWindow") {
+    openHome();
+  }
+}
+
+/** Dragging a session into the tool window selects the same placement for other tasks. */
+export function dockTask(task: string) {
+  saveSessionLocation("toolWindow");
+  showDockedTask(task);
+}
+
+export function undockTask() {
+  setSessionLocation("editor");
+}
+
+/** An explicit editor drop also updates where subsequent sessions open. */
+export function openTaskInEditorLocation(task: string) {
+  saveSessionLocation("editor");
+  useAgents.setState({ docked: null, homeOpen: false });
+  openTask(task);
 }
 
 /** Opens the New Task page; `prompt` pre-fills it. */
@@ -358,6 +468,12 @@ export function openHome(prompt?: string) {
     updateDraft({ projectRoot, ...(projectRoot !== previous ? { base: null } : {}) });
   }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
+  if (useAgents.getState().sessionLocation === "toolWindow") {
+    useAgents.setState({ docked: null, homeOpen: true });
+    toolWindowService().show(TOOL_WINDOW, true);
+    void editorService().closeInput?.(HOME_KEY);
+    return;
+  }
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
 }
 

@@ -10,6 +10,8 @@
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
 
 pub mod archive;
+mod bundled;
+pub mod formatter;
 pub mod jdk;
 pub mod platform;
 mod process;
@@ -146,7 +148,7 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
         Method::PipVenv { .. } => {
             Some(root.join(spec.name).join("venv").join(if platform.os == Os::Windows { "Scripts" } else { "bin" }))
         }
-        Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
+        Method::Bundled { .. } | Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
     }
 }
 
@@ -322,6 +324,9 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
         }
     };
     for l in langs {
+        if let Some(f) = &l.formatter {
+            add(&f.tool, &f.tool, ToolKind::Formatter, None, &l.name);
+        }
         for s in &l.language_servers {
             add(&s.name, &s.command, ToolKind::LanguageServer, s.install_hint.as_ref(), &l.name);
         }
@@ -389,9 +394,12 @@ fn is_bundle(command: &str) -> bool {
     command.ends_with(".jar")
 }
 
-/// Path of an installed plugin bundle (`<tools>/<name>/bin/<jar>`), if present.
+/// Path of an app-provided or installed plugin jar. Embedded jars are materialized on demand.
 pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
     let spec = registry::find(name)?;
+    if matches!(spec.method, Method::Bundled { .. }) {
+        return bundled::install(&tools_dir(app_data), spec).ok();
+    }
     let jar = spec.commands.first().filter(|c| is_bundle(c))?;
     let path = tools_dir(app_data).join(spec.name).join("bin").join(jar);
     path.is_file().then_some(path)
@@ -464,6 +472,19 @@ impl Tools {
         cmd
     }
 
+    /// `python` started in an empty private directory: Python puts the working directory
+    /// first on `sys.path` for `-c` / `-m`, and the IDE's own (inherited from wherever it
+    /// was launched, e.g. a project) could hold modules that shadow the standard library,
+    /// pip or the tool being probed. Not `-I`: that also hides `pip install --user` packages.
+    fn python_command(&self, python: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = self.command(python);
+        let dir = self.root.join(".python-cwd");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            cmd.current_dir(dir);
+        }
+        cmd
+    }
+
     fn python(&self) -> Option<PathBuf> {
         self.which_any(&["python3", "python"])
     }
@@ -532,6 +553,15 @@ impl Tools {
         if managed || self.method_missing(spec.method).is_some() { fallback } else { spec.method }
     }
 
+    /// [`Method::label`], naming the installer that will actually run: a virtualenv is
+    /// made with uv when it is on `PATH` (see `install_venv`).
+    fn method_label(&self, method: Method) -> &'static str {
+        match method {
+            Method::PipVenv { .. } if self.which("uv").is_some() => "uv (virtualenv)",
+            m => m.label(),
+        }
+    }
+
     /// Requirement check for installing `spec` right now.
     fn unavailable_reason(&self, spec: &ToolSpec) -> Option<String> {
         self.method_missing(self.install_method(spec))
@@ -542,6 +572,7 @@ impl Tools {
     fn method_missing(&self, method: Method) -> Option<String> {
         let need = |ok: bool, msg: &str| (!ok).then(|| msg.to_string());
         match method {
+            Method::Bundled { .. } => None,
             Method::Rustup { .. } => need(self.which("rustup").is_some(), "rustup is required (https://rustup.rs)"),
             Method::Npm { .. } => need(
                 self.which_any(&["npm", "pnpm"]).is_some(),
@@ -604,7 +635,8 @@ impl Tools {
         };
         let (status, path, version) = self.detect(spec);
         let unavailable_reason = self.unavailable_reason(spec);
-        let can_uninstall = status == ToolStatus::Installed;
+        let bundled = matches!(spec.method, Method::Bundled { .. });
+        let can_uninstall = status == ToolStatus::Installed && !bundled;
         Some(ToolInfo {
             name: spec.name.to_string(),
             display_name: spec.display.to_string(),
@@ -614,8 +646,8 @@ impl Tools {
             status,
             path: path.map(Into::into),
             version,
-            install_method: Some(self.install_method(spec).label().to_string()),
-            can_install: unavailable_reason.is_none(),
+            install_method: Some(self.method_label(self.install_method(spec)).to_string()),
+            can_install: unavailable_reason.is_none() && !bundled,
             unavailable_reason,
             can_uninstall,
             install_hint,
@@ -654,6 +686,12 @@ impl Tools {
     }
 
     fn detect(&self, spec: &ToolSpec) -> (ToolStatus, Option<PathBuf>, Option<String>) {
+        if let Method::Bundled { version, .. } = spec.method {
+            return match bundled::install(&self.root, spec) {
+                Ok(path) => (ToolStatus::Installed, Some(path), Some(version.to_owned())),
+                Err(_) => (ToolStatus::Missing, None, None),
+            };
+        }
         let main = spec.commands[0];
         let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
         if let Some(path) = managed {
@@ -683,7 +721,7 @@ impl Tools {
                 }
                 // Importable by the default interpreter (pip install --user / a system package).
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::OnPath, Some(python), parse_version(&out)),
@@ -692,7 +730,7 @@ impl Tools {
             }
             Method::PipUser { module, .. } => {
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::Installed, Some(python), parse_version(&out)),
@@ -780,8 +818,13 @@ impl Tools {
         let result = (|| {
             std::fs::create_dir_all(&self.root)?;
             let method = self.install_method(spec);
-            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, method.label()) });
+            emit(InstallEvent::Line {
+                text: format!("Installing {} via {}…", spec.display, self.method_label(method)),
+            });
             match method {
+                Method::Bundled { .. } => {
+                    bundled::install(&self.root, spec)?;
+                }
                 Method::Rustup { component } => {
                     let mut c = self.command(self.which("rustup").expect("checked"));
                     c.args(["component", "add", component]);
@@ -980,10 +1023,10 @@ impl Tools {
                 c.args(["pip", "install", "--python"]).arg(&python).arg(package);
                 run_streamed(c, cancel, emit)?;
             } else {
-                let mut c = self.command(self.python().expect("checked"));
+                let mut c = self.python_command(self.python().expect("checked"));
                 c.args(["-m", "venv"]).arg(&venv);
                 run_streamed(c, cancel, emit)?;
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", package]);
                 run_streamed(c, cancel, emit)?;
             }
@@ -1002,7 +1045,7 @@ impl Tools {
     fn install_pip_user(&self, package: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
         let python = self.python().expect("checked");
         let pip = |extra: &[&str]| {
-            let mut c = self.command(&python);
+            let mut c = self.python_command(&python);
             c.args(["-m", "pip", "install", "--user", "--upgrade", "--disable-pip-version-check"])
                 .args(extra)
                 .arg(package);
@@ -1039,7 +1082,7 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = python_lib_dir(&self.root, spec.name);
         std::fs::create_dir_all(&lib)?;
-        let mut c = self.command(self.python().expect("checked"));
+        let mut c = self.python_command(self.python().expect("checked"));
         c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
             .arg(&lib)
             .args(["--only-binary=:all:", "--platform", "any", "--implementation", "py"])
@@ -1188,6 +1231,8 @@ impl Tools {
         let cancel = CancellationToken::new();
         let quiet = |_: InstallEvent| {};
         match self.install_method(spec) {
+            // App-owned resources remain available for every project/window.
+            Method::Bundled { .. } => {}
             Method::Rustup { component } => {
                 let rustup = self.which("rustup").ok_or_else(|| IdeError::unavailable("rustup not found"))?;
                 let mut c = self.command(rustup);
@@ -1197,7 +1242,7 @@ impl Tools {
             Method::PipUser { package, .. } => {
                 let python = self.python().ok_or_else(|| IdeError::unavailable("python3 not found"))?;
                 let pip = |extra: &[&str]| {
-                    let mut c = self.command(&python);
+                    let mut c = self.python_command(&python);
                     c.args(["-m", "pip", "uninstall", "-y", "--disable-pip-version-check"]).args(extra).arg(package);
                     run_collect(c, &cancel, &quiet)
                 };

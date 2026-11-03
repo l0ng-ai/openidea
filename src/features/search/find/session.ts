@@ -17,6 +17,8 @@ export type FindStatus = "idle" | "validating" | "invalid" | "searching" | "done
 export interface FindState {
   status: FindStatus;
   query: SearchQuery | null;
+  /** Retained rows belong to a superseded search. */
+  stale: boolean;
   files: readonly FileMatches[];
   matchCount: number;
   summary: SearchSummary | null;
@@ -34,7 +36,15 @@ export interface FindDeps {
 export const countFileMatches = (file: FileMatches): number =>
   file.matches.reduce((count, line) => count + line.ranges.length, 0);
 
-export const IDLE: FindState = { status: "idle", query: null, files: [], matchCount: 0, summary: null, error: null };
+export const IDLE: FindState = {
+  status: "idle",
+  query: null,
+  stale: false,
+  files: [],
+  matchCount: 0,
+  summary: null,
+  error: null,
+};
 
 function errorMessage(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
@@ -61,6 +71,13 @@ export class FindSession {
     return this.state;
   }
 
+  /** Invalidates immediately, before a debounced search starts, keeping the layout steady. */
+  invalidate() {
+    this.seq++;
+    this.cancelRunning();
+    this.update({ ...this.state, stale: true, matchCount: 0, summary: null, error: null }, true);
+  }
+
   /** Starts (or restarts) a search; an empty pattern resets to idle. */
   async search(query: SearchQuery): Promise<void> {
     const seq = ++this.seq;
@@ -70,7 +87,10 @@ export class FindSession {
       this.update({ ...IDLE }, true);
       return;
     }
-    this.update({ ...this.state, status: "validating", query, error: null }, true);
+    this.update(
+      { ...this.state, status: "validating", query, stale: true, matchCount: 0, summary: null, error: null },
+      true,
+    );
     try {
       await this.deps.validate(query);
     } catch (e) {
@@ -84,22 +104,27 @@ export class FindSession {
     this.request = request;
     const files: FileMatches[] = [];
     let matchCount = 0;
-    this.update({ status: "searching", query, files: [], matchCount: 0, summary: null, error: null }, true);
+    this.update({ ...this.state, status: "searching" }, true);
     try {
       const summary = await this.deps.start(request, query, (f) => {
         if (seq !== this.seq) return;
         files.push(f);
         matchCount += countFileMatches(f);
-        this.update({ ...this.state, files: [...files], matchCount });
+        this.update({ ...this.state, stale: false, files: [...files], matchCount });
       });
       if (seq !== this.seq) return;
       this.request = null;
-      this.update({ ...this.state, status: "done", files: [...files], matchCount, summary }, true);
+      this.update({ ...this.state, status: "done", stale: false, files: [...files], matchCount, summary }, true);
     } catch (e) {
       if (seq !== this.seq) return;
       this.request = null;
-      if (isCancelledError(e)) this.update({ ...this.state, status: "done", files: [...files], matchCount }, true);
-      else this.update({ ...this.state, status: "error", error: errorMessage(e) }, true);
+      if (isCancelledError(e))
+        this.update({ ...this.state, status: "done", stale: false, files: [...files], matchCount }, true);
+      else
+        this.update(
+          { ...this.state, status: "error", stale: false, files: [...files], matchCount, error: errorMessage(e) },
+          true,
+        );
     }
   }
 

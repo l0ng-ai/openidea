@@ -27,6 +27,8 @@ import {
 } from "@/workbench/contributions";
 import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
+import { showApplicationUpdate } from "./applicationUpdate";
+import { isUpdatable } from "./updatePolicies";
 import { startRun, useRun, type RunSession } from "./store";
 import {
   currentServiceSession,
@@ -307,6 +309,17 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
     },
     { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
     stop,
+    ...(isUpdatable(r.config)
+      ? [
+          {
+            id: "update",
+            title: "Update Application",
+            icon: "refresh",
+            disabled: !live,
+            run: () => showApplicationUpdate(r.session?.run?.id ?? (debugging ? `debug:${debugging.id}` : undefined)),
+          },
+        ]
+      : []),
   ];
 }
 

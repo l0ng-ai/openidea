@@ -4,7 +4,9 @@
  * Kept outside React so actions (keyboard, Find Action, context menu) share it.
  */
 import { create } from "zustand";
-import type { FileEntry } from "@/bindings";
+import { call } from "@/platform/ipc";
+import { commands, type FileEntry, type OutlineItem } from "@/bindings";
+import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
 import {
   DEFAULT_TREE_OPTIONS,
@@ -43,6 +45,8 @@ export interface ViewOptions extends TreeOptions {
   singleClickExpand: boolean;
   /** Single click shows files in the preview tab (IDEA's "Enable Preview Tab"). */
   previewTab: boolean;
+  /** Show a file's declarations as expandable rows below it. */
+  showMembers: boolean;
 }
 
 export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
@@ -53,6 +57,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   singleClickExpand: false,
   // IDEA's "Enable Preview Tab" is off by default.
   previewTab: false,
+  showMembers: false,
 };
 
 function storedOptions(): ViewOptions {
@@ -82,6 +87,10 @@ export type Editing =
 export interface Clipboard {
   paths: string[];
   cut: boolean;
+  /** Server paths cannot be represented by the client's OS file list. */
+  remote?: boolean;
+  /** Pending OS hand-off, so a read cannot invalidate this copy before its write finishes. */
+  osWrite?: Promise<boolean>;
 }
 
 interface ProjectTreeState {
@@ -104,6 +113,8 @@ interface ProjectTreeState {
   openFiles: readonly string[];
   /** Files with VCS changes (All Changed Files mode). */
   changedFiles: readonly string[];
+  /** Loaded document outlines per file path, for the "Show Members" rows (empty for unsupported files). */
+  outlines: ReadonlyMap<string, readonly OutlineItem[]>;
 }
 
 const OPTIONS_KEY = "openidea.projectTree.options";
@@ -144,6 +155,7 @@ export const useProjectTree = create<ProjectTreeState>(() => ({
   mode: readMode(),
   openFiles: [],
   changedFiles: [],
+  outlines: new Map(),
 }));
 
 function readMode(): ViewMode {
@@ -255,6 +267,7 @@ let persistTimer: ReturnType<typeof setTimeout> | undefined;
 export function initProjectTree(root: string | null, name = "", members: readonly string[] | null = null) {
   generation++;
   inflight.clear();
+  outlineInflight.clear();
   clearTimeout(persistTimer);
   modeExpanded.clear();
   autoExpanded.clear();
@@ -270,6 +283,7 @@ export function initProjectTree(root: string | null, name = "", members: readonl
     clipboard: null,
     revealRequest: null,
     dropTarget: null,
+    outlines: new Map(),
   });
 }
 
@@ -287,11 +301,12 @@ function initialExpanded(root: string | null, mode: ViewMode, members = get().me
         r.scope === "scratches" && r.path ? [r.path] : [],
       ),
     );
-  const persisted = mode === "project" ? (readJson<string[]>(expandedKey(root)) ?? []) : [];
-  const roots = members ?? [root];
-  const expanded = new Set(persisted.filter((p) => roots.some((r) => isSameOrInside(p, r))));
-  roots.forEach((r) => expanded.add(r));
-  return expanded;
+  // The tree as the user left it, like IDEA: a collapsed project root stays collapsed, and
+  // nodes outside it (content roots, contributed roots) stay open.
+  // Keys of nodes that no longer exist are inert. Only a first open expands the roots.
+  const persisted = mode === "project" ? readJson<string[]>(expandedKey(root)) : null;
+  if (persisted) return new Set(persisted);
+  return new Set(members ?? [root]);
 }
 
 function persistExpanded() {
@@ -449,6 +464,19 @@ export async function applyFsChange(event: { created: string[]; modified: string
     }
   }
   await Promise.all(plan.reload.map((p) => loadDir(p, true)));
+  // Member rows go stale when the file changes on disk: drop and refetch.
+  if (event.modified.length) dropOutlines(event.modified);
+  if (event.removed.length) {
+    const outlines = new Map(get().outlines);
+    let changed = false;
+    for (const p of event.removed)
+      for (const key of [...outlines.keys()])
+        if (isSameOrInside(key, p)) {
+          outlines.delete(key);
+          changed = true;
+        }
+    if (changed) set({ outlines });
+  }
 }
 
 /** Re-reads the folders among `dirs` the tree has loaded; the rest stay unread. */
@@ -464,6 +492,54 @@ export async function reloadAll() {
 }
 
 // ---------------------------------------------------------------------------
+// Members ("Show Members")
+
+const outlineInflight = new Map<string, { promise: Promise<void> }>();
+
+/**
+ * Loads a file's outline for its member rows; unsupported files (no language
+ * support, binary, …) cache an empty list so the chevron collapses away.
+ */
+export function loadOutline(path: string, force = false): Promise<void> {
+  const { outlines } = get();
+  if (!force && outlines.has(path)) return Promise.resolve();
+  const running = outlineInflight.get(path);
+  if (running) return running.promise;
+  const gen = generation;
+  const request = { promise: Promise.resolve() };
+  outlineInflight.set(path, request);
+  request.promise = (async () => {
+    try {
+      const items = await withDocument(path, (doc) => call(commands.docOutline(doc)));
+      if (gen !== generation || outlineInflight.get(path) !== request) return;
+      set({ outlines: new Map(get().outlines).set(path, items) });
+    } catch (e) {
+      if (gen !== generation || outlineInflight.get(path) !== request) return;
+      console.warn(`project view: cannot read members of ${path}`, e);
+      set({ outlines: new Map(get().outlines).set(path, []) });
+    } finally {
+      if (outlineInflight.get(path) === request) outlineInflight.delete(path);
+    }
+  })();
+  return request.promise;
+}
+
+/** Drops the cached outlines of `paths`; expanded files are re-read at once. */
+export function dropOutlines(paths: readonly string[]) {
+  const s = get();
+  const touched = [...new Set(paths)].filter((p) => s.outlines.has(p) || outlineInflight.has(p));
+  if (!touched.length) return;
+  const outlines = new Map(s.outlines);
+  for (const p of touched) {
+    outlines.delete(p);
+    outlineInflight.delete(p);
+  }
+  set({ outlines });
+  for (const p of touched)
+    if (s.options.showMembers && [...s.expanded].some((k) => pathOfKey(k) === p)) void loadOutline(p);
+}
+
+// ---------------------------------------------------------------------------
 // Reveal / expand
 
 let revealSeq = 0;
@@ -472,7 +548,7 @@ let revealSeq = 0;
 export function revealPath(path: string, focus = false) {
   const { expanded } = get();
   const project = get().root;
-  const root = project && isSameOrInside(path, project) ? project : project ? extraRootOf(path) : null;
+  const root = project ? (memberRootOf(path) ?? (isSameOrInside(path, project) ? project : extraRootOf(path))) : null;
   if (!root) return false;
   // Library folders sit below group nodes (External Libraries › SDK), keyed in their own namespace.
   const model = currentModel();
@@ -492,6 +568,16 @@ export function revealPath(path: string, focus = false) {
   return true;
 }
 
+/**
+ * The linked workspace project containing `path`, if any (the innermost one). A
+ * workspace's root is its own directory; its projects are separate top-level roots.
+ */
+function memberRootOf(path: string): string | null {
+  let found: string | null = null;
+  for (const m of get().members ?? []) if (isSameOrInside(path, m) && (!found || m.length > found.length)) found = m;
+  return found;
+}
+
 /** The contributed folder (scratches, a library root…) containing `path`, if any. */
 export function extraRootOf(path: string): string | null {
   for (const r of extraFolders(projectViewRoots(useProjectViewRoots.getState().roots)))
@@ -507,7 +593,7 @@ export function modeShows(path: string): boolean {
     case "project":
       return true;
     case "projectFiles":
-      return isSameOrInside(path, root);
+      return memberRootOf(path) !== null || (!get().members && isSameOrInside(path, root));
     case "scratches":
       return projectViewRoots(useProjectViewRoots.getState().roots).some(
         (r) => r.scope === "scratches" && r.path !== undefined && isSameOrInside(path, r.path),

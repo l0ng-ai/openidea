@@ -1,9 +1,11 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "src-tauri"]
+# Plugins and the guest SDK build for wasm32-wasip2 in their own workspaces.
+exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.32"
+version = "0.1.35"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -42,6 +44,8 @@ ide-remote = { path = "crates/ide-remote" }
 ide-host = { path = "crates/ide-host" }
 ide-mcp = { path = "crates/ide-mcp" }
 ide-notebook = { path = "crates/ide-notebook" }
+ide-extension = { path = "crates/ide-extension" }
+ide-plugin = { path = "crates/ide-plugin" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
@@ -70,6 +74,7 @@ ropey = "1.6"
 encoding_rs = "0.8"
 chardetng = "0.1"
 ignore = "0.4"
+base64 = "0.22"
 globset = "0.4"
 notify = "8"
 notify-debouncer-full = "0.6"

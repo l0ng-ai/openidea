@@ -5,7 +5,7 @@
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
-import { onIdeEvent, type RunConfig } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type RunConfig, type RunImportSource } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
@@ -44,8 +44,10 @@ import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
-import { showTomcatUpdate } from "./tomcatUpdate";
+import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
+import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
 import {
@@ -116,6 +118,12 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
     await launchProduced(compiled, true);
+    return;
+  }
+  // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
+  const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  if (delegated) {
+    await debugWithAgent(delegated);
     return;
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
@@ -280,7 +288,10 @@ export function activate(): () => void {
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    listenForApplicationDeactivation(),
+    useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
+    registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
     registerMenuGroup({
       id: "run.context",
       menus: ["editor", "projectView", "editorTab"],
@@ -293,8 +304,8 @@ export function activate(): () => void {
         title: "Update Application",
         category: "Run",
         icon: "refresh",
-        when: "run.tomcatRunning",
-        run: () => showTomcatUpdate(),
+        when: "run.updatableRunning",
+        run: () => showApplicationUpdate(),
       },
       {
         id: "run.run",
@@ -404,6 +415,27 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.importVscodeLaunch",
+        title: "Import Run Configurations from .vscode/launch.json",
+        category: "Run",
+        when: "projectOpen",
+        keywords: ["launch.json", "vscode", "visual studio code", "debug configuration"],
+        run: async () => {
+          const sources = await call(commands.runImportSources()).catch((): RunImportSource[] => []);
+          if (!sources.includes("vscode")) {
+            notifications().notify({
+              group: "run",
+              level: "info",
+              title: "This project has no .vscode/launch.json",
+              key: "run-import",
+            });
+            return;
+          }
+          await ensureConfigs();
+          useRun.setState({ editorOpen: true, chooserOpen: false, editTarget: null, editImport: "vscode" });
+        },
+      },
+      {
         id: "run.debugConfig",
         title: "Debug Configuration",
         category: "Run",
@@ -510,10 +542,7 @@ export function activate(): () => void {
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
     useRun.subscribe((s) => {
       setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "");
-      setContext(
-        "run.tomcatRunning",
-        s.sessions.some((session) => session.config.kind === "tomcat" && session.status === "running"),
-      );
+      setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
@@ -539,7 +568,14 @@ export function activate(): () => void {
     }),
     // Detected configs carry the selected toolchains (interpreter, JDK, Maven home and options).
     onIdeEvent("settingsChanged", (e) => {
-      if (e.key === "languages" || e.key.startsWith("languages.")) scheduleReload();
+      if (
+        !e.key ||
+        e.key === "languages" ||
+        e.key.startsWith("languages.") ||
+        e.key === "cmake" ||
+        e.key.startsWith("cmake.")
+      )
+        scheduleReload();
     }),
   );
 

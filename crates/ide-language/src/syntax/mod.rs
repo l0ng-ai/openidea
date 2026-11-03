@@ -1,6 +1,8 @@
 //! Tree-sitter driven structure: outline, folding, symbol tags, selection ranges, highlighting.
 
 mod cache;
+mod configuration;
+mod external;
 mod folding;
 mod grammars;
 mod highlight;
@@ -12,6 +14,8 @@ mod web;
 
 use crate::{FoldRange, LanguageConfig, LanguageRegistry, SymbolTag};
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
+pub use configuration::ConfigurationKey;
+pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};
@@ -32,6 +36,7 @@ pub struct Syntax {
     grammars: Vec<Grammar>,
     /// Language id (and grammar name) -> index into `grammars`.
     by_lang: HashMap<String, usize>,
+    comments: HashMap<String, folding::CommentTokens>,
 }
 
 pub(crate) struct Grammar {
@@ -107,7 +112,14 @@ impl Syntax {
                 }
             }
         }
-        Self { grammars, by_lang }
+        let mut comments = HashMap::new();
+        for cfg in languages {
+            comments.insert(cfg.id.as_str().to_owned(), folding::CommentTokens::from(cfg));
+            if let Some(name) = &cfg.tree_sitter {
+                comments.entry(name.clone()).or_insert_with(|| folding::CommentTokens::from(cfg));
+            }
+        }
+        Self { grammars, by_lang, comments }
     }
 
     /// Names of the bundled grammars (valid values for `tree-sitter = "..."`).
@@ -161,8 +173,21 @@ impl Syntax {
     }
 
     pub fn folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {
-        self.analyze(lang, text, |g, tree, text| Some(folding::folding(g.spec, g.kinds(), tree, text)))
-            .unwrap_or_default()
+        let tokens = self.comment_tokens(lang);
+        self.analyze(lang, text, |g, tree, text| Some(folding::folding(g.spec, g.kinds(), tree, text, tokens)))
+            .unwrap_or_else(|| self.custom_folding(lang, text))
+    }
+
+    fn comment_tokens(&self, lang: &LanguageId) -> &folding::CommentTokens {
+        static EMPTY: OnceLock<folding::CommentTokens> = OnceLock::new();
+        self.comments.get(lang.as_str()).unwrap_or_else(|| EMPTY.get_or_init(Default::default))
+    }
+
+    fn custom_folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {
+        if text.len() > MAX_PARSE_BYTES {
+            return Vec::new();
+        }
+        folding::custom_folding(text, self.comment_tokens(lang))
     }
 
     pub fn tags(&self, lang: &LanguageId, text: &str) -> Vec<SymbolTag> {
@@ -178,11 +203,11 @@ impl Syntax {
 
     /// The grammar web features parse `lang` with: its own for HTML and CSS, the
     /// CSS grammar for SCSS / Less (selectors and custom properties parse alike),
-    /// HTML for Vue / Svelte single-file components.
+    /// HTML for Vue / Svelte single-file components and JSP pages.
     fn web_grammar(&self, lang: &LanguageId) -> Option<&Grammar> {
         let name = match lang.as_str() {
             "scss" | "less" => "css",
-            "vue" | "svelte" => "html",
+            "vue" | "svelte" | "jsp" => "html",
             _ => self.grammar(lang).map(|g| g.spec.name)?,
         };
         web::is_web_grammar(name).then(|| self.grammar(&LanguageId::new(name))).flatten()

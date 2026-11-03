@@ -17,6 +17,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const SERVER: &str = "jdtls";
+
+pub(crate) mod configuration;
+mod formatter;
+pub(crate) mod reserved_names;
+pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
 /// A workspace build of a large multi-module project can take far longer than
@@ -34,6 +39,48 @@ const ACCESS_OPTIONS: [&str; 2] = [
     "org.eclipse.jdt.core.compiler.problem.forbiddenReference",
     "org.eclipse.jdt.core.compiler.problem.discouragedReference",
 ];
+
+/// Keep the source model in protocol settings so jdtls's invisible-project
+/// initialization and configuration use the same roots as workspace builds.
+pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, paths: Option<Vec<String>>) {
+    if cfg.name != SERVER {
+        return;
+    }
+    if let Some(paths) = paths {
+        let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+        settings["java"]["project"]["sourcePaths"] = json!(paths);
+        cfg.settings = Some(settings);
+    }
+}
+
+pub(crate) fn source_paths_removed(
+    current: &ide_language::LanguageServerConfig,
+    next: &ide_language::LanguageServerConfig,
+) -> bool {
+    current.name == SERVER
+        && crate::handler::all_settings(current).pointer("/java/project/sourcePaths").is_some()
+        && crate::handler::all_settings(next).pointer("/java/project/sourcePaths").is_none()
+}
+
+pub(crate) fn source_trigger(root: &Path, paths: &[Value]) -> Option<PathBuf> {
+    for path in paths.iter().filter_map(Value::as_str) {
+        // Runs can start jdtls without an editor. Invisible-project import still
+        // needs a Java trigger file; discovery is bounded and runs off async workers.
+        let found = ignore::WalkBuilder::new(root.join(path))
+            .standard_filters(false)
+            .max_depth(Some(32))
+            .build()
+            .take(4000)
+            .filter_map(Result::ok)
+            .find(|e| {
+                e.file_type().is_some_and(|t| t.is_file()) && e.path().extension().is_some_and(|ext| ext == "java")
+            });
+        if let Some(entry) = found {
+            return Some(entry.into_path());
+        }
+    }
+    None
+}
 
 fn compiler_defaults(cfg: &ide_language::LanguageServerConfig) -> Value {
     // updateSettings persists project options. Only use it when jdtls redirects
@@ -145,6 +192,24 @@ pub struct JavaCompileError {
     pub line: u32,
     pub column: u32,
     pub message: String,
+}
+
+/// Holds off JDT writers while an external compiler builds and snapshots launch outputs.
+/// Restores current settings even when preparation fails or is cancelled.
+pub struct JavaExternalBuild {
+    server: Arc<Server>,
+    run: Running,
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for JavaExternalBuild {
+    fn drop(&mut self) {
+        self.server.java_autobuild_suspended.store(false, std::sync::atomic::Ordering::SeqCst);
+        let settings = crate::handler::all_settings(&self.server.effective_config());
+        if let Err(e) = self.run.peer.notify("workspace/didChangeConfiguration", json!({ "settings": settings })) {
+            tracing::debug!("jdtls: restoring autobuild: {e}");
+        }
+    }
 }
 
 /// Error diagnostics sorted by file and position, capped at `limit`, and their total.
@@ -271,6 +336,35 @@ impl LspManager {
         });
     }
 
+    /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
+    /// change, a Maven sync, other Maven profiles), but does not check open documents
+    /// again against the new classpath: their errors would stay until the next edit.
+    pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
+        let uris: Vec<String> = self
+            .docs
+            .lock()
+            .values()
+            .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+            .map(|d| crate::uri::path_to_uri_string(&d.path))
+            .collect();
+        if uris.is_empty() {
+            return;
+        }
+        self.runtime.spawn(async move {
+            let Some(run) = server.running_gen(generation) else { return };
+            for uri in uris {
+                let params =
+                    json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
+                let request = run.peer.request::<_, Value>("workspace/executeCommand", params, None);
+                if let Ok(Err(e)) | Err(e) =
+                    tokio::time::timeout(COMMAND_TIMEOUT, request).await.map_err(|_| ide_jsonrpc::RpcError::Timeout)
+                {
+                    tracing::debug!("jdtls: java.project.refreshDiagnostics {uri}: {e}");
+                }
+            }
+        });
+    }
+
     /// The jdtls instance serving `path` (a module directory or source file),
     /// started if needed and waited for.
     async fn jdtls(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<(Arc<Server>, Running)> {
@@ -336,7 +430,8 @@ impl LspManager {
         self.jdtls_command_cancellable(path, command, arguments, &CancellationToken::new()).await
     }
 
-    async fn jdtls_command_cancellable(
+    /// Cancellable delegate commands for project-owned background services.
+    pub async fn jdtls_command_cancellable(
         &self,
         path: &Path,
         command: &str,
@@ -391,9 +486,28 @@ impl LspManager {
             .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
     }
 
+    /// Pause autobuild before resolving the launch classpath. That query takes the
+    /// Java project's workspace scheduling rule, draining the interrupted autobuild.
+    /// Keep this guard until Maven outputs have been copied out of JDT's reach.
+    pub async fn java_external_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaExternalBuild> {
+        let (server, run) = self.jdtls(path, cancel).await?;
+        let lock = cancellable_wait(cancel, server.java_build_lock.clone().lock_owned()).await?;
+        server.java_autobuild_suspended.store(true, std::sync::atomic::Ordering::SeqCst);
+        let guard = JavaExternalBuild { server, run, _lock: lock };
+        let settings = crate::handler::all_settings(&guard.server.effective_config());
+        guard
+            .run
+            .peer
+            .notify("workspace/didChangeConfiguration", json!({ "settings": settings }))
+            .map_err(|e| crate::rpc_err(SERVER, "workspace/didChangeConfiguration", e))?;
+        Ok(guard)
+    }
+
     /// Incremental build of the jdtls workspace (`java/buildWorkspace`), so
     /// class files are up to date before a launch.
     pub async fn java_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
+        let (server, _) = self.jdtls(path, cancel).await?;
+        let _lock = cancellable_wait(cancel, server.java_build_lock.lock()).await?;
         let mut v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
         // The first build can finish the Maven import before ServiceReady is handled.
         let (server, run) = self.jdtls(path, cancel).await?;
@@ -437,11 +551,15 @@ impl LspManager {
     }
 
     /// Builds (when asked), then resolves the classpath and JDK of the module at `module`.
+    /// The classpath queries take the module's workspace scheduling rule like the build
+    /// commands do, so they run under the build lock; pass `build_lock_held` when the caller
+    /// already holds it (the delegated external build), or the wait would deadlock.
     pub async fn java_launch(
         &self,
         module: &Path,
         test: bool,
         build: bool,
+        build_lock_held: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<JavaLaunchInfo> {
         let build = if build { Some(self.java_build(module, cancel).await?) } else { None };
@@ -454,14 +572,23 @@ impl LspManager {
             }
             _ => (Vec::new(), 0),
         };
-        let cp = self.java_classpath(module, test, cancel).await?;
-        let java_home = match self.java_vm_location(module, cancel).await {
-            Ok(home) => home,
-            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-            Err(e) => {
-                tracing::debug!("java.project.getSettings: {e}");
+        let (cp, java_home) = {
+            let (server, _) = self.jdtls(module, cancel).await?;
+            let _lock = if build_lock_held {
                 None
-            }
+            } else {
+                Some(cancellable_wait(cancel, server.java_build_lock.lock()).await?)
+            };
+            let cp = self.java_classpath(module, test, cancel).await?;
+            let java_home = match self.java_vm_location(module, cancel).await {
+                Ok(home) => home,
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                Err(e) => {
+                    tracing::debug!("java.project.getSettings: {e}");
+                    None
+                }
+            };
+            (cp, java_home)
         };
         Ok(JavaLaunchInfo {
             build,
@@ -490,6 +617,59 @@ impl LspManager {
         collect()
     }
 
+    /// Resolve a disk/archive class to project source or the server's binary document.
+    /// Archive URIs must come from JDT's Java model: fabricated handles cannot map debug lines.
+    pub async fn java_class_file(&self, path: &Path, archive: Option<(PathBuf, String)>) -> IdeResult<String> {
+        let cancel = CancellationToken::new();
+        self.jdtls(&self.project_root, &cancel).await?;
+        if let Some((jar, entry)) = archive {
+            let entry = entry
+                .strip_prefix("META-INF/versions/")
+                .and_then(|s| s.split_once('/').map(|(_, s)| s))
+                .unwrap_or(&entry);
+            let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
+            let outer = class.split('$').next().unwrap_or(class);
+            let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
+            let query = outer.replace('/', ".");
+            let symbols = self.workspace_symbols(&query, cancel).await?;
+            let package = package.replace('/', ".");
+            let name = name.to_owned();
+            let outer = outer.to_owned();
+            return tokio::task::spawn_blocking(move || {
+                symbols
+                    .into_iter()
+                    .filter_map(|s| s.location.uri)
+                    .find(|uri| crate::virtual_doc::matches_class(uri, &jar, &package, &name))
+                    .ok_or_else(|| {
+                        IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display()))
+                    })
+            })
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+        }
+        let uri = crate::uri::path_to_uri_string(path);
+        // classFileContents accepts file URIs, but java-debug's line mapping only accepts JDT handles.
+        let doc = self.virtual_document(&uri).await?;
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").split('$').next().unwrap_or("");
+        let package = doc
+            .text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("package ").and_then(|p| p.strip_suffix(';')))
+            .unwrap_or("");
+        let relative = PathBuf::from(package.replace('.', "/")).join(format!("{name}.java"));
+        let key = "org.eclipse.jdt.ls.core.sourcePaths";
+        let settings = self
+            .jdtls_project_command(path, "java.project.getSettings", vec![json!(uri), json!([key])], &cancel)
+            .await?;
+        let roots: Vec<PathBuf> =
+            settings[key].as_array().into_iter().flatten().filter_map(Value::as_str).map(PathBuf::from).collect();
+        let source =
+            tokio::task::spawn_blocking(move || roots.into_iter().map(|r| r.join(&relative)).find(|p| p.is_file()))
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
+        Ok(source.map(|s| s.to_string_lossy().into_owned()).unwrap_or(uri))
+    }
+
     /// Starts (or reuses) java-debug's DAP server inside jdtls and returns its port.
     pub async fn java_debug_server(&self, path: &Path) -> IdeResult<u16> {
         let v = self.jdtls_command(path, "vscode.java.startDebugSession", Vec::new()).await.map_err(|e| {
@@ -500,7 +680,7 @@ impl LspManager {
             }
         })?;
         // Hot code replace after each (auto-)build; errors only cost the feature.
-        let settings = json!({ "hotCodeReplace": "auto", "showStaticVariables": false, "showQualifiedNames": false,
+        let settings = json!({ "debugSupportOnDecompiledSource": "on", "hotCodeReplace": "auto", "showStaticVariables": false, "showQualifiedNames": false,
             "showLogicalStructure": true, "showToString": true, "maxStringLength": 0,
             // java-debug NPEs on a missing level (java.util.logging names).
             "logLevel": "WARNING" });
@@ -514,9 +694,86 @@ impl LspManager {
     }
 }
 
+impl LspManager {
+    /// JDT LS aborted its import with `message`: when reserved Windows device names
+    /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
+    pub(crate) fn report_import_failure(&self, root: PathBuf, message: String) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn_blocking(move || {
+            let Some(body) = reserved_names::import_failure_hint(&root, &message, cfg!(windows)) else { return };
+            if me.first_message(SERVER, &body) {
+                me.sink().emit(ide_core::IdeEvent::Notify {
+                    level: ide_core::event::NotifyLevel::Error,
+                    title: "Java project import failed".into(),
+                    body: Some(body),
+                });
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn java_config() -> ide_language::LanguageServerConfig {
+        let language: ide_language::LanguageConfig =
+            toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
+        language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn source_settings_preserve_java_defaults_and_library_resolution() {
+        let mut cfg = java_config();
+        configure_source_paths(&mut cfg, Some(vec!["src/main/java".into(), "tests".into()]));
+        let settings = crate::handler::all_settings(&cfg);
+        assert_eq!(settings["java"]["project"]["sourcePaths"], json!(["src/main/java", "tests"]));
+        assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["lib/**/*.jar"]));
+        assert_eq!(settings["java"]["autobuild"]["enabled"], true);
+        assert_eq!(settings["java"]["contentProvider"]["preferred"], "fernflowerContentProvider");
+        assert!(settings.get("bundles").is_none());
+        assert!(settings.get("settings").is_none(), "didChangeConfiguration takes java settings directly");
+    }
+
+    #[test]
+    fn unmarked_and_managed_source_models_are_not_overridden() {
+        let mut cfg = java_config();
+        let initial = cfg.clone();
+        configure_source_paths(&mut cfg, None);
+        assert_eq!(cfg, initial);
+        assert!(crate::handler::all_settings(&cfg).pointer("/java/project/sourcePaths").is_none());
+        configure_source_paths(&mut cfg, Some(vec!["custom".into()]));
+        assert!(source_paths_removed(&cfg, &initial));
+        assert!(!source_paths_removed(&initial, &cfg));
+        let mut other = initial;
+        other.name = "other".into();
+        let initial = other.clone();
+        configure_source_paths(&mut other, Some(vec!["custom".into()]));
+        assert_eq!(other, initial);
+    }
+
+    #[test]
+    fn explicit_java_protocol_settings_override_defaults_in_either_shape() {
+        for wrapped in [false, true] {
+            let mut cfg = java_config();
+            let settings = json!({"java": {"project": {"referencedLibraries": ["vendor/*.jar"]}}});
+            cfg.settings = Some(if wrapped { json!({"settings": settings}) } else { settings });
+            configure_source_paths(&mut cfg, Some(vec!["custom".into()]));
+            let settings = crate::handler::all_settings(&cfg);
+            assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["vendor/*.jar"]));
+            assert_eq!(settings["java"]["project"]["sourcePaths"], json!(["custom"]));
+        }
+    }
+
+    #[test]
+    fn run_without_an_editor_discovers_a_trigger_inside_its_source_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/demo/engine")).unwrap();
+        let file = dir.path().join("src/demo/engine/Main.java");
+        std::fs::write(&file, "package demo.engine; public class Main {}").unwrap();
+        assert_eq!(source_trigger(dir.path(), &[json!("generated"), json!("src")]), Some(file));
+        assert_eq!(source_trigger(dir.path(), &[json!("tests")]), None);
+    }
 
     #[tokio::test]
     async fn cancellation_ends_a_pending_wait() {

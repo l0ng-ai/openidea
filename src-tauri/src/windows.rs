@@ -67,6 +67,8 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// Project tabs closing one by one (Close Other Tabs and friends).
+    pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
 }
@@ -109,7 +111,9 @@ impl WindowsState {
 
     pub fn set_quitting(&self, on: bool) {
         self.quitting.store(on, Ordering::SeqCst);
-        if !on {
+        if on {
+            *self.tab_closes.lock() = None;
+        } else {
             self.restart.store(false, Ordering::SeqCst);
         }
     }
@@ -284,6 +288,11 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    let visible = cfg!(target_os = "macos") && config.visible;
+    let focused = config.focus;
+    if visible {
+        config.visible = false;
+    }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
@@ -293,9 +302,13 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
     }
+    #[cfg(target_os = "linux")]
+    let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    #[cfg(target_os = "linux")]
+    decorate_csd(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -305,7 +318,28 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     {
         let _ = window.set_background_color(Some(frame_color(&a, true)));
     }
+    #[cfg(target_os = "linux")]
+    if show_after_build {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+    }
+    if visible {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+        if focused {
+            let _ = window.set_focus();
+        }
+    }
     Ok(window)
+}
+
+/// Wayland: tao already makes frameless windows client-side decorated (an empty GTK title bar, so
+/// the compositor adds no frame), but undecorated GTK windows get no shadow or resize margin.
+/// Decorating keeps that empty title bar, so GTK adds the theme's shadow and resize edges and
+/// nothing else. X11 has no such title bar: decorating there would bring back the WM frame.
+#[cfg(target_os = "linux")]
+fn decorate_csd(window: &WebviewWindow) {
+    if crate::linux_window_state::is_wayland() {
+        let _ = window.set_decorations(true);
+    }
 }
 
 /// Sets the saved IDE zoom before the page loads; applied later by the frontend,
@@ -340,18 +374,35 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new())
+    create_window_with(app, project, Vec::new(), false)
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
-fn create_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) -> IdeResult<WebviewWindow> {
+fn create_window_with(
+    app: &AppHandle,
+    project: Option<PathBuf>,
+    files: Vec<PathBuf>,
+    restoring: bool,
+) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() })
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
 }
 
-fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> IdeResult<WebviewWindow> {
+/// Restoring a saved group preserves its membership and selected tab.
+pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
+    create_window_with(app, Some(project), Vec::new(), true)
+}
+
+fn create_window_for(
+    app: &AppHandle,
+    title: Option<String>,
+    launch: Launch,
+    _restoring: bool,
+) -> IdeResult<WebviewWindow> {
+    #[cfg(target_os = "macos")]
+    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -371,6 +422,11 @@ fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> 
     }
     app.state::<WindowsState>().set_launch(&label, launch);
     let window = build_project_window(app, config)?;
+    #[cfg(target_os = "macos")]
+    if let Some(target) = tab_target {
+        crate::window_groups::join(app, target.label(), window.label())?;
+        return Ok(window);
+    }
     focus(&window);
     Ok(window)
 }
@@ -384,7 +440,7 @@ pub fn spawn_window(app: &AppHandle, project: Option<PathBuf>) {
 fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_with(&app, project, files) {
+        if let Err(e) = create_window_with(&app, project, files, false) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -423,7 +479,7 @@ pub fn open_project_window(
     if !new_window {
         return Ok(OpenOutcome::Current);
     }
-    let window = create_window_with(app, Some(root), files)?;
+    let window = create_window_with(app, Some(root), files, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -433,7 +489,7 @@ pub fn open_project_window(
 /// detach an editor tab out of its window.
 pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
     tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
-    let window = create_window_with(app, project, vec![file])?;
+    let window = create_window_with(app, project, vec![file], false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -461,7 +517,7 @@ pub fn open_remote_window(app: &AppHandle, ssh_config: &str, path: &str, new_win
     }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { ssh_config: ssh_config.to_owned(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() })?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -754,14 +810,22 @@ pub fn open_settings_window(
         config.background_color = Some(color);
     }
     windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
+    #[cfg(target_os = "linux")]
+    crate::linux_window_state::prepare(app, &mut config);
     let builder = WebviewWindowBuilder::from_config(app, &config);
-    // AppKit child windows can disappear when dragged to another display's Space.
-    // The settings label already tracks ownership and parent-close cleanup.
-    #[cfg(not(target_os = "macos"))]
+    // Windows: an owned child (WS_POPUP) of a borderless parent gets no DWM
+    // shadow, leaving the frameless settings window flat against its parent.
+    // Ownership is tracked by the `settings-<parent>` label instead
+    // (parent-close cleanup, menu modality), so only Linux keeps the native
+    // parent link. AppKit child windows can disappear when dragged to another
+    // display's Space, so macOS keeps it too.
+    #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
     let window = builder
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
+    #[cfg(target_os = "linux")]
+    decorate_csd(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -821,10 +885,19 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
 /// may still be on another display with a different scale, so its size is converted with its own
 /// scale and its position is given in physical pixels.
 #[cfg(not(target_os = "macos"))]
-fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+pub(super) fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+    // Placement setters leave maximized mode. Fit the restored frame, then reapply the saved state.
+    // A restored fullscreen window already covers its display and must not be fitted to the work area.
+    if window.is_fullscreen()? {
+        return Ok(());
+    }
     let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
         return Ok(());
     };
+    let maximized = window.is_maximized()?;
+    if maximized {
+        window.unmaximize()?;
+    }
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let origin = area.position.to_logical::<f64>(scale);
@@ -833,7 +906,12 @@ fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> taur
     let size = parent.outer_size()?.to_logical::<f64>(scale);
     let own_scale = window.scale_factor()?;
     let own = window.outer_size()?.to_logical::<f64>(own_scale);
-    let inner = window.inner_size()?.to_logical::<f64>(own_scale);
+    // On Wayland, the frame is GTK's CSD shadow margin, which tao's inner size includes.
+    #[cfg(target_os = "linux")]
+    let inner = crate::linux_window_state::content_size(&window.as_ref().window())?;
+    #[cfg(not(target_os = "linux"))]
+    let inner = window.inner_size()?;
+    let inner = inner.to_logical::<f64>(own_scale);
     let frame = (own.width - inner.width, own.height - inner.height);
     let bounds = fit_bounds(
         (pos.x, pos.y, size.width, size.height),
@@ -852,6 +930,9 @@ fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> taur
             SETTINGS_MIN_SIZE.1.min(height),
         )))?;
         window.set_size(tauri::LogicalSize::new(width, height))?;
+    }
+    if maximized {
+        window.maximize()?;
     }
     Ok(())
 }
@@ -872,6 +953,39 @@ fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// Reproduce WKWebView's user-font restriction before WKWebView creation. The
+/// private selector and environment override are absent from release builds.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
+        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2_foundation::NSObjectProtocol;
+        let config = unsafe {
+            objc2_web_kit::WKWebViewConfiguration::new(MainThreadMarker::new().expect("window creation on main thread"))
+        };
+        let preferences = unsafe { config.preferences() };
+        if preferences.respondsToSelector(sel!(_setShouldAllowUserInstalledFonts:)) {
+            unsafe {
+                let _: () = msg_send![&preferences, _setShouldAllowUserInstalledFonts: false];
+            }
+            let allowed: bool = unsafe { msg_send![&preferences, _shouldAllowUserInstalledFonts] };
+            tracing::info!(allowed, "Development user-installed fonts override");
+            return builder.with_webview_configuration(config);
+        }
+        tracing::warn!("WKPreferences user-font development selector unavailable");
+    }
+    builder
+}
+
+#[cfg(not(all(debug_assertions, target_os = "macos")))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    builder
 }
 
 #[cfg(test)]

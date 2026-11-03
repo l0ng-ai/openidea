@@ -13,7 +13,10 @@
 //!   they fork get them too (`spring-boot:run`, Surefire, `bootRun`, test workers).
 //!   Each JVM then reports "Picked up JAVA_TOOL_OPTIONS: …" on stderr (which a build tool
 //!   may copy to its stdout); that line is hidden again ([`NoticeFilter`]). `file.encoding` is left alone there: it would change
-//!   how a build reads sources that declare no encoding.
+//!   how a build reads sources that declare no encoding. The application JVMs a build
+//!   forks get `file.encoding=UTF-8` for a UTF-8 console instead, through the build's own
+//!   options: `-Dspring-boot.run.jvmArguments` for Maven `spring-boot:run`, an init script
+//!   ([`GRADLE_FILE_ENCODING_SCRIPT`]) for Gradle `JavaExec` tasks (`bootRun`, `run`).
 //! - Python: `PYTHONIOENCODING`.
 
 use std::collections::BTreeMap;
@@ -75,16 +78,34 @@ fn encoding_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
 const STD_PROPERTIES: &[&str] = &["stdout.encoding", "stderr.encoding", "sun.stdout.encoding", "sun.stderr.encoding"];
 const FILE_ENCODING: &str = "file.encoding";
 const TOOL_OPTIONS: &str = "JAVA_TOOL_OPTIONS";
+const SPRING_BOOT_JVM_ARGS: &str = "-Dspring-boot.run.jvmArguments=";
 
 /// Build tools and launcher scripts that run on (and may fork) JVMs.
-const JVM_TOOLS: &[&str] =
-    &["mvn", "mvnw", "mvnd", "gradle", "gradlew", "sbt", "ant", "kotlin", "kotlinc", "groovy", "scala", "jbang"];
+const JVM_TOOLS: &[&str] = &["sbt", "ant", "kotlin", "kotlinc", "groovy", "scala", "jbang"];
+const MAVEN: &[&str] = &["mvn", "mvnw", "mvnd"];
+const GRADLE: &[&str] = &["gradle", "gradlew"];
+
+/// Gradle init script giving the `JavaExec` tasks (`bootRun`, `run`, custom ones) a UTF-8
+/// default charset before the build configures them, so the build can override it.
+/// Gradle's own JVM and the compiler's source encoding are untouched.
+pub const GRADLE_FILE_ENCODING_SCRIPT: &str = "\
+// Written by OpenIDEA: a UTF-8 default charset for applications run by Gradle, as the Run console decodes UTF-8.
+allprojects {
+    tasks.withType(JavaExec).configureEach {
+        defaultCharacterEncoding = 'UTF-8'
+    }
+}
+";
 
 /// What a launch needs: `-D` options to put first on a `java` command line,
 /// environment variables to set, and the notice line its JVMs print because of them.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct EncodingFix {
     pub java_args: Vec<String>,
+    /// The build tool's arguments, rewritten to pass options to the JVM it forks.
+    pub args: Option<Vec<String>>,
+    /// Gradle: pass [`GRADLE_FILE_ENCODING_SCRIPT`] with `--init-script`.
+    pub gradle_init_script: bool,
     pub env: Vec<(String, String)>,
     /// "Picked up JAVA_TOOL_OPTIONS: …" for a variable set here alone, to drop from the output.
     pub notice: Option<String>,
@@ -116,6 +137,8 @@ fn options(properties: &[&str], encoding: &str) -> Vec<String> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Java,
+    Maven,
+    Gradle,
     JvmTool,
     Python,
     Other,
@@ -125,6 +148,10 @@ fn kind(program: &str) -> Kind {
     let name = program_name(program);
     if name == "java" || name == "javaw" {
         Kind::Java
+    } else if MAVEN.contains(&name.as_str()) {
+        Kind::Maven
+    } else if GRADLE.contains(&name.as_str()) {
+        Kind::Gradle
     } else if JVM_TOOLS.contains(&name.as_str()) {
         Kind::JvmTool
     } else if is_python(&name) {
@@ -193,7 +220,17 @@ fn fix_kind(
                 out.java_args.push(format!("-D{FILE_ENCODING}=UTF-8"));
             }
         }
-        (Kind::Java | Kind::JvmTool, _) => {
+        (Kind::Java | Kind::Maven | Kind::Gradle | Kind::JvmTool, _) => {
+            if let Some(args) = args
+                && is_utf8(encoding)
+                && !sets(&tool_options, &[FILE_ENCODING])
+            {
+                match kind {
+                    Kind::Maven => out.args = spring_boot_file_encoding(args),
+                    Kind::Gradle => out.gradle_init_script = true,
+                    _ => {}
+                }
+            }
             if !sets(&tool_options, STD_PROPERTIES) {
                 let added = options(STD_PROPERTIES, encoding).join(" ");
                 let value = match tool_options.trim() {
@@ -214,14 +251,42 @@ fn fix_kind(
     out
 }
 
-/// `vmArgs` of a launch by java-debug, which decodes the JVM's output as `encoding`
-/// (its launch attribute, UTF-8 when unset) and sets `file.encoding` itself.
-pub fn java_debug_vm_args(vm_args: &str, encoding: Option<&str>, windows: bool) -> Option<String> {
-    let encoding = encoding.map(str::trim).filter(|e| !e.is_empty()).unwrap_or("UTF-8");
-    if (!windows && is_utf8(encoding)) || sets(vm_args, STD_PROPERTIES) {
+fn spring_boot_file_encoding(args: &[String]) -> Option<Vec<String>> {
+    if !args.iter().any(|a| a == "spring-boot:run" || (a.contains(":spring-boot-maven-plugin:") && a.ends_with(":run")))
+    {
         return None;
     }
-    let added = options(STD_PROPERTIES, encoding).join(" ");
+    let option = format!("-D{FILE_ENCODING}=UTF-8");
+    let mut out = args.to_vec();
+    match out.iter_mut().rfind(|a| a.starts_with(SPRING_BOOT_JVM_ARGS)) {
+        Some(own) if sets(own, &[FILE_ENCODING]) => return None,
+        Some(own) => {
+            if own.len() > SPRING_BOOT_JVM_ARGS.len() {
+                own.push(' ');
+            }
+            own.push_str(&option);
+        }
+        None => out.push(format!("{SPRING_BOOT_JVM_ARGS}{option}")),
+    }
+    Some(out)
+}
+
+/// `vmArgs` of a launch by java-debug, which decodes the JVM's output as `encoding`
+/// (its launch attribute, UTF-8 when unset). java-debug sets `file.encoding` only
+/// when that attribute is nonblank; use the same defaults and user overrides as [`fix`].
+pub fn java_debug_vm_args(
+    vm_args: &str,
+    vars: &BTreeMap<String, String>,
+    inherited: impl Fn(&str) -> Option<String>,
+    encoding: Option<&str>,
+    windows: bool,
+) -> Option<String> {
+    let encoding = encoding.map(str::trim).filter(|e| !e.is_empty()).unwrap_or("UTF-8");
+    let added = fix_kind(Kind::Java, Some(&[vm_args.to_owned()]), vars, inherited, encoding, windows).java_args;
+    if added.is_empty() {
+        return None;
+    }
+    let added = added.join(" ");
     Some(match vm_args.trim() {
         "" => added,
         own => format!("{own} {added}"),
@@ -428,6 +493,64 @@ mod tests {
     }
 
     #[test]
+    fn spring_boot_run_forks_get_a_utf8_default_charset() {
+        let boot = |args: &[&str], env: &[(&str, &str)]| run("mvn.cmd", args, env, "UTF-8", true).args;
+        let utf8 = "-Dspring-boot.run.jvmArguments=-Dfile.encoding=UTF-8";
+        assert_eq!(boot(&["spring-boot:run"], &[]).unwrap(), ["spring-boot:run", utf8]);
+        let plugin = "org.springframework.boot:spring-boot-maven-plugin:3.2.0:run";
+        assert_eq!(boot(&["-pl", "app", plugin], &[]).unwrap(), ["-pl", "app", plugin, utf8]);
+        // The user's VM options are kept; their own `file.encoding` wins.
+        assert_eq!(
+            boot(&["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Xmx1g \"-Da=b c\""], &[]).unwrap(),
+            ["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Xmx1g \"-Da=b c\" -Dfile.encoding=UTF-8"]
+        );
+        assert_eq!(boot(&["spring-boot:run", "-Dspring-boot.run.jvmArguments="], &[]).unwrap()[1], utf8);
+        assert!(boot(&["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Dfile.encoding=GBK"], &[]).is_none());
+        assert!(boot(&["spring-boot:run"], &[(TOOL_OPTIONS, "-Dfile.encoding=GBK")]).is_none());
+        // Other goals and tools, other consoles, and other platforms are left alone.
+        assert!(boot(&["package"], &[]).is_none());
+        assert!(run("mvn", &["spring-boot:run"], &[], "GBK", true).args.is_none());
+        assert!(run("mvn", &["spring-boot:run"], &[], "UTF-8", false).args.is_none());
+    }
+
+    #[test]
+    fn forked_application_jvms_get_a_utf8_default_charset() {
+        // Reported: a Spring Boot app run by the build on Chinese Windows (JDK 8–17, GBK default).
+        for (tool, args) in [
+            ("C:\\p\\gradlew.bat", &["bootRun"][..]),
+            ("gradle", &[":app:run"]),
+            ("mvnw.cmd", &["spring-boot:run"]),
+            ("mvnd", &["org.springframework.boot:spring-boot-maven-plugin:2.7.18:run"]),
+        ] {
+            let f = run(tool, args, &[], "UTF-8", true);
+            let gradle = tool.contains("gradle");
+            assert_eq!(f.gradle_init_script, gradle, "{tool}");
+            assert_eq!(f.args.is_some(), !gradle, "{tool}");
+            // The build tool's own JVM keeps its default charset.
+            assert!(!tool_env(&f).unwrap().contains("file.encoding"), "{tool}");
+            // The user's choice, a GBK console and other platforms are left alone.
+            let own = run(tool, args, &[(TOOL_OPTIONS, "-Dfile.encoding=GBK")], "UTF-8", true);
+            assert!(!own.gradle_init_script && own.args.is_none(), "{tool}");
+            let gbk = run(tool, args, &[], "GBK", true);
+            assert!(!gbk.gradle_init_script && gbk.args.is_none(), "{tool}");
+            assert_eq!(run(tool, args, &[], "UTF-8", false), EncodingFix::default(), "{tool}");
+        }
+        // Shell command lines can't take arguments; other JVM tools fork no application.
+        assert!(!fix_command_line("gradlew bootRun", &BTreeMap::new(), |_| None, "UTF-8", true).gradle_init_script);
+        let sbt = run("sbt", &["run"], &[], "UTF-8", true);
+        assert!(!sbt.gradle_init_script && sbt.args.is_none());
+    }
+
+    #[test]
+    fn gradle_script_respects_the_builds_own_file_encoding() {
+        let s = GRADLE_FILE_ENCODING_SCRIPT;
+        assert!(s.contains("tasks.withType(JavaExec).configureEach"), "{s}");
+        assert!(s.contains("defaultCharacterEncoding = 'UTF-8'"), "{s}");
+        assert!(!s.contains("doFirst"), "the build must be able to override the default: {s}");
+        assert!(!s.contains("withType(Test)") && !s.contains("JavaCompile"), "{s}");
+    }
+
+    #[test]
     fn shell_command_lines_get_variables_from_their_first_word() {
         let line = |l: &str| fix_command_line(l, &BTreeMap::new(), |_| None, "UTF-8", true);
         for l in [
@@ -446,12 +569,53 @@ mod tests {
 
     #[test]
     fn java_debug_launches_write_what_java_debug_decodes() {
-        assert_eq!(java_debug_vm_args("", None, true).as_deref(), Some(TOOL_UTF8));
-        assert_eq!(java_debug_vm_args("-Xmx1g", Some(""), true), Some(format!("-Xmx1g {TOOL_UTF8}")));
-        assert_eq!(java_debug_vm_args("", Some("GBK"), true).unwrap().split(' ').next(), Some("-Dstdout.encoding=GBK"));
-        assert_eq!(java_debug_vm_args("-Dstdout.encoding=GBK", None, true), None);
-        assert_eq!(java_debug_vm_args("-Xmx1g", None, false), None);
-        assert!(java_debug_vm_args("", Some("GBK"), false).is_some());
+        let debug =
+            |args: &str, encoding, windows| java_debug_vm_args(args, &BTreeMap::new(), |_| None, encoding, windows);
+        for encoding in [None, Some(""), Some("  "), Some("UTF-8"), Some("utf8")] {
+            let streams = encoding.filter(|e| !e.trim().is_empty()).unwrap_or("UTF-8");
+            let utf8 = format!("{} -Dfile.encoding=UTF-8", options(STD_PROPERTIES, streams).join(" "));
+            assert_eq!(debug("", encoding, true), Some(utf8.clone()));
+            assert_eq!(debug("-Xmx1g", encoding, true), Some(format!("-Xmx1g {utf8}")));
+            assert_eq!(debug("-Xmx1g", encoding, false), None);
+        }
+        for windows in [true, false] {
+            assert_eq!(debug("", Some("GBK"), windows), Some(options(STD_PROPERTIES, "GBK").join(" ")));
+        }
+    }
+
+    #[test]
+    fn java_debug_preserves_user_options_independently() {
+        let debug = |args: &str| java_debug_vm_args(args, &BTreeMap::new(), |_| None, None, true);
+        assert_eq!(debug("-Dfile.encoding=GBK"), Some(format!("-Dfile.encoding=GBK {TOOL_UTF8}")));
+        for property in STD_PROPERTIES {
+            let args = format!("-D{property}=GBK");
+            assert_eq!(debug(&args), Some(format!("{args} -Dfile.encoding=UTF-8")));
+            assert_eq!(debug(&format!("{args} -Dfile.encoding=GBK")), None);
+        }
+        for key in ["JDK_JAVA_OPTIONS", TOOL_OPTIONS] {
+            for (own, expected) in [
+                ("-Dfile.encoding=GBK", Some(TOOL_UTF8.to_owned())),
+                ("-Dstdout.encoding=GBK", Some("-Dfile.encoding=UTF-8".to_owned())),
+                ("-Dstdout.encoding=GBK -Dfile.encoding=GBK", None),
+            ] {
+                assert_eq!(java_debug_vm_args("", &vars(&[(key, own)]), |_| None, None, true), expected);
+                assert_eq!(
+                    java_debug_vm_args("", &BTreeMap::new(), |k| (k == key).then(|| own.to_owned()), None, true),
+                    expected
+                );
+            }
+            // A launch environment value overrides the inherited one, as in Run.
+            assert_eq!(
+                java_debug_vm_args(
+                    "",
+                    &vars(&[(key, "")]),
+                    |k| (k == key).then(|| "-Dfile.encoding=GBK".into()),
+                    None,
+                    true
+                ),
+                Some(format!("{TOOL_UTF8} -Dfile.encoding=UTF-8"))
+            );
+        }
     }
 
     fn filtered(chunks: &[&str]) -> String {

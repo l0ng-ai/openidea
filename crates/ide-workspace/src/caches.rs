@@ -23,16 +23,26 @@ pub struct InvalidateCachesOptions {
 const MARKER: &str = "invalidate-caches.json";
 
 /// Data-directory folders removed for `options`.
-pub fn cache_dirs(data_dir: &Path, options: &InvalidateCachesOptions) -> Vec<PathBuf> {
-    let mut dirs = vec![data_dir.join("index")];
+pub fn cache_dirs(data_dir: &Path, local_data_dir: &Path, options: &InvalidateCachesOptions) -> Vec<PathBuf> {
+    let mut dirs = vec![local_data_dir.join("index")];
     if options.local_history {
         dirs.push(data_dir.join("history"));
     }
     if options.language_servers {
-        dirs.push(data_dir.join("lsp"));
+        dirs.push(local_data_dir.join("lsp"));
     }
     if options.build_caches {
-        dirs.push(data_dir.join("cache"));
+        dirs.push(local_data_dir.join("cache"));
+    }
+    // Also invalidate pre-migration caches so a later start cannot revive them.
+    if data_dir != local_data_dir {
+        dirs.push(data_dir.join("index"));
+        if options.language_servers {
+            dirs.push(data_dir.join("lsp"));
+        }
+        if options.build_caches {
+            dirs.push(data_dir.join("cache"));
+        }
     }
     dirs
 }
@@ -57,11 +67,11 @@ pub fn cancel(data_dir: &Path) {
 
 /// Carries out a scheduled invalidation (call at start-up, before projects
 /// open). Returns the folders removed.
-pub fn apply_pending(data_dir: &Path) -> Vec<PathBuf> {
+pub fn apply_pending(data_dir: &Path, local_data_dir: &Path) -> Vec<PathBuf> {
     let Some(options) = pending(data_dir) else { return Vec::new() };
     cancel(data_dir);
     let mut removed = Vec::new();
-    for dir in cache_dirs(data_dir, &options) {
+    for dir in cache_dirs(data_dir, local_data_dir, &options) {
         match fs::remove_dir_all(&dir) {
             Ok(()) => removed.push(dir),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -76,22 +86,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn split_roots_invalidate_local_caches_and_roaming_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("roaming");
+        let local = tmp.path().join("local");
+        let options = InvalidateCachesOptions { local_history: true, language_servers: true, build_caches: true };
+        assert_eq!(
+            cache_dirs(&data, &local, &options),
+            vec![
+                local.join("index"),
+                data.join("history"),
+                local.join("lsp"),
+                local.join("cache"),
+                data.join("index"),
+                data.join("lsp"),
+                data.join("cache")
+            ]
+        );
+        for path in cache_dirs(&data, &local, &options) {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::create_dir_all(local.join("tools")).unwrap();
+        schedule(&data, &options).unwrap();
+        assert_eq!(apply_pending(&data, &local).len(), 7);
+        assert!(local.join("tools").exists());
+        assert_eq!(pending(&data), None);
+    }
+
+    #[test]
     fn scheduled_invalidation_runs_once() {
         let tmp = tempfile::tempdir().unwrap();
         let data = tmp.path();
         for d in ["index/p1", "history/p1", "lsp/jdtls/x", "cache/p1/build", "tools/jdk"] {
             fs::create_dir_all(data.join(d)).unwrap();
         }
-        assert!(apply_pending(data).is_empty());
+        assert!(apply_pending(data, data).is_empty());
 
         let opts = InvalidateCachesOptions { local_history: true, language_servers: false, build_caches: true };
         schedule(data, &opts).unwrap();
         assert_eq!(pending(data), Some(opts));
-        let removed = apply_pending(data);
+        let removed = apply_pending(data, data);
         assert_eq!(removed, vec![data.join("index"), data.join("history"), data.join("cache")]);
         assert!(data.join("lsp/jdtls/x").exists() && data.join("tools/jdk").exists());
         assert_eq!(pending(data), None);
-        assert!(apply_pending(data).is_empty());
+        assert!(apply_pending(data, data).is_empty());
 
         schedule(data, &InvalidateCachesOptions::default()).unwrap();
         cancel(data);

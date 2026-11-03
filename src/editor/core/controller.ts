@@ -3,6 +3,7 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { pasteEditorClipboard } from "./cm/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
@@ -88,6 +89,7 @@ import { NavigationHistory } from "./model/navHistory";
 import { EditHistory } from "./model/editHistory";
 import { loadSession, restoreTabsState, serializeSession, storeSession, type FileViewState } from "./model/session";
 import { docBackend, type DocBackend } from "./backend";
+import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
@@ -169,6 +171,14 @@ function isTextTab(tab: Tab | null | undefined): tab is Tab & { input: { path: s
 
 type EditorKinds = ReturnType<typeof useContributions.getState>["editorKinds"];
 
+interface OpenRequest {
+  project: number;
+  admission: number;
+  sequence: number;
+  activation: number;
+  pane: string;
+}
+
 /** Tab title of an editor input: the file name, or what its editor kind calls it. */
 export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
   if (input.kind === "file") return basename(input.path ?? input.key);
@@ -221,6 +231,10 @@ export class EditorController implements SlotHost {
   private closeCommitted = false;
   private projectGeneration = 0;
   private admissionGeneration = 0;
+  private openSequence = 0;
+  private selectionRequests = new Map<string, number>();
+  private activationGeneration = 0;
+  private admitting = false;
   private closeRequests = 0;
   private projectTransition: Promise<void> = Promise.resolve();
 
@@ -244,6 +258,11 @@ export class EditorController implements SlotHost {
       useTabs.subscribe((s) => {
         const prev = prevTabs;
         prevTabs = s;
+        if (
+          !this.admitting &&
+          (s.activePane !== prev.activePane || s.panes[s.activePane]?.active !== prev.panes[prev.activePane]?.active)
+        )
+          ++this.activationGeneration;
         this.stampActive(s);
         this.onTabsChanged(prev, s);
       }),
@@ -345,6 +364,7 @@ export class EditorController implements SlotHost {
     this.preparedDocuments.clear();
     for (const slot of this.slots.values()) slot.dispose();
     this.slots.clear();
+    this.selectionRequests.clear();
     this.manager.stop();
     useTabs.setState(initialTabsState(), true);
     void this.releaseDocuments(documents.values()).catch((e) => this.documentError(e));
@@ -359,6 +379,7 @@ export class EditorController implements SlotHost {
   private onTabsChanged(prev: TabsState, next: TabsState) {
     const live = new Set<string>();
     for (const p of Object.values(next.panes)) for (const t of p.tabs) live.add(t.id);
+    for (const id of this.selectionRequests.keys()) if (!live.has(id)) this.selectionRequests.delete(id);
     for (const [id, slot] of this.slots) {
       if (!live.has(id)) {
         this.slots.delete(id);
@@ -527,7 +548,9 @@ export class EditorController implements SlotHost {
     if (active?.id === slot.tabId) this.setActiveSlot(slot);
     if (slot.wantsFocus) {
       slot.wantsFocus = false;
-      requestAnimationFrame(() => slot.focus());
+      requestAnimationFrame(() => {
+        if (!slot.disposed && this.activeTabOf()?.id === slot.tabId) slot.focus();
+      });
     }
   }
 
@@ -641,18 +664,7 @@ export class EditorController implements SlotHost {
         icon: "paste",
         shortcut: "⌘V",
         disabled: view.state.readOnly,
-        run: () => {
-          void navigator.clipboard
-            ?.readText()
-            .then((text) => {
-              view.dispatch(view.state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
-              view.focus();
-            })
-            .catch(() => {
-              view.focus();
-              document.execCommand("paste");
-            });
-        },
+        run: () => void pasteEditorClipboard(view),
       },
       { kind: "separator" },
       {
@@ -858,8 +870,15 @@ export class EditorController implements SlotHost {
 
   // --- opening ---------------------------------------------------------------------------
 
-  private openingGeneration() {
-    const generation = { project: this.projectGeneration, admission: this.admissionGeneration };
+  private openingGeneration(o: OpenOptions): OpenRequest {
+    const s = useTabs.getState();
+    const generation = {
+      project: this.projectGeneration,
+      admission: this.admissionGeneration,
+      sequence: ++this.openSequence,
+      activation: this.activationGeneration,
+      pane: o.pane && s.panes[o.pane] ? o.pane : s.activePane,
+    };
     this.checkOpening(generation);
     return generation;
   }
@@ -870,9 +889,33 @@ export class EditorController implements SlotHost {
       throw new Error("The project is closing");
   }
 
-  async openFile(path: string, o: OpenOptions = {}) {
-    const generation = this.openingGeneration();
-    if (isVirtualUri(path)) return this.openVirtual(path, o);
+  private isCurrentOpening(generation: OpenRequest) {
+    return (
+      generation.project === this.projectGeneration &&
+      generation.admission === this.admissionGeneration &&
+      generation.sequence === this.openSequence &&
+      generation.activation === this.activationGeneration
+    );
+  }
+
+  async openFile(path: string, o: OpenOptions = {}): Promise<void> {
+    return this.openFileRequest(path, o, this.openingGeneration(o));
+  }
+
+  private async openFileRequest(path: string, o: OpenOptions, generation: OpenRequest): Promise<void> {
+    if (isVirtualUri(path)) return this.openVirtualRequest(path, o, generation);
+    if (isClassFile(path)) {
+      await this.projectTransition;
+      this.checkOpening(generation);
+      try {
+        const target = await call(commands.lspResolveClassFile(path));
+        this.checkOpening(generation);
+        return this.openFileRequest(target, o, generation);
+      } catch (e) {
+        notifications().notify({ level: "warning", title: "Cannot open library class", body: String(e), group: "lsp" });
+        return;
+      }
+    }
     await this.projectTransition;
     this.checkOpening(generation);
     // Images, binary and huge files open in a contributed viewer unless already open as text.
@@ -892,7 +935,10 @@ export class EditorController implements SlotHost {
 
   /** Opens the library class (or other server-provided document) behind `uri` read-only. */
   async openVirtual(uri: string, o: OpenOptions = {}) {
-    const generation = this.openingGeneration();
+    return this.openVirtualRequest(uri, o, this.openingGeneration(o));
+  }
+
+  private async openVirtualRequest(uri: string, o: OpenOptions, generation: OpenRequest) {
     await this.projectTransition;
     this.checkOpening(generation);
     let vd: VirtualDocument;
@@ -911,13 +957,14 @@ export class EditorController implements SlotHost {
   }
 
   async openInput(input: EditorInput, o: OpenOptions = {}) {
-    return this.admitInput(input, o, this.openingGeneration());
+    if (input.path && isClassFile(input.path)) return this.openFile(input.path, o);
+    return this.admitInput(input, o, this.openingGeneration(o));
   }
 
   private async admitInput(
     input: EditorInput,
     o: OpenOptions,
-    generation: { project: number; admission: number },
+    generation: OpenRequest,
     resolution?: FileEditorResolution,
   ) {
     await this.projectTransition;
@@ -927,7 +974,14 @@ export class EditorController implements SlotHost {
     this.navSuppress++;
     try {
       let s = useTabs.getState();
-      let paneId = o.pane && s.panes[o.pane] ? o.pane : s.activePane;
+      const activate = this.isCurrentOpening(generation);
+      const preview =
+        !!o.preview &&
+        editorPrefs().tabs.previewTab &&
+        !documentLifecycle(input, useContributions.getState().editorKinds);
+      if (!activate && preview) return;
+      let paneId = s.panes[generation.pane] ? generation.pane : activate ? s.activePane : null;
+      if (!paneId) return;
       if (o.side) {
         const right = neighbourPane(s, paneId);
         if (right) paneId = right;
@@ -938,34 +992,44 @@ export class EditorController implements SlotHost {
           // The new pane starts with only the requested input.
           const pane = s.panes[paneId]!;
           s = { ...s, panes: { ...s.panes, [paneId]: { ...pane, tabs: [], active: null, mru: [] } } };
+          if (!activate) s = { ...s, activePane: useTabs.getState().activePane };
         }
       }
       const found = findTab(s, input.key, paneId);
       let tabId: string;
       if (found && (!(o.side || o.pane) || found.paneId === paneId)) {
         paneId = found.paneId;
-        s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
+        if (activate) s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
         if (!o.preview || documentLifecycle(input, useContributions.getState().editorKinds))
           s = promoteTab(s, paneId, found.tab.id);
         tabId = found.tab.id;
-        if (found.tab.input.data !== input.data && input.data !== undefined)
+        if (activate && found.tab.input.data !== input.data && input.data !== undefined)
           s = openTab(s, paneId, input, {
             preview: o.preview && !documentLifecycle(input, useContributions.getState().editorKinds),
+            activate,
           }).state;
       } else {
         const tabs = editorPrefs().tabs;
-        const preview =
-          !!o.preview && tabs.previewTab && !documentLifecycle(input, useContributions.getState().editorKinds);
         const r = openTab(s, paneId, input, {
           preview,
+          activate,
+          preservePreview: !activate,
           ...(tabs.openAtEnd ? { index: s.panes[paneId]?.tabs.length ?? 0 } : {}),
         });
         s = r.state;
         tabId = r.tabId;
         if (tabs.sortAlphabetically) s = sortTabs(s, paneId, (t) => tabSortKey(t.input));
       }
-      resolution?.admit();
-      useTabs.setState(s, true);
+      if (o.selection)
+        this.selectionRequests.set(tabId, Math.max(generation.sequence, this.selectionRequests.get(tabId) ?? 0));
+      this.admitting = true;
+      try {
+        resolution?.admit();
+        useTabs.setState(s, true);
+      } finally {
+        this.admitting = false;
+      }
+      const canFocus = () => this.isCurrentOpening(generation) && this.activeTabOf()?.id === tabId;
       const tabPrefs = editorPrefs().tabs;
       await this.removeGuarded(
         (current) =>
@@ -978,19 +1042,26 @@ export class EditorController implements SlotHost {
                 (tab) =>
                   inputDirty(tab.input, useContributions.getState().editorKinds) ??
                   !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
-                tabId,
+                activate ? tabId : (current.panes[paneId]?.active ?? tabId),
                 (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true,
               )
             : current,
         { protect: (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true },
       );
       if (!isTextInput(input)) {
-        if (o.focus !== false) requestAnimationFrame(() => this.focus());
+        if (o.focus !== false)
+          requestAnimationFrame(() => {
+            if (canFocus()) this.focus();
+          });
         return;
       }
       const slot = await this.ensureSlot(tabId);
       if (!slot) return;
-      if (o.selection) {
+      if (
+        o.selection &&
+        this.selectionRequests.get(tabId) === generation.sequence &&
+        generation.activation === this.activationGeneration
+      ) {
         const state = slot.currentState();
         const toOffset = (line: number, col: number) => {
           const l = state.doc.line(Math.min(Math.max(1, line + 1), state.doc.lines));
@@ -1002,7 +1073,7 @@ export class EditorController implements SlotHost {
         // Selection runs anchor→head; place the caret at the start like IDEA's navigation.
         slot.reveal({ anchor: head, head: anchor, center: true });
       }
-      if (o.focus !== false) {
+      if (o.focus !== false && canFocus()) {
         if (slot.view) slot.focus();
         else slot.wantsFocus = true;
       }
@@ -1013,12 +1084,19 @@ export class EditorController implements SlotHost {
   }
 
   activate(paneId: string, tabId: string, focus = true) {
+    ++this.activationGeneration;
     useTabs.setState((s) => activateTab(setActivePane(s, paneId), paneId, tabId), true);
     if (focus) {
       const slot = this.slots.get(tabId);
       if (slot?.view) slot.focus();
       else if (slot) slot.wantsFocus = true;
-      else void this.ensureSlot(tabId).then((sl) => sl && (sl.view ? sl.focus() : (sl.wantsFocus = true)));
+      else
+        void this.ensureSlot(tabId).then((sl) => {
+          if (sl && this.activeTabOf()?.id === tabId) {
+            if (sl.view) sl.focus();
+            else sl.wantsFocus = true;
+          }
+        });
     }
   }
 
@@ -1468,6 +1546,11 @@ export class EditorController implements SlotHost {
     return [...out];
   }
 
+  /** Input of the tab `tabId` in pane `paneId` (dragging a tab between views), null if there is none. */
+  tabInput(paneId: string, tabId: string): EditorInput | null {
+    return useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId)?.input ?? null;
+  }
+
   closePath(path: string): Promise<boolean> {
     return this.removeGuarded((s) => {
       const keys = new Set<string>();
@@ -1692,7 +1775,10 @@ export class EditorController implements SlotHost {
             { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
             { kind: "separator" },
           ] as MenuItem[])
-        : []),
+        : [
+            // Contributed groups for tabs without a file (e.g. "Open in Tool Window").
+            ...menuGroupItems("editorTab", { paths: [], input: tab.input }),
+          ]),
       { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
     ];
   }

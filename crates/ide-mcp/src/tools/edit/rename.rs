@@ -344,7 +344,7 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
     let mut files: Vec<&Path> = Vec::new();
     let mut usages = 0;
     for f in &edit.files {
-        if let FileEdit::Edit { path, edits } = f {
+        if let FileEdit::Edit { path, edits, .. } = f {
             usages += edits.len();
             if !files.contains(&&**path) {
                 files.push(path);
@@ -396,7 +396,7 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
         })
         .collect();
     let (h, w) = (host.clone(), window.to_owned());
-    let written = host.blocking(move || ide_host::ops::lsp::apply_workspace_edit(&h, &w, edit)).await;
+    let written = ide_host::ops::lsp::apply_workspace_edit(&h, &w, edit).await;
     // A failed write may have changed some of the files already.
     for path in &touched {
         call.record_change(path);
@@ -852,7 +852,7 @@ async fn add_text_occurrences(call: &Call, edit: &mut WorkspaceEdit, req: &Reque
     for (path, range) in found {
         let text_edit = TextEdit { range, new_text: req.new_name.clone() };
         let entry = edit.files.iter_mut().find_map(|f| match f {
-            FileEdit::Edit { path: p, edits } if super::same_file(p, &path) => Some(edits),
+            FileEdit::Edit { path: p, edits, .. } if super::same_file(p, &path) => Some(edits),
             _ => None,
         });
         match entry {
@@ -863,7 +863,7 @@ async fn add_text_occurrences(call: &Call, edit: &mut WorkspaceEdit, req: &Reque
                     edits.push(text_edit);
                 }
             }
-            None => edit.files.push(FileEdit::Edit { path: path.into(), edits: vec![text_edit] }),
+            None => edit.files.push(FileEdit::Edit { path: path.into(), edits: vec![text_edit], version: None }),
         }
     }
     Ok(())

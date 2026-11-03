@@ -198,9 +198,8 @@ export async function openConflictsInstead(): Promise<boolean> {
   return true;
 }
 
-export async function mergeIntoCurrent(branch: string) {
-  const repo = currentRepo();
-  const current = useVcs.getState().branch?.head ?? "HEAD";
+export async function mergeIntoCurrent(branch: string, repo: string | null = currentRepo()) {
+  const current = (repo === currentRepo() ? useVcs.getState().branch?.head : null) ?? "HEAD";
   await saveAll();
   await runOp(`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(repo, branch)), {
     success: `Merged ${branch} into ${current}`,

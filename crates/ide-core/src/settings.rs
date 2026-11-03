@@ -60,6 +60,68 @@ pub struct Settings {
     pub run_targets: Vec<RunTarget>,
     /// Tools › MCP Server (global only).
     pub mcp: crate::mcp::McpSettings,
+    pub cmake: CMakeSettings,
+    /// Tools › Agents › Chat.
+    pub agents: AgentSettings,
+    /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
+    #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
+    pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
+}
+
+/// What the meters in an agent task's header show.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSettings {
+    /// Context window use.
+    pub show_context_usage: bool,
+    /// Time the agent spent on the task.
+    pub show_work_time: bool,
+    /// The account's usage-limit windows (Claude's 5-hour and weekly limits).
+    pub show_usage_limits: bool,
+    /// What the session has cost so far, as the agent reports it.
+    pub show_cost: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
+    }
+}
+
+/// Absent profiles retain automatic discovery for existing projects.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub profiles: Option<Vec<CMakeProfile>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeProfile {
+    pub name: String,
+    pub build_type: String,
+    pub generator: String,
+    pub cmake_args: Vec<String>,
+    /// Empty uses cmake-build-<lowercase build type>.
+    pub build_dir: String,
+    pub build_args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for CMakeProfile {
+    fn default() -> Self {
+        Self {
+            name: "Debug".into(),
+            build_type: "Debug".into(),
+            generator: String::new(),
+            cmake_args: Vec::new(),
+            build_dir: String::new(),
+            build_args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -157,6 +219,9 @@ impl Default for Settings {
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
             mcp: crate::mcp::McpSettings::default(),
+            cmake: CMakeSettings::default(),
+            agents: AgentSettings::default(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -200,7 +265,7 @@ impl Default for GeneralSettings {
     fn default() -> Self {
         Self {
             reopen_last_project: true,
-            confirm_exit: false,
+            confirm_exit: true,
             open_project_in: "ask".into(),
             default_project_directory: String::new(),
             save_on_idle: false,
@@ -265,7 +330,8 @@ impl Default for NotificationGroupSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
-    /// `dark` | `light` | `system` | `dark-hc` (high-contrast dark)
+    /// A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
+    /// "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
     pub theme: String,
     pub accent: String,
     pub ui_font_size: f32,
@@ -274,11 +340,15 @@ pub struct AppearanceSettings {
     pub sync_with_os: bool,
     pub preferred_light_theme: String,
     pub preferred_dark_theme: String,
+    /// A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons.
+    pub file_icon_theme: String,
     /// IDE zoom in percent (50–300).
     pub zoom: u32,
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
     pub use_custom_font: bool,
     pub ui_font_family: String,
+    /// Font tried when `ui_font_family` lacks a glyph; empty = none.
+    pub ui_font_fallback: String,
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
@@ -295,6 +365,7 @@ pub struct AppearanceSettings {
     pub editor_antialiasing: String,
     pub show_tool_window_bars: bool,
     pub show_tool_window_names: bool,
+    pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
@@ -325,9 +396,11 @@ impl Default for AppearanceSettings {
             sync_with_os: false,
             preferred_light_theme: "light".into(),
             preferred_dark_theme: "dark".into(),
+            file_icon_theme: String::new(),
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
+            ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
             different_tool_window_background: false,
@@ -341,6 +414,7 @@ impl Default for AppearanceSettings {
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
             show_tool_window_names: false,
+            show_tool_window_badges: true,
             widescreen_tool_windows: false,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
@@ -503,10 +577,91 @@ impl Default for FileSettings {
 pub struct LanguagesSettings {
     pub python: PythonSettings,
     pub node: NodeSettings,
+    pub php: PhpSettings,
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
+    pub prettier: ExternalFormatterSettings,
+    pub oxfmt: ExternalFormatterSettings,
     pub java: JavaSettings,
+    pub ruby: RubySettings,
+    pub markdown: MarkdownSettings,
+}
+
+/// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MarkdownSettings {
+    /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
+    pub preview_font_size: Option<u32>,
+}
+
+impl LanguagesSettings {
+    pub fn formatter(&self, tool: ExternalFormatter) -> &ExternalFormatterSettings {
+        match tool {
+            ExternalFormatter::Prettier => &self.prettier,
+            ExternalFormatter::Oxfmt => &self.oxfmt,
+        }
+    }
+}
+
+/// A formatter that runs outside the language servers, with its own settings group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ExternalFormatter {
+    Prettier,
+    Oxfmt,
+}
+
+impl ExternalFormatter {
+    /// The name of the tool in the tool registry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Prettier => "prettier",
+            Self::Oxfmt => "oxfmt",
+        }
+    }
+}
+
+/// An external formatter (Prettier, oxfmt) and the languages it formats.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExternalFormatterSettings {
+    /// Empty path: project node_modules, managed installation, then PATH.
+    pub path: String,
+    pub languages: Vec<String>,
+    /// Prefer this formatter even when a language server offers formatting.
+    pub prefer: bool,
+    pub run_on_save: bool,
+}
+
+impl Default for ExternalFormatterSettings {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            languages: [
+                "markdown",
+                "yaml",
+                "css",
+                "scss",
+                "less",
+                "html",
+                "graphql",
+                "javascript",
+                "javascriptreact",
+                "typescript",
+                "typescriptreact",
+                "json",
+                "jsonc",
+                "vue",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            prefer: false,
+            run_on_save: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -522,6 +677,20 @@ impl Default for PythonSettings {
     fn default() -> Self {
         Self { interpreter: String::new(), activate_virtualenv: true }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PhpSettings {
+    /// `php` CLI executable; empty = the one on `PATH`.
+    pub interpreter: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RubySettings {
+    /// Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH).
+    pub interpreter: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -628,6 +797,19 @@ pub struct GradleSettings {
     pub home: String,
     /// Empty = Gradle's default user home.
     pub user_home: String,
+    /// IDEA's "Build and run using": who builds and launches an Application main.
+    pub run_using: GradleRunUsing,
+}
+
+/// IDEA's "Build and run using" for Gradle builds; IDEA defaults to Gradle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GradleRunUsing {
+    /// A `JavaExec` task on the source set's runtime classpath (`gradleRun.gradle`).
+    #[default]
+    Gradle,
+    /// The Java language server's classpath, launched by OpenIDEA.
+    Ide,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -723,6 +905,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cmake_profile_argument_arrays_round_trip() {
+        let mut settings = Settings::default();
+        assert!(settings.cmake.profiles.is_none());
+        assert!(CMakeProfile::default().cmake_args.is_empty());
+        assert!(CMakeProfile::default().build_args.is_empty());
+        let profile = CMakeProfile {
+            cmake_args: ["-DMESSAGE=two words", "-DQUOTE=\"hello\"", ""].map(String::from).into(),
+            build_args: ["-j", "8", "--", "LABEL=it's a build"].map(String::from).into(),
+            ..Default::default()
+        };
+        settings.cmake.profiles = Some(vec![profile.clone()]);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["cmake"]["profiles"][0]["cmakeArgs"], serde_json::json!(profile.cmake_args));
+        assert_eq!(value["cmake"]["profiles"][0]["buildArgs"], serde_json::json!(profile.build_args));
+        assert_eq!(serde_json::from_value::<Settings>(value).unwrap(), settings);
+    }
+
+    #[test]
+    fn ui_font_fallback_defaults_empty_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"useCustomFont":true}}"#).unwrap();
+        assert!(old.appearance.ui_font_fallback.is_empty());
+        for family in ["", "Songti SC", "Maple Mono NF CN"] {
+            let mut settings = Settings::default();
+            settings.appearance.ui_font_fallback = family.into();
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["appearance"]["uiFontFallback"], family);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.appearance.ui_font_fallback, family);
+        }
+    }
+
+    #[test]
+    fn tool_window_badges_default_on_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"showToolWindowNames":true}}"#).unwrap();
+        assert!(old.appearance.show_tool_window_badges);
+        assert!(Settings::default().appearance.show_tool_window_badges);
+        for enabled in [false, true] {
+            let mut settings = Settings::default();
+            settings.appearance.show_tool_window_badges = enabled;
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["appearance"]["showToolWindowBadges"], enabled);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.appearance.show_tool_window_badges, enabled);
+        }
+    }
+
+    #[test]
+    fn agent_meters_default_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        assert!(old.agents.show_cost);
+        assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
+        assert!(!Settings::default().agents.show_cost);
+        let mut settings = Settings::default();
+        settings.agents.show_usage_limits = false;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["agents"]["showUsageLimits"], false);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.agents, settings.agents);
+    }
+
+    #[test]
     fn main_menu_style_defaults_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
         assert_eq!(old.appearance.main_menu_style, "hamburger");
@@ -807,6 +1050,7 @@ mod gradle_settings_tests {
                 distribution,
                 home: "/gradle".into(),
                 user_home: "/cache/gradle".into(),
+                run_using: GradleRunUsing::Ide,
             };
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);

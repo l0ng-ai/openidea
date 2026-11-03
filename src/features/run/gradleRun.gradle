@@ -1,0 +1,31 @@
+// OpenIDEA: runs a main class on its Gradle source set's runtime classpath, like IntelliJ
+// IDEA's "Build and run using: Gradle" (ApplicationTaskInitScript.gradle). Parameters come
+// as system properties so this file never changes: see `gradleRun.ts`.
+import groovy.json.JsonSlurper
+
+def target = System.getProperty('openidea.run.project')
+if (target != null) {
+    allprojects { p ->
+        // `target` is an identity path (`:lib:core` for a project of an included build).
+        def id = { try { p.identityPath.toString() } catch (ignored) { p.path } }
+        if (id() != target) return
+        p.plugins.withId('java') {
+            def json = new JsonSlurper()
+            def list = { String key -> (List) json.parseText(System.getProperty(key, '[]')) }
+            p.tasks.register('openideaRun', JavaExec) { t ->
+                t.description = 'Runs a main class for OpenIDEA.'
+                t.classpath = p.sourceSets.getByName(System.getProperty('openidea.run.sourceSet', 'main')).runtimeClasspath
+                t.mainClass.set(System.getProperty('openidea.run.main'))
+                t.args(list('openidea.run.args'))
+                t.jvmArgs(list('openidea.run.jvmArgs'))
+                // The IDE attaches to this JVM, not to the Gradle daemon; port 0 prints the one picked.
+                if (Boolean.getBoolean('openidea.run.debug')) {
+                    t.jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')
+                }
+                def dir = System.getProperty('openidea.run.workingDir')
+                if (dir) t.workingDir = dir
+                t.standardInput = System.in
+            }
+        }
+    }
+}

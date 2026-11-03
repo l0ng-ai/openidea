@@ -22,6 +22,7 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),

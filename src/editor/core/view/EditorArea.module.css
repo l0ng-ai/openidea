@@ -90,6 +90,10 @@
   background: var(--bg-feedback-warning);
   border-bottom-color: var(--border-feedback-warning);
 }
+.virtualBannerText {
+  min-width: 0;
+  padding: 8px 0;
+}
 .bannerText {
   flex: none;
   white-space: nowrap;

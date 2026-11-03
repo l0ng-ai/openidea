@@ -1,20 +1,47 @@
 /** Agents tool window: tasks grouped by what they need from the user. */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import clsx from "clsx";
 import type { AgentStatus as Status, AgentTask } from "@/bindings";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
-import { EmptyState, Icon, IconButton, Spinner, T, Tree, showContextMenu } from "@/ui";
-import { SESSION_KIND, age, branchLabel, groupTasks, type TaskGroup } from "./model";
-import { openHome, openTask, useAgents } from "./store";
+import { EDITOR_TAB_MIME, maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  Popup,
+  Spinner,
+  T,
+  Tree,
+  registerDropTarget,
+  showContextMenu,
+  startPointerDrag,
+} from "@/ui";
+import { SESSION_KIND, TASK_DRAG, age, branchLabel, groupTasks, sessionKey, type TaskGroup } from "./model";
+import { openHome, useAgents } from "./store";
 import { taskMenu } from "./taskActions";
+import { SessionEditor } from "./SessionEditor";
+import { HomeEditor } from "./HomeEditor";
 import styles from "./Agents.module.css";
 import { basename, useProject } from "@/platform/project";
 import { useTx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
 
 export function AgentsHeaderActions() {
+  return <IconButton icon="plus" action="agents.newTask" size="small" />;
+}
+
+export function AgentsLocationActions() {
+  const location = useAgents((s) => s.sessionLocation);
+  const tx = useTx();
   return (
-    <>
-      <IconButton icon="plus" action="agents.newTask" size="small" />
-    </>
+    <div role="group" aria-label={tx("Conversation location")} className={styles.location}>
+      <IconButton
+        icon="open-in-tool-window"
+        action="agents.useToolWindow"
+        pressed={location === "toolWindow"}
+        size="small"
+      />
+      <IconButton icon="editor-only" action="agents.useEditor" pressed={location === "editor"} size="small" />
+    </div>
   );
 }
 
@@ -24,6 +51,18 @@ const nodeKey = (n: Node) => (n.kind === "group" ? `g:${n.group.status}` : n.tas
 
 const sessionTask = (input: EditorInput | null | undefined) =>
   input?.kind === SESSION_KIND ? (input.data as { task?: string } | undefined)?.task : undefined;
+
+/** The task of an editor tab drag payload (session tabs only), null for anything else. */
+const sessionPayloadTask = (payload: string): string | null => {
+  try {
+    const p = JSON.parse(payload) as { paneId?: unknown; tabId?: unknown };
+    if (typeof p.paneId !== "string" || typeof p.tabId !== "string") return null;
+    const input = maybeEditorService()?.tabInput?.(p.paneId, p.tabId);
+    return input?.kind === SESSION_KIND ? ((input.data as { task?: string }).task ?? null) : null;
+  } catch {
+    return null;
+  }
+};
 
 export function TaskStatusIcon({ status }: { status: Status }) {
   switch (status) {
@@ -51,6 +90,11 @@ export function AgentsView() {
   const tasks = useAgents((s) => s.tasks);
   const unread = useAgents((s) => s.unread);
   const providers = useAgents((s) => s.providers);
+  const docked = useAgents((s) => s.docked);
+  const homeOpen = useAgents((s) => s.homeOpen);
+  const inline = docked !== null || homeOpen;
+  const historyRef = useRef<HTMLButtonElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
     const task = sessionTask(maybeEditorService()?.activeInput?.());
@@ -71,6 +115,23 @@ export function AgentsView() {
   );
   const roots = useMemo<Node[]>(() => groupTasks(tasks.values()).map((group) => ({ kind: "group", group })), [tasks]);
   const expanded = useMemo(() => new Set(roots.map(nodeKey).filter((k) => !collapsed.has(k))), [roots, collapsed]);
+  // Dropping a session editor tab anywhere on the tool window docks it.
+  const viewRef = useRef<HTMLDivElement>(null);
+  const [tabOver, setTabOver] = useState(false);
+  useEffect(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === EDITOR_TAB_MIME,
+      over: (data) => setTabOver(sessionPayloadTask(data.payload) != null),
+      leave: () => setTabOver(false),
+      drop: (data) => {
+        setTabOver(false);
+        const task = sessionPayloadTask(data.payload);
+        if (task) void executeAction("agents.dockTask", task);
+      },
+    });
+  }, [loaded, error]);
   if (!loaded)
     return (
       <div className={styles.loading}>
@@ -79,9 +140,17 @@ export function AgentsView() {
     );
   if (error) return <EmptyState title="Cannot load agent tasks">{error}</EmptyState>;
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+  // Opening any session follows the global placement preference.
+  const showTask = (task: string) => {
+    setHistoryOpen(false);
+    void executeAction("agents.openTask", task);
+  };
+  const dockedTitle = docked ? (tasks.get(docked)?.title ?? docked) : null;
+  const dragTask = (e: ReactPointerEvent<HTMLSpanElement>, task: string) =>
+    startPointerDrag(e, e.currentTarget, { type: TASK_DRAG, payload: task });
 
-  return (
-    <div className={styles.view}>
+  const taskList = (
+    <div className={styles.tasks}>
       <Tree<Node>
         aria-label="Agent tasks"
         roots={roots}
@@ -103,9 +172,9 @@ export function AgentsView() {
         selected={selected}
         onSelectionChange={(sel, lead) => {
           setSelected(sel);
-          if (sel.size === 1 && lead?.kind === "task" && sel.has(lead.task.id)) openTask(lead.task.id);
+          if (!inline && sel.size === 1 && lead?.kind === "task" && sel.has(lead.task.id)) showTask(lead.task.id);
         }}
-        onActivate={(n) => n.kind === "task" && openTask(n.task.id)}
+        onActivate={(n) => n.kind === "task" && showTask(n.task.id)}
         onContextMenu={(n, sel, e) => {
           if (n?.kind !== "task") return;
           const selection = [...sel].flatMap((id) => {
@@ -123,7 +192,14 @@ export function AgentsView() {
               <span className={styles.count}>{n.group.tasks.length}</span>
             </span>
           ) : (
-            <span className={styles.row} title={n.task.error ?? n.task.title}>
+            <span
+              className={styles.row}
+              title={n.task.error ?? n.task.title}
+              onPointerDown={(e) => dragTask(e, n.task.id)}
+              onClick={(e) => {
+                if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
+              }}
+            >
               <TaskStatusIcon status={n.task.status} />
               <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
                 {n.task.title}
@@ -153,6 +229,69 @@ export function AgentsView() {
           </div>
         }
       />
+    </div>
+  );
+
+  return (
+    <div ref={viewRef} className={clsx(styles.view, tabOver && styles.dropTarget)}>
+      <div className={styles.content}>
+        {inline && (
+          <div className={styles.docked}>
+            <div className={styles.dockedBar}>
+              <IconButton
+                ref={historyRef}
+                icon="history"
+                title="Agent sessions"
+                size="small"
+                aria-haspopup="dialog"
+                aria-expanded={historyOpen}
+                onClick={() => {
+                  setSelected(new Set(docked ? [docked] : []));
+                  setHistoryOpen((open) => !open);
+                }}
+              />
+              <span
+                className={styles.dockedTitle}
+                title={dockedTitle ?? undefined}
+                onPointerDown={(e) => docked && dragTask(e, docked)}
+              >
+                {homeOpen ? <T>New Agent Task</T> : dockedTitle}
+              </span>
+            </div>
+            <div className={styles.dockedSession}>
+              {homeOpen ? (
+                <HomeEditor docked />
+              ) : (
+                docked && (
+                  <SessionEditor
+                    docked
+                    input={{
+                      kind: SESSION_KIND,
+                      key: sessionKey(docked),
+                      data: { task: docked, title: tasks.get(docked)?.title },
+                    }}
+                  />
+                )
+              )}
+            </div>
+          </div>
+        )}
+        {!inline && taskList}
+        {inline && (
+          <Popup
+            open={historyOpen}
+            anchor={historyRef}
+            onClose={() => setHistoryOpen(false)}
+            aria-label={tx("Agent sessions")}
+            className={styles.history}
+          >
+            <div className={styles.historyTitle}>
+              <T>Agent sessions</T>
+            </div>
+            {taskList}
+          </Popup>
+        )}
+      </div>
     </div>
   );
 }

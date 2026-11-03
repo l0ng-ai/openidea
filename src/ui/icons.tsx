@@ -21,6 +21,7 @@
  */
 import { useId, useMemo, type CSSProperties } from "react";
 import clsx from "clsx";
+import { create } from "zustand";
 import styles from "./icons.module.css";
 
 const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg"], {
@@ -76,6 +77,7 @@ const ICONS = {
   "file-npm": "openidea/fileTypes/npm",
   "file-vue": "fileTypes/vue",
   "file-svelte": "openidea/fileTypes/svelte",
+  "file-jsp": "openidea/fileTypes/jsp",
   "file-yaml": "fileTypes/yaml",
   "file-toml": "fileTypes/toml",
   "file-html": "fileTypes/html",
@@ -121,14 +123,17 @@ const ICONS = {
   "file-go": "openidea/fileTypes/go",
   "file-gomod": "openidea/fileTypes/goMod",
   "file-gowork": "openidea/fileTypes/goWork",
-  "file-rust": "openidea/fileTypes/rust",
-  "file-cargo": "openidea/fileTypes/cargo",
+  "file-rust": "fileTypes/rust",
+  "file-cargo": "fileTypes/cargo",
+  "file-cargo-lock": "fileTypes/cargoLock",
   "file-ruby": "openidea/fileTypes/ruby",
   "file-lua": "openidea/fileTypes/lua",
   "file-zig": "openidea/fileTypes/zig",
   "file-gdscript": "openidea/fileTypes/gdscript",
   "file-godot": "openidea/fileTypes/godot",
   "file-gdshader": "openidea/fileTypes/gdshader",
+  "file-asciidoc": "openidea/fileTypes/asciidoc",
+  "file-d": "openidea/fileTypes/d",
   "file-dart": "openidea/fileTypes/dart",
   "file-elixir": "openidea/fileTypes/elixir",
   "file-erlang": "openidea/fileTypes/erlang",
@@ -238,6 +243,8 @@ const ICONS = {
   hide: "general/hide",
   pin: "general/pin",
   eye: "general/show",
+  "show-read-access": "actions/showReadAccess",
+  "show-write-access": "actions/showWriteAccess",
   lock: "general/locked",
   unlock: "openidea/general/unlocked",
   scratches: "fileTypes/scratches",
@@ -394,6 +401,8 @@ const ICONS = {
   library: "nodes/library",
   // VCS
   commit: "vcs/commit",
+  "resolve-continue": "vcs/resolveContinue",
+  "vcs-abort": "vcs/abort",
   branch: "general/vcs",
   "git-pull": "vcs/update",
   "git-push": "vcs/push",
@@ -403,6 +412,18 @@ const ICONS = {
   "vcs-outgoing": "vcs/changesPush@12x12",
   diff: "vcs/diff",
   revert: "vcs/revert",
+  // The merge tool's own controls (IntelliJ's AllIcons.Diff)
+  "diff-apply-left": "diff/applyNotConflictsLeft",
+  "diff-apply-all": "diff/applyNotConflicts",
+  "diff-apply-right": "diff/applyNotConflictsRight",
+  "diff-arrow-right": "diff/arrowRight@14x14",
+  "diff-arrow-left": "diff/arrow@14x14",
+  "diff-arrow-right-down": "diff/arrowRightDown@14x14",
+  "diff-arrow-left-down": "diff/arrowLeftDown@14x14",
+  "diff-magic": "diff/magicResolve@14x14",
+  "diff-magic-toolbar": "diff/magicResolveToolbar",
+  "diff-remove": "diff/remove@14x14",
+  "diff-revert": "diff/revert@14x14",
   shelve: "vcs/shelve",
   unshelve: "vcs/unshelve",
   changelist: "vcs/changelist",
@@ -517,8 +538,62 @@ export type IconName = BaseName | `symbol-${SymbolKind}`;
 export const ICON_NAMES = Object.keys(ICONS) as BaseName[];
 
 function iconPath(name: string): string | undefined {
+  if (name.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.has(name) ? name : undefined;
   if (name.startsWith("symbol-")) return SYMBOL_ICONS[name.slice(7) as SymbolKind];
   return (ICONS as Record<string, string>)[name];
+}
+
+// ---------------------------------------------------------------------------
+// Icons supplied at runtime (plugin icon themes). The markup was sanitised by
+// the backend (`ide_host::plugins::sanitize_svg`); names are `ext:<source>/<icon>`.
+
+const EXTERNAL_PREFIX = "ext:";
+const EXTERNAL = new Map<string, string>();
+
+/** Registers icons by name (`ext:…`); the returned function removes them. */
+export function registerExternalIcons(icons: ReadonlyArray<readonly [name: string, svg: string]>): () => void {
+  const names: string[] = [];
+  for (const [name, svg] of icons) {
+    if (!name.startsWith(EXTERNAL_PREFIX)) continue;
+    EXTERNAL.set(name, svg);
+    prepared.delete(`${name}|16`);
+    prepared.delete(`${name}|20`);
+    names.push(name);
+  }
+  return () => {
+    for (const name of names) {
+      EXTERNAL.delete(name);
+      prepared.delete(`${name}|16`);
+      prepared.delete(`${name}|20`);
+    }
+  };
+}
+
+/** A file icon theme (plugin `iconThemes`). Each method returns an icon name, or null for the built-in one. */
+export interface FileIconTheme {
+  file(fileName: string): string | null;
+  /** Plain folders only: folders with a role (source root, excluded, …) keep their built-in icons. */
+  folder(folderName: string, expanded: boolean): string | null;
+}
+
+let fileIconTheme: FileIconTheme | null = null;
+
+/** Bumped when the file icon theme changes; file lists subscribe to redraw their icons. */
+export const useFileIconRevision = create<number>(() => 0);
+
+/**
+ * Sets the file icon theme: consulted after the user's own file type
+ * associations and before the built-in icons.
+ */
+export function setFileIconTheme(theme: FileIconTheme | null) {
+  if (fileIconTheme === theme) return;
+  fileIconTheme = theme;
+  useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+export function themedFolderIconName(folderName: string, expanded = false): IconName | null {
+  return (fileIconTheme?.folder(folderName, expanded) ?? null) as IconName | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +617,7 @@ interface Prepared {
 }
 
 function raw(path: string): string | undefined {
+  if (path.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.get(path);
   return RAW[path.startsWith("openidea/") ? `./${path}.svg` : `./expui/${path}.svg`];
 }
 
@@ -755,9 +831,9 @@ const FILE_NAMES = table({
   "file-makefile": "makefile gnumakefile bsdmakefile makefile.am makefile.in kbuild",
   "file-cmake": "cmakelists.txt cmakecache.txt",
   "file-perl": "makefile.pl build.pl cpanfile",
-  "file-git": ".gitignore .gitignore_global .gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
+  "file-git": ".gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
   "file-ignored":
-    ".dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
+    ".gitignore .gitignore_global .dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
     ".fdignore .helmignore .vscodeignore .gcloudignore .slugignore .cfignore .bzrignore .containerignore",
   "file-config":
     ".editorconfig justfile procfile .npmrc .nvmrc .yarnrc .node-version .python-version .ruby-version " +
@@ -767,6 +843,7 @@ const FILE_NAMES = table({
   "file-lock":
     "package-lock.json npm-shrinkwrap.json pnpm-lock.yaml bun.lockb deno.lock go.sum go.work.sum " + "package.resolved",
   "file-cargo": "cargo.toml",
+  "file-cargo-lock": "cargo.lock",
   "file-gomod": "go.mod",
   "file-gowork": "go.work",
   "file-pyproject": "pyproject.toml",
@@ -816,12 +893,13 @@ const EXT_ICONS = table({
   "file-tsx": "tsx",
   "file-vue": "vue",
   "file-svelte": "svelte",
+  "file-jsp": "jsp jspx jspf jsph tag tagf tagx",
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-rst": "rst",
   "file-yaml": "yaml yml",
   "file-toml": "toml",
-  "file-text": "txt text adoc",
+  "file-text": "txt text",
   "file-log": "log",
   "file-csv": "csv tsv",
   "file-html": "html htm shtml html.tmpl",
@@ -845,8 +923,7 @@ const EXT_ICONS = table({
   "file-config": "ini cfg conf cnf inf reg url desktop service socket timer config",
   "file-dotenv": "env",
   "file-lock": "lock lockb",
-  "file-git": "gitignore",
-  "file-ignored": "dockerignore",
+  "file-ignored": "dockerignore gitignore",
   "file-properties": "properties prefs",
   "file-font": "ttf otf woff woff2",
   "file-patch": "patch diff rej",
@@ -869,12 +946,14 @@ const EXT_ICONS = table({
   "file-swift": "swift swiftinterface",
   "file-go": "go",
   "file-rust": "rs",
-  "file-ruby": "rb rake gemspec ru rbi jbuilder podspec",
+  "file-ruby": "rb rake gemspec ru rbi jbuilder podspec erb rhtml",
   "file-lua": "lua luau rockspec",
   "file-zig": "zig zon",
   "file-gdscript": "gd",
   "file-godot": "tscn tres godot import",
   "file-gdshader": "gdshader gdshaderinc",
+  "file-asciidoc": "adoc asciidoc",
+  "file-d": "d di",
   "file-dart": "dart",
   "file-elixir": "ex exs",
   "file-erlang": "erl hrl escript app.src",
@@ -907,10 +986,29 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
+/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
+let fileIconProviders: ReadonlyArray<(fileName: string) => string | null> = [];
+
+/** Adds a file icon provider (an `ext:` icon name or null); the returned function removes it. */
+export function addFileIconProvider(resolve: (fileName: string) => string | null): () => void {
+  fileIconProviders = [resolve, ...fileIconProviders];
+  useFileIconRevision.setState((n) => n + 1, true);
+  return () => {
+    fileIconProviders = fileIconProviders.filter((p) => p !== resolve);
+    useFileIconRevision.setState((n) => n + 1, true);
+  };
+}
+
 /** Picks a file-type icon from a file name. */
 export function fileIconName(fileName: string): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  for (const provide of fileIconProviders) {
+    const icon = provide(fileName);
+    if (icon && iconPath(icon)) return icon as IconName;
+  }
+  const themed = fileIconTheme?.file(fileName);
+  if (themed) return themed as IconName;
   const lower = fileName.toLowerCase();
   const named = FILE_NAMES[lower] ?? NAME_PATTERNS.find(([re]) => re.test(lower))?.[1];
   if (named) return named;

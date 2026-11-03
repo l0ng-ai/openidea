@@ -2,6 +2,7 @@
 
 use super::{ConfigExt, config};
 use crate::{BeforeLaunchTask, RunConfig};
+use ide_core::settings::CMakeProfile;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,8 +20,14 @@ fn before(config: &mut RunConfig, id: &str) {
     config.extras.before_launch.push(BeforeLaunchTask { kind: "run".into(), target: id.into() });
 }
 
-pub(super) fn detect(root: &Path, out: &mut Vec<RunConfig>) {
+pub(super) fn detect(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut Vec<RunConfig>) {
     if !root.join("CMakeLists.txt").is_file() {
+        return;
+    }
+    if let Some(profiles) = profiles {
+        for (index, profile) in profiles.iter().enumerate() {
+            detect_profile(root, profile, index, profiles.len() > 1, out);
+        }
         return;
     }
     let mut builds = Vec::new();
@@ -79,11 +86,69 @@ pub(super) fn detect(root: &Path, out: &mut Vec<RunConfig>) {
         );
         before(&mut test, &build_id);
         out.push(test);
-        targets(root, &build, &dir, &prefix, out);
+        targets(root, &build, &dir, &prefix, None, out);
     }
 }
 
-fn targets(root: &Path, build: &Path, dir: &str, prefix: &str, out: &mut Vec<RunConfig>) {
+fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: bool, out: &mut Vec<RunConfig>) {
+    let dir = if profile.build_dir.trim().is_empty() {
+        format!("cmake-build-{}", profile.build_type.to_lowercase())
+    } else {
+        profile.build_dir.clone()
+    };
+    let build = root.join(&dir);
+    let prefix = format!("cmake:profile:{index}");
+    let configure_id = format!("{prefix}:configure");
+    let build_id = format!("{prefix}:build");
+    let start = out.len();
+    let mut configure =
+        config(&configure_id, format!("CMake Configure ({dir})"), "cmake", "cmake", &["-S", ".", "-B", &dir]);
+    if !profile.generator.trim().is_empty() {
+        configure.args.extend(["-G".into(), profile.generator.clone()]);
+    }
+    configure.args.push(format!("-DCMAKE_BUILD_TYPE={}", profile.build_type));
+    configure.args.push("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON".into());
+    configure.args.extend_from_slice(&profile.cmake_args);
+    configure.extras.params.insert("buildDir".into(), dir.clone());
+    out.push(configure);
+    let mut all = config(
+        &build_id,
+        format!("CMake Build ({dir})"),
+        "cmake",
+        "cmake",
+        &["--build", &dir, "--config", &profile.build_type],
+    );
+    all.args.extend_from_slice(&profile.build_args);
+    if !build.join("CMakeCache.txt").is_file() {
+        before(&mut all, &configure_id);
+    }
+    out.push(all);
+    let mut test = config(
+        format!("{prefix}:test"),
+        format!("CTest ({dir})"),
+        "cmake",
+        "ctest",
+        &["--test-dir", &dir, "-C", &profile.build_type, "--output-on-failure"],
+    );
+    before(&mut test, &build_id);
+    out.push(test);
+    targets(root, &build, &dir, &prefix, Some(profile), out);
+    for config in &mut out[start..] {
+        config.env = profile.env.clone();
+        if multiple {
+            config.name = format!("{} [{}]", config.name, profile.name);
+        }
+    }
+}
+
+fn targets(
+    root: &Path,
+    build: &Path,
+    dir: &str,
+    prefix: &str,
+    profile: Option<&CMakeProfile>,
+    out: &mut Vec<RunConfig>,
+) {
     let reply = build.join(".cmake/api/v1/reply");
     let Some(index_path) = fs::read_dir(&reply).ok().and_then(|entries| {
         entries
@@ -113,6 +178,9 @@ fn targets(root: &Path, build: &Path, dir: &str, prefix: &str, out: &mut Vec<Run
     let source_root = dunce::canonicalize(&source_root).unwrap_or(source_root);
     for configuration in configurations {
         let name = configuration["name"].as_str().unwrap_or("");
+        if profile.is_some_and(|p| !name.is_empty() && name != p.build_type) {
+            continue;
+        }
         let Some(targets) = configuration["targets"].as_array() else { continue };
         for target in targets {
             let Some(target) = target["jsonFile"].as_str().and_then(|n| reply_file(&reply, n)) else { continue };
@@ -130,8 +198,17 @@ fn targets(root: &Path, build: &Path, dir: &str, prefix: &str, out: &mut Vec<Run
             if !name.is_empty() {
                 args.extend(["--config", name]);
             }
-            let build_config =
+            let mut build_config =
                 config(&target_build_id, format!("Build {target_name} ({dir} {name})"), "cmake", "cmake", &args);
+            if let Some(profile) = profile {
+                if name.is_empty() {
+                    build_config.args.extend(["--config".into(), profile.build_type.clone()]);
+                }
+                build_config.args.extend_from_slice(&profile.build_args);
+                if !build.join("CMakeCache.txt").is_file() {
+                    before(&mut build_config, &format!("{prefix}:configure"));
+                }
+            }
             out.push(build_config);
             let binary = build.join(artifact);
             let mut run =
@@ -165,9 +242,99 @@ pub(crate) fn prepare(config: &RunConfig, cwd: &Path) -> crate::IdeResult<()> {
         && config.args.first().is_some_and(|a| a == "-S")
         && let Some(dir) = config.extras.params.get("buildDir")
     {
-        let query = cwd.join(dir).join(".cmake/api/v1/query/client-openidea");
+        let build = cwd.join(dir);
+        let generator = config.args.windows(2).find(|a| a[0] == "-G").map(|a| a[1].as_str());
+        if let Some(generator) = generator
+            && let Ok(cache) = fs::read_to_string(build.join("CMakeCache.txt"))
+            && let Some(cached) = cache.lines().find_map(|l| l.strip_prefix("CMAKE_GENERATOR:INTERNAL="))
+            && cached != generator
+        {
+            fs::remove_file(build.join("CMakeCache.txt"))?;
+            let files = build.join("CMakeFiles");
+            if files.is_dir() {
+                fs::remove_dir_all(files)?;
+            }
+        }
+        let query = build.join(".cmake/api/v1/query/client-openidea");
         fs::create_dir_all(&query)?;
         fs::write(query.join("codemodel-v2"), "")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profiles_select_file_api_configuration_and_apply_target_options() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("CMakeLists.txt"), "project(app)").unwrap();
+        let reply = root.path().join("output/.cmake/api/v1/reply");
+        fs::create_dir_all(&reply).unwrap();
+        let write = |name: &str, value: Value| fs::write(reply.join(name), value.to_string()).unwrap();
+        write(
+            "index-1.json",
+            serde_json::json!({"objects":[{"kind":"codemodel","version":{"major":2},"jsonFile":"model.json"}]}),
+        );
+        write(
+            "model.json",
+            serde_json::json!({"paths":{"source":root.path()},"configurations":[
+                {"name":"Debug","targets":[{"jsonFile":"debug.json"}]},
+                {"name":"Release","targets":[{"jsonFile":"release.json"}]}
+            ]}),
+        );
+        for name in ["debug", "release"] {
+            write(
+                &format!("{name}.json"),
+                serde_json::json!({"name":"app","type":"EXECUTABLE","artifacts":[{"path":format!("{name}/app")}]}),
+            );
+        }
+        let profile = CMakeProfile {
+            name: "Production".into(),
+            build_type: "Release".into(),
+            build_dir: "output".into(),
+            build_args: ["-j", "8", "--", "verbose=1"].map(String::from).into(),
+            env: [("FOO".into(), "bar".into())].into(),
+            ..Default::default()
+        };
+        let mut configs = Vec::new();
+        detect(root.path(), Some(std::slice::from_ref(&profile)), &mut configs);
+        let run = configs.iter().find(|c| c.kind == "native").unwrap();
+        assert!(run.command.ends_with("release/app"));
+        assert_eq!(run.env, profile.env);
+        assert_eq!(configs.iter().filter(|c| c.kind == "native").count(), 1);
+        let build = configs.iter().find(|c| c.id == run.extras.before_launch[0].target).unwrap();
+        assert_eq!(
+            build.args,
+            ["--build", "output", "--target", "app", "--config", "Release", "-j", "8", "--", "verbose=1"]
+        );
+        assert_eq!(build.env, profile.env);
+        assert_eq!(build.extras.before_launch[0].target, "cmake:profile:0:configure");
+        fs::write(root.path().join("output/CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Ninja\n").unwrap();
+        let mut configured = Vec::new();
+        detect(root.path(), Some(std::slice::from_ref(&profile)), &mut configured);
+        for id in ["cmake:profile:0:build", build.id.as_str()] {
+            let build = configured.iter().find(|c| c.id == id).unwrap();
+            assert!(build.extras.before_launch.is_empty(), "{id} should use CMake's automatic regeneration");
+        }
+    }
+
+    #[test]
+    fn generator_change_clears_only_cmake_state_at_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let build = root.path().join("cmake-build-debug");
+        fs::create_dir_all(build.join("CMakeFiles")).unwrap();
+        fs::write(build.join("CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Unix Makefiles\n").unwrap();
+        fs::write(build.join("keep.txt"), "artifact").unwrap();
+        fs::write(root.path().join("CMakeLists.txt"), "project(app)").unwrap();
+        let mut configs = Vec::new();
+        detect(root.path(), Some(&[CMakeProfile { generator: "Ninja".into(), ..Default::default() }]), &mut configs);
+        assert!(build.join("CMakeCache.txt").exists());
+        prepare(&configs[0], root.path()).unwrap();
+        assert!(!build.join("CMakeCache.txt").exists());
+        assert!(!build.join("CMakeFiles").exists());
+        assert!(build.join("keep.txt").exists());
+        assert!(build.join(".cmake/api/v1/query/client-openidea/codemodel-v2").exists());
+    }
 }

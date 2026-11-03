@@ -4,7 +4,18 @@ import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { showError, confirmChecked } from "@/workbench/messages";
 import { isBusy } from "./model";
-import { archiveTask, unarchiveTask, deleteTask, forkTask, openTask, useAgents } from "./store";
+import {
+  archiveTask,
+  unarchiveTask,
+  deleteTask,
+  dockTask,
+  forkTask,
+  openTask,
+  openTaskInEditorLocation,
+  setSessionLocation,
+  undockTask,
+  useAgents,
+} from "./store";
 
 const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
 const canFork = (task: AgentTask) => canArchive(task) && !!task.capabilities?.fork;
@@ -60,6 +71,29 @@ async function confirmDelete(tasks: AgentTask[]) {
 
 export const taskActions: Action[] = [
   {
+    id: "agents.useToolWindow",
+    title: "Chat in Tool Window",
+    category: "Agents",
+    icon: "open-in-tool-window",
+    run: () => setSessionLocation("toolWindow"),
+  },
+  {
+    id: "agents.useEditor",
+    title: "Chat in Editor",
+    category: "Agents",
+    icon: "editor-only",
+    run: () => setSessionLocation("editor"),
+  },
+  {
+    id: "agents.openTaskInEditor",
+    title: "Open Agent Task in Editor",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") openTaskInEditorLocation(arg);
+    },
+  },
+  {
     id: "agents.openTask",
     title: "Open Agent Task",
     category: "Agents",
@@ -67,6 +101,22 @@ export const taskActions: Action[] = [
     run: ({ arg }) => {
       if (typeof arg === "string") openTask(arg);
     },
+  },
+  {
+    id: "agents.dockTask",
+    title: "Open Agent Task in Tool Window",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") dockTask(arg);
+    },
+  },
+  {
+    id: "agents.undockTask",
+    title: "Open Agent Task in Editor",
+    category: "Agents",
+    hidden: true,
+    run: () => undockTask(),
   },
   {
     id: "agents.forkTask",

@@ -1,16 +1,23 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { executeAction, registerActions } from "@/platform/actions";
-import { call, commands, onIdeEvent, type TrustDecisions } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type TrustDecisions, type TrustStatus } from "@/platform/ipc";
 import { dirname, useProject } from "@/platform/project";
 import { initializeRemoteTrustMigration } from "@/platform/remote";
-import { provideProjectTrustPrompt } from "@/platform/projectTrust";
+import { provideProjectTrustPrompt, type ProjectTrustScope } from "@/platform/projectTrust";
+import { invokeLocal } from "@/platform/tauriCore";
 import { registerOverlay, registerSettingsPage, registerWorkbenchBanner } from "@/workbench/contributions";
 import { Button, Checkbox, Dialog, T } from "@/ui";
 import styles from "./trust.module.css";
 
-const usePrompt = create<{ path: string | null; folder: boolean; finish: ((open: boolean) => void) | null }>(() => ({
+const usePrompt = create<{
+  path: string | null;
+  scope: ProjectTrustScope;
+  folder: boolean;
+  finish: ((open: boolean) => void) | null;
+}>(() => ({
   path: null,
+  scope: "current",
   folder: false,
   finish: null,
 }));
@@ -144,25 +151,33 @@ async function decide(trusted: boolean) {
   const pending = usePrompt.getState();
   const path = pending.path ?? useProject.getState().project?.root;
   if (!path) return;
-  await call(commands.projectTrustSet(path, trusted, trusted && pending.folder));
-  const project = await commands.projectCurrent();
-  if (project) useProject.setState({ project, settings: project.settings });
+  const folder = trusted && pending.folder;
+  if (pending.scope === "local") {
+    await invokeLocal("project_trust_set", { path, trusted, folder });
+  } else {
+    await call(commands.projectTrustSet(path, trusted, folder));
+    const project = await commands.projectCurrent();
+    if (project) useProject.setState({ project, settings: project.settings });
+  }
   pending.finish?.(true);
 }
 
 export function activate(): () => void {
   initializeRemoteTrustMigration();
   const disposers = [
-    provideProjectTrustPrompt(async (path) => {
-      const status = await call(commands.projectTrustStatus(path));
+    provideProjectTrustPrompt(async (path, scope) => {
+      const status = await (scope === "local"
+        ? invokeLocal<TrustStatus>("project_trust_status", { path })
+        : call(commands.projectTrustStatus(path)));
       if (status.decided) return true;
       usePrompt.getState().finish?.(false);
       return new Promise<boolean>((resolve) =>
         usePrompt.setState({
           path: status.root,
+          scope,
           folder: false,
           finish: (open) => {
-            usePrompt.setState({ path: null, finish: null, folder: false });
+            usePrompt.setState({ path: null, scope: "current", finish: null, folder: false });
             resolve(open);
           },
         }),

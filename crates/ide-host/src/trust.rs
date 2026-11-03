@@ -106,6 +106,9 @@ impl crate::Host {
             if previous == trusted {
                 continue;
             }
+            if let Some(bridge) = &project.kotlin_bridge {
+                bridge.schedule();
+            }
             if !trusted {
                 project.lsp.set_execution_allowed(false);
             }
@@ -132,9 +135,7 @@ impl crate::Host {
                     for request in requests {
                         self.cancel_request(request);
                     }
-                    for session in self.debugger.sessions(Some(&window)) {
-                        let _ = self.debugger.stop(session.id).await;
-                    }
+                    self.debugger.stop_key(&window).await;
                 }
             }
             project.lsp.reconfigure().await;
@@ -175,6 +176,30 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
     matches!(
         cmd,
         "app_info"
+            | "app_build_info"
+            | "app_log_location"
+            | "app_check_update"
+            | "app_startup_update_check"
+            | "app_install_update"
+            | "caches_schedule_invalidation"
+            | "clear_caches"
+            | "clipboard_file_list"
+            | "clipboard_has_files"
+            | "clipboard_set_file_list"
+            | "jdk_download_vendors"
+            | "jdk_download_releases"
+            | "jdk_download_location"
+            | "jdk_download"
+            | "run_system_env"
+            | "run_gradle_jvm_args_script"
+            | "proxy_check_connection"
+            | "docker_settings"
+            | "docker_save_settings"
+            | "docker_set_registry_password"
+            | "docker_run_env"
+            | "db_console_path"
+            | "db_export_file"
+            | "vcs_write_patch"
             | "app_metrics"
             | "app_quit"
             | "app_cancel_quit"
@@ -184,6 +209,10 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "menu_model"
             | "menu_configure"
             | "menu_set_disabled"
+            | "prepare_workspace_edit"
+            | "apply_workspace_edit"
+            | "undo_workspace_edit"
+            | "redo_workspace_edit"
             | "lsp_servers"
             | "lsp_resend_diagnostics"
             | "recent_projects"
@@ -195,6 +224,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "index_status"
             | "jvm_file_presentations"
             | "deploy_coverage"
+            | "deploy_test_connection"
             | "find_files"
             | "find_symbols"
             | "mark_recent"
@@ -216,6 +246,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_current"
             | "remote_disconnect"
             | "remote_connect"
+            | "remote_bootstrap_list"
             | "remote_list"
             | "remote_open"
             | "remote_of"
@@ -235,12 +266,14 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_registry_remove"
             | "coverage_import"
             | "system_font_families"
+            | "user_font_data"
             | "plugin_subscribe"
             | "plugin_list"
             | "plugin_set_active_file"
             | "plugin_set_theme"
             | "plugin_set_theme_frame"
             | "plugin_catalog"
+            | "plugin_assets"
             | "notebook_open"
             | "notebook_get"
             | "notebook_edit"
@@ -276,6 +309,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_remotes"
             | "vcs_worktrees"
             | "vcs_diff_with_worktree"
+            | "vcs_compare_scope"
+            | "vcs_compare_paths"
             | "vcs_diff_revisions"
             | "vcs_merge_base"
             | "vcs_shelves"

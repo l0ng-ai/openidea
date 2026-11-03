@@ -22,9 +22,13 @@ import {
   type TextChange,
 } from "@/platform/ipc";
 
+import { EditorState } from "@codemirror/state";
+import { customRegions } from "./cm/regions";
+
 export type LanguageInfo = LanguageInfo_Serialize;
 
 export interface DocPatchedEvent {
+  workspaceEdit?: boolean;
   doc: DocId;
   baseVersion: number;
   version: number;
@@ -33,7 +37,7 @@ export interface DocPatchedEvent {
 
 export interface DocBackend {
   open(path: string): Promise<DocumentInfo>;
-  /** Opens the read-only virtual document behind a non-`file:` URI (library class contents). */
+  /** Opens a read-only language-server document (library or disk class contents). */
   openVirtual(uri: string): Promise<DocumentInfo>;
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;
@@ -116,6 +120,8 @@ const EXT_LANG: Record<string, string> = {
   go: "go",
   json: "json",
   md: "markdown",
+  adoc: "asciidoc",
+  asciidoc: "asciidoc",
   css: "css",
   html: "html",
   yml: "yaml",
@@ -129,6 +135,8 @@ const EXT_LANG: Record<string, string> = {
   cmd: "bat",
   sql: "sql",
   xml: "xml",
+  svg: "xml",
+  vue: "vue",
 };
 
 const MEM_LANGUAGES: LanguageInfo[] = [
@@ -214,6 +222,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     indent: { tabSize: 2, insertSpaces: true },
   },
   {
+    id: "asciidoc",
+    name: "AsciiDoc",
+    extensions: ["adoc", "asciidoc"],
+    uiMode: "AsciiDoc",
+    lineComment: "//",
+    blockComment: null,
+    indent: { tabSize: 2, insertSpaces: true },
+  },
+  {
     id: "markdown",
     name: "Markdown",
     extensions: ["md"],
@@ -240,6 +257,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     blockComment: null,
     indent: { tabSize: 4, insertSpaces: true },
   },
+  ...["xml", "html", "vue", "css"].map((id): LanguageInfo => ({
+    id,
+    name: id.toUpperCase(),
+    extensions: id === "xml" ? ["xml", "svg"] : [id],
+    uiMode: id === "xml" ? "XML" : id === "css" ? "CSS" : id === "vue" ? "Vue" : "HTML",
+    lineComment: null,
+    blockComment: id === "css" ? ["/*", "*/"] : ["<!--", "-->"],
+    indent: { tabSize: 2, insertSpaces: true },
+  })),
   {
     id: "plaintext",
     name: "Plain Text",
@@ -310,7 +336,7 @@ function lineIndex(text: string) {
 
 export interface MemoryBackend extends DocBackend {
   /** Test/dev hook: apply a backend-originated change and emit `docPatched`. */
-  patch(doc: DocId, changes: TextChange[]): void;
+  patch(doc: DocId, changes: TextChange[], workspaceEdit?: boolean): void;
   /** Seed file contents before opening. */
   files: Map<string, string>;
   docs: Map<DocId, MemDoc>;
@@ -507,8 +533,24 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     },
     async folding(doc) {
       const d = get(doc);
-      const out: FoldRange[] = [];
-      const seen = new Set<number>();
+      const info = MEM_LANGUAGES.find((language) => language.id === d.language);
+      const state = EditorState.create({
+        doc: d.text,
+        extensions: EditorState.languageData.of(() => [
+          {
+            commentTokens: {
+              line: info?.lineComment ?? undefined,
+              block: info?.blockComment && { open: info.blockComment[0], close: info.blockComment[1] },
+            },
+          },
+        ]),
+      });
+      const out: FoldRange[] = customRegions(state).map((region) => ({
+        start_line: region.startLine - 1,
+        end_line: region.endLine - 1,
+        kind: "region",
+      }));
+      const seen = new Set(out.map((fold) => fold.start_line));
       const stack: number[] = [];
       d.text.split("\n").forEach((line, i) => {
         for (const ch of line) {
@@ -541,13 +583,13 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
       dirtyHandlers.add(h);
       return () => dirtyHandlers.delete(h);
     },
-    patch(doc, changes) {
+    patch(doc, changes, workspaceEdit = false) {
       const d = get(doc);
       const before = d.text !== d.saved;
       const baseVersion = d.version;
       d.text = applyChanges(d.text, changes);
       d.version++;
-      const e = { doc, baseVersion, version: d.version, changes };
+      const e = { doc, baseVersion, version: d.version, changes, workspaceEdit };
       patched.forEach((h) => h(e));
       setDirty(d, before);
     },

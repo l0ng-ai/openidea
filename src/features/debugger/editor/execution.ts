@@ -49,6 +49,7 @@ function currentExec(path: string): Exec | null {
 export function inlineValuesFor(text: string, values: Record<string, string>): string | null {
   const parts: string[] = [];
   for (const id of identifiersIn(text)) {
+    if (!Object.hasOwn(values, id)) continue;
     const v = values[id];
     if (v === undefined) continue;
     parts.push(`${id}: ${inlineValue(v, 40)}`);
@@ -80,33 +81,48 @@ export function executionPoint(ctx: EditorDocContext): Extension {
     provide: (f) => EditorView.decorations.compute([f], (state) => lineDecorations(state, state.field(f))),
   });
 
+  // Keep the execution line alive even if an inline-value renderer fails.
+  const sync = ViewPlugin.fromClass(
+    class {
+      private unsub: () => void;
+      private pending = false;
+      private destroyed = false;
+      constructor(readonly view: EditorView) {
+        this.unsub = useExecutionPoint.subscribe(() => this.refresh());
+        // Hidden tabs retain EditorState while their views are unmounted.
+        this.refresh();
+      }
+      refresh() {
+        if (this.pending) return;
+        this.pending = true;
+        queueMicrotask(() => {
+          this.pending = false;
+          if (this.destroyed) return;
+          const next = currentExec(path);
+          const cur = this.view.state.field(execField);
+          const moved = cur?.line !== next?.line || cur?.top !== next?.top || !!cur !== !!next;
+          // Locals can change without moving the execution point.
+          this.view.dispatch(moved ? { effects: setExec.of(next) } : {});
+        });
+      }
+      destroy() {
+        this.destroyed = true;
+        this.unsub();
+      }
+    },
+  );
+
   const inline = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet = Decoration.none;
-      private unsub: () => void;
-      private pending = false;
       private destroyed = false;
       private unsubSettings: () => void;
       constructor(readonly view: EditorView) {
         this.decorations = this.build();
-        // Settings › Debugger › Data Views › Show values inline.
         this.unsubSettings = onWorkflowSettingsChange(
           (s) => s.debugger.inlineValues,
           () => queueMicrotask(() => !this.destroyed && this.view.dispatch({})),
         );
-        this.unsub = useExecutionPoint.subscribe(() => {
-          if (this.pending) return;
-          this.pending = true;
-          queueMicrotask(() => {
-            this.pending = false;
-            if (this.destroyed) return;
-            const next = currentExec(path);
-            const cur = this.view.state.field(execField);
-            const moved = cur?.line !== next?.line || cur?.top !== next?.top || !!cur !== !!next;
-            // An empty transaction still rebuilds the inline values (locals arrive after the frame).
-            this.view.dispatch(moved ? { effects: setExec.of(next) } : {});
-          });
-        });
       }
 
       update(u: ViewUpdate) {
@@ -136,12 +152,11 @@ export function executionPoint(ctx: EditorDocContext): Extension {
 
       destroy() {
         this.destroyed = true;
-        this.unsub();
         this.unsubSettings();
       }
     },
     { decorations: (v) => v.decorations },
   );
 
-  return [execField, inline];
+  return [execField, sync, inline];
 }

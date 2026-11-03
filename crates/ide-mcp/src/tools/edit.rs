@@ -134,7 +134,7 @@ fn edits_for(edit: &WorkspaceEdit, path: &Path) -> Vec<TextEdit> {
     edit.files
         .iter()
         .filter_map(|f| match f {
-            ide_core::FileEdit::Edit { path: p, edits } if same_file(p, path) => Some(edits.clone()),
+            ide_core::FileEdit::Edit { path: p, edits, .. } if same_file(p, path) => Some(edits.clone()),
             _ => None,
         })
         .flatten()

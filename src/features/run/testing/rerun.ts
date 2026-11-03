@@ -2,8 +2,10 @@
  * "Rerun Failed Tests": derives a run configuration that runs only the failed
  * tests of a previous run, using each framework's own filter syntax.
  */
+import { phpunitArgs, phpunitFilter } from "./phpunit";
 import type { RunConfig } from "@/platform/ipc";
 import { formatArgs } from "../configs";
+import { djangoTestsOf } from "../djangoTypes";
 import { goTestParts, withoutGoSelection } from "../goArguments";
 import { frameworkFor } from "./index";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
@@ -156,6 +158,15 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
       break;
     case "pytest":
       args = pytestArgs(config.args, paths);
+      break;
+    case "unittest": {
+      // Django: dotted labels (`polls.tests.QuestionTests.test_x`) in place of the run's own target.
+      const tests = djangoTestsOf(config, unique(paths.map((p) => p.join("."))));
+      if (!tests) return null;
+      return { ...config, ...tests, name, detected: true, env: { ...config.env } };
+    }
+    case "phpunit":
+      args = phpunitArgs(config.args, { filter: phpunitFilter(paths) });
       break;
     case "go":
       args = goArgs(config.args, paths);

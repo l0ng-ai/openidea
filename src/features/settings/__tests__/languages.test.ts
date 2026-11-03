@@ -35,6 +35,44 @@ describe("languages settings", () => {
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 
+  it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
+    expect(validateSettings({}).languages.ruby.interpreter).toBe("");
+    expect(validateLanguages({ ruby: { interpreter: 42 } }).ruby.interpreter).toBe("");
+    const settings = validateSettings({ languages: { ruby: { interpreter: " /opt/ruby/bin/ruby " } } });
+    expect(settings.languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+    expect(validateSettings(settings).languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+  });
+
+  it("keeps Prettier opt-in on save and normalizes its enabled languages", () => {
+    expect(validateLanguages({}).prettier).toMatchObject({ prefer: false, runOnSave: false, path: "" });
+    expect(
+      validateLanguages({
+        prettier: { path: " ./bin/prettier ", languages: ["markdown", 4, "markdown"], prefer: true, runOnSave: true },
+      }).prettier,
+    ).toEqual({ path: "./bin/prettier", languages: ["markdown"], prefer: true, runOnSave: true });
+    expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
+  });
+
+  it("gives oxfmt the same opt-in settings as Prettier, kept apart from them", () => {
+    expect(validateLanguages({}).oxfmt).toEqual(DEFAULT_LANGUAGES.prettier);
+    const v = validateLanguages({
+      prettier: { runOnSave: true },
+      oxfmt: { path: " ./bin/oxfmt ", languages: ["typescript", null, "typescript"], prefer: true },
+    });
+    expect(v.oxfmt).toEqual({ path: "./bin/oxfmt", languages: ["typescript"], prefer: true, runOnSave: false });
+    expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
+  });
+
+  it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
+    expect(validateLanguages({}).markdown).toEqual({ previewFontSize: null });
+    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown).toEqual({ previewFontSize: 72 });
+    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown).toEqual({ previewFontSize: null });
+  });
+
+  it("keeps the Markdown page global, like IDEA's application-level setting", () => {
+    expect(LANGUAGE_PAGES.find((p) => p.id === "languages.markdown")).not.toHaveProperty("projectScope");
+  });
+
   it("marks folders with one role each", () => {
     expect(normalizeFolder("./src/main/")).toBe("src/main");
     let ps = validateProjectStructure({ sourceRoots: ["src/", "src", 3], excluded: ["/dist"] });
@@ -56,8 +94,13 @@ describe("language pages", () => {
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
       "Java",
+      "Markdown",
       "Node.js",
       "Python Interpreter",
+      "PHP",
+      "Prettier",
+      "oxfmt",
+      "Ruby",
       "Rust",
       "TypeScript",
     ]);

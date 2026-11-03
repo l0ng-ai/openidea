@@ -8,6 +8,40 @@ use ide_run::{OutputChunk, RunConfig, RunInfo};
 use tauri::ipc::Channel;
 use tauri::{State, Window};
 
+#[tauri::command]
+#[specta::specta]
+pub async fn run_dotnet_resolve(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+    debug: bool,
+) -> IdeResult<RunConfig> {
+    ide_host::ops::run::run_dotnet_resolve(&state.host, window.label(), config, debug).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn run_application_build(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+    module: std::path::PathBuf,
+) -> IdeResult<RunConfig> {
+    ide_host::ops::run::run_application_build(&state.host, window.label(), config, module).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn run_application_publish(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+    class_paths: Vec<String>,
+    main_class: String,
+) -> IdeResult<()> {
+    ide_host::ops::run::run_application_publish(&state.host, window.label(), config, class_paths, main_class).await
+}
+
 /// Detected configs followed by user-defined ones (user ids win on conflict).
 #[tauri::command]
 #[specta::specta]
@@ -85,6 +119,28 @@ pub fn run_templates(window: Window, state: State<'_, AppState>) -> IdeResult<Ve
 #[specta::specta]
 pub fn run_save_templates(window: Window, state: State<'_, AppState>, templates: Vec<RunConfig>) -> IdeResult<()> {
     ide_host::ops::run::run_save_templates(&state.host, window.label(), templates)
+}
+
+/// Project files run configurations can be imported from (`.vscode/launch.json`).
+#[tauri::command]
+#[specta::specta]
+pub fn run_import_sources(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_run::import::RunImportSource>> {
+    ide_host::ops::run::run_import_sources(&state.host, window.label())
+}
+
+/// Configurations read from `source`, not saved; names already in `existing` are skipped.
+#[tauri::command]
+#[specta::specta]
+pub fn run_import_configs(
+    window: Window,
+    state: State<'_, AppState>,
+    source: ide_run::import::RunImportSource,
+    existing: Vec<RunConfig>,
+) -> IdeResult<ide_run::import::RunImport> {
+    ide_host::ops::run::run_import_configs(&state.host, window.label(), source, existing)
 }
 
 /// The environment runs inherit when "Include system environment variables" is on.

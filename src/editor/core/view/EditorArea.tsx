@@ -13,6 +13,9 @@ import { setContext } from "@/platform/context";
 import { useEditorPrefs } from "@/platform/editorSettings";
 import { basename, dirname } from "@/platform/project";
 import {
+  EDITOR_TAB_MIME,
+  acceptsEditorDrop,
+  dropOnEditor,
   getFileDecoration,
   prepareMenuGroups,
   textEditorWrapperFor,
@@ -43,6 +46,7 @@ import { editorController, isTextInput, tabIcon, tabTitle, useTabs, type Virtual
 import { useDocMeta } from "../model/document";
 import { inputDirty } from "../model/customDocuments";
 import type { LayoutNode, SplitEdge, Tab } from "../model/tabs";
+import { dropZoneAt } from "@/ui/pointerDrag";
 import { disambiguateTitles } from "../model/tabTitles";
 import { TextEditorHost } from "./TextEditorHost";
 import { FindBar } from "./FindBar";
@@ -54,10 +58,46 @@ import { tx } from "@/platform/i18n";
 export function EditorAreaView() {
   const layout = useTabs((s) => s.layout);
   const empty = useTabs((s) => Object.values(s.panes).every((p) => p.tabs.length === 0));
-  if (empty && layout.kind === "pane") return <EmptyEditor />;
+  if (empty && layout.kind === "pane") return <EmptyEditorArea />;
   return (
     <div className={styles.area}>
       <LayoutView node={layout} />
+    </div>
+  );
+}
+
+/** The empty editor still accepts drops: reopening tabs, opening files, feature drags (agent tasks). */
+function EmptyEditorArea() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      over: () => setOver(true),
+      leave: () => setOver(false),
+      drop: (data) => {
+        setOver(false);
+        const paneId = Object.keys(useTabs.getState().panes)[0];
+        if (!paneId) return;
+        if (data.type === FILES_DRAG) {
+          void editorController().openFilesIn(data.payload.split("\n").filter(Boolean), paneId, "center");
+          return;
+        }
+        if (data.type !== EDITOR_TAB_MIME) {
+          dropOnEditor(data);
+          return;
+        }
+        const p = parseTabPayload(data.payload);
+        if (p) editorController().moveTab(p.paneId, p.tabId, paneId, 0);
+      },
+    });
+  }, []);
+  return (
+    <div ref={ref} className={styles.area}>
+      <EmptyEditor />
+      {over && <div className={clsx(styles.dropZone, styles["drop-center"])} aria-hidden="true" />}
     </div>
   );
 }
@@ -78,28 +118,7 @@ function LayoutView({ node }: { node: LayoutNode }): ReactNode {
   );
 }
 
-/** MIME type of a dragged editor tab: `{"paneId","tabId"}` JSON. */
-export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
-
 type DropZone = SplitEdge | "center";
-
-/** Where a tab dropped at (x, y) over an editor goes: an edge (new split) or the pane itself. */
-export function dropZoneAt(
-  x: number,
-  y: number,
-  rect: { left: number; top: number; width: number; height: number },
-): DropZone {
-  const fx = (x - rect.left) / Math.max(1, rect.width);
-  const fy = (y - rect.top) / Math.max(1, rect.height);
-  const edges: Array<[SplitEdge, number]> = [
-    ["left", fx],
-    ["right", 1 - fx],
-    ["top", fy],
-    ["bottom", 1 - fy],
-  ];
-  const [edge, dist] = edges.reduce((a, b) => (b[1] < a[1] ? b : a));
-  return dist < 0.25 ? edge : "center";
-}
 
 function parseTabPayload(raw: string): { paneId: string; tabId: string } | null {
   try {
@@ -232,14 +251,19 @@ function PaneView({ paneId }: { paneId: string }) {
     if (!el) return;
     const zoneAt = (x: number, y: number) => dropZoneAt(x, y, el.getBoundingClientRect());
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG,
-      over: (_, x, y) => setDropZone(zoneAt(x, y)),
+      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      over: (data, x, y) =>
+        setDropZone(data.type === EDITOR_TAB_MIME || data.type === FILES_DRAG ? zoneAt(x, y) : "center"),
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
         const zone = zoneAt(x, y);
         setDropZone(null);
         if (data.type === FILES_DRAG) {
           void ctrl.openFilesIn(data.payload.split("\n").filter(Boolean), paneId, zone);
+          return;
+        }
+        if (data.type !== EDITOR_TAB_MIME) {
+          dropOnEditor(data);
           return;
         }
         const p = parseTabPayload(data.payload);
@@ -357,7 +381,7 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
     return (
       <>
         {virtual ? (
-          <VirtualBanner decompiled={virtual.decompiled} description={virtual.description} />
+          <VirtualBanner path={tab.input.path!} decompiled={virtual.decompiled} description={virtual.description} />
         ) : (
           <EditorBanners path={tab.input.path} />
         )}

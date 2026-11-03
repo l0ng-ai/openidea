@@ -3,7 +3,7 @@
 //! hooks, credentials and signing behave exactly as on the command line.
 
 use ide_core::ignored::IgnoredNames;
-use ide_core::{CancellationToken, IdeResult};
+use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
@@ -92,6 +92,11 @@ pub struct Commit {
     /// Committer time (Log › View Options › Commit Timestamp).
     #[serde(default)]
     pub commit_time_ms: f64,
+    /// Per parent, under a user or text filter: the link passes commits the filter hides
+    /// (`parents` then name the nearest shown ancestors). Empty when no parent is rewritten.
+    #[serde(default)]
+    #[specta(optional)]
+    pub dashed: Vec<bool>,
 }
 
 /// Order of the Git Log (Graph Options › Sort).
@@ -297,6 +302,9 @@ pub struct ShelvedChangeList {
     pub time_ms: f64,
     /// Branch checked out when the changes were shelved.
     pub branch: Option<String>,
+    /// Repository owning the patch; absent in legacy shelves.
+    #[serde(default)]
+    pub repo: Option<ide_core::IpcPath>,
     /// Repository-relative paths.
     pub files: Vec<ChangedFile>,
 }
@@ -453,6 +461,7 @@ pub struct ChangelistState {
 mod blame;
 pub mod changelists;
 mod cli;
+mod compare;
 mod diff;
 mod history;
 mod ignore;
@@ -464,6 +473,7 @@ mod refs;
 mod remotes;
 mod repo;
 mod roots;
+pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -480,20 +490,64 @@ pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};
 pub use remotes::Remote;
 pub use roots::Repos;
 
+fn clone_args(url: &str, dest: &str, depth: Option<u32>) -> IdeResult<Vec<String>> {
+    if depth == Some(0) {
+        return Err(IdeError::invalid("clone depth must be greater than zero"));
+    }
+    let mut args = vec!["-c".into(), "core.hooksPath=".into(), "clone".into(), "--progress".into()];
+    if let Some(depth) = depth {
+        args.extend(["--depth".into(), depth.to_string()]);
+    }
+    args.extend(["--".into(), url.into(), dest.into()]);
+    Ok(args)
+}
+
 /// Clones `url` into `dest` (which must not exist or be empty), streaming progress.
-pub fn clone(url: &str, dest: &Path, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
+/// `depth` creates a shallow clone containing at most that many commits.
+pub fn clone(
+    url: &str,
+    dest: &Path,
+    depth: Option<u32>,
+    cancel: &CancellationToken,
+    on_output: &dyn Fn(String),
+) -> IdeResult<()> {
     let parent = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let dest = if dest.is_absolute() { dest.to_path_buf() } else { std::env::current_dir()?.join(dest) };
     let dest = dest.to_string_lossy();
     // Cloning must not inherit an enclosing project's executable Git settings.
     let cwd = tempfile::tempdir()?;
-    cli::run_streaming(
-        cwd.path(),
-        &["-c", "core.hooksPath=", "clone", "--progress", "--", url, &dest],
-        cancel,
-        on_output,
-    )
+    let args = clone_args(url, &dest, depth)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    cli::run_streaming(cwd.path(), &args, cancel, on_output)
+}
+
+#[cfg(test)]
+mod clone_tests {
+    use super::clone_args;
+
+    #[test]
+    fn builds_full_and_shallow_clone_commands() {
+        assert_eq!(
+            clone_args("https://example.test/repo.git", "/tmp/repo", None).unwrap(),
+            ["-c", "core.hooksPath=", "clone", "--progress", "--", "https://example.test/repo.git", "/tmp/repo"]
+        );
+        assert_eq!(
+            clone_args("https://example.test/repo.git", "/tmp/repo", Some(3)).unwrap(),
+            [
+                "-c",
+                "core.hooksPath=",
+                "clone",
+                "--progress",
+                "--depth",
+                "3",
+                "--",
+                "https://example.test/repo.git",
+                "/tmp/repo",
+            ]
+        );
+        assert!(clone_args("https://example.test/repo.git", "/tmp/repo", Some(0)).is_err());
+    }
 }
 
 /// Creates an empty repository in `dir` (`git init`).

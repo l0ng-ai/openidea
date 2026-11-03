@@ -9,6 +9,7 @@ import { executeAction } from "@/platform/actions";
 import { lazyComponent } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import {
+  registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
   registerSettingsPage,
@@ -17,7 +18,7 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TOOL_WINDOW } from "./model";
+import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
@@ -53,6 +54,7 @@ export function activate(): () => void {
       anchor: "right",
       order: 0.5,
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
+      headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
         const n = useAgents(
@@ -78,6 +80,11 @@ export function activate(): () => void {
       title: () => "New Agent Task",
       icon: () => "toolwindow-agents",
       restorable: true,
+    }),
+    // An explicit editor drop sets the placement for subsequent sessions too.
+    registerEditorDropHandler({
+      accepts: (type) => type === TASK_DRAG,
+      drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({

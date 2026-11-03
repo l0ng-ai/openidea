@@ -1,14 +1,16 @@
 /** New Task page: one prompt box with the agent and its settings; where it works under it. */
+import clsx from "clsx";
 import { useEffect, useState } from "react";
 import type { AgentProbe, Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
-import { Button, Icon, Select, T, type SelectOption } from "@/ui";
+import { Icon, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
-import { maybeEditorService } from "@/workbench/contributions";
+import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
+import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { providerIcon } from "./model";
@@ -16,7 +18,7 @@ import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import { HOME, NO_COMMANDS, refreshProviders, startTask, updateDraft, useAgentCommands, useAgents } from "./store";
 import styles from "./Home.module.css";
 
-export function HomeEditor() {
+export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const draft = useAgents((s) => s.draft);
@@ -43,6 +45,7 @@ export function HomeEditor() {
   // Agents installed in Settings (its own window) show up when this one is back in front.
   useEffect(() => {
     const refresh = () => void refreshProviders();
+    refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, []);
@@ -64,7 +67,7 @@ export function HomeEditor() {
   }, [root, project?.workspace]);
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
-  const probe = useProbe(provider?.installed ? provider.id : null);
+  const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -85,15 +88,19 @@ export function HomeEditor() {
   const setOption = (id: string, value: string) => updateDraft({ config: { ...draft.config, [id]: value } });
 
   return (
-    <div className={styles.home}>
+    <div className={clsx(styles.home, docked && styles.docked)}>
       <div className={styles.inner}>
-        <h1 className={styles.heading}>
-          <T>What should the agent do?</T>
-        </h1>
+        {!docked && (
+          <h1 className={styles.heading}>
+            <T>What should the agent do?</T>
+          </h1>
+        )}
         <Composer
           id={HOME}
           autoFocus
-          placeholder="Describe a task for the agent. @ references a file, / runs a command"
+          placeholder={
+            docked ? "Describe a task…" : "Describe a task for the agent. @ references a file, / runs a command"
+          }
           root={root}
           projectRoot={root}
           commands={agentCommands}
@@ -117,9 +124,12 @@ export function HomeEditor() {
             </>
           }
           actions={
-            <Button variant="primary" size="small" disabled={!canStart} onClick={start}>
-              {starting ? "Starting…" : "Start"}
-            </Button>
+            <SubmitButton
+              label={starting ? "Starting…" : "Start"}
+              pending={starting}
+              disabled={!canStart}
+              onClick={start}
+            />
           }
         />
         <div className={styles.where}>
@@ -127,6 +137,7 @@ export function HomeEditor() {
             <Select
               variant="ghost"
               aria-label={tx("Project")}
+              className={styles.projectPicker}
               value={root}
               options={members.map((path) => ({ value: path, label: basename(path), detail: path }))}
               onChange={(path) => {
@@ -135,12 +146,15 @@ export function HomeEditor() {
               }}
             />
           ) : (
-            <span className={styles.project}>{members.length ? basename(root) : project?.name}</span>
+            <span className={styles.project} title={root}>
+              {members.length ? basename(root) : project?.name}
+            </span>
           )}
           {isGit && (
             <Select
               variant="ghost"
               aria-label="Isolation"
+              className={styles.isolation}
               value={isolation}
               options={[
                 { value: "worktree", label: tx("New worktree"), icon: "branch", detail: tx("away from your changes") },
@@ -151,28 +165,33 @@ export function HomeEditor() {
                   detail: tx("edits your files directly"),
                 },
               ]}
-              onChange={(isolation) => updateDraft({ isolation })}
+              onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
             />
           )}
           {isolation === "local" && current && (
             <>
-              <span className={styles.note}>
-                <T>on</T>
-              </span>
-              <span className={styles.branch}>
+              {!docked && (
+                <span className={styles.note}>
+                  <T>on</T>
+                </span>
+              )}
+              <span className={styles.branch} title={current}>
                 <Icon name="branch" size={14} />
-                {current}
+                <span className={styles.branchName}>{current}</span>
               </span>
             </>
           )}
           {isolation === "worktree" && branches.length > 0 && (
             <>
-              <span className={styles.note}>
-                <T>from</T>
-              </span>
+              {!docked && (
+                <span className={styles.note}>
+                  <T>from</T>
+                </span>
+              )}
               <Select
                 variant="ghost"
                 aria-label="Base branch"
+                className={styles.basePicker}
                 value={base}
                 options={branches.map((b) => ({ value: b.name, label: b.name }))}
                 onChange={(b) => updateDraft({ base: b === current ? null : b })}
@@ -180,7 +199,7 @@ export function HomeEditor() {
             </>
           )}
         </div>
-        {probe && (
+        {probe && (!docked || probe.error) && (
           <p className={probe.error ? styles.warning : styles.note}>
             {probe.error
               ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
@@ -206,7 +225,7 @@ export function HomeEditor() {
 }
 
 /** What the agent reports about itself when it starts (no session is opened), once per agent. */
-function useProbe(provider: string | null): AgentProbe | null {
+function useProbe(provider: string | null, command?: string): AgentProbe | null {
   const [probe, setProbe] = useState<AgentProbe | null>(null);
   useEffect(() => {
     if (!provider) return;
@@ -217,6 +236,6 @@ function useProbe(provider: string | null): AgentProbe | null {
     return () => {
       live = false;
     };
-  }, [provider]);
+  }, [provider, command]);
   return probe?.provider === provider ? probe : null;
 }

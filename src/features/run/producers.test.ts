@@ -309,6 +309,28 @@ describe("single-file producers (scratches)", () => {
     expect(p.config!.args.at(-1)).toBe("demo.Hi");
   });
 
+  it("Java: a main in a Gradle module outside the project runs on the module's classpath", () => {
+    // `includeFlat 'billing'`: the module folder is a sibling of the project folder.
+    const svc = "/work/billing/modules/core";
+    const boot =
+      "package com.example;\nimport org.springframework.boot.SpringApplication;\n@SpringBootApplication\n" +
+      "public class ShopApplication {\n  public static void main(String[] args) {\n" +
+      "    SpringApplication.run(ShopApplication.class, args);\n  }\n}";
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const input = (contentRoots?: string[]) => ({
+      path: `${svc}/src/main/java/com/example/ShopApplication.java`,
+      root: ROOT,
+      configs: gradle,
+      content: boot,
+      line: 4,
+      contentRoots,
+    });
+    expect(produceContext(input(), ALL)!.config!.kind).toBe("java-file");
+    const p = produceContext(input(["/work/billing", svc]), ALL)!;
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
+    expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
+  });
+
   describe("Java / Kotlin mains in a build nested in a folder of repositories", () => {
     // RuoYi-Vue-Plus (Maven) next to plus-ui (npm), opened together.
     const boot =
@@ -496,6 +518,56 @@ describe("project producers", () => {
       "npm run test:unit",
     ]);
     expect(produceContextChoices({ ...input, configs }, ALL)).toHaveLength(1);
+  });
+
+  it("django: tests.py, TestCase classes and test packages run through manage.py test", () => {
+    const django = [
+      cfg({ id: "django:runserver", kind: "python", command: ".venv/bin/python", args: ["manage.py", "runserver"] }),
+      cfg({
+        id: "django:test",
+        kind: "django-test",
+        command: ".venv/bin/python",
+        args: ["manage.py", "test", "--keepdb"],
+        isTest: true,
+      }),
+    ];
+    const src = [
+      "from django.test import TestCase",
+      "",
+      "class QuestionTests(TestCase):",
+      "    def test_recent(self):",
+      "        pass",
+    ].join("\n");
+    const input = { path: `${ROOT}/polls/tests.py`, root: ROOT, configs: django, content: src };
+    expect(produceContext({ ...input, line: 4 }, ALL)).toMatchObject({
+      name: "QuestionTests.test_recent",
+      config: { kind: "django-test", args: ["manage.py", "test", "polls.tests.QuestionTests.test_recent", "--keepdb"] },
+    });
+    expect(produceContext({ ...input, line: 2 }, ALL)!.config!.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.QuestionTests",
+      "--keepdb",
+    ]);
+    expect(produceContext(input, ALL)).toMatchObject({
+      name: "tests.py",
+      config: { args: ["manage.py", "test", "polls.tests", "--keepdb"] },
+    });
+    expect(produceDirectory({ path: `${ROOT}/polls/tests`, root: ROOT, configs: django })).toMatchObject({
+      name: "Tests in 'tests'",
+      config: { args: ["manage.py", "test", "polls.tests", "--keepdb"] },
+    });
+    expect(produceDirectory({ path: `${ROOT}/polls/migrations`, root: ROOT, configs: django })).toBeNull();
+    // Outside Django projects `tests.py` is a script: no test targets, and the file runs as one.
+    const plain = { ...input, configs: [configs[1]!] };
+    expect(fileTargets(plain, src)).toEqual([]);
+    expect(produceContext(plain, ALL)).toMatchObject({ name: "tests.py", config: { kind: "python", isTest: false } });
+    // pytest detected as well (pytest-django): the user chooses, pytest first.
+    const both = [configs[1]!, ...django];
+    expect(produceContextChoices({ ...input, configs: both, line: 4 }, ALL).map((c) => c.detail)).toEqual([
+      "pytest",
+      "django:test",
+    ]);
   });
 
   it("python: test function > test class > file; __main__ runs the file", () => {

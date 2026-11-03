@@ -205,7 +205,9 @@ pub async fn docker_registry_login(
 /// daemon and puts the docker executable on `PATH`.
 #[tauri::command]
 #[specta::specta]
-pub async fn docker_run_env(endpoint: DockerEndpoint) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    endpoint.validate()?;
-    blocking(move || Ok(ide_docker::run_env(&endpoint))).await
+pub async fn docker_run_env(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    ide_host::ops::docker::run_env(&state.host, endpoint).await
 }

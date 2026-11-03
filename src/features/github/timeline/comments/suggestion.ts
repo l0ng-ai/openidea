@@ -13,11 +13,12 @@ import type { GHPullRequest, GHPullRequestReviewThread } from "../../api/types";
 import { withBusy } from "../../data/local";
 import { resolveThread } from "../../data/operations";
 import { usePullRequestData } from "../../data/pullRequest";
+import { connectedRoot } from "../../data/repository";
 import { buildSuggestionPatch, type SuggestionTarget } from "../model";
 
+/** The connected pull requests' local repository (the project's primary one when unknown). */
 async function repositoryRoot(): Promise<string> {
-  const roots = await call(commands.vcsRoots());
-  const root = roots[0]?.root;
+  const root = connectedRoot() ?? (await call(commands.vcsRoots()))[0]?.root;
   if (!root) throw new Error("The project is not a Git repository");
   return String(root).replace(/[\\/]+$/, "");
 }
@@ -36,7 +37,7 @@ export async function applySuggestion(
     const abs = `${root}/${target.path}`;
     const text = await call(commands.fsReadText(abs));
     const { patch, start, lines } = buildSuggestionPatch(text, target, suggestion);
-    const outcome = await call(commands.vcsApplyPatch(null, patch));
+    const outcome = await call(commands.vcsApplyPatch(connectedRoot(), patch));
     const files = outcome.conflicts.join(", ");
     if (files) throw new Error(tx`Conflicts in ${files}`);
     if (commitMessage) {
@@ -48,7 +49,7 @@ export async function applySuggestion(
         .map(({ start, lines, oldStart, oldLines }) => ({ start, lines, oldStart, oldLines }));
       if (!hunks.length) throw new Error(tx`${target.path}: nothing to commit`);
       await call(
-        commands.vcsCommit(null, commitMessage, {
+        commands.vcsCommit(connectedRoot(), commitMessage, {
           amend: false,
           signOff: false,
           author: null,
@@ -75,7 +76,7 @@ function branchInfo(version: number) {
     branchCache = {
       at: Date.now(),
       version,
-      value: call(commands.vcsBranchInfo(null)).then(
+      value: call(commands.vcsBranchInfo(connectedRoot())).then(
         (b) => ({ head: b.head, upstream: b.upstream, commit: b.headCommit }),
         () => ({ head: null, upstream: null, commit: null }),
       ),

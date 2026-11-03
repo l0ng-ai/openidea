@@ -11,6 +11,7 @@ fn host(base: &Path, environment: bool) -> Arc<Host> {
     Arc::new(Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -18,6 +19,154 @@ fn host(base: &Path, environment: bool) -> Arc<Host> {
         runtime: tokio::runtime::Handle::current(),
         project_environment: environment,
     }))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn application_commands_work_in_restricted_projects_and_without_a_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    let host = host(&tmp.path().join("app"), false);
+    assert!(host.project("welcome").is_err());
+    assert!(ide_host::ops::project::roots(&host, "welcome").is_err());
+    assert!(!host.open_project("main", &root).unwrap().is_trusted());
+    for command in [
+        "app_info",
+        "app_build_info",
+        "app_log_location",
+        "app_check_update",
+        "app_startup_update_check",
+        "app_install_update",
+        "caches_schedule_invalidation",
+        "clear_caches",
+        "clipboard_file_list",
+        "clipboard_has_files",
+        "clipboard_set_file_list",
+        "jdk_download_vendors",
+        "jdk_download_releases",
+        "jdk_download_location",
+        "jdk_download",
+        "run_system_env",
+        "run_gradle_jvm_args_script",
+        "proxy_check_connection",
+        "docker_settings",
+        "docker_save_settings",
+        "docker_set_registry_password",
+        "docker_run_env",
+        "db_console_path",
+        "db_export_file",
+        "vcs_write_patch",
+        "remote_bootstrap_list",
+        "deploy_test_connection",
+    ] {
+        assert!(ide_host::trust::restricted_command_allowed(command), "{command}");
+        for window in ["main", "welcome"] {
+            assert!(host.authorize_command(window, command).is_ok(), "{window}: {command}");
+        }
+    }
+    for command in [
+        "run_start",
+        "build_sync",
+        "debug_start",
+        "sdk_detect",
+        "tools_list",
+        "tools_install",
+        "tools_uninstall",
+        "plugin_install_dir",
+        "plugin_reload",
+        "vcs_git_version",
+        "docker_compose_op",
+        "db_execute",
+        "remote_delete",
+        "remote_mkdir",
+        "remote_rename",
+        "remote_import_local",
+        "remote_bootstrap_exec",
+        "deploy_upload",
+        "deploy_download",
+        "deploy_delete_remote",
+        "deploy_sync",
+        "unknown_command",
+    ] {
+        assert!(!ide_host::trust::restricted_command_allowed(command), "{command}");
+        for window in ["main", "welcome"] {
+            assert!(host.authorize_command(window, command).is_err(), "{window}: {command}");
+        }
+    }
+    // These requests validate the vendor before any network access, independently of project trust.
+    for window in ["main", "welcome"] {
+        let error = ide_host::ops::tools::jdk_download_releases(
+            &host,
+            window,
+            "unknown-vendor".into(),
+            ide_core::RequestId(901),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+        let error = ide_host::ops::tools::jdk_download(
+            &host,
+            window,
+            "unknown-vendor".into(),
+            25,
+            None,
+            ide_core::RequestId(902),
+            ide_host::ops::Channel::new(|_| {}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+    }
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
+    use ide_core::remote_settings::{SshAuth, SshConfiguration};
+    use ide_ssh::{FsConnection, SshFiles, SshManager};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let server_root = tmp.path().join("server");
+    std::fs::create_dir_all(server_root.join("projects/demo")).unwrap();
+    std::fs::write(server_root.join("projects/README.md"), "remote file").unwrap();
+    let port = ide_ssh::testing::sshd(server_root, Arc::new(|cmd| panic!("unexpected SSH exec: {cmd}"))).await;
+    let ssh = Arc::new(SshManager::with_files(
+        tmp.path().join("secrets.json"),
+        SshFiles { known_hosts: tmp.path().join("known_hosts"), config: None },
+    ));
+    ssh.set_configs(vec![SshConfiguration {
+        id: "selected-host".into(),
+        host: "127.0.0.1".into(),
+        port: Some(port),
+        user: "dev".into(),
+        auth: SshAuth::Password,
+        ..Default::default()
+    }]);
+    ssh.set_secret("selected-host", Some("secret".into()), false);
+    assert!(ssh.session("selected-host").await.is_err());
+    ssh.trust_host("selected-host").await.unwrap();
+
+    let mut host = host(&tmp.path().join("app"), false);
+    let state = Arc::get_mut(&mut host).unwrap();
+    state.ssh = ssh;
+    state.remote = Arc::new(ide_remote::RemoteService::new(state.ssh.clone(), tmp.path().join("cache")));
+    assert!(host.project("welcome").is_err());
+    host.authorize_command("welcome", "remote_bootstrap_list").unwrap();
+    let connection = FsConnection::Sftp { ssh: "selected-host".into() };
+    let entries = host.remote.list(&connection, "/projects").await.unwrap();
+    assert!(entries.iter().any(|e| e.path == "/projects/demo" && e.is_dir));
+    assert!(entries.iter().any(|e| e.name == "README.md" && !e.is_dir));
+    assert!(host.remote.list(&connection, "/projects/demo").await.unwrap().is_empty());
+    host.authorize_command("welcome", "deploy_test_connection").unwrap();
+    host.remote.test_connection(&connection, "/projects").await.unwrap();
+    let local = tmp.path().join("local-deployment");
+    std::fs::create_dir(&local).unwrap();
+    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_dir(local).unwrap().count(), 0, "write probe is cleaned up");
+    assert!(host.project("welcome").is_err());
+    host.shutdown().await;
 }
 
 #[test]

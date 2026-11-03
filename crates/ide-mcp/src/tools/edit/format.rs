@@ -164,7 +164,7 @@ async fn format(call: &Call, doc: DocId, info: &ide_workspace::DocumentInfo) -> 
         None => editor.insert_spaces,
     };
     let tab_size = ec.and_then(|e| e.indent_size.or(e.tab_width)).unwrap_or(editor.tab_size);
-    let options = ide_lsp::types::FormatOptions { tab_size, insert_spaces };
+    let options = ide_lsp::types::FormatOptions { tab_size, insert_spaces, on_save: false, tool: None };
     let version = project.documents.text_snapshot(doc)?.version;
     let edits = tokio::select! {
         r = ide_host::ops::lsp::lsp_format(&host, call.window(), doc, None, options) => r?,

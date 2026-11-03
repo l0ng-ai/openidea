@@ -15,13 +15,15 @@ import type { EditorView } from "@codemirror/view";
 import {
   commands,
   isCancelled,
+  isNoServer,
   nextRequestId,
   unavailableText,
   type Pos,
   type RequestId,
   type WorkspaceEdit,
 } from "@/platform/ipc";
-import { whenSynced, type EditorDocContext } from "@/editor/api";
+import { executeAction } from "@/platform/actions";
+import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
 import { comparePos, offsetToPos, rangeToOffsets } from "./positions";
@@ -42,6 +44,7 @@ import { tx } from "@/platform/i18n";
 
 async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
+    await whenAllSynced();
     await lspRequest(() => commands.applyWorkspaceEdit(edit));
   } catch (e) {
     reportLspError(view, e, true);
@@ -78,7 +81,10 @@ export async function startRename(view: EditorView) {
     range = await lspRequest(() => commands.lspPrepareRename(doc.doc, pos));
   } catch (e) {
     if (isCancelled(e)) return;
-    if (!(await startSyntaxRename(view, doc, pos, e))) reportLspError(view, e, true);
+    if (await startSyntaxRename(view, doc, pos, e)) return;
+    // No server covers this file (a plain text file): Shift+F6 renames the file, like IDEA.
+    if (isNoServer(e) && (await executeAction("project.rename"))) return;
+    reportLspError(view, e, true);
     return;
   }
   if (!range) {
