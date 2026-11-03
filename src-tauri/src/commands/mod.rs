@@ -456,6 +456,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         http::http_requests,
         http::http_environments,
         http::http_execute,
+        http::http_request,
         http::http_history,
         http::http_history_get,
         http::http_history_clear,

@@ -31,6 +31,8 @@ export interface ToolWindowContribution {
   title: string;
   /** Icon name from `ui/icons`. */
   icon: string;
+  /** Optional short text shown instead of the icon on the stripe button (e.g. "API"). */
+  iconText?: string;
   anchor: ToolWindowAnchor;
   /** Order within its stripe group; lower first. */
   order?: number;

@@ -407,7 +407,7 @@ function StripeButton({
       {...tooltipAttrs(tw.title, shortcut)}
     >
       <span className={styles.stripeIcon}>
-        <Icon name={tw.icon} size={18} />
+        {tw.iconText ? <span className={styles.stripeIconText}>{tw.iconText}</span> : <Icon name={tw.icon} size={18} />}
         {tw.useBadge && <StripeBadge useBadge={tw.useBadge} />}
       </span>
       {showName && (
