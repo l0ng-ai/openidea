@@ -1,0 +1,6 @@
+id = "erb"
+name = "ERB"
+extensions = ["erb", "html.erb", "rhtml", "js.erb", "text.erb", "xml.erb", "json.erb"]
+block-comment = ["<%#", "%>"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "ERB"

@@ -19,6 +19,7 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
     /^test_.*\.py$|_test\.py$/.test(name) ||
     (django && name === "tests.py") ||
     /_test\.go$/.test(name) ||
+    /_(spec|test)\.rb$/.test(name) ||
     /(Test|Tests|Spec|IT)\.(kt|java|scala|groovy)$/.test(name) ||
     (/(^|\/)tests\/[^/]+\.rs$/.test(relPath) && name !== "mod.rs")
   )
@@ -27,7 +28,7 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
   if (/\.go$/.test(name) && content !== undefined && /^\s*package\s+main\b/m.test(content)) return "main";
   if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
     return "main";
-  if (/\.(py|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
+  if (/\.(py|rb|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
   if (windows && /\.(bat|cmd)$/i.test(name)) return "script";
   return null;
 }
@@ -39,6 +40,8 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 function testKinds(relPath: string): string[] {
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
+  if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake"];
+  if (/_test\.rb$/.test(relPath)) return ["rake", "rspec"];
   if (/\.go$/.test(relPath)) return ["go"];
   if (/\.rs$/.test(relPath)) return ["cargo"];
   if (/\.(kt|java|scala|groovy)$/.test(relPath)) return ["gradle", "maven"];
@@ -136,7 +139,9 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
 export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[] {
   const kinds = testKinds(relPath);
   // Configurations produced from a test or file are results of narrowing, never bases for it.
-  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"));
+  const candidates = configs
+    .filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"))
+    .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
   if (best.length) return best;
   const fallback = candidates[0] ?? implicitPytest(relPath, configs);
@@ -162,7 +167,14 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
       return derived(base, relPath, { args: [...base.args, file] });
     case "pytest":
     case "python":
+    case "rspec":
       return derived(base, relPath, { args: [...base.args, file] });
+    case "rake": {
+      // `rake test` (minitest) takes the file as TEST=; `rake spec` as SPEC=.
+      const task = base.args.at(-1) ?? "";
+      const key = /(^|:)spec$/.test(task) ? "SPEC" : /(^|:)test$/.test(task) ? "TEST" : null;
+      return key ? derived(base, relPath, { args: [...base.args, `${key}=${file}`] }) : base;
+    }
     case "django-test": {
       const tests = djangoTestsOf(base, [djangoLabel(file)]);
       return tests ? derived(base, relPath, tests) : null;

@@ -1167,6 +1167,40 @@ async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_launch_serializes_the_classpath_with_the_build_lock() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, _file) = h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+
+    // A launch with a build re-takes the lock after java_build has released it.
+    let info = tokio::time::timeout(
+        Duration::from_secs(30),
+        h.mgr.java_launch(&h.root, false, true, false, &Default::default()),
+    )
+    .await
+    .expect("java_launch deadlocked on the build lock")
+    .unwrap();
+    assert!(info.class_paths.is_empty());
+
+    // The delegated external build holds the lock while java_launch resolves the
+    // classpath; java_launch must not re-take it, or the launch would deadlock.
+    let guard = h.mgr.java_external_build(&h.root, &Default::default()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(30), h.mgr.java_launch(&h.root, false, false, true, &Default::default()))
+        .await
+        .expect("java_launch deadlocked on the delegated external build's lock")
+        .unwrap();
+    drop(guard);
+    let commands: Vec<_> = state
+        .requested("workspace/executeCommand")
+        .iter()
+        .filter_map(|p| p["command"].as_str().map(str::to_owned))
+        .collect();
+    assert!(commands.contains(&"java.project.getClasspaths".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
