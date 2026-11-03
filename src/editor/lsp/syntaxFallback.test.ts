@@ -303,6 +303,29 @@ describe("navigation wiring", () => {
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
   });
 
+  it("says why when the server only checks the file's syntax", async () => {
+    const { setFileDiagnostics } = await import("./diagnostics");
+    setFileDiagnostics("/p/a.ts", "jdtls", [
+      {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+        severity: "warning",
+        message: "a.ts is not on the classpath of project app, only syntax errors are reported",
+        source: "Java",
+        code: "32",
+      },
+    ]);
+    try {
+      cmd.lspGoto.mockReturnValueOnce(ok([]));
+      const view = editor("const x = 1;\nx;", "typescript", 13);
+      await gotoTargets(view, "definition");
+      expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe(
+        "Cannot find declaration to go to. This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.",
+      );
+    } finally {
+      setFileDiagnostics("/p/a.ts", "jdtls", []);
+    }
+  });
+
   it("falls back to the local definition when the server is not ready", async () => {
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [r(1, 0, 1)] })));
     const view = editor("const x = 1;\nx;", "typescript", 13);

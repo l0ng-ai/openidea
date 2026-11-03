@@ -411,6 +411,49 @@ fn pip_list_output_is_parsed() {
     assert_eq!(pkgs[0].version, "2.32.0");
 }
 
+/// A directory whose `typing.py` breaks any interpreter that imports it from there.
+fn shadowing_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("typing.py"), "raise ImportError('shadowed stdlib')\n").unwrap();
+    std::fs::write(dir.path().join("logging.py"), "raise ImportError('shadowed stdlib')\n").unwrap();
+    dir
+}
+
+#[test]
+fn venv_creation_ignores_modules_in_the_working_directory() {
+    let Some(python) = crate::exec::which("python3") else { return };
+    let shadow = shadowing_dir();
+    // Precondition: without isolation the shadowing module is picked up.
+    let plain =
+        std::process::Command::new(&python).args(["-c", "import typing"]).current_dir(shadow.path()).output().unwrap();
+    assert!(!plain.status.success());
+    let target = tempfile::tempdir().unwrap();
+    let location = target.path().join(".venv");
+    // `--without-pip` keeps the test fast; the stdlib imports of `venv` still happen.
+    let mut args = crate::python::venv_args(&location);
+    args.push("--without-pip".into());
+    crate::exec::stream(&python, &args, Some(shadow.path()), &[], &Default::default(), &|_| {}).unwrap();
+    assert!(location.join("pyvenv.cfg").is_file());
+}
+
+#[test]
+fn neutral_dir_is_fresh_and_empty() {
+    let a = crate::python::neutral_dir().unwrap();
+    let b = crate::python::neutral_dir().unwrap();
+    assert_ne!(a.path(), b.path());
+    assert_eq!(std::fs::read_dir(a.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn relative_requirements_resolve_against_the_project() {
+    use crate::python::resolve_requirement;
+    let root = Path::new("/work/app");
+    assert_eq!(resolve_requirement("requests==2.0", Some(root)).unwrap(), "requests==2.0");
+    assert_eq!(resolve_requirement("./pkg", Some(root)).unwrap(), root.join("./pkg").to_string_lossy());
+    assert_eq!(resolve_requirement(".[dev]", Some(root)).unwrap(), root.join(".[dev]").to_string_lossy());
+    assert!(resolve_requirement("../lib", None).is_err());
+}
+
 #[test]
 fn excluded_folders_become_anchored_globs() {
     let mut s = Settings::default();
