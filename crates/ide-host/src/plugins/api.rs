@@ -152,6 +152,8 @@ pub(super) struct Shared {
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
+    /// plugin → files it shows problems for, withdrawn when it stops.
+    diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
@@ -177,6 +179,7 @@ impl Shared {
             next_task: AtomicU64::new(1),
             status: Mutex::default(),
             subscriptions: Mutex::default(),
+            diagnostics: Mutex::default(),
         })
     }
 
@@ -186,6 +189,31 @@ impl Shared {
 
     pub fn project_of(&self, window: &str) -> Option<PathBuf> {
         self.workspace()?.project_of(window)
+    }
+
+    /// Shows `plugin`'s problems of `path`, remembering the file until they are
+    /// cleared (by the plugin, or when it stops).
+    fn publish_diagnostics(
+        &self,
+        plugin: &str,
+        path: &Path,
+        items: Vec<ide_core::Diagnostic>,
+    ) -> Result<(), HostError> {
+        let workspace = self.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
+        let empty = items.is_empty();
+        workspace.publish_diagnostics(plugin, path, items)?;
+        let mut published = self.diagnostics.lock();
+        if empty {
+            if let Some(paths) = published.get_mut(plugin) {
+                paths.remove(path);
+                if paths.is_empty() {
+                    published.remove(plugin);
+                }
+            }
+        } else {
+            published.entry(plugin.to_owned()).or_default().insert(path.to_path_buf());
+        }
+        Ok(())
     }
 
     pub fn status_items(&self) -> Vec<(String, String, StatusItem)> {
@@ -209,6 +237,13 @@ impl Shared {
         let tasks: Vec<u64> = self.tasks.lock().iter().filter(|(_, t)| t.plugin == plugin).map(|(id, _)| *id).collect();
         for id in tasks {
             self.end_task(id);
+        }
+        // Its problems go with it (an idle reclaim keeps them: it isn't cleared then).
+        let paths = self.diagnostics.lock().remove(plugin).unwrap_or_default();
+        if let Some(workspace) = self.workspace() {
+            for path in paths {
+                let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
+            }
         }
         if subscriptions && self.subscriptions.lock().remove(plugin).is_some() {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
@@ -422,8 +457,7 @@ impl HostApi for PluginApi {
     }
 
     fn publish_diagnostics(&self, path: &Path, items: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
-        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
-        workspace.publish_diagnostics(self.id(), path, items)
+        self.shared.publish_diagnostics(self.id(), path, items)
     }
 
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError> {

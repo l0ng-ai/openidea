@@ -16,7 +16,7 @@ import { registerStatusItem } from "@/workbench/contributions";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
-import { runPluginCommand } from "./store";
+import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
 
@@ -77,6 +77,14 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   );
 }
 
+/** The item's name in the status bar menu: its plugin's, plus what it declares (tooltip or text). */
+function statusItemTitle(key: ItemKey, declared: Declared | undefined): string {
+  const pluginId = key.slice(0, key.indexOf("/"));
+  const plugin = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.name ?? pluginId;
+  const what = declared?.item.tooltip || declared?.item.text;
+  return what ? `${plugin}: ${what}` : plugin;
+}
+
 /** One status bar contribution per plugin item (declared or set by code), registered while it exists. */
 function projectStatusItems(): () => void {
   const registered = new Map<ItemKey, { dispose: () => void; sig: string }>();
@@ -98,6 +106,8 @@ function projectStatusItems(): () => void {
         const View = () => <PluginStatusItemView itemKey={key} />;
         const dispose = registerStatusItem({
           id: `plugin.${key}`,
+          // Named in the status bar's context menu, so it can be hidden like the built-in widgets.
+          title: statusItemTitle(key, d),
           align: d?.align ?? "right",
           priority: d?.priority ?? 2,
           component: View,

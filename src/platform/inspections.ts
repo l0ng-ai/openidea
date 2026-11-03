@@ -8,6 +8,7 @@
  * at either level (`ide:<key>` / `project:<key>`).
  * Mirrors `ide-core::inspection_settings`.
  */
+import { create } from "zustand";
 import type { Diagnostic, Severity } from "@/bindings";
 import { useProject } from "./project";
 
@@ -471,6 +472,12 @@ function loadSeen(): Map<string, SeenCode> {
   }
   return seen;
 }
+
+/**
+ * Names of the producers that aren't language servers, for Settings ›
+ * Inspections: plugins (`plugin:<id>`) by their names.
+ */
+export const useProducerNames = create<{ names: ReadonlyMap<string, string> }>(() => ({ names: new Map() }));
 
 /** Records the codes of a producer's diagnostics (persisted, shared with the Settings window). */
 export function noteDiagnosticCodes(producer: string, items: readonly Diagnostic[]) {

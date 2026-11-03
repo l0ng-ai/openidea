@@ -11,6 +11,10 @@ use ide_extension::package::{self, Index, IndexEntry, PackageSignature, SIGNATUR
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// The official marketplace: the index the release workflow publishes with
+/// the app, next to the signed packages of the official plugins.
+pub const OFFICIAL_INDEX: &str = "https://github.com/l0ng-ai/openidea/releases/latest/download/plugins-index.json";
+
 /// The last index read, in the plugins directory.
 pub const INDEX_FILE: &str = "market-index.json";
 const DOWNLOADS: &str = ".downloads";
@@ -69,9 +73,14 @@ impl PluginHost {
         Index::parse(&text).map_err(|e| tracing::warn!("{INDEX_FILE}: {e}")).ok()
     }
 
-    /// The marketplace index URL (none: no marketplace).
+    /// The marketplace index URL: the user's, else the default (none: no marketplace).
     pub fn market_url(&self) -> Option<String> {
-        self.state.lock().market_url.clone()
+        self.state.lock().market_url.clone().or_else(|| self.default_market_url.read().clone())
+    }
+
+    /// The marketplace used while the user has set none.
+    pub fn set_default_market_url(&self, url: Option<String>) {
+        *self.default_market_url.write() = url.filter(|u| !u.trim().is_empty());
     }
 
     pub fn set_market_url(&self, url: Option<String>) {

@@ -12,10 +12,12 @@ import { applyThemeAttributes, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
 import {
   applyPluginTheme,
+  followThemeSetting,
   PLUGIN_THEME_STYLE_ID,
   handlePluginEvent,
   pluginActionId,
   startPluginBridge,
+  syncProjection,
 } from "../bridge";
 import { iconResolver } from "../iconThemes";
 import { markerIcon, placeMarkers } from "../lineMarkerGutter";
@@ -270,6 +272,24 @@ describe("store", () => {
     expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night");
     await selectPluginTheme(null, null);
     expect(usePlugins.getState().activeTheme).toBeNull();
+  });
+
+  it("applies the plugin theme the Appearance setting selects, and clears it for a built-in one", async () => {
+    const stop = [syncProjection(), followThemeSetting()];
+    try {
+      useProject.setState({ settings: { appearance: { theme: "plugin:theme-harbor-night/harbor-night" } } as never });
+      await refreshPlugins();
+      await waitFor(() => expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night"));
+      // A built-in theme picked anywhere (here the session override) wins over it.
+      act(() => useThemeOverride.setState({ theme: "solarized-dark" }));
+      await waitFor(() => expect(usePlugins.getState().activeTheme).toBeNull());
+      act(() => useThemeOverride.setState({ theme: null }));
+      await waitFor(() => expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night"));
+    } finally {
+      stop.forEach((s) => s());
+      useThemeOverride.setState({ theme: null });
+      useProject.setState({ settings: null as never });
+    }
   });
 
   it("installs from a folder, its plugin.toml, or a package file unpacked first", async () => {

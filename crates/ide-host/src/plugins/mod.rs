@@ -32,7 +32,7 @@ pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
-pub use market::{INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin};
+pub use market::{INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX};
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub(crate) use providers::editor_providers as editor_providers_for;
 pub use providers::{ProviderKind, set_editor_providers};
@@ -316,6 +316,8 @@ pub struct PluginHost {
     pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
     /// The last marketplace index read: trust root for signatures, revocations.
     market: RwLock<Option<ide_extension::package::Index>>,
+    /// The marketplace used while the user has set none (the app's official one).
+    default_market_url: RwLock<Option<String>>,
     /// Updates not confirmed yet (the new version hasn't started once): what
     /// to roll back to.
     updates: Mutex<HashMap<String, PendingUpdate>>,
@@ -355,6 +357,7 @@ impl PluginHost {
         let market = RwLock::new(Self::load_market_index(&plugins_dir));
         let host = Self {
             market,
+            default_market_url: RwLock::new(None),
             updates: Mutex::default(),
             project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,
@@ -933,7 +936,25 @@ impl PluginHost {
                 "development plugins are removed by deleting them from .openidea/plugins or unlinking them",
             ));
         }
+        // Its secrets (kept outside its directory, in the OS keychain on the desktop) go with it.
+        let secrets: Vec<String> = plugin
+            .manifest()
+            .contributes
+            .get(providers::SECRETS_POINT)
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
+            .collect();
         self.unload(id);
+        {
+            let store = self.shared.secrets.read().clone();
+            for name in &secrets {
+                if let Err(e) = store.set(id, name, None) {
+                    tracing::warn!(plugin = %id, "cannot delete secret {name:?}: {e}");
+                }
+            }
+        }
         // Every version (`<id>/<version>`), or the flat directory of an older install.
         let root = self.plugins_dir.join(id);
         std::fs::remove_dir_all(if root.is_dir() { root } else { plugin.dir().to_path_buf() })?;

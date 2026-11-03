@@ -1,19 +1,23 @@
 /**
- * File icon themes contributed by plugins (`iconThemes`). The selection is a
- * per-user preference kept in this browser profile; the mapping and the
- * sanitised SVGs are fetched from the backend only when a theme is selected,
- * so installed icon themes cost nothing at start-up.
+ * File icon themes contributed by plugins (`iconThemes`). The selection is the
+ * `appearance.fileIconTheme` setting (Settings › Appearance, or the plugin's
+ * details page); the mapping and the sanitised SVGs are fetched from the
+ * backend only when a theme is selected, so installed icon themes cost
+ * nothing at start-up.
  */
 import { create } from "zustand";
+import { call, commands, isTauri } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import { addContributedIconTheme } from "@/platform/themes";
 import { registerExternalIcons, setFileIconTheme, type FileIconTheme } from "@/ui";
 import { pluginsBackend } from "./backend";
-
-export const ICON_THEME_KEY = "openidea.fileIconTheme";
 
 export interface IconThemeRef {
   pluginId: string;
   id: string;
   label: string;
+  /** The plugin's name. */
+  origin?: string;
 }
 
 export interface IconThemeMap {
@@ -28,25 +32,34 @@ export interface IconThemeMap {
 interface IconThemesState {
   /** `<pluginId>/<themeId>` → theme. */
   available: ReadonlyMap<string, IconThemeRef>;
-  /** `<pluginId>/<themeId>` or null for the built-in icons. */
-  selected: string | null;
+  /** Without a backend (tests, browser preview): the selection for this session. */
+  override: string | null | undefined;
   /** The theme whose icons are registered. */
   applied: string | null;
 }
 
-const readSelection = (): string | null => {
-  try {
-    return localStorage.getItem(ICON_THEME_KEY);
-  } catch {
-    return null;
-  }
-};
-
 export const useIconThemes = create<IconThemesState>(() => ({
   available: new Map(),
-  selected: readSelection(),
+  override: undefined,
   applied: null,
 }));
+
+const fromSettings = (s: ReturnType<typeof useProject.getState>) =>
+  (s.settings?.appearance as { fileIconTheme?: unknown } | undefined)?.fileIconTheme;
+
+/** The selected icon theme (`<pluginId>/<themeId>`), or null for the built-in icons. */
+export function selectedIconTheme(): string | null {
+  const { override } = useIconThemes.getState();
+  if (override !== undefined) return override;
+  const v = fromSettings(useProject.getState());
+  return typeof v === "string" && v ? v : null;
+}
+
+export function useSelectedIconTheme(): string | null {
+  useIconThemes((s) => s.override);
+  useProject((s) => fromSettings(s));
+  return selectedIconTheme();
+}
 
 export const iconThemeKey = (pluginId: string, id: string) => `${pluginId}/${id}`;
 
@@ -54,22 +67,29 @@ export const iconThemeKey = (pluginId: string, id: string) => `${pluginId}/${id}
 export function addIconTheme(theme: IconThemeRef): () => void {
   const key = iconThemeKey(theme.pluginId, theme.id);
   useIconThemes.setState((s) => ({ available: new Map(s.available).set(key, theme) }));
-  return () =>
+  const unlist = addContributedIconTheme({ id: key, label: theme.label, origin: theme.origin });
+  return () => {
+    unlist();
     useIconThemes.setState((s) => {
       const available = new Map(s.available);
       available.delete(key);
       return { available };
     });
+  };
 }
 
-export function selectIconTheme(key: string | null) {
-  try {
-    if (key) localStorage.setItem(ICON_THEME_KEY, key);
-    else localStorage.removeItem(ICON_THEME_KEY);
-  } catch {
-    /* storage unavailable: the choice lasts for this window */
+export async function selectIconTheme(key: string | null) {
+  if (!isTauri()) {
+    useIconThemes.setState({ override: key });
+    return;
   }
-  useIconThemes.setState({ selected: key });
+  try {
+    useProject.setState({
+      settings: await call(commands.settingsSet("global", "appearance.fileIconTheme", JSON.stringify(key ?? ""))),
+    });
+  } catch (e) {
+    console.warn("cannot select the file icon theme", e);
+  }
 }
 
 /**
@@ -148,21 +168,21 @@ async function apply(key: string | null) {
 /** Keeps the registered icons in line with the selection and the available themes. */
 export function trackIconTheme(): () => void {
   const sync = () => {
-    const { selected, available } = useIconThemes.getState();
-    void apply(selected && available.has(selected) ? selected : null);
+    const selected = selectedIconTheme();
+    void apply(selected && useIconThemes.getState().available.has(selected) ? selected : null);
   };
   sync();
-  const unsubscribe = useIconThemes.subscribe((s, prev) => {
-    if (s.selected !== prev.selected || s.available !== prev.available) sync();
-  });
-  // Another window (Settings) changed the selection.
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === ICON_THEME_KEY) useIconThemes.setState({ selected: e.newValue });
-  };
-  window.addEventListener("storage", onStorage);
+  const unsubscribe = [
+    useIconThemes.subscribe((s, prev) => {
+      if (s.override !== prev.override || s.available !== prev.available) sync();
+    }),
+    // Settings are shared by every window: a choice made in one shows in all.
+    useProject.subscribe((s, prev) => {
+      if (fromSettings(s) !== fromSettings(prev)) sync();
+    }),
+  ];
   return () => {
-    unsubscribe();
-    window.removeEventListener("storage", onStorage);
+    unsubscribe.forEach((u) => u());
     undo?.();
     undo = null;
     useIconThemes.setState({ applied: null });

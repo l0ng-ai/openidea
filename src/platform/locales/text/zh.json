@@ -5774,5 +5774,9 @@
   "Cannot show {label}": "无法显示 {label}",
   "{title} layout": "{title} 布局",
   "Editor and {title}": "编辑器和{title}",
-  "{title} Only": "仅{title}"
+  "{title} Only": "仅{title}",
+  "File icon theme": "文件图标主题",
+  "Plugin not enabled": "插件未启用",
+  "Problems the {plugin} plugin reports. Severity \"As reported\" keeps the level the plugin assigns; a code below can override it.": "{plugin} 插件报告的问题。严重性“按报告”保留插件分配的级别；下方的代码可以覆盖它。",
+  "The plugin system is a preview: its API and the plugins may still change.": "插件系统目前是预览版：API 和插件都可能还会变化。"
 }

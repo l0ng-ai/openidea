@@ -1781,6 +1781,10 @@ fn official_license_header_reports_fixes_and_scans() {
     f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(20)));
     assert_eq!(diagnostics(&a).map(|d| d.len()), Some(0), "cleared once the header is there");
+
+    // Disabling the plugin withdraws the problems it still shows.
+    f.host.set_enabled("openidea.license-header", false).unwrap();
+    assert_eq!(diagnostics(&b).map(|d| d.len()), Some(0), "withdrawn with the plugin");
 }
 
 /// MyBatis Navigator: interface ↔ XML through the providers, on a
@@ -2275,4 +2279,33 @@ fn a_zipped_plugin_folder_installs_like_the_folder() {
     zip.finish().unwrap();
     let err = f.host.unpack_package(&other).unwrap_err().message;
     assert!(err.contains("is not an OpenIDEA plugin"), "{err}");
+}
+
+/// Secrets live outside the plugin's directory (the OS keychain on the
+/// desktop): uninstalling the plugin deletes the ones it declares.
+#[test]
+fn uninstalling_deletes_the_plugins_secrets() {
+    #[derive(Default)]
+    struct Keychain(Mutex<std::collections::HashMap<(String, String), String>>);
+    impl SecretStore for Keychain {
+        fn get(&self, plugin: &str, name: &str) -> Option<String> {
+            self.0.lock().get(&(plugin.into(), name.into())).cloned()
+        }
+        fn set(&self, plugin: &str, name: &str, value: Option<&str>) -> Result<(), String> {
+            let key = (plugin.to_owned(), name.to_owned());
+            match value {
+                Some(v) => self.0.lock().insert(key, v.into()),
+                None => self.0.lock().remove(&key),
+            };
+            Ok(())
+        }
+    }
+    let f = fixture(Limits::default());
+    let keychain = Arc::new(Keychain::default());
+    f.host.set_secret_store(keychain.clone());
+    f.install(&official("ai-completion"));
+    f.host.set_secret("openidea.ai-completion", "api-key", Some("sk-test")).unwrap();
+    assert!(keychain.get("openidea.ai-completion", "api-key").is_some());
+    f.host.uninstall("openidea.ai-completion").unwrap();
+    assert!(keychain.0.lock().is_empty(), "{:?}", keychain.0.lock().keys().collect::<Vec<_>>());
 }

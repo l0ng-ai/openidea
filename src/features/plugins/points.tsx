@@ -6,12 +6,15 @@
 import type { PluginInfo, ThemeDef } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
+import { addContributedTheme, pluginThemeRef } from "@/platform/themes";
+import { currentThemeChoice, setTheme, useThemeOverride } from "@/workbench/theme";
+import { useProject } from "@/platform/project";
 import { Button, Kbd, T } from "@/ui";
-import { addIconTheme, iconThemeKey, selectIconTheme, useIconThemes } from "./iconThemes";
+import { addIconTheme, iconThemeKey, selectIconTheme, useSelectedIconTheme } from "./iconThemes";
 import { defineUiPoint, type UiItem } from "./projection";
 import { SecretsDetails, type SecretDecl } from "./secrets";
 import { defineViewUiPoints } from "./uiPoints";
-import { isLive, runPluginCommand, selectPluginTheme, usePlugins } from "./store";
+import { isLive, runPluginCommand } from "./store";
 import styles from "./PluginsPage.module.css";
 
 export const pluginActionId = (pluginId: string, commandId: string) => `plugin.${pluginId}.${commandId}`;
@@ -54,18 +57,25 @@ function CommandsDetails({ plugin, items }: { plugin: PluginInfo; items: UiItem<
 }
 
 function ThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiItem<ThemeDef>[] }) {
-  const activeTheme = usePlugins((s) => s.activeTheme);
+  // The selection is the Appearance setting; these buttons write it as the theme pickers do.
+  useProject((s) => s.settings?.appearance);
+  useThemeOverride((s) => s.theme);
+  const selected = currentThemeChoice();
   const live = isLive(plugin.status);
   return (
     <ul className={styles.items}>
       {items.map(({ decl: t }) => {
-        const isActive = activeTheme?.pluginId === plugin.id && activeTheme.theme.id === t.id;
+        const isActive = selected === pluginThemeRef(plugin.id, t.id);
         return (
           <li key={t.id} className={styles.item}>
             <span className={styles.itemMain}>{t.name}</span>
             <span className={styles.muted}>{t.kind === "dark" ? tx("Dark") : tx("Light")}</span>
             {isActive ? (
-              <Button size="small" variant="secondary" onClick={() => void selectPluginTheme(null, null)}>
+              <Button
+                size="small"
+                variant="secondary"
+                onClick={() => void setTheme(t.kind === "light" ? "light" : "dark")}
+              >
                 <T>Use Default Theme</T>
               </Button>
             ) : (
@@ -73,7 +83,7 @@ function ThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiItem<Th
                 size="small"
                 variant="ghost"
                 disabled={!live}
-                onClick={() => void selectPluginTheme(plugin.id, t.id)}
+                onClick={() => void setTheme(pluginThemeRef(plugin.id, t.id))}
                 aria-label={tx`Apply theme ${t.name}`}
               >
                 <T>Apply</T>
@@ -93,7 +103,7 @@ interface IconThemeDecl {
 }
 
 function IconThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiItem<IconThemeDecl>[] }) {
-  const selected = useIconThemes((s) => s.selected);
+  const selected = useSelectedIconTheme();
   return (
     <ul className={styles.items}>
       {items.map(({ decl: t }) => {
@@ -103,14 +113,14 @@ function IconThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiIte
             <span className={styles.itemMain}>{t.label}</span>
             <span className={styles.muted}>{tx`${t.icons} icons`}</span>
             {selected === key ? (
-              <Button size="small" variant="secondary" onClick={() => selectIconTheme(null)}>
+              <Button size="small" variant="secondary" onClick={() => void selectIconTheme(null)}>
                 <T>Use Default Icons</T>
               </Button>
             ) : (
               <Button
                 size="small"
                 variant="ghost"
-                onClick={() => selectIconTheme(key)}
+                onClick={() => void selectIconTheme(key)}
                 aria-label={tx`Apply icon theme ${t.label}`}
               >
                 <T>Apply</T>
@@ -143,11 +153,22 @@ export function defineBuiltinUiPoints(): () => void {
         }),
       Details: CommandsDetails,
     }),
-    // Applied through `activeTheme` (the backend owns the selection); listed here.
-    defineUiPoint<ThemeDef>("themes", { title: "Themes", Details: ThemesDetails }),
+    // Offered by every theme picker while the plugin is live; `followThemeSetting` applies the selected one.
+    defineUiPoint<ThemeDef>("themes", {
+      title: "Themes",
+      project: ({ pluginId, decl }, { plugin }) =>
+        addContributedTheme({
+          id: pluginThemeRef(pluginId, decl.id),
+          label: decl.name,
+          kind: decl.kind === "light" ? "light" : "dark",
+          origin: plugin.name,
+        }),
+      Details: ThemesDetails,
+    }),
     defineUiPoint<IconThemeDecl>("iconThemes", {
       title: "File Icon Themes",
-      project: ({ pluginId, decl }) => addIconTheme({ pluginId, id: decl.id, label: decl.label }),
+      project: ({ pluginId, decl }, { plugin }) =>
+        addIconTheme({ pluginId, id: decl.id, label: decl.label, origin: plugin.name }),
       Details: IconThemesDetails,
     }),
     // Stored by the backend; listed here with a field per secret.

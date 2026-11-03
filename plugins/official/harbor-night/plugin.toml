@@ -2,7 +2,7 @@
 # `openidea-plugin new --template theme` starts a new theme from this one.
 id = "openidea.harbor-night"
 name = "Harbor Night"
-version = "1.0.0"
+version = "0.1.0"
 description = "A dark theme: slate surfaces, a teal accent and a warm syntax palette."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"

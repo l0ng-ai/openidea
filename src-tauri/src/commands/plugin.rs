@@ -107,6 +107,10 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     ide_language::set_external_syntax(Some(host.syntax_provider()));
     ide_run::set_external_detection(Some(host.run_detection()));
     host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(project_host)))));
+    // Released builds list the official plugins (published with each release) until the user picks another index.
+    if !cfg!(debug_assertions) {
+        host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
+    }
     #[cfg(target_os = "macos")]
     host.set_secret_store(Arc::new(KeychainSecrets));
     ide_host::plugins::set_editor_providers(Some(&host));
@@ -485,7 +489,7 @@ pub fn plugin_market_url(state: State<'_, AppState>) -> Option<String> {
     state.plugins.market_url()
 }
 
-/// Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for none).
+/// Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default).
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_set_market_url(state: State<'_, AppState>, url: Option<String>) {

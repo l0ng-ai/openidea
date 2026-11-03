@@ -11,6 +11,10 @@ editors, and contribute menus, shortcuts, settings, themes, file icon themes
 and languages. Plugins that only contribute data (themes, icons, languages,
 menus, settings) need no code at all.
 
+> **Preview.** The plugin system ships as a preview: until it is declared
+> stable the API (`openidea:plugin@1.0`) may still change, and the official
+> plugins are versioned `0.x`. See _Evolving the plugin API_ below.
+
 ```
 plugins/
 └─ official/
@@ -716,8 +720,8 @@ the API itself follows _Evolving the plugin API_ below.
 
 ## 10. Evolving the plugin API
 
-Until the plugin system's first release the API may still change freely. From
-then on wasmtime decides what stays compatible: it resolves interface names
+While the plugin system is a preview the API may still change freely. Once it
+is declared stable wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

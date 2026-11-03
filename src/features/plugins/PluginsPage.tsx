@@ -734,6 +734,11 @@ export function PluginsPage() {
             },
           ]}
         />
+        <span title={tx("The plugin system is a preview: its API and the plugins may still change.")}>
+          <Badge tone="accent">
+            <T>Preview</T>
+          </Badge>
+        </span>
         <span className={styles.spacer} />
         {(loading || installing) && <Spinner size={14} label={installing ? "Installing plugin" : "Loading plugins"} />}
         <IconButton icon="settings" title="Manage Plugins" aria-haspopup="menu" onClick={openGear} />

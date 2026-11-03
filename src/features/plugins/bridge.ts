@@ -10,14 +10,25 @@ import type { ActiveTheme, PluginEvent } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
 import { notifications } from "@/workbench/contributions";
-import { applyThemeAttributes, currentThemeId, syncWindowBackground, windowBackgroundHex } from "@/workbench/theme";
+import { useProducerNames } from "@/platform/inspections";
+import { languageListChanged } from "@/platform/languageList";
+import { isThemeAvailable, parsePluginThemeRef, useContributedThemes } from "@/platform/themes";
+import {
+  applyThemeAttributes,
+  currentThemeChoice,
+  currentThemeId,
+  subscribeScheme,
+  syncWindowBackground,
+  useThemeOverride,
+  windowBackgroundHex,
+} from "@/workbench/theme";
 import { useProject } from "@/platform/project";
 import { pluginsBackend } from "./backend";
 import { trackIconTheme } from "./iconThemes";
 import { defineBuiltinUiPoints } from "./points";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, usePlugins } from "./store";
+import { grantPlugin, refreshPlugins, selectPluginTheme, usePlugins } from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -26,6 +37,8 @@ export function syncProjection(): () => void {
   const apply = () => {
     const s = usePlugins.getState();
     syncUiContributions(s.ui, s.plugins);
+    // Their problems are listed by name in Settings › Inspections.
+    useProducerNames.setState({ names: new Map(s.plugins.map((p) => [`plugin:${p.id}`, p.name])) });
   };
   apply();
   const unsubscribe = usePlugins.subscribe((s, prev) => {
@@ -147,6 +160,53 @@ export function trackPluginTheme(): () => void {
   };
 }
 
+/**
+ * Makes the plugin host's theme the one the Appearance settings select: a
+ * plugin theme (`plugin:<id>/<theme>`, from any theme picker, the OS mode with
+ * "Sync with OS", or the plugin's details page) is selected there once its
+ * plugin is live; a built-in one clears it. While the selected plugin is off,
+ * its built-in base shows and the selection is kept for when it is back.
+ */
+export function followThemeSetting(): () => void {
+  let requested: string | undefined;
+  const reconcile = () => {
+    const plugins = usePlugins.getState();
+    if (!plugins.loaded || plugins.error || !useProject.getState().settings?.appearance) return;
+    const choice = currentThemeChoice();
+    const want = parsePluginThemeRef(choice);
+    const target = want && isThemeAvailable(choice) ? choice : null;
+    const active = plugins.activeTheme;
+    const current = active ? `plugin:${active.pluginId}/${active.theme.id}` : null;
+    if (target === current || (want && !target && !current)) {
+      requested = undefined;
+      return;
+    }
+    // A selected plugin that is off: leave the host's selection for when it is back.
+    if (want && !target) {
+      if (requested === "") return;
+      requested = "";
+      void selectPluginTheme(null, null);
+      return;
+    }
+    if (requested === (target ?? "")) return;
+    requested = target ?? "";
+    void selectPluginTheme(want && target ? want.pluginId : null, want && target ? want.themeId : null);
+  };
+  reconcile();
+  const disposers = [
+    usePlugins.subscribe((s, prev) => {
+      if (s.loaded !== prev.loaded || s.activeTheme !== prev.activeTheme) reconcile();
+    }),
+    useProject.subscribe((s, prev) => {
+      if (s.settings?.appearance !== prev.settings?.appearance) reconcile();
+    }),
+    useThemeOverride.subscribe(reconcile),
+    useContributedThemes.subscribe(reconcile),
+    subscribeScheme(reconcile),
+  ];
+  return () => disposers.forEach((d) => d());
+}
+
 /** Reports the focused editor's file to the backend (`editor-focused` events). */
 function trackActiveFile(): () => void {
   let last: string | null | undefined;
@@ -181,10 +241,23 @@ export function handlePluginEvent(e: PluginEvent) {
       break;
     case "languagesChanged":
       void refreshLanguageInfos();
+      languageListChanged();
       break;
     default:
       handleRuntimeEvent(e);
   }
+}
+
+/**
+ * For windows that only show plugins (Settings): stays in line with what
+ * changes elsewhere — installs, enable / disable, the theme, languages —
+ * while notifications and permission prompts stay with the project windows.
+ */
+export function followPluginChanges(): () => void {
+  return pluginsBackend().onEvent((e) => {
+    if (e.type === "commandsChanged" || e.type === "themeChanged" || e.type === "languagesChanged")
+      handlePluginEvent(e);
+  });
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -231,6 +304,7 @@ export function startPluginBridge(): () => void {
     pluginsBackend().onEvent(handlePluginEvent),
     syncProjection(),
     trackPluginTheme(),
+    followThemeSetting(),
     trackIconTheme(),
     trackActiveFile(),
     trackActivationEvents(),

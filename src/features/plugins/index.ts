@@ -17,7 +17,7 @@ import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { editorService, registerOverlay, registerSettingsPage } from "@/workbench/contributions";
-import { startPluginBridge, syncProjection, trackPluginTheme } from "./bridge";
+import { followPluginChanges, startPluginBridge, syncProjection, trackPluginTheme } from "./bridge";
 import { ConsentDialogHost, provideConsentDialog } from "./consent";
 import { trackIconTheme } from "./iconThemes";
 import { pluginLineMarkerGutter } from "./lineMarkerGutter";
@@ -43,6 +43,7 @@ export function activateSettingsPages(): () => void {
     registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
     provideConsentDialog(),
     defineBuiltinUiPoints(),
+    followPluginChanges(),
     syncProjection(),
     trackPluginTheme(),
     trackIconTheme(),
