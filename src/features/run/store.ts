@@ -15,6 +15,7 @@ import {
   type OutputChunk,
   type RunConfig,
   type RunId,
+  type RunImportSource,
   type TestCaseReport,
 } from "@/platform/ipc";
 import {
@@ -122,6 +123,8 @@ interface RunState {
   editTarget: string | null;
   /** The edit dialog opens with unsaved changes (a temporary configuration to make permanent on OK). */
   editDirty: boolean;
+  /** The edit dialog opens by importing from this project file ("Import Run Configurations from…"). */
+  editImport: RunImportSource | null;
 }
 
 export const useRun = create<RunState>(() => ({
@@ -138,6 +141,7 @@ export const useRun = create<RunState>(() => ({
   editorOpen: false,
   editTarget: null,
   editDirty: false,
+  editImport: null,
 }));
 
 const runtimes = new Map<string, SessionRuntime>();
@@ -1088,6 +1092,7 @@ export function resetRuns() {
     editorOpen: false,
     editTarget: null,
     editDirty: false,
+    editImport: null,
   });
 }
 

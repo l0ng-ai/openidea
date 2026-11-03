@@ -316,6 +316,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_save_configs,
         run::run_templates,
         run::run_save_templates,
+        run::run_import_sources,
+        run::run_import_configs,
         run::run_system_env,
         run::run_start,
         run::run_stop,
