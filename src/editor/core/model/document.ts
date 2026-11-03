@@ -405,6 +405,19 @@ export class DocModel {
     return this.indentOverride ?? effectiveIndent(this.settings(), this.info, this.editorconfig, this.detectedIndent);
   }
 
+  /**
+   * Indentation explicit reformat requests use (`formatIndentFacet`): with an
+   * explicit per-language Tabs and Indents override, the Code Style without the
+   * file's detected indents — the override must reach the formatter, or the
+   * language server keeps its own style. Without an override formatting keeps
+   * the editor's indent.
+   */
+  formatIndent() {
+    const lang = this.info ? prefsOf(this.settings()).codeStyle.languages[this.info.id] : undefined;
+    if (!lang || (lang.useTab === undefined && lang.tabSize === undefined && lang.indent === undefined)) return null;
+    return effectiveIndent(this.settings(), this.info, this.editorconfig, null);
+  }
+
   /** Soft wraps toggled for this file (wins over settings until the file is closed). */
   softWrapOverride: boolean | null = null;
 
@@ -429,7 +442,7 @@ export class DocModel {
     const indent = this.effectiveIndent();
     this.setMeta({ indent: { tabSize: indent.tabSize, insertSpaces: indent.insertSpaces } });
     const effects = [
-      compartments.indent.reconfigure(indentExtension(indent)),
+      compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
       compartments.sticky.reconfigure(stickyExtension(editor)),
       compartments.font.reconfigure(fontExtension(editor)),
@@ -569,8 +582,7 @@ export class DocModel {
 
   save(reason: "explicit" | "auto"): Promise<void> {
     const run = async () => {
-      if (this.closed || this.meta.readOnly) return;
-      if (reason === "auto" && !this.meta.dirty) return;
+      if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
       const slot = this.primarySlot();
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
@@ -764,7 +776,7 @@ export class DocumentManager {
     for (const m of this.byPath.values()) m.applySettings();
   }
 
-  /** Saves every document; failures are notified, and an explicit Save All also rejects with them. */
+  /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
   async saveAll(reason: "explicit" | "auto") {
     const errors: unknown[] = [];
     await Promise.all(

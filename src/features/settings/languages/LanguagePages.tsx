@@ -110,6 +110,28 @@ export function NodePage() {
 }
 
 // ---------------------------------------------------------------------------
+// Ruby
+
+export function RubyPage() {
+  return (
+    <div className={styles.page}>
+      <Section>
+        <SdkRow
+          k="languages.ruby.interpreter"
+          label="Ruby interpreter"
+          kind="ruby"
+          emptyLabel="Auto"
+          emptyDetail=".ruby-version / mise / asdf, else ruby on PATH"
+          browseTitle="Select Ruby Interpreter"
+          aria-label="Ruby interpreter"
+          hint="Runs the ruby, rake and rspec configurations and lists the standard library and gems under External Libraries. Installs from rbenv, rvm, chruby, mise and asdf are detected."
+        />
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Rust
 
 export function RustPage() {

@@ -56,14 +56,16 @@ pub async fn copy_merge(
         if overwrite {
             project.history.record_deletion(&to, DELETE_SNAPSHOT_LIMIT);
         }
-        ide_vfs::copy_merge(
-            &from,
-            &to,
-            overwrite,
-            Some(&project.root),
-            &project.exclude_globs(),
-            (&source_root, &destination_root),
-        )
+        project.with_disk_sync(|| {
+            ide_vfs::copy_merge(
+                &from,
+                &to,
+                overwrite,
+                Some(&project.root),
+                &project.exclude_globs(),
+                (&source_root, &destination_root),
+            )
+        })
     })
     .await
 }
@@ -71,24 +73,28 @@ pub async fn copy_merge(
 /// Files of a deleted folder snapshotted in Local History.
 const DELETE_SNAPSHOT_LIMIT: usize = 2000;
 
-pub fn read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
-    let excludes = host
-        .project(window)
-        .map(|p| {
-            let globs = p.exclude_globs();
-            // `read_dir` matches relative to the enclosing repository: re-anchor
-            // project-root patterns (`/build`) when the project is a repo subfolder.
-            let repo = p.root.ancestors().find(|d| d.join(".git").exists());
-            match repo.and_then(|r| p.root.strip_prefix(r).ok()).filter(|rel| !rel.as_os_str().is_empty()) {
-                Some(rel) => {
-                    let rel = rel.to_string_lossy().replace('\\', "/");
-                    globs.into_iter().map(|g| if g.starts_with('/') { format!("/{rel}{g}") } else { g }).collect()
+/// Runs on the blocking pool: on a network share (`\\wsl.localhost`) every stat is slow.
+pub async fn read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
+    let project = host.project(window);
+    host.blocking(move || {
+        let excludes = project
+            .map(|p| {
+                let globs = p.exclude_globs();
+                // `read_dir` matches relative to the enclosing repository: re-anchor
+                // project-root patterns (`/build`) when the project is a repo subfolder.
+                let repo = p.root.ancestors().find(|d| d.join(".git").exists());
+                match repo.and_then(|r| p.root.strip_prefix(r).ok()).filter(|rel| !rel.as_os_str().is_empty()) {
+                    Some(rel) => {
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        globs.into_iter().map(|g| if g.starts_with('/') { format!("/{rel}{g}") } else { g }).collect()
+                    }
+                    None => globs,
                 }
-                None => globs,
-            }
-        })
-        .unwrap_or_default();
-    ide_vfs::read_dir(&path, &excludes)
+            })
+            .unwrap_or_default();
+        ide_vfs::read_dir(&path, &excludes)
+    })
+    .await
 }
 
 /// Creates an empty file; inside a project, honours the EditorConfig
