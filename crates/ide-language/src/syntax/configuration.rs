@@ -1,9 +1,9 @@
 //! Source ranges for Spring-style configuration keys. This is a syntax index,
 //! not a YAML evaluator: aliases, merge keys and runtime profile precedence are
 //! intentionally left to the YAML server / application.
-use super::lines::LineIndex;
+use super::lines::{LineIndex, byte_at};
 use super::{ParsedTree, Syntax, TreeError};
-use ide_core::{LanguageId, Range};
+use ide_core::{LanguageId, Pos, Range};
 use tree_sitter::Node;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +23,40 @@ impl Syntax {
             return Ok(properties(text));
         }
         self.with_parsed(language, text, cancelled, |tree| tree.configuration_keys(cancelled))
+    }
+}
+
+/// Spring's property lookups whose first argument names a configuration key.
+const PROPERTY_LOOKUPS: [&str; 2] = ["getProperty", "getRequiredProperty"];
+
+impl Syntax {
+    /// Whether `pos` in Java `text` lies where a configuration key can be written:
+    /// inside the arguments of a `@Value` annotation or of a `getProperty` /
+    /// `getRequiredProperty` call. Everywhere else Go to Definition is ordinary
+    /// Java navigation and need not consult the configuration index. A file the
+    /// grammar cannot parse answers false.
+    pub fn java_configuration_site(&self, text: &str, pos: Pos, cancelled: &dyn Fn() -> bool) -> bool {
+        let Some(at) = byte_at(text, pos) else { return false };
+        self.with_parsed(&LanguageId::new("java"), text, cancelled, |tree| {
+            let mut node = tree.tree.root_node().descendant_for_byte_range(at, at);
+            while let Some(n) = node {
+                let Some(parent) = n.parent() else { break };
+                let callee = parent.child_by_field_name("name").map(|name| &text[name.byte_range()]);
+                match (n.kind(), parent.kind(), callee) {
+                    ("annotation_argument_list", "annotation", Some(name)) => {
+                        return name.rsplit('.').next() == Some("Value");
+                    }
+                    ("argument_list", "method_invocation", Some(name)) if PROPERTY_LOOKUPS.contains(&name) => {
+                        return true;
+                    }
+                    // Keys are expressions; nothing above a body or declaration can hold one.
+                    (_, "block" | "class_body" | "interface_body" | "program", _) => return false,
+                    _ => node = Some(parent),
+                }
+            }
+            false
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -188,6 +222,50 @@ fn unescape_property(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn java_configuration_sites() {
+        let text = r#"package a;
+import org.springframework.beans.factory.annotation.Value;
+class A {
+    @Value("${app.port:80}") int port;
+    @org.springframework.beans.factory.annotation.Value(value = Keys.NAME) String name;
+    @Values("x") int other;
+    @Override public String toString() {
+        String v = env.getProperty("app.host", "h") + env.getRequiredProperty(Keys.USER);
+        return helper.getValue("😀 app.port") + String.valueOf(port) + env.getProperty("k").trim();
+    }
+}
+"#;
+        let syntax = Syntax::new();
+        let at = |needle: &str, offset: u32| {
+            let line = text.lines().position(|l| l.contains(needle)).unwrap();
+            let byte = text.lines().nth(line).unwrap().find(needle).unwrap();
+            let col = text.lines().nth(line).unwrap()[..byte].encode_utf16().count() as u32 + offset;
+            syntax.java_configuration_site(text, Pos::new(line as u32, col), &|| false)
+        };
+        // @Value arguments (literal, qualified annotation, constant key).
+        assert!(at("${app.port", 2));
+        assert!(at("Keys.NAME", 6));
+        // Lookup arguments, including a constant and the default value.
+        assert!(at("\"app.host\"", 3));
+        assert!(at("\"h\"", 1));
+        assert!(at("Keys.USER", 1));
+        assert!(at("\"k\"", 1));
+        // Ordinary Java: names, other annotations, other calls, the lookup's own name and receiver.
+        assert!(!at("@Value(\"$", 2));
+        assert!(!at("int port", 4));
+        assert!(!at("@Values", 9));
+        assert!(!at("@Override", 2));
+        assert!(!at("getProperty(\"app", 3));
+        assert!(!at("env.getProperty(\"app", 1));
+        assert!(!at("app.port\")", 1));
+        assert!(!at("valueOf", 2));
+        assert!(!at(".trim", 2));
+        // Out of range and non-Java input.
+        assert!(!syntax.java_configuration_site(text, Pos::new(99, 0), &|| false));
+        assert!(!syntax.java_configuration_site("", Pos::new(0, 0), &|| false));
+    }
     #[test]
     fn yaml_structures_and_utf16() {
         let text = "app:\n  'time-out': 1\n  hosts:\n    - url: a\n    - {url: b}\n  map: {east: {size: 2}}\n---\n\"app.name\": ok\n'😀': {port: 3}\n";

@@ -23,6 +23,10 @@ export const commands = {
 	windowGroupSelect: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_select", { label })),
 	windowGroupDetach: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach")),
 	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
+	/**  Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`. */
+	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
+	/**  This window kept its project open (unsaved-changes prompt cancelled); stops a batch close. */
+	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
@@ -82,6 +86,11 @@ export const commands = {
 	/**  Streams the project's agent events to this window; returns every task. */
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	/**
+	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
+	 */
+	agentSetCommand: (id: string, command: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_command", { id, command })),
 	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
@@ -1138,6 +1147,9 @@ export type AgentCommand = {
 	hint: string | null,
 };
 
+/**  Why the executable cannot be changed in built-in agent settings. */
+export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
+
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
 	id: string,
@@ -1270,6 +1282,15 @@ export type AgentProvider = {
 	name: string,
 	/**  The command line that starts its ACP server. */
 	command: string,
+	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
+	program: string,
+	args: string[],
+	defaultProgram: string | null,
+	defaultArgs: string[],
+	loginHint: string | null,
+	commandOverridden: boolean,
+	commandEditable: boolean,
+	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
@@ -1386,6 +1407,8 @@ export type AppInfo = {
 	version: string,
 	platform: string,
 	configDir: IpcPath,
+	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
+	wayland: boolean,
 };
 
 export type AppMetrics = {
@@ -4098,6 +4121,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: PrettierSettings,
 	java?: JavaSettings,
+	ruby?: RubySettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -5330,6 +5354,11 @@ export type RouteSource = {
 	text: string,
 };
 
+export type RubySettings = {
+	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
+	interpreter?: string,
+};
+
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
 
 export type RunConfig_Deserialize = {
@@ -5538,7 +5567,7 @@ export type SdkKind = "python" | "node" |
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven";
+"maven" | "ruby";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
