@@ -171,12 +171,45 @@ export interface ConfigFormProps {
   modifyRequest: number;
 }
 
-/** Picks `.env` files; paths inside the project are returned relative to its root. */
-async function chooseEnvFiles(root: string | null, title: string): Promise<string[]> {
+/** Picks files or a directory in the local file dialog, opened at `from`; empty when cancelled. */
+async function choosePaths(opts: { directory?: boolean; multiple?: boolean; from: string | null }): Promise<string[]> {
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({ multiple: true, title, defaultPath: root ?? undefined });
-  const paths = picked === null ? [] : Array.isArray(picked) ? picked : [picked];
-  return paths.map((p) => (root ? relativePath(root, p) : p));
+  const picked = await open({
+    directory: !!opts.directory,
+    multiple: !!opts.multiple,
+    defaultPath: opts.from ?? undefined,
+  });
+  return picked === null ? [] : Array.isArray(picked) ? picked : [picked];
+}
+
+/** `path` relative to the project root when inside it; the root itself is "". */
+function projectRelative(root: string | null, path: string): string {
+  if (!root) return path;
+  return path === root ? "" : relativePath(root, path);
+}
+
+/** Browse button next to a path field; local windows only (the dialog shows this machine's files). */
+function BrowseButton({
+  directory,
+  title,
+  from,
+  onPick,
+}: {
+  directory?: boolean;
+  title: string;
+  from: string | null;
+  onPick: (path: string) => void;
+}) {
+  if (!isTauri() || isRemoteWindow()) return null;
+  return (
+    <IconButton
+      icon="folder-open"
+      size="small"
+      iconSize={14}
+      title={title}
+      onClick={() => void choosePaths({ directory, from }).then(([path]) => path !== undefined && onPick(path))}
+    />
+  );
 }
 
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
@@ -458,13 +491,21 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         <>
           {!type?.ownsWorkingDirectory && (
             <Field label="Working directory" error={errors.cwd}>
-              <Input
-                mono
-                aria-label="Working directory"
-                value={config.cwd ?? ""}
-                placeholder="Project root"
-                onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
-              />
+              <div className={styles.inputWithButton}>
+                <Input
+                  mono
+                  aria-label="Working directory"
+                  value={config.cwd ?? ""}
+                  placeholder="Project root"
+                  onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
+                />
+                <BrowseButton
+                  directory
+                  title="Browse…"
+                  from={root}
+                  onPick={(path) => update({ cwd: projectRelative(root, path) || null })}
+                />
+              </div>
             </Field>
           )}
           <Field
@@ -498,9 +539,9 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                   iconSize={14}
                   title="Browse for .env Files"
                   onClick={() =>
-                    void chooseEnvFiles(root, tx("Browse for .env Files")).then((files) => {
+                    void choosePaths({ multiple: true, from: root }).then((picked) => {
                       const current = config.envFiles ?? [];
-                      const added = files.filter((f) => !current.includes(f));
+                      const added = picked.map((p) => projectRelative(root, p)).filter((f) => !current.includes(f));
                       if (added.length) update({ envFiles: [...current, ...added] });
                     })
                   }
@@ -535,13 +576,20 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
           )}
           {isShown("stdinFile") && (
             <Field label="Redirect input from">
-              <Input
-                mono
-                aria-label="Redirect input from"
-                value={config.stdinFile ?? ""}
-                placeholder="File relative to the project root"
-                onChange={(e) => update({ stdinFile: e.target.value || null })}
-              />
+              <div className={styles.inputWithButton}>
+                <Input
+                  mono
+                  aria-label="Redirect input from"
+                  value={config.stdinFile ?? ""}
+                  placeholder="File relative to the project root"
+                  onChange={(e) => update({ stdinFile: e.target.value || null })}
+                />
+                <BrowseButton
+                  title="Browse…"
+                  from={root}
+                  onPick={(path) => update({ stdinFile: projectRelative(root, path) || null })}
+                />
+              </div>
             </Field>
           )}
           {isShown("outputFile") && (
@@ -679,6 +727,7 @@ function TypeField({
   onChange: (value: string) => void;
 }) {
   const tx = useTx();
+  const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
@@ -708,17 +757,33 @@ function TypeField({
       />
     );
   const suggestions = field.suggestions?.(all, params) ?? [];
+  const input = (
+    <Input
+      mono={field.mono}
+      aria-label={field.label}
+      value={value}
+      invalid={invalid}
+      placeholder={field.placeholder}
+      list={suggestions.length ? listId : undefined}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+  const browse = typeof field.browse === "function" ? field.browse(params) : field.browse;
   return (
     <>
-      <Input
-        mono={field.mono}
-        aria-label={field.label}
-        value={value}
-        invalid={invalid}
-        placeholder={field.placeholder}
-        list={suggestions.length ? listId : undefined}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      {browse ? (
+        <div className={styles.inputWithButton}>
+          {input}
+          <BrowseButton
+            directory={browse === "directory"}
+            title="Browse…"
+            from={/^(\/|[A-Za-z]:[\\/])/.test(value) ? value : root}
+            onPick={onChange}
+          />
+        </div>
+      ) : (
+        input
+      )}
       {suggestions.length > 0 && (
         <datalist id={listId}>
           {suggestions.map((s) => (

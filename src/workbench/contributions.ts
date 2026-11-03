@@ -1118,6 +1118,8 @@ export interface RunConfigTypeField {
   validate?(value: string, params: Readonly<Record<string, string>>): string | null;
   /** Shown under the control. */
   hint?: string;
+  /** A text field holding a path: a button next to it picks a file or a directory (absolute path). */
+  browse?: "file" | "directory" | ((params: Readonly<Record<string, string>>) => "file" | "directory");
 }
 
 export interface RunConfigTypeContribution {
