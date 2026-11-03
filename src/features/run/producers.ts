@@ -1027,6 +1027,33 @@ function cmakeTargets(input: ContextInput): RunConfig[] {
 
 const TEST_DIR = /(^|\/)(tests?|__tests__|specs?|test_?\w*)$/;
 
+/**
+ * The tests of a Ruby folder: RSpec on the folder, `rake test` with `TEST=<glob>`, or the
+ * detected Minitest runner given the folder (Sources roots on its load path).
+ */
+function rubyDirectory(
+  closest: (kinds: string[]) => RunConfig | undefined,
+  relToCwd: (c: RunConfig) => string,
+  make: (base: RunConfig, label: string, args: string[]) => Produced,
+  label: string,
+): Produced | null {
+  const rspec = closest(["rspec"]);
+  if (rspec) return make(rspec, label, [...rspec.args, relToCwd(rspec)]);
+  const rake = closest(["rake"]);
+  if (rake && rake.args.at(-1) === "test") {
+    // Rake splits `TEST` at commas into patterns, so no braces: two globs.
+    const dir = relToCwd(rake);
+    return make(rake, label, [...rake.args, `TEST=${dir}/**/*_test.rb,${dir}/**/test_*.rb`]);
+  }
+  const minitest = closest(["ruby"]);
+  if (!minitest) return null;
+  const at = minitest.args.indexOf("-e");
+  const flags = rubyLoadPath(currentRoots()).filter((f) => !minitest.args.includes(f));
+  const args = [...minitest.args.slice(0, -1)];
+  args.splice(at < 0 ? args.length : at, 0, ...flags);
+  return make(minitest, label, [...args, relToCwd(minitest)]);
+}
+
 export function produceDirectory(input: ContextInput): Produced | null {
   const { root } = input;
   if (!root || !isProjectPath(input) || input.path === root) return null;
@@ -1035,8 +1062,8 @@ export function produceDirectory(input: ContextInput): Produced | null {
   const jvmRoot = /^(?:(.*)\/)?src\/test(?:\/(java|kotlin|scala|groovy))?$/.exec(rel);
   const jvmPackage = /^(?:(.*)\/)?src\/test\/(?:java|kotlin|scala|groovy)\/(.+)$/.exec(rel);
   const marked = isTestPath(currentRoots(), rel);
-  if (!TEST_DIR.test(rel) && !jvmRoot && !jvmPackage && !marked && !/(^|\/)src\/test(\/|$)/.test(rel)) return null;
   const tests = input.configs.filter((c) => c.isTest);
+  if (!TEST_DIR.test(rel) && !jvmRoot && !jvmPackage && !marked && !/(^|\/)src\/test(\/|$)/.test(rel)) return null;
   const closest = (kinds: string[]) => {
     const cands = tests.filter((c) => kinds.includes(c.kind));
     const score = (c: RunConfig) => {
@@ -1077,6 +1104,8 @@ export function produceDirectory(input: ContextInput): Produced | null {
     }
   }
   const js = closest(["npm", "bun", "deno"]);
+  const ruby = marked && !js && rubyDirectory(closest, relToCwd, make, testsIn);
+  if (ruby) return ruby;
   const py = closest(["pytest"]);
   const django = closest(["django-test"]);
   const go = closest(["go"]);
