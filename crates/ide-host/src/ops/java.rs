@@ -96,7 +96,13 @@ async fn resolve_launch(
         let project_jdk = ide_sdk::apply::project_jdk(&project.root, &settings);
         let from_jdtls = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
         let java = project_jdk.map(|j| ide_sdk::java::java_executable(&j.home)).or(from_jdtls).or_else(|| {
-            let release = ide_sdk::java::project_java_version(&module);
+            // The build model's level includes what the module inherits from its parent POMs.
+            let release = model
+                .maven
+                .as_ref()
+                .and_then(|m| m.projects.iter().find(|p| project.root.join(&p.dir) == module))
+                .and_then(|p| p.java_version)
+                .or_else(|| ide_sdk::java::project_java_version(&module));
             let jdks = ide_sdk::java::installed_jdks();
             info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
             ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
