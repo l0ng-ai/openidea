@@ -195,7 +195,12 @@ function configFromArg(arg: unknown): RunConfig | undefined {
  * Stop: in the Run or Debug tool window, the selected tab's process; otherwise the selected
  * configuration's session, or a chooser of every running process.
  */
-function stopAction() {
+/**
+ * Stop. In the Run tool window: its active tab. From the run widget (`arg` "widget"): the selected
+ * configuration's process. Elsewhere (shortcut, menu, Find Action), like IDEA's Stop: the only
+ * stoppable process, or a list of them with Stop All when there are several.
+ */
+function stopAction(arg?: unknown) {
   const ctx = getContext();
   if (ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
     void executeAction("debug.stop");
@@ -210,16 +215,17 @@ function stopAction() {
     }
   }
   const debug = useDebugRunSessions.getState().sessions;
-  const selected = selectedConfig();
-  const compound = compoundTargets(selected, running, debug);
-  if (compound.length) {
-    compound.forEach((s) => s.stop());
-    return;
-  }
-  const target = selectedTarget(useRun.getState().selectedId, running, debug);
-  if (target) {
-    target.stop();
-    return;
+  if (arg === "widget") {
+    const compound = compoundTargets(selectedConfig(), running, debug);
+    if (compound.length) {
+      compound.forEach((s) => s.stop());
+      return;
+    }
+    const target = selectedTarget(useRun.getState().selectedId, running, debug);
+    if (target) {
+      target.stop();
+      return;
+    }
   }
   const items = [
     ...running.map((s): MenuItem => ({
@@ -357,7 +363,7 @@ export function activate(): () => void {
         category: "Run",
         icon: "stop",
         when: "projectOpen",
-        run: () => stopAction(),
+        run: ({ arg }) => stopAction(arg),
       },
       {
         id: "run.rerun",
