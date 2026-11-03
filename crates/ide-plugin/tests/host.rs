@@ -8,6 +8,7 @@
 
 use ide_plugin::*;
 use parking_lot::Mutex;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -509,4 +510,94 @@ fn restricted_dev_plugin_has_no_activation_registration() {
     assert!(f.run("hello", "word-count", None).is_err());
     f.host.sync_project(&f.project);
     assert!(f.host.list(Some(&f.project)).plugins.is_empty());
+}
+
+/// Zips the files of `dir` under `prefix` (recursively).
+fn add_dir(zip: &mut zip::ZipWriter<std::fs::File>, dir: &Path, prefix: &str) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
+        if entry.path().is_dir() {
+            add_dir(zip, &entry.path(), &format!("{name}/"));
+        } else {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(&std::fs::read(entry.path()).unwrap()).unwrap();
+        }
+    }
+}
+
+fn zip_of(dir: &Path, prefix: &str, out: &Path) -> PathBuf {
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(out).unwrap());
+    add_dir(&mut zip, dir, prefix);
+    zip.finish().unwrap();
+    out.to_path_buf()
+}
+
+#[test]
+fn installs_zips_with_the_package_at_the_root_or_in_one_folder() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, prefix) in [("root.ZIP", ""), ("folder.zip", "hello-1.0/")] {
+        let zip = zip_of(&sample("hello"), prefix, &tmp.path().join(name));
+        let info = f.host.install_from_path(&zip).unwrap();
+        assert_eq!((info.id.as_str(), info.status), ("hello", PluginStatus::Active), "{:?}", info.error);
+        assert!(f.plugins_dir.join("hello/dist/plugin.wasm").is_file());
+    }
+    // Still runs from the installed copy, not the unpacked archive.
+    assert!(f.run("hello", "insert-date", None).unwrap().is_some());
+}
+
+#[test]
+fn installs_from_a_manifest_or_a_folder() {
+    let f = fixture(Limits::default());
+    assert_eq!(f.host.install_from_path(&sample("hello").join("plugin.toml")).unwrap().id, "hello");
+    assert_eq!(f.host.install_from_path(&sample("hello")).unwrap().id, "hello");
+}
+
+#[test]
+fn ignores_archiver_metadata_next_to_the_package_folder() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("mac.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&out).unwrap());
+    add_dir(&mut zip, &sample("hello"), "hello/");
+    zip.start_file("__MACOSX/hello/._plugin.toml", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"metadata").unwrap();
+    zip.finish().unwrap();
+    assert_eq!(f.host.install_from_path(&out).unwrap().id, "hello");
+}
+
+#[test]
+fn refuses_zips_that_are_not_safe_plugin_packages() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let options = zip::write::SimpleFileOptions::default;
+
+    let no_manifest = tmp.path().join("idea-plugin.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&no_manifest).unwrap());
+    zip.start_file("idea-plugin/lib/plugin.jar", options()).unwrap();
+    zip.finish().unwrap();
+    let error = f.host.install_from_path(&no_manifest).unwrap_err();
+    assert!(error.message.contains("no plugin.toml"), "{}", error.message);
+
+    let escape = tmp.path().join("escape.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&escape).unwrap());
+    zip.start_file("../../evil.txt", options()).unwrap();
+    zip.write_all(b"evil").unwrap();
+    zip.finish().unwrap();
+    let error = f.host.install_from_path(&escape).unwrap_err();
+    assert!(error.message.contains("unsafe path"), "{}", error.message);
+
+    let link = tmp.path().join("link.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&link).unwrap());
+    zip.add_symlink("plugin.toml", "/etc/passwd", options()).unwrap();
+    zip.finish().unwrap();
+    let error = f.host.install_from_path(&link).unwrap_err();
+    assert!(error.message.contains("symbolic link"), "{}", error.message);
+
+    let garbage = tmp.path().join("garbage.zip");
+    std::fs::write(&garbage, "not a zip").unwrap();
+    let error = f.host.install_from_path(&garbage).unwrap_err();
+    assert!(error.message.contains("not a valid plugin archive"), "{}", error.message);
+
+    assert!(!f.plugins_dir.join("hello").exists());
 }

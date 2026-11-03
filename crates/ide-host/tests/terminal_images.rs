@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 
 use ide_core::{NullSink, TerminalId};
 use ide_host::{Host, HostConfig, ops};
@@ -28,20 +28,24 @@ async fn storage_requires_a_registered_terminal() {
         .spawn(
             TerminalOptions {
                 cwd: root.path().into(),
-                shell: Some("/bin/sh".into()),
-                args: vec![],
+                shell: Some(if cfg!(windows) { "powershell.exe" } else { "/bin/sh" }.into()),
+                args: if cfg!(windows) { vec!["-NoLogo".into(), "-NoProfile".into()] } else { vec![] },
                 env: Default::default(),
                 cols: 80,
                 rows: 24,
                 shell_integration: false,
             },
+            "main".into(),
             Arc::new(NullSink),
             Box::new(|_| {}),
         )
         .unwrap();
-    let path = ops::term::store_image(&host, terminal.id, vec![1, 2, 3], "image/png".into()).await.unwrap();
-    assert_eq!(std::fs::read(path).unwrap(), [1, 2, 3]);
+    for mime in ["image/png", "audio/mpeg", "video/mp4"] {
+        let path = ops::term::store_image(&host, terminal.id, vec![1, 2, 3], mime.into()).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), [1, 2, 3]);
+    }
+    assert!(ops::term::store_image(&host, terminal.id, vec![1], "application/octet-stream".into()).await.is_err());
     host.terminals.kill(terminal.id).unwrap();
     assert!(ops::term::store_image(&host, terminal.id, vec![4], "image/png".into()).await.is_err());
-    assert_eq!(std::fs::read_dir(data_dir.join("terminal-images")).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(data_dir.join("terminal-images")).unwrap().count(), 3);
 }

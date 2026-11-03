@@ -108,6 +108,33 @@ describe("view-local console copy with the Windows keymap (#372)", () => {
     expect(writeText).toHaveBeenCalledWith("selected application output");
   });
 
+  it("Ctrl+A selects only the console and copies the whole buffer, not just the mounted rows (#746)", () => {
+    const model = new ConsoleModel();
+    model.append({ kind: "stdout", text: "first\nsecond\n" });
+    vi.spyOn(model, "text").mockReturnValue("whole buffer, including unmounted rows");
+    const outside = document.createElement("p");
+    outside.textContent = "workbench chrome";
+    document.body.append(outside);
+    render(
+      createElement(ConsoleView, {
+        model,
+        version: 1,
+        softWrap: false,
+        follow: false,
+        onFollowChange: () => {},
+        cwd: "/",
+      }),
+    );
+    const output = screen.getByRole("log");
+    const selectAll = copy(output, { key: "a", code: "KeyA", metaKey: true });
+    expect(selectAll.defaultPrevented).toBe(true);
+    const selection = window.getSelection()!;
+    expect(output.contains(selection.anchorNode) && output.contains(selection.focusNode)).toBe(true);
+    expect(selection.toString()).not.toContain("workbench chrome");
+    copy(output);
+    expect(writeText).toHaveBeenCalledWith("whole buffer, including unmounted rows");
+  });
+
   it.each([false, true])("copies build output and selected message detail (detail=%s)", (detail) => {
     useBuildRun.setState({
       status: "failed",

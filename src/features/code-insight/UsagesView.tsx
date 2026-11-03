@@ -54,7 +54,7 @@ export function UsagePreview({ usage }: { usage: Usage }) {
   return (
     <span className={styles.preview}>
       {tokenSpans(text, 0, from, tokens, "b:")}
-      <mark className={styles.match}>{tokenSpans(text, from, to, tokens, "m:")}</mark>
+      <mark className={styles.match}>{text.slice(from, to)}</mark>
       {tokenSpans(text, to, text.length, tokens, "a:")}
     </span>
   );

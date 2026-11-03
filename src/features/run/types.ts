@@ -23,6 +23,7 @@ import { tomcatType } from "./tomcat";
 import { goBuildType, goTestType } from "./goTypes";
 
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
+import { djangoTestType } from "./djangoTypes";
 
 export const COMPOUND = "compound";
 
@@ -398,6 +399,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   maven,
   godot,
   pytest,
+  djangoTestType,
   dotnetProjectType,
   dotnetTestType,
   goBuildType,
@@ -451,7 +453,7 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet" && config.beforeLaunch === undefined
       ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
       : {}),
-    ...(config.kind === "dotnet-test" ? { isTest: true } : {}),
+    ...(config.kind === "dotnet-test" || config.kind === "django-test" ? { isTest: true } : {}),
     params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
     ...(config.kind === "go-test" && !config.id.startsWith("template:") ? { kind: "go" } : {}),
     ...(params.goKind ? { isTest: params.goKind === "test" } : {}),

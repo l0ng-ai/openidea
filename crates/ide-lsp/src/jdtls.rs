@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 const SERVER: &str = "jdtls";
 
+pub(crate) mod configuration;
 mod formatter;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
