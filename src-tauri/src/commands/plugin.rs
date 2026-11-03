@@ -413,6 +413,59 @@ pub async fn plugin_view_event(
     ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc).await
 }
 
+/// The page of a plugin's web view or custom editor (`web = …`).
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_web_page(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    view: String,
+) -> IdeResult<ide_host::plugins::web::WebPage> {
+    state.plugins.web_page(&plugin_id, &view)
+}
+
+/// Largest file a web view saves or opens (`openidea.saveFile` / `openFile`).
+const MAX_WEB_VIEW_FILE: u64 = 64 << 20;
+
+/// Writes what a web view saves (`openidea.saveFile`) to the path the user
+/// chose in the save dialog, on this machine.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_web_save_file(path: PathBuf, base64: String) -> IdeResult<()> {
+    use base64::Engine;
+    if base64.len() as u64 > MAX_WEB_VIEW_FILE / 3 * 4 + 4 {
+        return Err(IdeError::invalid(format!("larger than {} MiB", MAX_WEB_VIEW_FILE >> 20)));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .map_err(|e| IdeError::invalid(format!("not base64: {e}")))?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| IdeError::new(ide_core::error::ErrorKind::Io, format!("{}: {e}", path.display())))
+}
+
+/// Reads the file the user picked in an open dialog for a web view
+/// (`openidea.openFile`), on this machine; base64.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_web_read_file(path: PathBuf) -> IdeResult<String> {
+    use base64::Engine;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| IdeError::new(ide_core::error::ErrorKind::Io, format!("{}: {e}", path.display())))?;
+    if !meta.is_file() || meta.len() > MAX_WEB_VIEW_FILE {
+        return Err(IdeError::invalid(format!(
+            "{}: not a file of at most {} MiB",
+            path.display(),
+            MAX_WEB_VIEW_FILE >> 20
+        )));
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| IdeError::new(ide_core::error::ErrorKind::Io, format!("{}: {e}", path.display())))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// The marketplace's plugins: read again when `refresh`, else the last index read.
 #[tauri::command]
 #[specta::specta]

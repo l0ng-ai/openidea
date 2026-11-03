@@ -5770,5 +5770,11 @@
   "{icons} icons": "{icons} 个图标",
   "Use Default Icons": "使用默认图标",
   "Apply icon theme {label}": "应用图标主题 {label}",
-  "File Icon Themes": "文件图标主题"
+  "File Icon Themes": "文件图标主题",
+  "File Icons": "文件图标",
+  "File Templates": "文件模板",
+  "Cannot show {label}": "无法显示 {label}",
+  "{title} layout": "{title} 布局",
+  "Editor and {title}": "编辑器和{title}",
+  "{title} Only": "仅{title}"
 }

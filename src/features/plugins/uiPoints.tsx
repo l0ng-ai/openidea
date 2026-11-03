@@ -6,8 +6,11 @@
  * - `keymaps`: default shortcuts below the IDE's (a taken keystroke is dropped);
  * - `statusBar`: items shown before the code runs (its `set-status-item` with the same id updates them);
  * - `settings`: a page under Settings › Plugins generated from the schema;
- * - `views`: tool windows the plugin renders;
- * - `customEditors`: files opening in a plugin-rendered editor sharing the text document.
+ * - `views`: tool windows the plugin renders, or a web page of its package;
+ * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
+ *   beside the text editor;
+ * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
+ * - `fileTemplates`: entries of the New menu.
  */
 import { useMemo } from "react";
 import type { PluginInfo } from "@/bindings";
@@ -15,18 +18,31 @@ import { getAction } from "@/platform/actions";
 import { evaluateWhen } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
-import { Checkbox, Input, Select, T, type MenuItem } from "@/ui";
+import {
+  Checkbox,
+  Input,
+  Select,
+  T,
+  addFileIconProvider,
+  fileIconName,
+  registerExternalIcons,
+  type MenuItem,
+} from "@/ui";
+import { addContributedFileTemplate } from "@/features/templates/files/store";
 import {
   registerEditorKind,
   registerFileEditorProvider,
   registerMenuGroup,
   registerMenuSlotItem,
   registerSettingsPage,
+  registerTextEditorWrapper,
   registerToolWindow,
   useSettingsForm,
   type ContextMenuId,
   type ToolWindowAnchor,
 } from "@/workbench/contributions";
+import { pluginsBackend } from "./backend";
+import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
 import { declareStatusItem } from "./runtimeUi";
@@ -39,7 +55,9 @@ import {
   matchesPattern,
   type CustomEditorDecl,
 } from "./views/customEditor";
+import { layoutActions, layoutWrapper } from "./views/editorLayout";
 import { PluginView } from "./views/PluginView";
+import { WebView } from "./views/WebView";
 import styles from "./PluginsPage.module.css";
 
 // --- menus ------------------------------------------------------------------------
@@ -205,6 +223,69 @@ interface ViewDecl {
   title: string;
   icon?: string | null;
   location: ToolWindowAnchor;
+  web?: string;
+}
+
+interface FileIconDecl {
+  id: string;
+  patterns: string[];
+  /** A dark-theme variant was given. */
+  dark: boolean;
+}
+
+interface FileTemplateDecl {
+  id: string;
+  name: string;
+  extension: string;
+  body: string;
+}
+
+/** A new file's icon: the plugin's own file icon for it, else the built-in one. */
+function templateIcon(pluginId: string, extension: string): string {
+  const file = `untitled.${extension}`;
+  const own = usePlugins
+    .getState()
+    .ui.find(
+      (c) =>
+        c.pluginId === pluginId &&
+        c.point === "fileIcons" &&
+        (c.decl as FileIconDecl).patterns.some((p) => matchesPattern(p, file)),
+    );
+  return own ? `ext:fileIcon/${pluginId}/${(own.decl as FileIconDecl).id}` : fileIconName(file);
+}
+
+/** Registers a plugin's file icon (fetched first) and resolves matching files to it. */
+function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
+  let disposed = false;
+  let undo = () => {};
+  const name = `ext:fileIcon/${pluginId}/${decl.id}`;
+  void pluginsBackend()
+    .assets(pluginId, `fileIcon/${decl.id}/`)
+    .then((assets) => {
+      if (disposed) return;
+      const svg = (variant: string) => assets.find(([id]) => id === `fileIcon/${decl.id}/${variant}`)?.[1];
+      const light = svg("light");
+      if (!light) return;
+      const dark = svg("dark");
+      const unregister = registerExternalIcons(
+        dark
+          ? [
+              [name, light],
+              [`${name}_dark`, dark],
+            ]
+          : [[name, light]],
+      );
+      const remove = addFileIconProvider((file) => (decl.patterns.some((p) => matchesPattern(p, file)) ? name : null));
+      undo = () => {
+        remove();
+        unregister();
+      };
+    })
+    .catch((e: unknown) => console.warn(`plugin ${pluginId}: file icon ${decl.id}`, e));
+  return () => {
+    disposed = true;
+    undo();
+  };
 }
 
 export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
@@ -252,27 +333,57 @@ export function defineViewUiPoints(): () => void {
           icon: decl.icon ?? "plugin",
           anchor: decl.location,
           order: 900,
-          component: () => <PluginView pluginId={pluginId} view={decl.id} label={decl.title} />,
+          component: () =>
+            decl.web ? (
+              <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
+            ) : (
+              <PluginView pluginId={pluginId} view={decl.id} label={decl.title} />
+            ),
         }),
     }),
     defineUiPoint<CustomEditorDecl>("customEditors", {
       title: "Editors",
       project: ({ pluginId, decl }) => {
         const matches = (path: string) => decl.patterns.some((p) => matchesPattern(p, basename(path)));
+        const beside = decl.layout === "split" || decl.layout === "preview";
+        // A side-by-side editor wraps the text editor the file opens in; the others open their own tab.
         const provider =
-          decl.priority === "default"
-            ? registerFileEditorProvider({
-                id: `plugin.${pluginId}.${decl.id}`,
-                order: 40,
-                resolve: (path) => (matches(path) ? customEditorInput(pluginId, decl, path) : null),
-              })
-            : () => {};
+          decl.priority !== "default"
+            ? () => {}
+            : beside
+              ? registerTextEditorWrapper({
+                  id: `plugin.${pluginId}.${decl.id}`,
+                  matches,
+                  component: layoutWrapper(pluginId, decl),
+                  tabActions: layoutActions(pluginId, decl),
+                })
+              : registerFileEditorProvider({
+                  id: `plugin.${pluginId}.${decl.id}`,
+                  order: 40,
+                  resolve: (path) => (matches(path) ? customEditorInput(pluginId, decl, path) : null),
+                });
         openWith.set(`${pluginId}/${decl.id}`, { pluginId, decl, matches });
         return () => {
           provider();
           openWith.delete(`${pluginId}/${decl.id}`);
         };
       },
+    }),
+    defineUiPoint<FileIconDecl>("fileIcons", {
+      title: "File Icons",
+      project: ({ pluginId, decl }) => projectFileIcon(pluginId, decl),
+    }),
+    defineUiPoint<FileTemplateDecl>("fileTemplates", {
+      title: "File Templates",
+      project: ({ pluginId, decl }) =>
+        addContributedFileTemplate({
+          id: `plugin.${pluginId}.${decl.id}`,
+          name: decl.name,
+          icon: templateIcon(pluginId, decl.extension),
+          extension: decl.extension,
+          nameStyle: "asis",
+          kinds: [{ id: "file", label: decl.name, body: decl.body }],
+        }),
     }),
   ];
   return () => disposers.reverse().forEach((d) => d());

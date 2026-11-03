@@ -11,6 +11,7 @@
  * the same to scripts (canvas drawing, say).
  */
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
+import BRIDGE_SOURCE from "./frame-bridge.js?raw";
 
 export const FRAME_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:";
@@ -78,37 +79,9 @@ export function frameTheme(root: HTMLElement = document.documentElement): FrameT
 /** The message that updates a loaded frame's theme. */
 export const frameThemeMessage = (theme: FrameTheme) => ({ tag: FRAME_TAG, theme });
 
-const bridge = (initial: FrameTheme) => `
-(() => {
-  const listeners = [];
-  const themeListeners = [];
-  const root = document.documentElement;
-  let theme = null;
-  let applied = [];
-  const applyTheme = (t) => {
-    if (!t || typeof t !== "object" || !t.vars || typeof t.vars !== "object") return;
-    const vars = {};
-    for (const [k, v] of Object.entries(t.vars)) if (k.startsWith("--openidea-") && typeof v === "string") vars[k] = v;
-    for (const k of applied) if (!(k in vars)) root.style.removeProperty(k);
-    for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
-    applied = Object.keys(vars);
-    root.dataset.theme = t.dark ? "dark" : "light";
-    theme = Object.freeze({ dark: !!t.dark, vars: Object.freeze(vars) });
-    for (const l of themeListeners) { try { l(theme); } catch (err) { console.error(err); } }
-  };
-  applyTheme(${JSON.stringify(initial).replace(/</g, "\\u003c")});
-  window.addEventListener("message", (e) => {
-    if (e.source !== window.parent || !e.data || e.data.tag !== "${FRAME_TAG}") return;
-    if (e.data.theme) { applyTheme(e.data.theme); return; }
-    for (const l of listeners) { try { l(String(e.data.text)); } catch (err) { console.error(err); } }
-  });
-  window.openidea = Object.freeze({
-    postMessage: (text) => window.parent.postMessage({ tag: "${FRAME_TAG}", text: String(text) }, "*"),
-    onMessage: (fn) => { if (typeof fn === "function") listeners.push(fn); },
-    get theme() { return theme; },
-    onThemeChange: (fn) => { if (typeof fn === "function") themeListeners.push(fn); },
-  });
-})();`;
+/** `window.openidea`, a function expression taking the initial theme (shared with web view pages). */
+const bridge = (initial: FrameTheme | null) =>
+  `(${BRIDGE_SOURCE.trim().replace(/;$/, "")})(${JSON.stringify(initial).replace(/</g, "\\u003c")});`;
 
 const BASE_STYLE =
   "html[data-theme=light]{color-scheme:light}html[data-theme=dark]{color-scheme:dark}" +

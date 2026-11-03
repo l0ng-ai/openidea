@@ -28,6 +28,7 @@ mod theme;
 mod types;
 pub mod ui_points;
 pub mod views;
+pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
@@ -2057,8 +2058,10 @@ impl PluginHost {
 
     fn info(&self, p: &LoadedPlugin) -> PluginInfo {
         let m = p.manifest();
-        let meta = p.meta.lock();
+        // The ledger before a plugin's `meta`, as everywhere (`refresh_pins` holds the
+        // ledger and locks each plugin's): the other order deadlocks.
         let grant = self.ledger.lock().get(&p.subject()).cloned();
+        let meta = p.meta.lock();
         let granted = |c: &Capability| grant.as_ref().is_some_and(|g| g.confirmed && g.has(c));
         let mut capabilities: Vec<CapabilityInfo> =
             m.capabilities.all().map(|c| CapabilityInfo::new(c, m.capabilities.is_optional(c), granted(c))).collect();

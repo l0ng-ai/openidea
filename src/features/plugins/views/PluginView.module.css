@@ -173,3 +173,39 @@
   height: 100%;
   background: transparent;
 }
+
+/* A custom editor beside the text editor (`layout = "split"` / `"preview"`). */
+.split {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  position: relative;
+}
+.splitEditor {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.splitPreview {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-editor, var(--bg-app));
+}
+.layout-preview .splitEditor {
+  display: none;
+}
+.layout-split .splitEditor {
+  border-right: 1px solid var(--border-editor-tabs, var(--border));
+}
+.layoutActions {
+  display: flex;
+  align-items: center;
+}
+.layoutActions > button {
+  width: var(--h-floating-toolbar-button);
+  height: var(--h-floating-toolbar-button);
+}

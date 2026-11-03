@@ -70,6 +70,16 @@ pub fn svg_prefix(theme: &str) -> String {
     format!("iconTheme/{theme}/svg/")
 }
 
+/// An SVG icon of the package, size-checked and sanitised.
+pub(super) fn read_icon(pkg: &Package, path: &std::path::Path) -> Result<String, String> {
+    check_relative(path, "icon")?;
+    let svg = pkg.read_text(path)?;
+    if svg.len() > MAX_SVG {
+        return Err(format!("{}: larger than {} KiB", path.display(), MAX_SVG >> 10));
+    }
+    sanitize_svg(&svg).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 pub(super) fn icon_theme(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: Decl = decode(POINT_ID, decl)?;
     validate_item_id(&d.id, "icon theme id")?;
@@ -117,12 +127,7 @@ pub(super) fn icon_theme(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Str
     let mut files = vec![d.path.clone()];
     for (icon, path) in &theme.icon_definitions {
         validate_item_id(icon, "icon id")?;
-        check_relative(path, "icon")?;
-        let svg = pkg.read_text(path)?;
-        if svg.len() > MAX_SVG {
-            return Err(format!("{}: larger than {} KiB", path.display(), MAX_SVG >> 10));
-        }
-        let clean = sanitize_svg(&svg).map_err(|e| format!("{}: {e}", path.display()))?;
+        let clean = read_icon(pkg, path)?;
         assets.push((format!("{}{icon}", svg_prefix(&d.id)), clean));
         files.push(path.clone());
     }

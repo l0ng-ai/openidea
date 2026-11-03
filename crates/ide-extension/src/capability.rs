@@ -28,6 +28,8 @@ pub enum Capability {
     Events,
     /// Keystrokes and editor input events.
     InputEvents,
+    /// The system clipboard, from the plugin's web views.
+    Clipboard,
     /// HTTP(S) to one host (`*.example.com` matches subdomains).
     Net(String),
     /// Run one external program. Full code execution: never fine-grained.
@@ -52,7 +54,9 @@ impl Capability {
     pub fn risk(&self) -> Risk {
         match self {
             Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead => Risk::Low,
-            Self::EditorWrite | Self::VcsWrite | Self::Net(_) | Self::Secrets | Self::InputEvents => Risk::Medium,
+            Self::EditorWrite | Self::VcsWrite | Self::Net(_) | Self::Secrets | Self::InputEvents | Self::Clipboard => {
+                Risk::Medium
+            }
             Self::Process(_) | Self::FsRead(_) => Risk::High,
         }
     }
@@ -75,6 +79,7 @@ impl Capability {
             Self::Secrets => "Store secrets in the system keychain".into(),
             Self::Events => "Observe workbench events (files opened, saved, focus)".into(),
             Self::InputEvents => "Observe keystrokes and editor input".into(),
+            Self::Clipboard => "Read and write the clipboard from its web views".into(),
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
@@ -115,6 +120,7 @@ impl fmt::Display for Capability {
             Self::Secrets => f.write_str("secrets"),
             Self::Events => f.write_str("events"),
             Self::InputEvents => f.write_str("events.input"),
+            Self::Clipboard => f.write_str("clipboard"),
             Self::Net(h) => write!(f, "net:{h}"),
             Self::Process(b) => write!(f, "process:{b}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
@@ -169,6 +175,7 @@ impl FromStr for Capability {
             "secrets" => Self::Secrets,
             "events" => Self::Events,
             "events.input" => Self::InputEvents,
+            "clipboard" => Self::Clipboard,
             _ => return Err(format!("unknown capability {s:?}")),
         })
     }
@@ -241,6 +248,8 @@ mod tests {
         assert_eq!(Capability::ProjectRead.risk(), Risk::Low);
         assert_eq!(Capability::Net("x".into()).risk(), Risk::Medium);
         assert_eq!(Capability::InputEvents.risk(), Risk::Medium);
+        assert_eq!("clipboard".parse::<Capability>().unwrap(), Capability::Clipboard);
+        assert_eq!(Capability::Clipboard.risk(), Risk::Medium);
         assert_eq!(Capability::Process("cargo".into()).risk(), Risk::High);
         assert!(Capability::Storage.auto_migrates() && !Capability::EditorWrite.auto_migrates());
     }

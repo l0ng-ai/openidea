@@ -72,6 +72,12 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  /** The URL of a web view's page (`web = …`), under the `openidea-plugin` scheme. */
+  webPageUrl(pluginId: string, view: string): Promise<string>;
+  /** Save dialog for a web view's `openidea.saveFile`; the path written, or `null` when cancelled. */
+  saveWebFile(name: string, filters: FileFilter[] | undefined, bytes: Uint8Array): Promise<string | null>;
+  /** Open dialog for a web view's `openidea.openFile`; `null` when cancelled. */
+  openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -84,6 +90,34 @@ export interface PluginsBackend {
   pickFolder(): Promise<string | null>;
   /** Subscribes to backend plugin events (this window only). */
   onEvent(handler: (e: PluginEvent) => void): () => void;
+}
+
+/** A file type choice of the save / open dialogs. */
+export interface FileFilter {
+  name: string;
+  extensions: string[];
+}
+
+/**
+ * `path` under the `openidea-plugin` scheme, as the platform's webview spells
+ * custom schemes (WebView2 maps them onto `http://<scheme>.localhost`).
+ */
+export function webSchemeUrl(path: string, windows = /windows/i.test(navigator.userAgent)): string {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  return windows ? `http://openidea-plugin.localhost/${encoded}` : `openidea-plugin://localhost/${encoded}`;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+function fromBase64(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
 }
 
 export const tauriPluginsBackend: PluginsBackend = {
@@ -133,6 +167,25 @@ export const tauriPluginsBackend: PluginsBackend = {
   renderView: (pluginId, view, viewport, doc) => call(commands.pluginViewRender(pluginId, view, viewport, doc)),
   viewEvent: async (pluginId, view, event, doc) => {
     await call(commands.pluginViewEvent(pluginId, view, event, doc));
+  },
+  webPageUrl: async (pluginId, view) => {
+    const page = await call(commands.pluginWebPage(pluginId, view));
+    return webSchemeUrl(page.path);
+  },
+  saveWebFile: async (name, filters, bytes) => {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({ defaultPath: name, filters });
+    if (!path) return null;
+    await call(commands.pluginWebSaveFile(path, toBase64(bytes)));
+    return path;
+  },
+  openWebFile: async (filters) => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ multiple: false, filters });
+    const path = (Array.isArray(picked) ? picked[0] : picked) ?? null;
+    if (!path) return null;
+    const data = fromBase64(await call(commands.pluginWebReadFile(path)));
+    return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
@@ -437,6 +490,11 @@ export function createMemoryPluginsBackend(
       status: null,
     }),
     viewEvent: async () => {},
+    webPageUrl: async (pluginId, view) => {
+      throw new IpcError({ kind: "unavailable", message: `${pluginId} · ${view}: web views need the desktop app` });
+    },
+    saveWebFile: async () => null,
+    openWebFile: async () => null,
     secrets: async (pluginId) =>
       [...secrets.entries()]
         .filter(([k]) => k.startsWith(`${pluginId}/`))

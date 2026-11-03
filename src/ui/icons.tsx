@@ -986,10 +986,27 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
+/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
+let fileIconProviders: ReadonlyArray<(fileName: string) => string | null> = [];
+
+/** Adds a file icon provider (an `ext:` icon name or null); the returned function removes it. */
+export function addFileIconProvider(resolve: (fileName: string) => string | null): () => void {
+  fileIconProviders = [resolve, ...fileIconProviders];
+  useFileIconRevision.setState((n) => n + 1, true);
+  return () => {
+    fileIconProviders = fileIconProviders.filter((p) => p !== resolve);
+    useFileIconRevision.setState((n) => n + 1, true);
+  };
+}
+
 /** Picks a file-type icon from a file name. */
 export function fileIconName(fileName: string): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  for (const provide of fileIconProviders) {
+    const icon = provide(fileName);
+    if (icon && iconPath(icon)) return icon as IconName;
+  }
   const themed = fileIconTheme?.file(fileName);
   if (themed) return themed as IconName;
   const lower = fileName.toLowerCase();

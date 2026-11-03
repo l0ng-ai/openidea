@@ -102,6 +102,12 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
     dirty: () => model.getMeta().dirty,
     undo: () => historyCommand(undo),
     redo: () => historyCommand(redo),
+    edit: (changes, userEvent = "input") => {
+      // Into the document's history, like a typed edit: the text tab's when there is one.
+      const slot = model.primarySlot();
+      if (slot) slot.dispatchLocal({ changes, userEvent });
+      else target.view?.dispatch({ changes, userEvent });
+    },
     release: () => {
       if (released) return;
       released = true;

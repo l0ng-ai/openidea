@@ -98,21 +98,23 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                        | Code needed |
-| --------------- | -------------------------------------------------------------------------------------------------- | ----------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                | to run them |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                              | no          |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                    | no          |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                      | no          |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                          | no          |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                           | yes         |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                    | to use them |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?` | no          |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                  | no          |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                        | no          |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                         | no          |
-| `views`         | `id`, `title`, `icon?`, `location` (`left`, `right`, `bottom`)                                     | yes         |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`)                           | yes         |
+| Point           | Declaration                                                                                        | Code needed   |
+| --------------- | -------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                              | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                    | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                      | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                          | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                           | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                    | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?` | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                  | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                        | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                         | no            |
+| `views`         | `id`, `title`, `icon?`, `location` (`left`, `right`, `bottom`), `web?` (see _Web views_)           | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`        | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use           | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu     | no            |
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
@@ -162,6 +164,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                      |
 | `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                        |
 | `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                       |
+| `clipboard`         | medium | the clipboard API in the plugin's web views (keyboard copy / paste work without it) |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -384,6 +387,12 @@ plugin's editor, or through _Open With_ for `option`. For a custom editor
 Undo / Redo are one history with it, and Save, the dirty mark and the close
 prompts are the document's. _Open as Text_ opens the text editor.
 
+`layout` puts a custom editor beside the text editor instead of in a tab of
+its own: with `"split"` or `"preview"` the file opens in the text editor,
+with your editor next to it (the layout files start in) and the _Editor Only /
+Editor and … / … Only_ switch in the tab strip, as for Markdown. `"tab"`
+(the default) is the editor's own tab.
+
 `Html` is the escape hatch for content the declarative bodies can't show. It
 runs in a sandboxed frame — an opaque origin under a CSP that allows only its
 inline scripts and styles and `data:` images, no network, no IDE API — and
@@ -406,6 +415,49 @@ values (the body already uses the text colour, UI font and size):
 Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
 `openidea.onThemeChange(fn)`, for drawing on a canvas, say. Variables are only
 ever added.
+
+#### Web views
+
+A view or custom editor can instead be a web page of the package, for UIs the
+declarative bodies can't express (a drawing canvas, a diagram editor) — no
+code needed:
+
+```toml
+[[contributes.customEditors]]
+id = "canvas"
+title = "Drawing"
+patterns = ["*.excalidraw"]
+layout = "preview"
+web = "web/index.html"   # the page; its directory is what it can load
+```
+
+The page's directory (never the package root) is part of the declaration:
+every file under it is checked (at most 4096 files and 256 MiB, no links),
+installed and signed with the package. The IDE loads the page from its own
+`openidea-plugin` URL scheme into an `<iframe sandbox="allow-scripts">`: an
+opaque origin, no network, no cookies or storage, no IDE API, and only the
+page's own files (relative URLs, ES modules, fonts, WebAssembly) — so build
+it with relative paths (Vite: `base: "./"`). The same `openidea` object as
+in `html` bodies is there before the page's scripts run, plus:
+
+| `window.openidea`                    | What it does                                                                                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `document.get()`                     | `{ version, text, readOnly, name }` of the custom editor's document (`name`: the file's, without its directory; none in a tool window)                             |
+| `document.edit(version, edits)`      | Applies `[{ from, to, insert }]` (UTF-16 offsets) as one change of the document's undo history; rejects with `stale` when not at `version`; resolves `{ version }` |
+| `document.replace(version, text)`    | The same with the whole text (sent as the smallest edit)                                                                                                           |
+| `document.onChange(fn)`              | `{ version, text }` after changes made elsewhere: the text editor, Undo, another window                                                                            |
+| `saveFile({ name, data, filters? })` | The IDE's save dialog; `data` is a string, bytes or a Blob; the chosen path, or `null`. The page never names a path itself                                         |
+| `openFile({ filters? })`             | The IDE's open dialog; `{ name, data }` (bytes), or `null`                                                                                                         |
+| `postMessage` / `onMessage`          | To and from the plugin's code, when it has some                                                                                                                    |
+
+Save, the dirty mark and Undo are the document's, as for every custom editor.
+IDE shortcuts the page doesn't handle itself (Save, Close, Find Action…) still
+work while it has focus; editing keys (⌘C, ⌘V, ⌘Z…) stay with the page. With
+the `clipboard` capability the page may use `navigator.clipboard`.
+`plugins/official/excalidraw` is a complete example: a Vite + React page in
+`web-src/`, built into `web/` by `plugins/build.sh`. The built page is not
+checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
+before installing the plugin from the repository.
 
 ### Settings
 

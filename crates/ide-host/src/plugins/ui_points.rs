@@ -32,6 +32,20 @@
 //! title = "Table"
 //! patterns = ["*.csv", "*.tsv"]
 //! priority = "default"             # or "option": only through Open With
+//! layout = "tab"                   # or "split" / "preview": beside the text editor
+//! web = "web/index.html"           # a web page from the package instead of rendered content
+//!
+//! [[contributes.fileIcons]]
+//! id = "drawing"
+//! patterns = ["*.excalidraw"]
+//! icon = "icons/drawing.svg"
+//! iconDark = "icons/drawing_dark.svg"
+//!
+//! [[contributes.fileTemplates]]
+//! id = "drawing"
+//! name = "Excalidraw Drawing"
+//! extension = "excalidraw"
+//! path = "templates/drawing.excalidraw"
 //! ```
 
 use ide_extension::{Package, UiDecl, decode, validate_item_id, validate_when};
@@ -46,6 +60,8 @@ pub const STATUS_BAR: &str = "statusBar";
 pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
+pub const FILE_ICONS: &str = "fileIcons";
+pub const FILE_TEMPLATES: &str = "fileTemplates";
 
 const MENU_IDS: [&str; 4] = ["editor.context", "projectView.context", "editorTab.context", "tools"];
 const MAX_TITLE: usize = 256;
@@ -333,22 +349,36 @@ struct ViewDecl {
     icon: Option<String>,
     #[serde(default = "right")]
     location: String,
+    /// A web page of the package (`web/index.html`) instead of content the code renders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    web: Option<String>,
+}
+
+/// The files of a `web` entry, or a check that the code renders the view.
+fn web_or_code(pkg: &Package, web: Option<&str>, what: &str) -> Result<Vec<PathBuf>, String> {
+    match web {
+        Some(entry) => super::web::web_files(pkg, entry, what),
+        None if pkg.manifest.wasm.is_none() => {
+            Err(format!("{what}: give a web page (`web`) or the code that renders it (`wasm`)"))
+        }
+        None => Ok(Vec::new()),
+    }
 }
 
 pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: ViewDecl = decode(VIEWS, decl)?;
     validate_item_id(&d.id, "view id")?;
     title(VIEWS, &d.title)?;
-    if pkg.manifest.wasm.is_none() {
-        return Err(format!("view {:?}: views are rendered by the plugin's code (`wasm`)", d.id));
-    }
+    let files = web_or_code(pkg, d.web.as_deref(), &format!("view {:?}", d.id))?;
     if !["left", "right", "bottom"].contains(&d.location.as_str()) {
         return Err(format!("view {:?}: `location` is left, right or bottom", d.id));
     }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {
         return Err(format!("view {:?}: icon names are up to 64 bytes", d.id));
     }
-    Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
+    let mut out = UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -359,31 +389,125 @@ struct CustomEditorDecl {
     patterns: Vec<String>,
     #[serde(default = "default_priority")]
     priority: String,
+    /// `tab`: the file opens in this editor's own tab. `split` / `preview`:
+    /// the file opens in the text editor with this editor beside it (Editor /
+    /// Editor and Preview / Preview); the value is the layout files start in.
+    #[serde(default = "default_layout")]
+    layout: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    web: Option<String>,
 }
 
 fn default_priority() -> String {
     "default".into()
 }
 
+fn default_layout() -> String {
+    "tab".into()
+}
+
+/// File name globs (`*.csv`, `{a,b}.json`): no directories.
+fn file_patterns(patterns: &[String], what: &str) -> Result<(), String> {
+    if patterns.is_empty() || patterns.len() > MAX_PATTERNS {
+        return Err(format!("{what}: 1–{MAX_PATTERNS} file name `patterns`"));
+    }
+    for p in patterns {
+        if p.is_empty() || p.len() > 128 || p.contains(['/', '\\']) || globset::Glob::new(p).is_err() {
+            return Err(format!("{what}: invalid file name pattern {p:?}"));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn custom_editor(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: CustomEditorDecl = decode(CUSTOM_EDITORS, decl)?;
     validate_item_id(&d.id, "custom editor id")?;
     title(CUSTOM_EDITORS, &d.title)?;
-    if pkg.manifest.wasm.is_none() {
-        return Err(format!("custom editor {:?}: needs the plugin's code (`wasm`)", d.id));
-    }
-    if d.patterns.is_empty() || d.patterns.len() > MAX_PATTERNS {
-        return Err(format!("custom editor {:?}: 1–{MAX_PATTERNS} file name `patterns`", d.id));
-    }
-    for p in &d.patterns {
-        if p.is_empty() || p.len() > 128 || p.contains(['/', '\\']) || globset::Glob::new(p).is_err() {
-            return Err(format!("custom editor {:?}: invalid file name pattern {p:?}", d.id));
-        }
-    }
+    let what = format!("custom editor {:?}", d.id);
+    let files = web_or_code(pkg, d.web.as_deref(), &what)?;
+    file_patterns(&d.patterns, &what)?;
     if d.priority != "default" && d.priority != "option" {
-        return Err(format!("custom editor {:?}: `priority` is default or option", d.id));
+        return Err(format!("{what}: `priority` is default or option"));
     }
-    Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
+    if !["tab", "split", "preview"].contains(&d.layout.as_str()) {
+        return Err(format!("{what}: `layout` is tab, split or preview"));
+    }
+    let mut out = UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FileIconDecl {
+    id: String,
+    patterns: Vec<String>,
+    icon: PathBuf,
+    #[serde(default)]
+    icon_dark: Option<PathBuf>,
+}
+
+/// Asset id of a file icon's SVG (`dark`: its dark-theme variant).
+pub fn file_icon_asset(id: &str, dark: bool) -> String {
+    format!("fileIcon/{id}/{}", if dark { "dark" } else { "light" })
+}
+
+/// `[[contributes.fileIcons]]`: an icon for the files matching `patterns`,
+/// whatever icon theme is in use (the user's own file type icons still win).
+pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: FileIconDecl = decode(FILE_ICONS, decl)?;
+    validate_item_id(&d.id, "file icon id")?;
+    let what = format!("file icon {:?}", d.id);
+    file_patterns(&d.patterns, &what)?;
+    let mut files = Vec::new();
+    let mut assets = Vec::new();
+    for (path, dark) in [(Some(&d.icon), false), (d.icon_dark.as_ref(), true)] {
+        let Some(path) = path else { continue };
+        let svg = super::icons::read_icon(pkg, path)?;
+        assets.push((file_icon_asset(&d.id, dark), svg));
+        files.push(path.clone());
+    }
+    let json = serde_json::json!({ "id": d.id, "patterns": d.patterns, "dark": d.icon_dark.is_some() });
+    let mut out = UiDecl::new(d.id.clone(), d.patterns.join(", "), json);
+    out.files = files;
+    out.assets = assets;
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FileTemplateDecl {
+    id: String,
+    name: String,
+    /// Without the dot.
+    extension: String,
+    /// The new file's content (`$NAME$`, `$END$` and the other template variables work).
+    path: PathBuf,
+}
+
+const MAX_TEMPLATE: usize = 256 << 10;
+
+/// `[[contributes.fileTemplates]]`: an entry of the New menu.
+pub(super) fn file_template(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: FileTemplateDecl = decode(FILE_TEMPLATES, decl)?;
+    validate_item_id(&d.id, "file template id")?;
+    title(FILE_TEMPLATES, &d.name)?;
+    let what = format!("file template {:?}", d.id);
+    let ext = d.extension.trim_start_matches('.');
+    if ext.is_empty()
+        || ext.len() > 32
+        || !ext.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err(format!("{what}: `extension` is a file extension like \"md\" ({:?})", d.extension));
+    }
+    let body = pkg.read_text(&d.path)?;
+    if body.len() > MAX_TEMPLATE {
+        return Err(format!("{what}: {} is larger than {} KiB", d.path.display(), MAX_TEMPLATE >> 10));
+    }
+    let json = serde_json::json!({ "id": d.id, "name": d.name, "extension": ext, "body": body });
+    let mut out = UiDecl::new(d.id.clone(), d.name.clone(), json);
+    out.files = vec![d.path.clone()];
+    Ok(out)
 }
 
 #[cfg(test)]

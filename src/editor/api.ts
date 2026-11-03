@@ -21,6 +21,7 @@ import {
   Annotation,
   Compartment,
   Facet,
+  type ChangeSpec,
   StateEffect,
   type EditorState,
   type Extension,
@@ -604,6 +605,13 @@ export interface DocumentAttachment {
    */
   undo(): boolean;
   redo(): boolean;
+  /**
+   * Applies a change made by this view's owner as one edit of the document's
+   * history (where `undo` works): the text editor tab's when one shows the
+   * file, so Undo there reverts it too; else this view's. The view receives
+   * it like any other change of the document, before this returns.
+   */
+  edit(changes: ChangeSpec, userEvent?: string): void;
   /** Detach; the document closes when nothing else shows it. */
   release(): void;
 }

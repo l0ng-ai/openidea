@@ -1903,3 +1903,216 @@ fn official_kubernetes_browses_the_cluster_and_opens_logs() {
     assert_eq!(program.0, bin.join("kubectl").canonicalize().unwrap());
     assert_eq!(args, ["logs", "-f", "--tail=200", "-n", "default", "web-1"]);
 }
+
+/// A plugin with web views and no code: its pages and their files are
+/// installed with it and served only from the declared directories, while
+/// it is enabled and only for the installed version; file icons and
+/// templates are projected too.
+#[test]
+fn web_views_serve_only_their_own_files() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("web-demo");
+    for (path, text) in [
+        ("web/index.html", "<!doctype html><html><head></head><body>draw</body></html>"),
+        ("web/assets/app.js", "console.log(1)"),
+        ("panel/index.html", "<p>panel</p>"),
+        (
+            "icons/draw.svg",
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#08f"/></svg>"##,
+        ),
+        ("templates/new.draw", "{\"type\": \"drawing\"}\n"),
+        ("secret.txt", "not served"),
+    ] {
+        std::fs::create_dir_all(pkg.join(path).parent().unwrap()).unwrap();
+        std::fs::write(pkg.join(path), text).unwrap();
+    }
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        r#"id = "web-demo"
+name = "Web Demo"
+version = "1.0.0"
+engines.openidea = "^1.0"
+
+[capabilities]
+optional = ["clipboard"]
+
+[[contributes.customEditors]]
+id = "draw"
+title = "Drawing"
+patterns = ["*.draw"]
+layout = "preview"
+web = "web/index.html"
+
+[[contributes.views]]
+id = "panel"
+title = "Panel"
+web = "panel/index.html"
+
+[[contributes.fileIcons]]
+id = "draw"
+patterns = ["*.draw"]
+icon = "icons/draw.svg"
+
+[[contributes.fileTemplates]]
+id = "draw"
+name = "Drawing"
+extension = "draw"
+path = "templates/new.draw"
+"#,
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert!(info.capabilities.iter().any(|c| c.id == "clipboard" && c.granted), "{:?}", info.capabilities);
+    // The pages' directories are installed with the plugin; files nothing declares are not.
+    let installed = f.installed("web-demo");
+    assert!(installed.join("web/assets/app.js").is_file() && installed.join("panel/index.html").is_file());
+    assert!(!installed.join("secret.txt").exists());
+
+    let page = f.host.web_page("web-demo", "draw").unwrap();
+    let (rev, entry) = page.path.strip_prefix("web-demo/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "web/index.html");
+    let file = |path: &str| f.host.web_file("web-demo", path);
+    let js = file(&format!("{rev}/web/assets/app.js")).unwrap();
+    assert_eq!((js.bytes.as_slice(), js.mime), (b"console.log(1)".as_slice(), "text/javascript; charset=utf-8"));
+    assert!(file(&format!("{rev}/panel/index.html")).is_ok());
+    assert_eq!(f.host.web_page("web-demo", "panel").unwrap().path, format!("web-demo/{rev}/panel/index.html"));
+    for denied in [
+        format!("{rev}/secret.txt"),
+        format!("{rev}/plugin.toml"),
+        format!("{rev}/web/../secret.txt"),
+        format!("{rev}/icons/draw.svg"),
+        "stale-revision/web/index.html".to_owned(),
+    ] {
+        assert!(file(&denied).is_err(), "{denied} was served");
+    }
+    assert!(f.host.web_page("web-demo", "nope").is_err());
+
+    // File icons and templates.
+    let icon = f.host.assets("web-demo", "fileIcon/draw/").unwrap();
+    assert_eq!(icon.len(), 1);
+    assert!(icon[0].0 == "fileIcon/draw/light" && icon[0].1.contains("<rect"));
+    let templates = f.host.ui_items("fileTemplates");
+    assert_eq!(templates[0].decl["body"], "{\"type\": \"drawing\"}\n");
+    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
+
+    // Disabled: nothing is served.
+    f.host.set_enabled("web-demo", false).unwrap();
+    assert!(file(&format!("{rev}/web/index.html")).is_err());
+    assert!(f.host.web_page("web-demo", "draw").is_err());
+}
+
+/// A view needs a page or code to render it; a page's directory can't be the package itself.
+#[test]
+fn web_view_declarations_are_checked() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("bad-web");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("index.html"), "x").unwrap();
+    let manifest = |decl: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!("id = \"bad-web\"\nname = \"B\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n{decl}"),
+        )
+        .unwrap();
+        f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err().message
+    };
+    let err = manifest("[[contributes.customEditors]]\nid = \"e\"\ntitle = \"E\"\npatterns = [\"*.x\"]\n");
+    assert!(err.contains("give a web page (`web`) or the code"), "{err}");
+    let err = manifest("[[contributes.views]]\nid = \"v\"\ntitle = \"V\"\nweb = \"index.html\"\n");
+    assert!(err.contains("directory of its own"), "{err}");
+    let err = manifest(
+        "[[contributes.customEditors]]\nid = \"e\"\ntitle = \"E\"\npatterns = [\"*.x\"]\nlayout = \"side\"\nweb = \"w/i.html\"\n",
+    );
+    assert!(err.contains("no such file") || err.contains("`layout`"), "{err}");
+}
+
+/// Listing plugins (each plugin's state, then its grants) while another
+/// window's project changes (the grants, then each plugin's state) must not
+/// deadlock: both take the grant ledger first.
+#[test]
+fn listing_while_projects_change_does_not_deadlock() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    f.install(&sample("hello"));
+    let host = Arc::new(f.host);
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let workers: Vec<_> = (0..4)
+        .map(|i| {
+            let (host, done) = (host.clone(), done.clone());
+            let root = f._tmp.path().join(format!("p{i}"));
+            std::thread::spawn(move || {
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if i % 2 == 0 {
+                        host.list(None);
+                    } else {
+                        host.restrict_project(&root);
+                    }
+                }
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let started = Instant::now();
+    for w in workers {
+        while !w.is_finished() {
+            assert!(started.elapsed() < Duration::from_secs(10), "deadlocked");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        w.join().unwrap();
+    }
+}
+
+/// Excalidraw: a web custom editor beside the text editor, with its fonts,
+/// file icon, template and language — no code.
+#[test]
+fn official_excalidraw_installs_and_serves_its_page() {
+    // Its page is built by plugins/build.sh, not checked in: the package's own
+    // files, with a stand-in for the build (what build.sh checks it produces).
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("excalidraw");
+    let src = official("excalidraw");
+    for entry in std::fs::read_dir(&src).unwrap().flatten() {
+        let name = entry.file_name();
+        if ["web", "web-src", "web.sources"].iter().any(|n| name == *n) {
+            continue;
+        }
+        let to = pkg.join(&name);
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &to);
+        } else {
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::copy(entry.path(), to).unwrap();
+        }
+    }
+    std::fs::create_dir_all(pkg.join("web/assets")).unwrap();
+    std::fs::create_dir_all(pkg.join("web/fonts/Virgil")).unwrap();
+    std::fs::write(
+        pkg.join("web/index.html"),
+        r#"<!doctype html><html><head><script type="module" src="./assets/index.js"></script></head></html>"#,
+    )
+    .unwrap();
+    std::fs::write(pkg.join("web/assets/index.js"), "export {};").unwrap();
+    std::fs::write(pkg.join("web/fonts/Virgil/Virgil-Regular.woff2"), b"wOF2").unwrap();
+
+    let f = fixture(Limits::default());
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    let page = f.host.web_page("openidea.excalidraw", "canvas").unwrap();
+    let (rev, entry) = page.path.strip_prefix("openidea.excalidraw/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "web/index.html");
+    let html = f.host.web_file("openidea.excalidraw", &format!("{rev}/{entry}")).unwrap();
+    let html = String::from_utf8(html.bytes).unwrap();
+    // Relative URLs only: the page is served from the package.
+    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
+    assert!(script.starts_with("./assets/"), "{script}");
+    assert!(f.host.web_file("openidea.excalidraw", &format!("{rev}/web/{}", &script[2..])).is_ok());
+    let font = f.host.web_file("openidea.excalidraw", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
+    assert_eq!(font.mime, "font/woff2");
+    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
+    assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
+    assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
+}
