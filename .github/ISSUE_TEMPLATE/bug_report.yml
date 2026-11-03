@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting! Please write the title and description **in English** so every contributor can follow. Machine translation is fine, and you can add your original text below the English version. Keep logs and error messages exactly as they appear.
+        Thanks for reporting! Keep logs and error messages exactly as they appear.
 
         One problem per issue, please. If you have several, open one issue for each.
   - type: checkboxes
@@ -66,4 +66,4 @@ body:
     id: extra
     attributes:
       label: Additional context
-      description: Anything else, such as whether it worked in an earlier version, or your original-language description.
+      description: Anything else, such as whether it worked in an earlier version.

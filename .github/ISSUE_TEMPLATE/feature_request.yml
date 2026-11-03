@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please write the title and description **in English** so every contributor can follow. Machine translation is fine, and you can add your original text below the English version. One request per issue, please.
+        One request per issue, please.
   - type: checkboxes
     id: checks
     attributes:
