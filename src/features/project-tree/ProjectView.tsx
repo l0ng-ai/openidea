@@ -581,6 +581,11 @@ export function ProjectView() {
     // Files (not folders) can also be dropped on an editor to open them there.
     let files: DragSession | null = null;
     const move = (ev: PointerEvent) => {
+      // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
+      if (!(ev.buttons & 1)) {
+        if (!active) cleanup();
+        return;
+      }
       if (!active) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
@@ -626,6 +631,7 @@ export function ProjectView() {
     const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
       setDropTarget(null);
@@ -633,6 +639,7 @@ export function ProjectView() {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cleanup);
     window.addEventListener("keydown", key, true);
   }, []);
 

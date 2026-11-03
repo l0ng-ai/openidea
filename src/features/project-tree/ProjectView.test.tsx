@@ -242,6 +242,35 @@ describe("ProjectView", () => {
     }
   });
 
+  it("starts a file drag only while the primary button is held", async () => {
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    document.elementFromPoint = () => null; // jsdom lacks it; the drop-target lookup needs it
+    // The drag label repeats the file name outside the tree row.
+    const ghost = () => (screen.queryAllByText("README.md").length > 1 ? true : null);
+    const move = (buttons: number, x: number) =>
+      act(() => {
+        window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons, clientX: x, clientY: 0 }));
+      });
+    const release = () => act(() => void window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    // jsdom has no PointerEvent, so React would see `button` undefined on a plain pointerDown.
+    const press = () =>
+      fireEvent(
+        row("README.md").querySelector("[data-project-path]")!,
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+    // A macOS tap WebKit reorders: the press arrives late and no button is held.
+    press();
+    move(0, 40);
+    expect(ghost()).toBeNull();
+    release();
+    press();
+    move(1, 40);
+    expect(ghost()).not.toBeNull();
+    release();
+    expect(ghost()).toBeNull();
+  });
+
   it("cancels a new file when its name field loses focus", async () => {
     const { rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
