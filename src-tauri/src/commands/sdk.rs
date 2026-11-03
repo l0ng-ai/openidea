@@ -83,6 +83,7 @@ pub async fn sdk_python_packages(
 /// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn sdk_python_pip(
     window: Window,
     state: State<'_, AppState>,
