@@ -1184,13 +1184,13 @@ export type AgentConfigVia =
 /**  `session/set_model` (agents that report `models` instead of a model config option). */
 "model";
 
-/**  One item of a task's conversation. */
 export type AgentCost = {
-	amount: number,
+	amount: number | null,
 	/**  ISO 4217 code, e.g. `USD`. */
 	currency: string,
 };
 
+/**  One item of a task's conversation. */
 export type AgentEntry = { type: "user"; text: string; 
 /**  Names of the files and images sent with it. */
 attachments: string[]; 
@@ -1252,7 +1252,7 @@ export type AgentLimit = {
 	/**  The window as the agent names it: `five_hour`, `seven_day`, `seven_day_opus`… */
 	window: string,
 	/**  Share of the window used, 0–100. */
-	usedPercent: number,
+	usedPercent: number | null,
 	/**  When the window resets (ms since the epoch), if the agent said. */
 	resetsMs: number | null,
 };

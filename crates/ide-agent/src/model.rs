@@ -155,8 +155,9 @@ pub struct AgentUsage {
     /// Size of the context window.
     pub size: u32,
     /// What the session has cost so far (ACP `usage_update.cost`), when the agent reports it.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
     #[serde(default)]
-    pub cost: Option<AgentCost>,
+    pub cost: Option<Box<AgentCost>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

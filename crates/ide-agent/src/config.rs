@@ -153,10 +153,10 @@ pub(crate) fn commands_of(update: &Value) -> Vec<AgentCommand> {
 pub(crate) fn usage_of(update: &Value) -> Option<AgentUsage> {
     let tokens = |key: &str| update.get(key)?.as_f64().map(|n| n.clamp(0.0, f64::from(u32::MAX)) as u32);
     let cost = update.get("cost").and_then(|c| {
-        Some(AgentCost {
+        Some(Box::new(AgentCost {
             amount: c.get("amount")?.as_f64().filter(|a| a.is_finite() && *a >= 0.0)?,
             currency: c.get("currency")?.as_str().filter(|c| !c.is_empty())?.to_owned(),
-        })
+        }))
     });
     Some(AgentUsage { used: tokens("used")?, size: tokens("size").filter(|s| *s > 0)?, cost })
 }

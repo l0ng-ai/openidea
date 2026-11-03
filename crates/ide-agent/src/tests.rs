@@ -369,7 +369,7 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
         assert_eq!(t.usage.as_ref().map(|u| (u.used, u.size)), Some((50, 1000)));
         assert_eq!(
             t.usage.as_ref().and_then(|u| u.cost.clone()),
-            Some(AgentCost { amount: 0.25, currency: "USD".into() })
+            Some(Box::new(AgentCost { amount: 0.25, currency: "USD".into() }))
         );
         assert_eq!(t.title, "Lexer fix", "the agent's title replaces the prompt's first line");
     }

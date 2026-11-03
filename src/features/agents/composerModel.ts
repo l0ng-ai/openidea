@@ -194,7 +194,7 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
 /** "5h 19%" for a usage-limit window, and a tooltip saying when it resets. */
 export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
   const known = LIMIT_WINDOWS[l.window];
-  const percent = Math.min(100, Math.round(l.usedPercent));
+  const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
   const name = known ? tx(known.name) : l.window;
   const used = tx`${name}: ${percent}% used`;
   if (l.resetsMs == null) return { short: `${known?.short ?? l.window} ${percent}%`, percent, detail: used };
@@ -214,10 +214,10 @@ function untilReset(ms: number): string {
 /** "$0.42": what the session has cost so far. */
 export function costLabel(c: AgentCost): string {
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: c.currency }).format(c.amount);
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: c.currency }).format(c.amount ?? 0);
   } catch {
     // Not an ISO 4217 code.
-    return `${c.amount.toFixed(2)} ${c.currency}`;
+    return `${(c.amount ?? 0).toFixed(2)} ${c.currency}`;
   }
 }
 
