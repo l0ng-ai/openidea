@@ -13,6 +13,7 @@ import {
 } from "@/platform/formatGuard";
 import { indentExtension } from "@/editor/core/cm/setup";
 import { dedentsToColumnZero, formatDocument, formatOptionsOf, formattedLines } from "./format";
+import { formatsOnSave } from "./actions";
 
 describe("formatOptionsOf", () => {
   const stateWith = (...args: Parameters<typeof indentExtension>) =>
@@ -167,5 +168,17 @@ describe("format on save provider isolation", () => {
       view.destroy();
       useProject.setState(previous);
     }
+  });
+
+  it("formats on save for the languages whose Prettier or oxfmt Run on save is on", () => {
+    const settings = (languages: Settings["languages"], formatOnSave = false) =>
+      ({ editor: { formatOnSave }, languages }) as Settings;
+    const oxfmt = settings({ oxfmt: { runOnSave: true, languages: ["typescript"] } });
+    expect(formatsOnSave(oxfmt, "typescript")).toBe(true);
+    expect(formatsOnSave(oxfmt, "markdown")).toBe(false);
+    expect(formatsOnSave(settings({ prettier: { runOnSave: true } }), "markdown")).toBe(true);
+    expect(formatsOnSave(settings({}), "typescript")).toBe(false);
+    expect(formatsOnSave(settings({}, true), "rust")).toBe(true);
+    expect(formatsOnSave(null, "typescript")).toBe(false);
   });
 });

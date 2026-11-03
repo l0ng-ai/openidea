@@ -4,14 +4,14 @@ export {
   applySettingsToAll,
   applyThemeToAll,
   closeAll,
-  closePane,
   newTab,
   newTabAt,
-  requestClosePane,
+  requestCloseSession,
   sessionForTerminalId,
   sessionFromElement,
-  splitActive,
+  splitTab,
   startDirectory,
+  unsplit,
   useTerminals,
 } from "./store";
 export { TerminalTabs, TerminalView } from "./TerminalView";

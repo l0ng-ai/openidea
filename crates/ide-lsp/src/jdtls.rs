@@ -336,6 +336,35 @@ impl LspManager {
         });
     }
 
+    /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
+    /// change, a Maven sync, other Maven profiles), but does not check open documents
+    /// again against the new classpath: their errors would stay until the next edit.
+    pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
+        let uris: Vec<String> = self
+            .docs
+            .lock()
+            .values()
+            .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+            .map(|d| crate::uri::path_to_uri_string(&d.path))
+            .collect();
+        if uris.is_empty() {
+            return;
+        }
+        self.runtime.spawn(async move {
+            let Some(run) = server.running_gen(generation) else { return };
+            for uri in uris {
+                let params =
+                    json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
+                let request = run.peer.request::<_, Value>("workspace/executeCommand", params, None);
+                if let Ok(Err(e)) | Err(e) =
+                    tokio::time::timeout(COMMAND_TIMEOUT, request).await.map_err(|_| ide_jsonrpc::RpcError::Timeout)
+                {
+                    tracing::debug!("jdtls: java.project.refreshDiagnostics {uri}: {e}");
+                }
+            }
+        });
+    }
+
     /// The jdtls instance serving `path` (a module directory or source file),
     /// started if needed and waited for.
     async fn jdtls(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<(Arc<Server>, Running)> {

@@ -523,6 +523,27 @@ export const codeLenses = Facet.define<readonly CodeLens[], readonly CodeLens[]>
 let openPathsProvider: (() => string[]) | null = null;
 
 /** Paths of every file open in an editor tab (all panes, visual order, unique). */
+/**
+ * 0-based source line at the top of a view that shows a file instead of its text
+ * editor (Markdown Preview only), per path. Structure's Autoscroll from Source
+ * follows it while set; the owning view clears it when it stops standing in.
+ */
+const useShownLines = create<Record<string, number>>(() => ({}));
+
+export function setShownLine(path: string, line: number | null) {
+  if ((useShownLines.getState()[path] ?? null) === line) return;
+  useShownLines.setState((s) => {
+    const next = { ...s };
+    if (line === null) delete next[path];
+    else next[path] = line;
+    return next;
+  }, true);
+}
+
+export function useShownLine(path: string | null): number | null {
+  return useShownLines((s) => (path ? (s[path] ?? null) : null));
+}
+
 export function openEditorPaths(): string[] {
   return openPathsProvider?.() ?? [];
 }
@@ -569,7 +590,7 @@ export interface DocumentAttachment {
   readOnly: boolean;
   /** Add to the view (one view at a time). */
   extension: Extension;
-  save(): Promise<void>;
+  save(options?: { exact?: boolean }): Promise<void>;
   /** Detach; the document closes when nothing else shows it. */
   release(): void;
 }

@@ -80,7 +80,7 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
             model.onLocal(tr.changes, target);
       }),
     ],
-    save: () => model.save("explicit"),
+    save: (options) => model.save(options?.exact ? "exact" : "explicit"),
     release: () => {
       if (released) return;
       released = true;
