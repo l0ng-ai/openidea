@@ -46,6 +46,7 @@ import { editorController, isTextInput, tabIcon, tabTitle, useTabs, type Virtual
 import { useDocMeta } from "../model/document";
 import { inputDirty } from "../model/customDocuments";
 import type { LayoutNode, SplitEdge, Tab } from "../model/tabs";
+import { dropZoneAt } from "@/ui/pointerDrag";
 import { disambiguateTitles } from "../model/tabTitles";
 import { TextEditorHost } from "./TextEditorHost";
 import { FindBar } from "./FindBar";
@@ -118,24 +119,6 @@ function LayoutView({ node }: { node: LayoutNode }): ReactNode {
 }
 
 type DropZone = SplitEdge | "center";
-
-/** Where a tab dropped at (x, y) over an editor goes: an edge (new split) or the pane itself. */
-export function dropZoneAt(
-  x: number,
-  y: number,
-  rect: { left: number; top: number; width: number; height: number },
-): DropZone {
-  const fx = (x - rect.left) / Math.max(1, rect.width);
-  const fy = (y - rect.top) / Math.max(1, rect.height);
-  const edges: Array<[SplitEdge, number]> = [
-    ["left", fx],
-    ["right", 1 - fx],
-    ["top", fy],
-    ["bottom", 1 - fy],
-  ];
-  const [edge, dist] = edges.reduce((a, b) => (b[1] < a[1] ? b : a));
-  return dist < 0.25 ? edge : "center";
-}
 
 function parseTabPayload(raw: string): { paneId: string; tabId: string } | null {
   try {

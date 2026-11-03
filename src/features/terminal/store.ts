@@ -300,20 +300,23 @@ export function layoutGroups(node: GroupLayout): string[] {
   return typeof node === "string" ? [node] : node.children.flatMap(layoutGroups);
 }
 
-/** Inserts `key` after `target`, nesting a new split (`id`) when the orientation differs from the parent's. */
+/** Inserts `key` after `target` (or `before` it), nesting a new split (`id`) when the orientation differs from the parent's. */
 export function splitLayout(
   node: GroupLayout,
   target: string,
   key: string,
   orientation: SplitOrientation,
   id: string,
+  before = false,
 ): GroupLayout {
-  if (typeof node === "string") return node === target ? { id, orientation, children: [node, key] } : node;
+  if (typeof node === "string")
+    return node === target ? { id, orientation, children: before ? [key, node] : [node, key] } : node;
   const i = node.children.indexOf(target);
   if (i >= 0 && node.orientation === orientation) {
-    return { ...node, children: [...node.children.slice(0, i + 1), key, ...node.children.slice(i + 1)] };
+    const at = before ? i : i + 1;
+    return { ...node, children: [...node.children.slice(0, at), key, ...node.children.slice(at)] };
   }
-  return { ...node, children: node.children.map((c) => splitLayout(c, target, key, orientation, id)) };
+  return { ...node, children: node.children.map((c) => splitLayout(c, target, key, orientation, id, before)) };
 }
 
 /** Removes `key`; splits left with one child collapse into it, and same-orientation children merge up. */
@@ -404,6 +407,48 @@ export function unsplit(group: string) {
  * Drag & drop: moves tab `id` to insertion `index` of `group`'s strip. Within
  * its own group that reorders it; into another it also becomes the selected tab.
  */
+export type SplitEdge = "left" | "right" | "top" | "bottom";
+
+/**
+ * Drag & drop: tab `id` dropped on an edge of `group`'s terminal becomes a new group
+ * on that side, like an editor tab dropped on the edge of a pane. A group's only tab
+ * dropped on its own edge stays: there is nothing to split off from.
+ */
+export function moveTabToSplit(id: string, group: string, edge: SplitEdge): boolean {
+  const s = useTerminals.getState();
+  const tab = s.tabs.find((t) => t.id === id);
+  if (!tab || !layoutGroups(s.layout).includes(group)) return false;
+  if (tab.group === group && groupTabs(s.tabs, group).length < 2) return false;
+  const rest = withoutTab(s, id);
+  const target = newGroupId();
+  const orientation: SplitOrientation = edge === "left" || edge === "right" ? "horizontal" : "vertical";
+  useTerminals.setState({
+    tabs: [...rest.tabs, { ...tab, group: target }],
+    layout: splitLayout(
+      rest.layout,
+      group,
+      target,
+      orientation,
+      `split${++splitSeq}`,
+      edge === "left" || edge === "top",
+    ),
+    selected: { ...rest.selected, [target]: id },
+    activeTab: id,
+  });
+  return true;
+}
+
+/**
+ * Where a tab dropped on the middle of a group (its terminal, or the header's empty
+ * part) lands: at the end, like an editor tab dropped on a pane; `null` when it is
+ * already in that group, so a sloppy release doesn't reorder it.
+ */
+export function groupDropIndex(tabs: readonly TerminalTab[], id: string, group: string): number | null {
+  const tab = tabs.find((t) => t.id === id);
+  if (!tab || tab.group === group) return null;
+  return groupTabs(tabs, group).length;
+}
+
 export function moveTab(id: string, group: string, index: number) {
   useTerminals.setState((s) => {
     const tab = s.tabs.find((t) => t.id === id);

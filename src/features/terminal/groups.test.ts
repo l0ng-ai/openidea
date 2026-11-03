@@ -3,8 +3,11 @@ import {
   closeAll,
   closeTab,
   getSession,
+  groupDropIndex,
   groupTabs,
+  layoutGroups,
   moveTab,
+  moveTabToSplit,
   neighbourGroup,
   newTab,
   splitTab,
@@ -95,6 +98,51 @@ describe("terminal tab groups", () => {
     const d = splitTab(a.id, "horizontal")!;
     moveTab(d, tab(d).group, 0);
     expect(typeof state().layout).toBe("object");
+  });
+
+  it("drops a tab released on a group's header or terminal at the end, unless it is already there", () => {
+    const a = newTab("/p");
+    const b = splitTab(a.id, "horizontal")!;
+    const c = newTab("/p"); // opens in the active group, b's
+    expect(strip(tab(b).group)).toEqual([b, c.id]);
+    expect(groupDropIndex(state().tabs, b, a.group)).toBe(1);
+    expect(groupDropIndex(state().tabs, a.id, tab(b).group)).toBe(2);
+    expect(groupDropIndex(state().tabs, c.id, tab(b).group)).toBeNull();
+    expect(groupDropIndex(state().tabs, "gone", a.group)).toBeNull();
+  });
+
+  it("splits off a new group from a tab dropped on an edge of a group's terminal", () => {
+    const a = newTab("/p");
+    const b = splitTab(a.id, "horizontal")!;
+    const c = newTab("/p"); // in b's group
+    const A = a.group;
+    const B = tab(b).group;
+    const groups = () => layoutGroups(state().layout);
+    // Right edge: a new group beside a's, which becomes the active one.
+    expect(moveTabToSplit(c.id, A, "right")).toBe(true);
+    const G = tab(c.id).group;
+    expect(groups()).toEqual([A, G, B]);
+    expect(state().selected[G]).toBe(c.id);
+    expect(state().activeTab).toBe(c.id);
+    // Bottom edge nests a vertical split; the emptied group leaves the layout.
+    expect(moveTabToSplit(b, A, "bottom")).toBe(true);
+    const H = tab(b).group;
+    expect(groups()).toEqual([A, H, G]);
+    expect(state().layout).toMatchObject({
+      orientation: "horizontal",
+      children: [{ orientation: "vertical", children: [A, H] }, G],
+    });
+    // Left and top edges insert before the target.
+    expect(moveTabToSplit(c.id, A, "left")).toBe(true);
+    const K = tab(c.id).group;
+    expect(groups()).toEqual([K, A, H]);
+    // A group's only tab has nothing to split off from; with company it can.
+    expect(moveTabToSplit(c.id, K, "right")).toBe(false);
+    expect(groups()).toEqual([K, A, H]);
+    moveTab(b, K, 1);
+    expect(moveTabToSplit(b, K, "right")).toBe(true);
+    expect(groups()).toEqual([K, tab(b).group, A]);
+    expect(strip(K)).toEqual([c.id]);
   });
 });
 
