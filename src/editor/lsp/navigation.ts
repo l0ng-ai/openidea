@@ -47,6 +47,7 @@ import {
   type DeclarationTarget,
 } from "./syntaxFallback";
 import { showHint, showPendingHint } from "./hint";
+import { outsideProjectReason } from "./outsideProject";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { readManyFileLines, targetLabel } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
@@ -198,7 +199,16 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
       ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset)))
     )
       return;
-    showHint(view, serverDown ? `${NOT_FOUND[kind]}: no language server is running for this file` : NOT_FOUND[kind]);
+    // The server only checks this file's syntax: say why instead of just "not found".
+    const reason = serverDown ? null : outsideProjectReason(doc.path);
+    showHint(
+      view,
+      serverDown
+        ? `${NOT_FOUND[kind]}: no language server is running for this file`
+        : reason
+          ? `${tx(NOT_FOUND[kind])}. ${tx(reason)}`
+          : NOT_FOUND[kind],
+    );
     return;
   }
   // IDEA: ⌘B on a declaration shows its usages.
