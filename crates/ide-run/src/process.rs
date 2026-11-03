@@ -254,7 +254,7 @@ fn shell_invocation(command: &str, windows: bool, comspec: Option<String>) -> In
 
 /// The program to spawn: relative paths like `./gradlew` or `.venv/bin/python`
 /// against the run directory; a bare name through the configuration's search path
-/// (on Windows also `PATHEXT`: `kotlinc` → `kotlinc.bat`), so launchers installed
+/// (on Windows, first the run directory, also with `PATHEXT`: `kotlinc` → `kotlinc.bat`), so launchers installed
 /// outside the app's own `PATH` (`mvn` in a version manager's shims) still start.
 fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool) -> PathBuf {
     let path = Path::new(command);
@@ -264,6 +264,22 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
     if path.components().count() == 1 && path.is_relative() {
         let search = crate::wrap::search_path(config);
         let pathext = std::env::var("PATHEXT").ok();
+        if windows {
+            // As cmd.exe does: the run directory first, a name with an extension as is,
+            // an extensionless one only through PATHEXT (a POSIX `gradlew` script is not runnable).
+            let local = cwd.join(path);
+            if path.extension().is_some() && local.is_file() {
+                return local;
+            }
+            if path.extension().is_none()
+                && let Some(found) = crate::which::executable_names(command, true, pathext.as_deref())
+                    .iter()
+                    .map(|name| cwd.join(name))
+                    .find(|p| p.is_file())
+            {
+                return found;
+            }
+        }
         if let Some(found) = crate::which::find_executable_in(command, &search, windows, pathext.as_deref()) {
             return found;
         }
@@ -1163,6 +1179,32 @@ mod tests {
         };
         let config = config(BTreeMap::from([("Path".to_owned(), path)]));
         assert_eq!(resolve_program("kotlinc", cwd, &config, true), bin.join("kotlinc.bat"));
+        // Project wrappers win over an identically named launcher on PATH on Windows only.
+        for name in ["gradlew.bat", "mvnw.cmd"] {
+            std::fs::write(cwd.join(name), "@echo off\n").unwrap();
+            std::fs::write(bin.join(name), "@echo off\n").unwrap();
+            assert_eq!(resolve_program(name, cwd, &config, true), cwd.join(name));
+            assert_eq!(resolve_program(name, cwd, &config, false), bin.join(name));
+            let bare = name.split('.').next().unwrap();
+            assert_eq!(resolve_program(bare, cwd, &config, true), cwd.join(name));
+            assert_eq!(resolve_program(bare, cwd, &config, false), PathBuf::from(bare));
+            std::fs::remove_file(cwd.join(name)).unwrap();
+            std::fs::create_dir(cwd.join(name)).unwrap();
+            assert_eq!(resolve_program(name, cwd, &config, true), bin.join(name));
+            assert_eq!(resolve_program(bare, cwd, &config, true), bin.join(name));
+        }
+        // An extensionless file is not runnable on Windows: only PATHEXT candidates count,
+        // and directories are ignored.
+        std::fs::write(cwd.join("local-tool"), "tool").unwrap();
+        std::fs::write(cwd.join("local-tool.exe"), "tool").unwrap();
+        assert_eq!(resolve_program("local-tool", cwd, &config, true), cwd.join("local-tool.exe"));
+        assert_eq!(resolve_program("local-tool", cwd, &config, false), PathBuf::from("local-tool"));
+        std::fs::remove_file(cwd.join("local-tool")).unwrap();
+        assert_eq!(resolve_program("local-tool", cwd, &config, true), cwd.join("local-tool.exe"));
+        std::fs::remove_file(cwd.join("local-tool.exe")).unwrap();
+        std::fs::create_dir(cwd.join("local-tool")).unwrap();
+        std::fs::create_dir(cwd.join("local-tool.exe")).unwrap();
+        assert_eq!(resolve_program("local-tool", cwd, &config, true), PathBuf::from("local-tool"));
         // Not found: left to the OS (`command not found` at spawn).
         assert_eq!(resolve_program("nope", cwd, &config, true), PathBuf::from("nope"));
         // Unix: extensionless names only (`kotlinc.bat` does not match `kotlinc`).
