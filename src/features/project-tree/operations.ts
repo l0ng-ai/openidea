@@ -294,8 +294,14 @@ async function refreshAfterCreate(parent: string, path: string) {
 // ---------------------------------------------------------------------------
 // Delete
 
-function describe(paths: string[]): string {
-  return paths.length === 1 ? `'${nameOf(paths[0]!)}'` : `${paths.length} items`;
+/** The Delete dialog's question, e.g. "Delete 'src' and its contents?". */
+function deleteQuestion(paths: string[], folders: boolean): string {
+  if (paths.length === 1) {
+    const name = nameOf(paths[0]!);
+    return folders ? tx`Delete '${name}' and its contents?` : tx`Delete '${name}'?`;
+  }
+  const count = paths.length;
+  return folders ? tx`Delete ${count} items (including folder contents)?` : tx`Delete ${count} items?`;
 }
 
 /** Visible rows in display order (roots, then children of expanded folders). */
@@ -441,9 +447,9 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
     message: createElement(
       Fragment,
       null,
-      `Delete ${describe(paths)}${folders ? (paths.length === 1 ? " and its contents" : " (including folder contents)") : ""}?`,
+      deleteQuestion(paths, folders > 0),
       createElement("br"),
-      "Items are moved to the Trash.",
+      tx("Items are moved to the Trash."),
     ),
   });
   if (!answer) return;
