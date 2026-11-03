@@ -1220,7 +1220,9 @@ export type AgentEvent =
 /**  The task's conversation was cut to its first `length` entries (turns rolled back). */
 { type: "truncated"; task: string; length: number } | 
 /**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
-{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry };
+{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry } | 
+/**  The installed or configured agent providers changed. */
+{ type: "providers" };
 
 export type AgentImage = {
 	mimeType: string,
@@ -4100,6 +4102,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: PrettierSettings,
 	java?: JavaSettings,
+	ruby?: RubySettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -5327,6 +5330,11 @@ export type RevisionChange = {
 
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
 
+export type RubySettings = {
+	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
+	interpreter?: string,
+};
+
 export type RouteSource = {
 	path: string,
 	text: string,
@@ -5540,7 +5548,7 @@ export type SdkKind = "python" | "node" |
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven";
+"maven" | "ruby";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
