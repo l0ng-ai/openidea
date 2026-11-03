@@ -5330,14 +5330,14 @@ export type RevisionChange = {
 
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
 
-export type RubySettings = {
-	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
-	interpreter?: string,
-};
-
 export type RouteSource = {
 	path: string,
 	text: string,
+};
+
+export type RubySettings = {
+	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
+	interpreter?: string,
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
