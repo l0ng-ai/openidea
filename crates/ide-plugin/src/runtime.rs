@@ -17,7 +17,7 @@ use ide_extension::Capability;
 use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
@@ -271,7 +271,10 @@ fn store_precompiled(component: &Component, file: &Path) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let tmp = file.with_extension(format!("tmp{}", std::process::id()));
+    // Unique per write: two threads may store the same component at once, and a
+    // shared temporary file could be renamed into place half written.
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let tmp = file.with_extension(format!("tmp{}-{}", std::process::id(), WRITES.fetch_add(1, Ordering::Relaxed)));
     if std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, file)).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }

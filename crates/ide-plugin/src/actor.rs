@@ -35,17 +35,23 @@ pub enum ActorError {
 
 /// A call queued with [`Actor::submit`].
 pub struct Pending<R> {
-    result: mpsc::Receiver<Result<R, CallError>>,
+    /// The outcome and when the plugin's thread produced it.
+    result: mpsc::Receiver<(Result<R, CallError>, Instant)>,
     give_up: Option<Instant>,
     alive: Arc<AtomicBool>,
 }
 
 impl<R> Pending<R> {
-    /// Waits for the outcome, until the call's soft deadline if it has one.
+    /// Waits for the outcome, until the call's soft deadline if it has one. A
+    /// result produced after that deadline is dropped even when it is already
+    /// there (the caller was not scheduled in time, or waited on another call
+    /// first), so the deadline holds however busy the machine is; a failure is
+    /// still reported.
     pub fn wait(self) -> Result<R, ActorError> {
         let outcome = match self.give_up {
             Some(t) => match self.result.recv_timeout(t.saturating_duration_since(Instant::now())) {
-                Ok(r) => r,
+                Ok((Ok(_), done)) if done > t => return Err(ActorError::SoftTimeout),
+                Ok((r, _)) => r,
                 Err(mpsc::RecvTimeoutError::Timeout) => return Err(ActorError::SoftTimeout),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     // Skipped as too late, or the actor ended.
@@ -53,7 +59,7 @@ impl<R> Pending<R> {
                     return Err(if alive { ActorError::SoftTimeout } else { ActorError::Stopped });
                 }
             },
-            None => self.result.recv().map_err(|_| ActorError::Stopped)?,
+            None => self.result.recv().map_err(|_| ActorError::Stopped)?.0,
         };
         outcome.map_err(ActorError::Call)
     }
@@ -149,7 +155,7 @@ impl Actor {
                 alive.store(false, Ordering::Release);
                 *slot = None;
             }
-            let _ = reply.send(outcome);
+            let _ = reply.send((outcome, Instant::now()));
         });
         {
             let tx = self.tx.lock().unwrap_or_else(|e| e.into_inner());
