@@ -10,6 +10,8 @@ use std::{
 };
 
 mod duplicate;
+mod workspace_edit;
+pub(crate) use workspace_edit::expand_workspace_edit;
 #[cfg(test)]
 mod tests;
 

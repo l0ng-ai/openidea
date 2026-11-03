@@ -38,7 +38,7 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     for name in ["Cached.cs", "Temporary.cs", "Editor.log"] {
         assert!(project.index.find_files(name, 100).is_empty(), "indexed generated file {name}");
     }
-    let listing = ops::fs::read_dir(&host, "main", root.clone()).unwrap();
+    let listing = ops::fs::read_dir(&host, "main", root.clone()).await.unwrap();
     assert!(listing.iter().any(|e| e.name == "Library" && e.excluded));
     assert!(project.exclude_globs().contains(&"/Obj".to_owned()));
 
