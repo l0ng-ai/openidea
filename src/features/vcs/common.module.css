@@ -125,27 +125,6 @@
   flex-direction: column;
   padding: 0 14px 14px;
 }
-.cloneDirRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.cloneDirInput {
-  flex: 1;
-  min-width: 0;
-}
-.cloneProgress {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 4px;
-  min-width: 0;
-}
-.cloneProgress > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .todoList {
   margin: 8px 0 0;
   padding-left: 18px;
