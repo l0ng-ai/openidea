@@ -55,6 +55,7 @@ import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
+import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
@@ -398,6 +399,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
+  const testRoots = useEffectiveRoots();
   const roots = useMemo(
     () => buildChangeTree(status, root, groupByDir, lists, repos),
     [status, root, groupByDir, lists, repos],
@@ -608,7 +610,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   };
             return (
               <span
-                className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
+                className={clsx(
+                  styles.nodeRow,
+                  n.type === "file" && n.path && isTestFile(n.path, testRoots) && styles.testRow,
+                  n.type === "group" && dropTarget === n.changelist && styles.dropTarget,
+                )}
                 {...dnd}
               >
                 {checkboxes && (

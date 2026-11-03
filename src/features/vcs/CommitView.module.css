@@ -218,6 +218,10 @@
   gap: 4px;
   border-radius: var(--radius-small);
 }
+/* Test files get a light wash of the added-file green, as in IDEA's commit list. */
+.testRow {
+  background: color-mix(in srgb, var(--vcs-added) 12%, transparent);
+}
 .dropTarget {
   box-shadow: inset 0 0 0 1px var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
