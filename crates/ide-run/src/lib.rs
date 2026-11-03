@@ -6,6 +6,7 @@ pub mod dotnet;
 pub mod envfile;
 pub mod go;
 pub mod gradle_jvm;
+pub mod import;
 pub mod java_cmdline;
 pub mod junit;
 mod process;
@@ -254,6 +255,17 @@ pub fn system_env() -> BTreeMap<String, String> {
 /// Complete environment for a preparatory tool belonging to this run configuration.
 pub fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
     process::resolved_env(root, config)
+}
+
+/// Run configurations from another IDE's project file (`.vscode/launch.json`), not yet saved:
+/// names already in `existing` are skipped, so importing again adds nothing twice.
+pub fn import_configs(
+    root: &Path,
+    source: import::RunImportSource,
+    existing: &[RunConfig],
+) -> IdeResult<import::RunImport> {
+    // `${env:NAME}` reads what a run inherits, the login shell's variables included.
+    import::import(root, source, existing, &process::inherited_env())
 }
 
 /// Path of the user run configuration file for `root`.

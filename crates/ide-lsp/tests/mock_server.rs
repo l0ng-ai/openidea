@@ -1487,13 +1487,20 @@ async fn navigation_rename_format_and_decorations() {
 
     assert!(h.mgr.can_format(doc).await.unwrap());
     s.respond("textDocument/formatting", json!([{ "range": r(0,10,0,11), "newText": "\n}" }]));
-    let edits =
-        h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
+    let edits = h
+        .mgr
+        .format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None })
+        .await
+        .unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
     assert!(
         h.mgr
-            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+            .format(
+                doc,
+                Some(rng(0, 0, 1, 0)),
+                FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None }
+            )
             .await
             .is_err()
     );

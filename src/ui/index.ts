@@ -11,10 +11,12 @@ export {
   FILES_DRAG,
   dragRequiresAlt,
   dragSession,
+  dropZoneAt,
   registerDropTarget,
   setDragRequiresAlt,
   startPointerDrag,
   type DragSession,
+  type DropEdge,
 } from "./pointerDrag";
 export * from "./Tree";
 export * from "./List";

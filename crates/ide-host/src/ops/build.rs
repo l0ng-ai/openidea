@@ -150,6 +150,13 @@ pub async fn build_sync(
     .map_err(join_err);
     host.end_request(request);
     let model = result??;
+    if tool == BuildTool::Gradle {
+        // The sync may report project folders outside the project (`includeFlat`): index and list them.
+        project.refresh_index_scope();
+        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+        let p = project.clone();
+        tokio::task::spawn_blocking(move || p.refresh_repositories());
+    }
     if tool == BuildTool::Maven
         && model.maven.is_some()
         && let Some(bridge) = &project.kotlin_bridge
@@ -168,7 +175,16 @@ pub async fn build_sync(
         }
     };
     let lsp = project.lsp.clone();
-    let uris = build_files.iter().map(|f| ide_lsp::path_to_uri_string(&project.root.join(f))).collect();
+    // With a module of a reactor unlinked, jdtls imports the other modules one by one and
+    // not the reactor: naming the reactor here would import it again, all modules included.
+    let imported = match tool {
+        BuildTool::Maven => crate::project::jdtls_maven_import(&project.root, &project.settings.effective()).1,
+        BuildTool::Gradle => None,
+    };
+    let uris = match imported {
+        Some(files) => files.into_iter().filter(|f| f.ends_with("/pom.xml")).collect(),
+        None => build_files.iter().map(|f| ide_lsp::path_to_uri_string(&project.root.join(f))).collect(),
+    };
     tokio::spawn(async move {
         if profiles_changed {
             // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).

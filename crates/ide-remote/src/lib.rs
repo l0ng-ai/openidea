@@ -10,6 +10,6 @@ pub mod target;
 pub use deploy::{
     Deployment, DeploymentCoverage, SyncAction, SyncEntry, SyncStatus, SyncStep, TransferReport, coverage,
 };
-pub use mapping::{Excludes, Mappings};
-pub use service::{DeployedPath, RemoteService};
+pub use mapping::{Excludes, Mappings, ResolvedMapping};
+pub use service::{DeployedPath, DeploymentRoot, RemoteService};
 pub use target::{RemoteRuns, RemoteStart};

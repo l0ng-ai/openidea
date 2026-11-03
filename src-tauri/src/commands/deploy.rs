@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use ide_core::{IdeResult, IpcPath, RequestId};
-use ide_remote::{DeployedPath, DeploymentCoverage, SyncEntry, SyncStep, TransferReport};
+use ide_remote::{DeployedPath, DeploymentCoverage, DeploymentRoot, SyncEntry, SyncStep, TransferReport};
 use ide_ssh::{FsConnection, RemoteEntry};
 use tauri::{State, Window};
 
@@ -86,7 +86,11 @@ pub async fn deploy_info(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn deploy_server_root(window: Window, state: State<'_, AppState>, server: String) -> IdeResult<String> {
+pub async fn deploy_server_root(
+    window: Window,
+    state: State<'_, AppState>,
+    server: String,
+) -> IdeResult<DeploymentRoot> {
     ide_host::ops::deploy::deploy_server_root(window.label(), &state.host, server).await
 }
 
