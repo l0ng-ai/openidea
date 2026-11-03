@@ -20,6 +20,7 @@ const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
 mod formatter;
+pub(crate) mod reserved_names;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -661,6 +662,24 @@ impl LspManager {
             tracing::debug!("vscode.java.updateDebugSettings: {e}");
         }
         parse_port(&v).ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))
+    }
+}
+
+impl LspManager {
+    /// JDT LS aborted its import with `message`: when reserved Windows device names
+    /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
+    pub(crate) fn report_import_failure(&self, root: PathBuf, message: String) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn_blocking(move || {
+            let Some(body) = reserved_names::import_failure_hint(&root, &message, cfg!(windows)) else { return };
+            if me.first_message(SERVER, &body) {
+                me.sink().emit(ide_core::IdeEvent::Notify {
+                    level: ide_core::event::NotifyLevel::Error,
+                    title: "Java project import failed".into(),
+                    body: Some(body),
+                });
+            }
+        });
     }
 }
 
