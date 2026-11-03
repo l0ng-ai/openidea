@@ -174,14 +174,24 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.documents.clear_workspace_edit_history();
             project.agents.shutdown();
             project.notebooks.stop_admission();
+            // What the closing window started goes with it — the builds and searches it
+            // asked for, its runs, its shells and its debug sessions — and the language
+            // servers finish shutting down before the window is gone, as IDEA closes a
+            // project's processes.
+            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+                self.cancel_request(request);
+            }
+            self.processes.kill_project(&project.root);
+            self.terminals.kill_key(self.owner_window(window));
             self.shutdown_project_workers_blocking(
                 vec![project.notebooks.clone()],
                 project.kotlin_bridge.iter().cloned().collect(),
+                Some(project.lsp.clone()),
+                Some((self.debugger.clone(), window.to_owned())),
             );
-            let lsp = project.lsp.clone();
-            self.runtime.spawn(async move { lsp.shutdown_all().await });
         }
     }
 
@@ -191,6 +201,8 @@ impl Host {
         &self,
         notebooks: Vec<Arc<notebook::NotebookService>>,
         bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
+        lsp: Option<Arc<ide_lsp::LspManager>>,
+        debug: Option<(Arc<ide_dap::DebugManager>, String)>,
     ) {
         for bridge in &bridges {
             bridge.stop();
@@ -207,6 +219,12 @@ impl Host {
                     }
                     for service in notebooks {
                         service.shutdown().await;
+                    }
+                    if let Some(lsp) = lsp {
+                        lsp.shutdown_all().await;
+                    }
+                    if let Some((debug, key)) = debug {
+                        debug.stop_key(&key).await;
                     }
                 });
             });
@@ -229,7 +247,16 @@ impl Host {
         self.shutdown_project_workers_blocking(
             projects.iter().map(|project| project.notebooks.clone()).collect(),
             projects.iter().filter_map(|project| project.kotlin_bridge.clone()).collect(),
+            None,
+            None,
         );
+    }
+
+    /// Called before desktop exit, which may bypass document destructors.
+    pub fn clear_workspace_edit_history_on_exit(&self) {
+        for project in self.projects() {
+            project.documents.clear_workspace_edit_history();
+        }
     }
 
     /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
@@ -243,6 +270,7 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }

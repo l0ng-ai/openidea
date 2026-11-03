@@ -1,4 +1,6 @@
-# Semantic Java usages
+# Semantic Java usages and configuration navigation
+
+Spring YAML / properties navigation is described in [CONFIGURATION.md](CONFIGURATION.md).
 
 The app-owned OSGi command `openidea.java.usages` returns `{location, kind, access}`.
 `kind` retains field/getter/setter/unknown identity for compatibility. Optional
@@ -55,7 +57,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.1.1.jar`, and added alongside existing initialization bundles.
+`java-usages-1.2.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -64,8 +66,10 @@ Use its shipped ECJ and plugin jars, with Java 25; emitted bytecode targets Java
 The build uses sorted inputs and fixed zip timestamps and does not resolve Maven
 artifacts. Check the extracted distribution against `build-dependencies.sha256`
 from its root (`sha256sum -c /path/to/build-dependencies.sha256`). Build twice
-and compare SHA-256. The 1.1.1 output is
+and compare SHA-256. The prior 1.1.1 output was
 `1e569939cba22c7db6e2c9b53de2a4c10ccaabe762a51427119a04af3d974ae4`.
+Version 1.2.0 adds the configuration command; its reproducible SHA-256 is
+`9140f1d2ecf27eadfe66b40a17daa18a08a65927ebef79456ba55d486ce5eeba`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
