@@ -86,16 +86,13 @@ const MAVEN: &[&str] = &["mvn", "mvnw", "mvnd"];
 const GRADLE: &[&str] = &["gradle", "gradlew"];
 
 /// Gradle init script giving the `JavaExec` tasks (`bootRun`, `run`, custom ones) a UTF-8
-/// default charset, unless the task or the build already sets `file.encoding`. Checked when
-/// the task runs, after the build script configured it; Gradle's own JVM and the compiler's
-/// source encoding are untouched.
+/// default charset before the build configures them, so the build can override it.
+/// Gradle's own JVM and the compiler's source encoding are untouched.
 pub const GRADLE_FILE_ENCODING_SCRIPT: &str = "\
 // Written by OpenIDEA: a UTF-8 default charset for applications run by Gradle, as the Run console decodes UTF-8.
 allprojects {
     tasks.withType(JavaExec).configureEach {
-        doFirst { task ->
-            if (!task.allJvmArgs.any { it.startsWith('-Dfile.encoding=') }) task.jvmArgs('-Dfile.encoding=UTF-8')
-        }
+        defaultCharacterEncoding = 'UTF-8'
     }
 }
 ";
@@ -548,7 +545,8 @@ mod tests {
     fn gradle_script_respects_the_builds_own_file_encoding() {
         let s = GRADLE_FILE_ENCODING_SCRIPT;
         assert!(s.contains("tasks.withType(JavaExec).configureEach"), "{s}");
-        assert!(s.contains("allJvmArgs.any { it.startsWith('-Dfile.encoding=') }"), "{s}");
+        assert!(s.contains("defaultCharacterEncoding = 'UTF-8'"), "{s}");
+        assert!(!s.contains("doFirst"), "the build must be able to override the default: {s}");
         assert!(!s.contains("withType(Test)") && !s.contains("JavaCompile"), "{s}");
     }
 
