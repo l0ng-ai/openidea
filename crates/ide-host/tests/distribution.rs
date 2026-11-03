@@ -1,4 +1,4 @@
-//! Plan P8: versioned installs with automatic rollback, signed packages from
+//! Versioned installs with automatic rollback, signed packages from
 //! a static marketplace index, and revocation.
 
 use ide_extension::package::{self, Index, IndexEntry, KeyEntry, Publisher, PublisherKey, Revocation};

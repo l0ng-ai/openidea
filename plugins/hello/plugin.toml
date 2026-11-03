@@ -17,7 +17,7 @@ activation = ["on-command:*", "on-view:greetings"]
 required = ["editor.read", "editor.write"]
 
 # Static declarations make the commands visible before the plugin activates;
-# the plugin may also register more at runtime with `register_command`.
+# a command must be declared here to exist.
 [[contributes.commands]]
 id = "insert-date"
 title = "Hello: Insert Date"

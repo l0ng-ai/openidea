@@ -212,7 +212,7 @@ mod tests {
     fn bracket_folds_skip_strings() {
         let text = "a {\n  \"{\"\n  b {\n  }\n}\n";
         let s = text.find('"').unwrap();
-        let folds = bracket_folds(text, b'{', b'}', &[s..s + 3]);
+        let folds = bracket_folds(text, b'{', b'}', std::slice::from_ref(&(s..s + 3)));
         assert_eq!(
             folds,
             [

@@ -1,6 +1,6 @@
-/// OpenIDEA plugin API, version 1.0 (docs/plugin_plan.md 4.3). Frozen: 1.x
-/// only adds (new interfaces, new optional exports); a 2.0 keeps 1.0 running
-/// through an adapter in the host.
+/// OpenIDEA plugin API, version 1.0. Once released, 1.x only adds (new
+/// interfaces, new optional exports; plugins/README.md, "Evolving the plugin
+/// API"); a 2.0 keeps 1.0 running through an adapter in the host.
 ///
 /// A plugin is a WebAssembly component targeting the `plugin` world (or
 /// `plugin-syntax`). It runs sandboxed: no filesystem, network, environment
@@ -11,7 +11,6 @@ package openidea:plugin@1.0.0;
 
 world plugin {
     import log;
-    import contributions;
     import ui;
     import storage;
     import workspace;

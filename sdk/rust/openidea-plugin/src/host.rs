@@ -73,18 +73,6 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
-    pub fn register_command(id: &str, title: &str, category: Option<&str>) -> Result<(), Error> {
-        wit::contributions::register_command(id, title, category).map_err(error)
-    }
-
-    pub fn register_language(definition: &str) -> Result<(), Error> {
-        wit::contributions::register_language(definition).map_err(error)
-    }
-
-    pub fn register_theme(definition: &str) -> Result<(), Error> {
-        wit::contributions::register_theme(definition).map_err(error)
-    }
-
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         wit::storage::get(key).map_err(error)
     }
@@ -531,22 +519,6 @@ pub fn set_status_item(id: &str, item: &StatusItem) {
 
 pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
-}
-
-/// Registers or renames a command at runtime (action `plugin.<plugin-id>.<id>`).
-/// Prefer declaring commands in `plugin.toml`: they show before the plugin runs.
-pub fn register_command(id: &str, title: &str, category: Option<&str>) -> Result<(), Error> {
-    imp::register_command(id, title, category)
-}
-
-/// Registers a language (`languages/<id>.toml` format) at runtime.
-pub fn register_language(definition: &str) -> Result<(), Error> {
-    imp::register_language(definition)
-}
-
-/// Registers a theme (theme JSON) at runtime.
-pub fn register_theme(definition: &str) -> Result<(), Error> {
-    imp::register_theme(definition)
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of

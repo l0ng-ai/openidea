@@ -183,8 +183,8 @@ impl CsvEditor {
 }
 
 impl Plugin for CsvEditor {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
-        Err(format!("unknown command {id}"))
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(format!("command {id}")))
     }
 }
 

@@ -1,4 +1,4 @@
-//! Declarative views and custom editors (docs/plugin_plan.md P7) as the
+//! Declarative views and custom editors as the
 //! window commands `plugin_view_render` / `plugin_view_event` serve them —
 //! the desktop for local projects, `openidea-server` for remote ones.
 

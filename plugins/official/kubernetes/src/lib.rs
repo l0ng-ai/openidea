@@ -187,12 +187,12 @@ impl Kubernetes {
 }
 
 impl Plugin for Kubernetes {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
             "refresh" => self.refresh(),
             "logs" => self.open_logs()?,
             "shell" => self.open_shell()?,
-            _ => return Err(format!("unknown command {id}")),
+            _ => return Err(Error::NotFound(format!("command {id}"))),
         }
         Ok(None)
     }

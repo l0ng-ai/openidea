@@ -1,4 +1,4 @@
-//! Editor providers of plugins (docs/plugin_plan.md P6): completion, inline
+//! Editor providers of plugins: completion, inline
 //! completion, code actions, go to definition and gutter line markers, for
 //! the languages a plugin declares. The host calls only plugins whose
 //! declaration matches, so the others stay unloaded.
@@ -160,8 +160,8 @@ pub(super) fn secret(_pkg: &Package, decl: toml::Value) -> Result<UiDecl, String
 use super::{LoadedPlugin, PluginHost, PluginStatus};
 use ide_core::CancellationToken;
 use ide_plugin::{
-    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument,
-    Runtime,
+    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending,
+    ProviderDocument, Runtime,
 };
 use std::sync::Weak;
 use std::time::{Duration, Instant};
@@ -198,20 +198,38 @@ impl PluginHost {
             .collect()
     }
 
-    /// One edit-path call (soft / hard deadline); `None` when it failed or was late.
-    fn edit_call<R: Send + 'static>(
+    /// Edit-path calls (soft / hard deadline) to every usable plugin that
+    /// declares `kind` for `language`, in plugin order, leaving out those that
+    /// failed or were late. Each plugin runs on its own thread, so the calls
+    /// run at the same time: the wait is the slowest plugin's, not the sum.
+    fn edit_calls<R: Send + 'static>(
         &self,
-        plugin: &Arc<LoadedPlugin>,
-        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Send + 'static,
-    ) -> Option<R> {
-        let (actor, activated) = self.ensure_active(plugin, None).ok()?;
-        if activated {
-            self.changed();
-        }
-        let started = Instant::now();
-        let hard = self.limits.edit_hard;
-        let result = actor.call(Some(self.limits.edit_soft), move |rt| f(rt, hard));
-        self.finish_provider_call(plugin, &actor, started, result)
+        kind: ProviderKind,
+        language: &str,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        let (soft, hard) = (self.limits.edit_soft, self.limits.edit_hard);
+        let queued: Vec<_> = self
+            .provider_plugins(kind, language)
+            .into_iter()
+            .filter_map(|plugin| {
+                let (actor, activated) = self.ensure_active(&plugin, None).ok()?;
+                if activated {
+                    self.changed();
+                }
+                let f = f.clone();
+                let started = Instant::now();
+                let call = actor.submit(Some(soft), move |rt| f(rt, hard));
+                Some((plugin, actor, started, call))
+            })
+            .collect();
+        queued
+            .into_iter()
+            .filter_map(|(plugin, actor, started, call)| {
+                let result = call.and_then(Pending::wait);
+                self.finish_provider_call(&plugin, &actor, started, result).map(|r| (plugin, r))
+            })
+            .collect()
     }
 
     pub(super) fn finish_provider_call<R>(
@@ -233,7 +251,7 @@ impl PluginHost {
             }
             Err(ActorError::Cancelled) => None,
             Err(ActorError::Call(CallError::Guest(e))) => {
-                self.record_call(plugin, elapsed, false, true);
+                self.record_call(plugin, elapsed, !e.is_failure(), true);
                 tracing::debug!(plugin = %plugin.id(), "provider: {e}");
                 None
             }
@@ -251,16 +269,13 @@ impl PluginHost {
         at: ide_core::Pos,
         trigger: Option<&str>,
     ) -> Vec<(String, CompletionItem)> {
-        let mut out = Vec::new();
-        for p in self.provider_plugins(ProviderKind::Completion, &doc.language) {
-            let (d, t) = (doc.clone(), trigger.map(str::to_owned));
-            if let Some(items) =
-                self.edit_call(&p, move |rt, timeout| rt.provide_completion(&d, at, t.as_deref(), timeout))
-            {
-                out.extend(items.into_iter().map(|i| (p.id().to_owned(), i)));
-            }
-        }
-        out
+        let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
+        self.edit_calls(ProviderKind::Completion, &doc.language, move |rt, timeout| {
+            rt.provide_completion(&d, at, t.as_deref(), timeout)
+        })
+        .into_iter()
+        .flat_map(|(p, items)| items.into_iter().map(move |i| (p.id().to_owned(), i)))
+        .collect()
     }
 
     pub fn provide_code_actions(
@@ -268,38 +283,33 @@ impl PluginHost {
         doc: &ProviderDocument,
         selection: ide_core::Range,
     ) -> Vec<(String, CodeAction)> {
-        let mut out = Vec::new();
-        for p in self.provider_plugins(ProviderKind::CodeActions, &doc.language) {
-            let d = doc.clone();
-            if let Some(actions) =
-                self.edit_call(&p, move |rt, timeout| rt.provide_code_actions(&d, selection, timeout))
-            {
-                out.extend(actions.into_iter().map(|a| (p.id().to_owned(), a)));
-            }
-        }
-        out
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::CodeActions, &doc.language, move |rt, timeout| {
+            rt.provide_code_actions(&d, selection, timeout)
+        })
+        .into_iter()
+        .flat_map(|(p, actions)| actions.into_iter().map(move |a| (p.id().to_owned(), a)))
+        .collect()
     }
 
     pub fn provide_definition(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<Location> {
-        let mut out = Vec::new();
-        for p in self.provider_plugins(ProviderKind::Definition, &doc.language) {
-            let d = doc.clone();
-            if let Some(locations) = self.edit_call(&p, move |rt, timeout| rt.provide_definition(&d, at, timeout)) {
-                out.extend(locations);
-            }
-        }
-        out
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::Definition, &doc.language, move |rt, timeout| {
+            rt.provide_definition(&d, at, timeout)
+        })
+        .into_iter()
+        .flat_map(|(_, locations)| locations)
+        .collect()
     }
 
     pub fn provide_line_markers(&self, doc: &ProviderDocument) -> Vec<(String, LineMarker)> {
-        let mut out = Vec::new();
-        for p in self.provider_plugins(ProviderKind::LineMarkers, &doc.language) {
-            let d = doc.clone();
-            if let Some(markers) = self.edit_call(&p, move |rt, timeout| rt.provide_line_markers(&d, timeout)) {
-                out.extend(markers.into_iter().map(|m| (p.id().to_owned(), m)));
-            }
-        }
-        out
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::LineMarkers, &doc.language, move |rt, timeout| {
+            rt.provide_line_markers(&d, timeout)
+        })
+        .into_iter()
+        .flat_map(|(p, markers)| markers.into_iter().map(move |m| (p.id().to_owned(), m)))
+        .collect()
     }
 
     /// Ghost text from the first plugin that has some. Not bound by the

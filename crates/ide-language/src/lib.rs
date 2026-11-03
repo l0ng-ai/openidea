@@ -169,7 +169,7 @@ pub struct DebuggerConfig {
     pub pinned: Option<ProgramPin>,
 }
 
-/// The program a plugin's `process:` grant approved (docs/plugin_plan.md 4.2):
+/// The program a plugin's `process:` grant approved:
 /// a plugin language's server or debug adapter starts from this exact path,
 /// and only while the file still has the approved content. Set by the plugin
 /// host, never read from a definition.

@@ -4,15 +4,15 @@
 //! `languages/solidity.toml`.
 
 use openidea_plugin::syntax::{Fold, FoldKind, Highlight, Symbol, SymbolKind, SyntaxProvider, Token, bracket_folds};
-use openidea_plugin::{Invocation, Plugin, register_plugin};
+use openidea_plugin::{Error, Invocation, Plugin, register_plugin};
 use std::ops::Range;
 
 #[derive(Default)]
 pub struct Solidity;
 
 impl Plugin for Solidity {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
-        Err(format!("unknown command {id}"))
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(format!("command {id}")))
     }
 }
 
@@ -442,7 +442,7 @@ fn outline(text: &str) -> Vec<Symbol> {
                 }
                 stmt_start = i + 1;
             }
-            (Kind::Ident, "contract" | "interface" | "library") if declares && word(i + 1) != "" => {
+            (Kind::Ident, "contract" | "interface" | "library") if declares && !word(i + 1).is_empty() => {
                 if code.get(i + 1).is_some_and(|n| n.kind == Kind::Ident) {
                     let kind = match w {
                         "interface" => SymbolKind::Interface,

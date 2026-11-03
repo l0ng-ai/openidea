@@ -128,9 +128,7 @@ impl LanguagesPoint {
 #[serde(deny_unknown_fields)]
 struct Decl {
     /// A `languages/<id>.toml`-style file in the package.
-    path: Option<PathBuf>,
-    /// The same, inline (runtime `register-language`).
-    definition: Option<String>,
+    path: PathBuf,
 }
 
 /// Parses and checks one language definition.
@@ -179,18 +177,8 @@ impl ExtensionPoint for LanguagesPoint {
 
     fn prepare(&self, pkg: &Package, decl: toml::Value) -> Result<Prepared, String> {
         let decl: Decl = decode(POINT_ID, decl)?;
-        let (src, file) = match (decl.path, decl.definition) {
-            (Some(path), None) => {
-                let src = pkg.read_text(&path)?;
-                (src, Some(path))
-            }
-            (None, Some(def)) => (def, None),
-            _ => return Err("give either `path` or `definition`".into()),
-        };
-        let cfg = parse_definition(&src).map_err(|e| match &file {
-            Some(f) => format!("{}: {e}", f.display()),
-            None => e,
-        })?;
+        let src = pkg.read_text(&decl.path)?;
+        let cfg = parse_definition(&src).map_err(|e| format!("{}: {e}", decl.path.display()))?;
         let caps = required_capabilities(&cfg);
         let (store, plugin, key, label) = (
             self.store.clone(),
@@ -198,10 +186,7 @@ impl ExtensionPoint for LanguagesPoint {
             cfg.id.to_string(),
             format!("{} (.{})", cfg.name, cfg.extensions.join(", .")),
         );
-        let mut prepared = Prepared::new(label, move || Ok(store.add(plugin, cfg))).key(key);
-        if let Some(f) = file {
-            prepared = prepared.file(f);
-        }
+        let mut prepared = Prepared::new(label, move || Ok(store.add(plugin, cfg))).key(key).file(decl.path);
         for cap in caps {
             prepared = prepared.capability(cap);
         }
@@ -212,7 +197,7 @@ impl ExtensionPoint for LanguagesPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ide_extension::{ExtensionRegistry, Manifest, Scope};
+    use ide_extension::{ExtensionRegistry, Manifest};
 
     #[test]
     fn languages_point_registers_and_requires_process_capabilities() {
@@ -233,16 +218,12 @@ mod tests {
         let set = reg.prepare(&pkg).unwrap();
         assert_eq!(set.capabilities, [Capability::Process("solc".into())]);
         assert_eq!(set.files, [PathBuf::from("l/sol.toml")]);
-        reg.commit(set, Scope::Static).unwrap();
+        reg.commit(set).unwrap();
         assert_eq!(store.all()[0].id.as_str(), "solidity");
         reg.dispose_plugin("p");
         assert!(store.all().is_empty());
 
-        let bad = |def: &str| {
-            let mut t = toml::Table::new();
-            t.insert("definition".into(), def.into());
-            reg.contribute(&pkg, POINT_ID, toml::Value::Table(t)).unwrap_err()
-        };
+        let bad = |def: &str| parse_definition(def).unwrap_err();
         assert!(bad("not toml [").contains("invalid language"));
         assert!(bad("id = \"\"\nname = \"x\"").contains("must not be empty"));
         assert!(bad("id = \"a b\"\nname = \"x\"").contains("invalid language id"));

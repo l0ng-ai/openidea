@@ -1,4 +1,4 @@
-//! The contribution index (docs/plugin_plan.md 4.5): validated UI
+//! The contribution index: validated UI
 //! declarations of installed packages, kept on disk so start-up does not
 //! validate them again (sanitising thousands of icon SVGs, say).
 //!

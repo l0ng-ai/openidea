@@ -1,4 +1,4 @@
-//! Plugin distribution (docs/plugin_plan.md 4.7): the package file, its
+//! Plugin distribution: the package file, its
 //! signature, and the static marketplace index.
 //!
 //! - **Package** (`<id>-<version>.oiplugin`): a zip of the manifest, the files

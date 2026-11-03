@@ -1,5 +1,4 @@
-//! `cargo bench -p ide-host`: the plugin runtime budgets of
-//! docs/plugin_plan.md 4.5, checked by `pnpm perf:rust` against
+//! `cargo bench -p ide-host`: the plugin runtime budgets, checked by `pnpm perf:rust` against
 //! `perf/budgets.json` › rust (`plugins/…`).
 //!
 //! - `load_50`: start-up load of 50 installed plugins (20 with code, 10

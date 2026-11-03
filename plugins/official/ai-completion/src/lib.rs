@@ -118,7 +118,7 @@ impl Providers for AiCompletion {
 }
 
 impl Plugin for AiCompletion {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
         let msg = match id {
             "use-local" => {
                 storage::set("endpoint", LOCAL)?;
@@ -145,7 +145,7 @@ impl Plugin for AiCompletion {
                 storage::set("enabled", if enabled { "true" } else { "false" })?;
                 (if enabled { "AI Completion is on." } else { "AI Completion is off." }).into()
             }
-            _ => return Err(format!("unknown command {id}")),
+            _ => return Err(Error::NotFound(format!("command {id}"))),
         };
         host::notify(NotificationLevel::Info, "AI Completion", &msg);
         Ok(Some(msg))

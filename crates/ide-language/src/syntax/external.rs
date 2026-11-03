@@ -1,5 +1,5 @@
 //! Syntax from outside this crate for languages without a built-in grammar: a
-//! plugin's `syntax-provider` (docs/plugin_p0.md 4.1). Providers return flat
+//! plugin's `syntax-provider`. Providers return flat
 //! results in UTF-8 byte offsets; they are validated and converted here into
 //! the same [`OutlineItem`], [`FoldRange`] and highlight data the grammars
 //! produce, so the editor can't tell the difference. Results are memoized per

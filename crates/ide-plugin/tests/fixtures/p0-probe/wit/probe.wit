@@ -1,4 +1,4 @@
-/// P0 probe (docs/plugin_p0.md): optional exports, async calls and
+/// Runtime probe: optional exports, async calls and
 /// cancellation, and a WASI p2 task model built on `wasi:io/poll`.
 /// Test fixture only; not part of the plugin API.
 package openidea:probe@0.1.0;

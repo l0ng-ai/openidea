@@ -338,19 +338,10 @@ fn check(dir: &Path) -> Result<(), String> {
         if let Some(wasm) = &manifest.wasm {
             let engine = PluginEngine::new()?;
             let component = engine.compile(&dir.join(wasm))?;
-            let foreign: Vec<String> = engine
-                .imports(&component)
-                .into_iter()
-                .filter(|i| !(i.starts_with("openidea:plugin/") || i.starts_with("wasi:")))
-                .collect();
-            if !foreign.is_empty() {
-                return Err(format!(
-                    "the component imports interfaces the IDE does not provide: {}",
-                    foreign.join(", ")
-                ));
-            }
+            let built_for = engine.check_component(&component)?;
             let size = std::fs::metadata(dir.join(wasm)).map(|m| m.len()).unwrap_or(0);
-            println!("  code: {} ({})", wasm.display(), human_size(size));
+            let api = built_for.map(|v| format!(", plugin API {}.{}", v.major, v.minor)).unwrap_or_default();
+            println!("  code: {} ({}{api})", wasm.display(), human_size(size));
         } else {
             println!("  code: none (contributions only)");
         }

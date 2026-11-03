@@ -1,5 +1,5 @@
 /**
- * The install / permission dialog (docs/plugin_plan.md 4.2, 4.6): every
+ * The install / permission dialog: every
  * capability with its risk; optional ones can be refused; high-risk ones are
  * called out as running code on this machine.
  */

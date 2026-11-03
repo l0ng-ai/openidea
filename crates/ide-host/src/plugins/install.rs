@@ -1,5 +1,5 @@
 //! Copying a package into the plugins directory without ever leaving the
-//! plugin missing (docs/plugin_plan.md 4.7). Installed plugins are versioned:
+//! plugin missing. Installed plugins are versioned:
 //! `<plugins>/<id>/<version>/` plus an `active` pointer file (and `previous`,
 //! the version to roll back to). A new version is written to a staging
 //! directory, renamed into place, and only then made active by replacing the

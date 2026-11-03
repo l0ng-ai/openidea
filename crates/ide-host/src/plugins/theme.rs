@@ -96,11 +96,9 @@ impl ThemesPoint {
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct Decl {
-    path: Option<PathBuf>,
+    path: PathBuf,
     #[serde(default)]
     editor_scheme: Option<PathBuf>,
-    /// The theme JSON inline (runtime `register-theme`).
-    definition: Option<String>,
 }
 
 impl ExtensionPoint for ThemesPoint {
@@ -114,15 +112,9 @@ impl ExtensionPoint for ThemesPoint {
 
     fn prepare(&self, pkg: &Package, decl: toml::Value) -> Result<Prepared, String> {
         let decl: Decl = decode(POINT_ID, decl)?;
-        let mut files = Vec::new();
-        let mut theme = match (&decl.path, &decl.definition) {
-            (Some(path), None) => {
-                files.push(path.clone());
-                ThemeDef::parse(&pkg.read_text(path)?).map_err(|e| format!("{}: {e}", path.display()))?
-            }
-            (None, Some(def)) => ThemeDef::parse(def)?,
-            _ => return Err("give either `path` or `definition`".into()),
-        };
+        let path = &decl.path;
+        let mut theme = ThemeDef::parse(&pkg.read_text(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut files = vec![path.clone()];
         if let Some(scheme) = &decl.editor_scheme {
             files.push(scheme.clone());
             theme.merge_editor_scheme(&pkg.read_text(scheme)?).map_err(|e| format!("{}: {e}", scheme.display()))?;

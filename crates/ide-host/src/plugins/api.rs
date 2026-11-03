@@ -1,9 +1,9 @@
 //! [`HostApi`] for one plugin's code: what its imports reach in the IDE.
 //! Capabilities were checked by the runtime before any of this runs.
 
-use super::{COMMANDS, MAX_COMMANDS, PluginEvent, PluginEventSink};
+use super::{PluginEvent, PluginEventSink};
 use ide_core::{CancellationToken, TextEdit};
-use ide_extension::{ExtensionRegistry, Package};
+use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
     EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel, ProcessOutput, RepositoryStatus,
@@ -143,7 +143,6 @@ struct TaskEntry {
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
-    pub registry: Arc<ExtensionRegistry>,
     pub workspace: RwLock<Option<Arc<dyn PluginWorkspace>>>,
     /// `<plugins>/.data`: one directory per plugin id.
     pub data_dir: PathBuf,
@@ -163,7 +162,6 @@ pub(super) struct Shared {
 impl Shared {
     pub fn new(
         sink: Arc<dyn PluginEventSink>,
-        registry: Arc<ExtensionRegistry>,
         data_dir: PathBuf,
         pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
         ui: Arc<ide_extension::UiStore>,
@@ -171,7 +169,6 @@ impl Shared {
         Arc::new(Self {
             ui,
             sink,
-            registry,
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
@@ -318,18 +315,6 @@ impl HostApi for PluginApi {
         self.shared
             .sink
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
-    }
-
-    fn contribute(&self, point: &str, decl: toml::Value) -> Result<bool, String> {
-        if point == COMMANDS {
-            let key = decl.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-            if self.shared.registry.count(self.id(), COMMANDS) >= MAX_COMMANDS
-                && !self.shared.registry.has_key(self.id(), COMMANDS, key)
-            {
-                return Err(format!("too many commands (max {MAX_COMMANDS})"));
-            }
-        }
-        self.shared.registry.contribute(&self.pkg, point, decl)
     }
 
     fn projects(&self) -> Vec<PathBuf> {
@@ -754,13 +739,7 @@ mod tests {
         )
         .unwrap();
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
-        let shared = Shared::new(
-            sink,
-            Arc::new(ExtensionRegistry::new()),
-            dir.join(".data"),
-            pins,
-            ide_extension::UiStore::new(),
-        );
+        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new());
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
     }
 

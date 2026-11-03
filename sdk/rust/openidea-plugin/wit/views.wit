@@ -1,6 +1,6 @@
 package openidea:plugin@1.0.0;
 
-/// Declarative views (docs/plugin_plan.md 4.2, L2): tool windows declared
+/// Declarative views: tool windows declared
 /// under `[[contributes.views]]` and custom editors under
 /// `[[contributes.customEditors]]`. The plugin describes what to show; the
 /// IDE renders it with its own components (theme, keyboard, accessibility)

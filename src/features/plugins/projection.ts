@@ -1,6 +1,6 @@
 /**
  * Projection of plugin UI contributions onto the workbench's own `register*`
- * functions (docs/plugin_plan.md 4.1).
+ * functions.
  *
  * The backend validated every declaration completely (Rust extension points);
  * a projection maps one onto an existing registration and returns its

@@ -1,5 +1,4 @@
-//! Plugin languages of a remote project (docs/plugin_plan.md 3, placement
-//! rules): `Workspace` contributions take effect where the project is, so the
+//! Plugin languages of a remote project: `Workspace` contributions take effect where the project is, so the
 //! desktop pushes its plugins' language definitions to `openidea-server`
 //! (`plugin_sync_languages`) together with the `process:` programs the user
 //! granted. The server resolves each granted program on its own `PATH`, pins

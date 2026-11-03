@@ -9,10 +9,10 @@ use openidea_plugin::{Error, Invocation, Plugin, Range, TextEdit, TextEditor, re
 pub struct StringTools;
 
 impl Plugin for StringTools {
-    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
-        let transform = transform(id).ok_or_else(|| format!("unknown command {id}"))?;
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        let transform = transform(id).ok_or_else(|| Error::NotFound(format!("command {id}")))?;
         let editor = ctx.editor().ok_or("String Tools works on the focused editor")?;
-        apply(&editor, transform, lines_command(id)).map_err(|e| e.to_string())?;
+        apply(&editor, transform, lines_command(id))?;
         Ok(None)
     }
 }
@@ -270,7 +270,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
         let mut n = 0u32;
         for (i, b) in chunk.iter().enumerate() {
-            let v = B64.iter().position(|x| x == b).or_else(|| match b {
+            let v = B64.iter().position(|x| x == b).or(match b {
                 b'-' => Some(62),
                 b'_' => Some(63),
                 _ => None,
@@ -454,7 +454,7 @@ mod tests {
         let host = MockHost::install().with_capabilities(&["editor.read"]);
         host.open_editor("/p/a.txt", "text", "abc", &[(0, 0, 0, 3)]);
         let err = StringTools.run_command("upper-case", &host.invocation(), None).unwrap_err();
-        assert!(err.contains("editor.write"), "{err}");
+        assert_eq!(err, Error::Denied("editor.write".into()));
         assert_eq!(host.editor_text(), "abc");
     }
 }

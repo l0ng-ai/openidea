@@ -1,5 +1,4 @@
-//! The plugin system's kernel, independent of the Wasm runtime
-//! (`docs/plugin_plan.md` 3–4):
+//! The plugin system's kernel, independent of the Wasm runtime:
 //!
 //! - [`Manifest`]: `plugin.toml` (0.2 format; 0.1 still parses);
 //! - [`Capability`]: what a plugin may do, with its [`Risk`] level;
@@ -32,6 +31,6 @@ pub use manifest::{
     engine_compatible, validate_item_id, validate_plugin_id, validate_point_id,
 };
 pub use point::{Commit, Disposable, ExtensionPoint, MAX_PACKAGE_FILE, Package, Placement, Prepared, decode};
-pub use registry::{ContributionInfo, ExtensionRegistry, PreparedSet, Scope};
+pub use registry::{ContributionInfo, ExtensionRegistry, PreparedSet};
 pub use ui::{UiContribution, UiDecl, UiPoint, UiStore, to_json};
 pub use when::validate_when;

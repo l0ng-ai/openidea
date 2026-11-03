@@ -1,4 +1,4 @@
-//! The plugin host (`docs/plugin_plan.md` 3): assembles the extension
+//! The plugin host: assembles the extension
 //! registry (`ide-extension`), the grant ledger and the Wasm runtime
 //! (`ide-plugin`). It runs where the project is — in the desktop app for local
 //! projects, in `openidea-server` for remote ones; the desktop shell only adapts
@@ -32,7 +32,7 @@ pub mod views;
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
 pub use market::{INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin};
-pub use points::{COMMANDS, CommandDecl, MAX_COMMANDS, register_builtin_points};
+pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub(crate) use providers::editor_providers as editor_providers_for;
 pub use providers::{ProviderKind, set_editor_providers};
 pub use theme::{ThemeDef, ThemeKind};
@@ -42,7 +42,7 @@ use ide_core::{IdeError, IdeResult, LanguageId};
 use ide_extension::ledger::{self, BinaryGrant, Decision, Ledger, Request, Subject};
 use ide_extension::{
     ActivationEvent, Capability, CapabilityInfo, ContributionIndex, ExtensionRegistry, MANIFEST_FILE, Manifest,
-    Package, Scope, UiContribution, UiStore,
+    Package, UiContribution, UiStore,
 };
 use ide_language::plugin_point::PluginLanguages;
 use ide_language::{LanguageConfig, ProgramPin};
@@ -192,8 +192,6 @@ struct Batches {
     pending: u32,
     /// Kinds of the batch being handled right now.
     running: Option<BTreeSet<EventKind>>,
-    /// A finished batch changed contributions: the next flush announces it.
-    changed: bool,
 }
 
 impl LoadedPlugin {
@@ -352,8 +350,7 @@ impl PluginHost {
         languages.set_process_policy(Arc::new(move |plugin, cap| {
             policy_pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
         }));
-        let shared =
-            api::Shared::new(sink.clone(), registry.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone());
+        let shared = api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone());
         let market = RwLock::new(Self::load_market_index(&plugins_dir));
         let host = Self {
             market,
@@ -997,7 +994,7 @@ impl PluginHost {
         self.declared_view(id, view)?;
         let view = view.to_owned();
         self.code_call(id, invocation, "handling the view's event", move |rt, inv| {
-            rt.view_event(&view, event.clone(), inv).map(|fx| ((), fx))
+            rt.view_event(&view, event.clone(), inv)
         })
     }
 
@@ -1016,7 +1013,7 @@ impl PluginHost {
         id: &str,
         invocation: Invocation,
         what: &str,
-        f: impl Fn(&mut Runtime, Invocation) -> Result<(R, ide_plugin::CallEffects), CallError> + Clone + Send + 'static,
+        f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> IdeResult<R> {
         let plugin = self.get(id)?;
         let client = invocation.client.clone();
@@ -1061,16 +1058,17 @@ impl PluginHost {
             let result = actor.call(None, move |rt| call(rt, inv));
             if !matches!(result, Err(ActorError::Stopped | ActorError::SoftTimeout | ActorError::Cancelled)) {
                 let crashed = matches!(result, Err(ActorError::Call(CallError::Trap(_))));
-                self.record_call(&plugin, started.elapsed(), result.is_ok(), !crashed);
+                // Cancelling or a missing grant is not the plugin failing.
+                let ok = match &result {
+                    Ok(_) => true,
+                    Err(ActorError::Call(CallError::Guest(e))) => !e.is_failure(),
+                    Err(_) => false,
+                };
+                self.record_call(&plugin, started.elapsed(), ok, !crashed);
             }
             match result {
-                Ok((value, fx)) => {
-                    if fx.contributions_changed {
-                        self.changed();
-                    }
-                    return Ok(value);
-                }
-                Err(ActorError::Call(CallError::Guest(e))) => return Err(IdeError::internal(e)),
+                Ok(value) => return Ok(value),
+                Err(ActorError::Call(CallError::Guest(e))) => return Err(e.into()),
                 Err(ActorError::Call(CallError::Trap(e))) => {
                     self.reap(&plugin, &actor, client.as_deref());
                     return Err(IdeError::internal(format!("plugin {id:?} {e}")));
@@ -1274,10 +1272,9 @@ impl PluginHost {
         for ((id, client), events) in due {
             changed |= self.deliver(&id, client, events);
         }
-        // Batches that finished since: contributions they changed, crashes.
+        // Batches that crashed since.
         let plugins: Vec<_> = self.plugins.read().values().cloned().collect();
         for p in plugins {
-            changed |= std::mem::take(&mut p.batches.lock().changed);
             let dead = p.runtime.lock().clone().filter(|a| !a.is_alive());
             if let Some(actor) = dead {
                 self.reap(&p, &actor, None);
@@ -1354,7 +1351,6 @@ impl PluginHost {
                 let mut batches = finish.lock();
                 batches.pending = batches.pending.saturating_sub(1);
                 batches.running = None;
-                batches.changed |= result.is_ok_and(|fx| fx.contributions_changed);
             },
         );
         activated
@@ -1590,7 +1586,9 @@ impl PluginHost {
                 )));
             }
             // Precompiled on the way: the installed copy has the same bytes.
-            self.engine.compile_cached(&src.join(wasm), &self.component_cache()).map_err(IdeError::invalid)?;
+            let component =
+                self.engine.compile_cached(&src.join(wasm), &self.component_cache()).map_err(IdeError::invalid)?;
+            self.engine.check_component(&component).map_err(IdeError::invalid)?;
         }
         Ok((pkg, set))
     }
@@ -1689,7 +1687,7 @@ impl PluginHost {
                 return;
             }
         };
-        if let Err(e) = self.registry.commit(set, Scope::Static) {
+        if let Err(e) = self.registry.commit(set) {
             return self.set_failed(plugin, e);
         }
         {

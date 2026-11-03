@@ -196,7 +196,7 @@ impl Providers for Checkstyle {
 }
 
 impl Plugin for Checkstyle {
-    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
             "check" => {
                 let editor = ctx.editor().ok_or("no file is open")?;
@@ -207,7 +207,7 @@ impl Plugin for Checkstyle {
                 storage::set("config", if id == "use-sun" { SUN } else { GOOGLE })?;
                 Ok(None)
             }
-            _ => Err(format!("unknown command {id}")),
+            _ => Err(Error::NotFound(format!("command {id}"))),
         }
     }
 

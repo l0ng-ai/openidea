@@ -1,4 +1,4 @@
-//! P0 experiments (docs/plugin_p0.md), kept as regression tests: they pin the
+//! Runtime experiments, kept as regression tests: they pin the
 //! wasmtime behaviour the plugin runtime is designed around.
 //!
 //! Components: `tests/fixtures/p0-probe/dist/{min,full}.wasm`, rebuilt with

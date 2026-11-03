@@ -31,7 +31,7 @@ use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
-/// The API version of the world above.
+/// The API version of the world above, `major.minor` of [`host_api`].
 pub const API_VERSION: &str = "1.0";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
@@ -41,16 +41,12 @@ const STDERR_CAPACITY: usize = 256 << 10;
 pub const CANCELLED: &str = "was cancelled";
 
 /// What plugin code may ask of the IDE, per plugin. Implemented by the host,
-/// which routes notifications and status items to windows, edits to open
-/// documents and runtime registrations through the extension registry.
-/// Capabilities are already checked when these are called.
+/// which routes notifications and status items to windows and edits to open
+/// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
     fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
-    /// Registers a declaration with an extension point at runtime
-    /// (`commands`, `themes`, `languages`). Returns whether anything changed.
-    fn contribute(&self, point: &str, decl: toml::Value) -> Result<bool, String>;
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
     /// Unsaved text of an open editor's file.
@@ -151,8 +147,7 @@ impl PluginEngine {
         Component::new(&self.engine, bytes).map_err(|e| format!("not a valid plugin component: {e}"))
     }
 
-    /// Compiles `wasm`, or loads it precompiled from `cache_dir` (docs/plugin_plan.md
-    /// 4.5): the key is the module's hash plus the engine's compatibility hash,
+    /// Compiles `wasm`, or loads it precompiled from `cache_dir`: the key is the module's hash plus the engine's compatibility hash,
     /// so an engine upgrade simply misses and recompiles. Cache failures only
     /// cost the compilation.
     pub fn compile_cached(&self, wasm: &Path, cache_dir: &Path) -> Result<Component, String> {
@@ -200,10 +195,75 @@ impl PluginEngine {
         &self.engine
     }
 
-    /// Interfaces a component imports (`openidea:plugin/host@0.1.0`, `wasi:…`).
-    pub fn imports(&self, component: &Component) -> Vec<String> {
-        component.component_type().imports(&self.engine).map(|(name, _)| name.to_owned()).collect()
+    /// Rejects a component this host can't run, with a message that says what
+    /// to do: one importing interfaces outside the plugin API and WASI, or one
+    /// built for a plugin API this host doesn't implement (another major, or a
+    /// newer minor). Returns the API version the component was built for
+    /// (`None`: it uses no plugin interface).
+    pub fn check_component(&self, component: &Component) -> Result<Option<semver::Version>, String> {
+        let ty = component.component_type();
+        let imports: Vec<String> = ty.imports(&self.engine).map(|(name, _)| name.to_owned()).collect();
+        let foreign: Vec<&str> = imports
+            .iter()
+            .map(String::as_str)
+            .filter(|i| !(i.starts_with(PLUGIN_PACKAGE_PREFIX) || i.starts_with("wasi:")))
+            .collect();
+        if !foreign.is_empty() {
+            return Err(format!("the component imports interfaces the IDE does not provide: {}", foreign.join(", ")));
+        }
+        let exports = ty.exports(&self.engine).map(|(name, _)| name.to_owned()).collect::<Vec<_>>();
+        let built_for = component_api(imports.iter().chain(&exports).map(String::as_str))?;
+        if let Some(v) = &built_for {
+            check_api(v, &host_api())?;
+        }
+        Ok(built_for)
     }
+}
+
+/// Interface names of the plugin API start with this (`openidea:plugin/log@1.0.0`).
+const PLUGIN_PACKAGE_PREFIX: &str = "openidea:plugin/";
+
+/// The plugin API this host implements: the version of the `wit/` package.
+pub fn host_api() -> semver::Version {
+    semver::Version::parse(ide_extension::ENGINE_VERSION).expect("ENGINE_VERSION is a semantic version")
+}
+
+/// The plugin API version a component was built for: the highest version on
+/// its `openidea:plugin/*` imports and exports. An unversioned plugin
+/// interface is an error, since nothing could tell compatible hosts apart.
+pub fn component_api<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<Option<semver::Version>, String> {
+    let mut highest: Option<semver::Version> = None;
+    for name in names {
+        let Some(rest) = name.strip_prefix(PLUGIN_PACKAGE_PREFIX) else { continue };
+        let Some((_, version)) = rest.split_once('@') else {
+            return Err(format!("the component uses the unversioned plugin interface {name:?}"));
+        };
+        let version =
+            semver::Version::parse(version).map_err(|e| format!("bad plugin API version in {name:?}: {e}"))?;
+        if highest.as_ref().is_none_or(|h| version > *h) {
+            highest = Some(version);
+        }
+    }
+    Ok(highest)
+}
+
+/// A component built for `built_for` runs on a host implementing `host` when
+/// the major versions match and the host's minor is at least as new (1.x only
+/// adds; patches change no interface; 0.x makes no promise, so there every
+/// minor is its own API).
+pub fn check_api(built_for: &semver::Version, host: &semver::Version) -> Result<(), String> {
+    let (b, h) = ((built_for.major, built_for.minor), (host.major, host.minor));
+    let same_line = b.0 == h.0 && (h.0 > 0 || b.1 == h.1);
+    if same_line && b <= h {
+        return Ok(());
+    }
+    let newer = b > h;
+    let (b, h) = (format!("{}.{}", b.0, b.1), format!("{}.{}", h.0, h.1));
+    Err(if newer {
+        format!("the component was built for plugin API {b}, newer than this IDE's {h}: update OpenIDEA")
+    } else {
+        format!("the component was built for plugin API {b}; this IDE runs {h}: rebuild it with the {h} SDK")
+    })
 }
 
 fn store_precompiled(component: &Component, file: &Path) {
@@ -215,13 +275,6 @@ fn store_precompiled(component: &Component, file: &Path) {
     if std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, file)).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-}
-
-/// Side effects of one call the host acts on afterwards.
-#[derive(Default, Debug)]
-pub struct CallEffects {
-    /// A runtime registration changed contributions.
-    pub contributions_changed: bool,
 }
 
 /// Interrupts the running call: the epoch callback traps on `flag`, host
@@ -275,7 +328,6 @@ pub struct StoreData {
     pub(crate) granted: Vec<Capability>,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
-    pub(crate) effects: CallEffects,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
@@ -312,8 +364,74 @@ pub(crate) fn clip(mut s: String, max: usize) -> String {
 /// trapped / ran out of budget (the instance is poisoned and must be dropped).
 #[derive(Debug)]
 pub enum CallError {
-    Guest(String),
+    /// The plugin returned an error.
+    Guest(GuestError),
+    /// The instance trapped (panic, fuel, memory, timeout) and is unusable.
     Trap(String),
+}
+
+impl CallError {
+    fn missing_export(interface: &str) -> Self {
+        Self::Guest(GuestError::Failed(format!("the plugin does not export {interface}")))
+    }
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Guest(e) => e.fmt(f),
+            Self::Trap(e) => f.write_str(e),
+        }
+    }
+}
+
+/// An error a plugin returned (the API's `error` variant).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GuestError {
+    /// A capability it needs is not granted.
+    Denied(String),
+    Stale,
+    NotFound(String),
+    Invalid(String),
+    /// The user cancelled, or the plugin is being stopped.
+    Cancelled,
+    Failed(String),
+}
+
+impl GuestError {
+    /// Whether this is the plugin failing, as opposed to an outcome the
+    /// user or the host caused (cancelling, a missing grant, bad input).
+    pub fn is_failure(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+}
+
+impl std::fmt::Display for GuestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied(c) => write!(f, "permission {c} was not granted"),
+            Self::Stale => f.write_str("the document changed meanwhile"),
+            Self::NotFound(m) => write!(f, "not found: {m}"),
+            Self::Invalid(m) => write!(f, "invalid: {m}"),
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
+impl From<GuestError> for ide_core::IdeError {
+    fn from(e: GuestError) -> Self {
+        use ide_core::error::ErrorKind;
+        let kind = match &e {
+            GuestError::Denied(_) => ErrorKind::PermissionDenied,
+            GuestError::Stale => ErrorKind::OutOfSync,
+            GuestError::NotFound(_) => ErrorKind::NotFound,
+            GuestError::Invalid(_) => ErrorKind::InvalidInput,
+            GuestError::Cancelled => ErrorKind::Cancelled,
+            GuestError::Failed(_) => ErrorKind::Internal,
+        };
+        ide_core::IdeError::new(kind, e.to_string())
+    }
 }
 
 pub struct RuntimeSetup {
@@ -397,7 +515,6 @@ impl Runtime {
             granted: setup.granted,
             host: setup.host,
             invocation: Invocation::default(),
-            effects: CallEffects::default(),
             open_tasks: Vec::new(),
             last_report: None,
         };
@@ -512,10 +629,9 @@ impl Runtime {
         f: impl FnOnce(&wit_syntax::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
     ) -> Result<R, CallError> {
         if self.exports.syntax.is_none() {
-            return Err(CallError::Guest("the plugin does not provide syntax".into()));
+            return Err(CallError::missing_export("syntax-provider"));
         }
         self.call(Invocation::default(), timeout, |exports, store| f(exports.syntax.as_ref().expect("checked"), store))
-            .map(|(r, _)| r)
     }
 
     /// The component exports `providers`.
@@ -529,10 +645,9 @@ impl Runtime {
         f: impl FnOnce(&wit_prov::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
     ) -> Result<R, CallError> {
         if self.exports.providers.is_none() {
-            return Err(CallError::Guest("the plugin does not export providers".into()));
+            return Err(CallError::missing_export("providers"));
         }
         self.call(Invocation::default(), timeout, |e, store| f(e.providers.as_ref().expect("checked"), store))
-            .map(|(r, _)| r)
     }
 
     pub fn provide_completion(
@@ -550,7 +665,7 @@ impl Runtime {
             .map(|i| CompletionItem {
                 label: clip(i.label, MAX_TITLE),
                 detail: i.detail.map(|d| clip(d, MAX_TITLE)),
-                kind: i.kind.map(|k| completion_kind(k).to_owned()),
+                kind: i.kind.map(|k| clip(k, 32)),
                 insert_text: clip(i.insert_text, 64 << 10),
                 replace: i.replace.map(range_from_wit),
                 sort_text: i.sort_text.map(|t| clip(t, 64)),
@@ -634,7 +749,7 @@ impl Runtime {
             .collect())
     }
 
-    pub fn activate(&mut self) -> Result<CallEffects, CallError> {
+    pub fn activate(&mut self) -> Result<(), CallError> {
         let data = self.store.data();
         let ctx = wit_types::Context {
             plugin_id: data.plugin_id.clone(),
@@ -645,7 +760,7 @@ impl Runtime {
         self.call(Invocation::default(), self.limits.timeout, |e, store| {
             e.plugin.openidea_plugin_lifecycle().call_activate(store, &ctx)
         })
-        .and_then(|(r, fx)| r.map(|()| fx).map_err(CallError::Guest))
+        .and_then(|r| r.map_err(|e| CallError::Guest(e.into())))
     }
 
     pub fn run_command(
@@ -653,8 +768,8 @@ impl Runtime {
         id: &str,
         arg: Option<&str>,
         invocation: Invocation,
-    ) -> Result<(Option<String>, CallEffects), CallError> {
-        let (result, fx) = self.call(invocation, self.limits.timeout, |e, store| {
+    ) -> Result<Option<String>, CallError> {
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
@@ -665,7 +780,7 @@ impl Runtime {
             store.data_mut().drop_invocation(ctx);
             r
         })?;
-        result.map(|v| (v, fx)).map_err(CallError::Guest)
+        result.map_err(|e| CallError::Guest(e.into()))
     }
 
     /// The component exports `view-provider`.
@@ -679,12 +794,12 @@ impl Runtime {
         view: &str,
         viewport: Option<Viewport>,
         invocation: Invocation,
-    ) -> Result<(View, CallEffects), CallError> {
+    ) -> Result<View, CallError> {
         if self.exports.views.is_none() {
-            return Err(CallError::Guest("the plugin does not export view-provider".into()));
+            return Err(CallError::missing_export("view-provider"));
         }
         let viewport = viewport.map(|v| wit_vt::Viewport { first_row: v.first_row, rows: v.rows.min(MAX_TABLE_ROWS) });
-        let (result, fx) = self.call(invocation, self.limits.timeout, |e, store| {
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             let views = e.views.as_ref().expect("checked");
             let r =
@@ -693,38 +808,29 @@ impl Runtime {
             r
         })?;
         match result {
-            Ok(v) => Ok((view_from_wit(v), fx)),
-            Err(e) => Err(CallError::Guest(crate::wit_host::error_text(e))),
+            Ok(v) => Ok(view_from_wit(v)),
+            Err(e) => Err(CallError::Guest(e.into())),
         }
     }
 
     /// A user action in a view or custom editor.
-    pub fn view_event(
-        &mut self,
-        view: &str,
-        event: ViewEvent,
-        invocation: Invocation,
-    ) -> Result<CallEffects, CallError> {
+    pub fn view_event(&mut self, view: &str, event: ViewEvent, invocation: Invocation) -> Result<(), CallError> {
         if self.exports.views.is_none() {
-            return Err(CallError::Guest("the plugin does not export view-provider".into()));
+            return Err(CallError::missing_export("view-provider"));
         }
         let event = event_to_wit_view(event);
-        let (result, fx) = self.call(invocation, self.limits.timeout, |e, store| {
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
             r
         })?;
-        result.map(|()| fx).map_err(|e| CallError::Guest(crate::wit_host::error_text(e)))
+        result.map_err(|e| CallError::Guest(e.into()))
     }
 
     /// Delivers a batch of events (from the window in `invocation`).
-    pub fn handle_events(
-        &mut self,
-        events: Vec<WorkbenchEvent>,
-        invocation: Invocation,
-    ) -> Result<CallEffects, CallError> {
+    pub fn handle_events(&mut self, events: Vec<WorkbenchEvent>, invocation: Invocation) -> Result<(), CallError> {
         let events: Vec<wit_events::Event> = events.into_iter().take(MAX_BATCH).map(event_to_wit).collect();
         self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
@@ -736,16 +842,13 @@ impl Runtime {
             store.data_mut().drop_invocation(ctx);
             r
         })
-        .map(|((), fx)| fx)
     }
 
     /// Best effort; errors are logged.
     pub fn deactivate(&mut self) {
-        if let Err(CallError::Trap(e) | CallError::Guest(e)) =
-            self.call(Invocation::default(), self.limits.timeout, |e, store| {
-                e.plugin.openidea_plugin_lifecycle().call_deactivate(store)
-            })
-        {
+        if let Err(e) = self.call(Invocation::default(), self.limits.timeout, |e, store| {
+            e.plugin.openidea_plugin_lifecycle().call_deactivate(store)
+        }) {
             tracing::warn!(plugin = %self.store.data().plugin_id, "deactivate failed: {e}");
         }
     }
@@ -761,7 +864,7 @@ impl Runtime {
         invocation: Invocation,
         timeout: Duration,
         f: impl FnOnce(&Exports, &mut Store<StoreData>) -> wasmtime::Result<R>,
-    ) -> Result<(R, CallEffects), CallError> {
+    ) -> Result<R, CallError> {
         arm(&mut self.store, &self.limits, timeout).map_err(|e| CallError::Trap(e.to_string()))?;
         self.store.data_mut().invocation = invocation;
         let result = f(&self.exports, &mut self.store);
@@ -771,13 +874,12 @@ impl Runtime {
         for id in std::mem::take(&mut data.open_tasks) {
             data.host.task_end(id);
         }
-        let effects = std::mem::take(&mut data.effects);
         let stderr = data.drain_stderr();
         if !stderr.trim().is_empty() {
             tracing::info!(plugin = %data.plugin_id, "stderr: {}", stderr.trim_end());
         }
         match result {
-            Ok(r) => Ok((r, effects)),
+            Ok(r) => Ok(r),
             Err(e) => {
                 let mut msg = describe_trap(&e, &self.limits);
                 // Typically the panic message: "panicked at src/lib.rs:1:2:\nboom".
@@ -821,28 +923,6 @@ fn doc_to_wit(d: &ProviderDocument) -> wit_prov::Document {
         language: d.language.clone(),
         version: d.version,
         text: d.text.clone(),
-    }
-}
-
-fn completion_kind(k: wit_prov::CompletionKind) -> &'static str {
-    use wit_prov::CompletionKind as K;
-    match k {
-        K::Text => "text",
-        K::Method => "method",
-        K::Function => "function",
-        K::Constructor => "constructor",
-        K::Field => "field",
-        K::Variable => "variable",
-        K::Class => "class",
-        K::Interface => "interface",
-        K::Module => "module",
-        K::Property => "property",
-        K::Keyword => "keyword",
-        K::Snippet => "snippet",
-        K::Value => "value",
-        K::Constant => "constant",
-        K::File => "file",
-        K::Reference => "reference",
     }
 }
 

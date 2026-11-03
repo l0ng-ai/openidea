@@ -8,3 +8,35 @@ activation = ["on-command:*"]
 
 [capabilities]
 required = ["project.read"]
+
+[[contributes.commands]]
+id = "echo"
+title = "echo"
+
+[[contributes.commands]]
+id = "panic"
+title = "panic"
+
+[[contributes.commands]]
+id = "spin"
+title = "spin"
+
+[[contributes.commands]]
+id = "alloc"
+title = "alloc"
+
+[[contributes.commands]]
+id = "read"
+title = "read"
+
+[[contributes.commands]]
+id = "root"
+title = "root"
+
+[[contributes.commands]]
+id = "insert"
+title = "insert"
+
+[[contributes.commands]]
+id = "cancel"
+title = "cancel"

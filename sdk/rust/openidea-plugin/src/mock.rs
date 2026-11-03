@@ -19,13 +19,6 @@ pub struct Notification {
     pub body: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Command {
-    pub id: String,
-    pub title: String,
-    pub category: Option<String>,
-}
-
 /// A task the plugin began.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MockTask {
@@ -64,9 +57,6 @@ struct State {
     files: BTreeMap<String, String>,
     editor: Option<Editor>,
     notifications: Vec<Notification>,
-    commands: Vec<Command>,
-    languages: Vec<String>,
-    themes: Vec<String>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     storage: BTreeMap<String, String>,
@@ -172,18 +162,6 @@ impl MockHost {
 
     pub fn notifications(&self) -> Vec<Notification> {
         self.state.borrow().notifications.clone()
-    }
-
-    pub fn commands(&self) -> Vec<Command> {
-        self.state.borrow().commands.clone()
-    }
-
-    pub fn languages(&self) -> Vec<String> {
-        self.state.borrow().languages.clone()
-    }
-
-    pub fn themes(&self) -> Vec<String> {
-        self.state.borrow().themes.clone()
     }
 
     pub fn logs(&self) -> Vec<(LogLevel, String)> {
@@ -365,37 +343,6 @@ pub mod current {
 
     pub fn remove_status_item(id: &str) {
         with(|s| s.status.remove(id));
-    }
-
-    pub fn register_command(id: &str, title: &str, category: Option<&str>) -> Result<(), Error> {
-        with(|s| {
-            let cmd = Command { id: id.into(), title: title.into(), category: category.map(str::to_owned) };
-            match s.commands.iter_mut().find(|c| c.id == id) {
-                Some(existing) => *existing = cmd,
-                None => s.commands.push(cmd),
-            }
-            Ok(())
-        })
-    }
-
-    pub fn register_language(definition: &str) -> Result<(), Error> {
-        with(|s| {
-            if !definition.contains("id") {
-                return Err(Error::Invalid("invalid language definition".into()));
-            }
-            s.languages.push(definition.into());
-            Ok(())
-        })
-    }
-
-    pub fn register_theme(definition: &str) -> Result<(), Error> {
-        with(|s| {
-            if !definition.trim_start().starts_with('{') {
-                return Err(Error::Invalid("invalid theme JSON".into()));
-            }
-            s.themes.push(definition.into());
-            Ok(())
-        })
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -714,10 +661,7 @@ mod tests {
         assert_eq!(project.read_file("src/a.txt").unwrap(), "hello");
         assert!(matches!(project.read_file("../etc/passwd"), Err(Error::Invalid(_))));
         host::notify(NotificationLevel::Info, "t", "b");
-        host::register_command("c", "C", None).unwrap();
-        host::register_command("c", "C2", Some("Cat")).unwrap();
         assert_eq!(mock.notifications()[0].title, "t");
-        assert_eq!(mock.commands(), [Command { id: "c".into(), title: "C2".into(), category: Some("Cat".into()) }]);
         host::storage::set("k", "v").unwrap();
         assert_eq!(host::storage::get("k").unwrap().as_deref(), Some("v"));
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);

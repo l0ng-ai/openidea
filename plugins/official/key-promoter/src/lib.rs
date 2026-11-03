@@ -4,7 +4,7 @@
 //! instance being reclaimed while you work.
 
 use openidea_plugin::host::{self, storage};
-use openidea_plugin::{ActionSource, Event, Invocation, NotificationLevel, Plugin, register_plugin};
+use openidea_plugin::{ActionSource, Error, Event, Invocation, NotificationLevel, Plugin, register_plugin};
 
 /// Tips for one action are shown on these counts, then every `REPEAT_EVERY`.
 const FIRST_TIPS: [u32; 3] = [1, 3, 10];
@@ -22,7 +22,7 @@ fn get_u32(key: &str) -> u32 {
 }
 
 impl Plugin for KeyPromoter {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
             "statistics" => {
                 let mut rows: Vec<(u32, String)> = storage::keys(COUNT)?
@@ -56,7 +56,7 @@ impl Plugin for KeyPromoter {
                 storage::set(&format!("{SUPPRESSED}{action}"), "1")?;
                 Ok(Some(format!("No more tips for {action}.")))
             }
-            _ => Err(format!("unknown command {id}")),
+            _ => Err(Error::NotFound(format!("command {id}"))),
         }
     }
 
@@ -78,7 +78,7 @@ impl Plugin for KeyPromoter {
                 return; // storage denied or full: nothing to count with
             }
             let _ = storage::set(&format!("{TITLE}{}", a.action), &a.title);
-            if FIRST_TIPS.contains(&n) || n % REPEAT_EVERY == 0 {
+            if FIRST_TIPS.contains(&n) || n.is_multiple_of(REPEAT_EVERY) {
                 tip = Some((a.clone(), shortcut.clone(), n));
             }
         }
@@ -156,6 +156,9 @@ mod tests {
         let host = MockHost::install().with_capabilities(&["events.input"]);
         KeyPromoter.handle_events(&[action("x", ActionSource::Menu, Some("F2"))], &host.invocation());
         assert!(host.notifications().is_empty());
-        assert!(KeyPromoter.run_command("statistics", &host.invocation(), None).unwrap_err().contains("storage"));
+        assert_eq!(
+            KeyPromoter.run_command("statistics", &host.invocation(), None).unwrap_err(),
+            Error::Denied("storage".into())
+        );
     }
 }

@@ -33,7 +33,6 @@ pub(crate) mod syntax_bindings {
         with: {
             "openidea:plugin/types": super::bindings::openidea::plugin::types,
             "openidea:plugin/log": super::bindings::openidea::plugin::log,
-            "openidea:plugin/contributions": super::bindings::openidea::plugin::contributions,
             "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
             "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
@@ -61,7 +60,6 @@ pub(crate) mod providers_bindings {
         with: {
             "openidea:plugin/types": super::bindings::openidea::plugin::types,
             "openidea:plugin/log": super::bindings::openidea::plugin::log,
-            "openidea:plugin/contributions": super::bindings::openidea::plugin::contributions,
             "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
             "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
@@ -89,7 +87,6 @@ pub(crate) mod views_bindings {
         with: {
             "openidea:plugin/types": super::bindings::openidea::plugin::types,
             "openidea:plugin/log": super::bindings::openidea::plugin::log,
-            "openidea:plugin/contributions": super::bindings::openidea::plugin::contributions,
             "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
             "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
@@ -109,8 +106,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    contributions, diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks,
-    types as wit, ui, vcs, views, workspace,
+    diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks, types as wit, ui,
+    vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -150,14 +147,17 @@ pub(crate) fn to_wit(e: HostError) -> wit::Error {
 }
 
 /// A guest's `error` as text (`denied: net:example.com`, `stale`, …).
-pub(crate) fn error_text(e: wit::Error) -> String {
-    match e {
-        wit::Error::Denied(c) => format!("permission {c} was not granted"),
-        wit::Error::Stale => "the document changed meanwhile".into(),
-        wit::Error::NotFound(m) => format!("not found: {m}"),
-        wit::Error::Invalid(m) => format!("invalid: {m}"),
-        wit::Error::Cancelled => "cancelled".into(),
-        wit::Error::Failed(m) => m,
+impl From<wit::Error> for crate::runtime::GuestError {
+    fn from(e: wit::Error) -> Self {
+        let clip = |m: String| clip(m, crate::runtime::MAX_TITLE * 16);
+        match e {
+            wit::Error::Denied(c) => Self::Denied(clip(c)),
+            wit::Error::Stale => Self::Stale,
+            wit::Error::NotFound(m) => Self::NotFound(clip(m)),
+            wit::Error::Invalid(m) => Self::Invalid(clip(m)),
+            wit::Error::Cancelled => Self::Cancelled,
+            wit::Error::Failed(m) => Self::Failed(clip(m)),
+        }
     }
 }
 
@@ -172,10 +172,6 @@ fn range_to_wit(r: &ide_core::Range) -> wit::Range {
     }
 }
 
-fn table(entries: &[(&str, toml::Value)]) -> toml::Value {
-    toml::Value::Table(entries.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect())
-}
-
 impl StoreData {
     fn require(&self, cap: Capability) -> Result<(), wit::Error> {
         if self.granted.iter().any(|g| g.covers(&cap)) { Ok(()) } else { Err(wit::Error::Denied(cap.to_string())) }
@@ -183,12 +179,6 @@ impl StoreData {
 
     fn client(&self) -> Option<&str> {
         self.invocation.client.as_deref()
-    }
-
-    fn contribute(&mut self, point: &str, decl: toml::Value) -> Result<(), wit::Error> {
-        let changed = self.host.contribute(point, decl).map_err(wit::Error::Invalid)?;
-        self.effects.contributions_changed |= changed;
-        Ok(())
     }
 
     fn push<T: Send + 'static>(&mut self, value: T) -> wasmtime::Result<Resource<T>> {
@@ -218,25 +208,6 @@ impl log::Host for StoreData {
             wit::LogLevel::Error => tracing::error!(plugin = %id, "{message}"),
         }
         Ok(())
-    }
-}
-
-impl contributions::Host for StoreData {
-    fn register_command(&mut self, id: String, title: String, category: Option<String>) -> Fallible<()> {
-        let max = crate::runtime::MAX_TITLE;
-        let mut entries = vec![("id", toml::Value::String(id)), ("title", toml::Value::String(clip(title, max)))];
-        if let Some(c) = category.map(|c| clip(c, max)).filter(|c| !c.is_empty()) {
-            entries.push(("category", toml::Value::String(c)));
-        }
-        Ok(self.contribute("commands", table(&entries)))
-    }
-
-    fn register_language(&mut self, definition: String) -> Fallible<()> {
-        Ok(self.contribute("languages", table(&[("definition", toml::Value::String(definition))])))
-    }
-
-    fn register_theme(&mut self, definition: String) -> Fallible<()> {
-        Ok(self.contribute("themes", table(&[("definition", toml::Value::String(definition))])))
     }
 }
 

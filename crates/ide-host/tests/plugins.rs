@@ -6,6 +6,7 @@
 //! `plugins/build.sh crates/ide-plugin/tests/fixtures/misbehave` after
 //! changing their source or `wit/`.
 
+use ide_core::error::ErrorKind;
 use ide_host::plugins::*;
 use ide_plugin::{EditorContext, HostError, Invocation, Limits};
 use parking_lot::Mutex;
@@ -292,14 +293,17 @@ fn hello_plugin_commands() {
 
     // Without an editor it fails cleanly; guest errors don't disable the plugin.
     assert!(f.run("hello", "word-count", None).unwrap_err().contains("no file is open"));
-    assert!(f.run_in(&editor, "hello", "nope").unwrap_err().contains("unknown command"));
+    let inv = Invocation { editor: Some(editor.clone()), ..f.inv() };
+    let err = f.host.run_command("hello", "nope", None, inv).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
     assert_eq!(f.status("hello"), PluginStatus::Active);
     let stats = f.host.info_of("hello").unwrap().stats;
     assert_eq!(stats.activations, 1);
-    assert!(stats.calls >= 4 && stats.errors >= 2, "{stats:?}");
+    // "no file is open" is the plugin failing; an unknown command is not.
+    assert!(stats.calls >= 4 && stats.errors == 1, "{stats:?}");
 }
 
-/// Plan P5: edits name the document version they were computed for.
+/// Edits name the document version they were computed for.
 #[test]
 fn edits_are_refused_when_the_document_changed() {
     use ide_plugin::{HostApi, Runtime, RuntimeSetup};
@@ -344,20 +348,26 @@ fn read_file_is_confined_to_the_project() {
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
 }
 
-/// Plan P5: a missing capability is an error the plugin can handle, not a trap.
+/// A missing capability is an error the plugin can handle, not a trap.
 #[test]
 fn ungranted_capabilities_are_denied_not_trapped() {
     let f = fixture(Limits::default());
     f.install(&misbehave_pkg());
     let editor = f.workspace.open("src/notes.txt", &[]);
-    let err = f.run_in(&editor, "misbehave", "insert").unwrap_err();
-    assert!(err.contains("Denied") && err.contains("editor.write"), "{err}");
+    let inv = Invocation { editor: Some(editor.clone()), ..f.inv() };
+    let err = f.host.run_command("misbehave", "insert", None, inv).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("editor.write"), "{err:?}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes), (PluginStatus::Active, 0), "the instance lives on");
+    assert_eq!(info.stats.errors, 0, "a missing grant is not the plugin failing");
+    let err = f.host.run_command("misbehave", "cancel", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled, "{err:?}");
+    assert_eq!(f.host.info_of("misbehave").unwrap().stats.errors, 0, "nor is the user cancelling");
     assert_eq!(f.workspace.text("src/notes.txt"), "one two three\nfour five\n");
 }
 
-/// Plan P4: a trap drops the instance, which restarts on next use after a
+/// A trap drops the instance, which restarts on next use after a
 /// backoff that doubles; only consecutive crashes stop the plugin.
 #[test]
 fn crashes_restart_with_backoff_until_the_circuit_opens() {
@@ -457,7 +467,7 @@ fn memory_limit_traps() {
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.crashes, 1);
 }
 
-/// Plan P4: a running call can be interrupted from another thread; the
+/// A running call can be interrupted from another thread; the
 /// instance is rebuilt on next use without counting as a crash.
 #[test]
 fn running_calls_can_be_cancelled() {
@@ -493,7 +503,7 @@ fn misbehave_with_language(dir: &Path) -> PathBuf {
     pkg
 }
 
-/// Plan P4: edit-path calls stop waiting at the soft deadline (the result is
+/// Edit-path calls stop waiting at the soft deadline (the result is
 /// dropped, the instance kept) and are interrupted at the hard one.
 #[test]
 fn edit_path_calls_have_soft_and_hard_deadlines() {
@@ -537,7 +547,56 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     assert_eq!(host.info_of("misbehave").unwrap().stats.activations, 2);
 }
 
-/// Plan P4: idle instances are reclaimed; the plugin activates again on its
+/// Editor providers of several plugins are asked at the same time: the wait
+/// is the slowest plugin's, not the sum, so each has the whole budget.
+#[test]
+fn providers_of_several_plugins_run_concurrently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let limits = Limits {
+        edit_soft: Duration::from_millis(300),
+        edit_hard: Duration::from_secs(2),
+        fuel: u64::MAX,
+        ..Limits::default()
+    };
+    let host =
+        Arc::new(PluginHost::new(tmp.path().join("plugins"), Arc::new(|_: Option<&str>, _| {}), limits).unwrap());
+    host.load_all();
+    host.startup_finished();
+    for id in ["slow-a", "slow-b"] {
+        let pkg = tmp.path().join(id);
+        copy_dir(&misbehave_pkg(), &pkg);
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                "id = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\nengines.openidea = \"^1.0\"\n\
+                 wasm = \"dist/plugin.wasm\"\nactivation = [\"on-language:text\"]\n\
+                 [[contributes.providers]]\nkinds = [\"completion\"]\nlanguages = [\"text\"]\n"
+            ),
+        )
+        .unwrap();
+        host.install_from_dir(&pkg, &Consent::all()).unwrap();
+    }
+    let doc = |text: &str| ide_plugin::ProviderDocument {
+        path: "/p/a.txt".into(),
+        language: "text".into(),
+        version: 1,
+        text: text.into(),
+    };
+    let at = ide_core::Pos::new(0, 0);
+    // Activation is not what is measured.
+    assert_eq!(host.provide_completion(&doc("fast"), at, None).len(), 2);
+
+    let started = Instant::now();
+    let items = host.provide_completion(&doc("sleep:200"), at, None);
+    let elapsed = started.elapsed();
+    let mut from: Vec<&str> = items.iter().map(|(p, _)| p.as_str()).collect();
+    from.sort();
+    assert_eq!(from, ["slow-a", "slow-b"], "both within the budget");
+    assert!(elapsed < Duration::from_millis(350), "one after the other would take 400ms: {elapsed:?}");
+    assert_eq!(host.info_of("slow-b").unwrap().stats.slow_calls, 0);
+}
+
+/// Idle instances are reclaimed; the plugin activates again on its
 /// next use, and `on-schedule` activations don't keep it alive.
 #[test]
 fn idle_instances_are_reclaimed_and_schedules_reactivate() {
@@ -553,7 +612,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 9, "runtime contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 8, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -573,27 +632,6 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     std::thread::sleep(Duration::from_millis(150));
     f.host.tick();
     assert_eq!(f.status("hello"), PluginStatus::Inactive, "reclaimed again");
-}
-
-#[test]
-fn runtime_language_and_theme_registration() {
-    let f = fixture(Limits::default());
-    f.install(&misbehave_pkg());
-    let lang = "id = \"zz\"\nname = \"ZZ\"\nextensions = [\"zz\"]";
-    f.run("misbehave", "language", Some(lang)).unwrap();
-    assert!(f.run("misbehave", "language", Some("not toml [")).unwrap_err().contains("invalid language"));
-    assert_eq!(f.host.languages().iter().map(|l| l.id.to_string()).collect::<Vec<_>>(), ["zz"]);
-    assert_eq!(f.host.languages()[0].extensions, ["zz"]);
-
-    let theme = r##"{"id":"t1","name":"T1","kind":"light","tokens":{"--bg-app":"#fff"}}"##;
-    f.run("misbehave", "theme", Some(theme)).unwrap();
-    assert!(
-        f.run("misbehave", "theme", Some(r#"{"id":"t2","name":"x","kind":"dark","tokens":{"--a":"url(x)"}}"#)).is_err()
-    );
-    assert_eq!(f.theme_kinds("misbehave"), [("t1".to_owned(), ThemeKind::Light)]);
-    let active = f.host.set_theme(Some(("misbehave", "t1"))).unwrap().unwrap();
-    assert_eq!(active.theme.tokens["--bg-app"], "#fff");
-    assert!(f.host.set_theme(Some(("misbehave", "nope"))).is_err());
 }
 
 #[test]
@@ -953,7 +991,7 @@ fn replaced_binaries_are_refused() {
     assert!(err.message.contains("confirm"), "{}", err.message);
 }
 
-/// Plan P3: a declaration-only language plugin reaches detection and LSP of
+/// A declaration-only language plugin reaches detection and LSP of
 /// every project; its server starts only while `process:` is granted, from
 /// the approved file.
 #[cfg(unix)]
@@ -1005,7 +1043,7 @@ fn plugin_languages_join_the_registry_and_start_only_granted_servers() {
     assert_eq!(project.detect(Path::new("/p/a.toy"), None), LanguageId::plain_text());
 }
 
-/// Plan P3: a plugin provides the syntax of a language the IDE has no grammar
+/// A plugin provides the syntax of a language the IDE has no grammar
 /// for (the official Solidity plugin, built with the SDK), activated on first use.
 #[test]
 fn plugin_syntax_for_languages_without_a_grammar() {
@@ -1050,7 +1088,7 @@ fn plugin_syntax_for_languages_without_a_grammar() {
     ide_language::set_external_syntax(None);
 }
 
-/// Plan P3: plugins add run configurations to `ide-run`'s detection; the
+/// Plugins add run configurations to `ide-run`'s detection; the
 /// command runs only while granted, from the approved file.
 #[cfg(unix)]
 #[test]
@@ -1102,7 +1140,7 @@ fn run_detectors_offer_granted_commands_in_marked_projects() {
     assert!(detection.launch(config).unwrap_err().contains("no longer enabled"));
 }
 
-/// Plan P4: compiled components are cached across runs (keyed by module and
+/// Compiled components are cached across runs (keyed by module and
 /// engine), so a cold activation only deserializes.
 #[test]
 fn precompiled_components_make_cold_activation_cheap() {
@@ -1261,7 +1299,7 @@ fn official_material_icons_install() {
     );
 }
 
-/// Plan P1: an icon theme with thousands of SVGs (sanitising, package size, start-up).
+/// An icon theme with thousands of SVGs (sanitising, package size, start-up).
 #[test]
 fn thousands_of_icons_install_and_reload_within_budget() {
     const ICONS: usize = 3000;
@@ -1374,7 +1412,7 @@ fn official(name: &str) -> PathBuf {
     repo().join("plugins/official").join(name)
 }
 
-/// Plan P5, String Tools: 26 commands show before the code loads; one command
+/// String Tools: 26 commands show before the code loads; one command
 /// edits every selection as one versioned change.
 #[test]
 fn official_string_tools() {
@@ -1395,7 +1433,7 @@ fn official_string_tools() {
     assert_eq!(f.workspace.document(&editor.path).unwrap().0, before + 1, "both selections in one change");
 }
 
-/// Plan P5, Key Promoter: action events are batched; an idle plugin is
+/// Key Promoter: action events are batched; an idle plugin is
 /// woken once per batch, and its counts persist in storage.
 #[test]
 fn official_key_promoter() {
@@ -1456,7 +1494,7 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
-/// Plan P5 acceptance: Git Toolbox's scheduled fetch still runs after the
+/// Git Toolbox's scheduled fetch still runs after the
 /// instance was reclaimed while idle, and the status bar follows.
 #[test]
 fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
@@ -1574,7 +1612,7 @@ fn http_server(
     (port, seen)
 }
 
-/// Plan P6, AI Completion: typing on cancels the previous request (the fetch
+/// AI Completion: typing on cancels the previous request (the fetch
 /// returns `cancelled`, the instance stays); the plugin's own work stays
 /// within the edit-path budget.
 #[test]
@@ -1629,7 +1667,7 @@ fn official_ai_completion_cancels_superseded_requests() {
     assert!(times[9] < Duration::from_millis(500), "{times:?}");
 }
 
-/// Plan P6, Checkstyle: a save runs the approved `checkstyle` and publishes
+/// Checkstyle: a save runs the approved `checkstyle` and publishes
 /// diagnostics; quick fixes come through the code-action provider; saving
 /// again cancels the check still running.
 #[cfg(unix)]
@@ -1695,7 +1733,7 @@ fn official_checkstyle_checks_on_save() {
     assert_eq!(info.stats.crashes, 0);
 }
 
-/// Plan P6, MyBatis Navigator: interface ↔ XML through the providers, on a
+/// MyBatis Navigator: interface ↔ XML through the providers, on a
 /// real project tree (`find-files`), within the edit-path budget.
 #[test]
 fn official_mybatis_navigates_between_interface_and_xml() {
@@ -1749,7 +1787,7 @@ fn official_mybatis_navigates_between_interface_and_xml() {
     assert_eq!(f.host.info_of("openidea.mybatis").unwrap().stats.slow_calls, 0);
 }
 
-/// Plan P7, CSV Editor: a custom editor renders the document as a table (the
+/// CSV Editor: a custom editor renders the document as a table (the
 /// rows asked for), and edits the document itself — versioned, so a text edit
 /// made meanwhile is never overwritten.
 #[test]
@@ -1784,7 +1822,7 @@ fn official_csv_editor_edits_the_shared_document() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
 }
 
-/// Plan P7 acceptance: the sample plugin makes a tool window with a tree view.
+/// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.
 #[test]
@@ -1826,7 +1864,7 @@ fn sample_plugin_tool_window_with_a_tree() {
     }
 }
 
-/// Plan P7, Kubernetes: the cluster tree through `kubectl` (pinned), logs in
+/// Kubernetes: the cluster tree through `kubectl` (pinned), logs in
 /// the terminal of the invoking window.
 #[test]
 fn official_kubernetes_browses_the_cluster_and_opens_logs() {

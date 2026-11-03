@@ -14,3 +14,7 @@ path = "src/lib.rs"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wit-bindgen = "0.63"
+
+[dev-dependencies]
+# Reads the WIT in tests/wit_coverage.rs (the version wit-bindgen already uses).
+wit-parser = "0.262"

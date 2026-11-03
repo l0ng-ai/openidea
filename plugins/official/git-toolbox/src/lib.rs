@@ -130,7 +130,7 @@ fn fetch(projects: &[Project]) -> Result<usize, Error> {
 }
 
 impl Plugin for GitToolbox {
-    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         let project = current(ctx).ok_or("no project is open")?;
         match id {
             "fetch" => {
@@ -142,12 +142,12 @@ impl Plugin for GitToolbox {
                 show(&project)?;
                 Ok(None)
             }
-            _ => Err(format!("unknown command {id}")),
+            _ => Err(Error::NotFound(format!("command {id}"))),
         }
     }
 
     fn handle_events(&mut self, events: &[Event], ctx: &Invocation) {
-        if events.iter().any(|e| *e == Event::Scheduled) {
+        if events.contains(&Event::Scheduled) {
             let projects = host::projects().unwrap_or_default();
             if let Err(e) = fetch(&projects)
                 && e != Error::Cancelled
@@ -225,7 +225,7 @@ mod tests {
         GitToolbox.handle_events(&[Event::Scheduled], &host.invocation());
         assert_eq!(host.notifications()[0].body, "no network");
         let err = GitToolbox.run_command("fetch", &host.invocation(), None).unwrap_err();
-        assert_eq!(err, "no network");
+        assert_eq!(err, Error::Failed("no network".into()));
         host.fail_fetch(Some(Error::Cancelled));
         GitToolbox.handle_events(&[Event::Scheduled], &host.invocation());
         assert_eq!(host.notifications().len(), 1, "a cancelled fetch is not an error to report");

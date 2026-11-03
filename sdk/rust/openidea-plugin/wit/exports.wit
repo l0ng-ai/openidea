@@ -1,20 +1,25 @@
 package openidea:plugin@1.0.0;
 
 interface lifecycle {
-    use types.{context};
+    use types.{context, error};
 
-    /// Called once after the instance is created. Register runtime
-    /// contributions and subscriptions here; restore state from `storage`.
-    activate: func(ctx: context) -> result<_, string>;
+    /// Called once after the instance is created: subscribe to events and
+    /// restore state from `storage`. Contributions (commands, languages,
+    /// themes, …) are declared in plugin.toml, not registered here.
+    /// An error fails the activation (shown on the plugin's page).
+    activate: func(ctx: context) -> result<_, error>;
     /// Called before the instance is dropped (disable, uninstall, idle reclaim).
     deactivate: func();
 }
 
 interface commands {
+    use types.{error};
     use invocation.{invocation};
 
     /// Runs one of the plugin's commands. Returns an optional message.
-    run: func(id: string, ctx: borrow<invocation>, arg: option<string>) -> result<option<string>, string>;
+    /// `cancelled` (the user gave up) and `denied` (a capability is missing)
+    /// are not counted as the plugin failing.
+    run: func(id: string, ctx: borrow<invocation>, arg: option<string>) -> result<option<string>, error>;
 }
 
 interface event-handler {

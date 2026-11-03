@@ -216,7 +216,7 @@ pub fn to_json(v: &toml::Value) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::manifest::Manifest;
-    use crate::registry::{ExtensionRegistry, Scope};
+    use crate::registry::ExtensionRegistry;
 
     #[test]
     fn ui_point_projects_into_the_store() {
@@ -233,7 +233,7 @@ mod tests {
                    [[contributes.badges]]\ntext = \"hi\"";
         let pkg = Package::new(Manifest::parse(src).unwrap(), PathBuf::from("/x"));
         let rev = store.revision();
-        reg.commit(reg.prepare(&pkg).unwrap(), Scope::Static).unwrap();
+        reg.commit(reg.prepare(&pkg).unwrap()).unwrap();
         assert!(store.revision() > rev);
         let items = store.items("badges", Some("p"));
         assert_eq!(items.len(), 1);

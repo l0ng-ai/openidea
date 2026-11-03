@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub const COMMANDS: &str = "commands";
-/// Most commands one plugin may register.
-pub const MAX_COMMANDS: usize = 256;
 const MAX_TITLE: usize = 256;
 
 /// `[[contributes.commands]]`: an action `plugin.<plugin-id>.<id>` in Search

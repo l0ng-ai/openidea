@@ -1,5 +1,5 @@
 /**
- * Renders a plugin's declarative view (docs/plugin_plan.md 4.2, L2): the
+ * Renders a plugin's declarative view: the
  * plugin returns data (`View`), this draws it with the workbench's own
  * components and sends the user's actions back (`ViewEvent`). Used by plugin
  * tool windows and custom editors. A refresh comes from the plugin

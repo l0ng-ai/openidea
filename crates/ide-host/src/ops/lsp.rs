@@ -79,28 +79,40 @@ async fn plugin_call<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
 /// Items from plugins carry no server (resolve and commands don't apply).
 const PLUGIN_SERVER: ServerId = ServerId(0);
 
+/// A plugin's `completion-item.kind` (wit/providers.wit lists them).
+fn plugin_completion_kind(kind: &str) -> Option<CompletionKind> {
+    Some(match kind {
+        "text" => CompletionKind::Text,
+        "method" => CompletionKind::Method,
+        "function" => CompletionKind::Function,
+        "constructor" => CompletionKind::Constructor,
+        "field" => CompletionKind::Field,
+        "variable" => CompletionKind::Variable,
+        "class" => CompletionKind::Class,
+        "interface" => CompletionKind::Interface,
+        "module" => CompletionKind::Module,
+        "property" => CompletionKind::Property,
+        "unit" => CompletionKind::Unit,
+        "value" => CompletionKind::Value,
+        "enum" => CompletionKind::Enum,
+        "keyword" => CompletionKind::Keyword,
+        "snippet" => CompletionKind::Snippet,
+        "color" => CompletionKind::Color,
+        "file" => CompletionKind::File,
+        "reference" => CompletionKind::Reference,
+        "folder" => CompletionKind::Folder,
+        "enum-member" => CompletionKind::EnumMember,
+        "constant" => CompletionKind::Constant,
+        "struct" => CompletionKind::Struct,
+        "event" => CompletionKind::Event,
+        "operator" => CompletionKind::Operator,
+        "type-parameter" => CompletionKind::TypeParameter,
+        _ => return None,
+    })
+}
+
 fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
-    let kind = item.kind.as_deref().and_then(|k| {
-        Some(match k {
-            "text" => CompletionKind::Text,
-            "method" => CompletionKind::Method,
-            "function" => CompletionKind::Function,
-            "constructor" => CompletionKind::Constructor,
-            "field" => CompletionKind::Field,
-            "variable" => CompletionKind::Variable,
-            "class" => CompletionKind::Class,
-            "interface" => CompletionKind::Interface,
-            "module" => CompletionKind::Module,
-            "property" => CompletionKind::Property,
-            "keyword" => CompletionKind::Keyword,
-            "snippet" => CompletionKind::Snippet,
-            "value" => CompletionKind::Value,
-            "constant" => CompletionKind::Constant,
-            "file" => CompletionKind::File,
-            "reference" => CompletionKind::Reference,
-            _ => return None,
-        })
-    });
+    let kind = item.kind.as_deref().and_then(plugin_completion_kind);
     CompletionItem {
         label: item.label,
         label_detail: None,
@@ -714,4 +726,29 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_execute_command", |c| async move {
         lsp_execute_command(&c.host, &c.window, c.arg("doc")?, c.arg("command")?).await
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_completion_kind_the_plugin_api_documents_is_understood() {
+        let wit = include_str!("../../../../wit/providers.wit");
+        let doc: String = wit
+            .lines()
+            .map(|l| l.trim().trim_start_matches("///").trim())
+            .skip_while(|l| !l.starts_with("Icon and sort group:"))
+            .take_while(|l| !l.starts_with("kind:"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let list = doc.strip_prefix("Icon and sort group:").unwrap().split(". Unknown").next().unwrap();
+        let list = list.replace(" or ", ", ");
+        let kinds: Vec<&str> = list.split(',').map(str::trim).filter(|k| !k.is_empty()).collect();
+        assert_eq!(kinds.len(), 25, "{kinds:?}");
+        for k in kinds {
+            assert!(plugin_completion_kind(k).is_some(), "{k:?}");
+        }
+        assert_eq!(plugin_completion_kind("nonsense"), None);
+    }
 }

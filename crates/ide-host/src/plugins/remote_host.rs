@@ -1,4 +1,4 @@
-//! Code plugins of remote projects (docs/plugin_plan.md 3, placement rule 1):
+//! Code plugins of remote projects:
 //! Wasm runs where the project is, so `openidea-server` hosts the desktop's
 //! code plugins and they read, search, run processes and publish diagnostics
 //! on the remote machine.

@@ -30,22 +30,6 @@ pub fn position(text: &str, at: usize) -> Position {
     Position { line, character }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trips_utf16_columns() {
-        let text = "ab\n😀x\nlast";
-        for at in [0, 1, 2, 3, 7, 8, 9, text.len()] {
-            assert_eq!(offset(text, position(text, at)), Some(at), "{at}");
-        }
-        assert_eq!(position(text, 7), Position::new(1, 2));
-        assert_eq!(offset(text, Position::new(0, 99)), Some(2), "clamped to the line");
-        assert_eq!(offset(text, Position::new(5, 0)), None);
-    }
-}
-
 /// The text of a JSON string literal's contents (`\"`, `\\`, `\n`, `\uXXXX`).
 pub fn unescape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -79,4 +63,20 @@ pub fn unescape_json(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_utf16_columns() {
+        let text = "ab\n😀x\nlast";
+        for at in [0, 1, 2, 3, 7, 8, 9, text.len()] {
+            assert_eq!(offset(text, position(text, at)), Some(at), "{at}");
+        }
+        assert_eq!(position(text, 7), Position::new(1, 2));
+        assert_eq!(offset(text, Position::new(0, 99)), Some(2), "clamped to the line");
+        assert_eq!(offset(text, Position::new(5, 0)), None);
+    }
 }

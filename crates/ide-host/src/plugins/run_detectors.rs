@@ -1,6 +1,5 @@
 //! The `runDetectors` extension point: run configurations a plugin offers in
-//! projects that contain a marker file (docs/plugin_plan.md P3, "open
-//! `ide-run` detection").
+//! projects that contain a marker file.
 //!
 //! ```toml
 //! [[contributes.runDetectors]]

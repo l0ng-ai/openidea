@@ -1,4 +1,4 @@
-//! Declarative UI contributions (docs/plugin_plan.md P7): menus, key
+//! Declarative UI contributions: menus, key
 //! bindings, status bar items and settings (L0, shown before any code runs),
 //! and the views and custom editors whose content plugin code renders (L2).
 //! Everything is validated here; the client only projects the JSON.

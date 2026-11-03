@@ -99,6 +99,7 @@ name = "openidea-plugin"
 version = "0.1.0"
 dependencies = [
  "wit-bindgen",
+ "wit-parser",
 ]
 
 [[package]]

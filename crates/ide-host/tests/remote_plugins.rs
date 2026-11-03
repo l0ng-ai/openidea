@@ -1,5 +1,5 @@
-//! Plan P6 remote acceptance: code plugins of a remote project run on the
-//! server (docs/plugin_plan.md 3). The desktop's plugin host syncs its live
+//! Code plugins of a remote project run on the
+//! server. The desktop's plugin host syncs its live
 //! code plugins over the remote protocol; Checkstyle then checks the file on
 //! the server's disk when it is saved, and secrets come from the desktop.
 
@@ -207,7 +207,7 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     plugins.host().shutdown();
 }
 
-/// Plan P7 remote acceptance: CSV Editor and Kubernetes in a remote project.
+/// CSV Editor and Kubernetes in a remote project.
 /// The table edits the document on the server; the cluster is the server's
 /// `kubectl`'s, and its log terminal opens in the remote window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

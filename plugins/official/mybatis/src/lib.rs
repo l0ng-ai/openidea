@@ -5,7 +5,7 @@
 
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, LineMarker, Providers};
 use openidea_plugin::text::{offset, position};
-use openidea_plugin::{Invocation, Location, Plugin, Position, Project, Range, host, register_plugin};
+use openidea_plugin::{Error, Invocation, Location, Plugin, Position, Project, Range, host, register_plugin};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -292,8 +292,8 @@ impl Providers for Navigator {
 }
 
 impl Plugin for Navigator {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
-        Err(format!("unknown command {id}"))
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(format!("command {id}")))
     }
 }
 

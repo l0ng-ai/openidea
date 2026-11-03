@@ -30,8 +30,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 ```
 
 The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.0.0`, world
-`plugin`); the design and roadmap are in
-[`docs/plugin_plan.md`](../docs/plugin_plan.md).
+`plugin`).
 
 ## 1. Quick start
 
@@ -207,13 +206,13 @@ panic = "abort"
 `src/lib.rs`:
 
 ```rust
-use openidea_plugin::{Invocation, NotificationLevel, Plugin, host, register_plugin};
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, host, register_plugin};
 
 #[derive(Default)]
 struct WordTools;
 
 impl Plugin for WordTools {
-    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         let editor = ctx.editor().ok_or("no file is open")?;
         match id {
             "count" => {
@@ -226,7 +225,7 @@ impl Plugin for WordTools {
                 editor.transform_selections(|s| s.to_uppercase())?;
                 Ok(None)
             }
-            _ => Err(format!("unknown command {id}")),
+            _ => Err(Error::NotFound(format!("command {id}"))),
         }
     }
 }
@@ -261,31 +260,30 @@ then run `openidea-plugin check`.
 
 ### The API
 
-| Rust SDK                                                                 | WIT                              | Notes                                                                                                                                                          |
-| ------------------------------------------------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Plugin::run_command(id, ctx, arg)`                                      | export `commands.run`            | `ctx` is the window: `ctx.project()`, `ctx.editor()`. `Err(msg)` shows _"<title> failed: msg"_; the plugin keeps running.                                      |
-| `Plugin::handle_events(events, ctx)`                                     | export `event-handler.handle`    | Batches of subscribed events, oldest first, per window.                                                                                                        |
-| `Plugin::activate` / `deactivate`                                        | export `lifecycle`               | Per instance: after a crash or idle reclaim a new one is activated.                                                                                            |
-| `TextEditor::document()` → `{version, text}`                             | `editor.text-editor.document`    | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                 |
-| `TextEditor::apply_edits(version, edits)`                                | `editor.text-editor.apply-edits` | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                |
-| `Project::root()`, `read_file(path)`                                     | `workspace.project`              | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win.                                 |
-| `host::projects()`                                                       | `workspace.projects`             | Every open project (for scheduled work without a window).                                                                                                      |
-| `Project::vcs_status()`, `vcs_fetch()`                                   | `vcs`                            | Fetch runs git, so only in trusted projects; call it inside a task.                                                                                            |
-| `host::subscribe(kind)`                                                  | `events.subscribe`               | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                            |
-| `host::begin_task(title, cancellable)` → `Task`                          | `tasks.begin`                    | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                         |
-| `host::storage::{get, set, delete, keys}`                                | `storage`                        | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                       |
-| `host::set_status_item(id, item)`, `remove_status_item`                  | `ui`                             | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                           |
-| `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                |
-| `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                        |
-| `host::register_command`, `register_language`, `register_theme`          | `contributions`                  | Run-time contributions; declaring them in `plugin.toml` is better (they show before the code loads). Max 256 commands.                                         |
-| `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                         |
-| `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                              |
-| `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                 |
-| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out. |
-| `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                   |
-| `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                       |
-| `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.            |
-| `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                |
+| Rust SDK                                                                 | WIT                              | Notes                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Plugin::run_command(id, ctx, arg)`                                      | export `commands.run`            | `ctx` is the window: `ctx.project()`, `ctx.editor()`. An error shows _"<title> failed: …"_; the plugin keeps running. `"msg".into()` is `Error::Failed`; `Cancelled` and `Denied` don't count as the plugin failing. |
+| `Plugin::handle_events(events, ctx)`                                     | export `event-handler.handle`    | Batches of subscribed events, oldest first, per window.                                                                                                                                                              |
+| `Plugin::activate` / `deactivate`                                        | export `lifecycle`               | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                  |
+| `TextEditor::document()` → `{version, text}`                             | `editor.text-editor.document`    | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                       |
+| `TextEditor::apply_edits(version, edits)`                                | `editor.text-editor.apply-edits` | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                      |
+| `Project::root()`, `read_file(path)`                                     | `workspace.project`              | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win.                                                                                       |
+| `host::projects()`                                                       | `workspace.projects`             | Every open project (for scheduled work without a window).                                                                                                                                                            |
+| `Project::vcs_status()`, `vcs_fetch()`                                   | `vcs`                            | Fetch runs git, so only in trusted projects; call it inside a task.                                                                                                                                                  |
+| `host::subscribe(kind)`                                                  | `events.subscribe`               | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                                                                                  |
+| `host::begin_task(title, cancellable)` → `Task`                          | `tasks.begin`                    | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                               |
+| `host::storage::{get, set, delete, keys}`                                | `storage`                        | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                             |
+| `host::set_status_item(id, item)`, `remove_status_item`                  | `ui`                             | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                 |
+| `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
+| `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
+| `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
+| `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
+| `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
+| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |
+| `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
+| `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
+| `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
+| `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
 
 `run-command` receives an optional string argument: `executeAction("plugin.hello.insert-date", "arg")`
 from another feature, or nothing when run from Search Everywhere / a shortcut.
@@ -321,9 +319,17 @@ Then `register_plugin!(MyPlugin, providers)` and implement
 `inline_completion`, `code_actions`, `definition`, `line_markers`. Each gets
 the document (path, language, version, text). Results join the language
 servers' (completion lists, ⌥⏎ quick fixes, ⌘B, gutter icons; a code action
-carries edits for any files, applied as one change). Editor providers run
-under the edit-path budget: 50 ms, after which the result is dropped, and an
-interruption at 500 ms. Inline completion is exempt from the 50 ms (it may
+carries edits for any files, applied as one change). A completion item's
+`kind` (`CompletionKind` in the SDK, a string in the WIT) picks its icon.
+Editor providers run under the edit-path budget: 50 ms, after which the
+result is dropped, and an interruption at 500 ms. Every plugin providing a
+kind is asked at the same time, so each has the whole budget.
+
+Providers run in the plugin's one instance, with its commands, events and
+views: they see the same memory (Checkstyle answers quick fixes from the
+results of its last check) but also wait behind them. Keep commands and event
+handlers short where you can; a provider call queued behind a long one is
+dropped at 50 ms like a slow one. Inline completion is exempt from the 50 ms (it may
 need the network) but is cancelled as soon as the user types on: check
 `Task::is_cancelled` or just let the host interrupt the call.
 
@@ -627,12 +633,77 @@ and the publisher's key, then shows the install page.
 ## 9. Testing the host
 
 The host's integration tests (`crates/ide-host/tests/plugins.rs`) load the
-checked-in `hello` and test-fixture components. Rebuild them after changing the
-SDK or the WIT file:
+checked-in components of `hello`, the official plugins and the test fixtures.
+Rebuild them after changing a plugin, the SDK or the WIT files:
 
 ```sh
-cargo run -p ide-host --bin openidea-plugin -- build plugins/hello
-cargo run -p ide-host --bin openidea-plugin -- build plugins/official/solidity
-plugins/build.sh crates/ide-plugin/tests/fixtures/misbehave
+plugins/build.sh                         # all of them
+plugins/build.sh official/solidity       # one
+plugins/build.sh --check                 # what CI runs: nothing stale, everything builds
 cargo test -p ide-host --test plugins
 ```
+
+Next to each `dist/plugin.wasm`, `dist/plugin.wasm.sources` fingerprints the
+sources it was built from (the plugin, the SDK and `wit/`); builds are not
+byte-reproducible across machines, so `--check` compares fingerprints.
+
+The SDK carries a copy of `wit/` in `sdk/rust/openidea-plugin/wit`; keep them
+identical (a test in `crates/ide-plugin/tests/api_compat.rs` checks). Changing
+the API itself follows _Evolving the plugin API_ below.
+
+## 10. Evolving the plugin API
+
+Until the plugin system's first release the API may still change freely. From
+then on wasmtime decides what stays compatible: it resolves interface names
+by semver (a component importing `openidea:plugin/x@1.0.0` links against a
+host defining `@1.1.0`, and the host finds its exports the same way), but
+function types must match exactly — a record with another field count, or a
+variant or enum with another case count, doesn't link. So a released 1.x
+only grows:
+
+1. **Released types and signatures never change**, whichever way the data
+   flows: no new record fields, variant or enum cases, renames or parameters.
+   Extend with new types and new functions (or interfaces). `types.error` is
+   used everywhere and is no exception; new situations use `failed(string)`
+   or `invalid(string)`. Sets that keep growing (completion, token, symbol and
+   fold kinds, icons) are strings for this reason.
+2. **Host interfaces (imports) may gain functions and interfaces**: older
+   components don't import them.
+3. **Plugin interfaces (exports) never gain functions** once released: the
+   host would not find them in older components. New capabilities get new
+   interfaces (e.g. a `hover-provider`) in new optional worlds.
+4. **The host knows each component's API version** (the highest version of
+   its `openidea:plugin/*` imports and exports, `PluginEngine::check_component`).
+   Installing and `openidea-plugin check` refuse another major or a newer
+   minor with a message that says to update the IDE or rebuild with the SDK.
+5. **One version number**: the `wit/` package version, `ENGINE_VERSION` and
+   `API_VERSION` agree, and the SDK's `wit/` copy is identical to `wit/`.
+
+Checked automatically:
+
+- SDK `tests/api_frozen.rs`: `tests/api/<version>/` holds the WIT of each
+  released version; every interface, type, function and world import or
+  export in it must still exist unchanged in `wit/` (rules 1–3). Copy `wit/`
+  there when releasing; there is no snapshot before the first release.
+- `crates/ide-plugin/tests/api_compat.rs`: the versions agree, the SDK's copy
+  matches, the version check (rules 4, 5); a simulated next-minor host (every
+  import stubbed at the newer version, plus extra functions and an extra
+  interface) links every shipped component and finds its exports; another
+  major doesn't link; a host missing one function doesn't link.
+
+A new host function touches:
+
+| Where                                                     | Checked by                                     |
+| --------------------------------------------------------- | ---------------------------------------------- |
+| `wit/*.wit`, copied to `sdk/rust/openidea-plugin/wit`     | `api_compat.rs::the_sdk_carries_the_hosts_wit` |
+| `crates/ide-plugin/src/wit_host.rs`: binding, capability  | the compiler (bindgen's traits)                |
+| `crates/ide-plugin/src/runtime.rs`: `HostApi` method      | the compiler                                   |
+| `crates/ide-host/src/plugins/api.rs`: implementation      | the compiler (desktop and `openidea-server`)   |
+| SDK `src/host.rs`: the wasm and the mock `imp`            | the compiler (CI builds both targets)          |
+| SDK public wrapper                                        | SDK `tests/wit_coverage.rs`                    |
+| Capability: `ide-extension/src/capability.rs`, consent UI | review; a test that a missing grant is denied  |
+| The API table above                                       | review                                         |
+
+Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
+plus fmt, clippy (host and wasm) and the tests of the SDK, the official
+plugins and the fixtures.

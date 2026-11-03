@@ -9,14 +9,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Manifest contributions are `Static` (re-committed on every start); `Runtime`
-/// ones are registered by the plugin's code and withdrawn when it stops.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    Static,
-    Runtime,
-}
-
 /// A contribution as the plugin details page lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -28,9 +20,7 @@ pub struct ContributionInfo {
 struct Entry {
     point: &'static str,
     key: Option<String>,
-    decl: toml::Value,
     label: String,
-    scope: Scope,
     disposable: Disposable,
 }
 
@@ -43,7 +33,7 @@ pub struct PreparedSet {
     pub files: Vec<PathBuf>,
     /// Declarations for extension points this host does not know (skipped).
     pub warnings: Vec<String>,
-    items: Vec<(&'static str, toml::Value, Prepared)>,
+    items: Vec<(&'static str, Prepared)>,
 }
 
 impl PreparedSet {
@@ -122,7 +112,7 @@ impl ExtensionRegistry {
             };
             for (i, decl) in pkg.manifest.declarations(point_id).into_iter().enumerate() {
                 let prepared = point
-                    .prepare(pkg, decl.clone())
+                    .prepare(pkg, decl)
                     .map_err(|e| format!("contributes.{point_id}[{i}]: {}", strip_prefix(&e, point_id)))?;
                 for cap in &prepared.capabilities {
                     if !set.capabilities.contains(cap) {
@@ -134,7 +124,7 @@ impl ExtensionRegistry {
                         set.files.push(f.clone());
                     }
                 }
-                set.items.push((point.id(), decl, prepared));
+                set.items.push((point.id(), prepared));
             }
         }
         Ok(set)
@@ -142,12 +132,12 @@ impl ExtensionRegistry {
 
     /// Makes a prepared set take effect, all or nothing: if one commit fails,
     /// the ones before it are disposed in reverse order.
-    pub fn commit(&self, set: PreparedSet, scope: Scope) -> Result<(), String> {
+    pub fn commit(&self, set: PreparedSet) -> Result<(), String> {
         let mut committed: Vec<Entry> = Vec::with_capacity(set.items.len());
-        for (point, decl, prepared) in set.items {
+        for (point, prepared) in set.items {
             let Prepared { key, label, commit, .. } = prepared;
             match commit() {
-                Ok(disposable) => committed.push(Entry { point, key, decl, label, scope, disposable }),
+                Ok(disposable) => committed.push(Entry { point, key, label, disposable }),
                 Err(e) => {
                     tracing::error!(plugin = %set.plugin, "contributes.{point}: commit failed: {e}");
                     while let Some(entry) = committed.pop() {
@@ -177,52 +167,11 @@ impl ExtensionRegistry {
         Ok(())
     }
 
-    /// Registers one declaration at runtime (a plugin's `register-command`).
-    /// Returns `false` when an identical contribution with the same key exists.
-    pub fn contribute(&self, pkg: &Package, point_id: &str, decl: toml::Value) -> Result<bool, String> {
-        let point = self.point(point_id).ok_or_else(|| format!("unknown extension point {point_id:?}"))?;
-        let prepared = point.prepare(pkg, decl.clone())?;
-        if let Some(key) = &prepared.key {
-            let entries = self.entries.lock();
-            let same = entries.get(pkg.id()).is_some_and(|list| {
-                list.iter().any(|e| e.point == point.id() && e.key.as_ref() == Some(key) && e.decl == decl)
-            });
-            if same {
-                return Ok(false);
-            }
-        }
-        let set = PreparedSet {
-            plugin: pkg.id().to_owned(),
-            capabilities: prepared.capabilities.clone(),
-            files: Vec::new(),
-            warnings: Vec::new(),
-            items: vec![(point.id(), decl, prepared)],
-        };
-        self.commit(set, Scope::Runtime)?;
-        Ok(true)
-    }
-
     /// Withdraws everything `plugin` contributed, newest first.
     pub fn dispose_plugin(&self, plugin: &str) -> bool {
         let list = self.entries.lock().remove(plugin).unwrap_or_default();
         let any = !list.is_empty();
         for entry in list.into_iter().rev() {
-            entry.disposable.dispose();
-        }
-        any
-    }
-
-    /// Withdraws what `plugin`'s code registered, keeping its manifest contributions.
-    pub fn dispose_runtime(&self, plugin: &str) -> bool {
-        let removed: Vec<Entry> = {
-            let mut entries = self.entries.lock();
-            let Some(list) = entries.get_mut(plugin) else { return false };
-            let (runtime, keep): (Vec<Entry>, Vec<Entry>) = list.drain(..).partition(|e| e.scope == Scope::Runtime);
-            *list = keep;
-            runtime
-        };
-        let any = !removed.is_empty();
-        for entry in removed.into_iter().rev() {
             entry.disposable.dispose();
         }
         any
@@ -241,14 +190,6 @@ impl ExtensionRegistry {
     /// How many contributions `plugin` has at `point`.
     pub fn count(&self, plugin: &str, point: &str) -> usize {
         self.entries.lock().get(plugin).map_or(0, |list| list.iter().filter(|e| e.point == point).count())
-    }
-
-    /// Whether `plugin` has a contribution with `key` at `point`.
-    pub fn has_key(&self, plugin: &str, point: &str, key: &str) -> bool {
-        self.entries
-            .lock()
-            .get(plugin)
-            .is_some_and(|list| list.iter().any(|e| e.point == point && e.key.as_deref() == Some(key)))
     }
 
     /// Plugins with at least one contribution.
@@ -332,7 +273,7 @@ mod tests {
         assert_eq!(set.len(), 3);
         assert_eq!(set.files, [PathBuf::from("x.json")]);
         assert!(live.lock().is_empty(), "prepare has no side effects");
-        reg.commit(set, Scope::Static).unwrap();
+        reg.commit(set).unwrap();
         assert_eq!(*live.lock(), ["c", "a", "b"]);
         assert_eq!(reg.count("p", "things"), 2);
         assert_eq!(reg.contributions("p").len(), 3);
@@ -344,7 +285,7 @@ mod tests {
     fn a_failed_commit_rolls_back() {
         let (reg, live) = setup();
         let p = pkg("[[contributes.things]]\nname = \"a\"\n[[contributes.things]]\nname = \"b\"\nfail = true");
-        let err = reg.commit(reg.prepare(&p).unwrap(), Scope::Static).unwrap_err();
+        let err = reg.commit(reg.prepare(&p).unwrap()).unwrap_err();
         assert!(err.contains("boom"));
         assert!(live.lock().is_empty(), "a was undone");
         assert!(reg.contributions("p").is_empty());
@@ -360,25 +301,5 @@ mod tests {
         assert_eq!(set.len(), 1);
         assert_eq!(set.warnings.len(), 1);
         assert!(set.warnings[0].contains("futureThing"));
-    }
-
-    #[test]
-    fn runtime_contributions_replace_by_key_and_dispose_separately() {
-        let (reg, live) = setup();
-        let p = pkg("[[contributes.things]]\nname = \"static\"");
-        reg.commit(reg.prepare(&p).unwrap(), Scope::Static).unwrap();
-        let decl = |name: &str| {
-            let mut t = toml::Table::new();
-            t.insert("name".into(), name.into());
-            t.insert("key".into(), true.into());
-            toml::Value::Table(t)
-        };
-        assert!(reg.contribute(&p, "things", decl("r1")).unwrap());
-        assert!(!reg.contribute(&p, "things", decl("r1")).unwrap(), "identical: no change");
-        assert!(reg.contribute(&p, "things", decl("r2")).unwrap());
-        assert_eq!(*live.lock(), ["static", "r2"], "same key replaced r1");
-        assert!(reg.contribute(&p, "nope", decl("x")).is_err());
-        assert!(reg.dispose_runtime("p"));
-        assert_eq!(*live.lock(), ["static"]);
     }
 }

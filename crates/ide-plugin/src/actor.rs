@@ -1,4 +1,4 @@
-//! One thread per active plugin owning its [`Runtime`] (docs/plugin_plan.md 4.5).
+//! One thread per active plugin owning its [`Runtime`].
 //!
 //! Callers queue jobs and wait on a reply channel instead of holding a lock
 //! across the call, so an edit-path caller can stop waiting at its soft
@@ -31,6 +31,32 @@ pub enum ActorError {
     Stopped,
     /// The caller cancelled the call (`call_cancellable`).
     Cancelled,
+}
+
+/// A call queued with [`Actor::submit`].
+pub struct Pending<R> {
+    result: mpsc::Receiver<Result<R, CallError>>,
+    give_up: Option<Instant>,
+    alive: Arc<AtomicBool>,
+}
+
+impl<R> Pending<R> {
+    /// Waits for the outcome, until the call's soft deadline if it has one.
+    pub fn wait(self) -> Result<R, ActorError> {
+        let outcome = match self.give_up {
+            Some(t) => match self.result.recv_timeout(t.saturating_duration_since(Instant::now())) {
+                Ok(r) => r,
+                Err(mpsc::RecvTimeoutError::Timeout) => return Err(ActorError::SoftTimeout),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Skipped as too late, or the actor ended.
+                    let alive = self.alive.load(Ordering::Acquire);
+                    return Err(if alive { ActorError::SoftTimeout } else { ActorError::Stopped });
+                }
+            },
+            None => self.result.recv().map_err(|_| ActorError::Stopped)?,
+        };
+        outcome.map_err(ActorError::Call)
+    }
 }
 
 pub struct Actor {
@@ -97,6 +123,17 @@ impl Actor {
         wait: Option<Duration>,
         f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
     ) -> Result<R, ActorError> {
+        self.submit(wait, f)?.wait()
+    }
+
+    /// Queues `f` like [`call`](Self::call) and returns at once, so a caller
+    /// can start calls on several plugins and then wait for all of them: the
+    /// wait is the slowest one's, not the sum.
+    pub fn submit<R: Send + 'static>(
+        &self,
+        wait: Option<Duration>,
+        f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
+    ) -> Result<Pending<R>, ActorError> {
         let give_up = wait.map(|w| Instant::now() + w);
         let (reply, result) = mpsc::sync_channel(1);
         let (crash, alive) = (self.crash.clone(), self.alive.clone());
@@ -119,18 +156,7 @@ impl Actor {
             let Some(tx) = tx.as_ref() else { return Err(ActorError::Stopped) };
             tx.send(job).map_err(|_| ActorError::Stopped)?;
         }
-        let outcome = match give_up {
-            Some(t) => match result.recv_timeout(t.saturating_duration_since(Instant::now())) {
-                Ok(r) => r,
-                Err(mpsc::RecvTimeoutError::Timeout) => return Err(ActorError::SoftTimeout),
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    // Skipped as too late, or the actor ended.
-                    return Err(if self.is_alive() { ActorError::SoftTimeout } else { ActorError::Stopped });
-                }
-            },
-            None => result.recv().map_err(|_| ActorError::Stopped)?,
-        };
-        outcome.map_err(ActorError::Call)
+        Ok(Pending { result, give_up, alive: self.alive.clone() })
     }
 
     /// Like [`call`](Self::call) without a soft deadline, but `cancel` (the

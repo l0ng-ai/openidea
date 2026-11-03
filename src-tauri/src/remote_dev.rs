@@ -162,7 +162,7 @@ impl Handler for ClientHandler {
                 }
                 Err(e) => tracing::warn!("remote event: {e}"),
             },
-            // Plugin code of this window's project runs on the server (docs/plugin_plan.md 3).
+            // Plugin code of this window's project runs on the server.
             ide_host::plugins::remote_host::EVENT_NOTIFICATION => {
                 match serde_json::from_value::<ide_host::plugins::remote_host::PluginEventMessage>(params) {
                     Ok(m) if ide_host::plugins::remote_host::forwarded(&m.event) => {
@@ -445,7 +445,7 @@ pub async fn remote_connect(
 
 /// Sends the desktop's plugin languages, with the programs granted to them, to
 /// the window's server: `Workspace` contributions take effect where the project
-/// is (docs/plugin_plan.md 3). Servers without the command are left alone.
+/// is. Servers without the command are left alone.
 pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, window: &str) {
     use ide_host::plugins::remote::{SYNC_COMMAND, SyncReport};
     if !c.commands.iter().any(|cmd| cmd == SYNC_COMMAND) {
@@ -470,7 +470,7 @@ pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &
 }
 
 /// Sends the desktop's live code plugins to the window's server, which runs
-/// them next to the project (docs/plugin_plan.md 3): digests and grants first,
+/// them next to the project: digests and grants first,
 /// then the files of the packages the server lacks, one per request.
 pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, window: &str) {
     use ide_host::plugins::remote_host::{PackageSyncReport, SYNC_PACKAGES};

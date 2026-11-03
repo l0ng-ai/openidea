@@ -1,4 +1,4 @@
-//! The marketplace (docs/plugin_plan.md 4.7): a static index (`index.json` +
+//! The marketplace: a static index (`index.json` +
 //! packages, served from any URL or folder) lists publishers and their keys,
 //! plugins, and revocations. The host keeps the last index it read
 //! (`market-index.json`), checks signatures against it, and disables what it

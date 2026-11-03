@@ -15,29 +15,15 @@ interface providers {
         text: string,
     }
 
-    enum completion-kind {
-        text,
-        method,
-        function,
-        %constructor,
-        field,
-        variable,
-        class,
-        %interface,
-        module,
-        property,
-        keyword,
-        snippet,
-        value,
-        constant,
-        file,
-        reference,
-    }
-
     record completion-item {
         label: string,
         detail: option<string>,
-        kind: option<completion-kind>,
+        /// Icon and sort group: text, method, function, constructor, field,
+        /// variable, class, interface, module, property, unit, value, enum,
+        /// keyword, snippet, color, file, reference, folder, enum-member,
+        /// constant, struct, event, operator or type-parameter. Unknown kinds
+        /// show no icon.
+        kind: option<string>,
         insert-text: string,
         /// Replaced on accept; `none`: the word at the caret.
         replace: option<range>,

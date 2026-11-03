@@ -71,6 +71,39 @@ jobs:
       - run: cargo build --locked -p ide-host --bin openidea-server --target x86_64-unknown-linux-musl
       - run: target/x86_64-unknown-linux-musl/debug/openidea-server --version
 
+  # The plugin SDK, the official plugins and the test fixtures build in their
+  # own workspaces (the root excludes them), so the jobs above don't see them.
+  plugins:
+    name: Plugins (SDK, official, fixtures)
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-wasip2, components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: plugins
+          cache-directories: target-plugins
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Format, lint (host and wasm) and test each crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in sdk/rust/openidea-plugin plugins/*/ plugins/official/*/ crates/ide-plugin/tests/fixtures/misbehave; do
+            [ -f "$dir/Cargo.toml" ] || continue
+            echo "::group::$dir"
+            cargo fmt --check --manifest-path "$dir/Cargo.toml"
+            cargo clippy --locked --all-targets --manifest-path "$dir/Cargo.toml" -- -D warnings
+            cargo clippy --locked --target wasm32-wasip2 --manifest-path "$dir/Cargo.toml" -- -D warnings
+            cargo test --locked --manifest-path "$dir/Cargo.toml"
+            echo "::endgroup::"
+          done
+      # The host's tests run the checked-in components: they must be built from these sources.
+      - name: Checked-in components are up to date
+        run: plugins/build.sh --check
+
   deny:
     name: Cargo deny
     runs-on: ubuntu-latest

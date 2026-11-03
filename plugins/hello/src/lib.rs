@@ -19,7 +19,7 @@ const GREETINGS: &[(&str, &[&str])] = &[
 ];
 
 impl Plugin for Hello {
-    fn activate(&mut self, ctx: &Context) -> Result<(), String> {
+    fn activate(&mut self, ctx: &Context) -> Result<(), Error> {
         host::log(LogLevel::Info, &format!("hello {} activated", ctx.plugin_version));
         Ok(())
     }
@@ -28,7 +28,7 @@ impl Plugin for Hello {
         host::log(LogLevel::Info, "hello deactivated");
     }
 
-    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         let editor = ctx.editor().ok_or("no file is open in the editor")?;
         match id {
             "insert-date" => {
@@ -47,7 +47,7 @@ impl Plugin for Hello {
                 host::notify(NotificationLevel::Info, &format!("Word count: {name}"), &body);
                 Ok(Some(body))
             }
-            other => Err(format!("unknown command: {other}")),
+            other => Err(Error::NotFound(format!("command {other}"))),
         }
     }
 }
@@ -174,7 +174,7 @@ mod tests {
         let host = MockHost::install().with_capabilities(&["editor.read"]);
         host.open_editor("/project/a.txt", "text", "", &[(0, 0, 0, 0)]);
         let err = Hello::default().run_command("insert-date", &host.invocation(), None).unwrap_err();
-        assert!(err.contains("editor.write"), "{err}");
+        assert_eq!(err, Error::Denied("editor.write".into()));
         assert_eq!(host.editor_text(), "");
     }
 }

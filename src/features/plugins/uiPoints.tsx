@@ -1,5 +1,5 @@
 /**
- * Client side of the P7 UI points (docs/plugin_plan.md P7): declarations the
+ * Client side of the plugin UI points: declarations the
  * backend validated, projected onto the workbench's own registries.
  *
  * - `menus`: editor / project view / editor tab context menus, and Tools in the main menu;

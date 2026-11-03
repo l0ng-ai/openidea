@@ -1,5 +1,5 @@
-//! Run configurations detected outside this crate: plugins' `runDetectors`
-//! (docs/plugin_plan.md P3). Their ids start with [`EXTERNAL_PREFIX`]; before
+//! Run configurations detected outside this crate: plugins' `runDetectors`.
+//! Their ids start with [`EXTERNAL_PREFIX`]; before
 //! one is started the provider names the program to run (the file approved
 //! for the plugin's `process:` capability) or refuses.
 

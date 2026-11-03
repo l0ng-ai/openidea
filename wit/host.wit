@@ -7,19 +7,6 @@ interface log {
     log: func(level: log-level, message: string);
 }
 
-/// Contributions made at run time (declare static ones in plugin.toml).
-interface contributions {
-    use types.{error};
-
-    /// Registers (or updates) a command `plugin.<plugin-id>.<id>`.
-    /// `id` must match `[a-z0-9][a-z0-9._-]*`.
-    register-command: func(id: string, title: string, category: option<string>) -> result<_, error>;
-    /// A language from a `languages/<id>.toml`-style definition.
-    register-language: func(definition: string) -> result<_, error>;
-    /// A theme from JSON: {"id","name","kind":"dark"|"light","tokens":{"--var":"value"}}.
-    register-theme: func(definition: string) -> result<_, error>;
-}
-
 interface ui {
     use types.{notification-level};
 

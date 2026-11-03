@@ -1,20 +1,20 @@
 //! SDK for OpenIDEA plugins written in Rust (plugin API 1.0).
 //!
 //! ```ignore
-//! use openidea_plugin::{Context, Invocation, Plugin, register_plugin};
+//! use openidea_plugin::{Error, Invocation, Plugin, register_plugin};
 //!
 //! #[derive(Default)]
 //! struct Shout;
 //!
 //! impl Plugin for Shout {
-//!     fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+//!     fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
 //!         match id {
 //!             "shout" => {
 //!                 let editor = ctx.editor().ok_or("no editor is focused")?;
 //!                 editor.transform_selections(|s| s.to_uppercase())?;
 //!                 Ok(None)
 //!             }
-//!             _ => Err(format!("unknown command {id}")),
+//!             _ => Err(Error::NotFound(format!("command {id}"))),
 //!         }
 //!     }
 //! }
@@ -120,9 +120,9 @@ pub const API_VERSION: &str = "1.0";
 /// A plugin. One instance lives as long as the plugin's Wasm instance (until
 /// it is disabled, crashes or is reclaimed when idle).
 pub trait Plugin: 'static {
-    /// Called once when the instance is created. Register runtime commands
-    /// and subscriptions here; restore state from [`host::storage`].
-    fn activate(&mut self, _ctx: &Context) -> Result<(), String> {
+    /// Called once when the instance is created: subscribe to events and
+    /// restore state from [`host::storage`]. An error fails the activation.
+    fn activate(&mut self, _ctx: &Context) -> Result<(), Error> {
         Ok(())
     }
 
@@ -130,7 +130,9 @@ pub trait Plugin: 'static {
     fn deactivate(&mut self) {}
 
     /// Runs one of the plugin's commands; `Ok(Some(text))` is shown to the user.
-    fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, String>;
+    /// A plain message (`Err("…".into())`, or `?` on a `String` error) is
+    /// [`Error::Failed`]; return [`Error::Cancelled`] when the user gave up.
+    fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error>;
 
     /// A batch of subscribed events (see [`host::subscribe`]), oldest first.
     fn handle_events(&mut self, _events: &[Event], _ctx: &Invocation) {}
@@ -308,7 +310,7 @@ macro_rules! __plugin_exports {
         impl $crate::bindings::exports::openidea::plugin::lifecycle::Guest for $component {
             fn activate(
                 ctx: $crate::bindings::openidea::plugin::types::Context,
-            ) -> ::core::result::Result<(), ::std::string::String> {
+            ) -> ::core::result::Result<(), $crate::bindings::openidea::plugin::types::Error> {
                 $crate::__rt::activate::<$plugin>(ctx)
             }
 
@@ -322,7 +324,10 @@ macro_rules! __plugin_exports {
                 id: ::std::string::String,
                 ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
                 arg: ::core::option::Option<::std::string::String>,
-            ) -> ::core::result::Result<::core::option::Option<::std::string::String>, ::std::string::String> {
+            ) -> ::core::result::Result<
+                ::core::option::Option<::std::string::String>,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
                 $crate::__rt::run_command::<$plugin>(id, ctx, arg)
             }
         }
@@ -361,14 +366,14 @@ pub mod __rt {
         })
     }
 
-    pub fn activate<T: Plugin + Default>(ctx: b::types::Context) -> Result<(), String> {
+    pub fn activate<T: Plugin + Default>(ctx: b::types::Context) -> Result<(), b::types::Error> {
         let ctx = Context {
             plugin_id: ctx.plugin_id,
             plugin_version: ctx.plugin_version,
             api_version: ctx.api_version,
             capabilities: ctx.capabilities,
         };
-        with::<T, _>(|p| p.activate(&ctx))
+        with::<T, _>(|p| p.activate(&ctx)).map_err(error_out)
     }
 
     pub fn deactivate<T: Plugin + Default>() {
@@ -380,9 +385,9 @@ pub mod __rt {
         id: String,
         ctx: &b::invocation::Invocation,
         arg: Option<String>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, b::types::Error> {
         let ctx = Invocation::__new(ctx);
-        with::<T, _>(|p| p.run_command(&id, &ctx, arg.as_deref()))
+        with::<T, _>(|p| p.run_command(&id, &ctx, arg.as_deref())).map_err(error_out)
     }
 
     // ---- providers ----
@@ -413,24 +418,7 @@ pub mod __rt {
             .map(|i| w::CompletionItem {
                 label: i.label,
                 detail: i.detail,
-                kind: i.kind.map(|k| match k {
-                    p::CompletionKind::Text => w::CompletionKind::Text,
-                    p::CompletionKind::Method => w::CompletionKind::Method,
-                    p::CompletionKind::Function => w::CompletionKind::Function,
-                    p::CompletionKind::Constructor => w::CompletionKind::Constructor,
-                    p::CompletionKind::Field => w::CompletionKind::Field,
-                    p::CompletionKind::Variable => w::CompletionKind::Variable,
-                    p::CompletionKind::Class => w::CompletionKind::Class,
-                    p::CompletionKind::Interface => w::CompletionKind::Interface,
-                    p::CompletionKind::Module => w::CompletionKind::Module,
-                    p::CompletionKind::Property => w::CompletionKind::Property,
-                    p::CompletionKind::Keyword => w::CompletionKind::Keyword,
-                    p::CompletionKind::Snippet => w::CompletionKind::Snippet,
-                    p::CompletionKind::Value => w::CompletionKind::Value,
-                    p::CompletionKind::Constant => w::CompletionKind::Constant,
-                    p::CompletionKind::File => w::CompletionKind::File,
-                    p::CompletionKind::Reference => w::CompletionKind::Reference,
-                }),
+                kind: i.kind.map(|k| k.as_str().to_owned()),
                 insert_text: i.insert_text,
                 replace: i.replace.map(crate::host::__range_to),
                 sort_text: i.sort_text,

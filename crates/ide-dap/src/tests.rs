@@ -1149,7 +1149,7 @@ async fn java_stack_frames_without_breakpoints_normalize_windows_paths() {
     }
 }
 
-/// Plan P3: a built-in language definition (GDScript) shipped by a plugin
+/// A built-in language definition (GDScript) shipped by a plugin
 /// instead: its debugger starts the program approved for the plugin's
 /// `process:godot` grant, and refuses once that file changed.
 #[cfg(unix)]

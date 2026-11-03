@@ -173,8 +173,7 @@ pub struct RepositoryStatus {
     pub changed_files: u32,
 }
 
-/// Resource limits and supervision policy for plugin code
-/// (docs/plugin_plan.md 4.5).
+/// Resource limits and supervision policy for plugin code.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     /// Wasm fuel (≈ instructions) per host → plugin call.

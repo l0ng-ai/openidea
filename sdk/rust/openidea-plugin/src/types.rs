@@ -35,6 +35,19 @@ impl From<Error> for String {
     }
 }
 
+/// A plain message is [`Error::Failed`].
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for Error {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_owned())
+    }
+}
+
 /// Log level of [`crate::host::log`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogLevel {

@@ -23,7 +23,9 @@ pub struct Document {
     pub text: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Icon and sort group of a completion item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CompletionKind {
     Text,
     Method,
@@ -35,12 +37,54 @@ pub enum CompletionKind {
     Interface,
     Module,
     Property,
+    Unit,
+    Value,
+    Enum,
     Keyword,
     Snippet,
-    Value,
-    Constant,
+    Color,
     File,
     Reference,
+    Folder,
+    EnumMember,
+    Constant,
+    Struct,
+    Event,
+    Operator,
+    TypeParameter,
+}
+
+impl CompletionKind {
+    /// The name the plugin API uses (`completion-item.kind`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Method => "method",
+            Self::Function => "function",
+            Self::Constructor => "constructor",
+            Self::Field => "field",
+            Self::Variable => "variable",
+            Self::Class => "class",
+            Self::Interface => "interface",
+            Self::Module => "module",
+            Self::Property => "property",
+            Self::Unit => "unit",
+            Self::Value => "value",
+            Self::Enum => "enum",
+            Self::Keyword => "keyword",
+            Self::Snippet => "snippet",
+            Self::Color => "color",
+            Self::File => "file",
+            Self::Reference => "reference",
+            Self::Folder => "folder",
+            Self::EnumMember => "enum-member",
+            Self::Constant => "constant",
+            Self::Struct => "struct",
+            Self::Event => "event",
+            Self::Operator => "operator",
+            Self::TypeParameter => "type-parameter",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
