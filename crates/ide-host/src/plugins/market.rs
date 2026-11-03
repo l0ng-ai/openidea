@@ -56,13 +56,20 @@ pub fn read_url(url: &str, max: usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// `href` relative to the index at `base`.
+/// `href` relative to the index at `base`: a URL, or a local path (with the
+/// platform's separators, e.g. `C:\\market\\index.json`).
 pub fn resolve(base: &str, href: &str) -> String {
-    if href.contains("://") || href.starts_with('/') {
+    if href.contains("://") || href.starts_with('/') || Path::new(href).is_absolute() {
         return href.to_owned();
     }
-    match base.rfind('/') {
-        Some(i) => format!("{}/{href}", &base[..i]),
+    if base.contains("://") {
+        return match base.rfind('/') {
+            Some(i) => format!("{}/{href}", &base[..i]),
+            None => href.to_owned(),
+        };
+    }
+    match Path::new(base).parent() {
+        Some(dir) => dir.join(href).to_string_lossy().into_owned(),
         None => href.to_owned(),
     }
 }
@@ -296,7 +303,12 @@ mod tests {
     #[test]
     fn downloads_resolve_against_the_index() {
         assert_eq!(resolve("https://x.dev/market/index.json", "p/a.oiplugin"), "https://x.dev/market/p/a.oiplugin");
-        assert_eq!(resolve("/srv/market/index.json", "a.oiplugin"), "/srv/market/a.oiplugin");
+        assert_eq!(
+            Path::new(&resolve("/srv/market/index.json", "a.oiplugin")),
+            Path::new("/srv/market").join("a.oiplugin")
+        );
+        #[cfg(windows)]
+        assert_eq!(resolve(r"C:\market\index.json", "a.oiplugin"), r"C:\market\a.oiplugin");
         assert_eq!(resolve("https://x.dev/index.json", "https://cdn.dev/a"), "https://cdn.dev/a");
     }
 }
