@@ -234,6 +234,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "pyrefly",
+        display: "Pyrefly (Python)",
+        kind: LanguageServer,
+        commands: &["pyrefly"],
+        method: Method::PipVenv { package: "pyrefly" },
+        fallback: None,
+        version: ver("pyrefly"),
+        homepage: "https://pyrefly.org",
+        needs: &[],
+    },
+    ToolSpec {
         name: "ruff",
         display: "Ruff",
         kind: LanguageServer,
