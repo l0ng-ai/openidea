@@ -24,16 +24,14 @@ vi.mock("@/platform/ipc", () => ({
     settingsSet: mocks.set,
   },
 }));
-vi.mock("@/workbench/contributions", async (original) => ({
-  ...(await original<typeof import("@/workbench/contributions")>()),
+vi.mock("@/workbench/contributions", () => ({
   notifications: () => ({ notify: mocks.notify }),
   registerStatusItem: (item: { component: React.ComponentType }) => {
     mocks.component = item.component;
     return () => {};
   },
 }));
-import { activateInterpreterStatus, interpreterChoices, shownLanguage } from "../languages/InterpreterStatus";
-import { isPhpPath, isPythonPath } from "../languages/interpreterSpecs";
+import { activatePythonStatus, interpreterChoices, isPythonPath } from "../languages/PythonStatus";
 
 let dispose: () => void;
 beforeEach(() => {
@@ -44,12 +42,7 @@ beforeEach(() => {
   mocks.set.mockResolvedValue({ languages: { python: { interpreter: "/new/python" } } });
   useProject.setState({ project: { root: "/project" } as ProjectInfo, settings: null });
   setContext("projectOpen", true);
-  try {
-    localStorage.clear();
-  } catch {
-    // no storage
-  }
-  dispose = activateInterpreterStatus();
+  dispose = activatePythonStatus();
 });
 afterEach(() => {
   cleanup();
@@ -61,7 +54,7 @@ const mount = () => {
   return render(<Component />);
 };
 
-describe("Interpreter status", () => {
+describe("Python interpreter status", () => {
   it.each([
     "src/main.py",
     "types/lib.pyi",
@@ -100,7 +93,7 @@ describe("Interpreter status", () => {
     ]);
     mount();
     await screen.findByRole("button", { name: "Python Interpreter: Python 3.11" });
-    await act(() => executeAction("interpreter.popup"));
+    await act(() => executeAction("python.interpreterPopup"));
     expect(await screen.findByText("/opt/homebrew/bin/python3.11")).toBeTruthy();
     expect(screen.getByText("/usr/local/bin/python3.11")).toBeTruthy();
     expect(screen.queryByText("/venv/bin/python")).toBeNull();
@@ -110,7 +103,7 @@ describe("Interpreter status", () => {
     const off = registerAction({ id: "file.settings", title: "Settings…", run });
     mount();
     await waitFor(() => expect(mocks.files).toHaveBeenCalled());
-    await executeAction("interpreter.popup");
+    await executeAction("python.interpreterPopup");
     expect(run.mock.calls.map(([ctx]) => ctx.arg)).toEqual(["python.interpreter"]);
     off();
   });
@@ -125,13 +118,13 @@ describe("Interpreter status", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
   it("writes the project setting through the same backend path as Settings", async () => {
-    await executeAction("interpreter.select", "/new/python");
+    await executeAction("python.selectInterpreter", "/new/python");
     expect(mocks.set).toHaveBeenCalledWith("project", "languages.python.interpreter", '"/new/python"');
     expect(useProject.getState().settings?.languages?.python?.interpreter).toBe("/new/python");
   });
   it("reports write failures without changing the selected interpreter", async () => {
     mocks.set.mockRejectedValueOnce(new Error("write failed"));
-    await executeAction("interpreter.select", "/new/python");
+    await executeAction("python.selectInterpreter", "/new/python");
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error" }));
     expect(useProject.getState().settings).toBeNull();
   });
@@ -154,86 +147,9 @@ describe("Interpreter status", () => {
   it("opens the Python page for both settings entries", async () => {
     const run = vi.fn();
     const off = registerAction({ id: "file.settings", title: "Settings…", run });
-    await executeAction("interpreter.add");
-    await executeAction("interpreter.settings");
+    await executeAction("python.addInterpreter");
+    await executeAction("python.interpreterSettings");
     expect(run.mock.calls.map(([ctx]) => ctx.arg)).toEqual(["python.interpreter", "python.interpreter"]);
     off();
-  });
-
-  describe("other languages", () => {
-    const php83 = { path: "/opt/php83/bin/php", name: "PHP 8.3.6" } as Sdk;
-    const php82 = { path: "/opt/php82/bin/php", name: "PHP 8.2.1" } as Sdk;
-    const phpProject = () =>
-      mocks.files.mockImplementation(async (query: string) =>
-        [".php", "composer.json"].some((q) => query === q)
-          ? [{ path: `/project/${query === ".php" ? "a.php" : query}` }]
-          : [],
-      );
-
-    it.each(["src/Foo.php", "views/a.phtml", "composer.json", "phpunit.xml.dist", "artisan"])("recognizes %s", (p) =>
-      expect(isPhpPath(p)).toBe(true),
-    );
-    it.each(["main.py", "php.md", "composer.json.bak"])("rejects %s", (p) => expect(isPhpPath(p)).toBe(false));
-
-    it("follows the project: a PHP project shows PHP, picking the first detected PHP", async () => {
-      phpProject();
-      mocks.detect.mockResolvedValue([php83, php82]);
-      mount();
-      expect(await screen.findByRole("button", { name: "PHP Interpreter: PHP 8.3.6" })).toBeTruthy();
-      expect(screen.queryByText("No interpreter")).toBeNull();
-      expect(mocks.detect).toHaveBeenCalledWith("php");
-    });
-
-    it("shows the configured PHP", async () => {
-      phpProject();
-      mocks.detect.mockResolvedValue([php83, php82]);
-      useProject.setState({ settings: { languages: { php: { interpreter: php82.path } } } as never });
-      mount();
-      expect(await screen.findByRole("button", { name: "PHP Interpreter: PHP 8.2.1" })).toBeTruthy();
-    });
-
-    it("warns only when no PHP is installed", async () => {
-      phpProject();
-      mount();
-      expect(await screen.findByRole("button", { name: "PHP Interpreter: No interpreter" })).toBeTruthy();
-    });
-
-    it("lets the menu switch the language and remembers it", async () => {
-      mocks.files.mockResolvedValue([{ path: "/project/main.py" }, { path: "/project/a.php" }]);
-      mocks.effective.mockResolvedValue("/usr/bin/python3");
-      mocks.detect.mockImplementation(async (kind: string) =>
-        kind === "php" ? [php83] : [{ path: "/usr/bin/python3", name: "Python 3.12" }],
-      );
-      mount();
-      // Both languages are in the project: Python is the default.
-      expect(await screen.findByRole("button", { name: "Python Interpreter: Python 3.12" })).toBeTruthy();
-      await act(() => executeAction("interpreter.language", "php"));
-      expect(await screen.findByRole("button", { name: "PHP Interpreter: PHP 8.3.6" })).toBeTruthy();
-      expect(localStorage.getItem("openidea.interpreterLanguage")).toBe("php");
-      // A pick writes the setting of the language shown.
-      await act(() => executeAction("interpreter.select", php83.path));
-      expect(mocks.set).toHaveBeenCalledWith("project", "languages.php.interpreter", JSON.stringify(php83.path));
-    });
-
-    it("offers every language, even one the project has no files of", async () => {
-      mocks.files.mockResolvedValue([{ path: "/project/main.py" }]);
-      mocks.detect.mockImplementation(async (kind: string) =>
-        kind === "jdk" ? [{ path: "/jdk21", name: "JDK 21" }] : [],
-      );
-      mount();
-      await screen.findByRole("button", { name: "Python Interpreter: No interpreter" });
-      await act(() => executeAction("interpreter.language", "java"));
-      expect(await screen.findByRole("button", { name: "Java SDK: JDK 21" })).toBeTruthy();
-    });
-
-    it("picks the language by file being edited, else by project", () => {
-      const visible = ["python", "php"];
-      expect(shownLanguage(null, visible, null)).toBe("python");
-      expect(shownLanguage(null, visible, "/project/src/Foo.php")).toBe("php");
-      expect(shownLanguage(null, visible, "/project/README.md")).toBe("python");
-      expect(shownLanguage(null, ["php"], null)).toBe("php");
-      expect(shownLanguage(null, [], null)).toBe("python");
-      expect(shownLanguage("java", visible, "/project/src/Foo.php")).toBe("java");
-    });
   });
 });
