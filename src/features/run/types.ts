@@ -457,7 +457,9 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet" && config.beforeLaunch === undefined
       ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
       : {}),
-    ...(config.kind === "dotnet-test" || config.kind === "django-test" || config.kind === "rspec" ? { isTest: true } : {}),
+    ...(config.kind === "dotnet-test" || config.kind === "django-test" || config.kind === "rspec"
+      ? { isTest: true }
+      : {}),
     params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
     ...(config.kind === "go-test" && !config.id.startsWith("template:") ? { kind: "go" } : {}),
     ...(params.goKind ? { isTest: params.goKind === "test" } : {}),

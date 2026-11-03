@@ -5013,6 +5013,9 @@
   "Window group": "窗口组",
   "Select Project Tab": "选择项目标签页",
   "Close Project Tab": "关闭项目标签页",
+  "Close Other Project Tabs": "关闭其他项目标签页",
+  "Close Project Tabs to the Left": "关闭左侧项目标签页",
+  "Close Project Tabs to the Right": "关闭右侧项目标签页",
   "Reorder Project Tabs": "重新排列项目标签页",
   "Close {name}": "关闭 {name}",
   "Tomcat Server": "Tomcat 服务器",
@@ -5552,5 +5555,7 @@
   "Passed as --settings; empty keeps DJANGO_SETTINGS_MODULE or the default in manage.py": "作为 --settings 传入；留空则沿用 DJANGO_SETTINGS_MODULE 或 manage.py 中的默认值",
   "e.g. --keepdb --parallel": "例如 --keepdb --parallel",
   "select files in a git repository to shelve": "请选择 Git 仓库中的文件以搁置更改",
-  "select files from a single git repository to shelve": "请一次只选择同一个 Git 仓库中的文件以搁置更改"
+  "select files from a single git repository to shelve": "请一次只选择同一个 Git 仓库中的文件以搁置更改",
+  "External file changes sync may be slow": "外部文件更改同步可能较慢",
+  "recursive": "递归"
 }

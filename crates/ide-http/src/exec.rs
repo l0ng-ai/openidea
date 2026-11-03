@@ -1,6 +1,6 @@
 //! Preparing (substitution, body includes) and executing requests.
 
-use crate::client::describe;
+use crate::client::{describe, with_scheme};
 use crate::env::{Environments, Resolver};
 use crate::parse::{BodyPart, RawRequest};
 use ide_core::{CancellationToken, IdeError, IdeResult};
@@ -84,10 +84,8 @@ pub fn prepare(
             Some((_, host)) => format!("http://{host}{url}"),
             None => return Err(IdeError::invalid(format!("relative URL {url} needs a Host header"))),
         }
-    } else if !url.contains("://") {
-        format!("http://{url}")
     } else {
-        url
+        with_scheme(&url)
     };
     Ok(PreparedRequest {
         name: raw.block.name.clone(),
@@ -212,6 +210,20 @@ mod tests {
         let f = parse("GET /status\nHost: localhost:9000\n");
         let p = prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap();
         assert_eq!(p.url, "http://localhost:9000/status");
+    }
+
+    #[test]
+    fn urls_without_a_scheme_default_to_http() {
+        let url = |text: &str| {
+            let f = parse(text);
+            prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap().url
+        };
+        assert_eq!(url("GET localhost:8080/health\n"), "http://localhost:8080/health");
+        assert_eq!(
+            url("GET localhost:8080/login?next=http://localhost:3000/\n"),
+            "http://localhost:8080/login?next=http://localhost:3000/"
+        );
+        assert_eq!(url("GET https://api.test/cb?u=http://x\n"), "https://api.test/cb?u=http://x");
     }
 
     #[tokio::test]
