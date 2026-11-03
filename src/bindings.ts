@@ -5820,10 +5820,12 @@ export type RunId = number;
 /**  What an import found: configurations to add and entries left out, with the reason. */
 export type RunImport = RunImport_Serialize | RunImport_Deserialize;
 
-/**  A project file run configurations can be imported from. */
+/**  Project files run configurations can be imported from. */
 export type RunImportSource = 
 /**  VS Code's `.vscode/launch.json`. */
-"vscode";
+"vscode" | 
+/**  JetBrains IDEs' `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`. */
+"jetbrains";
 
 /**  What an import found: configurations to add and entries left out, with the reason. */
 export type RunImport_Deserialize = {
@@ -6205,7 +6207,7 @@ export type SignatureHelp = {
 export type SkipReason = 
 /**  A configuration with this name already exists. */
 { kind: "nameTaken" } | 
-/**  The debugger type (`type`) has no equivalent here, e.g. `cppdbg`. */
+/**  The configuration type has no equivalent here: a VS Code debugger (`cppdbg`), a JetBrains type (`Application`). */
 { kind: "unsupportedType"; type: string } | 
 /**  A `request` other than `launch` and `attach`. */
 { kind: "unsupportedRequest"; request: string } | 
@@ -6215,6 +6217,14 @@ export type SkipReason =
 { kind: "variable"; variable: string } | 
 /**  No program, module or command. */
 { kind: "nothingToRun" } | 
+/**  A JetBrains path variable with no value here (`$MAVEN_REPOSITORY$`, user-defined ones). */
+{ kind: "pathVariable"; variable: string } | 
+/**  `$MODULE_DIR$` in a project with several modules: which module's directory is unknown. */
+{ kind: "severalModules"; variable: string } | 
+/**  A file the configuration needs isn't in the project (Django's `manage.py`). */
+{ kind: "missingFile"; file: string } | 
+/**  A project file that can't be read, or isn't XML; `name` is the file. */
+{ kind: "invalidFile"; detail: string } | 
 /**  A compound member that is neither imported nor an existing configuration. */
 { kind: "missingMember"; member: string } | 
 /**  Not an object with a name. */
