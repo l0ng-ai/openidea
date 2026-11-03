@@ -5,7 +5,6 @@
  * generic code-insight notice so it replaces it.
  */
 import { executeAction } from "@/platform/actions";
-import type { ServerId } from "@/bindings";
 import { onIdeEvent } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
@@ -62,40 +61,19 @@ export async function promptInstall(
 export function installMissingServerPrompts(): () => void {
   const prompted = new Set<string>();
   const offered = new Set<string>();
-  // Missing servers not offered, maybe held back by a server before them in the chain.
-  const quiet = new Set<string>();
-  const names = new Map<ServerId, string>();
   // One at a time: a missing server's fallback reports missing right after it, and
   // must see whether the server's own notice went up.
   let queue = Promise.resolve();
-  const offer = (name: string) => {
+  return onIdeEvent("languageServer", (e) => {
+    if (e.status !== "missing" || prompted.has(e.name)) return;
+    prompted.add(e.name);
     // Async on purpose: lands after the synchronous generic notice and replaces it.
     queue = queue
       .then(async () => {
-        if (await promptInstall(name, true, offered)) {
-          offered.add(name);
-          quiet.delete(name);
-        } else quiet.add(name);
+        if (await promptInstall(e.name, true, offered)) offered.add(e.name);
       })
       .catch(() => {});
-  };
-  const offMissing = onIdeEvent("languageServer", (e) => {
-    names.set(e.server, e.name);
-    if (e.status !== "missing" || prompted.has(e.name)) return;
-    prompted.add(e.name);
-    offer(e.name);
   });
-  // Turned off in settings (another server of the chain picked): what it held back is offered again.
-  const offRemoved = onIdeEvent("languageServerRemoved", (e) => {
-    const name = names.get(e.server);
-    if (!name || !offered.delete(name)) return;
-    prompted.delete(name);
-    for (const held of [...quiet]) offer(held);
-  });
-  return () => {
-    offMissing();
-    offRemoved();
-  };
 }
 
 /** A system server that lacks a capability can be replaced by the managed tool. */
