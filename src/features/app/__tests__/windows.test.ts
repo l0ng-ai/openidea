@@ -60,9 +60,12 @@ const { IpcError } = await import("@/platform/ipc");
 provideNotificationService({ notify });
 
 const opened: string[] = [];
+const openFile = vi.fn(async (path: string, options?: import("@/workbench/contributions").OpenOptions) => {
+  opened.push(`${path}${options?.focus ? " (focus)" : ""}`);
+});
 let activePath: string | null = null;
 provideEditorService({
-  openFile: async (path, options) => void opened.push(`${path}${options?.focus ? " (focus)" : ""}`),
+  openFile,
   openInput: async () => {},
   activePath: () => activePath,
   activeCursor: () => null,
@@ -80,6 +83,7 @@ beforeEach(() => {
   notify.mockClear();
   vi.mocked(isRemoteWindow).mockReturnValue(false);
   opened.length = 0;
+  openFile.mockClear();
   activePath = null;
   useProject.setState({ project: null, lightEdit: false, settings: null } as never);
 });
@@ -249,6 +253,56 @@ describe("Open Containing Folder as Project", () => {
 });
 
 describe("launch", () => {
+  it.each([false, true])("opens a Unity script at the requested position (already open: %s)", async (existing) => {
+    if (existing) useProject.setState(projectState("/game") as never);
+    windowTakeLaunch.mockResolvedValueOnce({
+      project: "/game",
+      files: ["/game/Assets/Player.cs"],
+      location: { path: "/game/Assets/Player.cs", line: 42, column: 7 },
+    });
+    await consumeLaunch();
+    expect(openProject).toHaveBeenCalledTimes(existing ? 0 : 1);
+    expect(lightEditOpen).not.toHaveBeenCalled();
+    expect(openFile).toHaveBeenCalledWith("/game/Assets/Player.cs", {
+      focus: true,
+      selection: { line: 41, col: 6 },
+    });
+  });
+
+  it("applies a location only to its file, including in LightEdit", async () => {
+    windowTakeLaunch.mockResolvedValueOnce({
+      files: ["/notes/a.txt", "/notes/b.txt"],
+      location: { path: "/notes/b.txt", line: 1, column: 1 },
+    });
+    await consumeLaunch();
+    expect(openFile).toHaveBeenNthCalledWith(1, "/notes/a.txt", { focus: false });
+    expect(openFile).toHaveBeenNthCalledWith(2, "/notes/b.txt", { focus: true, selection: { line: 0, col: 0 } });
+  });
+
+  it("serializes external navigation while a project is opening", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    openProject.mockImplementationOnce(async (path) => {
+      await pending;
+      const project = { root: path, name: path, trusted: true, isGit: false, settings: {} };
+      useProject.setState({ project } as never);
+      return project;
+    });
+    windowTakeLaunch
+      .mockResolvedValueOnce({ project: "/game", files: ["/game/a.cs"] })
+      .mockResolvedValueOnce({ files: ["/game/b.cs"], location: { path: "/game/b.cs", line: 9, column: 2 } });
+    const first = consumeLaunch();
+    const second = consumeLaunch();
+    await vi.waitFor(() => expect(openProject).toHaveBeenCalledTimes(1));
+    expect(windowTakeLaunch).toHaveBeenCalledTimes(1);
+    finish();
+    await Promise.all([first, second]);
+    expect(opened).toEqual(["/game/a.cs (focus)", "/game/b.cs (focus)"]);
+    expect(openFile).toHaveBeenLastCalledWith("/game/b.cs", { focus: true, selection: { line: 8, col: 1 } });
+  });
+
   it("opens the pending project once", async () => {
     windowTakeLaunch.mockResolvedValueOnce({ project: "/p/launch", files: [] }).mockResolvedValueOnce(null);
     await consumeLaunch();

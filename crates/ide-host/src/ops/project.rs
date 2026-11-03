@@ -17,6 +17,8 @@ pub struct ProjectInfo {
     pub settings: Settings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<ide_workspace::workspace::Workspace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unity: Option<ide_workspace::unity::UnityProjectInfo>,
 }
 
 pub fn info(project: &Project) -> ProjectInfo {
@@ -33,6 +35,7 @@ pub fn info(project: &Project) -> ProjectInfo {
         settings,
         root: project.root.clone().into(),
         workspace: ide_workspace::workspace::Workspace::load(&project.root).ok().flatten(),
+        unity: ide_workspace::unity::detect(&project.root),
     }
 }
 

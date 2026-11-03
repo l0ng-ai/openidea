@@ -67,8 +67,6 @@ pub fn run() {
     }
 
     let builder = specta_builder();
-    #[cfg(debug_assertions)]
-    export_bindings(&builder);
 
     let app = tauri::Builder::default();
     // Single instance first: a second launch focuses this one and opens its path argument.
@@ -139,18 +137,27 @@ pub fn run() {
         invoke(request)
     })
     .setup(move |app| {
+        // Only the primary instance reaches setup. Exporting before the
+        // single-instance check makes Unity's file-open launches rewrite
+        // bindings.ts, triggering a Vite reload while navigation is in flight.
+        #[cfg(debug_assertions)]
+        export_bindings(&builder);
         builder.mount_events(app);
         let state = AppState::new(app.handle().clone())?;
         let windows = WindowsState::default();
-        if let Ok(cwd) = std::env::current_dir()
-            && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
-        {
-            windows.set_launch("main", windows::path_launch(path));
+        if let Ok(cwd) = std::env::current_dir() {
+            match windows::cli::parse(&std::env::args().collect::<Vec<_>>(), &cwd) {
+                Ok(Some(launch)) => windows.set_launch("main", launch),
+                Err(error) => tracing::warn!("invalid editor arguments: {error}"),
+                Ok(None) => {}
+            }
         }
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
         app.manage(windows);
+        #[cfg(windows)]
+        windows::allow_external_launches(app.handle());
         app.manage(application_focus::ApplicationFocus::default());
         #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());

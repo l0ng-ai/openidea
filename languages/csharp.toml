@@ -10,7 +10,7 @@ tree-sitter = "csharp"
 [[language-servers]]
 name = "csharp-ls"
 command = "csharp-ls"
-root-markers = ["*.sln", "*.slnx", "*.csproj", "global.json", "Directory.Build.props"]
+root-markers = ["*.sln", "*.slnx", "*.csproj", "global.json", "Directory.Build.props", "ProjectSettings/ProjectVersion.txt"]
 install-hint = "dotnet tool install --global csharp-ls"
 
 [debugger]

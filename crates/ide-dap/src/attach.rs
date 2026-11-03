@@ -11,6 +11,7 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum AttachKind {
+    Unity,
     Java,
     Node,
     Python,

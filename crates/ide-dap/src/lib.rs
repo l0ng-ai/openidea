@@ -16,6 +16,7 @@ pub mod jdwp;
 pub mod kotlin;
 mod kotlin_jdwp;
 mod session;
+pub mod unity;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
@@ -874,6 +875,9 @@ impl DebugManager {
         }
         if let Some(relay) = s.kotlin_relay.lock().as_mut() {
             relay.release();
+        }
+        if s.adapter == "unity" {
+            unity::wait_until_ready(s).await?;
         }
         Ok(())
     }

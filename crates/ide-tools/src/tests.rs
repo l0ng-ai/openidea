@@ -44,6 +44,24 @@ fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
 }
 
 #[test]
+fn unity_adapter_download_is_pinned_and_checksum_verified() {
+    let env = Env::new();
+    let tools = env.tools();
+    let spec = registry::find("unity-debug").unwrap();
+    let Method::Release { source, assets, locate } = spec.method else { panic!("expected release") };
+    // Resolve a pinned release without ever invoking curl or contacting GitHub.
+    let curl = env.sys.join(if cfg!(windows) { "curl.exe" } else { "curl" });
+    fs::write(&curl, b"unused").unwrap();
+    archive::make_executable(&curl).unwrap();
+    let http = Http::new(env.sys.as_os_str()).unwrap();
+    let download = tools.resolve_release(&http, source, assets, &CancellationToken::new()).unwrap();
+    assert_eq!(download.version, "3.0.1");
+    assert!(download.url.starts_with("https://github.com/Unity-Technologies/vscode-unity-debug/releases/download/"));
+    assert_eq!(download.sha256.as_deref(), Some("4fa00660e0b52b0413726f80962e7d3d6efd41ac6cfd4df39520cae4a8ba5bd0"));
+    assert_eq!(locate, &["UnityDebug.exe"]);
+}
+
+#[test]
 fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads() {
     for os in [Os::Mac, Os::Linux, Os::Windows] {
         for arch in [platform::Arch::Arm64, platform::Arch::X64] {

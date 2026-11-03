@@ -42,6 +42,7 @@ export const commands = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 } | null>("project_current"),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
 	languages: () => __TAURI_INVOKE<LanguageInfo_Serialize[]>("languages"),
@@ -757,6 +758,8 @@ export const commands = {
 	 *  window's project or (without one) in LightEdit.
 	 */
 	files: IpcPath[],
+	/**  Latest external navigation request; 1-based coordinates. */
+	location: FileLocation | null,
 	/**  Remote project to open (Remote Development). */
 	remote: RemoteLaunch | null,
 	/**  Settings windows: the page to show. */
@@ -820,6 +823,7 @@ export const commands = {
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
+	debugUnityProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_unity_processes")),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -1487,7 +1491,7 @@ export type AskpassKind =
 /**  Yes / no (an unknown host key); answered with `yes` or `no`. */
 "confirm";
 
-export type AttachKind = "java" | "node" | "python" | "go" | "native";
+export type AttachKind = "unity" | "java" | "node" | "python" | "go" | "native";
 
 export type AttachableProcess = {
 	pid: number,
@@ -3126,6 +3130,12 @@ export type FileIdentifiers = {
 	occurrences: IdentifierOccurrence[],
 };
 
+export type FileLocation = {
+	path: IpcPath,
+	line: number,
+	column: number,
+};
+
 export type FileMatch = {
 	path: IpcPath,
 	/**  Path relative to the project root, as displayed. */
@@ -4114,6 +4124,8 @@ export type Launch = {
 	 *  window's project or (without one) in LightEdit.
 	 */
 	files: IpcPath[],
+	/**  Latest external navigation request; 1-based coordinates. */
+	location: FileLocation | null,
 	/**  Remote project to open (Remote Development). */
 	remote: RemoteLaunch | null,
 	/**  Settings windows: the page to show. */
@@ -4951,6 +4963,7 @@ export type ProjectInfo_Deserialize = {
 	isGit: boolean,
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectInfo_Serialize = {
@@ -4960,6 +4973,7 @@ export type ProjectInfo_Serialize = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectRoots = {
@@ -6358,6 +6372,13 @@ export type UndoOutcome = {
 	moves: FileMove[],
 	/**  Edited files changed since the refactoring, so their edits were kept. */
 	conflicts: IpcPath[],
+};
+
+export type UnityProjectInfo = {
+	editorVersion: string | null,
+	/**  File names relative to the Unity root, in stable order. */
+	solutions: string[],
+	projects: string[],
 };
 
 export type UpdateCheck = {

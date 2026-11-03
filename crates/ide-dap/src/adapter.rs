@@ -89,6 +89,12 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install Samsung netcoredbg (https://github.com/Samsung/netcoredbg/releases)",
         ),
+        "unity" => cfg(
+            "unity-debug",
+            &[],
+            "stdio",
+            "Install Unity Debugger in Settings > Language Servers, or configure the unity-debug tool path",
+        ),
         "lldb-dap" => {
             cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
         }
@@ -116,6 +122,7 @@ pub fn default_type(adapter: &str) -> Option<&'static str> {
         "js-debug" => "pwa-node",
         "delve" => "go",
         "netcoredbg" => "coreclr",
+        "unity" => "unity",
         "lldb-dap" => "lldb-dap",
         "java-debug" => "java",
         _ => return None,

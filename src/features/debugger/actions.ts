@@ -44,14 +44,9 @@ import { expressionAt, valueHint } from "./editor/valueTooltip";
 import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
-import {
-  openBreakpointsDialog,
-  openConfigChooser,
-  openEvaluateDialog,
-  openSmartStepChooser,
-  useOverlays,
-} from "./ui/popoverStore";
+import { openBreakpointsDialog, openConfigChooser, openEvaluateDialog, openSmartStepChooser } from "./ui/popoverStore";
 import { tx } from "@/platform/i18n";
+import { openAttachPopup } from "./attachPopup";
 
 function isRunConfig(arg: unknown): arg is RunConfig {
   return !!arg && typeof arg === "object" && "command" in arg && "args" in arg && "debugAdapter" in arg;
@@ -134,22 +129,6 @@ async function smartStepInto() {
     return;
   }
   if (!startInlineSmartStep(t.s.id, t.thread, targets)) openSmartStepChooser(t.s.id, t.thread, targets);
-}
-
-/** Opens the Attach to Process popup and loads the process list. */
-export async function openAttachPopup() {
-  if (!isTauri()) {
-    notifications().notify({ group: "run", level: "warning", title: "Attaching needs the desktop app" });
-    return;
-  }
-  useOverlays.setState({ attach: { processes: null, error: null } });
-  try {
-    const processes = await call(commands.debugAttachableProcesses());
-    if (useOverlays.getState().attach) useOverlays.setState({ attach: { processes, error: null } });
-  } catch (e) {
-    if (useOverlays.getState().attach)
-      useOverlays.setState({ attach: { processes: [], error: errorText(e) || "Cannot list processes" } });
-  }
 }
 
 function cursor(): { path: string; line: number; selection: string } | null {
@@ -547,6 +526,14 @@ export function registerDebugActions(): () => void {
       icon: "attach-to-process",
       description: "Attach the debugger to a running Java, Node.js, Python, Go or native process",
       run: () => void openAttachPopup(),
+    },
+    {
+      id: "debug.attachUnity",
+      title: "Attach to Unity Process",
+      category: "Run",
+      icon: "debug",
+      when: "projectOpen",
+      run: () => openAttachPopup("unity"),
     },
     {
       id: "debug.runToCursor",

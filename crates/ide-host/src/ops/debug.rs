@@ -9,6 +9,9 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
+    if config.adapter == "unity" && config.request != "attach" {
+        return Err(ide_core::IdeError::invalid("Unity debugging only supports attachment to a running Editor"));
+    }
     let mut config = match_java_debug_encoding(config, cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -311,6 +314,14 @@ pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResul
         .map_err(|e| ide_core::IdeError::internal(format!("listing processes failed: {e}")))?
 }
 
+pub async fn debug_unity_processes(host: &Host, window: &str) -> IdeResult<Vec<attach::AttachableProcess>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let command = ide_sdk::apply::tool_command(&project.root, &project.settings.effective(), "unity-debug")
+        .map(|p| p.to_string_lossy().into_owned());
+    unity::editors(command, project.root.clone()).await
+}
+
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 pub async fn debug_listen_for_jvm(
@@ -437,6 +448,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_attachable_processes", |c| async move { debug_attachable_processes(&c.host, &c.window).await });
+    d.add("debug_unity_processes", |c| async move { debug_unity_processes(&c.host, &c.window).await });
     d.add("debug_listen_for_jvm", |c| async move {
         debug_listen_for_jvm(&c.host, &c.window, c.arg("request")?, c.arg("host")?, c.arg("port")?).await
     });

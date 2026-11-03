@@ -713,6 +713,9 @@ impl LspManager {
         if server.name == "gopls" {
             params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
         }
+        if server.name == "csharp-ls" {
+            params["capabilities"]["experimental"]["csharp"]["metadataUris"] = json!(true);
+        }
         if !init_options.is_null() {
             params["initializationOptions"] = init_options;
         }
@@ -2218,7 +2221,8 @@ impl LspManager {
 
     /// Contents of a virtual document, from the server that owns `uri`:
     /// `workspace/textDocumentContent` (LSP 3.18) when the server serves the
-    /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs. Cached.
+    /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs, or csharp-ls'
+    /// `csharp/metadata` for `csharp:` URIs. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
         if let Some(d) = self.virtual_docs.lock().get(uri) {
             return Ok(d.clone());
@@ -2233,6 +2237,7 @@ impl LspManager {
         for t in &targets {
             let languages = t.server.languages();
             let serves_scheme = t.caps().content_schemes().contains(&scheme);
+            let mut description = None;
             let result: IdeResult<Option<String>> = if serves_scheme && !class_file {
                 self.call::<_, Option<Value>>(
                     t,
@@ -2246,6 +2251,21 @@ impl LspManager {
             } else if class_file && languages.iter().any(|l| l.as_str() == "java") {
                 self.call::<_, Option<String>>(t, "java/classFileContents", json!({ "uri": uri }), None, LONG_TIMEOUT)
                     .await
+            } else if scheme == "csharp" && languages.iter().any(|l| l.as_str() == "csharp") {
+                self.call::<_, Option<virtual_doc::CSharpMetadata>>(
+                    t,
+                    "csharp/metadata",
+                    json!({ "textDocument": { "uri": uri } }),
+                    None,
+                    LONG_TIMEOUT,
+                )
+                .await
+                .map(|metadata| {
+                    metadata.map(|metadata| {
+                        description = metadata.assembly_name.filter(|name| !name.is_empty());
+                        metadata.source
+                    })
+                })
             } else {
                 continue;
             };
@@ -2257,7 +2277,7 @@ impl LspManager {
                     continue;
                 }
             };
-            let decompiled = virtual_doc::is_decompiled(&text);
+            let decompiled = virtual_doc::is_decompiled(&text) || virtual_doc::is_csharp_decompiled(uri);
             let title = virtual_doc::title(uri, decompiled);
             let detected = self.languages.detect(Path::new(&title), None);
             let language_id = if detected == LanguageId::plain_text() {
@@ -2270,7 +2290,7 @@ impl LspManager {
                 text,
                 language_id,
                 title,
-                description: virtual_doc::description(uri),
+                description: description.or_else(|| virtual_doc::description(uri)),
                 decompiled,
             };
             self.virtual_origins.lock().entry(uri.to_owned()).or_insert(t.server.id);

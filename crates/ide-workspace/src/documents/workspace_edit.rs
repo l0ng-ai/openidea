@@ -395,6 +395,7 @@ impl Documents {
             return Ok(());
         }
         let mut edit = normalize_edit(edit)?;
+        crate::unity::assets::expand_workspace_edit(&mut edit)?;
         self.prepare_workspace_edit(&mut edit)?;
         self.validate_preconditions(&edit.preconditions)?;
         for file in &edit.files {

@@ -1,4 +1,12 @@
 {
+  "Unity Editor": "Unity 编辑器",
+  "Run this project in Unity Editor": "请在 Unity 编辑器中运行此项目",
+  "Attach to Unity Process": "附加到 Unity 进程",
+  "Stop IDE Sessions": "停止 IDE 会话",
+  "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.": "请先在 Unity 编辑器中打开项目，启用 Editor Attaching 并切换到 Debug Mode，再选择下方对应的进程。停止调试只会断开连接，不会关闭 Unity。",
+  "No Unity Editor processes found. Open Unity Editor, then refresh.": "未找到 Unity 编辑器进程，请打开 Unity 编辑器后刷新。",
+  "Install Unity Debugger": "安装 Unity 调试器",
+  "Unity Debugger is not installed": "尚未安装 Unity 调试器",
   "The language server JDK ({path}) must be a full JDK with jdk.compiler, jdk.jdi and jdk.unsupported for Java language support and debugging. jdtls needs JDK {version} or newer. Download JDK {version}, choose a full JDK in {setting}, or set it to Auto.": "语言服务器 JDK（{path}）必须是包含 jdk.compiler、jdk.jdi 和 jdk.unsupported 的完整 JDK，才能支持 Java 语言功能和调试。jdtls 需要 JDK {version} 或更高版本。请下载 JDK {version}，在 {setting} 中选择完整 JDK，或设为自动。",
   "Apple's clangd does not run clang-tidy, so checks from .clang-tidy are not shown. Install clangd (LLVM) to get them.": "Apple 的 clangd 不运行 clang-tidy，因此不会显示 .clang-tidy 中配置的检查。请安装 clangd（LLVM）以启用这些检查。",
   "Newer dependency version available": "有更新的依赖版本可用",
@@ -4511,6 +4519,7 @@
   "Vim rc file": "Vim rc 文件",
   "Breakpoints are not supported in output classes without source code.": "输出目录中无源码的类不支持断点。",
   "Decompiled .class file: sources are not available.": "已反编译的 .class 文件：没有可用的源代码。",
+  "Decompiled assembly (read-only).": "反编译的程序集（只读）。",
   "No column of the file matches the table": "文件中没有与该表匹配的列",
   "Not a URL of PostgreSQL, MySQL, SQLite or a compatible database": "不是 PostgreSQL、MySQL、SQLite 或兼容数据库的 URL",
   "The Database tree shows only the checked names and patterns (* and ?); the connected database always shows.": "数据库树只显示选中的名称和模式（* 和 ?）；已连接的数据库始终显示。",
@@ -5551,5 +5560,7 @@
   "e.g. --keepdb --parallel": "例如 --keepdb --parallel",
   "select files in a git repository to shelve": "请选择 Git 仓库中的文件以搁置更改",
   "select files from a single git repository to shelve": "请一次只选择同一个 Git 仓库中的文件以搁置更改",
+  "Installing…": "正在安装…",
+  "C# project files are missing. In Unity, select an external script editor in Preferences > External Tools, then regenerate project files.": "缺少 C# 项目文件。请在 Unity 的 Preferences > External Tools 中选择外部脚本编辑器，然后重新生成项目文件。",
   "External file changes sync may be slow": "外部文件更改同步可能较慢"
 }

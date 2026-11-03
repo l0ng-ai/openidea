@@ -6,6 +6,15 @@
   flex-direction: column;
 }
 
+.unityNotice {
+  flex: none;
+  padding: 8px 12px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--border);
+}
+
 .content {
   flex: 1;
   min-width: 0;

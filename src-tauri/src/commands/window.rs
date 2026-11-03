@@ -120,7 +120,11 @@ pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResu
 #[tauri::command]
 #[specta::specta]
 pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
-    windows.take_launch(window.label())
+    let launch = windows.take_launch(window.label());
+    if let Some(launch) = &launch {
+        tracing::debug!(window = window.label(), ?launch, "window consumed launch");
+    }
+    launch
 }
 
 #[derive(Serialize, Deserialize, Type)]

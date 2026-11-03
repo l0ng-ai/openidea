@@ -4,6 +4,18 @@
 
 use percent_encoding::percent_decode_str;
 
+/// csharp-ls serves both assembly metadata and source-generated documents here.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CSharpMetadata {
+    pub source: String,
+    pub assembly_name: Option<String>,
+}
+
+pub(crate) fn is_csharp_decompiled(uri: &str) -> bool {
+    scheme(uri) == "csharp" && (uri.contains("/decompiled/") || uri.starts_with("csharp:/metadata/"))
+}
+
 /// Recognize decompiler headers, without treating disassembler stubs as Java source.
 pub fn is_decompiled(text: &str) -> bool {
     let head: String = text.chars().take(600).collect();

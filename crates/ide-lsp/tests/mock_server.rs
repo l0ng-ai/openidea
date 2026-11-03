@@ -1651,6 +1651,65 @@ async fn noop_handler_is_usable_for_raw_peers() {
 // ------------------------------------------------------------------ virtual documents
 
 #[tokio::test(flavor = "multi_thread")]
+async fn csharp_metadata_navigation_and_generated_documents() {
+    let h = harness_for("csharp", "cs", &[("csharp-ls", incremental_caps())], &[]);
+    let (doc, _) = h.open("Player.cs", "class Player : MonoBehaviour {}\n");
+    h.wait_status("csharp-ls", ServerStatus::Ready).await;
+    let s = h.launcher.state("csharp-ls");
+    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"]["csharp"]["metadataUris"], true);
+    let uri = "csharp:/D:/My%20Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs";
+    s.respond(
+        "textDocument/definition",
+        json!([{
+            "uri": uri,
+            "range": {"start": {"line": 2, "character": 13}, "end": {"line": 2, "character": 26}}
+        }]),
+    );
+    let targets = h.mgr.goto(doc, Pos::new(0, 20), GotoKind::Definition).await.unwrap();
+    assert_eq!(targets[0].uri.as_deref(), Some(uri));
+    assert_eq!(targets[0].range, rng(2, 13, 2, 26));
+    let source = "// Decompiled\nnamespace UnityEngine;\npublic class MonoBehaviour {}\n";
+    s.respond(
+        "csharp/metadata",
+        json!({
+            "projectName": "Game", "assemblyName": "UnityEngine.CoreModule",
+            "symbolName": "UnityEngine.MonoBehaviour", "source": source
+        }),
+    );
+    let vd = h.mgr.virtual_document(uri).await.unwrap();
+    assert_eq!(vd.text, source);
+    assert_eq!(vd.title, "UnityEngine.MonoBehaviour.cs");
+    assert_eq!(vd.language_id.as_str(), "csharp");
+    assert_eq!(vd.description.as_deref(), Some("UnityEngine.CoreModule"));
+    assert!(vd.decompiled);
+    assert_eq!(h.mgr.virtual_document(uri).await.unwrap(), vd);
+    assert_eq!(s.requested("csharp/metadata"), vec![json!({ "textDocument": { "uri": uri } })]);
+
+    // The virtual document stays on its owning server, retaining navigation
+    // within decompiled source; editing must never send didChange.
+    let vdoc = DocId::next();
+    h.mgr.did_open_virtual(vdoc, uri, &vd.language_id, 0, &vd.text);
+    eventually(|| s.docs.lock().contains_key(uri)).await;
+    s.respond("textDocument/hover", json!({"contents": "MonoBehaviour"}));
+    assert!(h.mgr.hover(vdoc, Pos::new(2, 15), Default::default()).await.unwrap().is_some());
+    assert_eq!(s.requested("textDocument/hover").last().unwrap()["textDocument"]["uri"], uri);
+    h.mgr.did_close(vdoc);
+    eventually(|| !s.docs.lock().contains_key(uri)).await;
+    assert!(s.notified("textDocument/didChange").is_empty());
+
+    // Source-generator output shares the protocol, but is not decompiled.
+    let generated = "csharp:/D:/My%20Game/Game.csproj/generated/Generator/Player.g.cs";
+    s.respond("csharp/metadata", Value::Null);
+    assert!(h.mgr.virtual_document(generated).await.is_err());
+    s.respond("csharp/metadata", json!({"source": "partial class Player {}", "assemblyName": "Game"}));
+    let vd = h.mgr.virtual_document(generated).await.unwrap();
+    assert!(!vd.decompiled);
+    assert_eq!(vd.title, "Player.g.cs");
+    assert_eq!(vd.language_id.as_str(), "csharp");
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn virtual_locations_and_text_document_content() {
     let mut caps = incremental_caps();
     caps["typeHierarchyProvider"] = json!(true);

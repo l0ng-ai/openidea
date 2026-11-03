@@ -18,6 +18,8 @@ pub enum ToolKind {
 /// Where release archives come from.
 #[derive(Clone, Copy, Debug)]
 pub enum ReleaseSource {
+    /// A pinned upstream archive, verified before extraction.
+    Fixed { version: &'static str, url: &'static str, sha256: &'static str },
     /// Latest GitHub release of `owner/repo`; assets plus links in the release notes.
     GitHub { repo: &'static str },
     /// `api.releases.hashicorp.com` product.
@@ -72,6 +74,7 @@ impl Method {
             Method::Release { source: ReleaseSource::EclipseJdtls, .. } => "Eclipse download",
             Method::Release { source: ReleaseSource::OpenVsx { .. }, .. } => "Open VSX",
             Method::Release { source: ReleaseSource::MavenCentral { .. }, .. } => "Maven Central",
+            Method::Release { source: ReleaseSource::Fixed { .. }, .. } => "Verified download",
             Method::Release { .. } => "GitHub release",
         }
     }
@@ -123,6 +126,29 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 pub const TYPESCRIPT: &str = "typescript@6";
 
 pub static TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "unity-debug",
+        display: "Unity Debugger",
+        kind: Debugger,
+        commands: &["unity-debug"],
+        method: Method::Release {
+            source: ReleaseSource::Fixed {
+                version: "3.0.1",
+                url: "https://github.com/Unity-Technologies/vscode-unity-debug/releases/download/Version-3.0.1/unity-debug-3.0.1.vsix",
+                sha256: "4fa00660e0b52b0413726f80962e7d3d6efd41ac6cfd4df39520cae4a8ba5bd0",
+            },
+            assets: &[any_arch(Mac, "*.vsix"), any_arch(Linux, "*.vsix"), any_arch(Windows, "*.vsix")],
+            locate: &["UnityDebug.exe"],
+        },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/Unity-Technologies/vscode-unity-debug",
+        needs: if cfg!(windows) {
+            &[]
+        } else {
+            &[("mono", "Mono is required to run the Unity debugger (https://www.mono-project.com)")]
+        },
+    },
     ToolSpec {
         name: "prettier",
         display: "Prettier",
@@ -1001,6 +1027,8 @@ mod tests {
     fn registry_names_match_language_configs() {
         let langs = ide_language::LanguageRegistry::load(None).unwrap().all();
         let mut known = std::collections::HashSet::new();
+        // Unity is a project-specific adapter, not the default C# debugger.
+        known.insert(("unity-debug".to_owned(), "unity-debug".to_owned()));
         for l in &langs {
             for s in &l.language_servers {
                 known.insert((s.name.clone(), s.command.clone()));
