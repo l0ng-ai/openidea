@@ -20,7 +20,7 @@ export const tomcatType: RunConfigTypeContribution = {
   },
   fields: [
     ...updatePolicyFields(true),
-    { key: "tomcatHome", label: "Tomcat installation directory", required: true, mono: true },
+    { key: "tomcatHome", label: "Tomcat installation directory", required: true, mono: true, browse: "directory" },
     {
       key: "deployment",
       label: "Deployment",
@@ -35,6 +35,7 @@ export const tomcatType: RunConfigTypeContribution = {
       key: "deploymentPath",
       label: "Deployment path",
       mono: true,
+      browse: (p) => (p.deployment === "war" ? "file" : "directory"),
       required: true,
       visible: (p) => p.deployment !== "artifact",
     },
@@ -59,6 +60,7 @@ export const tomcatType: RunConfigTypeContribution = {
       key: "jre",
       label: "JRE",
       mono: true,
+      browse: "directory",
       placeholder: "Project JDK",
       hint: "Java installation directory; empty uses the project JDK",
     },

@@ -377,6 +377,7 @@ function EditConfigsDialog() {
       onClose={close}
       title="Run/Debug Configurations"
       width={860}
+      resizable="both"
       className={styles.editDialog}
       footerStart={
         <span className={styles.footerRun}>
