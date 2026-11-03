@@ -15,7 +15,8 @@
  * the mask are offsets in the original: read structure from the mask, content
  * from the original.
  */
-import type { LiteralRange } from "@/editor/core/cm/literals";
+import type { EditorState } from "@codemirror/state";
+import { literalRanges, type LiteralRange } from "@/editor/core/cm/literals";
 
 /** Half-open `[from, to)` pair, in UTF-16 offsets of the same text. */
 export type MaskRange = readonly [from: number, to: number];
@@ -39,6 +40,15 @@ export function blankOut(text: string, ranges: MaskSource): string {
 /** Literal ranges of an open document, in the shape the scanners expect. */
 export function rangesFromLiterals(literals: readonly LiteralRange[]): MaskSource {
   return literals.map((l) => [l.from, l.to] as MaskRange);
+}
+
+/**
+ * Java mask of an open document: the IDE's own grammar while its tree is there,
+ * otherwise nothing, which lets the caller's scanner do the whole job.
+ */
+export function javaMask(state: EditorState): MaskSource | undefined {
+  const literals = literalRanges(state);
+  return literals.length ? rangesFromLiterals(literals) : undefined;
 }
 
 /** 0-based line of `offset`, counting the line breaks before it. */
@@ -135,7 +145,6 @@ function maskAttributes(text: string, from: number, end: number, out: MaskRange[
 
 /**
  * A masked span from `open` to `close`. No `close` means a line comment: it
- * ends at the next newline, or at the end of the text. `stopAtNewline` marks a
  * ends at the next newline, or at the end of the text. `stopAtNewline` marks a
  * span that cannot legally cross a line break (a Java string literal): an
  * unterminated one ends at the newline instead of swallowing the rest of the
