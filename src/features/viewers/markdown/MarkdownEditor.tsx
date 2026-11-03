@@ -17,6 +17,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
@@ -77,6 +78,7 @@ export function MarkdownEditor({
 function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const text = useLiveMarkdown((s) => s[path]?.text);
   const fontZoom = useLiveMarkdown((s) => s[path]?.fontZoom ?? 0);
+  const fontSize = useMarkdownPreviewFontSize();
   const topLine = useLiveMarkdown((s) => s[path]?.topLine ?? 0);
   const scrollSeq = useLiveMarkdown((s) => s[path]?.scrollSeq ?? 0);
   const deferred = useDeferredValue(text ?? "");
@@ -185,7 +187,12 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     <div
       ref={ref}
       className={clsx(styles.preview, selectableText)}
-      style={{ "--markdown-font-zoom": `${fontZoom}px` } as CSSProperties}
+      style={
+        {
+          "--markdown-preview-font-size": `${fontSize}px`,
+          "--markdown-font-zoom": `${fontZoom}px`,
+        } as CSSProperties
+      }
       tabIndex={-1}
       role="document"
       aria-label={tx("Markdown preview")}
