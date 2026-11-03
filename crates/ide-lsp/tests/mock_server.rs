@@ -789,6 +789,30 @@ async fn progress_tasks_and_busy_status() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn progress_titled_with_an_executable_path_shows_the_program_name() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let title = "/Users/thomas/Library/Application Support/mbx/bin/cargo check";
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "begin", "title": title } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "report", "message": "tauri_plugin (lib)" } }))
+        .unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "end" } })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { done: true, .. }))).await;
+    let titles: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Task { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, ["cargo check"; 3]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
     h.open("a.mk", "x");

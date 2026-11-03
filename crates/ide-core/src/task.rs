@@ -44,6 +44,39 @@ pub fn cancel(id: TaskId) -> bool {
     }
 }
 
+/// A progress title a tool reported, made readable: a leading absolute executable path
+/// (rust-analyzer reports `/…/bin/cargo check`) shows as its program name (`cargo check`).
+pub fn display_title(title: &str) -> String {
+    let is_sep = |c: char| c == '/' || c == '\\';
+    let b = title.as_bytes();
+    let absolute = title.starts_with(is_sep)
+        || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && is_sep(b[2] as char));
+    if !absolute {
+        return title.to_owned();
+    }
+    // The path runs on through spaces (`Application Support/…`) while the next word still
+    // continues it; the first word without a separator, an option or a new path ends it.
+    let mut end = title.find(' ').unwrap_or(title.len());
+    while end < title.len() {
+        let rest = &title[end + 1..];
+        let word = rest.split(' ').next().unwrap_or_default();
+        if word.is_empty() || !word.contains(is_sep) || word.starts_with(is_sep) || word.starts_with('-') {
+            break;
+        }
+        end += 1 + word.len();
+    }
+    let (path, rest) = title.split_at(end);
+    let name = path.rsplit(is_sep).next().unwrap_or(path);
+    let name = [".exe", ".cmd", ".bat"]
+        .iter()
+        .find_map(|ext| {
+            let cut = name.len().checked_sub(ext.len())?;
+            (name.is_char_boundary(cut) && name[cut..].eq_ignore_ascii_case(ext)).then(|| &name[..cut])
+        })
+        .unwrap_or(name);
+    if name.is_empty() { title.to_owned() } else { format!("{name}{rest}") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +103,29 @@ mod tests {
         }));
         assert!(!cancel(other), "an ended task is not cancelled");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn display_title_shows_a_leading_executable_path_as_its_name() {
+        for (title, shown) in [
+            ("/Users/thomas/Library/Application Support/mbx/bin/cargo check", "cargo check"),
+            ("/home/me/.cargo/bin/cargo clippy (#2)", "cargo clippy (#2)"),
+            (
+                "/opt/my tools/bin/cargo check --manifest-path /x/Cargo.toml",
+                "cargo check --manifest-path /x/Cargo.toml",
+            ),
+            (r"C:\Users\me\.cargo\bin\cargo.exe check", "cargo check"),
+            (r"C:\Program Files\Rust\bin\cargo.EXE check", "cargo check"),
+            (r"\\server\share\tools\x.cmd build", "x build"),
+            ("/usr/bin/make", "make"),
+            ("cargo check", "cargo check"),
+            ("Indexing", "Indexing"),
+            ("Building compile-time-deps", "Building compile-time-deps"),
+            ("Loading /src/app (2/3)", "Loading /src/app (2/3)"),
+            ("/", "/"),
+            ("", ""),
+        ] {
+            assert_eq!(display_title(title), shown, "{title:?}");
+        }
     }
 }

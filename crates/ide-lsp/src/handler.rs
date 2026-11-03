@@ -59,7 +59,7 @@ impl ClientHandler {
                         .get("title")
                         .and_then(Value::as_str)
                         .filter(|t| !t.is_empty())
-                        .map(str::to_owned)
+                        .map(ide_core::task::display_title)
                         .unwrap_or_else(|| self.server.name.clone());
                     let task = TaskId::next();
                     let cancel = (cancellable == Some(true)).then(|| self.cancel_handle(task, &params["token"]));
