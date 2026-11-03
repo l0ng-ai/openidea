@@ -570,7 +570,10 @@ impl LspManager {
                 if let Some(info) = result.get("serverInfo") {
                     tracing::info!("{} initialized: {info}", server.name);
                 }
-                ServerCaps::parse(result.get("capabilities").cloned().unwrap_or_else(|| json!({})))
+                let mut caps = ServerCaps::parse(result.get("capabilities").cloned().unwrap_or_else(|| json!({})));
+                let cfg = server.effective_config();
+                caps.restrict(caps::Restriction::new(&server.name, &cfg.features, &cfg.code_action_kinds));
+                caps
             }
             Err(e) => {
                 tracing::warn!("{}: initialize failed: {e}", server.name);
@@ -1593,8 +1596,14 @@ impl LspManager {
                 Ok(actions) => {
                     let conv = self.conv(t.enc());
                     let acc = out.value.get_or_insert_with(Vec::new);
+                    let caps = t.caps();
                     acc.extend(
-                        actions.unwrap_or_default().into_iter().map(|a| convert::code_action(&conv, a, t.server.id)),
+                        actions
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|a| convert::code_action(&conv, a, t.server.id))
+                            // Servers may ignore `only`, and the kinds kept for this one.
+                            .filter(|a| caps.restriction.keeps_action(a.kind.as_deref())),
                     );
                 }
                 Err(e) => out.fail(e),

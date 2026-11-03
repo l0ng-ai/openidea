@@ -33,6 +33,8 @@ fn server(name: &str) -> LanguageServerConfig {
         install_hint: None,
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
@@ -329,6 +331,26 @@ fn language_server_settings_disable_add_and_override() {
     let init = serde_json::to_value(ra.initialization_options.unwrap()).unwrap();
     assert_eq!(init, json!({ "checkOnSave": false, "check": { "command": "clippy" } }));
     assert_eq!(ra.settings, Some(json!({ "rust-analyzer": { "cargo": { "features": "all" } } })));
+    assert!(ra.features.is_empty() && ra.code_action_kinds.is_empty(), "no setting keeps the definition's");
+
+    // `features` / `codeActionKinds` replace the definition's; empty lifts them.
+    let mut pylsp = server("pylsp");
+    pylsp.features = vec!["code-action".into()];
+    pylsp.code_action_kinds = vec!["refactor".into()];
+    s.language_servers.insert(
+        "pylsp".into(),
+        LanguageServerSettings {
+            features: Some(vec!["code-action".into(), "hover".into()]),
+            code_action_kinds: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    server_protocol_overrides(&mut pylsp, &s);
+    assert_eq!(pylsp.features, ["code-action", "hover"]);
+    assert!(pylsp.code_action_kinds.is_empty());
+    let parsed: LanguageServerSettings =
+        serde_json::from_value(json!({ "features": ["code-action"], "codeActionKinds": ["refactor"] })).unwrap();
+    assert_eq!(parsed.code_action_kinds, Some(vec!["refactor".to_string()]));
 }
 
 #[test]

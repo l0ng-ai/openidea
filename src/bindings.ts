@@ -4306,6 +4306,16 @@ export type LanguageServerSettings_Deserialize = {
 	languages?: string[],
 	/**  Files marking a workspace root for a server defined here (`pyproject.toml`). */
 	rootMarkers?: string[],
+	/**
+	 *  Replaces the definition's `features`: what the server is used for
+	 *  (`code-action`, `hover`, …); an empty list means everything.
+	 */
+	features?: string[] | null,
+	/**
+	 *  Replaces the definition's `code-action-kinds` (`refactor`); an empty
+	 *  list keeps every kind.
+	 */
+	codeActionKinds?: string[] | null,
 };
 
 export type LanguageServerSettings_Serialize = {
@@ -4334,6 +4344,16 @@ export type LanguageServerSettings_Serialize = {
 	languages: string[],
 	/**  Files marking a workspace root for a server defined here (`pyproject.toml`). */
 	rootMarkers: string[],
+	/**
+	 *  Replaces the definition's `features`: what the server is used for
+	 *  (`code-action`, `hover`, …); an empty list means everything.
+	 */
+	features?: string[] | null,
+	/**
+	 *  Replaces the definition's `code-action-kinds` (`refactor`); an empty
+	 *  list keeps every kind.
+	 */
+	codeActionKinds?: string[] | null,
 };
 
 export type LanguagesSettings = {
