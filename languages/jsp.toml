@@ -1,0 +1,6 @@
+id = "jsp"
+name = "JSP"
+extensions = ["jsp", "jspx", "jspf", "jsph", "tag", "tagf", "tagx"]
+block-comment = ["<%--", "--%>"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "JSP"

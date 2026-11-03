@@ -966,13 +966,19 @@ fn rel_path(root: &Path, p: &Path) -> String {
 }
 
 /// The POMs that are not modules of another one: the root `pom.xml`, else the
-/// shallowest `pom.xml` of each branch (a folder holding several builds).
+/// shallowest `pom.xml` of each branch (a folder holding several builds). An
+/// aggregate POM directly inside `src/` counts too (issue #1001: `src/pom.xml`
+/// with its modules beside it, `src/app/pom.xml` and so on).
 fn top_level_poms(root: &Path) -> Vec<PathBuf> {
     let top = root.join("pom.xml");
     if top.is_file() {
         return vec![top];
     }
     let mut out = Vec::new();
+    let src_pom = root.join("src").join("pom.xml");
+    if src_pom.is_file() {
+        out.push(src_pom);
+    }
     let mut queue: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = queue.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -986,9 +992,16 @@ fn top_level_poms(root: &Path) -> Vec<PathBuf> {
         }
         dirs.sort();
         for d in dirs.into_iter().rev() {
-            if d.join("pom.xml").is_file() {
-                out.push(d.join("pom.xml"));
-            } else if depth + 1 < POM_SEARCH_DEPTH {
+            let pom = d.join("pom.xml");
+            if pom.is_file() {
+                out.push(pom);
+                continue;
+            }
+            let src_pom = d.join("src").join("pom.xml");
+            if src_pom.is_file() {
+                out.push(src_pom);
+            }
+            if depth + 1 < POM_SEARCH_DEPTH {
                 queue.push((d, depth + 1));
             }
         }
@@ -1704,6 +1717,25 @@ mod tests {
         assert_eq!(names, ["a", "b"]);
         assert!(is_maven_project(root));
         assert!(!is_maven_project(&root.join("c")));
+    }
+
+    #[test]
+    fn aggregate_pom_in_src_is_a_build() {
+        // Issue #1001: `src/pom.xml` aggregating modules under `src/` is recognized,
+        // with its modules loaded — while `src` stays unsearched otherwise.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "src/pom.xml",
+            "<project><groupId>g</groupId><artifactId>parent</artifactId><packaging>pom</packaging>\
+             <modules><module>app</module></modules></project>",
+        );
+        write(root, "src/app/pom.xml", "<project><groupId>g</groupId><artifactId>app</artifactId></project>");
+        let model = load_with_repo(root, None);
+        let names: Vec<&str> = model.projects.iter().map(|p| p.artifact_id.as_str()).collect();
+        assert_eq!(names, ["parent", "app"]);
+        assert!(is_maven_project(root));
     }
 
     #[test]

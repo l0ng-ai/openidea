@@ -129,6 +129,7 @@ impl Host {
             let root = root.clone();
             let data_dir = self.local_data_dir.clone();
             let config_dir = self.config_dir.clone();
+            let build_cache = self.local_data_dir.join("cache").join(&project_key).join("build");
             let sink = sink.clone();
             let formatter_problem = std::sync::Mutex::new(None);
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
@@ -142,6 +143,15 @@ impl Host {
                 let root = member.as_ref().unwrap_or(&root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                if cfg.name == "jdtls" {
+                    // A workspace member keeps its build model under its own key (Build Project).
+                    let cache = match &member {
+                        Some(member) => build_cache.join(crate::project::project_key(member)),
+                        None => build_cache.clone(),
+                    };
+                    let profiles = ide_build::maven_profiles(&cache);
+                    ide_sdk::maven_profiles::configure_jdtls(cfg, root, &effective, &profiles, &cache);
+                }
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
                     let problem = ide_lsp::jdtls::configure_formatter(
@@ -365,6 +375,13 @@ impl Host {
                 }),
             )?
         };
+        if let Some(reason) = watcher.polling() {
+            sink.emit(IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Warning,
+                title: "External file changes sync may be slow".into(),
+                body: Some(reason.into()),
+            });
+        }
 
         // Scratch files live outside the project; watch them too so the
         // Project view and open editors follow changes made there.

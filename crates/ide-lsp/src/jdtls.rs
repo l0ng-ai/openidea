@@ -20,6 +20,7 @@ const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
 mod formatter;
+pub(crate) mod reserved_names;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -331,6 +332,35 @@ impl LspManager {
             let Some(run) = server.running_gen(generation) else { return };
             if let Err(e) = mgr.java_configure_compiler(&server, &run).await {
                 tracing::warn!("jdtls: cannot apply compiler defaults: {e}");
+            }
+        });
+    }
+
+    /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
+    /// change, a Maven sync, other Maven profiles), but does not check open documents
+    /// again against the new classpath: their errors would stay until the next edit.
+    pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
+        let uris: Vec<String> = self
+            .docs
+            .lock()
+            .values()
+            .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+            .map(|d| crate::uri::path_to_uri_string(&d.path))
+            .collect();
+        if uris.is_empty() {
+            return;
+        }
+        self.runtime.spawn(async move {
+            let Some(run) = server.running_gen(generation) else { return };
+            for uri in uris {
+                let params =
+                    json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
+                let request = run.peer.request::<_, Value>("workspace/executeCommand", params, None);
+                if let Ok(Err(e)) | Err(e) =
+                    tokio::time::timeout(COMMAND_TIMEOUT, request).await.map_err(|_| ide_jsonrpc::RpcError::Timeout)
+                {
+                    tracing::debug!("jdtls: java.project.refreshDiagnostics {uri}: {e}");
+                }
             }
         });
     }
@@ -661,6 +691,24 @@ impl LspManager {
             tracing::debug!("vscode.java.updateDebugSettings: {e}");
         }
         parse_port(&v).ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))
+    }
+}
+
+impl LspManager {
+    /// JDT LS aborted its import with `message`: when reserved Windows device names
+    /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
+    pub(crate) fn report_import_failure(&self, root: PathBuf, message: String) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn_blocking(move || {
+            let Some(body) = reserved_names::import_failure_hint(&root, &message, cfg!(windows)) else { return };
+            if me.first_message(SERVER, &body) {
+                me.sink().emit(ide_core::IdeEvent::Notify {
+                    level: ide_core::event::NotifyLevel::Error,
+                    title: "Java project import failed".into(),
+                    body: Some(body),
+                });
+            }
+        });
     }
 }
 

@@ -7,7 +7,12 @@
  */
 import type { Extension } from "@codemirror/state";
 import { registerEditorContribution, type EditorDocContext } from "@/editor/api";
-import { registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import {
+  registerEditorBanner,
+  registerOverlay,
+  registerStatusItem,
+  registerToolWindow,
+} from "@/workbench/contributions";
 import { lspDoc } from "./lsp";
 import { hintExtension } from "./hint";
 import { completionExtension } from "./completion";
@@ -31,6 +36,7 @@ import { spellingExtension } from "./spelling";
 import { DocumentationWindow, LspPopups, UsagesStatus } from "./Popups";
 import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
+import { outsideProjectBanner } from "./outsideProject";
 import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
 
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
@@ -66,6 +72,7 @@ export function activate(): () => void {
     // After the templates (order 90): live template / postfix expansion keeps ⇥ first.
     registerEditorContribution({ id: "lsp.parameterTab", order: 95, extensions: () => parameterTabKeys }),
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
+    registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.
     registerToolWindow({
