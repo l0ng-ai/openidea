@@ -1,9 +1,9 @@
 /**
  * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
- * Languages & Frameworks › Go / Java / Markdown / Node.js / Rust / TypeScript. Pages live in
+ * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
-import { GoPage, JavaPage, NodePage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { PrettierPage } from "../languages/PrettierPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
@@ -127,6 +127,26 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.5,
     keywords: ["formatter", "prettier", "markdown", "yaml", "css", "format on save", "node_modules"],
     component: PrettierPage,
+  },
+  {
+    id: "languages.php",
+    projectScope: true,
+    defaultScope: "project",
+    title: "PHP",
+    group: LANGUAGES_GROUP,
+    order: 403.2,
+    keywords: [
+      "php interpreter",
+      "cli interpreter",
+      "php",
+      "composer",
+      "phpunit",
+      "xampp",
+      "herd",
+      "homebrew",
+      "phpbrew",
+    ],
+    component: PhpPage,
   },
   {
     id: "languages.ruby",

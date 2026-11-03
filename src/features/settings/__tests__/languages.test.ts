@@ -87,6 +87,7 @@ describe("language pages", () => {
       "Markdown",
       "Node.js",
       "Python Interpreter",
+      "PHP",
       "Prettier",
       "Ruby",
       "Rust",
