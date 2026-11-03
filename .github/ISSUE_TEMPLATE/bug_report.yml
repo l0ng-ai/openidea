@@ -1,0 +1,69 @@
+name: Bug Report
+description: Report a problem with OpenIDEA. 请用英文填写标题和描述（机器翻译即可，原文可附在下面）。
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+
+        Please write the title and description in **English** — machine translation is fine, and you may include the original text below the English version. Keep logs and error messages in their original form.
+
+        Before submitting, please [search existing issues](https://github.com/l0ng-ai/openidea/issues?q=is%3Aissue) for duplicates and report **one problem per issue**.
+  - type: input
+    id: version
+    attributes:
+      label: OpenIDEA version
+      description: The release tag you installed, or the commit you built from.
+      placeholder: e.g. v0.1.33
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux (X11)
+        - Linux (Wayland)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps, with a small example project if possible.
+      placeholder: |
+        1. Open …
+        2. Click …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Screenshots help. Keep logs and error messages in their original form.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Console output or log files, if any.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for duplicates
+          required: true
+        - label: This issue reports only one problem
+          required: true

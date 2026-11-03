@@ -1,0 +1,21 @@
+name: Feature Request
+description: Suggest an idea or an improvement for OpenIDEA. 请用英文填写标题和描述（机器翻译即可，原文可附在下面）。
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please write the title and description in **English** — machine translation is fine, and you may include the original text below. Before submitting, please [search existing issues](https://github.com/l0ng-ai/openidea/issues?q=is%3Aissue) for duplicates.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What are you trying to do, and what stands in the way? Which IDE already solves it well, if any?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
