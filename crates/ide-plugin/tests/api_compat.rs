@@ -9,7 +9,7 @@
 //!   simulated with a linker that stubs every plugin import the component has
 //!   at the newer version, so no copy of the WIT is needed.
 //!
-//! Components: the checked-in `dist/plugin.wasm` of `plugins/hello`, the
+//! Components: the checked-in `dist/plugin.wasm` of the `hello` fixture, the
 //! official plugins (`plugins/build.sh` rebuilds them).
 
 use ide_plugin::{API_VERSION, PluginEngine, check_api, component_api, host_api};
@@ -23,14 +23,14 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Every component the repository ships: `hello` and the official plugins with code.
+/// Every component the repository builds for users: the official plugins with code, plus the `hello` fixture.
 fn components() -> Vec<PathBuf> {
-    let mut out = vec![repo().join("plugins/hello/dist/plugin.wasm")];
+    let mut out = vec![repo().join("crates/ide-plugin/tests/fixtures/hello/dist/plugin.wasm")];
     let official = repo().join("plugins/official");
     let mut dirs: Vec<_> = std::fs::read_dir(&official).unwrap().map(|e| e.unwrap().path()).collect();
     dirs.sort();
     out.extend(dirs.into_iter().map(|d| d.join("dist/plugin.wasm")).filter(|p| p.is_file()));
-    assert!(out.len() >= 10, "expected hello and the official plugins, found {out:?}");
+    assert!(out.len() >= 9, "expected hello and the official plugins, found {out:?}");
     out
 }
 
@@ -232,7 +232,7 @@ fn components_link_against_a_later_minor_that_adds_functions_and_interfaces() {
 fn components_do_not_link_against_another_major() {
     let engine = engine();
     let next_major = format!("{}.0.0", host_api().major + 1);
-    let wasm = repo().join("plugins/hello/dist/plugin.wasm");
+    let wasm = repo().join("crates/ide-plugin/tests/fixtures/hello/dist/plugin.wasm");
     let component = Component::from_file(&engine, &wasm).unwrap();
     let linker = host_at(&engine, &component, &next_major, Host::Superset);
     assert!(linker.instantiate_pre(&component).is_err());
@@ -250,7 +250,7 @@ fn components_do_not_link_against_another_major() {
 fn a_later_minor_that_drops_a_function_does_not_link() {
     // Keeps the test above honest: the stub host really is type-checked.
     let engine = engine();
-    let wasm = repo().join("plugins/hello/dist/plugin.wasm");
+    let wasm = repo().join("crates/ide-plugin/tests/fixtures/hello/dist/plugin.wasm");
     let component = Component::from_file(&engine, &wasm).unwrap();
     let (iface, func) = component
         .component_type()

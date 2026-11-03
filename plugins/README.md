@@ -13,8 +13,6 @@ menus, settings) need no code at all.
 
 ```
 plugins/
-├─ hello/                     # Rust plugin built with the SDK: commands, a tree tool window
-├─ language-toy/              # data only: a language definition
 └─ official/
    ├─ material-icons/         # data only: a file icon theme
    ├─ solidity/               # language + syntax provider + run configurations
@@ -24,9 +22,10 @@ plugins/
    ├─ checkstyle/             # one-shot process, diagnostics, quick fixes
    ├─ ai-completion/          # inline completion over the network, secrets
    ├─ mybatis/                # navigation, gutter markers, completion across files
-   ├─ kubernetes/             # tree tool window, terminals, settings
-   └─ csv-editor/             # custom editor sharing the text document
+   ├─ csv-editor/             # custom editor sharing the text document
+   └─ excalidraw/             # web view custom editor, file icons, a template
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
 ```
 
 The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.0.0`, world
@@ -288,7 +287,7 @@ then run `openidea-plugin check`.
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
 
-`run-command` receives an optional string argument: `executeAction("plugin.hello.insert-date", "arg")`
+`run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`
 from another feature, or nothing when run from Search Everywhere / a shortcut.
 
 ### Events
@@ -576,8 +575,8 @@ entities. Apply a theme in Settings › Plugins; see
 ## 6. Languages
 
 `languages/<id>.toml` files use the IDE's own language format; see any file in
-[`languages/`](../languages). `language-toy` is a minimal example,
-[`official/solidity`](official/solidity) a complete one.
+[`languages/`](../languages); [`official/solidity`](official/solidity) is a
+complete example.
 
 Plugin languages join the IDE's language registry like built-in ones: file
 detection (`extensions`, `filenames`, `first-line`), comments, indentation,
@@ -687,7 +686,8 @@ and the publisher's key, then shows the install page.
 ## 9. Testing the host
 
 The host's integration tests (`crates/ide-host/tests/plugins.rs`) load the
-checked-in components of `hello`, the official plugins and the test fixtures.
+checked-in components of the official plugins and of the test fixtures
+(`crates/ide-plugin/tests/fixtures/`).
 Rebuild them after changing a plugin, the SDK or the WIT files:
 
 ```sh

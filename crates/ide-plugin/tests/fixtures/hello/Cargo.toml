@@ -1,18 +1,17 @@
 [package]
-name = "openidea-plugin-openidea-kubernetes"
+name = "openidea-plugin-hello"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
-# A plugin builds on its own (target wasm32-wasip2), outside any IDE workspace.
+# Standalone: not a member of the IDE workspace (different target).
 [workspace]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-openidea-plugin = { path = "../../../sdk/rust/openidea-plugin" }
-serde_json = "1"
+openidea-plugin = { path = "../../../../../sdk/rust/openidea-plugin" }
 
 [profile.release]
 opt-level = "s"

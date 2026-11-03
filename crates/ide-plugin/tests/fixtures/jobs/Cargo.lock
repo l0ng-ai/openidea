@@ -102,11 +102,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "openidea-plugin-openidea-kubernetes"
+name = "openidea-plugin-jobs"
 version = "0.1.0"
 dependencies = [
  "openidea-plugin",
- "serde_json",
 ]
 
 [[package]]

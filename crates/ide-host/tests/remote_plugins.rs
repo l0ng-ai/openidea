@@ -67,6 +67,11 @@ fn official(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/official").join(name)
 }
 
+/// A test fixture plugin (`crates/ide-plugin/tests/fixtures/<name>`).
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures").join(name)
+}
+
 /// A `checkstyle` that reports a tab on line 2 of the file it is given.
 fn fake_checkstyle(bin: &Path) {
     std::fs::create_dir_all(bin).unwrap();
@@ -207,22 +212,16 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     plugins.host().shutdown();
 }
 
-/// CSV Editor and Kubernetes in a remote project.
-/// The table edits the document on the server; the cluster is the server's
-/// `kubectl`'s, and its log terminal opens in the remote window.
+/// CSV Editor and a tool window with a terminal (the `jobs` fixture) in a
+/// remote project. The table edits the document on the server; the jobs are
+/// the server's `jobs` program's, and the terminal opens in the remote window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_projects_get_plugin_views_and_custom_editors() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = tmp.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(
-        bin.join("kubectl"),
-        "#!/bin/sh\ncase \"$*\" in\n\
-         *'get namespaces'*) echo '{\"items\":[{\"metadata\":{\"name\":\"remote-ns\"}}]}' ;;\n\
-         *) echo '{\"items\":[]}' ;;\nesac\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(bin.join("kubectl"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(bin.join("jobs"), "#!/bin/sh\n[ \"$1\" = list ] && echo remote-job\n").unwrap();
+    std::fs::set_permissions(bin.join("jobs"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let path_var = {
         let bin = bin.clone();
         Arc::new(move || Some(bin.clone().into_os_string()))
@@ -231,8 +230,8 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
         PluginHost::new(tmp.path().join("desktop/plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default())
             .unwrap();
     desktop.set_program_path(path_var.clone());
-    for name in ["csv-editor", "kubernetes"] {
-        let info = desktop.install_from_dir(&official(name), &Consent::all()).unwrap();
+    for dir in [official("csv-editor"), fixture("jobs")] {
+        let info = desktop.install_from_dir(&dir, &Consent::all()).unwrap();
         assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     }
 
@@ -267,7 +266,7 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     let _: Value = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
     invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
     invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
-    let report = sync(&peer, &desktop, &["openidea.csv-editor", "openidea.kubernetes"]).await;
+    let report = sync(&peer, &desktop, &["openidea.csv-editor", "jobs"]).await;
     assert_eq!(report.installed.len(), 2, "{report:?}");
 
     // CSV Editor: the document is the server's.
@@ -287,20 +286,14 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     let snap = invoke(&peer, "doc_snapshot", json!({ "doc": doc })).await.unwrap();
     assert_eq!(snap["text"], "name,city\nAda,Oslo\n");
 
-    // Kubernetes: the server's kubectl; the terminal opens in this window.
-    let k8s =
-        |event: Value| json!({ "pluginId": "openidea.kubernetes", "view": "cluster", "doc": null, "event": event });
-    let view = invoke(
-        &peer,
-        "plugin_view_render",
-        json!({ "pluginId": "openidea.kubernetes", "view": "cluster", "doc": null }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(view["body"]["value"][0]["label"], "remote-ns", "{view}");
-    invoke(&peer, "plugin_view_event", k8s(json!({ "kind": "select", "key": "remote-ns/pods/api-0" }))).await.unwrap();
-    invoke(&peer, "plugin_view_event", k8s(json!({ "kind": "button", "id": "logs" }))).await.unwrap();
-    until("the log terminal", 5, || {
+    // Jobs: the server's program; the terminal opens in this window.
+    let jobs = |event: Value| json!({ "pluginId": "jobs", "view": "jobs", "doc": null, "event": event });
+    let view =
+        invoke(&peer, "plugin_view_render", json!({ "pluginId": "jobs", "view": "jobs", "doc": null })).await.unwrap();
+    assert_eq!(view["body"]["value"][0]["label"], "remote-job", "{view}");
+    invoke(&peer, "plugin_view_event", jobs(json!({ "kind": "select", "key": "remote-job" }))).await.unwrap();
+    invoke(&peer, "plugin_view_event", jobs(json!({ "kind": "button", "id": "follow" }))).await.unwrap();
+    until("the job's terminal", 5, || {
         client.plugin_events.lock().iter().any(|m| {
             m.window.as_deref() == Some("main")
                 && matches!(&m.event, PluginEvent::OpenTerminal { program, .. } if program.0.starts_with(bin.canonicalize().unwrap()))

@@ -1,10 +1,9 @@
 //! End-to-end tests of the plugin host against real components.
 //!
-//! The components are checked in (`plugins/hello/dist/plugin.wasm`,
-//! `crates/ide-plugin/tests/fixtures/misbehave/dist/plugin.wasm`) so tests need no
-//! wasm toolchain. Rebuild them with `plugins/build.sh hello` and
-//! `plugins/build.sh crates/ide-plugin/tests/fixtures/misbehave` after
-//! changing their source or `wit/`.
+//! The components are checked in (`dist/plugin.wasm` of the official plugins
+//! and of the fixtures in `crates/ide-plugin/tests/fixtures/`: `hello`, `jobs`,
+//! `misbehave`) so tests need no wasm toolchain. Rebuild them with
+//! `plugins/build.sh <dir>` after changing their source or `wit/`.
 
 use ide_core::error::ErrorKind;
 use ide_host::plugins::*;
@@ -111,8 +110,9 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
+/// A test fixture plugin (`crates/ide-plugin/tests/fixtures/<name>`).
 fn sample(name: &str) -> PathBuf {
-    repo().join("plugins").join(name)
+    repo().join("crates/ide-plugin/tests/fixtures").join(name)
 }
 
 fn theme_template() -> PathBuf {
@@ -1393,7 +1393,11 @@ fn catalog_lists_sample_packages() {
     std::fs::create_dir_all(tmp.path().join("junk")).unwrap();
     std::fs::write(tmp.path().join("junk/plugin.toml"), "garbage = ").unwrap();
 
-    let catalog = f.host.catalog(&[repo().join("plugins"), repo().join("templates"), tmp.path().to_path_buf()]);
+    let catalog = f.host.catalog(&[
+        repo().join("crates/ide-plugin/tests/fixtures"),
+        repo().join("templates"),
+        tmp.path().to_path_buf(),
+    ]);
     let ids: Vec<&str> = catalog.iter().map(|c| c.id.as_str()).collect();
     for id in ["hello", "theme-harbor-night", "language-toy", "x"] {
         assert!(ids.contains(&id), "{id} missing from {ids:?}");
@@ -1864,44 +1868,45 @@ fn sample_plugin_tool_window_with_a_tree() {
     }
 }
 
-/// Kubernetes: the cluster tree through `kubectl` (pinned), logs in
-/// the terminal of the invoking window.
+/// A tree filled from a pinned program's output, and a terminal for the
+/// activated entry in the invoking window, titled and sized by the plugin's
+/// settings (the `jobs` fixture).
 #[test]
-fn official_kubernetes_browses_the_cluster_and_opens_logs() {
+fn pinned_programs_fill_views_and_open_terminals() {
     use std::os::unix::fs::PermissionsExt;
     let f = fixture(Limits::default());
     let bin = f.plugins_dir.parent().unwrap().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(
-        bin.join("kubectl"),
-        "#!/bin/sh\ncase \"$*\" in\n\
-         *'get namespaces'*) echo '{\"items\":[{\"metadata\":{\"name\":\"default\"}}]}' ;;\n\
-         *'get pods'*) echo '{\"items\":[{\"metadata\":{\"name\":\"web-1\"},\"status\":{\"phase\":\"Running\",\"containerStatuses\":[{\"ready\":true}]}}]}' ;;\n\
-         *) echo '{\"items\":[]}' ;;\nesac\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(bin.join("kubectl"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(bin.join("jobs"), "#!/bin/sh\n[ \"$1\" = list ] && printf 'build\\ndeploy\\n'\n").unwrap();
+    std::fs::set_permissions(bin.join("jobs"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = bin.clone();
     f.host.set_program_path(Arc::new(move || Some(path.clone().into_os_string())));
-    let info = f.install(&official("kubernetes"));
+    let info = f.install(&sample("jobs"));
     assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
-    let ev = |e: ide_plugin::ViewEvent| f.host.view_event("openidea.kubernetes", "cluster", e, f.inv()).unwrap();
-    ev(ide_plugin::ViewEvent::Expand { key: "default".into() });
-    ev(ide_plugin::ViewEvent::Expand { key: "default/pods".into() });
-    let view = f.host.render_view("openidea.kubernetes", "cluster", None, f.inv()).unwrap();
+
+    let view = f.host.render_view("jobs", "jobs", None, f.inv()).unwrap();
     let ide_plugin::ViewBody::Tree(items) = &view.body else { panic!("{view:?}") };
-    let pod = items.iter().find(|i| i.key == "default/pods/web-1").expect("the pod");
-    assert_eq!(pod.detail.as_deref(), Some("Running 1/1"));
-    f.take_events();
-    ev(ide_plugin::ViewEvent::Activate { key: "default/pods/web-1".into() });
-    let terminal = f.take_events().into_iter().find_map(|(client, e)| match e {
-        PluginEvent::OpenTerminal { title, program, args, .. } => Some((client, title, program, args)),
-        _ => None,
-    });
-    let (client, title, program, args) = terminal.expect("a terminal");
-    assert_eq!((client.as_deref(), title.as_str()), (Some("main"), "logs: web-1"));
-    assert_eq!(program.0, bin.join("kubectl").canonicalize().unwrap());
-    assert_eq!(args, ["logs", "-f", "--tail=200", "-n", "default", "web-1"]);
+    assert_eq!(items.iter().map(|i| i.key.as_str()).collect::<Vec<_>>(), ["build", "deploy"]);
+
+    let open = |key: &str| {
+        f.take_events();
+        f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Activate { key: key.into() }, f.inv()).unwrap();
+        f.take_events().into_iter().find_map(|(client, e)| match e {
+            PluginEvent::OpenTerminal { title, program, args, .. } => Some((client, title, program, args)),
+            _ => None,
+        })
+    };
+    let (client, title, program, args) = open("deploy").expect("a terminal");
+    assert_eq!((client.as_deref(), title.as_str()), (Some("main"), "follow: deploy"));
+    assert_eq!(program.0, bin.join("jobs").canonicalize().unwrap());
+    assert_eq!(args, ["follow", "deploy", "--lines=20"]);
+
+    // The plugin's settings, string and number.
+    let values = serde_json::json!({ "title": "tail ", "lines": 5 }).as_object().unwrap().clone();
+    f.workspace.settings.lock().insert("jobs".into(), values);
+    let (_, title, _, args) = open("build").expect("a terminal");
+    assert_eq!(title, "tail build");
+    assert_eq!(args, ["follow", "build", "--lines=5"]);
 }
 
 /// A plugin with web views and no code: its pages and their files are

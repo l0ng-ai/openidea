@@ -131,7 +131,7 @@ fn installs_from_before_versioning_keep_working_and_move_on_update() {
 
 /// `hello` as `acme.hello` at `version`, packed and signed with `key`.
 fn signed_hello(dir: &Path, version: &str, key: &PublisherKey, host: &PluginHost) -> (PathBuf, IndexEntry) {
-    let src = variant(&repo().join("plugins/hello"), dir, &format!("src-{version}"), |t| {
+    let src = variant(&repo().join("crates/ide-plugin/tests/fixtures/hello"), dir, &format!("src-{version}"), |t| {
         t.replace("id = \"hello\"", "id = \"acme.hello\"")
             .replace("version = \"0.3.0\"", &format!("version = \"{version}\""))
     });

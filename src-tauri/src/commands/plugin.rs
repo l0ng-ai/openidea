@@ -282,14 +282,13 @@ pub async fn plugin_activation_event(
 }
 
 /// Plugin packages available locally for installation: `<resources>/plugins`
-/// when bundled, plus the repository's sample `plugins/` in debug builds.
+/// when bundled, plus the repository's official plugins in debug builds.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_catalog(app: AppHandle, state: State<'_, AppState>) -> IdeResult<Vec<CatalogPlugin>> {
     let mut dirs: Vec<PathBuf> = app.path().resource_dir().map(|d| vec![d.join("plugins")]).unwrap_or_default();
     if cfg!(debug_assertions) {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        dirs.push(repo.join("plugins"));
         dirs.push(repo.join("plugins/official"));
     }
     let host = state.plugins.clone();

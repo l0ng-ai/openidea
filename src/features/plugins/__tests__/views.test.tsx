@@ -217,7 +217,7 @@ describe("PluginView", () => {
     };
     setPluginsBackend(backendWith(() => tree, events));
     const user = userEvent.setup();
-    render(<PluginView pluginId="k8s" view="clusters" label="Kubernetes" />);
+    render(<PluginView pluginId="jobs" view="jobs" label="Jobs" />);
     expect(await screen.findByText("default")).toBeInTheDocument();
     expect(screen.getByText("1 namespace")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh" }));

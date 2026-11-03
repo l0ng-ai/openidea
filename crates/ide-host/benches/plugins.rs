@@ -63,7 +63,10 @@ fn install_50(plugins: &Path, work: &Path) {
         host.install_from_dir(&pkg, &Consent::default()).unwrap();
     };
     for i in 0..20 {
-        install(root.join("plugins/hello"), vec![("id = \"hello\"", format!("id = \"bench.hello{i}\""))]);
+        install(
+            root.join("crates/ide-plugin/tests/fixtures/hello"),
+            vec![("id = \"hello\"", format!("id = \"bench.hello{i}\""))],
+        );
     }
     for i in 0..10 {
         install(

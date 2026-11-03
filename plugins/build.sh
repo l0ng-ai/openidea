@@ -4,7 +4,7 @@
 # and web pages (`web-src/`, a Vite project) into `web/`.
 #
 #   plugins/build.sh                 # every plugin with code or a web page
-#   plugins/build.sh hello           # one plugin (a name under plugins/, or a path)
+#   plugins/build.sh official/csv-editor  # one plugin (a path under plugins/, or any path)
 #   plugins/build.sh --check [...]   # change nothing tracked; fail if a checked-in
 #                                    # component is stale or a plugin doesn't build (CI)
 #
@@ -131,7 +131,7 @@ if [ $# -gt 0 ]; then
   done
 else
   # Every component (plugin.toml + Cargo.toml) and web page (plugin.toml + web-src/).
-  for manifest in "$here"/*/plugin.toml "$here"/official/*/plugin.toml "$repo"/crates/ide-plugin/tests/fixtures/*/plugin.toml; do
+  for manifest in "$here"/official/*/plugin.toml "$repo"/crates/ide-plugin/tests/fixtures/*/plugin.toml; do
     dir="$(dirname "$manifest")"
     if [ -f "$dir/Cargo.toml" ] || [ -f "$dir/web-src/package.json" ]; then build "$dir"; fi
   done

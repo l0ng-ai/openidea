@@ -91,7 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for dir in sdk/rust/openidea-plugin plugins/*/ plugins/official/*/ crates/ide-plugin/tests/fixtures/misbehave; do
+          for dir in sdk/rust/openidea-plugin plugins/official/*/ crates/ide-plugin/tests/fixtures/*/; do
             [ -f "$dir/Cargo.toml" ] || continue
             echo "::group::$dir"
             cargo fmt --check --manifest-path "$dir/Cargo.toml"
@@ -109,7 +109,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for dir in plugins/*/web-src/ plugins/official/*/web-src/; do
+          for dir in plugins/official/*/web-src/; do
             [ -f "$dir/package.json" ] || continue
             echo "::group::$dir"
             pnpm --dir "$dir" install --frozen-lockfile --ignore-workspace

@@ -22,8 +22,8 @@
 //! schema = "settings.schema.json"  # {"properties": {"key": {"type": "boolean", "default": true, …}}}
 //!
 //! [[contributes.views]]
-//! id = "clusters"
-//! title = "Kubernetes"
+//! id = "jobs"
+//! title = "Jobs"
 //! icon = "server"
 //! location = "right"               # left, right, bottom
 //!
