@@ -30,9 +30,13 @@ target/
 test-results/
 playwright-report/
 
-# Local AI agent files
-CLAUDE.md
-.claude/
+# Local AI agent files. Shared skills live in .agents/skills; .claude/skills links to them.
+CLAUDE.local.md
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/verify
+!.claude/skills/issue-fix
 
 # Local reference screenshots
 pycharm-screenshots/

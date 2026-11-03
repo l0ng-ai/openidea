@@ -43,6 +43,12 @@ body:
     validations:
       required: true
   - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A link to a small public repository, or the smallest files/snippet that trigger the problem. Optional, but it's the fastest way to get a fix.
+      placeholder: https://github.com/you/repro-project
+  - type: textarea
     id: expected
     attributes:
       label: Expected behavior

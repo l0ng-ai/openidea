@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
-import { Chunk } from "@codemirror/merge";
+import { Chunk, getChunks } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { ContextMenuHost, iconMarkup } from "@/ui";
 
 const probe = vi.fn();
 const openFile = vi.fn();
+const openInput = vi.fn();
 const texts: Record<string, string> = { HEAD: "a\n", abc123: "a\n" };
 let working = "a\n";
 
@@ -26,7 +27,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 
 vi.mock("@/workbench/contributions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/workbench/contributions")>()),
-  editorService: () => ({ openFile }),
+  editorService: () => ({ openFile, openInput }),
 }));
 
 vi.mock("@/editor/api", async (importOriginal) => ({
@@ -43,6 +44,9 @@ vi.mock("@/editor/api", async (importOriginal) => ({
 }));
 
 import { DiffEditor, mapLine } from "../DiffEditor";
+import { DiffEditorTab } from "../diff-editor-tab";
+import { diffInput, withChain, type DiffData } from "../diffInput";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 
 /** Git Log opens a commit's file: both sides are revisions. */
 const input = {
@@ -61,6 +65,7 @@ const paths = (html: string) => [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m
 beforeEach(() => {
   probe.mockReset();
   openFile.mockReset();
+  openInput.mockReset();
   texts.HEAD = texts.abc123 = working = "a\n";
   probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: false, tooLarge: false } });
 });
@@ -148,6 +153,97 @@ describe("Diff toolbar", () => {
     await waitFor(() => expect(probe).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByRole("button", { name: "Jump to Source" })).toBeNull());
   });
+});
+
+it.each([null, "bottom"] as const)(
+  "maximizes a diff tab and restores the %s layout without rebuilding its editor",
+  async (maximized) => {
+    const layout = useToolWindowLayout.getState();
+    const visible = { ...layout.visible, left: "project", bottom: "git" };
+    useToolWindowLayout.setState({ visible, stashed: null, maximized });
+    const mounted = render(<DiffEditorTab input={input} />);
+    try {
+      await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+      const dom = document.querySelectorAll<HTMLElement>(".cm-mergeViewEditor .cm-editor")[1]!;
+      const view = EditorView.findFromDOM(dom)!;
+      view.dispatch({ selection: { anchor: 1 } });
+      fireEvent.click(screen.getByRole("button", { name: "Maximize Editor" }));
+      expect(Object.values(useToolWindowLayout.getState().visible).every((id) => id === null)).toBe(true);
+      expect(screen.getByRole("button", { name: "Restore Size" })).toHaveAttribute("aria-pressed", "true");
+      expect(EditorView.findFromDOM(dom)).toBe(view);
+      expect(view.state.selection.main.head).toBe(1);
+      fireEvent.click(screen.getByRole("button", { name: "Restore Size" }));
+      expect(useToolWindowLayout.getState().visible).toEqual(visible);
+      expect(useToolWindowLayout.getState().maximized).toBe(maximized);
+      expect(EditorView.findFromDOM(dom)).toBe(view);
+      expect(view.state.selection.main.head).toBe(1);
+    } finally {
+      mounted.unmount();
+      useToolWindowLayout.setState(layout);
+    }
+  },
+);
+
+it("does not offer editor maximization in an embedded diff", async () => {
+  render(<DiffEditor input={input} />);
+  await screen.findByRole("button", { name: "Jump to Source" });
+  expect(screen.queryByRole("button", { name: "Maximize Editor" })).toBeNull();
+});
+
+it("restores the shared layout after the diff tab is remounted", async () => {
+  const layout = useToolWindowLayout.getState();
+  const visible = { ...layout.visible, left: "project", bottom: "git" };
+  useToolWindowLayout.setState({ visible, stashed: null, maximized: "bottom" });
+  const first = render(<DiffEditorTab input={input} />);
+  fireEvent.click(screen.getByRole("button", { name: "Maximize Editor" }));
+  first.unmount();
+  const second = render(<DiffEditorTab input={input} />);
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Restore Size" }));
+    expect(useToolWindowLayout.getState()).toMatchObject({ visible, maximized: "bottom" });
+  } finally {
+    second.unmount();
+    useToolWindowLayout.setState(layout);
+  }
+});
+
+it.each([
+  {
+    index: 0,
+    dir: 1 as const,
+    button: "Next Difference",
+    hint: "Press again to go to the next file",
+    path: "/p/b.ts",
+    reveal: "first",
+  },
+  {
+    index: 1,
+    dir: -1 as const,
+    button: "Previous Difference",
+    hint: "Press again to go to the previous file",
+    path: "/p/a.ts",
+    reveal: "last",
+  },
+])("moves across files after the $button boundary hint", async ({ index, dir, button, hint, path, reveal }) => {
+  texts.HEAD = "same\nold\n";
+  texts.abc123 = "same\nnew\n";
+  const items: DiffData[] = ["/p/a.ts", "/p/b.ts"].map((path) => ({
+    path,
+    left: { type: "rev", rev: "HEAD" },
+    right: { type: "rev", rev: "abc123" },
+  }));
+  render(<DiffEditor input={diffInput(withChain(items, index))} />);
+  await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+  const view = EditorView.findFromDOM(document.querySelectorAll<HTMLElement>(".cm-mergeViewEditor .cm-editor")[1]!)!;
+  const chunks = getChunks(view.state)!.chunks;
+  const chunk = dir === 1 ? chunks[chunks.length - 1]! : chunks[0]!;
+  view.dispatch({ selection: { anchor: chunk.fromB } });
+  fireEvent.click(screen.getByRole("button", { name: button }));
+  expect(await screen.findByText(hint)).toBeInTheDocument();
+  expect(openInput).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: button }));
+  await waitFor(() => expect(openInput).toHaveBeenCalledOnce());
+  expect(openInput.mock.calls[0]![0].data).toMatchObject({ path, reveal });
 });
 
 const doc = (s: string) => Text.of(s.split("\n"));

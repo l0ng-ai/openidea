@@ -13,9 +13,10 @@ const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.conf
 
 /// The external formatter of a file, for a language with an external formatter.
 /// `forced` names the tool (Reformat with Prettier/oxfmt). Otherwise oxfmt
-/// applies when it is enabled for the language and an oxfmt configuration is
-/// found above the file, oxfmt is the selected provider, or Prettier is off for
-/// the language; else Prettier, when it is enabled.
+/// applies when it is enabled for the language and either an oxfmt
+/// configuration is found above the file or oxfmt is the selected provider;
+/// else Prettier, when it is enabled. Turning Prettier off for a language
+/// leaves it to the language server, not to oxfmt.
 fn external_tool(
     forced: Option<ExternalFormatter>,
     language: Option<&LanguageConfig>,
@@ -38,7 +39,7 @@ fn external_tool(
     }
     let enabled = |tool| settings.formatter(tool).languages.iter().any(|l| l == language.id.as_str());
     let oxfmt_config = || OXFMT_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
-    Ok(if enabled(Oxfmt) && (settings.oxfmt.prefer || !enabled(Prettier) || oxfmt_config()) {
+    Ok(if enabled(Oxfmt) && (settings.oxfmt.prefer || oxfmt_config()) {
         Some(Oxfmt)
     } else {
         enabled(Prettier).then_some(Prettier)
@@ -166,14 +167,15 @@ mod tests {
     }
 
     #[test]
-    fn oxfmt_provider_or_prettier_off_selects_oxfmt_without_a_config() {
+    fn oxfmt_provider_selects_oxfmt_without_a_config_and_prettier_off_leaves_the_language_server() {
         let file = Path::new("/project/src/app.ts");
         let mut settings = LanguagesSettings::default();
         settings.oxfmt.prefer = true;
         assert_eq!(tool(None, "typescript", file, &settings).unwrap(), Some(Oxfmt));
         settings.oxfmt.prefer = false;
         settings.prettier.languages.clear();
-        assert_eq!(tool(None, "typescript", file, &settings).unwrap(), Some(Oxfmt));
+        assert_eq!(tool(None, "typescript", file, &settings).unwrap(), None);
+        settings.oxfmt.prefer = true;
         settings.oxfmt.languages.clear();
         assert_eq!(tool(None, "typescript", file, &settings).unwrap(), None);
     }

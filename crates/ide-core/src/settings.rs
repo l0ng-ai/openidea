@@ -543,6 +543,7 @@ impl Default for FileSettings {
 pub struct LanguagesSettings {
     pub python: PythonSettings,
     pub node: NodeSettings,
+    pub php: PhpSettings,
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
@@ -550,6 +551,15 @@ pub struct LanguagesSettings {
     pub oxfmt: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
+    pub markdown: MarkdownSettings,
+}
+
+/// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MarkdownSettings {
+    /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
+    pub preview_font_size: Option<u32>,
 }
 
 impl LanguagesSettings {
@@ -633,6 +643,13 @@ impl Default for PythonSettings {
     fn default() -> Self {
         Self { interpreter: String::new(), activate_virtualenv: true }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PhpSettings {
+    /// `php` CLI executable; empty = the one on `PATH`.
+    pub interpreter: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]

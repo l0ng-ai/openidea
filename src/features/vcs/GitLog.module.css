@@ -374,6 +374,11 @@
   max-width: none;
   flex-wrap: wrap;
 }
+.meta .ref {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .hash {
   font-family: var(--font-mono);
 }

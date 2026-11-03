@@ -92,7 +92,7 @@ export function OxfmtPage() {
       tool="oxfmt"
       name="oxfmt"
       pathLabel="oxfmt path"
-      providerHint="oxfmt formats an enabled language instead of Prettier below an oxfmt configuration file (.oxfmtrc.json, oxfmt.config.ts), when it is the selected provider, or when Prettier is off for that language."
+      providerHint="oxfmt formats an enabled language instead of Prettier below an oxfmt configuration file (.oxfmtrc.json, oxfmt.config.ts) or when it is the selected provider."
       saveHint="Run oxfmt on save for enabled languages when it is the selected formatting provider."
     />
   );

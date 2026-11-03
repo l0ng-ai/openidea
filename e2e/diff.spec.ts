@@ -31,7 +31,7 @@ const toolbar = (page: Page) => page.getByRole("toolbar", { name: "Diff" });
 const counter = (page: Page) =>
   toolbar(page)
     .locator("span")
-    .filter({ hasText: /differen|identical/ });
+    .filter({ hasText: /differen|identical|Whitespace-only/ });
 
 /** Opens HEAD ↔ working tree of `path` and waits until the difference count shows; returns the time it took. */
 async function openCase(page: Page, path: string, opts: Opts = {}): Promise<number> {
@@ -98,7 +98,9 @@ async function rendered(page: Page): Promise<{ a: Side; b: Side; deletedChunks: 
 const differences = (n: number) => (n === 1 ? "1 difference" : `${n} differences`);
 
 async function expectCount(page: Page, path: string, n = gitHunks(repo, path)) {
-  await expect(counter(page)).toHaveText(new RegExp(`^(${differences(n)}|\\d+ of ${n} differences)$`));
+  await expect(counter(page)).toHaveText(
+    new RegExp(`^(${differences(n)}|\\d+ of ${n} differences)(?: · (?:Whitespace-only changes|\\d+ moved blocks?))?$`),
+  );
 }
 
 const all = (n: number, k: Kind) => Array<Kind>(n).fill(k);
@@ -164,7 +166,20 @@ test.describe("small cases (side-by-side, Highlight words)", () => {
       expect(b.lines, "right lines").toEqual(c.b);
       if (c.wordsA) expect(a.words, "left words").toEqual(c.wordsA);
       if (c.wordsB) expect(b.words, "right words").toEqual(c.wordsB);
+      if (c.path === "src/moved.ts") await expect(page.locator(".cm-diffMoveLink")).toHaveCount(2);
     });
+
+  test("edited moves link the counterpart and highlight their actual word changes", async ({ workbench: page }) => {
+    await openCase(page, "src/moved-edited.ts");
+    await expectCount(page, "src/moved-edited.ts");
+    await expect(page.locator(".cm-diffMoveLink")).toHaveCount(2);
+    await expect(page.locator(".cm-diffMoveEdit-deleted")).toHaveText("parseImpl");
+    await expect(page.locator(".cm-diffMoveEdit-inserted")).toHaveText("parseUpdated");
+    const link = page.getByRole("button", { name: /Go to moved code at line/ });
+    await expect(link).toContainText("(edited)");
+    await link.click();
+    await expect(page.locator(".cm-merge-b .cm-activeLine")).toContainText("function parse");
+  });
 
   test("a renamed field with a comment added reads as one modified block", async ({ workbench: page }) => {
     await openCase(page, "src/options.ts");
@@ -211,7 +226,7 @@ test.describe("small cases (side-by-side, Highlight words)", () => {
 
   test("ignoring whitespace hides an indentation-only change", async ({ workbench: page }) => {
     await openCase(page, "src/indent.py", { ignore: "whitespace" });
-    await expect(counter(page)).toHaveText("No differences");
+    await expect(counter(page)).toHaveText("Whitespace-only changes");
     expect((await rendered(page)).b.lines).toEqual([]);
   });
 

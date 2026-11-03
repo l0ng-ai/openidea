@@ -11,6 +11,8 @@ import { useContextKeys } from "@/platform/context";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
 import { intellijWindows } from "@/platform/keymaps/intellij-windows";
 import { vscodeMacos } from "@/platform/keymaps/vscode-macos";
+import { markdownPreviewFontSize } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
 
 let activeSlot: Partial<EditorSlot> | null = null;
 vi.mock("@/editor/core/controller", async (importOriginal) => ({
@@ -126,5 +128,49 @@ describe("editor font size actions", () => {
       expect(keys.filter((k) => /^(Meta|Ctrl)\+(Shift\+)?[=-]$/.test(k))).toEqual([]);
       expect(Object.keys(km).filter((id) => id.startsWith("markdown.zoom"))).toEqual([]);
     }
+  });
+});
+
+describe("Markdown preview font size", () => {
+  const preview = () => {
+    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    return screen.getByRole("document", { name: "Markdown preview" });
+  };
+  afterEach(() => {
+    cleanup();
+    useProject.setState({ settings: null });
+  });
+
+  it("follows the editor font size until Markdown › Preview font size is set, never the UI font", () => {
+    expect(preview().style.getPropertyValue("--markdown-preview-font-size")).toBe("13px");
+    cleanup();
+    act(() => useProject.setState({ settings: { appearance: { uiFontSize: 11 }, editor: { fontSize: 15 } } } as never));
+    expect(preview().style.getPropertyValue("--markdown-preview-font-size")).toBe("15px");
+    cleanup();
+    act(() =>
+      useProject.setState({
+        settings: {
+          appearance: { uiFontSize: 11 },
+          editor: { fontSize: 15 },
+          languages: { markdown: { previewFontSize: 20 } },
+        },
+      } as never),
+    );
+    expect(preview().style.getPropertyValue("--markdown-preview-font-size")).toBe("20px");
+  });
+
+  it("keeps a set size within IDEA's 8..72", () => {
+    const size = (v: unknown) =>
+      markdownPreviewFontSize({ editor: { fontSize: 14 }, languages: { markdown: { previewFontSize: v } } });
+    expect(size(3)).toBe(8);
+    expect(size(200)).toBe(72);
+    expect(size(15.6)).toBe(16);
+    expect(size(null)).toBe(14);
+    expect(size("big")).toBe(14);
   });
 });

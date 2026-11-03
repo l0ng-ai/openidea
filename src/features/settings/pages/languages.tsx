@@ -1,9 +1,10 @@
 /**
  * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
- * Languages & Frameworks › Go / Java / Node.js / Rust / TypeScript. Pages live in
+ * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
-import { GoPage, JavaPage, NodePage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage } from "../languages/FormatterPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
@@ -109,6 +110,15 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     component: NodePage,
   },
   {
+    // Global only, like IDEA's application-level Markdown settings.
+    id: "languages.markdown",
+    title: "Markdown",
+    group: LANGUAGES_GROUP,
+    order: 400,
+    keywords: ["markdown", "preview", "font size", "jupyter", "notebook"],
+    component: MarkdownPage,
+  },
+  {
     id: "languages.prettier",
     projectScope: true,
     defaultScope: "project",
@@ -127,6 +137,26 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.6,
     keywords: ["formatter", "oxfmt", "oxc", ".oxfmtrc.json", "format on save", "node_modules"],
     component: OxfmtPage,
+  },
+  {
+    id: "languages.php",
+    projectScope: true,
+    defaultScope: "project",
+    title: "PHP",
+    group: LANGUAGES_GROUP,
+    order: 403.2,
+    keywords: [
+      "php interpreter",
+      "cli interpreter",
+      "php",
+      "composer",
+      "phpunit",
+      "xampp",
+      "herd",
+      "homebrew",
+      "phpbrew",
+    ],
+    component: PhpPage,
   },
   {
     id: "languages.ruby",
