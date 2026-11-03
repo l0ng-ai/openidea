@@ -171,6 +171,7 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
       const task = base.args.at(-1) ?? "";
       const key = /(^|:)spec$/.test(task) ? "SPEC" : /(^|:)test$/.test(task) ? "TEST" : null;
       return key ? derived(base, relPath, { args: [...base.args, `${key}=${file}`] }) : base;
+    }
     case "django-test": {
       const tests = djangoTestsOf(base, [djangoLabel(file)]);
       return tests ? derived(base, relPath, tests) : null;
