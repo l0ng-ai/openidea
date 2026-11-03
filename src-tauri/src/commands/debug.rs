@@ -261,12 +261,13 @@ pub async fn debug_attachable_processes(state: State<'_, AppState>) -> IdeResult
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_listen_for_jvm(
+    window: Window,
     state: State<'_, AppState>,
     request: ide_core::RequestId,
     host: String,
     port: u16,
 ) -> IdeResult<u16> {
-    ide_host::ops::debug::debug_listen_for_jvm(&state.host, "", request, host, port).await
+    ide_host::ops::debug::debug_listen_for_jvm(&state.host, window.label(), request, host, port).await
 }
 
 /// HotSwap (Reload Changed Classes) in a java-debug session.
