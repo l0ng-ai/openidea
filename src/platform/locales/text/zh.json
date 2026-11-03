@@ -4114,6 +4114,7 @@
   "Rebasing {n} commit from the root": "正在从根变基 {n} 个提交",
   "Rebasing {n} commits from the root": "正在从根变基 {n} 个提交",
   "Push Commits to {remote}": "推送提交到 {remote}",
+  "Pushed {commits} to {remote}": "已推送 {commits} 到 {remote}",
   "You're going to force push to '{target}'. It may overwrite commits at the remote. Are you sure you want to proceed?": "您将强制推送到 '{target}'。这可能会覆盖远程上的提交。确定要继续吗？",
   "Delete “{name}” from the shelf? This cannot be undone.": "是否从搁置中删除“{name}”？此操作无法撤消。",
   "Handler for {keystroke}": "{keystroke} 的处理程序",
