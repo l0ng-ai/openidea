@@ -124,7 +124,7 @@ pub fn read_dir(dir: &Path, excludes: &[String]) -> IdeResult<Vec<FileEntry>> {
     if !fs::metadata(dir)?.is_dir() {
         return Err(IdeError::invalid(format!("{} is not a directory", dir.display())));
     }
-    let gitignore = rules::GitignoreStack::new(dir);
+    let gitignore = rules::GitignoreStack::cached(dir);
     let base = gitignore.repo_root().unwrap_or(dir).to_path_buf();
     let excludes = ExcludeMatcher::new(excludes);
 
