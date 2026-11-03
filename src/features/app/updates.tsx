@@ -1,7 +1,7 @@
 /**
  * Update check and install. Both run as background tasks in the status bar: the
- * check while the request is out, the install with download progress and Cancel,
- * which its balloon shows too (the welcome screen has no status bar).
+ * check while the request is out, the install with download progress and Cancel.
+ * Their balloons show the progress too (the welcome screen has no status bar).
  * Every entry point (Help menu, toolbar gear, welcome screen, Search Everywhere,
  * the "is available" notification and its log entry) goes through these, so a
  * repeated click joins the running check or install instead of starting another.
@@ -17,6 +17,7 @@ import {
   type UpdateInfo,
   type UpdateProgress,
 } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { upsertTask } from "@/workbench/tasks";
 import { UpdateBalloonBody } from "./UpdateBalloonBody";
@@ -45,6 +46,15 @@ async function runCheck() {
   let abandon = () => {};
   const abandoned = new Promise<"cancelled">((resolve) => (abandon = () => resolve("cancelled")));
   upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: null, done: false, cancel: () => abandon() });
+  // No status bar (the welcome screen): the balloon is the only place the check can show.
+  const { project, lightEdit } = useProject.getState();
+  if (!installing && !project && !lightEdit)
+    notifications().notify({
+      level: "info",
+      title,
+      body: <UpdateBalloonBody task={CHECK_TASK_ID} />,
+      key: UPDATE_KEY,
+    });
   try {
     const r = await Promise.race([call(commands.appCheckUpdate()), abandoned]);
     if (r === "cancelled") return;

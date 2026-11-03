@@ -106,7 +106,7 @@ export function sampleTools(): ToolInfo[] {
                 ? "Pyrefly (Python)"
                 : name,
         languages: ["Python"],
-        installMethod: "pip (virtualenv)",
+        installMethod: "uv (virtualenv)",
         alternatives: ["basedpyright", "pyright", "ty", "pyrefly"],
       }),
     ),

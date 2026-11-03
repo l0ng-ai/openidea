@@ -546,7 +546,7 @@ export const commands = {
 	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
 	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
 	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
-	vcsShelfImport: (name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { name, patch })),
+	vcsShelfImport: (repo: string | null, name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { repo, name, patch })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
 	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
 	/**  Create Patch › Save to file. */
@@ -853,7 +853,7 @@ export const commands = {
 	 */
 	pluginList: () => typedError<PluginsSnapshot, IdeError>(__TAURI_INVOKE("plugin_list")),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
-	/**  Installs the plugin package in `path` (a folder with `plugin.toml`). */
+	/**  Installs the plugin package at `path`: a folder, its `plugin.toml`, or a `.zip` of the folder. */
 	pluginInstallDir: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_install_dir", { path })),
 	/**
 	 *  Plugin packages available locally for installation: `<resources>/plugins`
@@ -1216,7 +1216,9 @@ export type AgentEvent =
 /**  The task's conversation was cut to its first `length` entries (turns rolled back). */
 { type: "truncated"; task: string; length: number } | 
 /**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
-{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry };
+{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry } | 
+/**  The installed or configured agent providers changed. */
+{ type: "providers" };
 
 export type AgentImage = {
 	mimeType: string,
@@ -1688,7 +1690,7 @@ export type CatalogPlugin = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
-	/**  Package directory; install with `install_from_dir(path)`. */
+	/**  Package directory; install with `install_from_path(path)`. */
 	path: IpcPath,
 	hasCode: boolean,
 	permissions: Permission[],
@@ -5783,6 +5785,8 @@ export type ShelvedChangeList = {
 	timeMs: number | null,
 	/**  Branch checked out when the changes were shelved. */
 	branch: string | null,
+	/**  Repository owning the patch; absent in legacy shelves. */
+	repo?: IpcPath | null,
 	/**  Repository-relative paths. */
 	files: ChangedFile[],
 };
