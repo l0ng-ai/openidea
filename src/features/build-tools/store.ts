@@ -114,8 +114,19 @@ export const toggleSkipTests = () =>
 export const toggleGradleOffline = () =>
   updateSettings((s) => ({ ...s, gradle: { ...s.gradle, offline: !s.gradle.offline } }));
 
+/** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
+export const PROFILE_RELOAD_DELAY_MS = 800;
+let profileReload: ReturnType<typeof setTimeout> | undefined;
+
 export function setProfile(id: string, checked: boolean) {
   updateSettings((s) => ({ ...s, maven: { ...s.maven, profiles: { ...s.maven.profiles, [id]: checked } } }));
+  // The Java language server and Build Project resolve the project with the profiles of the
+  // last sync, so a new choice reloads it (IDEA re-imports on a profile change too).
+  clearTimeout(profileReload);
+  profileReload = setTimeout(() => {
+    profileReload = undefined;
+    requestSync("maven");
+  }, PROFILE_RELOAD_DELAY_MS);
 }
 
 export function readHistory(tool: BuildTool): string[] {
@@ -269,6 +280,15 @@ export function initialExpanded(tool: BuildTool, model: BuildModel): Set<string>
 
 const TITLES: Record<BuildTool, string> = { maven: "Syncing Maven projects", gradle: "Syncing Gradle projects" };
 
+/** Tools to sync again once their running sync ends: its options changed meanwhile. */
+const queuedSyncs = new Set<BuildTool>();
+
+/** Syncs `tool` now, or right after the sync in progress (which used the previous options). */
+export function requestSync(tool: BuildTool) {
+  if (useBuild.getState().syncing[tool]) queuedSyncs.add(tool);
+  else void syncTool(tool);
+}
+
 /** Reloads all projects of `tool` from the build tool itself (effective POM, dependency tree, task list). */
 export async function syncTool(tool: BuildTool): Promise<void> {
   const state = useBuild.getState();
@@ -317,6 +337,7 @@ export async function syncTool(tool: BuildTool): Promise<void> {
   } finally {
     if (useBuild.getState().syncing[tool]?.request === request) setSync(undefined);
     upsertTask({ id: taskId, title: TITLES[tool], message: null, fraction: 1, done: true });
+    if (queuedSyncs.delete(tool) && gen === generation) void syncTool(tool);
   }
 }
 
@@ -330,6 +351,9 @@ export function cancelSync(tool: BuildTool) {
 
 export function resetBuild() {
   generation++;
+  clearTimeout(profileReload);
+  profileReload = undefined;
+  queuedSyncs.clear();
   useAnalyzer.setState({ pom: null });
   for (const tool of ["maven", "gradle"] as const) {
     cancelSync(tool);

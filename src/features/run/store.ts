@@ -41,6 +41,8 @@ import {
   type TestOutputParser,
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
+import { TeamcityOutput } from "./testing/phpunit";
+import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
 import { compoundChildren } from "./configs";
@@ -82,7 +84,8 @@ interface SessionRuntime {
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
-  goOutput: GoTestOutput | null;
+  /** Machine-readable stdout (`go test -json`, `--teamcity`): fed to the parser, shown decoded. */
+  stdout: TestStdout | null;
   queue: OutputChunk[];
   /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
   flushHandle: { raf: number } | { timeout: number } | null;
@@ -374,7 +377,7 @@ function flush(sessionId: string) {
   if (rt.queue.length === 0) return;
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
-    const text = c.kind === "stdout" && rt.goOutput ? rt.goOutput.feed(c.text) : c.text;
+    const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
     if (text) rt.console.append({ ...c, text });
   }
   bump(sessionId);
@@ -441,18 +444,20 @@ export function applyConsoleSettings() {
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
   const parser = config.isTest ? createTestParser(config) : null;
-  const goOutput =
-    tests && parser && frameworkFor(config) === "go"
-      ? new GoTestOutput((line) => tests.apply(parser.feed(line)))
-      : null;
+  const feed = (line: string) => {
+    if (tests && parser) tests.apply(parser.feed(line));
+  };
+  const framework = tests && parser ? frameworkFor(config) : null;
+  const stdout =
+    framework === "go" ? new GoTestOutput(feed) : framework === "phpunit" ? new TeamcityOutput(feed) : null;
   const runtime: SessionRuntime = {
-    goOutput,
+    stdout,
     tests,
     parser,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
-        if (parser && tests && kind !== "system" && !(kind === "stdout" && goOutput)) tests.apply(parser.feed(text));
+        if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
       },
     }),
@@ -783,8 +788,8 @@ function finishSession(sessionId: string, code: number | null) {
     void (async () => {
       if (runtimes.get(sessionId) !== rt) return;
       flush(sessionId);
-      if (rt.goOutput) {
-        const text = rt.goOutput.end();
+      if (rt.stdout) {
+        const text = rt.stdout.end();
         if (text) rt.console.append({ kind: "stdout", text });
       }
       rt.console.flush();

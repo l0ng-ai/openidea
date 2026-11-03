@@ -699,3 +699,17 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();
     assert!(!env.root.join("rust-analyzer").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn python_probes_run_in_an_empty_private_directory() {
+    let env = Env::new();
+    // A stand-in interpreter that reports where it was started.
+    env.script(&env.sys, "python3", "pwd; ls -A");
+    let tools = env.tools();
+    let python = tools.python().unwrap();
+    let out = tools.python_command(&python).output().unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let dir = env.root.join(".python-cwd");
+    assert_eq!(out.trim(), dir.canonicalize().unwrap().to_string_lossy());
+}

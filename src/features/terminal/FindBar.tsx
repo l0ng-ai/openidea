@@ -44,13 +44,19 @@ export function matchCounter(r: TerminalSearchResult | null, query: string): str
   return r.index >= 0 ? `${r.index + 1}/${r.count}` : `${r.count}+`;
 }
 
+/** The last open request the find bar took focus for. */
+let focusedSeq = 0;
+
 export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
   const { open, seq, query, options } = useTerminalFind();
   const input = useRef<HTMLInputElement>(null);
   const [result, setResult] = useState<TerminalSearchResult | null>(null);
 
+  // Only an open request focuses the field: the bar also re-mounts when another
+  // tab group becomes active, and must not take focus from its terminal then.
   useEffect(() => {
-    if (!open) return;
+    if (!open || seq === focusedSeq) return;
+    focusedSeq = seq;
     input.current?.focus();
     input.current?.select();
   }, [open, seq]);

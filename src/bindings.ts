@@ -504,7 +504,7 @@ export const commands = {
 	 */
 	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
 	/**  Clones a repository (Get from VCS). Works without an open project. */
-	vcsClone: (request: RequestId, url: string, dest: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, onOutput })),
+	vcsClone: (request: RequestId, url: string, dest: string, depth: number | null, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, depth, onOutput })),
 	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
 	/**
@@ -4116,12 +4116,14 @@ export type LanguageServerSettings_Serialize = {
 export type LanguagesSettings = {
 	python?: PythonSettings,
 	node?: NodeSettings,
+	php?: PhpSettings,
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
 	prettier?: PrettierSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
+	markdown?: MarkdownSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -4350,6 +4352,12 @@ export type ManifestDependency = {
 	/**  UTF-16 offsets of the string's contents (quotes excluded). */
 	from: number,
 	to: number,
+};
+
+/**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
+export type MarkdownSettings = {
+	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
+	previewFontSize?: number | null,
 };
 
 export type Markup = {
@@ -4710,6 +4718,11 @@ export type Permission =
 "editor-read" | 
 /**  `insert-text`, `replace-selection`. */
 "editor-write";
+
+export type PhpSettings = {
+	/**  `php` CLI executable; empty = the one on `PATH`. */
+	interpreter?: string,
+};
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
@@ -5562,6 +5575,8 @@ export type Sdk = {
 
 /**  What [`detect`] looks for. */
 export type SdkKind = "python" | "node" | 
+/**  `php` CLI executables. */
+"php" | 
 /**  npm / pnpm / yarn executables. */
 "packageManager" | "rust" | "go" | "typeScript" | 
 /**  JDK homes. */
