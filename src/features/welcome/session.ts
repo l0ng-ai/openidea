@@ -118,7 +118,7 @@ async function reopen(path: string) {
   useSession.setState({ reopening: path });
   try {
     const remote = parseRemoteLocation(path);
-    if (remote) await connectRemote(remote.sshConfig, remote.path);
+    if (remote) await connectRemote(remote.target, remote.path);
     else await openProject(path);
   } catch (e) {
     write(SESSION_KEY, null);

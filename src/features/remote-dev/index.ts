@@ -1,19 +1,27 @@
 /**
- * Remote development: a window whose project lives on an SSH host. The backend
+ * Remote development: a window whose project lives on an SSH host or in a WSL distribution. The backend
  * (`openidea-server`) runs there and this window routes its commands to it
  * (platform/remote.ts).
  */
 import { registerActions } from "@/platform/actions";
 import { disconnectRemote } from "@/platform/remote";
-import { maybeEditorService, registerOverlay } from "@/workbench/contributions";
+import { maybeEditorService, registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
 import { reloadEnvironment } from "./environment";
+import { RemoteStatus } from "./RemoteStatus";
 import { closeConnectDialog, openConnectDialog } from "./model";
 
 export function activate(): () => void {
   const disposers = [
     registerOverlay({ id: "remote.connect", component: ConnectHost }),
+    registerStatusItem({
+      id: "remote.location",
+      title: "Remote Host",
+      align: "left",
+      priority: 100,
+      component: RemoteStatus,
+    }),
     registerActions([
       {
         id: "remote.connect",

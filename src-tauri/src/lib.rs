@@ -15,6 +15,7 @@ mod logging;
 mod macos;
 mod menu;
 mod remote_dev;
+mod remote_wsl;
 
 mod state;
 mod theme_frame;

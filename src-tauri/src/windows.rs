@@ -10,6 +10,7 @@
 //! window) that shares its parent's project (see [`AppState::project`]); its
 //! [`Launch::settings_page`] tells it which page to show.
 
+use crate::remote_dev::RemoteTarget;
 use crate::state::AppState;
 use crate::theme_frame::builtin_frame;
 use ide_core::settings::AppearanceSettings;
@@ -49,12 +50,18 @@ pub struct Launch {
     pub new_projects: bool,
 }
 
-/// A project folder on the host of an SSH configuration.
+/// A project folder on an SSH host or in a WSL distribution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteLaunch {
-    pub ssh_config: String,
+    pub target: RemoteTarget,
     pub path: String,
+}
+
+/// The remote launch for a folder of the `\\wsl.localhost\<distro>` share, if it is one.
+pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
+    let w = ide_core::wsl::parse(path)?;
+    Some(RemoteLaunch { target: RemoteTarget::Wsl { distro: w.distro }, path: w.path })
 }
 
 #[derive(Default)]
@@ -449,6 +456,10 @@ pub fn open_project_window(
     new_window: bool,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
+    // Before touching the share: a stat on `\\wsl.localhost` is what makes it slow.
+    if let Some(remote) = wsl_launch(path) {
+        return open_remote_window(app, &remote.target, &remote.path, new_window);
+    }
     let root = dunce::canonicalize(path).map_err(|e| IdeError::not_found(format!("{}: {e}", path.display())))?;
     tracing::info!("open_project_window {} new_window={new_window}", root.display());
     if let Some(w) = find_project_window(app, &root) {
@@ -485,12 +496,16 @@ pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> 
     here.into_iter().map(Into::into).collect()
 }
 
-/// [`open_project_window`] for folder `path` on the host of SSH configuration
-/// `ssh_config` (Remote Development).
-pub fn open_remote_window(app: &AppHandle, ssh_config: &str, path: &str, new_window: bool) -> IdeResult<OpenOutcome> {
-    tracing::info!("open_remote_window {ssh_config}:{path} new_window={new_window}");
+/// [`open_project_window`] for folder `path` of `target` (Remote Development).
+pub fn open_remote_window(
+    app: &AppHandle,
+    target: &RemoteTarget,
+    path: &str,
+    new_window: bool,
+) -> IdeResult<OpenOutcome> {
+    tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
     let windows = app.webview_windows();
-    let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(ssh_config, path));
+    let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
     if let Some(w) = open.and_then(|label| windows.get(&label)) {
         focus(w);
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
@@ -499,7 +514,7 @@ pub fn open_remote_window(app: &AppHandle, ssh_config: &str, path: &str, new_win
         return Ok(OpenOutcome::Current);
     }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
-    let remote = RemoteLaunch { ssh_config: ssh_config.to_owned(), path: path.to_owned() };
+    let remote = RemoteLaunch { target: target.clone(), path: path.to_owned() };
     let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
@@ -511,8 +526,31 @@ pub enum Holds {
     Nothing,
     LightEdit,
     Project(PathBuf),
-    /// A remote project.
+    /// A project inside a WSL distribution (`path` is the Linux path).
+    Wsl {
+        distro: String,
+        path: String,
+    },
+    /// An SSH remote project.
     Other,
+}
+
+impl Holds {
+    fn of_remote(remote: &RemoteLaunch) -> Self {
+        match &remote.target {
+            RemoteTarget::Wsl { distro } => Holds::Wsl { distro: distro.clone(), path: remote.path.clone() },
+            RemoteTarget::Ssh { .. } => Holds::Other,
+        }
+    }
+
+    fn is_wsl_folder(&self, remote: &RemoteLaunch) -> bool {
+        match (self, &remote.target) {
+            (Holds::Wsl { distro, path }, RemoteTarget::Wsl { distro: d }) => {
+                distro.eq_ignore_ascii_case(d) && path.trim_end_matches('/') == remote.path.trim_end_matches('/')
+            }
+            _ => false,
+        }
+    }
 }
 
 /// What window `label` holds: its open project, else what its pending launch is about to open.
@@ -521,8 +559,8 @@ fn holds(app: &AppHandle, label: &str) -> Holds {
     if let Some(project) = state.as_ref().and_then(|s| s.project(label).ok()) {
         return if project.light { Holds::LightEdit } else { Holds::Project(project.root.clone()) };
     }
-    if state.is_some_and(|s| s.remote_dev.get(label).is_some()) {
-        return Holds::Other;
+    if let Some(c) = state.as_ref().and_then(|s| s.remote_dev.get(label)) {
+        return Holds::of_remote(&RemoteLaunch { target: c.target.clone(), path: c.root.clone() });
     }
     pending_holds(app.state::<WindowsState>().pending(label).as_ref())
 }
@@ -530,7 +568,7 @@ fn holds(app: &AppHandle, label: &str) -> Holds {
 fn pending_holds(launch: Option<&Launch>) -> Holds {
     match launch {
         Some(Launch { project: Some(root), .. }) => Holds::Project(root.to_path_buf()),
-        Some(Launch { remote: Some(_), .. }) => Holds::Other,
+        Some(Launch { remote: Some(remote), .. }) => Holds::of_remote(remote),
         Some(l) if !l.files.is_empty() => Holds::LightEdit,
         _ => Holds::Nothing,
     }
@@ -547,6 +585,8 @@ pub enum OpenStep {
     Launch(String, Launch),
     /// A new window opens the project folder or (without one) the files in LightEdit.
     New(Option<PathBuf>, Vec<PathBuf>),
+    /// A new window connects to a WSL distribution.
+    NewRemote(RemoteLaunch),
 }
 
 /// Where a file inside a project goes: a window with it open, or the step opening it.
@@ -578,6 +618,17 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
         })
         .collect();
     for dir in dirs {
+        // A folder of a WSL distro opens as a WSL project, not as a network folder.
+        if let Some(remote) = wsl_launch(&dir) {
+            steps.push(match windows.iter().find(|(_, h)| h.is_wsl_folder(&remote)) {
+                Some((label, _)) => OpenStep::Focus(label.clone()),
+                None => match free.next() {
+                    Some(label) => OpenStep::Launch(label, Launch { remote: Some(remote), ..Default::default() }),
+                    None => OpenStep::NewRemote(remote),
+                },
+            });
+            continue;
+        }
         if let Some((label, _)) = windows.iter().find(|(_, h)| matches!(h, Holds::Project(root) if *root == dir)) {
             steps.push(OpenStep::Focus(label.clone()));
             continue;
@@ -601,7 +652,9 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
             Some(ProjectTarget::Step(i)) => match &mut steps[*i] {
                 OpenStep::Launch(_, launch) => launch.files.push(file.into()),
                 OpenStep::New(_, list) => list.push(file),
-                OpenStep::Focus(_) | OpenStep::Files(..) => unreachable!("folders opened by the plan launch or open"),
+                OpenStep::Focus(_) | OpenStep::Files(..) | OpenStep::NewRemote(_) => {
+                    unreachable!("folders opened by the plan launch or open")
+                }
             },
             None => loose.push(file),
         }
@@ -713,6 +766,17 @@ fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
                 }
             }
             OpenStep::New(project, files) => spawn_window_with(app, project, files),
+            OpenStep::NewRemote(remote) => {
+                let app = app.clone();
+                // Off the event-loop thread, like `spawn_window`.
+                tauri::async_runtime::spawn(async move {
+                    let title = remote.path.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
+                    let launch = Launch { remote: Some(remote), ..Default::default() };
+                    if let Err(e) = create_window_for(&app, title, launch, false) {
+                        tracing::warn!("cannot open window: {}", e.message);
+                    }
+                });
+            }
         }
     }
 }
@@ -725,7 +789,9 @@ pub fn opened_paths(urls: &[tauri::Url]) -> Vec<PathBuf> {
 
 /// What a window opens for a command-line path: a folder as its project, a file in LightEdit.
 pub fn path_launch(path: PathBuf) -> Launch {
-    if path.is_dir() {
+    if let Some(remote) = wsl_launch(&path) {
+        Launch { remote: Some(remote), ..Default::default() }
+    } else if path.is_dir() {
         Launch { project: Some(path.into()), ..Default::default() }
     } else {
         Launch { files: vec![path.into()], ..Default::default() }
@@ -1147,6 +1213,33 @@ mod tests {
             plan_open(vec![(p("/home/me/a.rs"), false)], &windows),
             [OpenStep::Files("project-1".into(), vec![p("/home/me/a.rs")])]
         );
+    }
+
+    #[test]
+    fn wsl_folders_open_as_wsl_projects() {
+        let (distro, linux_path) = ("Debian-12", "/srv/app");
+        let share = format!(r"\\wsl.localhost\{distro}{}", linux_path.replace('/', r"\"));
+        let share = share.as_str();
+        let remote = wsl_launch(&p(share)).unwrap();
+        assert_eq!(
+            remote,
+            RemoteLaunch { target: RemoteTarget::Wsl { distro: distro.into() }, path: linux_path.into() }
+        );
+        assert!(wsl_launch(&p(linux_path)).is_none());
+        let launch = Launch { remote: Some(remote.clone()), ..Default::default() };
+        let folder = vec![(p(share), true)];
+        // A free window connects, else a new one; the window that has it open is focused.
+        assert_eq!(plan_open(folder.clone(), &[w("main", Holds::Nothing)]), [OpenStep::Launch("main".into(), launch)]);
+        assert_eq!(plan_open(folder.clone(), &[w("main", Holds::LightEdit)]), [OpenStep::NewRemote(remote.clone())]);
+        let open = Holds::Wsl { distro: distro.to_lowercase(), path: format!("{linux_path}/") };
+        assert_eq!(
+            plan_open(folder, &[w("main", Holds::Nothing), w("project-1", open)]),
+            [OpenStep::Focus("project-1".into())]
+        );
+        // Another distro's folder is a different project.
+        let other = Holds::Wsl { distro: format!("{distro}-other"), path: linux_path.into() };
+        assert!(!other.is_wsl_folder(&remote));
+        assert_eq!(path_launch(p(share)).remote, Some(remote));
     }
 
     #[test]

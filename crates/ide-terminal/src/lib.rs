@@ -92,14 +92,16 @@ impl TerminalManager {
         let size = pty_size(options.cols, options.rows);
         let pair = native_pty_system().openpty(size).map_err(|e| IdeError::internal(format!("openpty failed: {e}")))?;
 
-        let (shell, mut args) = resolve_shell(options.shell.as_deref(), &options.args);
+        let wsl = if cfg!(windows) { wsl_shell(&options) } else { None };
+        let (shell, mut args) = wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args));
         let mut env = terminal_env(&options.env);
         if options.shell_integration {
             integration::apply(&shell_title(&shell), &mut args, &mut env);
         }
         let mut cmd = CommandBuilder::new(&shell);
         cmd.args(&args);
-        cmd.cwd(resolve_cwd(&options.cwd));
+        // wsl.exe takes the directory through `--cd`; a UNC share is no valid process cwd.
+        cmd.cwd(if wsl.is_some() { resolve_cwd(Path::new("")) } else { resolve_cwd(&options.cwd) });
         for (k, v) in ide_core::process::host_env_fixes() {
             match v {
                 Some(v) => cmd.env(k, v),
@@ -450,6 +452,16 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+/// `wsl.exe` in the distro of a `\\wsl.localhost\...` folder, so its terminal is a Linux
+/// shell and not PowerShell (#925). An explicitly chosen shell or arguments win.
+fn wsl_shell(options: &TerminalOptions) -> Option<(String, Vec<String>)> {
+    if options.shell.as_deref().is_some_and(|s| !s.trim().is_empty()) || !options.args.is_empty() {
+        return None;
+    }
+    let w = ide_core::wsl::parse(&options.cwd)?;
+    Some((ide_core::wsl::EXE.into(), vec!["-d".into(), w.distro, "--cd".into(), w.path]))
+}
+
 fn resolve_cwd(cwd: &Path) -> PathBuf {
     if cwd.is_dir() {
         return cwd.to_path_buf();
@@ -498,7 +510,7 @@ pub fn available_shells() -> Vec<String> {
     }
     #[cfg(windows)]
     {
-        for exe in ["pwsh.exe", "powershell.exe", "cmd.exe", "wsl.exe"] {
+        for exe in ["pwsh.exe", "powershell.exe", "cmd.exe", ide_core::wsl::EXE] {
             if let Some(p) = find_in_path(exe) {
                 add(p);
             }
@@ -818,6 +830,24 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(100));
         assert!(h.events.try_recv().is_err() && other_events.try_recv().is_err(), "no cross delivery");
+    }
+
+    #[test]
+    fn wsl_folder_gets_the_distro_shell_unless_one_is_chosen() {
+        let mut o = sh("true");
+        o.shell = None;
+        o.args = vec![];
+        let (distro, linux_path) = ("Debian-12", "/srv/app");
+        let want = (ide_core::wsl::EXE.to_owned(), vec!["-d".into(), distro.into(), "--cd".into(), linux_path.into()]);
+        for host in ["wsl.localhost", "wsl$"] {
+            o.cwd = PathBuf::from(format!(r"\\{host}\{distro}{}", linux_path.replace('/', r"\"))).into();
+            assert_eq!(wsl_shell(&o), Some(want.clone()), "{host}");
+        }
+        o.shell = Some("pwsh.exe".into());
+        assert_eq!(wsl_shell(&o), None);
+        o.shell = None;
+        o.cwd = PathBuf::from("/tmp").into();
+        assert_eq!(wsl_shell(&o), None);
     }
 
     #[test]

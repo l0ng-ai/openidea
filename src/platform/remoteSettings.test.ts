@@ -41,7 +41,7 @@ beforeEach(() => {
     cmd === "remote_invoke" ? JSON.stringify(remote) : local,
   );
   Object.assign(window, { __TAURI_INTERNALS__: { invoke, transformCallback: () => 1 } });
-  enableRemote({ sshConfig: "test", root: "/remote", host: "test", commands: [...served] });
+  enableRemote({ target: { kind: "ssh", config: "test" }, root: "/remote", host: "test", commands: [...served] });
 });
 afterEach(() => {
   disableRemote();
@@ -91,7 +91,7 @@ describe("remote client settings", () => {
     invoke.mockImplementation(async (cmd: string) =>
       cmd === "remote_connect"
         ? {
-            sshConfig: "test",
+            target: { kind: "ssh", config: "test" },
             root: "/remote",
             host: "test",
             commands: [...served],
@@ -101,7 +101,7 @@ describe("remote client settings", () => {
           ? "null"
           : local,
     );
-    await connectRemote("test", "/remote");
+    await connectRemote({ kind: "ssh", config: "test" }, "/remote");
     expect(useProject.getState().settings).toMatchObject({ keymap: "my-map", editor: { tabSize: 2, fontSize: 19 } });
   });
   it("overlays the project snapshot used by the settings window", async () => {

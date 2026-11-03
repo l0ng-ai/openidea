@@ -57,7 +57,9 @@ describe("OS file imports", () => {
     setProjectFsForTests(fs, "/p");
     initProjectTree("/p", "p");
     await loadDir("/p");
-    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "ssh" }, root: "/p", host: "host", commands: ["fs_copy"] },
+    });
     provideNotificationService({ notify });
     notify.mockClear();
   });
@@ -247,7 +249,9 @@ describe("project clipboard ownership", () => {
   it.each(remoteCases)(
     "remote hand-off=$handedOff OS=$osList cut=$cut on $entry",
     async ({ handedOff, osList, cut, entry }) => {
-      useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+      useRemote.setState({
+        session: { target: { kind: "ssh", config: "ssh" }, root: "/p", host: "host", commands: ["fs_copy"] },
+      });
       const writeText = vi.fn(async () => {
         if (!handedOff) throw new Error("unavailable");
       });
@@ -293,7 +297,9 @@ describe("project clipboard ownership", () => {
   );
 
   it("writes multiple remote paths as newline-joined text", async () => {
-    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "ssh" }, root: "/p", host: "host", commands: ["fs_copy"] },
+    });
     await fs.createFile("/p/second.txt");
     await loadDir("/p", true);
     setSelection(new Set(["/p/source.txt", "/p/second.txt"]), "/p/source.txt");
@@ -305,7 +311,9 @@ describe("project clipboard ownership", () => {
   });
 
   it("waits for a pending remote text write before reading file URLs", async () => {
-    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "ssh" }, root: "/p", host: "host", commands: ["fs_copy"] },
+    });
     let finish!: () => void;
     vi.stubGlobal("navigator", {
       clipboard: {

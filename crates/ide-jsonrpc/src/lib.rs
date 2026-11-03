@@ -49,6 +49,10 @@ pub mod framing {
                 }
                 return Ok(None);
             }
+            // A UTF-16LE line break is `\n\0`: the cut after `\n` leaves a NUL at the start of the
+            // next line, which would turn the `Content-Length` after it into noise.
+            let nuls = line.iter().take_while(|&&b| b == 0).count();
+            line.drain(..nuls);
             if line.last() != Some(&b'\n') {
                 if n as u64 >= MAX_HEADER_LINE {
                     return Err(Error::new(ErrorKind::InvalidData, "header line too long"));

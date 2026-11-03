@@ -1,8 +1,8 @@
 /** Picks an SSH configuration and a folder on that host, then opens it in this or a new window. */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
-import { call, commands, isCancelled, type RemoteEntry } from "@/platform/ipc";
+import { call, commands, isCancelled, type RemoteEntry, type RemoteTarget } from "@/platform/ipc";
 import { useRemoteProgress } from "@/platform/remote";
 import { sshLabel } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -29,10 +29,33 @@ function ConnectDialog() {
   const tx = useTx();
   const configs = useWorkflowSettings((s) => s.ssh.configs);
   const [ssh, setSsh] = useState(configs[0]?.id ?? "");
+  const [kind, setKind] = useState<RemoteTarget["kind"]>("ssh");
+  // Installed WSL distributions; none (or no WSL at all) hides the WSL choice.
+  const [distros, setDistros] = useState<string[]>([]);
+  const [distro, setDistro] = useState("");
   const [path, setPath] = useState("~");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browse, setBrowse] = useState<{ dir: string; folders: RemoteEntry[] } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    // Detection is a convenience: any failure just leaves SSH as the only choice.
+    void call(commands.wslDistros())
+      .then((found) => {
+        if (!live) return;
+        setDistros(found);
+        setDistro((d) => d || (found[0] ?? ""));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const wsl = kind === "wsl";
+  const name = wsl ? distro : ssh;
+  const target: RemoteTarget = wsl ? { kind: "wsl", distro } : { kind: "ssh", config: ssh };
 
   const list = async (dir: string) => {
     setError(null);
@@ -53,8 +76,7 @@ function ConnectDialog() {
     setError(null);
     setBusy(true);
     try {
-      const target = path.trim() || "~";
-      if (await openRemoteProject(ssh, target)) closeConnectDialog();
+      if (await openRemoteProject(target, path.trim() || "~")) closeConnectDialog();
       else setBusy(false);
     } catch (e) {
       if (!isCancelled(e)) setError(e instanceof Error ? e.message : String(e));
@@ -63,7 +85,7 @@ function ConnectDialog() {
   };
 
   const options = configs.map((c) => ({ value: c.id, label: c.name.trim() || sshLabel(c), detail: sshLabel(c) }));
-  const ready = !!ssh && !busy && !!path.trim();
+  const ready = !!name && !busy && !!path.trim();
   const connecting = useRemoteProgress((s) => s.progress !== null);
 
   return (
@@ -92,21 +114,52 @@ function ConnectDialog() {
         <p className={styles.hint}>
           {tx("The project runs on the remote host; the IDE backend is installed there on first use.")}
         </p>
-        <label className={styles.label}>{tx("SSH configuration:")}</label>
-        <div className={styles.row}>
-          <Select
-            className={styles.grow}
-            value={ssh || null}
-            options={options}
-            placeholder={tx("No SSH configurations")}
-            onChange={(id) => {
-              setSsh(id);
-              setBrowse(null);
-            }}
-            aria-label={tx("SSH configuration")}
-          />
-          <Button onClick={() => void executeAction("file.settings", SSH_SETTINGS_PAGE)}>{tx("Configure…")}</Button>
-        </div>
+        {distros.length > 0 && (
+          <>
+            <label className={styles.label}>{tx("Connect through:")}</label>
+            <Select
+              value={kind}
+              options={[
+                { value: "ssh", label: "SSH" },
+                { value: "wsl", label: "WSL" },
+              ]}
+              onChange={(k) => {
+                setKind(k as RemoteTarget["kind"]);
+                setBrowse(null);
+              }}
+              aria-label={tx("Connect through")}
+            />
+          </>
+        )}
+        {wsl ? (
+          <>
+            <label className={styles.label}>{tx("WSL distribution:")}</label>
+            <Select
+              value={distro || null}
+              options={distros.map((d) => ({ value: d, label: d }))}
+              onChange={setDistro}
+              aria-label={tx("WSL distribution")}
+            />
+          </>
+        ) : (
+          <>
+            <label className={styles.label}>{tx("SSH configuration:")}</label>
+            <div className={styles.row}>
+              <Select
+                className={styles.grow}
+                value={ssh || null}
+                options={options}
+                placeholder={tx("No SSH configurations")}
+                onChange={(id) => {
+                  setSsh(id);
+                  setBrowse(null);
+                }}
+                aria-label={tx("SSH configuration")}
+              />
+              <Button onClick={() => void executeAction("file.settings", SSH_SETTINGS_PAGE)}>{tx("Configure…")}</Button>
+            </div>
+          </>
+        )}
         <label className={styles.label} htmlFor="remote-dev-path">
           {tx("Project directory:")}
         </label>
@@ -119,9 +172,12 @@ function ConnectDialog() {
             spellCheck={false}
             onChange={(e) => setPath(e.target.value)}
           />
-          <Button disabled={!ssh || busy} onClick={() => void list(path.trim() || "~")}>
-            {tx("Browse")}
-          </Button>
+          {/* Browsing lists over SFTP; a WSL distribution has no such session before connecting. */}
+          {!wsl && (
+            <Button disabled={!ssh || busy} onClick={() => void list(path.trim() || "~")}>
+              {tx("Browse")}
+            </Button>
+          )}
         </div>
         {browse && (
           <ul className={styles.folders} aria-label={tx("Remote folders")}>

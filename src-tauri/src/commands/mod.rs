@@ -47,6 +47,7 @@ pub mod web;
 pub mod window;
 pub mod window_group;
 pub mod workspace;
+pub mod wsl;
 
 use tauri_specta::collect_commands;
 
@@ -466,6 +467,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_set_ssh_secret,
         db::db_trust_ssh_host,
         ssh::ssh_test,
+        wsl::wsl_distros,
+        wsl::wsl_resolve,
         ssh::ssh_set_secret,
         ssh::ssh_needs_secret,
         ssh::ssh_trust_host,

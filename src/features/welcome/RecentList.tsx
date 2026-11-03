@@ -54,7 +54,7 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
           label: "Open in New Window",
           icon: "folder-open",
           run: () =>
-            void call(commands.windowOpenRemote(remote.sshConfig, remote.path, true))
+            void call(commands.windowOpenRemote(remote.target, remote.path, true))
               .then(() => onOpened?.())
               .catch(() => undefined),
         }

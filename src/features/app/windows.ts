@@ -53,7 +53,10 @@ async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
   if (!(await confirmLeaveProject())) return false;
   try {
-    await openProject(path);
+    // A folder of a WSL distro runs there, not as a network folder.
+    const wsl = await commands.wslResolve(path).catch(() => null);
+    if (wsl) await connectRemote(wsl.target, wsl.path);
+    else await openProject(path);
     return true;
   } catch (e) {
     maybeEditorService()?.cancelClose?.();
@@ -210,8 +213,8 @@ export async function consumeLaunch(): Promise<void> {
     if (await openHere(launch.project)) await openInEditor(files);
   } else if (files.length) await openFilesHere(files);
   else if (launch?.remote) {
-    const { sshConfig, path } = launch.remote;
-    await connectRemote(sshConfig, path).catch((e) =>
+    const { target, path } = launch.remote;
+    await connectRemote(target, path).catch((e) =>
       notifications().notify({
         level: "error",
         title: t("app.window.openFailed", { name: basename(path) }),
