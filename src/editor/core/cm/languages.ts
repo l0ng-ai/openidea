@@ -98,6 +98,12 @@ const OWN_MODES = [
   ),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
   LanguageDescription.of({
+    name: "ERB",
+    alias: ["erb", "rhtml"],
+    extensions: ["erb", "rhtml"],
+    load: () => import("./erb").then((m) => m.erb()),
+  }),
+  LanguageDescription.of({
     name: "Astro",
     extensions: ["astro"],
     load: () => import("./astro").then((m) => m.astro()),

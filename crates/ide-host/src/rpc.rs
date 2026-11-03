@@ -178,7 +178,7 @@ impl Dispatcher {
             Ok(())
         })
         .add("cancel_task", |c| async move { Ok(ide_core::task::cancel(c.arg::<TaskId>("id")?)) })
-        .add("fs_read_dir", |c| async move { ops::fs::read_dir(&c.host, &c.window, c.arg("path")?) })
+        .add("fs_read_dir", |c| async move { ops::fs::read_dir(&c.host, &c.window, c.arg("path")?).await })
         .add("fs_entry_kind", |c| async move { ops::fs::entry_kind(&c.host, c.arg("path")?).await })
         .add("fs_create_file", |c| async move { ops::fs::create_file(&c.host, &c.window, c.arg("path")?) })
         .add("fs_create_file_bytes", |c| async move {
@@ -215,9 +215,14 @@ impl Dispatcher {
         })
         .add("fs_read_text", |c| async move { ops::fs::read_text(&c.host, &c.window, c.arg("path")?).await })
         .add("doc_open", |c| async move { ops::doc::open(&c.host, &c.window, c.arg("path")?).await })
-        .add("doc_close", |c| async move { ops::doc::close(&c.host, &c.window, c.arg("doc")?) })
+        .add("doc_close", |c| async move {
+            ops::doc::blocking(move || ops::doc::close(&c.host, &c.window, c.arg("doc")?)).await
+        })
         .add("doc_edit", |c| async move {
-            ops::doc::edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?)
+            ops::doc::blocking(move || {
+                ops::doc::edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?)
+            })
+            .await
         })
         .add("doc_save", |c| async move { ops::doc::save(&c.host, &c.window, c.arg("doc")?).await })
         .add("doc_save_all", |c| async move { ops::doc::save_all(&c.host, &c.window).await })
