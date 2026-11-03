@@ -242,6 +242,39 @@ export function duplicateKeymap(
   };
 }
 
+/**
+ * Imports a `CustomKeymap` into `customs`.
+ * When `overwrite` is true and a custom keymap with the same name exists, replaces it in place.
+ * Otherwise, if the name collides with a built-in preset or existing custom keymap, appends ` (2)`, ` (3)`, etc.
+ */
+export function importKeymap(
+  customs: CustomKeymaps,
+  keymap: CustomKeymap,
+  overwrite = false,
+): { id: string; customs: CustomKeymaps } {
+  const baseName = keymap.name.trim() || "Imported Keymap";
+  const parent = PRESETS[keymap.parent] ? keymap.parent : defaultPreset();
+  if (overwrite) {
+    const existing = Object.entries(customs).find(([, k]) => k.name === baseName);
+    if (existing) {
+      const [id] = existing;
+      return {
+        id,
+        customs: { ...customs, [id]: { name: baseName, parent, overrides: { ...keymap.overrides } } },
+      };
+    }
+  }
+  const taken = (n: string) =>
+    Object.values(PRESET_TITLES).includes(n) || Object.values(customs).some((k) => k.name === n);
+  let name = baseName;
+  for (let i = 2; taken(name); i++) name = `${baseName} (${i})`;
+  const id = newKeymapId(name, customs);
+  return {
+    id,
+    customs: { ...customs, [id]: { name, parent, overrides: { ...keymap.overrides } } },
+  };
+}
+
 export function renameKeymap(customs: CustomKeymaps, id: string, name: string): CustomKeymaps {
   const k = customs[id];
   return k ? { ...customs, [id]: { ...k, name: name.trim() } } : customs;
