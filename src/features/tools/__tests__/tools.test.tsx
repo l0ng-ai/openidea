@@ -191,11 +191,30 @@ describe("missing language server prompt", () => {
     off();
   });
 
-  it("offers the first server that reports missing when earlier ones are turned off", async () => {
+  it("offers the fallback picked in settings once the server before it is turned off", async () => {
+    const off = installMissingServerPrompts();
+    const missing = (server: number, name: string) =>
+      emitLocalIdeEvent({ type: "languageServer", server, name, status: "missing", message: null });
+    missing(30, "basedpyright");
+    missing(31, "pyright");
+    await waitFor(() => expect(notes).toHaveLength(1));
+    // "Pyright" picked: basedpyright stops and leaves the list, pyright was already held back.
+    emitLocalIdeEvent({ type: "languageServerRemoved", server: 30 });
+    await waitFor(() => expect(notes).toHaveLength(2));
+    // ty, started later, follows pyright's notice.
+    missing(32, "ty");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(notes.map((n) => n.key)).toEqual([missingKey("basedpyright"), missingKey("pyright")]);
+    off();
+  });
+
+  it("offers the first server that reports missing when earlier ones are off from the start", async () => {
     const off = installMissingServerPrompts();
     // basedpyright turned off in settings never starts, so never reports.
     for (const [i, name] of ["pyright", "ty"].entries()) {
-      emitLocalIdeEvent({ type: "languageServer", server: 30 + i, name, status: "missing", message: null });
+      emitLocalIdeEvent({ type: "languageServer", server: 40 + i, name, status: "missing", message: null });
     }
     await waitFor(() => expect(notes).toHaveLength(1));
     await act(async () => {
