@@ -671,6 +671,8 @@ export const commands = {
 	debugScopes: (session: DebugSessionId, frameId: number) => typedError<Scope[], IdeError>(__TAURI_INVOKE("debug_scopes", { session, frameId })),
 	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
 	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
+	/**  Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16). */
+	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
@@ -2582,6 +2584,17 @@ export type DebugCapabilities = {
 	logPoints: boolean,
 	/**  HotSwap ("Reload Changed Classes"): java-debug's `redefineClasses` request. */
 	hotCodeReplace: boolean,
+};
+
+/**  A completion the adapter offers for an expression (DAP `completions`). */
+export type DebugCompletion = {
+	label: string,
+	/**  What to insert, when it differs from `label`. */
+	text: string | null,
+	/**  DAP item type: `method`, `field`, `variable`, `class`, `keyword`, … */
+	kind: string | null,
+	detail: string | null,
+	sortText: string | null,
 };
 
 export type DebugEvent = 
