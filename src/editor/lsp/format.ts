@@ -24,6 +24,7 @@ import {
 import { useProject } from "@/platform/project";
 import { CONTRIBUTED_FORMAT, contributedAt, whenSynced, type ContributedFormatter } from "@/editor/api";
 import { docOf, lspRequest, reportLspError } from "./lsp";
+import { formatIndentFacet } from "../core/cm/setup";
 import { offsetToPos, textEditsToChanges } from "./positions";
 import { tx, txTemplate } from "@/platform/i18n";
 import { showHint } from "./hint";
@@ -71,8 +72,10 @@ function formattedHint(view: EditorView, lines: number) {
   });
 }
 
-/** LSP `FormattingOptions`: with spaces the indent width is the indent unit, not the tab size. */
+/** LSP `FormattingOptions`: with spaces the indent width is the indent unit, not the tab size. An explicit Code Style override replaces the editor's indent — the server's formatter profile carries the same override, so both agree. */
 export function formatOptionsOf(state: EditorState): { tabSize: number; insertSpaces: boolean } {
+  const style = state.facet(formatIndentFacet)[0];
+  if (style) return { tabSize: style.indentSize ?? style.tabSize, insertSpaces: style.insertSpaces };
   const unit = state.facet(indentUnit);
   return unit.includes("\t")
     ? { tabSize: state.tabSize, insertSpaces: false }

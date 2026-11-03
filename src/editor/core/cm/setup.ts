@@ -2,7 +2,7 @@
  * The base extension set of every text editor, with compartments for the
  * parts that change at runtime (language, settings, contributions).
  */
-import { Compartment, EditorState, Prec, type Extension, type Range } from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec, type Extension, type Range } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -160,6 +160,17 @@ export function indentExtension(indent: EffectiveIndent): Extension {
     indentUnit.of(indent.insertSpaces ? " ".repeat(Math.max(1, indent.indentSize ?? indent.tabSize)) : "\t"),
   ];
 }
+
+/**
+ * Indentation explicit reformat requests use: the Code Style without the file's
+ * detected indents (detection affects editing, reformatting uses the configured
+ * style, as in IDEA). Set only when the language has an explicit Tabs and Indents
+ * override — unset, formatting keeps the editor's indent, the status bar choice
+ * included.
+ */
+export const formatIndentFacet = Facet.define<EffectiveIndent | null>({
+  combine: (values) => [values.find((v) => v !== null) ?? null],
+});
 
 export function fontExtension(settings: EditorSettings | undefined): Extension {
   const vars: string[] = [];
