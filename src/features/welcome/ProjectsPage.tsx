@@ -31,6 +31,9 @@ function HeaderButtons() {
   const openKey = shortcutLabel("file.openProject");
   return (
     <div className={styles.headerButtons}>
+      <Button variant="primary" disabled={opening} onClick={() => void executeAction("file.newProject")}>
+        <T>New Project</T>
+      </Button>
       <Button
         disabled={opening}
         onClick={() => void executeAction("file.openProject")}
@@ -71,6 +74,17 @@ function Landing() {
         <T>You can also drop a folder onto this window.</T>
       </p>
       <div className={styles.landingActions}>
+        <button
+          type="button"
+          className={styles.landingAction}
+          disabled={opening}
+          onClick={() => void executeAction("file.newProject")}
+        >
+          <span className={styles.landingIcon}>
+            <Icon name="folder" size={20} />
+          </span>
+          <T>New Project</T>
+        </button>
         <button
           type="button"
           className={styles.landingAction}

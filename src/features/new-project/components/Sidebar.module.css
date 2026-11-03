@@ -1,0 +1,87 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  height: 100%;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+  user-select: none;
+}
+
+.searchBox {
+  padding: 10px 12px 6px;
+}
+
+.searchInput {
+  width: 100%;
+  font-size: var(--fs-base, 13px);
+}
+
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+
+.groupTitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: 10px 8px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-base, 4px);
+  border: none;
+  background: transparent;
+  color: var(--fg-strong);
+  font-size: var(--fs-base, 13px);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast, 120ms);
+}
+
+.item:hover:not(.active) {
+  background: var(--bg-hover);
+}
+
+.active {
+  background: #3574f0;
+  color: #ffffff;
+}
+
+:global([data-theme="dark"]) .active {
+  background: #3574f0;
+  color: #ffffff;
+}
+
+.itemIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.pluginLink {
+  color: var(--link, #3574f0);
+  font-size: var(--fs-tiny, 12px);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.pluginLink:hover {
+  text-decoration: underline;
+}

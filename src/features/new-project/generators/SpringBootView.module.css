@@ -1,0 +1,119 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 24px;
+  gap: 14px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  align-items: center;
+  row-gap: 12px;
+  column-gap: 16px;
+}
+
+.label {
+  font-size: var(--fs-base, 13px);
+  color: var(--fg-strong);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+}
+
+.helpIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--fg-muted);
+  cursor: help;
+}
+
+.serverRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.serverLink {
+  color: var(--link, #3574f0);
+  font-size: var(--fs-base, 13px);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.gearBtn {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: var(--radius-base, 4px);
+}
+
+.gearBtn:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.inputField {
+  width: 100%;
+  max-width: 440px;
+}
+
+.selectField {
+  width: 100%;
+  max-width: 440px;
+}
+
+.checkboxRow {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-base, 13px);
+  color: var(--fg-strong);
+  user-select: none;
+  cursor: pointer;
+  margin-top: -4px;
+}
+
+.jdkRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 440px;
+}
+
+.dialogTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialogAppIcon {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.dialogBody {
+  padding: 16px;
+}
+
+.dialogInput {
+  width: 100%;
+}
