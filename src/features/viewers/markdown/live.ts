@@ -17,6 +17,8 @@ export interface LiveMarkdown {
   scrollSeq: number;
   /** The editor's font zoom in px; the preview scales its text by the same amount. */
   fontZoom: number;
+  /** The preview div's own scrollTop, kept so Preview Only survives a remount. */
+  previewTop: number;
 }
 
 export const useLiveMarkdown = create<Record<string, LiveMarkdown | undefined>>(() => ({}));
@@ -25,9 +27,14 @@ const TEXT_DELAY = 120;
 
 function publish(path: string, patch: Partial<LiveMarkdown>) {
   useLiveMarkdown.setState((s) => {
-    const prev = s[path] ?? { text: "", topLine: 0, scrollSeq: 0, fontZoom: 0 };
+    const prev = s[path] ?? { text: "", topLine: 0, scrollSeq: 0, fontZoom: 0, previewTop: 0 };
     return { [path]: { ...prev, ...patch } };
   });
+}
+
+/** Records the preview's own scroll offset, published by the preview's scroll listener. */
+export function publishPreviewTop(path: string, top: number) {
+  publish(path, { previewTop: top });
 }
 
 function topLineOf(view: EditorView): number {
