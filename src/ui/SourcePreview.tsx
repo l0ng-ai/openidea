@@ -17,6 +17,7 @@ import { tokenSpans } from "@/editor/lineTokens";
 import { codeHighlighter, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
 import { T } from "./T";
 import styles from "./SourcePreview.module.css";
+import { useSelectionBoundary } from "./useSelectionBoundary";
 import { tx } from "@/platform/i18n";
 
 export interface SourceHighlight {
@@ -50,7 +51,6 @@ export function SourcePreview({ path, line, highlights = [], load, version = 0, 
   const [text, setText] = useState<{ path: string; lines: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [highlighter, setHighlighter] = useState<{ path: string; fn: Highlighter } | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const current = text && text.path === path ? text : null;
 
   useEffect(() => {
@@ -90,12 +90,6 @@ export function SourcePreview({ path, line, highlights = [], load, version = 0, 
       alive = false;
     };
   }, [current]);
-
-  useLayoutEffect(() => {
-    const box = scrollRef.current;
-    const el = box?.querySelector<HTMLElement>(`[data-line="${line}"]`);
-    if (box && el) box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
-  }, [current, line]);
 
   // Offsets of every line in the newline-normalised text, so whole-file token
   // ranges can be sliced per rendered line.
@@ -149,12 +143,54 @@ export function SourcePreview({ path, line, highlights = [], load, version = 0, 
   if (error && !current) return <div className={clsx(styles.preview, styles.empty, className)}>{error}</div>;
   if (!current) return <div className={clsx(styles.preview, className)} />;
 
+  return (
+    <PreviewBody
+      path={path}
+      line={line}
+      lines={current.lines}
+      tokensByLine={tokensByLine}
+      highlights={highlights}
+      className={className}
+    />
+  );
+}
+
+/**
+ * The rendered lines. A separate component so the selection boundary mounts
+ * with the scroll element: the pane's own `path` may go null → set, after
+ * this component's effects already ran, and the ref would stay empty.
+ */
+function PreviewBody({
+  path,
+  line,
+  lines,
+  tokensByLine,
+  highlights,
+  className,
+}: {
+  path: string;
+  line: number;
+  lines: string[];
+  tokensByLine: Map<number, CodeToken[]> | null;
+  highlights: readonly SourceHighlight[];
+  className?: string;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(scrollRef);
+  // Re-run on the loaded lines (not the parent's `current` object): the body
+  // remounts per text, so recentring must fire when the new lines arrive.
+  useLayoutEffect(() => {
+    const box = scrollRef.current;
+    const el = box?.querySelector<HTMLElement>(`[data-line="${line}"]`);
+    if (box && el) box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
+  }, [line, path, lines]);
+
   const byLine = new Map(highlights.map((h) => [h.line, h.ranges]));
   const start = Math.max(0, line - WINDOW);
-  const end = Math.min(current.lines.length, line + WINDOW);
+  const end = Math.min(lines.length, line + WINDOW);
   const rows: ReactNode[] = [];
   for (let n = start; n < end; n++) {
-    const content = current.lines[n] ?? "";
+    const content = lines[n] ?? "";
     const ranges = byLine.get(n);
     const lineTokens = tokensByLine?.get(n);
     rows.push(

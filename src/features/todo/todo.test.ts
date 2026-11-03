@@ -12,6 +12,7 @@ import {
   DEFAULT_TODO_SETTINGS,
   groupTodos,
   itemsFromMatches,
+  looksLikeComment,
   mergeLive,
   scanText,
   todoRegexSource,
@@ -21,6 +22,52 @@ import {
 import { todoDecorations } from "./highlight";
 
 const S = DEFAULT_TODO_SETTINGS;
+
+describe("comment markers", () => {
+  const keep = [
+    "// TODO",
+    "/* TODO */",
+    " * TODO", // Javadoc continuation
+    "/** TODO: document this */", // doc comment led by the keyword
+    "# TODO", // line-start Python/Shell
+    "foo() # TODO", // trailing Python/Shell comment
+    "SELECT 1 -- TODO", // trailing SQL comment
+    "<!-- TODO -->",
+    "  ; TODO", // line-start ini comment
+    "  % TODO", // line-start LaTeX comment
+    '""" TODO', // Python docstring
+    "''' TODO",
+    "x = 1; // TODO", // marker after whitespace, not just line start
+    "x (* TODO *)", // OCaml trailing comment
+    "x {- TODO -}", // Haskell trailing comment
+  ];
+  const drop = [
+    "foo(); TODO", // statement separator
+    "if (a % 2) TODO", // modulo
+    "i--; TODO", // postfix decrement
+    'let s = "a#b"; TODO', // # inside a string, no preceding space
+    "x = a--b; TODO", // -- with no preceding space
+    "see http://example.com TODO", // // inside a URL
+    '"//"; TODO', // // inside a string
+    "f(*) TODO", // OCaml-style wildcard
+    "a * b; TODO", // infix multiplication
+    // The keyword must lead the comment, not be mentioned mid-text:
+    "/** 业务类别：WORK_NOTICE 工作通知，TODO 待办。 */", // documents an enum value
+    "// fixed the TODO bug", // mentions TODO inside the comment body
+    "/* see the TODO list */",
+  ];
+
+  it.each(keep)("keeps %s", (line) => expect(looksLikeComment(`${line.slice(0, line.indexOf("TODO"))}`)).toBe(true));
+  it.each(drop)("drops %s", (line) => expect(looksLikeComment(`${line.slice(0, line.indexOf("TODO"))}`)).toBe(false));
+
+  it("falls back to the lenient rule on truncated lines", () => {
+    // A 600-char shell line truncated by the backend: the window starts
+    // mid-line, so the leading rule cannot apply — any marker counts.
+    expect(looksLikeComment("very long code # remainder ", true)).toBe(true);
+    expect(looksLikeComment("very long code % remainder ", true)).toBe(true);
+    expect(looksLikeComment("i-- ", true)).toBe(true);
+  });
+});
 
 describe("query", () => {
   it("builds the keyword regex from enabled patterns", () => {

@@ -55,4 +55,11 @@ describe("SourcePreview", () => {
     await screen.findByText('const lib = "x";');
     expect(firstTok(container)).toBeNull();
   });
+
+  it("makes its text selectable as a selection boundary", async () => {
+    const { container } = render(<SourcePreview path="/p/a.ts" line={0} load={loadOf("// TODO")} />);
+    await screen.findByText("// TODO");
+    // The scroll pane is a selection scope: drags stay inside, text stays copyable.
+    expect(container.querySelector("[data-selection-scope]")).toBeTruthy();
+  });
 });
