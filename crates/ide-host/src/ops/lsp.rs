@@ -1,9 +1,11 @@
 use super::doc::blocking;
 use crate::Host;
 use crate::apply_workspace_edit as apply_edit;
+use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
+use ide_plugin::ProviderDocument;
 
 async fn prepare_actions(
     project: std::sync::Arc<crate::Project>,
@@ -38,9 +40,87 @@ pub async fn lsp_completion(
 ) -> IdeResult<CompletionList> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.completion(doc, pos, trigger, cancel).await;
+    let result = lsp.completion(doc, pos, trigger.clone(), cancel).await;
     host.end_request(request);
-    result
+    // Plugin providers (`[[contributes.providers]]`) add theirs.
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
+    let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
+    if items.is_empty() {
+        return result;
+    }
+    let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
+    list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
+    Ok(list)
+}
+
+/// The plugin host and the document, when some plugin provides `kind`.
+fn plugin_providers(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    kind: ProviderKind,
+) -> Option<(std::sync::Arc<crate::plugins::PluginHost>, ProviderDocument)> {
+    let plugins = editor_providers(kind)?;
+    let snap = host.project(window).ok()?.documents.snapshot(doc).ok()?;
+    let d = ProviderDocument {
+        path: snap.path.0,
+        language: snap.language.0,
+        version: u64::from(snap.version),
+        text: snap.text,
+    };
+    Some((plugins, d))
+}
+
+/// Plugin calls block (the plugin's actor thread does the work).
+async fn plugin_call<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    tokio::task::spawn_blocking(f).await.ok()
+}
+
+/// Items from plugins carry no server (resolve and commands don't apply).
+const PLUGIN_SERVER: ServerId = ServerId(0);
+
+fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
+    let kind = item.kind.as_deref().and_then(|k| {
+        Some(match k {
+            "text" => CompletionKind::Text,
+            "method" => CompletionKind::Method,
+            "function" => CompletionKind::Function,
+            "constructor" => CompletionKind::Constructor,
+            "field" => CompletionKind::Field,
+            "variable" => CompletionKind::Variable,
+            "class" => CompletionKind::Class,
+            "interface" => CompletionKind::Interface,
+            "module" => CompletionKind::Module,
+            "property" => CompletionKind::Property,
+            "keyword" => CompletionKind::Keyword,
+            "snippet" => CompletionKind::Snippet,
+            "value" => CompletionKind::Value,
+            "constant" => CompletionKind::Constant,
+            "file" => CompletionKind::File,
+            "reference" => CompletionKind::Reference,
+            _ => return None,
+        })
+    });
+    CompletionItem {
+        label: item.label,
+        label_detail: None,
+        detail: item.detail,
+        kind,
+        documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),
+        sort_text: item.sort_text,
+        filter_text: None,
+        preselect: false,
+        deprecated: false,
+        insert_text: item.insert_text,
+        is_snippet: false,
+        replace_range: item.replace,
+        replace_range_tab: None,
+        additional_edits: Vec::new(),
+        commit_characters: Vec::new(),
+        command: None,
+        data: None,
+        server: PLUGIN_SERVER,
+    }
 }
 
 /// Inline (ghost text) suggestions at `pos`; `automatic` when triggered by typing.
@@ -54,9 +134,26 @@ pub async fn lsp_inline_completion(
 ) -> IdeResult<Vec<InlineCompletionItem>> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.inline_completion(doc, pos, automatic, cancel).await;
+    let result = lsp.inline_completion(doc, pos, automatic, cancel.clone()).await;
+    // Plugins: cancelled (cooperatively) when the editor cancels the request.
+    let plugin = match plugin_providers(host, window, doc, ProviderKind::InlineCompletion) {
+        Some((plugins, d)) if !matches!(&result, Ok(items) if !items.is_empty()) => {
+            let cancel = cancel.clone();
+            plugin_call(move || plugins.provide_inline_completion(&d, pos, &cancel)).await.flatten()
+        }
+        _ => None,
+    };
     host.end_request(request);
-    result
+    match plugin {
+        Some((_, s)) => Ok(vec![InlineCompletionItem {
+            insert_text: s.insert_text,
+            range: s.replace,
+            filter_text: None,
+            command: None,
+            server: PLUGIN_SERVER,
+        }]),
+        None => result,
+    }
 }
 
 pub async fn lsp_resolve_completion(
@@ -87,7 +184,40 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
-    host.project(window)?.lsp.goto(doc, pos, kind).await
+    let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
+    if kind != GotoKind::Definition {
+        return result;
+    }
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else { return result };
+    let found = plugin_call(move || plugins.provide_definition(&d, pos)).await.unwrap_or_default();
+    if found.is_empty() {
+        return result;
+    }
+    let mut out = result.unwrap_or_default();
+    out.extend(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }));
+    Ok(out)
+}
+
+/// Gutter markers from plugins (`line-markers` providers) for `doc`.
+pub async fn plugin_line_markers(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+) -> IdeResult<Vec<crate::plugins::LineMarkerInfo>> {
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::LineMarkers) else {
+        return Ok(Vec::new());
+    };
+    let markers = plugin_call(move || plugins.provide_line_markers(&d)).await.unwrap_or_default();
+    Ok(markers
+        .into_iter()
+        .map(|(plugin_id, m)| crate::plugins::LineMarkerInfo {
+            plugin_id,
+            line: m.line,
+            icon: m.icon,
+            tooltip: m.tooltip,
+            target: m.target.map(|l| Location { path: l.path.into(), range: l.range, uri: None }),
+        })
+        .collect())
 }
 
 /// Implementations of the symbols at `positions`, one list per position (the
@@ -165,8 +295,42 @@ pub async fn lsp_code_actions(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let actions = project.lsp.code_actions(doc, range, only).await?;
+    let result = project.lsp.code_actions(doc, range, only.clone()).await;
+    let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
+        Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let plugin_actions: Vec<CodeAction> = plugin_actions
+        .into_iter()
+        .map(|(_, a)| plugin_code_action(a))
+        .filter(|a| {
+            only.is_empty()
+                || a.kind.as_ref().is_some_and(|k| only.iter().any(|o| k == o || k.starts_with(&format!("{o}."))))
+        })
+        .collect();
+    let actions = if plugin_actions.is_empty() {
+        result?
+    } else {
+        let mut out = result.unwrap_or_default();
+        out.extend(plugin_actions);
+        out
+    };
     prepare_actions(project, doc, version, actions).await
+}
+
+fn plugin_code_action(a: ide_plugin::CodeAction) -> CodeAction {
+    let files =
+        a.edits.into_iter().map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None }).collect();
+    CodeAction {
+        title: a.title,
+        kind: a.kind,
+        is_preferred: a.preferred,
+        disabled_reason: None,
+        edit: Some(WorkspaceEdit { files, preconditions: Vec::new() }),
+        command: None,
+        data: None,
+        server: PLUGIN_SERVER,
+    }
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).

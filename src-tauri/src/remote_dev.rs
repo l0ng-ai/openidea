@@ -90,6 +90,11 @@ impl Connections {
             .map(|(label, _)| label.clone())
     }
 
+    /// Every connected window.
+    pub fn all(&self) -> Vec<(String, Arc<Connection>)> {
+        self.0.lock().iter().map(|(w, c)| (w.clone(), c.clone())).collect()
+    }
+
     pub fn disconnect(&self, window: &str) {
         if let Some(c) = self.0.lock().remove(window) {
             c.peer.kill();
@@ -157,6 +162,16 @@ impl Handler for ClientHandler {
                 }
                 Err(e) => tracing::warn!("remote event: {e}"),
             },
+            // Plugin code of this window's project runs on the server (docs/plugin_plan.md 3).
+            ide_host::plugins::remote_host::EVENT_NOTIFICATION => {
+                match serde_json::from_value::<ide_host::plugins::remote_host::PluginEventMessage>(params) {
+                    Ok(m) if ide_host::plugins::remote_host::forwarded(&m.event) => {
+                        crate::commands::plugin::deliver_to(&self.window, m.event)
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("remote plugin event: {e}"),
+                }
+            }
             "channel" => match serde_json::from_value::<ChannelMessage>(params) {
                 Ok(m) => {
                     let channel = self.channels.lock().get(&m.id).cloned();
@@ -170,8 +185,18 @@ impl Handler for ClientHandler {
         }
     }
 
-    fn on_request(&self, method: &str, _: Value) -> Result<Value, (i64, String)> {
-        Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unhandled method {method}")))
+    fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        use ide_host::plugins::remote_host::{SECRET_REQUEST, SecretRequest};
+        match method {
+            // A remote plugin's request header needs a secret from this machine's keychain.
+            SECRET_REQUEST => {
+                let r: SecretRequest =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                let state = self.app.state::<AppState>();
+                Ok(serde_json::to_value(state.plugins.declared_secret(&r.plugin, &r.name)).unwrap_or(Value::Null))
+            }
+            _ => Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unhandled method {method}"))),
+        }
     }
 }
 
@@ -401,7 +426,12 @@ pub async fn remote_connect(
         next_channel: std::sync::atomic::AtomicU64::new(1),
         _session: session,
     });
-    state.remote_dev.0.lock().insert(label, connection);
+    state.remote_dev.0.lock().insert(label.clone(), connection.clone());
+    let plugins = state.plugins.clone();
+    tauri::async_runtime::spawn(async move {
+        sync_plugin_languages(&plugins, &connection, &label).await;
+        sync_plugin_packages(&plugins, &connection, &label).await;
+    });
     Ok(RemoteProject {
         ssh_config,
         root,
@@ -411,6 +441,80 @@ pub async fn remote_connect(
         commands,
         project,
     })
+}
+
+/// Sends the desktop's plugin languages, with the programs granted to them, to
+/// the window's server: `Workspace` contributions take effect where the project
+/// is (docs/plugin_plan.md 3). Servers without the command are left alone.
+pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, window: &str) {
+    use ide_host::plugins::remote::{SYNC_COMMAND, SyncReport};
+    if !c.commands.iter().any(|cmd| cmd == SYNC_COMMAND) {
+        return;
+    }
+    let call = Invoke {
+        window: window.to_owned(),
+        cmd: SYNC_COMMAND.into(),
+        args: serde_json::json!({ "languages": plugins.remote_languages() }),
+    };
+    match c.peer.request::<_, SyncReport>("invoke", call, None).await {
+        Ok(report) => {
+            for program in &report.unresolved {
+                tracing::info!("{}: plugin program {program} is not installed", c.host);
+            }
+            for rejected in &report.rejected {
+                tracing::warn!("{}: plugin language rejected: {rejected}", c.host);
+            }
+        }
+        Err(e) => tracing::warn!("{}: syncing plugin languages: {e}", c.host),
+    }
+}
+
+/// Sends the desktop's live code plugins to the window's server, which runs
+/// them next to the project (docs/plugin_plan.md 3): digests and grants first,
+/// then the files of the packages the server lacks, one per request.
+pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, window: &str) {
+    use ide_host::plugins::remote_host::{PackageSyncReport, SYNC_PACKAGES};
+    if !c.commands.iter().any(|cmd| cmd == SYNC_PACKAGES) {
+        return;
+    }
+    let host = plugins.clone();
+    let Ok(packages) = tauri::async_runtime::spawn_blocking(move || host.remote_packages()).await else { return };
+    let sync = |files: serde_json::Value| Invoke {
+        window: window.to_owned(),
+        cmd: SYNC_PACKAGES.into(),
+        args: serde_json::json!({ "packages": packages, "files": files }),
+    };
+    let report: PackageSyncReport = match c.peer.request("invoke", sync(Value::Null), None).await {
+        Ok(r) => r,
+        Err(e) => return tracing::warn!("{}: syncing plugins: {e}", c.host),
+    };
+    let mut failed = report.failed;
+    for id in report.missing {
+        let host = plugins.clone();
+        let pid = id.clone();
+        let files = match tauri::async_runtime::spawn_blocking(move || host.remote_package_files(&pid)).await {
+            Ok(Ok(files)) => files,
+            Ok(Err(e)) => {
+                failed.push(format!("{id}: {e}"));
+                continue;
+            }
+            Err(e) => {
+                failed.push(format!("{id}: {e}"));
+                continue;
+            }
+        };
+        match c
+            .peer
+            .request::<_, PackageSyncReport>("invoke", sync(serde_json::json!({ (id.clone()): files })), None)
+            .await
+        {
+            Ok(r) => failed.extend(r.failed),
+            Err(e) => failed.push(format!("{id}: {e}")),
+        }
+    }
+    for f in failed {
+        tracing::warn!("{}: plugin not available remotely: {f}", c.host);
+    }
 }
 
 #[derive(Serialize, Deserialize, Type)]

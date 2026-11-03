@@ -61,6 +61,9 @@ pub struct Settings {
     pub cmake: CMakeSettings,
     /// Tools › Agents › Chat.
     pub agents: AgentSettings,
+    /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
+    #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
+    pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// What the meters in an agent task's header show.
@@ -215,6 +218,7 @@ impl Default for Settings {
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
+            plugins: BTreeMap::new(),
         }
     }
 }

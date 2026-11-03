@@ -1,0 +1,27 @@
+{
+  "properties": {
+    "context": {
+      "type": "string",
+      "title": "Context",
+      "description": "kubectl context to use; empty for the current one.",
+      "default": ""
+    },
+    "namespaces": {
+      "type": "string",
+      "title": "Namespaces",
+      "description": "Comma-separated namespaces to show; empty for all.",
+      "default": ""
+    },
+    "tailLines": {
+      "type": "integer",
+      "title": "Log lines to show first",
+      "default": 200
+    },
+    "shell": {
+      "type": "string",
+      "title": "Shell in pods",
+      "enum": ["sh", "bash"],
+      "default": "sh"
+    }
+  }
+}

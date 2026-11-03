@@ -37,7 +37,9 @@ import {
   Tree,
   acquirePopup,
   fileIconName,
+  useFileIconRevision,
   folderIconName,
+  themedFolderIconName,
   showContextMenu,
   SymbolBadge,
   type DragSession,
@@ -125,6 +127,7 @@ function iconFor(
   root: string | null,
   build: BuildPresentation,
   detected: readonly RootFolder[],
+  expanded: boolean,
 ): string {
   if (node.placeholder) return node.placeholder === "dir" ? "folder" : "file";
   if (node.icon) return node.icon;
@@ -136,7 +139,7 @@ function iconFor(
     const key = rel !== null && build.modules.has(rel) ? rel : node.path;
     const module = root ? moduleFolderIcon(key, node.root, build.modules) : null;
     if (module) return module;
-    return node.root ? "module" : "folder";
+    return node.root ? "module" : (themedFolderIconName(node.label, expanded) ?? "folder");
   }
   return fileIconName(node.label);
 }
@@ -267,15 +270,18 @@ const Row = memo(function Row({
   onDoubleClick,
   onPointerDown,
 }: RowProps) {
+  // Memoised: redraw this row itself when the file icon theme changes.
+  useFileIconRevision();
   const deco = useFileDecoration(node.path);
   const roots = useEffectiveRoots();
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
+  const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const icon =
     node.dir || node.placeholder || node.icon
-      ? iconFor(node, roots, root, build, detected)
+      ? iconFor(node, roots, root, build, detected, expanded)
       : presentationIcon(node.path, file, roots, root, build.spring);
   const moduleFolder =
     node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
@@ -396,6 +402,8 @@ function folderAt(container: HTMLElement | null, x: number, y: number): { key: s
 
 export function ProjectView() {
   const txTemplate = useTxTemplate();
+  // Rows compute their file icons while rendering: redraw when the icon theme changes.
+  useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
   const expanded = useProjectTree((s) => s.expanded);

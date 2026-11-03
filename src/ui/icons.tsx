@@ -21,6 +21,7 @@
  */
 import { useId, useMemo, type CSSProperties } from "react";
 import clsx from "clsx";
+import { create } from "zustand";
 import styles from "./icons.module.css";
 
 const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg"], {
@@ -537,8 +538,62 @@ export type IconName = BaseName | `symbol-${SymbolKind}`;
 export const ICON_NAMES = Object.keys(ICONS) as BaseName[];
 
 function iconPath(name: string): string | undefined {
+  if (name.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.has(name) ? name : undefined;
   if (name.startsWith("symbol-")) return SYMBOL_ICONS[name.slice(7) as SymbolKind];
   return (ICONS as Record<string, string>)[name];
+}
+
+// ---------------------------------------------------------------------------
+// Icons supplied at runtime (plugin icon themes). The markup was sanitised by
+// the backend (`ide_host::plugins::sanitize_svg`); names are `ext:<source>/<icon>`.
+
+const EXTERNAL_PREFIX = "ext:";
+const EXTERNAL = new Map<string, string>();
+
+/** Registers icons by name (`ext:…`); the returned function removes them. */
+export function registerExternalIcons(icons: ReadonlyArray<readonly [name: string, svg: string]>): () => void {
+  const names: string[] = [];
+  for (const [name, svg] of icons) {
+    if (!name.startsWith(EXTERNAL_PREFIX)) continue;
+    EXTERNAL.set(name, svg);
+    prepared.delete(`${name}|16`);
+    prepared.delete(`${name}|20`);
+    names.push(name);
+  }
+  return () => {
+    for (const name of names) {
+      EXTERNAL.delete(name);
+      prepared.delete(`${name}|16`);
+      prepared.delete(`${name}|20`);
+    }
+  };
+}
+
+/** A file icon theme (plugin `iconThemes`). Each method returns an icon name, or null for the built-in one. */
+export interface FileIconTheme {
+  file(fileName: string): string | null;
+  /** Plain folders only: folders with a role (source root, excluded, …) keep their built-in icons. */
+  folder(folderName: string, expanded: boolean): string | null;
+}
+
+let fileIconTheme: FileIconTheme | null = null;
+
+/** Bumped when the file icon theme changes; file lists subscribe to redraw their icons. */
+export const useFileIconRevision = create<number>(() => 0);
+
+/**
+ * Sets the file icon theme: consulted after the user's own file type
+ * associations and before the built-in icons.
+ */
+export function setFileIconTheme(theme: FileIconTheme | null) {
+  if (fileIconTheme === theme) return;
+  fileIconTheme = theme;
+  useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+export function themedFolderIconName(folderName: string, expanded = false): IconName | null {
+  return (fileIconTheme?.folder(folderName, expanded) ?? null) as IconName | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +617,7 @@ interface Prepared {
 }
 
 function raw(path: string): string | undefined {
+  if (path.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.get(path);
   return RAW[path.startsWith("openidea/") ? `./${path}.svg` : `./expui/${path}.svg`];
 }
 
@@ -934,6 +990,8 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
 export function fileIconName(fileName: string): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  const themed = fileIconTheme?.file(fileName);
+  if (themed) return themed as IconName;
   const lower = fileName.toLowerCase();
   const named = FILE_NAMES[lower] ?? NAME_PATTERNS.find(([re]) => re.test(lower))?.[1];
   if (named) return named;

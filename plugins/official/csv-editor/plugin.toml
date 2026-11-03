@@ -1,0 +1,23 @@
+id = "openidea.csv-editor"
+name = "CSV Editor"
+version = "0.1.0"
+description = "Edit CSV and TSV files as a table. Edits go to the file's text, so the text view follows and undo is shared."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: table editor for .csv and .tsv with cell editing, inserting and deleting rows; large files load the visible rows only."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-view:table"]
+
+[capabilities]
+required = ["editor.read", "editor.write"]
+
+[[contributes.customEditors]]
+id = "table"
+title = "Table"
+patterns = ["*.csv", "*.tsv"]
+priority = "default"
+
+[contributes.settings]
+title = "CSV Editor"
+schema = "settings.schema.json"

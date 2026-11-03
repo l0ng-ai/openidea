@@ -1,0 +1,44 @@
+id = "openidea.kubernetes"
+name = "Kubernetes"
+version = "0.1.0"
+description = "Browse your Kubernetes cluster — namespaces, pods, deployments and services — follow pod logs and open a shell in a pod. Uses your kubectl and its configuration."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: cluster tree, pod logs and shells in the terminal, context and namespace settings."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-view:cluster", "on-command:*"]
+
+# kubectl reads ~/.kube/config (outside the project): that access is part of
+# the `process:kubectl` grant; the plugin itself reads no files.
+[capabilities]
+required = ["process:kubectl"]
+
+[[contributes.views]]
+id = "cluster"
+title = "Kubernetes"
+icon = "toolwindow-services"
+location = "right"
+
+[[contributes.commands]]
+id = "refresh"
+title = "Kubernetes: Refresh"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "logs"
+title = "Kubernetes: Follow Logs of Selected Pod"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "shell"
+title = "Kubernetes: Open Shell in Selected Pod"
+category = "Kubernetes"
+
+[[contributes.menus]]
+menu = "tools"
+command = "refresh"
+
+[contributes.settings]
+title = "Kubernetes"
+schema = "settings.schema.json"

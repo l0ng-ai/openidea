@@ -1,84 +1,68 @@
-/// OpenIDEA plugin API, version 0.1.
+/// OpenIDEA plugin API, version 1.0 (docs/plugin_plan.md 4.3). Frozen: 1.x
+/// only adds (new interfaces, new optional exports); a 2.0 keeps 1.0 running
+/// through an adapter in the host.
 ///
-/// A plugin is a WebAssembly component targeting the `plugin` world. It runs
-/// sandboxed: no filesystem, network, environment or clock access beyond what
-/// WASI preview 2 grants by default (wall/monotonic clocks and random only).
-/// Everything else goes through the `host` interface and is gated by the
-/// permissions declared in `plugin.toml`.
-package openidea:plugin@0.1.0;
-
-interface types {
-    enum log-level {
-        trace,
-        debug,
-        info,
-        warn,
-        error,
-    }
-
-    enum notification-level {
-        info,
-        warning,
-        error,
-    }
-
-    /// Passed to `activate`.
-    record context {
-        plugin-id: string,
-        plugin-version: string,
-        /// Version of this API the host implements, e.g. "0.1".
-        api-version: string,
-        /// Permissions granted from the manifest, e.g. ["project-read"].
-        permissions: list<string>,
-    }
-}
-
-interface host {
-    use types.{log-level, notification-level};
-
-    /// Writes to the IDE log (tagged with the plugin id).
-    log: func(level: log-level, message: string);
-
-    /// Registers (or updates) a command. It appears as action
-    /// `plugin.<plugin-id>.<id>` in Search Everywhere and the keymap editor.
-    /// `id` must match `[a-z0-9][a-z0-9._-]*`.
-    register-command: func(id: string, title: string, category: option<string>);
-
-    /// Shows a notification balloon.
-    show-notification: func(level: notification-level, title: string, body: string);
-
-    /// Root of the project the current command was invoked from.
-    /// Requires `project-read`.
-    workspace-root: func() -> option<string>;
-
-    /// Path of the focused editor's file. Requires `editor-read`.
-    active-file: func() -> option<string>;
-
-    /// Reads a UTF-8 text file inside the project root (absolute, or relative
-    /// to the root). Paths escaping the root are rejected. Requires `project-read`.
-    read-file: func(path: string) -> result<string, string>;
-
-    /// Inserts text at the cursor of the active editor. Requires `editor-write`.
-    insert-text: func(text: string);
-
-    /// Replaces the active editor's selection(s). Requires `editor-write`.
-    replace-selection: func(text: string);
-
-    /// Registers a language from a `languages/<id>.toml`-style definition.
-    register-language: func(definition: string) -> result<_, string>;
-
-    /// Registers a theme from JSON: {"id","name","kind":"dark"|"light","tokens":{"--var":"value"}}.
-    register-theme: func(definition: string) -> result<_, string>;
-}
+/// A plugin is a WebAssembly component targeting the `plugin` world (or
+/// `plugin-syntax`). It runs sandboxed: no filesystem, network, environment
+/// or processes beyond WASI's clocks and randomness; everything else goes
+/// through the imports below, gated by the capabilities granted in
+/// `plugin.toml` (a missing one returns `error::denied`).
+package openidea:plugin@1.0.0;
 
 world plugin {
-    use types.{context};
-    import host;
+    import log;
+    import contributions;
+    import ui;
+    import storage;
+    import workspace;
+    import editor;
+    import invocation;
+    import vcs;
+    import events;
+    import tasks;
+    import diagnostics;
+    import net;
+    import secrets;
+    import process;
+    import views;
+    import settings;
 
-    /// Called once after loading. Register commands here.
-    export activate: func(ctx: context) -> result<_, string>;
-    /// Called before unloading / disabling.
-    export deactivate: func();
-    /// Runs one of the plugin's commands. Returns an optional message.
-    export run-command: func(id: string, arg: option<string>) -> result<option<string>, string>;
+    export lifecycle;
+    export commands;
+    export event-handler;
+}
+
+/// A plugin that also provides syntax for its languages.
+world plugin-syntax {
+    include plugin;
+    export syntax-provider;
+}
+
+/// A plugin with editor providers (`[[contributes.providers]]`).
+world plugin-providers {
+    include plugin;
+    export providers;
+}
+
+/// A plugin with views or custom editors (`[[contributes.views]]`,
+/// `[[contributes.custom-editors]]`).
+world plugin-views {
+    include plugin;
+    export view-provider;
+}
+
+/// Only the `syntax-provider` export: guests generate it next to `plugin`
+/// (the component tools merge both into one component).
+world syntax {
+    export syntax-provider;
+}
+
+/// Only the `providers` export, generated next to `plugin` like `syntax`.
+world editor-providers {
+    export providers;
+}
+
+/// Only the `view-provider` export, generated next to `plugin` like `syntax`.
+world views-provider {
+    export view-provider;
 }

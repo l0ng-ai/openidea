@@ -941,6 +941,26 @@ export type ContextMenuId =
   | "selectIn"
   | "new";
 
+/**
+ * Entries of the native main menu's open slots (src-tauri/src/menu.rs
+ * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ */
+export interface MenuSlotItem {
+  action: string;
+  arg?: string | null;
+  label: string;
+}
+
+export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));
+
+export function registerMenuSlotItem(slot: string, item: MenuSlotItem): () => void {
+  useMenuSlotItems.setState((s) => ({ slots: { ...s.slots, [slot]: [...(s.slots[slot] ?? []), item] } }));
+  return () =>
+    useMenuSlotItems.setState((s) => ({
+      slots: { ...s.slots, [slot]: (s.slots[slot] ?? []).filter((i) => i !== item) },
+    }));
+}
+
 export interface MenuGroupContext {
   /** Files / directories the menu is for (absolute paths; a virtual URI for virtual documents). */
   paths: string[];

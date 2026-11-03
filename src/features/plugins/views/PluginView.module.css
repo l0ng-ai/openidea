@@ -1,0 +1,175 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.textButton {
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.textButton:hover:not(:disabled) {
+  background: var(--bg-toolbar-hover);
+}
+
+.textButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+.status {
+  padding: 2px 8px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.error {
+  padding: 4px 8px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.listItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  cursor: default;
+}
+
+.listItem:hover,
+.listItem:focus-visible {
+  background: var(--bg-toolbar-hover);
+  outline: none;
+}
+
+.detail {
+  color: var(--fg-muted);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  max-width: 520px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fieldLabel {
+  color: var(--fg-muted);
+}
+
+.textarea {
+  min-height: 80px;
+  font: inherit;
+  font-family: var(--font-mono, monospace);
+  resize: vertical;
+}
+
+.tableScroller {
+  height: 100%;
+  overflow: auto;
+  position: relative;
+  font-variant-numeric: tabular-nums;
+}
+
+.tableCanvas {
+  position: relative;
+  min-width: 100%;
+  width: max-content;
+}
+
+.tableRow {
+  position: absolute;
+  left: 0;
+  display: flex;
+  height: 24px;
+  min-width: 100%;
+  border-bottom: 1px solid var(--border);
+}
+
+.tableRow[aria-selected="true"] {
+  background: var(--bg-tree-selected);
+}
+
+.tableHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-island);
+  font-weight: 600;
+}
+
+.rowNumber {
+  flex: 0 0 48px;
+  padding: 0 6px;
+  text-align: right;
+  color: var(--fg-muted);
+  line-height: 24px;
+  border-right: 1px solid var(--border);
+}
+
+.cell {
+  flex: 0 0 160px;
+  padding: 0 6px;
+  line-height: 24px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--border);
+}
+
+.tableEmpty {
+  padding: 32px 12px;
+  color: var(--fg-muted);
+}
+
+.frame {
+  border: none;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}

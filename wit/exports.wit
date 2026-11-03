@@ -1,0 +1,70 @@
+package openidea:plugin@1.0.0;
+
+interface lifecycle {
+    use types.{context};
+
+    /// Called once after the instance is created. Register runtime
+    /// contributions and subscriptions here; restore state from `storage`.
+    activate: func(ctx: context) -> result<_, string>;
+    /// Called before the instance is dropped (disable, uninstall, idle reclaim).
+    deactivate: func();
+}
+
+interface commands {
+    use invocation.{invocation};
+
+    /// Runs one of the plugin's commands. Returns an optional message.
+    run: func(id: string, ctx: borrow<invocation>, arg: option<string>) -> result<option<string>, string>;
+}
+
+interface event-handler {
+    use events.{event};
+    use invocation.{invocation};
+
+    /// A batch of subscribed events, oldest first, from one window (`ctx`).
+    handle: func(events: list<event>, ctx: borrow<invocation>);
+}
+
+/// Optional export (world `plugin-syntax`): syntax of the plugin's own
+/// languages, for languages the IDE has no grammar for. The IDE calls it
+/// with the whole document; results are flat. Offsets are UTF-8 byte offsets
+/// into `text` (the IDE converts them); lines are 0-based.
+interface syntax-provider {
+    /// One highlighted range. `kind` is a highlight category: keyword, string,
+    /// string-special, escape, regexp, atom, number, constant, comment,
+    /// doc-comment, function, function-call, builtin, type, namespace,
+    /// variable, self-variable, property, attribute, macro, label, tag,
+    /// operator, punctuation. Unknown kinds are ignored; ranges must be
+    /// sorted and not overlap.
+    record token {
+        start: u32,
+        end: u32,
+        kind: string,
+    }
+
+    /// A symbol of the structure view. `parent` is the index of the enclosing
+    /// symbol in the same list (which must come first).
+    record symbol {
+        name: string,
+        detail: option<string>,
+        /// class, interface, struct, enum, function, method, constructor,
+        /// field, property, variable, constant, module, namespace, event, …
+        kind: string,
+        start: u32,
+        end: u32,
+        name-start: u32,
+        name-end: u32,
+        parent: option<u32>,
+    }
+
+    /// A foldable line range. `kind`: region, comment or imports.
+    record fold {
+        start-line: u32,
+        end-line: u32,
+        kind: string,
+    }
+
+    highlights: func(language: string, text: string) -> list<token>;
+    outline: func(language: string, text: string) -> list<symbol>;
+    folding: func(language: string, text: string) -> list<fold>;
+}

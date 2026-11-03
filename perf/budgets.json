@@ -1,5 +1,5 @@
 {
-  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust`.",
+  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust` (`plugins/…`: the runtime budgets of docs/plugin_plan.md 4.5).",
   "regressionTolerance": 0.2,
   "regressionFloor": 1,
   "ui": {
@@ -83,6 +83,10 @@
 
     "search_5k/literal": 100000,
     "search_5k/regex": 100000,
-    "search_5k/dense_limit": 20000
+    "search_5k/dense_limit": 20000,
+
+    "plugins/load_50": 20000,
+    "plugins/cold_activation": 30000,
+    "plugins/syntax_highlights_2k_lines": 50000
   }
 }

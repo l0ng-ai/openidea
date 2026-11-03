@@ -1,6 +1,17 @@
-/** Installed plugins, the selected plugin theme, and the operations on them. */
+/** Installed plugins, their UI contributions, the selected plugin theme, and the operations on them. */
 import { create } from "zustand";
-import type { ActiveTheme, CatalogPlugin, PluginInfo } from "@/bindings";
+import type {
+  ActiveTheme,
+  CapabilityInfo,
+  CatalogPlugin,
+  Consent,
+  MarketPlugin,
+  PluginEditor,
+  PluginInfo,
+  PluginStatus,
+  UiContribution,
+} from "@/bindings";
+import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 
@@ -8,6 +19,8 @@ export const SETTINGS_PAGE_ID = "plugins";
 
 interface PluginsState {
   plugins: PluginInfo[];
+  /** UI contributions of live plugins, projected by `projection.ts`. */
+  ui: UiContribution[];
   activeTheme: ActiveTheme | null;
   loaded: boolean;
   loading: boolean;
@@ -18,10 +31,16 @@ interface PluginsState {
   /** Locally available packages (Marketplace tab); `null` until loaded. */
   catalog: CatalogPlugin[] | null;
   catalogError: string | null;
+  /** The marketplace index URL; `null` when none is configured. */
+  marketUrl: string | null;
+  /** Plugins of the marketplace index; `null` until read. */
+  market: MarketPlugin[] | null;
+  marketError: string | null;
 }
 
 export const usePlugins = create<PluginsState>(() => ({
   plugins: [],
+  ui: [],
   activeTheme: null,
   loaded: false,
   loading: false,
@@ -30,9 +49,47 @@ export const usePlugins = create<PluginsState>(() => ({
   installing: false,
   catalog: null,
   catalogError: null,
+  marketUrl: null,
+  market: null,
+  marketError: null,
 }));
 
 export const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Statuses whose contributions are in effect. */
+export const isLive = (status: PluginStatus) => status === "active" || status === "inactive" || status === "static";
+
+// --- consent ------------------------------------------------------------------
+
+/** What a consent prompt shows: an install preview or a plugin waiting for permission. */
+export interface ConsentRequest {
+  pluginId: string;
+  name: string;
+  version: string;
+  /** Install page (new or update) or a permission prompt for an installed/project plugin. */
+  kind: "install" | "grant";
+  capabilities: CapabilityInfo[];
+  /** Unsigned package (from disk or a project folder). */
+  unsigned: boolean;
+  warnings: string[];
+}
+
+type ConsentPrompt = (req: ConsentRequest) => Promise<Consent | null>;
+
+let consentPrompt: ConsentPrompt | null = null;
+
+/** The dialog that asks (registered by `consent.tsx`; tests substitute their own). */
+export function setConsentPrompt(prompt: ConsentPrompt | null) {
+  consentPrompt = prompt;
+}
+
+/** Without a prompt only plugins asking for nothing are accepted. */
+function askConsent(req: ConsentRequest): Promise<Consent | null> {
+  if (consentPrompt) return consentPrompt(req);
+  return Promise.resolve(req.capabilities.length === 0 ? { optional: [] } : null);
+}
+
+// --- loading ------------------------------------------------------------------
 
 let generation = 0;
 
@@ -44,6 +101,7 @@ export async function refreshPlugins(): Promise<void> {
     if (gen !== generation) return;
     usePlugins.setState({
       plugins: snapshot.plugins,
+      ui: snapshot.ui,
       activeTheme: snapshot.activeTheme,
       loaded: true,
       loading: false,
@@ -93,11 +151,85 @@ export function uninstallPlugin(id: string): Promise<boolean> {
   });
 }
 
+/** Asks for (and records) the permissions of a plugin waiting for consent. */
+export async function grantPlugin(id: string, capabilities?: CapabilityInfo[]): Promise<boolean> {
+  const plugin = usePlugins.getState().plugins.find((p) => p.id === id);
+  if (!plugin) return false;
+  const consent = await askConsent({
+    pluginId: id,
+    name: plugin.name,
+    version: plugin.version,
+    kind: "grant",
+    capabilities: capabilities ?? plugin.capabilities,
+    unsigned: plugin.source !== "installed",
+    warnings: plugin.warnings,
+  });
+  if (!consent) return false;
+  return withBusy(id, `Could not enable ${plugin.name}`, () => pluginsBackend().grant(id, consent));
+}
+
+export function setPluginCapability(id: string, capability: string, granted: boolean): Promise<boolean> {
+  return withBusy(id, `Could not change ${capability} of ${nameOf(id)}`, () =>
+    pluginsBackend().setCapability(id, capability, granted),
+  );
+}
+
 export async function refreshCatalog(): Promise<void> {
   try {
     usePlugins.setState({ catalog: await pluginsBackend().catalog(), catalogError: null });
   } catch (e) {
     usePlugins.setState({ catalog: [], catalogError: errorText(e) });
+  }
+}
+
+/** The marketplace's plugins: the index read again with `refresh`. */
+export async function refreshMarket(refresh = true): Promise<void> {
+  const backend = pluginsBackend();
+  try {
+    const marketUrl = await backend.marketUrl();
+    usePlugins.setState({ marketUrl });
+    if (!marketUrl) return usePlugins.setState({ market: null, marketError: null });
+    usePlugins.setState({ market: await backend.market(refresh), marketError: null });
+  } catch (e) {
+    usePlugins.setState({ marketError: errorText(e) });
+  }
+}
+
+export async function setMarketUrl(url: string | null): Promise<void> {
+  await pluginsBackend().setMarketUrl(url?.trim() || null);
+  await refreshMarket(true);
+}
+
+/** Downloads (and checks) a marketplace plugin, then the install page as from disk. */
+export async function installFromMarket(id: string): Promise<string | null> {
+  usePlugins.setState({ installing: true });
+  let dir: string;
+  try {
+    dir = await pluginsBackend().marketDownload(id);
+  } catch (e) {
+    usePlugins.setState({ installing: false });
+    notifications().notify({
+      group: "plugins",
+      level: "error",
+      title: "Could not download plugin",
+      body: errorText(e),
+    });
+    return null;
+  }
+  const installed = await installFromDisk(dir);
+  void refreshMarket(false);
+  return installed;
+}
+
+/** Settings › Plugins › Roll Back: the version before the last update. */
+export async function rollBackPlugin(id: string): Promise<void> {
+  try {
+    const info = await pluginsBackend().rollBack(id);
+    notifications().notify({ group: "plugins", level: "info", title: `Rolled back ${info.name} to ${info.version}` });
+  } catch (e) {
+    notifications().notify({ group: "plugins", level: "error", title: "Could not roll back", body: errorText(e) });
+  } finally {
+    await refreshPlugins();
   }
 }
 
@@ -124,25 +256,41 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** Asks for a plugin package (a `.zip` or a `plugin.toml`) and installs it. Returns the new plugin id. */
-export async function installFromDisk(path?: string): Promise<string | null> {
+/**
+ * Asks for a plugin folder (containing plugin.toml), shows what it may do,
+ * and installs it with the user's consent. Returns the new plugin id.
+ */
+export async function installFromDisk(path?: string, packageFile = false): Promise<string | null> {
   const backend = pluginsBackend();
-  let source: string | null = path ?? null;
+  let dir: string | null = path ?? null;
   try {
-    source ??= await backend.pickPackage();
+    dir ??= packageFile ? await backend.pickPackage() : await backend.pickFolder();
+    // A package file (`.oiplugin`) is unpacked first; signed ones are checked on the install page.
+    if (dir?.endsWith(".oiplugin")) dir = await backend.unpackPackage(dir);
   } catch (e) {
     notifications().notify({
       group: "plugins",
       level: "error",
-      title: "Could not open the file picker",
+      title: packageFile ? "Could not open the package" : "Could not open the folder picker",
       body: errorText(e),
     });
     return null;
   }
-  if (!source) return null;
+  if (!dir) return null;
   usePlugins.setState({ installing: true });
   try {
-    const info = await backend.installDir(source);
+    const preview = await backend.previewInstall(dir);
+    const consent = await askConsent({
+      pluginId: preview.id,
+      name: preview.name,
+      version: preview.version,
+      kind: "install",
+      capabilities: preview.capabilities,
+      unsigned: preview.unsigned,
+      warnings: preview.warnings,
+    });
+    if (!consent) return null;
+    const info = await backend.installDir(dir, consent);
     notifications().notify({
       group: "plugins",
       level: info.status === "failed" ? "warning" : "info",
@@ -168,17 +316,43 @@ export async function selectPluginTheme(pluginId: string | null, themeId: string
   }
 }
 
+/** Title of a plugin command from its UI contribution. */
+export function commandTitle(pluginId: string, commandId: string): string {
+  const item = usePlugins
+    .getState()
+    .ui.find((c) => c.point === "commands" && c.pluginId === pluginId && c.key === commandId);
+  const title = (item?.decl as { title?: unknown } | undefined)?.title;
+  return typeof title === "string" ? title : commandId;
+}
+
+/** The focused text editor as a command's context: path, language, selections (line / UTF-16 column). */
+function focusedEditor(): PluginEditor | null {
+  const editor = activeEditor();
+  if (!editor?.ctx.path) return null;
+  const { doc, selection } = editor.view.state;
+  const pos = (offset: number) => {
+    const line = doc.lineAt(offset);
+    return { line: line.number - 1, col: offset - line.from };
+  };
+  return {
+    path: editor.ctx.path,
+    language: editor.ctx.language,
+    selections: selection.ranges.map((r) => ({ start: pos(r.from), end: pos(r.to) })),
+  };
+}
+
 /** Runs a plugin command from an action; failures become notifications. */
 export async function runPluginCommand(pluginId: string, commandId: string, arg: string | null = null) {
-  const plugin = usePlugins.getState().plugins.find((p) => p.id === pluginId);
-  const title = plugin?.commands.find((c) => c.id === commandId)?.title ?? commandId;
+  const title = commandTitle(pluginId, commandId);
   try {
-    return await pluginsBackend().runCommand(pluginId, commandId, arg);
+    return await pluginsBackend().runCommand(pluginId, commandId, arg, focusedEditor());
   } catch (e) {
     await refreshPlugins();
-    // A trap disables the plugin and the backend already announced why.
-    const failed = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.status === "failed";
-    if (!failed)
+    const status = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.status;
+    // A trap disables the plugin and the backend already announced why; a
+    // consent request opens its own dialog.
+    const permission = (e as { kind?: string }).kind === "permissionDenied";
+    if (status !== "failed" && !permission)
       notifications().notify({ group: "plugins", level: "error", title: `${title} failed`, body: errorText(e) });
     return null;
   }

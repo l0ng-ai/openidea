@@ -544,6 +544,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     }
 }
 
@@ -553,6 +554,8 @@ pub fn server_launch_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     let Some(ls) = s.language_servers.get(&cfg.name) else { return };
     if let Some(command) = non_empty(ls.command.trim()) {
         cfg.command = command.to_owned();
+        // The user's own program, not the one approved for a plugin.
+        cfg.pinned = None;
     }
     if let Some(args) = &ls.args {
         cfg.args = args.clone();

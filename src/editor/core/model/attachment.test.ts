@@ -110,4 +110,33 @@ describe("attached document views (editable diff side)", () => {
     att.release();
     tab.dispose();
   });
+
+  it("undoes backend edits in the document's history: the text tab's when one is open (custom editors)", async () => {
+    const { backend, manager, frame } = setup({ "/p/c.csv": "a,b\n" });
+    const att = await attachDocument(manager, "/p/c.csv");
+    const view = new EditorView({ doc: att.text(), extensions: [att.extension, history()] });
+    const model = manager.get("/p/c.csv")!;
+    expect(att.doc).toBe(model.doc);
+
+    // No tab: the attachment holds the history.
+    backend.patch(model.doc, [{ from: 0, to: 1, insert: "X" }]);
+    expect(att.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("a,b\n");
+    expect(att.redo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("X,b\n");
+    await frame();
+    await att.synced();
+    expect(backend.docs.get(model.doc)?.text).toBe("X,b\n");
+
+    // With a text tab, backend edits are recorded there: undo from the custom editor reaches it.
+    const tab = new EditorSlot(model, "t1", host);
+    backend.patch(model.doc, [{ from: 2, to: 3, insert: "Y" }]);
+    expect(tab.currentState().doc.toString()).toBe("X,Y\n");
+    expect(att.undo()).toBe(true);
+    expect(tab.currentState().doc.toString()).toBe("X,b\n");
+    expect(view.state.doc.toString()).toBe("X,b\n");
+    view.destroy();
+    att.release();
+    tab.dispose();
+  });
 });

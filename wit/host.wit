@@ -1,0 +1,51 @@
+package openidea:plugin@1.0.0;
+
+/// Writes to the IDE log, tagged with the plugin id.
+interface log {
+    use types.{log-level};
+
+    log: func(level: log-level, message: string);
+}
+
+/// Contributions made at run time (declare static ones in plugin.toml).
+interface contributions {
+    use types.{error};
+
+    /// Registers (or updates) a command `plugin.<plugin-id>.<id>`.
+    /// `id` must match `[a-z0-9][a-z0-9._-]*`.
+    register-command: func(id: string, title: string, category: option<string>) -> result<_, error>;
+    /// A language from a `languages/<id>.toml`-style definition.
+    register-language: func(definition: string) -> result<_, error>;
+    /// A theme from JSON: {"id","name","kind":"dark"|"light","tokens":{"--var":"value"}}.
+    register-theme: func(definition: string) -> result<_, error>;
+}
+
+interface ui {
+    use types.{notification-level};
+
+    record status-item {
+        text: string,
+        tooltip: option<string>,
+        /// One of the plugin's commands, run when the item is clicked.
+        command: option<string>,
+    }
+
+    /// Shows a notification balloon in the window the current command or
+    /// event came from (every window when there is none).
+    show-notification: func(level: notification-level, title: string, body: string);
+    /// Shows or updates the plugin's status bar item `id` in every window.
+    set-status-item: func(id: string, item: status-item);
+    remove-status-item: func(id: string);
+}
+
+/// Persistent key-value storage of the plugin (survives restarts and idle
+/// reclaim; instance memory does not). Requires `storage`. At most 1 MiB.
+interface storage {
+    use types.{error};
+
+    get: func(key: string) -> result<option<string>, error>;
+    set: func(key: string, value: string) -> result<_, error>;
+    delete: func(key: string) -> result<_, error>;
+    /// Keys starting with `prefix`, sorted.
+    keys: func(prefix: string) -> result<list<string>, error>;
+}

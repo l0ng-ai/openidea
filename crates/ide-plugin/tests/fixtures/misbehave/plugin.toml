@@ -1,7 +1,10 @@
 id = "misbehave"
 name = "Misbehave"
-version = "0.0.1"
-description = "Test fixture: traps, spins, allocates, probes permissions."
-openidea-api = "0.1"
+version = "0.0.2"
+description = "Test fixture: traps, spins, allocates, probes capabilities."
+engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
-permissions = ["project-read"]
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read"]
