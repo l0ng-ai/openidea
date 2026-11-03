@@ -123,6 +123,9 @@ export function startPointerDrag(
   const session = dragSession(data);
   const onMove = (ev: PointerEvent) => {
     if (!ghost) {
+      // macOS WebKit can deliver a tap's pointerup before its pointerdown, so a
+      // press with no button held would otherwise start a phantom drag.
+      if (!(ev.buttons & 1)) return onCancel();
       if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD) return;
       const r = source.getBoundingClientRect();
       ghost = source.cloneNode(true) as HTMLElement;
@@ -140,6 +143,8 @@ export function startPointerDrag(
       document.documentElement.classList.add(styles.dragging!);
       opts.onStart?.();
     }
+    // Late moves after release may still precede the pointerup; ignore, don't cancel the drop.
+    if (!(ev.buttons & 1)) return;
     ghost.style.transform = `translate(${ev.clientX - start.x}px, ${ev.clientY - start.y}px)`;
     ghost.classList.toggle(styles.noTarget!, !session.move(ev.clientX, ev.clientY));
   };

@@ -219,6 +219,7 @@ function StripeHandle({
     document.body.style.cursor = "col-resize";
     let next = { names, width, px: start };
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       const r = resolve(start + sign * (ev.clientX - origin));
       if (r.names !== next.names) onPreview(r.names);
       next = r;
@@ -314,6 +315,8 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
   };
   const onMove = (ev: globalThis.PointerEvent) => {
     if (!ghost) {
+      // Reordered macOS tap: no button held, so not a drag (see pointerDrag.ts).
+      if (!(ev.buttons & 1)) return finish(false);
       if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD) return;
       const r = button.getBoundingClientRect();
       ghost = button.cloneNode(true) as HTMLElement;
@@ -328,6 +331,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
       document.body.appendChild(ghost);
       useStripeDrag.setState({ id, drop: null });
     }
+    if (!(ev.buttons & 1)) return;
     place(ev.clientX, ev.clientY);
     const drop = stripeDropAt(ev.clientX, ev.clientY);
     const cur = useStripeDrag.getState().drop;
@@ -812,6 +816,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
     document.body.style.cursor = stacked ? "row-resize" : "col-resize";
     let ratio: number | null = null;
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       ratio = ratioOf(m.clamp(m.first + (stacked ? ev.clientY : ev.clientX) - origin), m.total);
       apply(m.areas, ratio);
     };
@@ -963,6 +968,7 @@ function GapHandle({
     document.body.style.cursor = vertical ? "col-resize" : "row-resize";
     let next = m.size;
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       const raw = m.size + sign * ((vertical ? ev.clientX : ev.clientY) - origin);
       // Dragged past half the minimum: collapse, as IDEA does.
       next = raw < MIN[anchor] / 2 ? 0 : clamp(raw, m.max);
