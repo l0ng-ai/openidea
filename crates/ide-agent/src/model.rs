@@ -322,6 +322,15 @@ pub struct AgentProvider {
     pub name: String,
     /// The command line that starts its ACP server.
     pub command: String,
+    /// Executable and arguments actually launched, without flattening paths containing spaces.
+    pub program: String,
+    pub args: Vec<String>,
+    pub default_program: Option<String>,
+    pub default_args: Vec<String>,
+    pub login_hint: Option<String>,
+    pub command_overridden: bool,
+    pub command_editable: bool,
+    pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
@@ -329,6 +338,15 @@ pub struct AgentProvider {
     /// Slash commands it offered last time.
     pub commands: Vec<AgentCommand>,
     pub source: AgentSource,
+}
+
+/// Why the executable cannot be changed in built-in agent settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCommandReadOnlyReason {
+    PackageRunner,
+    Registry,
+    CustomAgent,
 }
 
 /// Where an agent comes from.
@@ -413,4 +431,6 @@ pub enum AgentEvent {
         index: u32,
         entry: AgentEntry,
     },
+    /// The installed or configured agent providers changed.
+    Providers,
 }

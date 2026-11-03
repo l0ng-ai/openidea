@@ -1,6 +1,6 @@
 use crate::apply::{
     apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    terminal_activation, tsdk,
+    terminal_activation, tsdk, without_derived,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -409,6 +409,49 @@ fn pip_list_output_is_parsed() {
     let pkgs = parse_pip_list(out).unwrap();
     assert_eq!(pkgs[0].name, "requests");
     assert_eq!(pkgs[0].version, "2.32.0");
+}
+
+/// A directory whose `typing.py` breaks any interpreter that imports it from there.
+fn shadowing_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("typing.py"), "raise ImportError('shadowed stdlib')\n").unwrap();
+    std::fs::write(dir.path().join("logging.py"), "raise ImportError('shadowed stdlib')\n").unwrap();
+    dir
+}
+
+#[test]
+fn venv_creation_ignores_modules_in_the_working_directory() {
+    let Some(python) = crate::exec::which("python3") else { return };
+    let shadow = shadowing_dir();
+    // Precondition: without isolation the shadowing module is picked up.
+    let plain =
+        std::process::Command::new(&python).args(["-c", "import typing"]).current_dir(shadow.path()).output().unwrap();
+    assert!(!plain.status.success());
+    let target = tempfile::tempdir().unwrap();
+    let location = target.path().join(".venv");
+    // `--without-pip` keeps the test fast; the stdlib imports of `venv` still happen.
+    let mut args = crate::python::venv_args(&location);
+    args.push("--without-pip".into());
+    crate::exec::stream(&python, &args, Some(shadow.path()), &[], &Default::default(), &|_| {}).unwrap();
+    assert!(location.join("pyvenv.cfg").is_file());
+}
+
+#[test]
+fn neutral_dir_is_fresh_and_empty() {
+    let a = crate::python::neutral_dir().unwrap();
+    let b = crate::python::neutral_dir().unwrap();
+    assert_ne!(a.path(), b.path());
+    assert_eq!(std::fs::read_dir(a.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn relative_requirements_resolve_against_the_project() {
+    use crate::python::resolve_requirement;
+    let root = Path::new("/work/app");
+    assert_eq!(resolve_requirement("requests==2.0", Some(root)).unwrap(), "requests==2.0");
+    assert_eq!(resolve_requirement("./pkg", Some(root)).unwrap(), root.join("./pkg").to_string_lossy());
+    assert_eq!(resolve_requirement(".[dev]", Some(root)).unwrap(), root.join(".[dev]").to_string_lossy());
+    assert!(resolve_requirement("../lib", None).is_err());
 }
 
 #[test]
@@ -1043,6 +1086,39 @@ fn node_on_the_search_path_keeps_its_version_manager_as_source() {
 }
 
 #[test]
+fn php_sources_and_selected_interpreter() {
+    let home = Path::new("/home/me");
+    let source = |p: &str| crate::discover::php_source(Path::new(p), Some(home));
+    assert_eq!(source("/home/me/.phpbrew/php/php-8.3.1/bin/php"), "phpbrew");
+    assert_eq!(source("/home/me/.config/herd-lite/bin/php"), "herd");
+    assert_eq!(source("/opt/homebrew/opt/php@8.2/bin/php"), "homebrew");
+    assert_eq!(source("/home/me/bin/php"), "path");
+
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    assert_eq!(crate::apply::php_dir(tmp.path(), &s), None);
+    s.languages.php.interpreter = "/opt/php82/bin/php".into();
+    assert_eq!(crate::apply::php_dir(tmp.path(), &s), Some("/opt/php82/bin".into()));
+    let mut configs = vec![
+        run("php", "php", &["artisan", "serve"]),
+        run("phpunit", "vendor/bin/phpunit", &[]),
+        run("composer", "composer", &["run-script", "test"]),
+        run("npm", "npm", &["run", "dev"]),
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, "/opt/php82/bin/php");
+    // Scripts with a `#!/usr/bin/env php` shebang find the selected PHP first on `PATH`.
+    for c in &configs[..3] {
+        assert!(c.env["PATH"].starts_with("/opt/php82/bin"), "{}: {:?}", c.kind, c.env.get("PATH"));
+    }
+    assert_eq!(configs[1].command, "vendor/bin/phpunit");
+    assert!(configs[3].env.get("PATH").is_none_or(|p| !p.contains("php82")));
+}
+
+#[test]
 fn go_constraints_change_only_protocol_settings() {
     use serde_json::json;
     let tmp = tempfile::tempdir().unwrap();
@@ -1107,4 +1183,85 @@ fn go_modules_configure_gopls_in_place_and_commands_with_explicit_run_overrides(
     let mut cleared = server("gopls");
     configure_server(&mut cleared, tmp.path(), tmp.path(), &Settings::default());
     assert_eq!(cleared.settings.unwrap()["env"], json!({}));
+}
+
+#[test]
+fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let touch = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "").unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    let mut s = Settings::default();
+    s.languages.python.interpreter = fake_venv(root, ".venv").to_string_lossy().into_owned();
+    s.languages.node.interpreter = touch("node/bin/node");
+    touch("rustup/toolchains/stable/bin/cargo");
+    s.languages.rust.toolchain = root.join("rustup/toolchains/stable").to_string_lossy().into_owned();
+    touch("go/bin/go");
+    s.languages.go.goroot = root.join("go").to_string_lossy().into_owned();
+    s.languages.go.gopath = root.join("gopath").to_string_lossy().into_owned();
+    s.languages.go.modules.env = BTreeMap::from([("GOPROXY".into(), "https://proxy.example".into())]);
+    fake_jdk(&root.join("jdk17"));
+    s.languages.java.jdk = root.join("jdk17").to_string_lossy().into_owned();
+    touch("maven/bin/mvn");
+    s.languages.java.maven.home = root.join("maven").to_string_lossy().into_owned();
+    s.languages.ruby.interpreter = touch("ruby/bin/ruby");
+    touch("ruby/bin/bundle");
+    s.tools.insert("godot".into(), ide_core::settings::ToolSettings { path: touch("Godot/godot") });
+
+    let saved = |kind: &str, command: &str, args: &[&str], env: &[(&str, &str)]| {
+        let mut c = run(kind, command, args);
+        c.detected = false;
+        c.env = env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        c
+    };
+    // As the user saved them: bare tools, only their own environment.
+    let configs = [
+        saved("python", "python", &["app.py"], &[]),
+        saved("pytest", ".venv/bin/pytest", &["-x"], &[("FOO", "1")]),
+        saved("npm", "npm", &["run", "dev"], &[]),
+        saved("cargo", "cargo", &["run"], &[]),
+        saved("go", "go", &["run", "."], &[]),
+        saved("go", "go", &["mod", "tidy"], &[("GOPROXY", "off")]),
+        saved("maven", "mvn", &["package"], &[]),
+        saved("tomcat", "catalina", &[], &[]),
+        saved("ruby", "ruby", &["app.rb"], &[]),
+        saved("rake", "bundle", &["exec", "rake"], &[("RAILS_ENV", "test")]),
+        saved("godot", "godot", &["--path", "."], &[]),
+        // The user's own values that merely look like derived ones stay.
+        saved("cargo", "/opt/rust/bin/cargo", &["build"], &[("PATH", "/custom/bin")]),
+        saved("maven", "mvn", &["verify"], &[("JAVA_HOME", "/other/jdk")]),
+        saved("python", "python", &["x.py"], &[("VIRTUAL_ENV", "/elsewhere/venv")]),
+    ];
+    for user in configs {
+        let mut loaded = user.clone();
+        apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
+        assert_ne!(loaded, user, "{} {}: settings apply to it", user.kind, user.command);
+        let stored = without_derived(&loaded, root, &s);
+        assert_eq!(stored, user, "{} {}: saved as the user left it", user.kind, user.command);
+        let mut reloaded = stored;
+        apply_to_run_configs(std::slice::from_mut(&mut reloaded), root, &s);
+        assert_eq!(reloaded, loaded, "{} {}: runs the same after a save", user.kind, user.command);
+    }
+
+    // Another bare name for the interpreter comes back as the interpreter's own.
+    let mut loaded = saved("python", "python3", &["app.py"], &[]);
+    apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
+    assert_eq!(without_derived(&loaded, root, &s).command, exe("python"));
+
+    // A saved configuration follows a later interpreter change instead of a frozen PATH.
+    let mut loaded = saved("ruby", "ruby", &["app.rb"], &[]);
+    apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
+    let mut next = without_derived(&loaded, root, &s);
+    s.languages.ruby.interpreter = touch("ruby2/bin/ruby");
+    apply_to_run_configs(std::slice::from_mut(&mut next), root, &s);
+    let ruby2 = root.join("ruby2/bin");
+    assert_eq!(next.command, ruby2.join("ruby").to_string_lossy());
+    assert!(next.env["PATH"].starts_with(&*ruby2.to_string_lossy()), "{}", next.env["PATH"]);
 }

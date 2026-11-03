@@ -1,5 +1,6 @@
 .root {
   position: relative;
+  container: diff-editor / inline-size;
   flex: 1;
   height: 100%;
   min-height: 0;
@@ -16,18 +17,36 @@
   padding: 0 6px;
   border-bottom: 1px solid var(--border);
 }
+.toolbar > * {
+  flex-shrink: 0;
+}
 .sep {
   width: 1px;
   height: 14px;
   margin: 0 4px;
   background: var(--border-strong);
 }
-.count {
+.toolbar > .count {
+  flex-shrink: 1;
+  min-width: 0;
   margin-left: auto;
   padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   white-space: nowrap;
+}
+/* Narrow (a side-docked preview): the whitespace / highlighting pickers stay in the gear menu. */
+@container diff-editor (max-width: 640px) {
+  .select {
+    display: none;
+  }
+}
+@container diff-editor (max-width: 380px) {
+  .toolbar > .sep {
+    display: none;
+  }
 }
 .labels {
   flex: none;

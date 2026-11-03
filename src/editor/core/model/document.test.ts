@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { language as languageFacet } from "@codemirror/language";
-import { remoteChange } from "@/editor/api";
+import { indentUnit, language as languageFacet } from "@codemirror/language";
+import { registerSaveParticipant, remoteChange } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
 import { EditorSlot, type SlotHost } from "./slot";
+import { formatOptionsOf } from "@/editor/lsp/format";
 
 const host: SlotHost = {
   onFocus: () => {},
@@ -37,6 +38,51 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it("gives a new slot the Code Style indent for Reformat Code, not the detected one", async () => {
+    const settings = {
+      editor: {
+        codeStyle: {
+          languages: { java: { useTab: true, tabSize: 1, indent: 1 } },
+          detectIndents: true,
+          editorconfig: false,
+        },
+      },
+    };
+    const { manager } = setup({ "/p/A.java": "class A {\n    int x;\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const first = new EditorSlot(model, "t1", host);
+    const split = new EditorSlot(model, "t2", host, { from: first });
+    for (const slot of [first, split])
+      expect(formatOptionsOf(slot.currentState())).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
+  it("detects the indents again after Reformat Code rewrote them", async () => {
+    const settings = {
+      editor: {
+        codeStyle: {
+          languages: { java: { useTab: true, tabSize: 1, indent: 1 } },
+          detectIndents: true,
+          editorconfig: false,
+        },
+      },
+    };
+    const { manager } = setup({ "/p/A.java": "class A {\n    int x;\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const first = new EditorSlot(model, "t1", host);
+    const split = new EditorSlot(model, "t2", host, { from: first });
+    expect(first.currentState().tabSize).toBe(4);
+    // Typing keeps the indents detected when the file was opened.
+    first.dispatchLocal({ changes: { from: 10, to: 14, insert: "\t" }, userEvent: "input.type" });
+    expect(first.currentState().tabSize).toBe(4);
+    first.dispatchLocal({ changes: { from: 10, to: 11, insert: "    " }, userEvent: "undo" });
+    first.dispatchLocal({ changes: { from: 10, to: 14, insert: "\t" }, userEvent: "format.reformat" });
+    for (const slot of [first, split]) {
+      expect(slot.currentState().tabSize).toBe(1);
+      expect(slot.currentState().facet(indentUnit)).toBe("\t");
+    }
+    expect(useDocMeta.getState()["/p/A.java"]?.indent).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
   it("shares one document between split slots and syncs edits to the backend", async () => {
     const { backend, manager, frame } = setup({ "/p/a.txt": "hello\n" });
     const model = await manager.acquire("/p/a.txt");
@@ -86,6 +132,60 @@ describe("DocumentManager + slots", () => {
     await save;
     expect(backend.files.get("/p/a.txt")).toBe("keep   \nline x\n");
     expect(useDocMeta.getState()["/p/a.txt"]?.dirty).toBe(false);
+  });
+
+  it.each(["explicit", "auto"] as const)(
+    "%s save leaves untouched documents byte-for-byte unchanged",
+    async (reason) => {
+      const files = {
+        "/p/src/main/resources/sql/no-final.sql": "SELECT *\nFROM patients\n\tLIMIT 10 OFFSET 0",
+        "/p/trailing.sql": "SELECT id   \nFROM patients;\t \n",
+        "/p/crlf.sql": "SELECT id\r\nFROM patients;\r\n",
+        "/p/Untouched.java": "class Untouched {   \n\tint id;\n}",
+        "/p/blank.sql": "SELECT 1;\n\n\n",
+        "/p/edited.java": "class Edited {}\n",
+      };
+      const { backend, manager } = setup(files, {
+        editor: { general: { stripTrailingScope: "all", removeTrailingBlankLines: true } },
+      });
+      const participant = vi.fn();
+      const unregister = registerSaveParticipant({ id: "test.save", beforeSave: participant });
+      const save = vi.spyOn(backend, "save");
+      try {
+        const slots = [];
+        for (const path of Object.keys(files)) slots.push(new EditorSlot(await manager.acquire(path), path, host));
+        const edited = slots.at(-1)!;
+        edited.dispatchLocal({ changes: { from: 0, insert: "// edited\n" } });
+        await manager.saveAll(reason);
+        for (const [path, text] of Object.entries(files)) {
+          if (path !== "/p/edited.java") expect(backend.files.get(path), path).toBe(text);
+        }
+        expect(backend.files.get("/p/edited.java")).toBe("// edited\nclass Edited {}\n");
+        expect(save.mock.calls).toEqual([[edited.model.doc]]);
+        expect(participant).toHaveBeenCalledTimes(reason === "explicit" ? 1 : 0);
+        if (reason === "explicit") expect(participant.mock.calls[0]![0].path).toBe("/p/edited.java");
+        await manager.saveAll(reason);
+        expect(save).toHaveBeenCalledTimes(1);
+      } finally {
+        unregister();
+        manager.stop();
+      }
+    },
+  );
+
+  it("checks dirty state when each queued save starts", async () => {
+    const { backend, manager } = setup({ "/p/query.sql": "SELECT 1" });
+    const model = await manager.acquire("/p/query.sql");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 7, to: 8, insert: "2" } });
+    const save = vi.spyOn(backend, "save");
+    try {
+      await Promise.all([model.save("explicit"), model.save("explicit"), model.save("auto")]);
+      expect(backend.files.get(model.path)).toBe("SELECT 2\n");
+      expect(save).toHaveBeenCalledTimes(1);
+    } finally {
+      manager.stop();
+    }
   });
 
   it("closes the backend document when the last slot goes away", async () => {

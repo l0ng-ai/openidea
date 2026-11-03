@@ -23,6 +23,10 @@ export const commands = {
 	windowGroupSelect: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_select", { label })),
 	windowGroupDetach: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach")),
 	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
+	/**  Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`. */
+	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
+	/**  This window kept its project open (unsaved-changes prompt cancelled); stops a batch close. */
+	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
@@ -82,6 +86,11 @@ export const commands = {
 	/**  Streams the project's agent events to this window; returns every task. */
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	/**
+	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
+	 */
+	agentSetCommand: (id: string, command: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_command", { id, command })),
 	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
@@ -495,7 +504,7 @@ export const commands = {
 	 */
 	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
 	/**  Clones a repository (Get from VCS). Works without an open project. */
-	vcsClone: (request: RequestId, url: string, dest: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, onOutput })),
+	vcsClone: (request: RequestId, url: string, dest: string, depth: number | null, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, depth, onOutput })),
 	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
 	/**
@@ -546,7 +555,7 @@ export const commands = {
 	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
 	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
 	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
-	vcsShelfImport: (name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { name, patch })),
+	vcsShelfImport: (repo: string | null, name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { repo, name, patch })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
 	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
 	/**  Create Patch › Save to file. */
@@ -1009,7 +1018,7 @@ export const commands = {
 	remotePath: string,
 	webUrl: string | null,
 } | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
-	deployServerRoot: (server: string) => typedError<string, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
+	deployServerRoot: (server: string) => typedError<DeploymentRoot, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
 	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
 	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
@@ -1138,6 +1147,9 @@ export type AgentCommand = {
 	hint: string | null,
 };
 
+/**  Why the executable cannot be changed in built-in agent settings. */
+export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
+
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
 	id: string,
@@ -1216,7 +1228,9 @@ export type AgentEvent =
 /**  The task's conversation was cut to its first `length` entries (turns rolled back). */
 { type: "truncated"; task: string; length: number } | 
 /**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
-{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry };
+{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry } | 
+/**  The installed or configured agent providers changed. */
+{ type: "providers" };
 
 export type AgentImage = {
 	mimeType: string,
@@ -1268,6 +1282,15 @@ export type AgentProvider = {
 	name: string,
 	/**  The command line that starts its ACP server. */
 	command: string,
+	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
+	program: string,
+	args: string[],
+	defaultProgram: string | null,
+	defaultArgs: string[],
+	loginHint: string | null,
+	commandOverridden: boolean,
+	commandEditable: boolean,
+	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
@@ -1384,6 +1407,8 @@ export type AppInfo = {
 	version: string,
 	platform: string,
 	configDir: IpcPath,
+	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
+	wayland: boolean,
 };
 
 export type AppMetrics = {
@@ -2505,12 +2530,18 @@ export type DeploymentCoverage = {
 };
 
 export type DeploymentMapping = {
-	/**  Project-relative folder; empty = the project root. */
+	/**  Project-relative folder, or absolute inside the project; empty = the project root. */
 	local?: string,
 	/**  Remote folder, relative to the server root (a leading `/` is the root too). */
 	deployment?: string,
 	/**  Web path, relative to the server's URL. */
 	web?: string,
+};
+
+/**  Resolved root and project mappings of the Remote Host browser. */
+export type DeploymentRoot = {
+	root: string,
+	mappings: ResolvedMapping[],
 };
 
 /**  A deployment filesystem and how project folders map onto it. */
@@ -4091,11 +4122,14 @@ export type LanguageServerSettings_Serialize = {
 export type LanguagesSettings = {
 	python?: PythonSettings,
 	node?: NodeSettings,
+	php?: PhpSettings,
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
 	prettier?: PrettierSettings,
 	java?: JavaSettings,
+	ruby?: RubySettings,
+	markdown?: MarkdownSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -4324,6 +4358,12 @@ export type ManifestDependency = {
 	/**  UTF-16 offsets of the string's contents (quotes excluded). */
 	from: number,
 	to: number,
+};
+
+/**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
+export type MarkdownSettings = {
+	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
+	previewFontSize?: number | null,
 };
 
 export type Markup = {
@@ -4684,6 +4724,11 @@ export type Permission =
 "editor-read" | 
 /**  `insert-text`, `replace-selection`. */
 "editor-write";
+
+export type PhpSettings = {
+	/**  `php` CLI executable; empty = the one on `PATH`. */
+	interpreter?: string,
+};
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
@@ -5306,6 +5351,12 @@ export type RequestId = number;
 /**  `git reset` modes offered by Reset Current Branch to Here. */
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
+/**  A mapping resolved by the backend for the Remote Host browser. */
+export type ResolvedMapping = {
+	local: IpcPath,
+	deployment: string,
+};
+
 export type ReviewEvent = "approve" | "requestChanges" | "comment";
 
 /**  A file changed across several commits: its content at `before` ↔ at `after`. */
@@ -5326,6 +5377,11 @@ export type RootKind = "source" | "test" | "resources" | "testResources" | "excl
 export type RouteSource = {
 	path: string,
 	text: string,
+};
+
+export type RubySettings = {
+	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
+	interpreter?: string,
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
@@ -5531,12 +5587,14 @@ export type Sdk = {
 
 /**  What [`detect`] looks for. */
 export type SdkKind = "python" | "node" | 
+/**  `php` CLI executables. */
+"php" | 
 /**  npm / pnpm / yarn executables. */
 "packageManager" | "rust" | "go" | "typeScript" | 
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven";
+"maven" | "ruby";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -5783,6 +5841,8 @@ export type ShelvedChangeList = {
 	timeMs: number | null,
 	/**  Branch checked out when the changes were shelved. */
 	branch: string | null,
+	/**  Repository owning the patch; absent in legacy shelves. */
+	repo?: IpcPath | null,
 	/**  Repository-relative paths. */
 	files: ChangedFile[],
 };

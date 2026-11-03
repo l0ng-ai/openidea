@@ -117,11 +117,23 @@ impl LspManager {
             return Ok(None);
         }
         // Definition in ordinary Java code remains JDT's definition. Reverse
-        // configuration navigation is offered on string expressions; field/config
-        // accessor usages are merged into the ordinary Find Usages response.
+        // configuration navigation is offered only inside `@Value` / property
+        // lookup arguments: the command builds a project-wide index, and every
+        // Ctrl+click and Ctrl+hover probe would otherwise wait on it before JDT
+        // answers. Field/config accessor usages are merged into Find Usages.
         if !config && !usages {
             let text = snap.text.as_str();
             if !text.contains("Value") && !text.contains("getProperty") && !text.contains("getRequiredProperty") {
+                return Ok(None);
+            }
+            let text = text.to_owned();
+            let cancelled = cancel.clone();
+            let site = tokio::task::spawn_blocking(move || {
+                syntax().java_configuration_site(&text, pos, &|| cancelled.is_cancelled())
+            })
+            .await
+            .unwrap_or(false);
+            if !site {
                 return Ok(None);
             }
         }

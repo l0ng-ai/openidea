@@ -459,7 +459,7 @@ function MappingsTab({
       <div className={styles.note}>
         <T>
           {
-            "Local paths are relative to the project root (empty: the whole project); deployment paths are relative to the server's root path."
+            "Local paths are relative to the project root or absolute inside it (empty: the whole project); deployment paths are relative to the server's root path."
           }
         </T>
       </div>
