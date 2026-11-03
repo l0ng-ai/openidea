@@ -141,8 +141,20 @@ fn rewrite_json(value: &mut serde_json::Value, ids: &HashMap<String, String>) ->
                 false
             }
         }
-        serde_json::Value::Array(a) => a.iter_mut().fold(false, |changed, v| rewrite_json(v, ids) || changed),
-        serde_json::Value::Object(o) => o.values_mut().fold(false, |changed, v| rewrite_json(v, ids) || changed),
+        serde_json::Value::Array(a) => {
+            let mut changed = false;
+            for v in a {
+                changed |= rewrite_json(v, ids);
+            }
+            changed
+        }
+        serde_json::Value::Object(o) => {
+            let mut changed = false;
+            for v in o.values_mut() {
+                changed |= rewrite_json(v, ids);
+            }
+            changed
+        }
         _ => false,
     }
 }

@@ -47,7 +47,6 @@ import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
 import { openBreakpointsDialog, openConfigChooser, openEvaluateDialog, openSmartStepChooser } from "./ui/popoverStore";
 import { tx } from "@/platform/i18n";
 import { openAttachPopup } from "./attachPopup";
-export { openAttachPopup } from "./attachPopup";
 
 function isRunConfig(arg: unknown): arg is RunConfig {
   return !!arg && typeof arg === "object" && "command" in arg && "args" in arg && "debugAdapter" in arg;
