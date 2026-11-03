@@ -4,16 +4,28 @@
  * theme becomes a stylesheet of CSS variables, notifications become balloons.
  */
 import { EditorSelection } from "@codemirror/state";
-import type { ActiveTheme, PluginEvent, PluginInfo } from "@/bindings";
+import type { ActiveTheme, EditorContext, PluginEvent, PluginInfo } from "@/bindings";
 import { activeEditor, useEditorRegistry } from "@/editor/api";
 import { registerAction, type Action } from "@/platform/actions";
-import { notifications } from "@/workbench/contributions";
+import { notifications, registerMenuGroup, type MenuGroupContext } from "@/workbench/contributions";
 import { applyThemeAttributes, currentThemeId, syncWindowBackground, windowBackgroundHex } from "@/workbench/theme";
+import type { MenuItem } from "@/ui/Menu";
 import { pluginsBackend } from "./backend";
 import { refreshPlugins, runPluginCommand, usePlugins } from "./store";
 import { tx } from "@/platform/i18n";
 
 export const pluginActionId = (pluginId: string, commandId: string) => `plugin.${pluginId}.${commandId}`;
+
+/** The focused editor as plugin context: which file, and the 0-based caret line. */
+function currentEditorContext(): EditorContext | null {
+  const editor = activeEditor();
+  if (!editor) return null;
+  const { view } = editor;
+  return {
+    path: editor.ctx.path,
+    line: view.state.doc.lineAt(view.state.selection.main.head).number - 1,
+  };
+}
 
 /** Actions for every command of every running plugin. */
 export function pluginActions(plugins: readonly PluginInfo[]): Action[] {
@@ -28,10 +40,54 @@ export function pluginActions(plugins: readonly PluginInfo[]): Action[] {
         keywords: ["plugin", p.name, p.id],
         description: tx`From plugin ${p.name}`,
         run: async ({ arg }) => {
-          await runPluginCommand(p.id, c.id, typeof arg === "string" ? arg : null);
+          await runPluginCommand(p.id, c.id, typeof arg === "string" ? arg : null, currentEditorContext());
         },
       })),
     );
+}
+
+/** File extension without the dot, lower-case; undefined without one. */
+function extensionOf(path: string): string | undefined {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : undefined;
+}
+
+/**
+ * Items a running plugin contributes to the editor menu (`[[contributes.menu-items]]`),
+ * grouped into submenus by `group` (e.g. Editor › Arthas Command › Watch).
+ */
+export function pluginMenuItems(plugins: readonly PluginInfo[], ctx: MenuGroupContext): MenuItem[] {
+  const path = ctx.paths.length === 1 ? ctx.paths[0]! : undefined;
+  const extension = path ? extensionOf(path) : undefined;
+  const entries: Array<{ group?: string; order: number; label: string; item: MenuItem }> = [];
+  for (const p of plugins) {
+    if (p.status !== "active") continue;
+    for (const m of p.menuItems) {
+      if (m.menu !== "editor") continue;
+      const extensions = m.extensions ?? [];
+      if (extensions.length && (!extension || !extensions.some((e) => e.toLowerCase() === extension))) continue;
+      const label = m.label ?? p.commands.find((c) => c.id === m.command)?.title ?? m.command;
+      entries.push({
+        group: m.group ?? undefined,
+        order: m.order ?? 0,
+        label,
+        item: {
+          label,
+          run: () => void runPluginCommand(p.id, m.command, null, { path: path ?? null, line: ctx.line ?? null }),
+        },
+      });
+    }
+  }
+  if (!entries.length) return [];
+  entries.sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+  const groups = new Map<string, MenuItem[]>();
+  const flat: MenuItem[] = [];
+  for (const e of entries) {
+    if (e.group === undefined) flat.push(e.item);
+    else groups.set(e.group, [...(groups.get(e.group) ?? []), e.item]);
+  }
+  return [...flat, ...[...groups].map(([label, submenu]): MenuItem => ({ label, submenu }))];
 }
 
 /** Keeps the action registry in sync with the plugin list; re-registers only changed actions. */
@@ -234,6 +290,16 @@ export function handlePluginEvent(e: PluginEvent) {
     case "replaceSelection":
       applyTextToActiveEditor(e.text, true, e.pluginId);
       break;
+    case "writeClipboard":
+      void navigator.clipboard?.writeText(e.text).catch(() => {
+        const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;
+        notifications().notify({
+          group: "plugins",
+          level: "warning",
+          title: `${name}: could not copy to the clipboard`,
+        });
+      });
+      break;
     case "themeChanged":
       usePlugins.setState({ activeTheme: e.theme });
       break;
@@ -256,6 +322,13 @@ export function startPluginBridge(): () => void {
     syncPluginActions(),
     trackPluginTheme(),
     trackActiveFile(),
+    // Plugin items join the editor menu (after the built-in groups).
+    registerMenuGroup({
+      id: "plugins.menuItems",
+      menus: ["editor"],
+      order: 200,
+      items: (_menu, ctx) => pluginMenuItems(usePlugins.getState().plugins, ctx),
+    }),
   ];
   return () => {
     if (refreshTimer) clearTimeout(refreshTimer);

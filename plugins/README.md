@@ -2,15 +2,16 @@
 
 OpenIDEA plugins are sandboxed **WebAssembly components** (wasmtime, component
 model, WASI preview 2), in the style of Zed extensions. A plugin can register
-commands (they become IDE actions you can search for and bind to keys), read
-project files, insert text into the editor, show notifications and contribute
-themes and languages. Plugins that only contribute themes or languages need no
-code at all.
+commands (they become IDE actions you can search for and bind to keys), add
+items to the editor's context menu, read project files, insert text into the
+editor, copy to the clipboard, show notifications and contribute themes and
+languages. Plugins that only contribute themes or languages need no code at all.
 
 ```
 plugins/
 ├─ build.sh                 # builds Rust plugins into components
 ├─ hello/                   # Rust plugin: two commands
+├─ arthas/                  # Rust plugin: editor context menu items
 └─ language-toy/            # manifest-only: a language definition
 ```
 
@@ -37,6 +38,15 @@ id = "insert-date"              # [a-z0-9][a-z0-9._-]*
 title = "Hello: Insert Date"
 category = "Hello"              # group in Search Everywhere / Keymap
 
+# Editor context menu item (see _Context menus_ below).
+[[contributes.menu-items]]
+menu = "editor"
+command = "insert-date"
+label = "Insert Date"
+group = "Hello"                 # optional submenu label
+extensions = ["java"]           # optional: only for these file extensions
+order = 1
+
 [[contributes.themes]]
 path = "themes/my-theme.json"
 
@@ -48,16 +58,27 @@ All paths are relative to the package directory and may not leave it.
 
 ### Permissions
 
-| Permission     | Unlocks                                           |
-| -------------- | ------------------------------------------------- |
-| `project-read` | `workspace-root`, `read-file` (project root only) |
-| `editor-read`  | `active-file`                                     |
-| `editor-write` | `insert-text`, `replace-selection`                |
+| Permission        | Unlocks                                           |
+| ----------------- | ------------------------------------------------- |
+| `project-read`    | `workspace-root`, `read-file` (project root only) |
+| `editor-read`     | `active-file`, `caret-line`                       |
+| `editor-write`    | `insert-text`, `replace-selection`                |
+| `clipboard-write` | `write-clipboard`                                 |
 
 `log`, `register-command`, `show-notification`, `register-language` and
 `register-theme` are always available. Calling a gated function without its
 permission **traps**: the plugin is stopped and the user is told which
 permission is missing.
+
+### Context menus
+
+`[[contributes.menu-items]]` adds an item to the editor's right-click menu.
+Selecting it runs `command` with the caret's editor context (`active-file` is
+the clicked file, `caret-line` the 0-based line), exactly like running the
+command from Search Everywhere. `group` collects items under a submenu
+(Editor › Arthas Command › Watch), `extensions` hides the item for other file
+types, and `order` sorts it (lower first). See
+[`arthas`](arthas) for a complete example.
 
 ## 2. Writing code (Rust)
 
@@ -139,10 +160,12 @@ Any language with component-model tooling works (e.g. `componentize-py`,
 | `register-command(id, title, category?)` | Becomes action `plugin.<plugin-id>.<id>`; call again to rename. Max 256 commands.                                                        |
 | `show-notification(level, title, body)`  | Balloon in the invoking window.                                                                                                          |
 | `workspace-root()`                       | Root of the project the command runs in.                                                                                                 |
-| `active-file()`                          | Absolute path of the focused editor's file.                                                                                              |
+| `active-file()`                          | Absolute path of the focused editor's file (or the one the menu item was invoked on).                                                    |
+| `caret-line()`                           | 0-based caret line of that editor (menu items, editor actions).                                                                          |
 | `read-file(path)`                        | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB. Unsaved editor contents win over disk. |
 | `insert-text(text)`                      | Inserts at every cursor of the active editor (cursor ends after the text).                                                               |
 | `replace-selection(text)`                | Replaces every selection and selects the new text.                                                                                       |
+| `write-clipboard(text)`                  | Copies to the clipboard of the window that invoked the command.                                                                          |
 | `register-language(toml)`                | Same format as `languages/<id>.toml`.                                                                                                    |
 | `register-theme(json)`                   | See _Themes_ below.                                                                                                                      |
 

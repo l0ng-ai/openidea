@@ -1,6 +1,6 @@
 //! UI-facing types and the event stream.
 
-use crate::manifest::{CommandDecl, Permission};
+use crate::manifest::{CommandDecl, MenuItemDecl, Permission};
 use crate::theme::{ThemeDef, ThemeKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -73,6 +73,8 @@ pub struct PluginInfo {
     pub permissions: Vec<Permission>,
     /// Commands contributed while enabled (manifest + registered at runtime).
     pub commands: Vec<CommandDecl>,
+    /// Editor context menu items from the manifest.
+    pub menu_items: Vec<MenuItemDecl>,
     pub languages: Vec<PluginLanguage>,
     pub themes: Vec<PluginTheme>,
 }
@@ -126,6 +128,9 @@ pub enum PluginEvent {
     InsertText { plugin_id: String, text: String },
     #[serde(rename_all = "camelCase")]
     ReplaceSelection { plugin_id: String, text: String },
+    /// `write-clipboard`: copy to the clipboard of the invoking window.
+    #[serde(rename_all = "camelCase")]
+    WriteClipboard { plugin_id: String, text: String },
     #[serde(rename_all = "camelCase")]
     ThemeChanged { theme: Option<ActiveTheme> },
 }
@@ -144,6 +149,17 @@ impl<F: Fn(Option<&str>, PluginEvent) + Send + Sync> PluginEventSink for F {
 
 pub type BufferText = Arc<dyn Fn(&Path) -> Option<String> + Send + Sync>;
 
+/// The editor a plugin command was invoked from (context menu, caret actions):
+/// lets `active-file` and `caret-line` describe what the user right-clicked,
+/// even if another editor holds the focus.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorContext {
+    pub path: Option<String>,
+    /// 0-based caret line.
+    pub line: Option<u32>,
+}
+
 /// Where a command runs: the invoking window and its project.
 #[derive(Clone, Default)]
 pub struct Invocation {
@@ -151,6 +167,8 @@ pub struct Invocation {
     pub workspace_root: Option<PathBuf>,
     /// Unsaved editor contents win over disk for `read-file`.
     pub buffer_text: Option<BufferText>,
+    /// Editor the command was invoked from (menu items, editor actions).
+    pub editor: Option<EditorContext>,
 }
 
 /// Per-call resource limits for plugin code.

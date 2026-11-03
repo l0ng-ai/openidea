@@ -5,7 +5,7 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::{
-    ActiveTheme, CatalogPlugin, Invocation, Limits, PluginEvent, PluginHost, PluginInfo, PluginsSnapshot,
+    ActiveTheme, CatalogPlugin, EditorContext, Invocation, Limits, PluginEvent, PluginHost, PluginInfo, PluginsSnapshot,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -127,7 +127,8 @@ pub async fn plugin_reload(state: State<'_, AppState>, id: String) -> IdeResult<
     blocking(move || host.reload(&id)).await
 }
 
-/// Runs a plugin command in the context of this window's project.
+/// Runs a plugin command in the context of this window's project. `editor` is
+/// the editor it was invoked from (context menu item, editor action), when known.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_run_command(
@@ -136,6 +137,7 @@ pub async fn plugin_run_command(
     plugin_id: String,
     command_id: String,
     arg: Option<String>,
+    editor: Option<EditorContext>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -146,6 +148,7 @@ pub async fn plugin_run_command(
             let documents = p.documents.clone();
             Arc::new(move |path: &Path| documents.text_of(path)) as ide_plugin::BufferText
         }),
+        editor,
     };
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
 }

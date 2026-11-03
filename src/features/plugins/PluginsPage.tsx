@@ -50,8 +50,9 @@ const STATUS: Record<PluginStatus, { label: string; tone: "success" | "accent" |
 
 export const PERMISSION_TEXT: Record<Permission, string> = {
   "project-read": "Read files inside the open project",
-  "editor-read": "See which file is open in the editor",
+  "editor-read": "See the open file and the caret position",
   "editor-write": "Insert text into the active editor",
+  "clipboard-write": "Copy text to the system clipboard",
 };
 
 export const NO_REPOSITORY = "There is no online plugin repository";

@@ -1,6 +1,6 @@
 //! Wasmtime glue: one shared engine, one `Store` per plugin, host imports.
 
-use crate::manifest::{API_VERSION, CommandDecl, Permission, validate_command_id};
+use crate::manifest::{API_VERSION, CommandDecl, MenuItemDecl, Permission, validate_command_id};
 use crate::sandbox;
 use crate::theme::ThemeDef;
 use crate::types::{Invocation, Limits, NotificationLevel, PluginEvent, PluginEventSink};
@@ -74,6 +74,7 @@ impl PluginEngine {
 #[derive(Default, Clone)]
 pub(crate) struct Registrations {
     pub commands: Vec<CommandDecl>,
+    pub menu_items: Vec<MenuItemDecl>,
     pub languages: Vec<LanguageConfig>,
     pub themes: Vec<ThemeDef>,
 }
@@ -236,7 +237,15 @@ impl wit_host::Host for StoreData {
 
     fn active_file(&mut self) -> wasmtime::Result<Option<String>> {
         self.require(Permission::EditorRead)?;
+        if let Some(path) = self.invocation.editor.as_ref().and_then(|e| e.path.clone()) {
+            return Ok(Some(path));
+        }
         Ok((self.active_file)(self.invocation.client.as_deref()))
+    }
+
+    fn caret_line(&mut self) -> wasmtime::Result<Option<u32>> {
+        self.require(Permission::EditorRead)?;
+        Ok(self.invocation.editor.as_ref().and_then(|e| e.line))
     }
 
     fn read_file(&mut self, path: String) -> wasmtime::Result<Result<String, String>> {
@@ -263,6 +272,12 @@ impl wit_host::Host for StoreData {
     fn replace_selection(&mut self, text: String) -> wasmtime::Result<()> {
         self.require(Permission::EditorWrite)?;
         self.emit(PluginEvent::ReplaceSelection { plugin_id: self.plugin_id.clone(), text: clip(text, MAX_TEXT) });
+        Ok(())
+    }
+
+    fn write_clipboard(&mut self, text: String) -> wasmtime::Result<()> {
+        self.require(Permission::ClipboardWrite)?;
+        self.emit(PluginEvent::WriteClipboard { plugin_id: self.plugin_id.clone(), text: clip(text, MAX_TEXT) });
         Ok(())
     }
 

@@ -1,0 +1,65 @@
+id = "arthas"
+name = "Arthas Commands"
+version = "0.1.0"
+description = "Right-click a Java method to copy a ready-made Arthas watch / trace / monitor / stack command."
+authors = ["OpenIDEA contributors"]
+change-notes = """
+0.1.0 — Arthas Command submenu in the editor: Watch, Trace, Monitor and Stack.
+"""
+openidea-api = "0.1"
+wasm = "dist/plugin.wasm"
+# `caret-line` resolves the method under the caret; `read-file` reads the
+# editor's (unsaved) text; `write-clipboard` copies the command.
+permissions = ["project-read", "editor-read", "clipboard-write"]
+
+[[contributes.commands]]
+id = "watch"
+title = "Arthas: Watch"
+category = "Arthas"
+
+[[contributes.commands]]
+id = "trace"
+title = "Arthas: Trace"
+category = "Arthas"
+
+[[contributes.commands]]
+id = "monitor"
+title = "Arthas: Monitor"
+category = "Arthas"
+
+[[contributes.commands]]
+id = "stack"
+title = "Arthas: Stack"
+category = "Arthas"
+
+[[contributes.menu-items]]
+menu = "editor"
+command = "watch"
+label = "Watch"
+group = "Arthas Command"
+extensions = ["java"]
+order = 1
+
+[[contributes.menu-items]]
+menu = "editor"
+command = "trace"
+label = "Trace"
+group = "Arthas Command"
+extensions = ["java"]
+order = 2
+
+[[contributes.menu-items]]
+menu = "editor"
+command = "monitor"
+label = "Monitor"
+group = "Arthas Command"
+extensions = ["java"]
+order = 3
+
+[[contributes.menu-items]]
+menu = "editor"
+command = "stack"
+label = "Stack"
+group = "Arthas Command"
+extensions = ["java"]
+order = 4

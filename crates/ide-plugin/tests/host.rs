@@ -81,7 +81,7 @@ fn fixture(limits: Limits) -> Fixture {
 
 impl Fixture {
     fn inv(&self) -> Invocation {
-        Invocation { client: Some("main".into()), workspace_root: Some(self.project.clone()), buffer_text: None }
+        Invocation { client: Some("main".into()), workspace_root: Some(self.project.clone()), ..Default::default() }
     }
 
     fn run(&self, plugin: &str, cmd: &str, arg: Option<&str>) -> Result<Option<String>, String> {
@@ -147,7 +147,7 @@ fn read_file_is_confined_to_the_project() {
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
     // Without a project there is nothing to read.
-    let inv = Invocation { client: None, workspace_root: None, buffer_text: None };
+    let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), f.project.to_string_lossy());
@@ -376,6 +376,30 @@ fn state_persists_across_restarts() {
             .message
             .contains("disabled")
     );
+}
+
+#[test]
+fn arthas_plugin_copies_a_command_for_the_caret_line() {
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("arthas")).unwrap();
+    assert_eq!(info.status, PluginStatus::Active, "{:?}", info.error);
+    let labels: Vec<_> = info.menu_items.iter().map(|i| i.label.as_deref().unwrap()).collect();
+    assert_eq!(labels, ["Watch", "Trace", "Monitor", "Stack"]);
+    assert!(info.menu_items.iter().all(|i| i.menu == MenuId::Editor && i.extensions == ["java"]));
+
+    let java = "package com.example.demo;\n\npublic class OrderService {\n    public Order create(String id) {\n        return new Order(id);\n    }\n}\n";
+    std::fs::write(f.project.join("src/OrderService.java"), java).unwrap();
+    let path = f.project.join("src/OrderService.java").to_string_lossy().into_owned();
+    let invocation = Invocation { editor: Some(EditorContext { path: Some(path), line: Some(4) }), ..f.inv() };
+    f.take_events();
+    let command = f.host.run_command("arthas", "watch", None, invocation).unwrap().unwrap();
+    assert_eq!(command, "watch com.example.demo.OrderService create '{params, returnObj, throwException}' -x 3");
+    assert!(
+        f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::WriteClipboard { text, .. } if text == &command))
+    );
+
+    // Search Everywhere has no editor context: no caret line.
+    assert!(f.run("arthas", "trace", None).unwrap_err().contains("caret"));
 }
 
 #[test]

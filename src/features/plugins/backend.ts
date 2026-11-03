@@ -4,7 +4,7 @@
  * development and tests.
  */
 import { Channel } from "@tauri-apps/api/core";
-import type { ActiveTheme, CatalogPlugin, PluginEvent, PluginInfo, PluginsSnapshot } from "@/bindings";
+import type { ActiveTheme, CatalogPlugin, EditorContext, PluginEvent, PluginInfo, PluginsSnapshot } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 
@@ -16,7 +16,12 @@ export interface PluginsBackend {
   catalog(): Promise<CatalogPlugin[]>;
   uninstall(id: string): Promise<void>;
   reload(id: string): Promise<PluginInfo>;
-  runCommand(pluginId: string, commandId: string, arg: string | null): Promise<string | null>;
+  runCommand(
+    pluginId: string,
+    commandId: string,
+    arg: string | null,
+    editor?: EditorContext | null,
+  ): Promise<string | null>;
   setActiveFile(path: string | null): Promise<void>;
   setTheme(pluginId: string | null, themeId: string | null): Promise<ActiveTheme | null>;
   /** The selected theme's resolved frame colour (`#rrggbb[aa]`), which new windows open in. */
@@ -39,7 +44,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg) => call(commands.pluginRunCommand(pluginId, commandId, arg)),
+  runCommand: (pluginId, commandId, arg, editor) =>
+    call(commands.pluginRunCommand(pluginId, commandId, arg, editor ?? null)),
   setActiveFile: async (path) => {
     await commands.pluginSetActiveFile(path);
   },
@@ -112,6 +118,7 @@ function samplePlugins(): PluginInfo[] {
     languages: [],
     themes: [],
     commands: [],
+    menuItems: [],
     permissions: [],
   };
   return [

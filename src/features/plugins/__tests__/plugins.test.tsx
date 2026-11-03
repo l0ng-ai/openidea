@@ -16,6 +16,7 @@ import {
   handlePluginEvent,
   pluginActionId,
   pluginActions,
+  pluginMenuItems,
   startPluginBridge,
 } from "../bridge";
 import { catalogState, filterCatalog, filterPlugins, NO_REPOSITORY, PluginsPage } from "../PluginsPage";
@@ -50,6 +51,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     hasCode: true,
     permissions: [],
     commands: [],
+    menuItems: [],
     languages: [],
     themes: [],
     ...partial,
@@ -296,6 +298,35 @@ describe("PluginsPage", () => {
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["language-toy"]));
     expect(within(list).getAllByText("Installed").length).toBeGreaterThan(0);
     expect(notes.at(-1)).toMatchObject({ title: "Installed Toy Language 0.1.0" });
+  });
+});
+
+describe("plugin menus", () => {
+  const arthas = () =>
+    plugin({
+      id: "arthas",
+      commands: [
+        { id: "watch", title: "Arthas: Watch", category: "Arthas" },
+        { id: "trace", title: "Arthas: Trace", category: "Arthas" },
+      ],
+      menuItems: [
+        { menu: "editor", command: "watch", label: "Watch", group: "Arthas Command", extensions: ["java"], order: 1 },
+        { menu: "editor", command: "trace", label: "Trace", group: "Arthas Command", extensions: ["java"], order: 2 },
+      ],
+    });
+
+  it("groups editor menu items into submenus, only for matching files", () => {
+    const items = pluginMenuItems([arthas()], { paths: ["/p/Main.java"], line: 3 });
+    expect(items).toHaveLength(1);
+    const submenu = items[0] as { label?: string; submenu?: Array<{ kind?: string; label?: string }> };
+    expect(submenu.label).toBe("Arthas Command");
+    expect(submenu.submenu?.map((i) => (i.kind === "separator" ? "-" : i.label))).toEqual(["Watch", "Trace"]);
+    expect(pluginMenuItems([arthas()], { paths: ["/p/notes.txt"] })).toEqual([]);
+    expect(
+      pluginMenuItems([plugin({ id: "off", status: "disabled", menuItems: arthas().menuItems })], {
+        paths: ["/p/Main.java"],
+      }),
+    ).toEqual([]);
   });
 });
 

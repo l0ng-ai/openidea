@@ -54,6 +54,10 @@ interface host {
     /// Path of the focused editor's file. Requires `editor-read`.
     active-file: func() -> option<string>;
 
+    /// 0-based line of the caret in the focused editor, e.g. to resolve the
+    /// enclosing Java method. Requires `editor-read`.
+    caret-line: func() -> option<u32>;
+
     /// Reads a UTF-8 text file inside the project root (absolute, or relative
     /// to the root). Paths escaping the root are rejected. Requires `project-read`.
     read-file: func(path: string) -> result<string, string>;
@@ -63,6 +67,10 @@ interface host {
 
     /// Replaces the active editor's selection(s). Requires `editor-write`.
     replace-selection: func(text: string);
+
+    /// Copies `text` to the system clipboard, like the IDE's "Copy" of a
+    /// resolved command. Requires `clipboard-write`.
+    write-clipboard: func(text: string);
 
     /// Registers a language from a `languages/<id>.toml`-style definition.
     register-language: func(definition: string) -> result<_, string>;

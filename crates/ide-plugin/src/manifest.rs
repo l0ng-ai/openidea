@@ -14,10 +14,12 @@ pub const MANIFEST_FILE: &str = "plugin.toml";
 pub enum Permission {
     /// `workspace-root`, `read-file` (inside the project root only).
     ProjectRead,
-    /// `active-file`.
+    /// `active-file`, `caret-line`.
     EditorRead,
     /// `insert-text`, `replace-selection`.
     EditorWrite,
+    /// `write-clipboard`.
+    ClipboardWrite,
 }
 
 impl Permission {
@@ -26,6 +28,7 @@ impl Permission {
             Permission::ProjectRead => "project-read",
             Permission::EditorRead => "editor-read",
             Permission::EditorWrite => "editor-write",
+            Permission::ClipboardWrite => "clipboard-write",
         }
     }
 }
@@ -62,6 +65,8 @@ pub struct Contributions {
     #[serde(default)]
     pub commands: Vec<CommandDecl>,
     #[serde(default)]
+    pub menu_items: Vec<MenuItemDecl>,
+    #[serde(default)]
     pub languages: Vec<FileDecl>,
     #[serde(default)]
     pub themes: Vec<ThemeDecl>,
@@ -74,6 +79,46 @@ pub struct CommandDecl {
     pub title: String,
     #[serde(default)]
     pub category: Option<String>,
+}
+
+/// Context menus a plugin may contribute to. Only the editor's for now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MenuId {
+    /// The editor's right-click menu (IDEA's EditorPopupMenu).
+    Editor,
+}
+
+impl MenuId {
+    /// The id the frontend uses (`registerMenuGroup({ menus: [...] })`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MenuId::Editor => "editor",
+        }
+    }
+}
+
+/// An item a plugin adds to a context menu (e.g. Editor › Arthas Command › Watch).
+/// Selecting it runs `command` as if it was executed from Search Everywhere.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MenuItemDecl {
+    /// Menu to add the item to.
+    pub menu: MenuId,
+    /// Command id of this plugin (declared here or registered at activation).
+    pub command: String,
+    /// Item label; the command's title when absent.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Submenu to group the item under, e.g. "Arthas Command".
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Only shown for files with one of these extensions (without the dot).
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    /// Position within the menu / group; lower first.
+    #[serde(default)]
+    pub order: Option<i32>,
 }
 
 /// A contributed file, relative to the package directory.
@@ -131,6 +176,21 @@ impl PluginManifest {
             }
             if c.title.trim().is_empty() {
                 return Err(format!("command {:?} has an empty title", c.id));
+            }
+        }
+        for item in &self.contributes.menu_items {
+            validate_command_id(&item.command)?;
+            if item.label.as_deref().is_some_and(|l| l.trim().is_empty()) {
+                return Err(format!("menu item {:?} has an empty label", item.command));
+            }
+            if item.group.as_deref().is_some_and(|g| g.trim().is_empty()) {
+                return Err(format!("menu item {:?} has an empty group", item.command));
+            }
+            for ext in &item.extensions {
+                let ext = ext.trim_start_matches('.');
+                if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return Err(format!("menu item {:?} has an invalid extension {ext:?}", item.command));
+                }
             }
         }
         let theme_files = self.contributes.themes.iter().flat_map(|t| std::iter::once(&t.path).chain(&t.editor_scheme));
@@ -214,6 +274,14 @@ mod tests {
         title = "Say Hi"
         category = "Hello"
 
+        [[contributes.menu-items]]
+        menu = "editor"
+        command = "say.hi"
+        label = "Hi"
+        group = "Greetings"
+        extensions = ["java"]
+        order = 1
+
         [[contributes.themes]]
         path = "themes/dark.json"
         editor-scheme = "themes/dark.scheme.json"
@@ -225,6 +293,13 @@ mod tests {
         assert_eq!(m.id, "hello");
         assert_eq!(m.permissions, vec![Permission::ProjectRead, Permission::EditorWrite]);
         assert_eq!(m.contributes.commands[0].category.as_deref(), Some("Hello"));
+        let item = &m.contributes.menu_items[0];
+        assert_eq!(item.menu, MenuId::Editor);
+        assert_eq!(item.command, "say.hi");
+        assert_eq!(item.label.as_deref(), Some("Hi"));
+        assert_eq!(item.group.as_deref(), Some("Greetings"));
+        assert_eq!(item.extensions, vec!["java"]);
+        assert_eq!(item.order, Some(1));
         assert_eq!(
             m.files(),
             vec![Path::new("dist/plugin.wasm"), Path::new("themes/dark.json"), Path::new("themes/dark.scheme.json")]
@@ -262,6 +337,14 @@ mod tests {
         assert!(err(&base(traversal, "ok", "0.1")).contains("relative path"));
         let scheme_escape = "[[contributes.themes]]\npath = \"t.json\"\neditor-scheme = \"../s.json\"";
         assert!(err(&base(scheme_escape, "ok", "0.1")).contains("relative path"));
+        let bad_menu = "[[contributes.menu-items]]\nmenu = \"projectView\"\ncommand = \"a\"";
+        assert!(err(&base(bad_menu, "ok", "0.1")).contains("unknown variant"));
+        let bad_menu_id = "[[contributes.menu-items]]\nmenu = \"editor\"\ncommand = \"Bad id\"";
+        assert!(err(&base(bad_menu_id, "ok", "0.1")).contains("invalid command id"));
+        let bad_ext = "[[contributes.menu-items]]\nmenu = \"editor\"\ncommand = \"a\"\nextensions = [\"j a\"]";
+        assert!(err(&base(bad_ext, "ok", "0.1")).contains("invalid extension"));
+        let empty_label = "[[contributes.menu-items]]\nmenu = \"editor\"\ncommand = \"a\"\nlabel = \" \"";
+        assert!(err(&base(empty_label, "ok", "0.1")).contains("empty label"));
         assert!(err("id = \"ok\"\nname = \"N\"\nversion = \"1.0\"\nopenidea-api = \"0.1\"").contains("version"));
         assert!(err("id = \"ok\"\nname = \" \"\nversion = \"1.0.0\"\nopenidea-api = \"0.1\"").contains("name"));
     }

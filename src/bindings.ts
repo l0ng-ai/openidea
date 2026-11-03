@@ -873,8 +873,15 @@ export const commands = {
 	pluginUninstall: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_uninstall", { id })),
 	/**  Re-reads a plugin from disk (after rebuilding a dev plugin). */
 	pluginReload: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_reload", { id })),
-	/**  Runs a plugin command in the context of this window's project. */
-	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg })),
+	/**
+	 *  Runs a plugin command in the context of this window's project. `editor` is
+	 *  the editor it was invoked from (context menu item, editor action), when known.
+	 */
+	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: {
+	path: string | null,
+	/**  0-based caret line. */
+	line: number | null,
+} | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor })),
 	/**  The UI reports the focused editor's file (`active-file` for plugins). */
 	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
@@ -2845,6 +2852,17 @@ export type EditorConfigProps = {
 	maxLineLength: number | null,
 };
 
+/**
+ *  The editor a plugin command was invoked from (context menu, caret actions):
+ *  lets `active-file` and `caret-line` describe what the user right-clicked,
+ *  even if another editor holds the focus.
+ */
+export type EditorContext = {
+	path: string | null,
+	/**  0-based caret line. */
+	line: number | null,
+};
+
 /**  Editor › General (mouse, scrolling, soft wraps, virtual space, saving). */
 export type EditorGeneralSettings = {
 	/**  Change font size with ⌘ + mouse wheel. */
@@ -4468,6 +4486,30 @@ export type MenuConfig = {
 	dynamic?: { [key in string]: DynamicItem[] },
 };
 
+/**  Context menus a plugin may contribute to. Only the editor's for now. */
+export type MenuId = 
+/**  The editor's right-click menu (IDEA's EditorPopupMenu). */
+"editor";
+
+/**
+ *  An item a plugin adds to a context menu (e.g. Editor › Arthas Command › Watch).
+ *  Selecting it runs `command` as if it was executed from Search Everywhere.
+ */
+export type MenuItemDecl = {
+	/**  Menu to add the item to. */
+	menu: MenuId,
+	/**  Command id of this plugin (declared here or registered at activation). */
+	command: string,
+	/**  Item label; the command's title when absent. */
+	label?: string | null,
+	/**  Submenu to group the item under, e.g. "Arthas Command". */
+	group?: string | null,
+	/**  Only shown for files with one of these extensions (without the dot). */
+	extensions?: string[],
+	/**  Position within the menu / group; lower first. */
+	order?: number | null,
+};
+
 /**
  *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
  *  Labels are the English defaults; the frontend localises them like the native menu.
@@ -4710,10 +4752,12 @@ export type PathCompletion = {
 export type Permission = 
 /**  `workspace-root`, `read-file` (inside the project root only). */
 "project-read" | 
-/**  `active-file`. */
+/**  `active-file`, `caret-line`. */
 "editor-read" | 
 /**  `insert-text`, `replace-selection`. */
-"editor-write";
+"editor-write" | 
+/**  `write-clipboard`. */
+"clipboard-write";
 
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
@@ -4723,7 +4767,9 @@ export type PhpSettings = {
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their commands changed: re-fetch `plugin_list`. */
-{ type: "commandsChanged" } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | { type: "insertText"; pluginId: string; text: string } | { type: "replaceSelection"; pluginId: string; text: string } | { type: "themeChanged"; theme: ActiveTheme | null };
+{ type: "commandsChanged" } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | { type: "insertText"; pluginId: string; text: string } | { type: "replaceSelection"; pluginId: string; text: string } | 
+/**  `write-clipboard`: copy to the clipboard of the invoking window. */
+{ type: "writeClipboard"; pluginId: string; text: string } | { type: "themeChanged"; theme: ActiveTheme | null };
 
 export type PluginInfo = {
 	id: string,
@@ -4743,6 +4789,8 @@ export type PluginInfo = {
 	permissions: Permission[],
 	/**  Commands contributed while enabled (manifest + registered at runtime). */
 	commands: CommandDecl[],
+	/**  Editor context menu items from the manifest. */
+	menuItems: MenuItemDecl[],
 	languages: PluginLanguage[],
 	themes: PluginTheme[],
 };

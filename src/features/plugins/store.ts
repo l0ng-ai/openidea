@@ -1,6 +1,6 @@
 /** Installed plugins, the selected plugin theme, and the operations on them. */
 import { create } from "zustand";
-import type { ActiveTheme, CatalogPlugin, PluginInfo } from "@/bindings";
+import type { ActiveTheme, CatalogPlugin, EditorContext, PluginInfo } from "@/bindings";
 import { notifications } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 
@@ -168,12 +168,17 @@ export async function selectPluginTheme(pluginId: string | null, themeId: string
   }
 }
 
-/** Runs a plugin command from an action; failures become notifications. */
-export async function runPluginCommand(pluginId: string, commandId: string, arg: string | null = null) {
+/** Runs a plugin command from an action or a contributed menu item; failures become notifications. */
+export async function runPluginCommand(
+  pluginId: string,
+  commandId: string,
+  arg: string | null = null,
+  editor: EditorContext | null = null,
+) {
   const plugin = usePlugins.getState().plugins.find((p) => p.id === pluginId);
   const title = plugin?.commands.find((c) => c.id === commandId)?.title ?? commandId;
   try {
-    return await pluginsBackend().runCommand(pluginId, commandId, arg);
+    return await pluginsBackend().runCommand(pluginId, commandId, arg, editor);
   } catch (e) {
     await refreshPlugins();
     // A trap disables the plugin and the backend already announced why.

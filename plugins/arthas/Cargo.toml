@@ -1,0 +1,21 @@
+[package]
+name = "openidea-plugin-arthas"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone: not a member of the IDE workspace (different target).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.63"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

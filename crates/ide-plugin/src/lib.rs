@@ -22,7 +22,8 @@ mod theme;
 mod types;
 
 pub use manifest::{
-    API_VERSION, CommandDecl, Contributions, FileDecl, MANIFEST_FILE, Permission, PluginManifest, ThemeDecl,
+    API_VERSION, CommandDecl, Contributions, FileDecl, MANIFEST_FILE, MenuId, MenuItemDecl, Permission, PluginManifest,
+    ThemeDecl,
 };
 pub use sandbox::resolve_in_root;
 pub use theme::{ThemeDef, ThemeKind};
@@ -654,6 +655,7 @@ impl PluginHost {
             has_code: m.wasm.is_some(),
             permissions: m.permissions.clone(),
             commands: regs.commands,
+            menu_items: regs.menu_items,
             languages: regs
                 .languages
                 .iter()
@@ -737,6 +739,7 @@ fn static_contributions(dir: &Path, m: &PluginManifest) -> Result<Registrations,
     for cmd in &m.contributes.commands {
         regs.add_command(cmd.clone());
     }
+    regs.menu_items = m.contributes.menu_items.clone();
     let read = |p: &Path| std::fs::read_to_string(dir.join(p)).map_err(|e| format!("{}: {e}", p.display()));
     for f in &m.contributes.languages {
         let cfg = runtime::parse_language(&read(&f.path)?).map_err(|e| format!("{}: {e}", f.path.display()))?;
