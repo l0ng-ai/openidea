@@ -331,8 +331,11 @@ pub async fn lsp_code_actions(
 }
 
 fn plugin_code_action(a: ide_plugin::CodeAction) -> CodeAction {
-    let files =
-        a.edits.into_iter().map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None }).collect();
+    let files = a
+        .edits
+        .into_iter()
+        .map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None })
+        .collect();
     CodeAction {
         title: a.title,
         kind: a.kind,

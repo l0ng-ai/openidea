@@ -11,7 +11,7 @@
  * optionally with modifiers (`Alt+Button4`); they are single strokes.
  */
 import { create } from "zustand";
-import { getAction, isActionKeyEnabled, executeActionFrom } from "./actions";
+import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
 import { getContext } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
