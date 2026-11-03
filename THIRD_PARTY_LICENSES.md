@@ -52,6 +52,15 @@ Their original copyright headers and Apache-2.0 licensing are retained.
 
 At render time `src/ui/icons.tsx` may recolour monochrome icons to `currentColor`.
 
+## JetBrains IntelliJ Platform VCS log graph algorithms
+
+`crates/ide-vcs/src/bek.rs` and `src/features/vcs/graph.ts` adapt the Bek ordering,
+graph layout and LinearBek merge linearization algorithms from
+[intellij-community](https://github.com/JetBrains/intellij-community/tree/1d70d5c54302d655758edbd2f808fb8dea8b1764/platform/vcs-log/graph/src/com/intellij/vcs/log/graph)
+(`impl/facade/sort/bek`, `impl/permanent/GraphLayoutBuilder.kt` and
+`linearBek/LinearBekGraphBuilder.java`). Modified from the originals.
+Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
+
 ## JetBrains IntelliJ Platform diff algorithm
 
 `src/features/vcs/comparison/**` is a TypeScript port of the text comparison of

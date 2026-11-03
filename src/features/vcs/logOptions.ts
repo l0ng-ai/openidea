@@ -3,8 +3,10 @@
  * persisted across sessions.
  */
 import { create } from "zustand";
+import { useContext } from "react";
+import { LogOptionsContext } from "./logContext";
 
-export type LogSort = "date" | "topo";
+export type LogSort = "date" | "topo" | "standard";
 
 export interface LogOptions {
   sort: LogSort;
@@ -19,6 +21,7 @@ export interface LogOptions {
   showAuthor: boolean;
   showDate: boolean;
   showHash: boolean;
+  showSignature: boolean;
   highlightMine: boolean;
   highlightMerges: boolean;
   highlightCurrentBranch: boolean;
@@ -28,6 +31,15 @@ export interface LogOptions {
   groupByDirectory: boolean;
   /** Selecting a changed file shows its diff in the editor's preview tab. */
   diffPreview: boolean;
+  showDetails: boolean;
+  showRepository: boolean;
+  showOnlyAffected: boolean;
+  changesFromParents: boolean;
+  diffLocation: "editor" | "right" | "bottom";
+  columnOrder: string[];
+  columnWidths: Record<string, number>;
+  linearizeMerges: boolean;
+  hiddenColumns: string[];
 }
 
 /** IDEA's defaults. */
@@ -44,12 +56,22 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   showAuthor: true,
   showDate: true,
   showHash: false,
+  showSignature: false,
   highlightMine: true,
   highlightMerges: true,
   highlightCurrentBranch: true,
   showBranches: true,
   groupByDirectory: true,
   diffPreview: true,
+  showDetails: true,
+  showRepository: true,
+  showOnlyAffected: false,
+  changesFromParents: false,
+  diffLocation: "editor",
+  columnOrder: ["author", "date", "hash"],
+  columnWidths: {},
+  linearizeMerges: false,
+  hiddenColumns: [],
 };
 
 /** Options that change which commits the backend returns (a reload is needed). */
@@ -61,7 +83,21 @@ export function parseLogOptions(raw: unknown): LogOptions {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const out = { ...DEFAULT_LOG_OPTIONS };
   for (const k of Object.keys(out) as Array<keyof LogOptions>) {
-    if (k === "sort") out.sort = o.sort === "topo" ? "topo" : o.sort === "date" ? "date" : DEFAULT_LOG_OPTIONS.sort;
+    if (k === "sort")
+      out.sort = o.sort === "standard" || o.sort === "topo" || o.sort === "date" ? o.sort : DEFAULT_LOG_OPTIONS.sort;
+    else if (k === "diffLocation")
+      out.diffLocation = o.diffLocation === "right" || o.diffLocation === "bottom" ? o.diffLocation : "editor";
+    else if (k === "columnOrder" || k === "hiddenColumns")
+      out[k] = Array.isArray(o.columnOrder)
+        ? [...new Set(o.columnOrder.filter((v): v is string => typeof v === "string"))]
+        : [...DEFAULT_LOG_OPTIONS[k]];
+    else if (k === "columnWidths" && o.columnWidths && typeof o.columnWidths === "object")
+      out.columnWidths = Object.fromEntries(
+        Object.entries(o.columnWidths).filter(
+          (entry): entry is [string, number] =>
+            typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 40 && entry[1] <= 800,
+        ),
+      );
     else if (typeof o[k] === "boolean") (out as Record<string, unknown>)[k] = o[k];
   }
   return out;
@@ -76,7 +112,13 @@ function load(): LogOptions {
   }
 }
 
-export const useLogOptions = create<LogOptions>(() => load());
+export const rootLogOptions = create<LogOptions>(() => load());
+export const useLogOptions = Object.assign(function useScopedLogOptions<T = LogOptions>(
+  selector?: (state: LogOptions) => T,
+): T {
+  const scoped = useContext(LogOptionsContext);
+  return rootLogOptions((state) => (selector ? selector(scoped ?? state) : ((scoped ?? state) as T)));
+}, rootLogOptions);
 
 // Settings › Version Control › Log edits them from the Settings window too.
 if (typeof window !== "undefined")

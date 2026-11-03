@@ -64,7 +64,7 @@ fn ids(commits: &[Commit]) -> Vec<String> {
 }
 
 fn parents_of(commits: &[Commit], id: &str) -> Vec<String> {
-    commits.iter().find(|c| c.id == id).unwrap().parents.clone()
+    commits.iter().find(|c| c.id == id).unwrap().graph_parents.clone().unwrap()
 }
 
 #[test]
@@ -73,6 +73,14 @@ fn date_order_follows_commit_time_and_reports_it() {
     let out = log(&h, LogQuery { order: LogOrder::Date, ..Default::default() });
     assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.c2.clone(), h.s1.clone(), h.c1.clone()]);
     assert_eq!(out[0].commit_time_ms, 5_000_000.0);
+}
+
+#[test]
+fn incoming_order_groups_the_merged_branch_before_the_main_parent() {
+    let h = history();
+    let out = log(&h, LogQuery { order: LogOrder::Standard, ..Default::default() });
+    assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.s1.clone(), h.c2.clone(), h.c1.clone()]);
+    assert_eq!(out[1].parents, vec![h.c2.clone(), h.s1.clone()]);
 }
 
 #[test]
@@ -90,6 +98,7 @@ fn first_parent_skips_merged_branches() {
     let out = log(&h, LogQuery { first_parent: true, ..Default::default() });
     assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.c2.clone(), h.c1.clone()]);
     assert_eq!(parents_of(&out, &h.m), vec![h.c2.clone()]);
+    assert_eq!(out.iter().find(|c| c.id == h.m).unwrap().parents, vec![h.c2.clone(), h.s1.clone()]);
 }
 
 #[test]

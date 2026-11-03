@@ -1,10 +1,12 @@
+import { registerLogContribution, useLogContributions } from "@/features/vcs/logContributions";
+import { commitKey } from "@/features/vcs/multiRoot";
 /**
  * Glue between backend plugins and the workbench: plugin commands become
  * actions, editor requests are applied to the active editor, the selected
  * theme becomes a stylesheet of CSS variables, notifications become balloons.
  */
 import { EditorSelection } from "@codemirror/state";
-import type { ActiveTheme, PluginEvent, PluginInfo } from "@/bindings";
+import type { ActiveTheme, Commit, PluginEvent, PluginInfo } from "@/bindings";
 import { activeEditor, useEditorRegistry } from "@/editor/api";
 import { registerAction, type Action } from "@/platform/actions";
 import { notifications } from "@/workbench/contributions";
@@ -37,7 +39,40 @@ export function pluginActions(plugins: readonly PluginInfo[]): Action[] {
 /** Keeps the action registry in sync with the plugin list; re-registers only changed actions. */
 export function syncPluginActions(): () => void {
   const registered = new Map<string, { key: string; dispose: () => void }>();
+  const logProviders = new Map<string, { key: string; dispose: () => void }>();
   const apply = (plugins: readonly PluginInfo[]) => {
+    const active = plugins.filter((p) => p.status === "active");
+    const columns = active
+      .filter((p) => p.permissions.includes("project-read"))
+      .flatMap((p) => (p.logColumns ?? []).map((column) => ({ plugin: p, column, id: `plugin.${p.id}.${column.id}` })));
+    for (const [id, entry] of logProviders)
+      if (!columns.some((c) => c.id === id)) {
+        entry.dispose();
+        logProviders.delete(id);
+      }
+    for (const { plugin, column, id } of columns) {
+      const key = JSON.stringify(column) + plugin.version;
+      if (logProviders.get(id)?.key === key) continue;
+      logProviders.get(id)?.dispose();
+      const text = (c: Commit) => useLogContributions.getState().values.get(`${id}\0${commitKey(c)}`) ?? "";
+      const dispose = registerLogContribution({
+        id,
+        columns: [{ id, title: column.title, width: column.width ?? 120, render: text, text }],
+        load: async (commits, signal) => {
+          const result = await pluginsBackend().runCommand(plugin.id, column.command, JSON.stringify({ commits }));
+          if (signal.aborted || !result) return new Map();
+          const raw: unknown = JSON.parse(result);
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid Git log column response");
+          return new Map(
+            commits.flatMap((c) => {
+              const value = (raw as Record<string, unknown>)[commitKey(c)] ?? (raw as Record<string, unknown>)[c.id];
+              return typeof value === "string" ? [[commitKey(c), value]] : [];
+            }),
+          );
+        },
+      });
+      logProviders.set(id, { key, dispose });
+    }
     const next = new Map(pluginActions(plugins).map((a) => [a.id, a]));
     for (const [id, entry] of registered) {
       if (!next.has(id)) {
@@ -61,6 +96,8 @@ export function syncPluginActions(): () => void {
     unsubscribe();
     registered.forEach((e) => e.dispose());
     registered.clear();
+    logProviders.forEach((entry) => entry.dispose());
+    logProviders.clear();
   };
 }
 

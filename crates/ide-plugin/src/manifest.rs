@@ -60,11 +60,24 @@ pub struct PluginManifest {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Contributions {
     #[serde(default)]
+    pub log_columns: Vec<LogColumnDecl>,
+    #[serde(default)]
     pub commands: Vec<CommandDecl>,
     #[serde(default)]
     pub languages: Vec<FileDecl>,
     #[serde(default)]
     pub themes: Vec<ThemeDecl>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogColumnDecl {
+    pub id: String,
+    pub title: String,
+    /// Command receives a JSON batch of commit summaries and returns a hash-to-text JSON object.
+    pub command: String,
+    #[serde(default)]
+    pub width: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -123,7 +136,18 @@ impl PluginManifest {
         if let Some(wasm) = &self.wasm {
             check_relative(wasm, "wasm")?;
         }
+        if !self.contributes.log_columns.is_empty() && !self.has(Permission::ProjectRead) {
+            return Err("Git log columns require project-read permission".into());
+        }
         let mut seen = std::collections::HashSet::new();
+        for column in &self.contributes.log_columns {
+            validate_command_id(&column.id)?;
+            validate_command_id(&column.command)?;
+            if column.title.trim().is_empty() || !seen.insert(column.id.as_str()) {
+                return Err(format!("invalid or duplicate log column {:?}", column.id));
+            }
+        }
+        seen.clear();
         for c in &self.contributes.commands {
             validate_command_id(&c.id)?;
             if !seen.insert(c.id.as_str()) {
@@ -237,6 +261,16 @@ mod tests {
         let m =
             PluginManifest::parse("id = \"t\"\nname = \"T\"\nversion = \"1.0.0\"\nopenidea-api = \"0.1.3\"").unwrap();
         assert!(m.wasm.is_none() && m.permissions.is_empty());
+    }
+
+    #[test]
+    fn log_columns_require_project_read_permission() {
+        let column = "\n[[contributes.log-columns]]\nid = \"status\"\ntitle = \"Status\"\ncommand = \"load-status\"";
+        let manifest = format!("{FULL}{column}");
+        assert_eq!(PluginManifest::parse(&manifest).unwrap().contributes.log_columns[0].id, "status");
+        let without_permission =
+            manifest.replace("permissions = [\"project-read\", \"editor-write\"]", "permissions = []");
+        assert!(err(&without_permission).contains("project-read permission"));
     }
 
     fn err(src: &str) -> String {

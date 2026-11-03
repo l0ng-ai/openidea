@@ -222,3 +222,25 @@ plugins/build.sh hello
 plugins/build.sh crates/ide-plugin/tests/fixtures/misbehave
 cargo test -p ide-plugin
 ```
+
+## Git log columns
+
+A WASM command can provide a column or commit status in the Git log:
+
+```toml
+[[contributes.log-columns]]
+id = "build-status"
+title = "Build status"
+command = "load-build-status"
+width = 120
+```
+
+The command receives a JSON object with a `commits` array. Each commit includes
+its `id` and `repo`, plus summary metadata. Return a JSON object mapping commit
+hashes (or `repo + "\\u0000" + id` for multiple roots) to plain display strings.
+The workbench requests visible rows in batches, caches results for the provider's
+lifetime, discards cancelled responses, and removes the provider and cache when
+the plugin stops. Users enable columns in Git Log → View Options → Columns.
+Git log columns require `permissions = ["project-read"]` in the manifest because
+their commands receive repository metadata. Other host functions retain their
+existing permission checks.

@@ -85,7 +85,7 @@ describe("multi-root Git log", () => {
     selectCommit(commitKey(front));
     expect(selectedCommits()).toEqual([front]);
     toggleCommitSelection(commitKey(back));
-    expect(selectedCommits()).toEqual([back]);
+    expect(selectedCommits()).toEqual([front, back]);
     expect(commitFileDiffData(back, { path: "main.ts", oldPath: null, kind: "added" }).path).toBe(
       "/project/back/main.ts",
     );
@@ -112,6 +112,30 @@ describe("multi-root Git log", () => {
     expect(rows).toHaveLength((PAGE + 5) * 2);
     expect(new Set(rows.map(commitKey)).size).toBe(rows.length);
     expect(rows.map((c) => c.timeMs)).toEqual([...rows.map((c) => c.timeMs)].sort((a, b) => b! - a!));
+  });
+
+  it("does not mark native root pages complete before every fetched commit has been emitted", async () => {
+    const data = Object.fromEntries(
+      useVcs.getState().roots.map((repo, root) => [
+        repo,
+        Array.from({ length: 180 }, (_, i) => ({
+          ...commit(`${root}-${i}`, 10000 - i * 2 - root),
+          logPosition: i,
+          logTotal: 180,
+        })),
+      ]),
+    );
+    log.mockImplementation(async (repo: string, q: LogQuery) => ({
+      status: "ok",
+      data: data[repo]!.slice(q.skip, q.skip + q.limit),
+    }));
+    await reloadLog();
+    expect(useGitLog.getState().commits).toHaveLength(PAGE);
+    expect(useGitLog.getState().done).toBe(false);
+    await loadMore();
+    expect(useGitLog.getState().commits).toHaveLength(360);
+    expect(useGitLog.getState().done).toBe(true);
+    expect(new Set(useGitLog.getState().commits.map(commitKey)).size).toBe(360);
   });
 
   it("filters repositories and keeps history tabs pinned when the selected root changes", async () => {

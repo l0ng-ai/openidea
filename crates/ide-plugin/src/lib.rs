@@ -654,6 +654,7 @@ impl PluginHost {
             has_code: m.wasm.is_some(),
             permissions: m.permissions.clone(),
             commands: regs.commands,
+            log_columns: m.contributes.log_columns.clone(),
             languages: regs
                 .languages
                 .iter()

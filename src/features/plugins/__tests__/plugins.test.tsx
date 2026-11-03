@@ -6,6 +6,7 @@ import { EditorView } from "@codemirror/view";
 import type { PluginInfo } from "@/bindings";
 import { _setActiveEditor } from "@/editor/api";
 import { executeAction, getAction } from "@/platform/actions";
+import { useLogContributions } from "@/features/vcs/logContributions";
 import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
 import { applyThemeAttributes, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
@@ -17,6 +18,7 @@ import {
   pluginActionId,
   pluginActions,
   startPluginBridge,
+  syncPluginActions,
 } from "../bridge";
 import { catalogState, filterCatalog, filterPlugins, NO_REPOSITORY, PluginsPage } from "../PluginsPage";
 import {
@@ -90,6 +92,22 @@ afterEach(() => {
 });
 
 describe("plugin actions", () => {
+  it("exposes Git log metadata only to plugins with project-read permission", () => {
+    const column = { id: "status", title: "Status", command: "load-status", width: 120 };
+    const info = plugin({ id: "log-status", logColumns: [column] });
+    const stop = syncPluginActions();
+    try {
+      usePlugins.setState({ plugins: [info] });
+      expect(useLogContributions.getState().providers.has("plugin.log-status.status")).toBe(false);
+      usePlugins.setState({ plugins: [{ ...info, permissions: ["project-read"] }] });
+      expect(useLogContributions.getState().providers.has("plugin.log-status.status")).toBe(true);
+      usePlugins.setState({ plugins: [info] });
+      expect(useLogContributions.getState().providers.has("plugin.log-status.status")).toBe(false);
+    } finally {
+      stop();
+    }
+  });
+
   it("maps commands of running plugins to plugin.<plugin>.<command> actions", () => {
     const actions = pluginActions([
       plugin({ id: "a", name: "Alpha", commands: [{ id: "go", title: "Alpha: Go", category: null }] }),

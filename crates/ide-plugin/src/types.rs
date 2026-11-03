@@ -73,6 +73,8 @@ pub struct PluginInfo {
     pub permissions: Vec<Permission>,
     /// Commands contributed while enabled (manifest + registered at runtime).
     pub commands: Vec<CommandDecl>,
+    #[serde(default)]
+    pub log_columns: Vec<crate::manifest::LogColumnDecl>,
     pub languages: Vec<PluginLanguage>,
     pub themes: Vec<PluginTheme>,
 }
