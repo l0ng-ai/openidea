@@ -18,7 +18,7 @@ mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
-pub use sync::{SyncOptions, SyncProgress, sync_gradle, sync_maven};
+pub use sync::{SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_maven};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
