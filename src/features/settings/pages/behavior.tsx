@@ -32,7 +32,6 @@ import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
 import { LOCALES, SUPPORTED_LOCALES, tx, useT } from "@/platform/i18n";
-import { tx, useT } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
 import { originDetail, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 
