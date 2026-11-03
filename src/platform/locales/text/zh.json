@@ -5688,5 +5688,20 @@
   "Unresolved merge conflicts": "未解决的合并冲突",
   "Reports the <<<<<<<, ======= and >>>>>>> lines a merge leaves in a file, whatever its language and whether or not a language server is installed.": "报告合并在文件中留下的 <<<<<<<、======= 和 >>>>>>> 行，与文件语言以及是否安装了语言服务器无关。",
   "Merge/Rebase Widget": "合并/变基微件",
-  "Unresolved merge conflict markers": "未解决的合并冲突标记"
+  "Unresolved merge conflict markers": "未解决的合并冲突标记",
+  "What the session has cost so far, as the agent reports it": "智能体报告的本会话目前花费",
+  "{name}: {percent}% used": "{name}：已使用 {percent}%",
+  "{used}, resets in {reset}": "{used}，{reset} 后重置",
+  "5-hour limit": "5 小时限额",
+  "Weekly limit": "每周限额",
+  "Weekly Opus limit": "每周 Opus 限额",
+  "Weekly Sonnet limit": "每周 Sonnet 限额",
+  "Chat": "聊天",
+  "Shown in the Task Header": "在任务标题栏中显示",
+  "Context window usage": "上下文窗口用量",
+  "Time spent on the task": "任务耗时",
+  "Usage limits": "用量限额",
+  "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "账户的 5 小时和每周限额，在智能体报告时显示（Claude Code）",
+  "Session cost": "会话花费",
+  "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)": "智能体报告的本会话目前花费（按 API 价格计算，订阅账户也会显示）"
 }

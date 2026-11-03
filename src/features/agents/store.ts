@@ -8,6 +8,7 @@ import type {
   AgentEntry,
   AgentEvent,
   AgentImage,
+  AgentLimit,
   AgentProvider,
   AgentTask,
   Isolation,
@@ -59,6 +60,8 @@ interface AgentsState {
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
+  /** The usage limits each agent last reported for its account, by provider. */
+  limits: Map<string, AgentLimit[]>;
   draft: Draft;
   composers: Map<string, ComposerDraft>;
   /** The composer typed in last: where "Send to Agent" adds references. */
@@ -106,6 +109,7 @@ export const useAgents = create<AgentsState>(() => ({
   entries: new Map(),
   changes: new Map(),
   providers: [],
+  limits: new Map(),
   draft: { ...fallbackDraft, ...load<Partial<Draft>>(DRAFT_KEY, {}) },
   composers: new Map(),
   lastComposer: HOME,
@@ -259,6 +263,10 @@ function onEvent(e: AgentEvent) {
     }
     case "providers": {
       void refreshProviders();
+      break;
+    }
+    case "limits": {
+      useAgents.setState({ limits: new Map(s.limits).set(e.provider, e.limits) });
       break;
     }
     case "entry": {
