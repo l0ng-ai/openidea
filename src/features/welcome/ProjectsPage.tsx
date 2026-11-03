@@ -1,4 +1,4 @@
-/** Welcome › Projects: search, Open / Clone Repository, and the recent projects list. */
+/** Welcome › Projects: search, New Project / Open / Clone Repository, and the recent projects list. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
@@ -12,6 +12,7 @@ import {
   Icon,
   IconButton,
   Kbd,
+  Menu,
   SearchField,
   Spinner,
   isPopupOpen,
@@ -19,10 +20,43 @@ import {
   showContextMenu,
   T,
 } from "@/ui";
+import { newProjectMenuItems } from "@/features/app/newProjectLanguages";
 import { askRemoveRecent, ProjectBadge, recentMenu } from "./RecentList";
 import { filterRecent, openRecent, useRecent, type RecentMatch } from "./recent";
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
+
+function NewProjectButton({ disabled }: { disabled?: boolean }) {
+  const canNew = useActions((s) => s.actions.has("file.newProject"));
+  const more = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState(false);
+  if (!canNew) return null;
+  return (
+    <div className={styles.split}>
+      <Button disabled={disabled} className={styles.splitMain} onClick={() => void executeAction("file.newProject")}>
+        <T>New Project</T>
+      </Button>
+      <Button
+        ref={more}
+        disabled={disabled}
+        className={styles.splitMore}
+        aria-label="New Project…"
+        aria-haspopup="menu"
+        aria-expanded={menu}
+        onClick={() => setMenu((open) => !open)}
+      >
+        <Icon name="chevron-down" size={12} />
+      </Button>
+      <Menu
+        open={menu}
+        onClose={() => setMenu(false)}
+        anchor={more}
+        aria-label="New Project…"
+        items={newProjectMenuItems()}
+      />
+    </div>
+  );
+}
 
 function HeaderButtons() {
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
@@ -31,6 +65,7 @@ function HeaderButtons() {
   const openKey = shortcutLabel("file.openProject");
   return (
     <div className={styles.headerButtons}>
+      <NewProjectButton disabled={opening} />
       <Button
         disabled={opening}
         onClick={() => void executeAction("file.openProject")}
@@ -54,23 +89,42 @@ function HeaderButtons() {
 
 /** Shown when there are no recent projects (IntelliJ's empty welcome). */
 function Landing() {
+  const canNew = useActions((s) => s.actions.has("file.newProject"));
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
   const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
   const shortcut = shortcutLabel("file.openProject");
+  const intro = canNew
+    ? canClone
+      ? tx("Create a new project, open a folder, or clone a repository.")
+      : tx("Create a new project or open a folder from disk.")
+    : canClone
+      ? tx("Open a folder from disk or clone a repository from version control.")
+      : tx("Open a folder from disk.");
   return (
     <div className={styles.landing}>
       <div className={styles.landingTitle}>
         <T>Welcome to OpenIDEA</T>
       </div>
       <p className={styles.landingText}>
-        {canClone
-          ? tx("Open a folder from disk or clone a repository from version control.")
-          : tx("Open a folder from disk.")}
+        {intro}
         <br />
         <T>You can also drop a folder onto this window.</T>
       </p>
       <div className={styles.landingActions}>
+        {canNew && (
+          <button
+            type="button"
+            className={styles.landingAction}
+            disabled={opening}
+            onClick={() => void executeAction("file.newProject")}
+          >
+            <span className={styles.landingIcon}>
+              <Icon name="folder" size={20} />
+            </span>
+            <T>New Project</T>
+          </button>
+        )}
         <button
           type="button"
           className={styles.landingAction}

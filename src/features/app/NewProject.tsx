@@ -1,23 +1,30 @@
 /**
- * File › New Project…: an empty project folder (no framework templates),
- * optionally a Git repository, opened in a new window (this one when it has
- * no project).
+ * File › New Project…: a language (or an empty folder), optionally a Git
+ * repository, opened in a new window (this one when it has no project).
  */
 import { useEffect, useState } from "react";
+import clsx from "clsx";
 import { create } from "zustand";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { useTxTemplate } from "@/platform/i18n";
-import { Button, Checkbox, Dialog, Input, T } from "@/ui";
+import { useTx, useTxTemplate } from "@/platform/i18n";
+import { Checkbox, Dialog, Icon, IconButton, Input, T } from "@/ui";
+import { groupedProjectKinds, projectKind, projectKindIcon, projectKindLabel } from "./newProjectLanguages";
+import { defaultFieldValues, projectFieldWarning, projectFields, starterChoices } from "./newProjectOptions";
+import { ProjectOptions } from "./newProjectForm";
+import { starterFiles } from "./newProjectTemplates";
 import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./app.module.css";
 
-const useNewProject = create<{ open: boolean }>(() => ({ open: false }));
-export const showNewProject = () => useNewProject.setState({ open: true });
+const useNewProject = create<{ open: boolean; kindId: string | null }>(() => ({ open: false, kindId: null }));
+export const showNewProject = (kindId?: string) => useNewProject.setState({ open: true, kindId: kindId ?? null });
 
 export function NewProjectOverlay() {
   const open = useNewProject((s) => s.open);
-  return open ? <NewProjectDialog onClose={() => useNewProject.setState({ open: false })} /> : null;
+  const kindId = useNewProject((s) => s.kindId);
+  return open ? (
+    <NewProjectDialog kindId={kindId} onClose={() => useNewProject.setState({ open: false, kindId: null })} />
+  ) : null;
 }
 
 /** Why `name` cannot be a project folder name, or null. */
@@ -32,6 +39,19 @@ export function projectNameError(name: string): string | null {
 export function joinPath(dir: string, name: string): string {
   const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
   return dir.endsWith("/") || dir.endsWith("\\") ? `${dir}${name.trim()}` : `${dir}${sep}${name.trim()}`;
+}
+
+/** Joins a project root and a template path (`src/main.rs`). */
+export function joinRelative(root: string, relative: string): string {
+  return relative.split("/").reduce((dir, part) => joinPath(dir, part), root);
+}
+
+/** Splits a full project path into its parent directory and folder name. */
+export function splitProjectPath(full: string): { parent: string; name: string } {
+  const trimmed = full.trim().replace(/[\\/]+$/, "");
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (index < 0) return { parent: "", name: trimmed };
+  return { parent: trimmed.slice(0, index), name: trimmed.slice(index + 1) };
 }
 
 function errorText(e: unknown) {
@@ -59,26 +79,46 @@ function initialLocation(): string {
   return root ? root.slice(0, Math.max(root.lastIndexOf("/"), 1)) : "";
 }
 
-function NewProjectDialog({ onClose }: { onClose: () => void }) {
-  const [name, setName] = useState("untitled");
-  const [location, setLocation] = useState(initialLocation);
+function NewProjectDialog({ kindId, onClose }: { kindId: string | null; onClose: () => void }) {
+  const initialParent = initialLocation();
+  const [selected, setSelected] = useState(() => projectKind(kindId).id);
+  const [location, setLocation] = useState(initialParent ? joinPath(initialParent, "untitled") : "");
   const [git, setGit] = useState(true);
+  const [fields, setFields] = useState<Record<string, string | boolean>>(() =>
+    defaultFieldValues(projectKind(kindId).id),
+  );
+  const [requestedKind, setRequestedKind] = useState(kindId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const tx = useTx();
   const txTemplate = useTxTemplate();
+  if (kindId && kindId !== requestedKind) {
+    const next = projectKind(kindId).id;
+    setRequestedKind(kindId);
+    setSelected(next);
+    setFields(defaultFieldValues(next));
+  }
+  const kind = projectKind(selected);
+  const hasOptions = projectFields(kind.id).length > 0;
 
   useEffect(() => {
-    if (initialLocation()) return;
-    // Otherwise the user's home.
+    document.getElementById(`new-project-kind-${selected}`)?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
+
+  useEffect(() => {
+    if (location) return;
+    // Otherwise the user's home, with the PhpStorm default folder name.
     void import("@tauri-apps/api/path")
       .then((p) => p.homeDir())
-      .then(setLocation)
+      .then((home) => setLocation((current) => current || joinPath(home, "untitled")))
       .catch(() => {});
-  }, []);
+  }, [location]);
 
-  const nameError = projectNameError(name);
-  const invalid = !!nameError || !location.trim();
-  const path = location.trim() && !nameError ? joinPath(location.trim(), name) : "";
+  const projectName = splitProjectPath(location).name;
+  const nameError = projectNameError(projectName);
+  const fieldWarning = projectFieldWarning(kind.id, fields);
+  const path = location.trim().replace(/[\\/]+$/, "");
+  const invalid = !!nameError || !path || !!fieldWarning;
 
   const browse = async () => {
     if (!isTauri()) return;
@@ -93,12 +133,27 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     if (dir) setLocation(dir);
   };
 
+  const browseInto = async (id: string) => {
+    if (!isTauri()) return;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true, multiple: false, title: "Project Location" });
+    const dir = Array.isArray(picked) ? picked[0] : picked;
+    if (dir) setFields((current) => ({ ...current, [id]: dir }));
+  };
+
+  const showsGit = !hasOptions || projectFields(kind.id).some((field) => field.type === "git");
+
   const create = async () => {
     if (invalid || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await createProjectFolder(path, git);
+      await createProjectFolder(path, false);
+      for (const starter of starterFiles(kind.id, projectName, starterChoices(kind.id, fields))) {
+        const data = Array.from(new TextEncoder().encode(starter.contents));
+        await call(commands.fsCreateFileBytes(joinRelative(path, starter.path), data));
+      }
+      if (showsGit && git) await call(commands.vcsInit(path));
     } catch (e) {
       setBusy(false);
       setError(errorText(e));
@@ -113,46 +168,95 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
       open
       title="New Project"
       onClose={onClose}
-      width={520}
+      width={980}
       buttons={[
         { label: "Create", role: "default", disabled: invalid || busy, onClick: () => void create() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <form
-        className={styles.newProject}
-        onSubmit={(e) => {
-          e.preventDefault();
-          void create();
-        }}
-      >
-        <label className={styles.newProjectRow}>
-          <span className={styles.newProjectLabel}>
-            <T>Name:</T>
-          </span>
-          <Input
-            data-autofocus
-            value={name}
-            invalid={!!nameError}
-            onChange={(e) => setName(e.target.value)}
-            aria-label="Name"
+      <div className={styles.wizard}>
+        <div
+          className={styles.kindPane}
+          role="listbox"
+          aria-label="New Project"
+          aria-activedescendant={`new-project-kind-${selected}`}
+        >
+          {groupedProjectKinds().map((group) => (
+            <div key={group.name} className={styles.kindGroup}>
+              {group.name !== "General" && <div className={styles.kindHeading}>{tx(group.name)}</div>}
+              {group.kinds.map((item) => (
+                <button
+                  key={item.id}
+                  id={`new-project-kind-${item.id}`}
+                  type="button"
+                  role="option"
+                  aria-selected={item.id === selected}
+                  className={clsx(styles.kindRow, item.id === selected && styles.kindRowSelected)}
+                  onClick={() => {
+                    setSelected(item.id);
+                    setFields(defaultFieldValues(item.id));
+                    setGit(true);
+                  }}
+                >
+                  <span className={styles.kindIcon}>
+                    <Icon name={projectKindIcon(item)} size={16} />
+                  </span>
+                  <span className={styles.kindName}>{tx(projectKindLabel(item))}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+        <form
+          className={styles.kindDetail}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create();
+          }}
+        >
+          <h2 className={styles.kindTitle}>{hasOptions ? <T>New Project</T> : tx(projectKindLabel(kind))}</h2>
+          {!hasOptions && (
+            <p className={styles.kindBlurb}>
+              {kind.id === "empty" ? (
+                <T>Creates an empty folder.</T>
+              ) : (
+                <T>Creates a standard starter for this language.</T>
+              )}
+            </p>
+          )}
+          <div className={styles.formRow}>
+            <span className={styles.formLabel}>
+              <T>Location:</T>
+            </span>
+            <Input
+              data-autofocus
+              value={location}
+              invalid={!!nameError}
+              onChange={(e) => setLocation(e.target.value)}
+              aria-label="Location"
+            />
+            <IconButton icon="folder" title="Browse…" disabled={!isTauri()} onClick={() => void browse()} />
+          </div>
+          {!hasOptions && <Checkbox checked={git} onChange={setGit} label="Create Git repository" />}
+          <ProjectOptions
+            kindId={kind.id}
+            values={fields}
+            onChange={(id, value) => setFields((current) => ({ ...current, [id]: value }))}
+            git={git}
+            onGit={setGit}
+            browseDisabled={!isTauri()}
+            onBrowse={(id) => void browseInto(id)}
           />
-        </label>
-        <div className={styles.newProjectRow}>
-          <span className={styles.newProjectLabel}>
-            <T>Location:</T>
-          </span>
-          <Input value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Location" />
-          <Button onClick={() => void browse()} disabled={!isTauri()}>
-            <T>Browse…</T>
-          </Button>
-        </div>
-        <div className={styles.newProjectHint}>
-          {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
-        </div>
-        <Checkbox checked={git} onChange={setGit} label="Create Git repository" />
-        {error && <div className={styles.newProjectError}>{txTemplate(error)}</div>}
-      </form>
+          {nameError && <div className={styles.newProjectHint}>{txTemplate(nameError)}</div>}
+          {fieldWarning && (
+            <div className={styles.optionWarn}>
+              <Icon name="warning" size={16} />
+              <span>{tx(fieldWarning)}</span>
+            </div>
+          )}
+          {error && <div className={styles.newProjectError}>{txTemplate(error)}</div>}
+        </form>
+      </div>
     </Dialog>
   );
 }

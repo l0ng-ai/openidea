@@ -181,12 +181,95 @@
   color: var(--fg-weak-warning);
 }
 
-/* File › New Project… */
-.newProject {
+/* File › New Project…: language list (icons aligned) and the location form. */
+.wizard {
+  display: flex;
+  height: min(640px, 78vh);
+  min-height: 360px;
+}
+.kindPane {
+  flex: none;
+  width: 248px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 6px 0;
+}
+.kindGroup {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px;
+}
+.kindHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 12px 4px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+}
+.kindHeading::before,
+.kindHeading::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.kindRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0 10px 0 12px;
+  border: 0;
+  background: none;
+  color: var(--fg-strong);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.kindRow:hover {
+  background: var(--bg-hover);
+}
+.kindRowSelected,
+.kindRowSelected:hover {
+  background: var(--bg-list-selected);
+}
+.kindIcon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kindName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kindDetail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  overflow: auto;
+}
+.kindTitle {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: 18px;
+  font-weight: 600;
+}
+.kindBlurb {
+  margin: -4px 0 4px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }
 .newProjectRow {
   display: flex;
@@ -213,4 +296,69 @@
   color: var(--danger);
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
+}
+.optionList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.formRow {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.formLabel {
+  color: var(--fg);
+}
+.radioRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.checkBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.checkTitle {
+  color: var(--fg-strong);
+}
+.checkGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 18px;
+}
+.checkColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.checkLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.configure {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.optionWarn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: auto;
+  color: var(--fg-weak-warning);
+  font-size: var(--fs-small);
 }

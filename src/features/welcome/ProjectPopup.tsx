@@ -14,6 +14,7 @@ type Entry =
   | { kind: "project"; open: boolean; m: RecentMatch };
 
 const ACTIONS: { id: string; label: string; icon: IconName }[] = [
+  { id: "file.newProject", label: "New Project…", icon: "folder-open" },
   { id: "file.openProject", label: "Open…", icon: "folder" },
   { id: "vcs.clone", label: "Clone Repository…", icon: "branch" },
   { id: "remote.connect", label: "Remote Development…", icon: "terminal" },

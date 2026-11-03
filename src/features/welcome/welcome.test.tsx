@@ -131,6 +131,20 @@ describe("Welcome › Projects", () => {
     dispose();
   });
 
+  it("offers New Project, with a language menu, beside Open", async () => {
+    const run = vi.fn();
+    const dispose = registerActions([{ id: "file.newProject", title: "New Project…", run }]);
+    await renderWelcome();
+    fireEvent.click(screen.getByRole("button", { name: "New Project" }));
+    expect(run).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "New Project…" }));
+    const menu = await screen.findByRole("menu", { name: "New Project…" });
+    expect(within(menu).getByText("Empty Project")).toBeTruthy();
+    expect(within(menu).getByText("Web")).toBeTruthy();
+    expect(within(menu).getByText("JVM")).toBeTruthy();
+    dispose();
+  });
+
   it("shows the landing page without recent projects", async () => {
     recent = [];
     await renderWelcome();
