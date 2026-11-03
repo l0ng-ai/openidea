@@ -1,8 +1,11 @@
 //! Child-process helpers shared by every crate that spawns tools.
 
 use std::ffi::{OsStr, OsString};
-use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
+use std::process::{Child, Command};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 /// Windows `CREATE_NO_WINDOW` creation flag, for call sites that combine it
 /// with other flags (and then call [`host_env`] themselves). Prefer [`prepare`] otherwise.
@@ -23,6 +26,95 @@ pub fn prepare(cmd: &mut Command) -> &mut Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     host_env(cmd)
+}
+
+/// Starts the child as the leader of its own process group on Unix, so [`kill_tree`] and
+/// [`terminate_tree`] reach what it starts in turn (`gh` → `git`, `npm` → `node`, `mvnw` →
+/// the JVM). A no-op elsewhere: on Windows the tree is found from the child's process id.
+pub fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
+}
+
+/// Kills the child and everything it started, then reaps it.
+///
+/// - Unix: `SIGKILL` to its process group, so spawn it with [`own_group`].
+/// - Windows: `taskkill /T /F`, which walks the tree from the child's process id.
+pub fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    signal_group(child, libc::SIGKILL);
+    #[cfg(windows)]
+    taskkill_tree(child);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// [`kill_tree`] for a child known by its process id (a `tokio` child): `SIGKILL` to its
+/// process group (spawn it with [`own_group`]) or `taskkill /T /F`. Call it before the child
+/// is reaped, so the id still names it. The child itself is left to its owner to kill and reap.
+pub fn kill_tree_of(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall; see `signal_group`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut taskkill = Command::new("taskkill");
+        prepare(&mut taskkill)
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = taskkill.status();
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
+/// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
+/// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
+/// git command fails. Windows has no such signal to send from outside the child's console,
+/// so there it is [`kill_tree`].
+pub fn terminate_tree(child: &mut Child, grace: Duration) {
+    #[cfg(unix)]
+    {
+        signal_group(child, libc::SIGTERM);
+        // Sleep rather than `try_wait`: the child stays unreaped, so its process id (and the
+        // group id) cannot be reused before the `SIGKILL` below.
+        std::thread::sleep(grace);
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    kill_tree(child);
+}
+
+#[cfg(unix)]
+fn signal_group(child: &Child, signal: libc::c_int) {
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: plain syscall. The child is not reaped yet, so `-pid` is still its group (or
+        // no group at all when it was not spawned with `own_group`, and the call fails).
+        unsafe {
+            libc::kill(-pid, signal);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn taskkill_tree(child: &Child) {
+    let mut taskkill = Command::new("taskkill");
+    prepare(&mut taskkill)
+        .args(["/T", "/F", "/PID", &child.id().to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _ = taskkill.status();
 }
 
 /// Gives `cmd` the host's environment back when the IDE runs from an AppImage. `AppRun` and
@@ -328,6 +420,28 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_of_reaches_what_the_child_started() {
+        use std::io::BufRead;
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 30 & echo $!; wait"]).stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let grandchild: libc::pid_t = line.trim().parse().unwrap();
+        let alive = |pid: libc::pid_t| unsafe { libc::kill(pid, 0) } == 0;
+        assert!(alive(grandchild));
+        kill_tree_of(child.id());
+        let _ = child.wait();
+        // Reparented to init once its parent is gone, which reaps it.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !alive(grandchild)
+        });
+        assert!(gone, "the grandchild {grandchild} survived");
+    }
+
     #[cfg(windows)]
     #[test]
     fn user_path_reads_the_current_users_path() {
@@ -595,5 +709,73 @@ mod tests {
             assert_eq!(find_executable("agent", &search), Some(a.join("agent")));
         }
         assert_eq!(find_executable("nope", &search), None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod kill_tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::Instant;
+
+    /// Runs `script` in `sh` as its own group's leader and waits for it to write `ready`.
+    fn start(script: &str, ready: &Path) -> Child {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        let child = own_group(&mut cmd).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "the script never got ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child
+    }
+
+    fn assert_gone(pid: libc::pid_t) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "process {pid} survived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn kill_tree_kills_what_the_child_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}'; wait", pid_file.display());
+        let mut child = start(&script, &pid_file);
+        let grandchild: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        kill_tree(&mut child);
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+        assert_gone(grandchild);
+    }
+
+    #[test]
+    fn terminate_tree_lets_the_child_clean_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ready, cleaned) = (dir.path().join("ready"), dir.path().join("cleaned"));
+        let script = format!(
+            "trap 'touch \"{}\"; exit 0' TERM; touch \"{}\"; sleep 30 & wait",
+            cleaned.display(),
+            ready.display()
+        );
+        let mut child = start(&script, &ready);
+        terminate_tree(&mut child, Duration::from_millis(500));
+        assert!(cleaned.exists(), "the SIGTERM handler ran before the SIGKILL");
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+    }
+
+    #[test]
+    fn terminate_tree_still_kills_a_child_that_ignores_sigterm() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let script = format!("trap '' TERM; touch \"{}\"; while :; do sleep 1; done", ready.display());
+        let mut child = start(&script, &ready);
+        let started = Instant::now();
+        terminate_tree(&mut child, Duration::from_millis(50));
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

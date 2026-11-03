@@ -1,13 +1,15 @@
 use crate::LanguageConfig;
+use crate::plugin_point::PluginLanguages;
 use ide_core::settings::{FileSettings, FileTypeAssociation};
 use ide_core::{IdeError, IdeResult, LanguageId};
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -15,11 +17,13 @@ const BUILTIN: &[(&str, &str)] = &[
     ("cpp", include_str!("../../../languages/cpp.toml")),
     ("csharp", include_str!("../../../languages/csharp.toml")),
     ("css", include_str!("../../../languages/css.toml")),
+    ("d", include_str!("../../../languages/d.toml")),
     ("dart", include_str!("../../../languages/dart.toml")),
     ("diff", include_str!("../../../languages/diff.toml")),
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
     ("dotenv", include_str!("../../../languages/dotenv.toml")),
     ("elixir", include_str!("../../../languages/elixir.toml")),
+    ("erb", include_str!("../../../languages/erb.toml")),
     ("erlang", include_str!("../../../languages/erlang.toml")),
     ("fsharp", include_str!("../../../languages/fsharp.toml")),
     ("gitattributes", include_str!("../../../languages/gitattributes.toml")),
@@ -42,6 +46,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("javascriptreact", include_str!("../../../languages/javascriptreact.toml")),
     ("json", include_str!("../../../languages/json.toml")),
     ("jsonc", include_str!("../../../languages/jsonc.toml")),
+    ("jsp", include_str!("../../../languages/jsp.toml")),
     ("julia", include_str!("../../../languages/julia.toml")),
     ("kotlin", include_str!("../../../languages/kotlin.toml")),
     ("latex", include_str!("../../../languages/latex.toml")),
@@ -84,10 +89,20 @@ const BUILTIN: &[(&str, &str)] = &[
 ];
 
 pub struct LanguageRegistry {
-    languages: Vec<LanguageConfig>,
-    /// Lookup tables of the definitions with the user's file types applied.
-    tables: RwLock<Arc<Tables>>,
+    /// Built-in definitions and the user's `languages/*.toml`.
+    base: Vec<LanguageConfig>,
+    /// Languages of enabled plugins, shared by every fork; `base` wins on id clashes.
+    plugins: OnceLock<Arc<PluginLanguages>>,
+    state: RwLock<Arc<State>>,
     file_types: RwLock<FileTypes>,
+}
+
+/// The effective definitions and their lookup tables (the user's file types applied).
+struct State {
+    languages: Vec<LanguageConfig>,
+    tables: Tables,
+    /// [`PluginLanguages::revision`] they were built from.
+    plugins_revision: u64,
 }
 
 /// The user's file type associations (Settings › Editor › File Types) and
@@ -243,12 +258,73 @@ impl LanguageRegistry {
             }
         }
         let tables = Tables::build(&languages, &FileTypes::default());
-        Self { languages, tables: RwLock::new(Arc::new(tables)), file_types: RwLock::default() }
+        let state = State { languages: languages.clone(), tables, plugins_revision: 0 };
+        Self {
+            base: languages,
+            plugins: OnceLock::new(),
+            state: RwLock::new(Arc::new(state)),
+            file_types: RwLock::default(),
+        }
+    }
+
+    /// Adds the languages of enabled plugins (once, before projects fork the
+    /// registry). They follow the store: installing, disabling or changing a
+    /// grant takes effect on the next lookup in every fork.
+    pub fn attach_plugins(&self, plugins: Arc<PluginLanguages>) {
+        if self.plugins.set(plugins).is_err() {
+            tracing::warn!("plugin languages are already attached");
+        }
     }
 
     /// A registry with the same definitions and no user file types (one per project).
     pub fn fork(&self) -> Self {
-        Self::from_configs(self.languages.clone())
+        let fork = Self::from_configs(self.base.clone());
+        if let Some(p) = self.plugins.get() {
+            let _ = fork.plugins.set(p.clone());
+        }
+        fork
+    }
+
+    /// The current effective state, rebuilt when the plugin languages changed.
+    fn state(&self) -> Arc<State> {
+        let Some(plugins) = self.plugins.get() else { return self.state.read().clone() };
+        let revision = plugins.revision();
+        {
+            let state = self.state.read();
+            if state.plugins_revision == revision {
+                return state.clone();
+            }
+        }
+        let file_types = self.file_types.read();
+        let mut state = self.state.write();
+        if state.plugins_revision != revision {
+            *state = Arc::new(self.build(&file_types, Some(revision)));
+        }
+        state.clone()
+    }
+
+    fn build(&self, file_types: &FileTypes, revision: Option<u64>) -> State {
+        let mut languages = self.base.clone();
+        let mut plugins_revision = 0;
+        if let Some(plugins) = self.plugins.get() {
+            plugins_revision = revision.unwrap_or_else(|| plugins.revision());
+            // A plugin adds languages; it can't take over a built-in or user
+            // definition's id, extensions or file names (File Types can).
+            let base_ext: std::collections::HashSet<String> =
+                self.base.iter().flat_map(|l| &l.extensions).map(|e| e.to_ascii_lowercase()).collect();
+            let base_names: std::collections::HashSet<&str> =
+                self.base.iter().flat_map(|l| &l.filenames).map(String::as_str).collect();
+            for mut cfg in plugins.effective() {
+                if languages.iter().any(|l| l.id == cfg.id) {
+                    continue;
+                }
+                cfg.extensions.retain(|e| !base_ext.contains(&e.to_ascii_lowercase()));
+                cfg.filenames.retain(|n| !base_names.contains(n.as_str()));
+                languages.push(cfg);
+            }
+        }
+        let tables = Tables::build(&languages, file_types);
+        State { languages, tables, plugins_revision }
     }
 
     /// A copy with the same definitions and file types (to compare detection before / after a change).
@@ -264,17 +340,19 @@ impl LanguageRegistry {
         if *current == file_types {
             return false;
         }
-        *self.tables.write() = Arc::new(Tables::build(&self.languages, &file_types));
+        let state = self.build(&file_types, None);
+        *self.state.write() = Arc::new(state);
         *current = file_types;
         true
     }
 
+    /// Built-in, user and plugin definitions.
     pub fn all(&self) -> Vec<LanguageConfig> {
-        self.languages.clone()
+        self.state().languages.clone()
     }
 
     pub fn get(&self, id: &LanguageId) -> Option<LanguageConfig> {
-        self.languages.iter().find(|l| &l.id == id).cloned()
+        self.state().languages.iter().find(|l| &l.id == id).cloned()
     }
 
     /// The `framework-ui-modes` mode of a `language` file at `path`: the first
@@ -282,7 +360,8 @@ impl LanguageRegistry {
     /// directory without one: loose files). `None` keeps the language's own
     /// `ui-mode`.
     pub fn framework_ui_mode(&self, language: &LanguageId, path: &Path, project_root: Option<&Path>) -> Option<String> {
-        let cfg = self.languages.iter().find(|l| &l.id == language)?;
+        let state = self.state();
+        let cfg = state.languages.iter().find(|l| &l.id == language)?;
         cfg.framework_ui_modes
             .iter()
             .find(|f| crate::marked_root(project_root, path, &f.root_markers).is_some())
@@ -292,7 +371,8 @@ impl LanguageRegistry {
     /// Creating or removing `path` can change a file's `framework_ui_mode`:
     /// it is a framework's root marker.
     pub fn is_framework_marker(&self, path: &Path) -> bool {
-        self.languages
+        self.state()
+            .languages
             .iter()
             .flat_map(|l| &l.framework_ui_modes)
             .any(|f| f.root_markers.iter().any(|m| crate::markers::is_marker_path(path, m)))
@@ -303,33 +383,34 @@ impl LanguageRegistry {
     /// then hashbang / first line; falls back to plaintext. The user's patterns
     /// win over the definitions'.
     pub fn detect(&self, path: &Path, first_line: Option<&str>) -> LanguageId {
-        let t = self.tables.read().clone();
+        let state = self.state();
+        let (t, languages) = (&state.tables, &state.languages);
         if !t.overrides.is_empty()
             && let Some(&i) = t.overrides.get(path)
         {
-            return self.languages[i].id.clone();
+            return languages[i].id.clone();
         }
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         if let Some(&i) = t.by_name.get(file_name) {
-            return self.languages[i].id.clone();
+            return languages[i].id.clone();
         }
         if let Some((_, i)) = t.name_globs.iter().find(|(p, _)| wildcard_match(p, file_name)) {
-            return self.languages[*i].id.clone();
+            return languages[*i].id.clone();
         }
         let lower = file_name.to_ascii_lowercase();
         let mut rest = lower.as_str();
         while let Some(dot) = rest.find('.') {
             rest = &rest[dot + 1..];
             if let Some(&i) = t.by_ext.get(rest) {
-                return self.languages[i].id.clone();
+                return languages[i].id.clone();
             }
         }
         if let Some(line) = first_line {
             if let Some((_, i)) = t.hashbangs.iter().find(|(h, _)| hashbang_runs(line, h)) {
-                return self.languages[*i].id.clone();
+                return languages[*i].id.clone();
             }
             if let Some((_, i)) = t.first_line.iter().find(|(re, _)| re.is_match(line)) {
-                return self.languages[*i].id.clone();
+                return languages[*i].id.clone();
             }
         }
         LanguageId::plain_text()
@@ -373,6 +454,7 @@ mod tests {
     /// `name`s exported by `@codemirror/language-data` or built into `src/editor/core/cm/languages.ts`
     /// (the UI resolves `ui-mode` against these).
     const UI_MODES: &[&str] = &[
+        "AsciiDoc",
         "Batch",
         "C",
         "C++",
@@ -517,6 +599,8 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "ERB",
+        "JSP",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -532,6 +616,12 @@ mod tests {
         let reg = reg();
         assert_eq!(detect(&reg, "src/main.rs"), "rust");
         assert_eq!(detect(&reg, "a/b.TS"), "typescript");
+        for path in ["guide.adoc", "guide.asciidoc", "GUIDE.ADOC"] {
+            assert_eq!(detect(&reg, path), "asciidoc");
+        }
+        let asciidoc = reg.get(&LanguageId::new("asciidoc")).unwrap();
+        assert_eq!(asciidoc.ui_mode.as_deref(), Some("AsciiDoc"));
+        assert_eq!(asciidoc.line_comment.as_deref(), Some("//"));
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
@@ -544,7 +634,7 @@ mod tests {
     fn alternative_servers_are_fallbacks() {
         let reg = reg();
         for (lang, servers) in [
-            ("python", vec!["basedpyright", "pyright", "ty"]),
+            ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
@@ -567,7 +657,7 @@ mod tests {
         };
         // After the TypeScript fallback (an available server before it would hide
         // it); before the HTML server (hover, rename and symbols take the first).
-        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server"]);
+        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server", "oxlint"]);
         assert_eq!(names("html"), ["angular-language-server", "vscode-html-language-server"]);
         for lang in ["typescript", "html"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
@@ -575,6 +665,50 @@ mod tests {
             assert!(angular.require_root_marker && !angular.fallback, "{lang}");
             assert_eq!(angular.root_markers, ["angular.json", "node_modules/@angular/core"], "{lang}");
         }
+    }
+
+    #[test]
+    fn oxlint_serves_js_files_only_below_its_config() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("apps/web/src")).unwrap();
+        std::fs::write(root.join("apps/web/.oxlintrc.json"), "{}").unwrap();
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"] {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let oxlint = cfg.language_servers.iter().find(|s| s.name == "oxlint").unwrap();
+            assert_eq!((oxlint.command.as_str(), oxlint.args.as_slice()), ("oxlint", ["--lsp".to_string()].as_slice()));
+            assert!(oxlint.require_root_marker && !oxlint.fallback, "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &oxlint.root_markers);
+            assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/api/main.ts"), None, "{lang}");
+        }
+    }
+
+    #[test]
+    fn ruff_serves_python_files_only_below_its_config() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("python")).unwrap();
+        let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
+        // After the fallbacks: hover, rename and symbols stay with the type checker.
+        assert_eq!(names, ["basedpyright", "pyright", "ty", "pyrefly", "ruff"]);
+        let ruff = cfg.language_servers.iter().find(|s| s.name == "ruff").unwrap();
+        assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", ["server".to_string()].as_slice()));
+        assert!(ruff.require_root_marker && !ruff.fallback);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["lint", "dot", "pyproject", "plain"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("lint/ruff.toml"), "").unwrap();
+        std::fs::write(root.join("dot/.ruff.toml"), "").unwrap();
+        std::fs::write(root.join("pyproject/pyproject.toml"), "[tool.ruff]\nline-length = 100\n").unwrap();
+        std::fs::write(root.join("plain/pyproject.toml"), "[project]\nname = \"plain\"\n").unwrap();
+        let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &ruff.root_markers);
+        for dir in ["lint", "dot", "pyproject"] {
+            assert_eq!(served(&format!("{dir}/pkg/main.py")), Some(root.join(dir)), "{dir}");
+        }
+        assert_eq!(served("plain/main.py"), None);
     }
 
     #[test]
@@ -723,6 +857,7 @@ mod tests {
             ("AppDelegate.m", "objective-c"),
             ("a.rb", "ruby"),
             ("Gemfile", "ruby"),
+            ("show.html.erb", "erb"),
             ("index.php", "php"),
             ("init.lua", "lua"),
             ("main.dart", "dart"),
@@ -747,6 +882,8 @@ mod tests {
             ("a.less", "less"),
             ("App.vue", "vue"),
             ("App.svelte", "svelte"),
+            ("index.jsp", "jsp"),
+            ("WEB-INF/tags/card.tag", "jsp"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),
             ("tsconfig.app.json", "jsonc"),

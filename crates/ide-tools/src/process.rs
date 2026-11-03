@@ -4,47 +4,15 @@
 use crate::InstallEvent;
 use ide_core::error::ErrorKind;
 use ide_core::output_encoding::decode_tool_output;
+use ide_core::process::{kill_tree, own_group};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub type Emit<'a> = &'a dyn Fn(InstallEvent);
-
-/// Starts the child as the leader of its own process group, so [`kill`] reaches what it
-/// starts in turn (`npm` → `node`, `go install` → the compiler, `pip` → build backends).
-fn own_group(cmd: &mut Command) -> &mut Command {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    cmd
-}
-
-/// Kills the child and everything it started.
-fn kill(child: &mut Child) {
-    #[cfg(unix)]
-    if let Ok(pid) = i32::try_from(child.id()) {
-        // SAFETY: plain syscall; the child leads its own process group (`own_group`) and is not reaped yet.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let mut taskkill = Command::new("taskkill");
-        ide_core::process::prepare(&mut taskkill)
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let _ = taskkill.status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
 
 fn describe(cmd: &Command) -> String {
     let mut s = Path::new(cmd.get_program()).file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -100,7 +68,7 @@ pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> 
     let mut output = String::new();
     let status = loop {
         if cancel.is_cancelled() {
-            kill(&mut child);
+            kill_tree(&mut child);
             return Err(IdeError::cancelled());
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -144,7 +112,7 @@ pub fn run_quiet(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> 
             Ok(Some(s)) => break s,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(15)),
             _ => {
-                kill(&mut child);
+                kill_tree(&mut child);
                 return None;
             }
         }
@@ -176,18 +144,46 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Whether `curl` checks certificate revocation with Schannel and takes
+/// `--ssl-revoke-best-effort` (7.70+). Schannel fails the whole download with
+/// CRYPT_E_REVOCATION_OFFLINE when the CRL/OCSP servers are unreachable (corporate
+/// proxies, firewalls); best effort skips only that check, and still rejects
+/// certificates that are actually revoked.
+fn revoke_best_effort(curl: &Path) -> bool {
+    static CHECKED: parking_lot::Mutex<Vec<(std::path::PathBuf, bool)>> = parking_lot::Mutex::new(Vec::new());
+    if let Some((_, ok)) = CHECKED.lock().iter().find(|(path, _)| path == curl) {
+        return *ok;
+    }
+    let mut cmd = Command::new(curl);
+    cmd.arg("--version");
+    let ok = run_quiet(cmd, Duration::from_secs(5))
+        .is_some_and(|(success, out)| success && curl_takes_revoke_best_effort(&out));
+    CHECKED.lock().push((curl.to_path_buf(), ok));
+    ok
+}
+
+/// Reads `curl --version`: `curl 8.9.1 (Windows) libcurl/8.9.1 Schannel …`.
+fn curl_takes_revoke_best_effort(version: &str) -> bool {
+    let Some(first) = version.lines().find(|l| l.starts_with("curl ")) else { return false };
+    let mut parts = first.split_whitespace().nth(1).unwrap_or("").split('.').map(|n| n.parse::<u32>().ok());
+    let (Some(Some(major)), Some(Some(minor))) = (parts.next(), parts.next()) else { return false };
+    (major, minor) >= (7, 70) && first.split_whitespace().any(|w| w.eq_ignore_ascii_case("schannel"))
+}
+
 /// HTTP via the system `curl` (shipped with macOS, Windows 10+ and every
 /// mainstream Linux), so the IDE carries no TLS stack of its own.
 pub struct Http {
     curl: std::path::PathBuf,
     https_only: bool,
+    revoke_best_effort: bool,
 }
 
 impl Http {
     pub fn new(search_path: &std::ffi::OsStr) -> IdeResult<Self> {
         let curl = which::which_in("curl", Some(search_path), ".")
             .map_err(|_| IdeError::unavailable("`curl` is required to download tools"))?;
-        Ok(Self { curl, https_only: false })
+        let revoke_best_effort = cfg!(windows) && revoke_best_effort(&curl);
+        Ok(Self { curl, https_only: false, revoke_best_effort })
     }
 
     /// Refuses every protocol but HTTPS, redirects included.
@@ -204,6 +200,9 @@ impl Http {
         cmd.args(ide_core::proxy_settings::proxy().curl_args(url));
         if self.https_only {
             cmd.args(["--proto", "=https", "--proto-redir", "=https"]);
+        }
+        if self.revoke_best_effort {
+            cmd.arg("--ssl-revoke-best-effort");
         }
         if url.starts_with("https://api.github.com/")
             && let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
@@ -256,7 +255,7 @@ impl Http {
         });
         let status = loop {
             if cancel.is_cancelled() {
-                kill(&mut child);
+                kill_tree(&mut child);
                 return Err(IdeError::cancelled());
             }
             match child.try_wait()? {
@@ -308,7 +307,7 @@ impl Http {
         let mut last_bytes = 0;
         let status = loop {
             if cancel.is_cancelled() {
-                kill(&mut child);
+                kill_tree(&mut child);
                 let _ = std::fs::remove_file(dest);
                 return Err(IdeError::cancelled());
             }
@@ -413,7 +412,7 @@ pub(crate) fn run_input(
         }
     };
     if result.is_err() {
-        kill(&mut child);
+        kill_tree(&mut child);
     }
     result?;
     let output = output.unwrap()?;
@@ -470,13 +469,28 @@ mod tests {
         assert!(lines.contains(&"one".to_string()) && lines.contains(&"two".to_string()), "{lines:?}");
     }
 
+    #[test]
+    fn revoke_best_effort_needs_schannel_curl_7_70() {
+        let schannel = "curl 8.9.1 (Windows) libcurl/8.9.1 Schannel zlib/1.3 WinIDN\nRelease-Date: 2024-07-31\n";
+        assert!(curl_takes_revoke_best_effort(schannel));
+        assert!(curl_takes_revoke_best_effort("curl 7.70.0 (x86_64-pc-win32) libcurl/7.70.0 Schannel\n"));
+        // Windows 10 1803 shipped 7.55, which rejects the unknown option.
+        assert!(!curl_takes_revoke_best_effort("curl 7.55.1 (Windows) libcurl/7.55.1 WinSSL\n"));
+        // OpenSSL never checks revocation this way; Schannel in parentheses is not the active backend.
+        assert!(!curl_takes_revoke_best_effort(
+            "curl 8.10.1 (x86_64-w64-mingw32) libcurl/8.10.1 OpenSSL/3.2.3 (Schannel)\n"
+        ));
+        assert!(!curl_takes_revoke_best_effort("WARNING: this libcurl is Debug-enabled\n"));
+        assert!(curl_takes_revoke_best_effort(&format!("WARNING: this libcurl is Debug-enabled\n\n{schannel}")));
+    }
+
     #[cfg(unix)]
     #[test]
     fn absent_build_is_empty_but_http_failures_are_not() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let curl = tmp.path().join("curl");
-        let http = Http { curl: curl.clone(), https_only: false };
+        let http = Http { curl: curl.clone(), https_only: false, revoke_best_effort: false };
         for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
         {
             std::fs::write(&curl, format!("#!/bin/sh\nprintf 'payload\\n{code:03}'\nexit {exit}\n")).unwrap();

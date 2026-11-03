@@ -21,6 +21,7 @@ import { ComparisonTree } from "./ComparisonTree";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
+import { repositoryPath } from "./repositoryPaths";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -178,24 +179,22 @@ export function OperationBanner() {
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const busy = useVcs((s) => s.remoteBusy);
   const op = inProgress(branch?.operation);
-  if (!op) return null;
+  // Conflicts need a notice with no operation in progress too (applying a stash leaves them).
+  if (!op && !conflicts) return null;
+  const count = conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`;
   return (
-    <div className={styles.banner} role="status" aria-label={tx(IN_PROGRESS[op])}>
+    <div className={styles.banner} role="status" aria-label={tx(op ? IN_PROGRESS[op] : "Merge conflicts")}>
       <Icon name={conflicts ? "warning" : "branch"} size={14} />
       <span className={styles.bannerText}>
-        {operationTitle(op, branch?.head ?? null)}
-        {conflicts
-          ? ` · ${conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`}`
-          : op === "merge"
-            ? tx(" · commit to conclude")
-            : ""}
+        {op ? operationTitle(op, branch?.head ?? null) : tx("Unresolved merge conflicts")}
+        {conflicts ? ` · ${count}` : op === "merge" ? tx(" · commit to conclude") : ""}
       </span>
       {conflicts > 0 && (
         <button type="button" className={styles.linkButton} onClick={() => void executeAction("vcs.resolveConflicts")}>
           <T>Resolve…</T>
         </button>
       )}
-      {operationControls(op).map((c) => (
+      {(op ? operationControls(op) : []).map((c) => (
         <button
           key={c}
           type="button"
@@ -580,7 +579,7 @@ export function ChangesBetweenDialog({
   const diffFor = (f: ComparisonFile): DiffData => {
     const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
     return {
-      path: `${f.root}/${f.path}`,
+      path: repositoryPath(f.root, f.path),
       left:
         f.kind === "added" || f.kind === "untracked"
           ? missing("(does not exist)")
@@ -588,7 +587,7 @@ export function ChangesBetweenDialog({
               type: "rev",
               rev: f.revision,
               label: from.label,
-              path: f.oldPath ? `${f.root}/${f.oldPath}` : undefined,
+              path: f.oldPath ? repositoryPath(f.root, f.oldPath) : undefined,
             },
       right:
         f.kind === "deleted"

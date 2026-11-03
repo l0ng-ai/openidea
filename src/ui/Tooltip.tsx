@@ -121,7 +121,7 @@ export function TooltipHost() {
       data-placed={shown.placed || undefined}
       style={{ left: shown.x, top: shown.y }}
     >
-      <span>{shown.text}</span>
+      <span className={styles.text}>{shown.text}</span>
       {shown.shortcut && <span className={styles.shortcut}>{shown.shortcut}</span>}
     </div>,
     document.body,

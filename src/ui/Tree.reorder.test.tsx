@@ -67,7 +67,17 @@ const labels = () =>
     .getAllByRole("treeitem")
     .map((el) => el.textContent);
 const pointer = (el: Element | Window, type: string, y: number, altKey = false) =>
-  fireEvent(el, new MouseEvent(type, { bubbles: true, button: 0, clientX: 30, clientY: y, altKey }));
+  fireEvent(
+    el,
+    new MouseEvent(type, {
+      bubbles: true,
+      button: 0,
+      buttons: type === "pointerup" ? 0 : 1,
+      clientX: 30,
+      clientY: y,
+      altKey,
+    }),
+  );
 function drag(source: HTMLElement, target: HTMLElement, after = false, alt = false) {
   pointer(source, "pointerdown", source.getBoundingClientRect().top + 12, alt);
   hit = target;

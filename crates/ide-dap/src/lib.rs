@@ -212,6 +212,19 @@ pub struct Variable {
     pub evaluate_name: Option<String>,
 }
 
+/// A completion the adapter offers for an expression (DAP `completions`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugCompletion {
+    pub label: String,
+    /// What to insert, when it differs from `label`.
+    pub text: Option<String>,
+    /// DAP item type: `method`, `field`, `variable`, `class`, `keyword`, …
+    pub kind: Option<String>,
+    pub detail: Option<String>,
+    pub sort_text: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum StepKind {
@@ -1157,6 +1170,47 @@ impl DebugManager {
         })
     }
 
+    /// Completions for `text` at `line` / `column` (0-based, UTF-16) in the frame's scope; none
+    /// when the adapter doesn't offer them.
+    pub async fn completions(
+        &self,
+        s: DebugSessionId,
+        frame_id: Option<i64>,
+        text: String,
+        line: u32,
+        column: u32,
+    ) -> IdeResult<Vec<DebugCompletion>> {
+        let session = self.session(s)?;
+        if !session.supports("supportsCompletionsRequest") {
+            return Ok(Vec::new());
+        }
+        let mut args = json!({ "text": text, "line": line + 1, "column": column + 1 });
+        if let Some(f) = frame_id {
+            args["frameId"] = f.into();
+        }
+        let body = session.conn.request_timeout("completions", args, REQUEST_TIMEOUT).await?;
+        let text =
+            |v: &Value, key: &str| v.get(key).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned);
+        Ok(body
+            .get("targets")
+            .and_then(Value::as_array)
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter_map(|t| {
+                        Some(DebugCompletion {
+                            label: text(t, "label")?,
+                            text: text(t, "text"),
+                            kind: text(t, "type"),
+                            detail: text(t, "detail"),
+                            sort_text: text(t, "sortText"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
@@ -1387,6 +1441,16 @@ impl DebugManager {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default(),
         })
+    }
+
+    /// Stops every session `key` started: the window that opened the project is closing.
+    pub async fn stop_key(&self, key: &str) {
+        let ids: Vec<DebugSessionId> = self.sessions(Some(key)).into_iter().map(|s| s.id).collect();
+        for id in ids {
+            if let Err(e) = self.stop(id).await {
+                tracing::debug!("debug session {id:?} did not stop: {e}");
+            }
+        }
     }
 
     /// Stops a session and its child sessions.

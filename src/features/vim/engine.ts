@@ -3,14 +3,161 @@
  * is turned on: the per-editor extension, OpenIDEA's Ex commands (`:w`, `:q`,
  * `:action`) and applying the rc file.
  */
-import { Prec, type Extension } from "@codemirror/state";
+import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, runScopeHandlers } from "@codemirror/view";
 import { Vim, getCM, vim } from "@replit/codemirror-vim";
+import { transientChange } from "@/editor/api";
 import { executeAction, getAction } from "@/platform/actions";
 import { showStatusInfo } from "@/workbench/contributions";
 import { VIM_EDITOR_ATTR } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
 import { resolveActionId, type RcCommand } from "./rc";
+
+/** Insert/Replace state as seen by transactions (mode changes are queued). */
+const setVimInsert = StateEffect.define<boolean>();
+
+const vimInsert = StateField.define<boolean>({
+  // Vim starts in Normal mode.
+  create: () => false,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setVimInsert)) value = e.value;
+    return value;
+  },
+});
+
+interface ImeComposition {
+  /** The span the composition occupies now: the replaced selection, mapped through its changes. */
+  from: number;
+  to: number;
+  /** Selection contents replaced by the composition. */
+  before: string;
+  /** Selection before the composition, to restore it afterwards. */
+  selection: { anchor: number; head: number };
+  /** The text the IME committed. */
+  ended: string | null;
+  timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+const imeCompositions = new WeakMap<EditorView, ImeComposition>();
+
+/**
+ * codemirror-vim only discards single-character IME commits in Normal mode, so
+ * Chinese pinyin (often several characters) is written to the document. Let the
+ * IME and CodeMirror own the composition normally, then drop its net change:
+ * the preedit is temporary, an ASCII commit (dead keys) is replayed as a Vim
+ * key, and text commits (CJK, words) are discarded. The changes are marked
+ * transient, keeping them out of undo and the document model.
+ */
+function finishImeComposition(view: EditorView) {
+  const composition = imeCompositions.get(view);
+  if (!composition) return;
+  imeCompositions.delete(view);
+  clearTimeout(composition.timer);
+  const cm = getCM(view);
+  if (!cm) return;
+  const insert = !!cm.state.vim?.insertMode;
+  const { from, to, before, selection, ended } = composition;
+  // The whole span, not the last change CodeMirror read: its changes are minimal diffs, so a
+  // commit sharing a prefix or suffix with the preedit (`かんじを` → `漢字を`) touches only part of it.
+  if (view.state.sliceDoc(from, to) !== before) {
+    view.dispatch({
+      changes: { from, to, insert: before },
+      selection,
+      annotations: [Transaction.addToHistory.of(false), transientChange.of(true)],
+    });
+  } else {
+    const main = view.state.selection.main;
+    if (main.anchor !== selection.anchor || main.head !== selection.head) {
+      view.dispatch({ selection, annotations: transientChange.of(true) });
+    }
+  }
+  // Dead keys and ASCII compositions are Vim commands (`^`, `` ` ``, letters);
+  // CJK commits are text and must not move the cursor or consume a pending operator.
+  if (!insert && ended?.length === 1 && ended.charCodeAt(0) < 0x80) Vim.handleKey(cm, ended, "user");
+}
+
+const imeHandlers = EditorView.domEventHandlers({
+  compositionstart(e, view) {
+    if (typeof e.data !== "string") return false;
+    const cm = getCM(view);
+    if (!cm?.state.vim || cm.state.vim.insertMode) return false;
+    const previous = imeCompositions.get(view);
+    if (previous) clearTimeout(previous.timer);
+    const range = view.state.selection.main;
+    imeCompositions.set(view, {
+      from: range.from,
+      to: range.to,
+      before: view.state.sliceDoc(range.from, range.to),
+      selection: { anchor: range.anchor, head: range.head },
+      ended: null,
+      timer: undefined,
+    });
+    return false;
+  },
+  compositionupdate(_e, view) {
+    if (!imeCompositions.has(view)) return false;
+    const cm = getCM(view);
+    if (cm?.state.vim && !cm.state.vim.insertMode && cm.state.vimPlugin) {
+      // Keep codemirror-vim's single-character path from calling its
+      // forceEndComposition() while we let the browser compose normally.
+      cm.state.vimPlugin.useNextTextInput = false;
+    }
+    return false;
+  },
+  compositionend(e, view) {
+    const composition = imeCompositions.get(view);
+    // Ignore the untrusted, data-less event codemirror-vim synthesises when it
+    // force-ends a composition; real ends (even cancelled ones) are trusted.
+    if (!composition || (typeof e.data !== "string" && !e.isTrusted)) return false;
+    composition.ended = typeof e.data === "string" ? e.data : "";
+    clearTimeout(composition.timer);
+    composition.timer = setTimeout(() => finishImeComposition(view), 0);
+    return false;
+  },
+});
+
+/** Let CodeMirror apply the composing text; it is removed when the IME ends. */
+const imeInput = EditorView.inputHandler.of((view) => {
+  const composition = imeCompositions.get(view);
+  if (!composition) return false;
+  const cm = getCM(view);
+  if (cm?.state.vim && !cm.state.vim.insertMode && cm.state.vimPlugin) {
+    cm.state.vimPlugin.useNextTextInput = false;
+  }
+  return false;
+});
+
+/** Keeps the composition's span current, including commits CodeMirror reports after
+ * `compositionend`: composing text at its edges belongs to it, other edits there don't. */
+const imeTracker = ViewPlugin.define((view) => ({
+  update(update) {
+    const composition = imeCompositions.get(view);
+    if (!composition) return;
+    for (const tr of update.transactions) {
+      if (!tr.docChanged) continue;
+      const compose = tr.isUserEvent("input.type.compose");
+      composition.from = tr.changes.mapPos(composition.from, compose ? -1 : 1);
+      composition.to = Math.max(composition.from, tr.changes.mapPos(composition.to, compose ? 1 : -1));
+    }
+  },
+}));
+
+/** Composition changes are temporary: no undo entry, no document/backend sync. */
+const imeTransactions = EditorState.transactionExtender.of((tr) =>
+  !tr.startState.field(vimInsert) && tr.isUserEvent("input.type.compose")
+    ? { annotations: [Transaction.addToHistory.of(false), transientChange.of(true)] }
+    : null,
+);
+
+const imeCleanup = ViewPlugin.define((view) => ({
+  destroy() {
+    const composition = imeCompositions.get(view);
+    if (composition) {
+      clearTimeout(composition.timer);
+      imeCompositions.delete(view);
+    }
+  },
+}));
 
 /**
  * IdeaVim's Escape: an open popup, lookup, find bar or template closes first
@@ -33,6 +180,7 @@ const modeTracker = ViewPlugin.define((view) => {
   const focused = () => view.root.activeElement === view.contentDOM;
   const onModeChange = (e: { mode: string; subMode?: string }) => {
     state = { mode: e.mode, sub: e.subMode === "linewise" || e.subMode === "blockwise" ? e.subMode : null };
+    queueMicrotask(() => view.dispatch({ effects: setVimInsert.of(e.mode === "insert" || e.mode === "replace") }));
     if (focused()) publish();
   };
   cm?.on("vim-mode-change", onModeChange);
@@ -74,7 +222,17 @@ const vimTheme = EditorView.theme({
 export function vimExtension(): Extension {
   defineExCommands();
   return [
-    Prec.highest([escapeClosesPopupsFirst, vim(), modeTracker]),
+    Prec.highest([
+      vimInsert,
+      imeHandlers,
+      imeInput,
+      imeTracker,
+      imeTransactions,
+      escapeClosesPopupsFirst,
+      vim(),
+      modeTracker,
+    ]),
+    imeCleanup,
     vimTheme,
     EditorView.editorAttributes.of({ [VIM_EDITOR_ATTR]: "true" }),
   ];

@@ -68,6 +68,14 @@ describe("lazy loading", () => {
     expect([...useProjectTree.getState().expanded].sort()).toEqual(["/p", "/p/docs"]);
   });
 
+  it("keeps a collapsed project root collapsed and an expanded node outside it open", async () => {
+    setExpanded(new Set(["/other/lib"]));
+    await new Promise((r) => setTimeout(r, 350));
+    initProjectTree(null);
+    initProjectTree(ROOT, "proj");
+    expect([...useProjectTree.getState().expanded]).toEqual(["/other/lib"]);
+  });
+
   it("drops a folder that vanished and collapses it", async () => {
     await loadDir(ROOT);
     setExpanded(new Set([ROOT, "/p/gone"]));
@@ -136,6 +144,17 @@ describe("reveal and expand", () => {
     expect(s.expanded.has("/p/docs")).toBe(true);
     expect(s.revealRequest?.path).toBe("/p/docs/guide.md");
     expect(visibleInfo(currentModel(), s.expanded).visible.has("/p/docs/guide.md")).toBe(true);
+  });
+
+  it("reveals files of linked workspace projects outside the workspace directory", async () => {
+    fs = new MemoryFs({ "/ws/.openidea/workspace.json": "x", "/a/src/app.ts": "x", "/b/lib/util.ts": "x" }, "/");
+    setProjectFsForTests(fs, "/ws");
+    initProjectTree("/ws", "ws", ["/a", "/b"]);
+    expect(revealPath("/b/lib/util.ts")).toBe(true);
+    await vi.waitFor(() => expect(childLabels("/b/lib")).toEqual(["util.ts"]));
+    const s = useProjectTree.getState();
+    expect(s.revealRequest?.path).toBe("/b/lib/util.ts");
+    expect(visibleInfo(currentModel(), s.expanded).visible.has("/b/lib/util.ts")).toBe(true);
   });
 
   it("expands everything below a folder", async () => {

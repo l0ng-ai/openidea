@@ -1,6 +1,7 @@
 //! IDE-side, IPC-stable equivalents of the LSP types we surface.
 
 use ide_core::event::ServerStatus;
+use ide_core::settings::ExternalFormatter;
 use ide_core::{Location, Range, ServerId, SymbolKind, TextEdit, WorkspaceEdit};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -222,6 +223,10 @@ pub struct FormatOptions {
     #[serde(default)]
     #[specta(optional)]
     pub on_save: bool,
+    /// External formatter to run whatever the settings select.
+    #[serde(default)]
+    #[specta(optional)]
+    pub tool: Option<ExternalFormatter>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

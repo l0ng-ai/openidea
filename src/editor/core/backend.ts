@@ -28,6 +28,7 @@ import { customRegions } from "./cm/regions";
 export type LanguageInfo = LanguageInfo_Serialize;
 
 export interface DocPatchedEvent {
+  workspaceEdit?: boolean;
   doc: DocId;
   baseVersion: number;
   version: number;
@@ -119,6 +120,8 @@ const EXT_LANG: Record<string, string> = {
   go: "go",
   json: "json",
   md: "markdown",
+  adoc: "asciidoc",
+  asciidoc: "asciidoc",
   css: "css",
   html: "html",
   yml: "yaml",
@@ -215,6 +218,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     extensions: ["json"],
     uiMode: "JSON",
     lineComment: null,
+    blockComment: null,
+    indent: { tabSize: 2, insertSpaces: true },
+  },
+  {
+    id: "asciidoc",
+    name: "AsciiDoc",
+    extensions: ["adoc", "asciidoc"],
+    uiMode: "AsciiDoc",
+    lineComment: "//",
     blockComment: null,
     indent: { tabSize: 2, insertSpaces: true },
   },
@@ -324,7 +336,7 @@ function lineIndex(text: string) {
 
 export interface MemoryBackend extends DocBackend {
   /** Test/dev hook: apply a backend-originated change and emit `docPatched`. */
-  patch(doc: DocId, changes: TextChange[]): void;
+  patch(doc: DocId, changes: TextChange[], workspaceEdit?: boolean): void;
   /** Seed file contents before opening. */
   files: Map<string, string>;
   docs: Map<DocId, MemDoc>;
@@ -571,13 +583,13 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
       dirtyHandlers.add(h);
       return () => dirtyHandlers.delete(h);
     },
-    patch(doc, changes) {
+    patch(doc, changes, workspaceEdit = false) {
       const d = get(doc);
       const before = d.text !== d.saved;
       const baseVersion = d.version;
       d.text = applyChanges(d.text, changes);
       d.version++;
-      const e = { doc, baseVersion, version: d.version, changes };
+      const e = { doc, baseVersion, version: d.version, changes, workspaceEdit };
       patched.forEach((h) => h(e));
       setDirty(d, before);
     },

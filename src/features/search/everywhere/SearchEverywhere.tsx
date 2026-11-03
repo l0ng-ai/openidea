@@ -1,7 +1,7 @@
 import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
-import { actionToggled, executeAction, getAction } from "@/platform/actions";
+import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";
 import type { ProjectFileSet } from "@/platform/ipc";
 import { tx as translate, useTx } from "@/platform/i18n";
 import { hasPrimaryModifier, shortcutLabel } from "@/platform/keymap";
@@ -281,10 +281,10 @@ function SearchEverywhereDialog() {
         if (!row.enabled) return;
         pushRecentAction(row.id);
         if (getAction(row.id)?.toggled) {
-          void executeAction(row.id).then(() => bumpToggles());
+          void executeActionFrom("search", row.id).then(() => bumpToggles());
           return;
         }
-        return closeThen(() => void executeAction(row.id));
+        return closeThen(() => void executeActionFrom("search", row.id));
       case "setting":
         return closeThen(() => void executeAction("file.settings", row.pageId));
     }
@@ -761,7 +761,7 @@ function ResultRow({
                 aria-label={row.title}
                 onChange={() => {
                   pushRecentAction(row.id);
-                  void executeAction(row.id).then(onToggled);
+                  void executeActionFrom("search", row.id).then(onToggled);
                 }}
               />
             </span>

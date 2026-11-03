@@ -121,6 +121,28 @@ pub fn run_save_templates(window: Window, state: State<'_, AppState>, templates:
     ide_host::ops::run::run_save_templates(&state.host, window.label(), templates)
 }
 
+/// Project files run configurations can be imported from (`.vscode/launch.json`).
+#[tauri::command]
+#[specta::specta]
+pub fn run_import_sources(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_run::import::RunImportSource>> {
+    ide_host::ops::run::run_import_sources(&state.host, window.label())
+}
+
+/// Configurations read from `source`, not saved; names already in `existing` are skipped.
+#[tauri::command]
+#[specta::specta]
+pub fn run_import_configs(
+    window: Window,
+    state: State<'_, AppState>,
+    source: ide_run::import::RunImportSource,
+    existing: Vec<RunConfig>,
+) -> IdeResult<ide_run::import::RunImport> {
+    ide_host::ops::run::run_import_configs(&state.host, window.label(), source, existing)
+}
+
 /// The environment runs inherit when "Include system environment variables" is on.
 #[tauri::command]
 #[specta::specta]

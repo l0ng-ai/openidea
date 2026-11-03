@@ -5,7 +5,7 @@
 //! Agent tool use that launched them: their messages carry it as `parent_tool_use_id`.
 
 use super::tools;
-use crate::RETRY_UPDATE;
+use crate::{LIMITS_UPDATE, RETRY_UPDATE};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -58,6 +58,8 @@ pub(super) struct Translator {
     pub used: Option<u64>,
     pub model: Option<String>,
     windows: HashMap<String, u64>,
+    /// The session's cost so far in USD, as the last `result` reported it.
+    cost_usd: Option<f64>,
 }
 
 impl Translator {
@@ -75,6 +77,7 @@ impl Translator {
             used: None,
             model: None,
             windows: HashMap::new(),
+            cost_usd: None,
         }
     }
 
@@ -169,7 +172,7 @@ impl Translator {
                     Some("tool_use") => {
                         // The input streams after this: shown by name until the message has it.
                         let (id, name) = (str_of(&block, "id"), str_of(&block, "name"));
-                        if !id.is_empty() && !tools::is_plan(&name) && !(tools::is_agent(&name) && self.subagents) {
+                        if !(id.is_empty() || tools::is_plan(&name) || tools::is_agent(&name) && self.subagents) {
                             out.extend(self.ensure_call(&id, &name, &json!({}), &session));
                         }
                     }
@@ -543,6 +546,9 @@ impl Translator {
                 self.windows.insert(model.clone(), w);
             }
         }
+        if let Some(cost) = result.get("total_cost_usd").and_then(Value::as_f64).filter(|c| c.is_finite()) {
+            self.cost_usd = Some(cost);
+        }
         self.usage_update().into_iter().collect()
     }
 
@@ -557,9 +563,33 @@ impl Translator {
                     .or_else(|| self.windows.iter().find(|(k, _)| k.starts_with(m.as_str())).map(|(_, v)| v))
             })
             .or_else(|| (self.windows.len() == 1).then(|| self.windows.values().next()).flatten())?;
-        Some(Update {
+        let mut update = json!({ "sessionUpdate": "usage_update", "used": used, "size": size });
+        if let Some(amount) = self.cost_usd {
+            update["cost"] = json!({ "amount": amount, "currency": "USD" });
+        }
+        Some(Update { session: self.root.clone(), update })
+    }
+
+    /// The usage-limit windows a `rate_limit_event` reports, as a [`LIMITS_UPDATE`]: every
+    /// window of `unifiedWindows`, or the single `rateLimitType` window older versions send.
+    pub fn on_rate_limit(&self, info: &Value) -> Option<Update> {
+        let window = |name: &str, w: &Value| {
+            let utilization = w.get("utilization")?.as_f64()?;
+            Some(json!({
+                "window": name,
+                "usedPercent": utilization * 100.0,
+                "resetsMs": w.get("resetsAt").and_then(Value::as_f64).map(|s| s * 1000.0),
+            }))
+        };
+        let limits: Vec<Value> = match info.get("unifiedWindows").and_then(Value::as_object) {
+            Some(windows) => windows.iter().filter_map(|(name, w)| window(name, w)).collect(),
+            None => {
+                info.get("rateLimitType").and_then(Value::as_str).and_then(|t| window(t, info)).into_iter().collect()
+            }
+        };
+        (!limits.is_empty()).then(|| Update {
             session: self.root.clone(),
-            update: json!({ "sessionUpdate": "usage_update", "used": used, "size": size }),
+            update: json!({ "sessionUpdate": LIMITS_UPDATE, "limits": limits }),
         })
     }
 }

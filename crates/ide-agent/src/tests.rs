@@ -9,6 +9,8 @@ struct FakeAgent {
     /// Every connection's agent side, kept open.
     servers: Mutex<Vec<Peer>>,
     calls: Mutex<Vec<String>>,
+    /// Without `loadSession` (a session lives only as long as its process).
+    no_load: bool,
 }
 
 impl FakeAgent {
@@ -89,7 +91,7 @@ impl Handler for FakeAgent {
                 if params.pointer("/clientCapabilities/subagents").is_some_and(Value::is_object) {
                     self.calls.lock().push("subagents".into());
                 }
-                Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true,
+                Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !self.no_load,
                     "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true}}}}))
             }
             "session/new" => Ok(json!({"sessionId": "s1",
@@ -145,7 +147,16 @@ impl Handler for FakeAgent {
                     json!({"sessionUpdate": "available_commands_update",
                     "availableCommands": [{"name": "review", "description": "Review", "input": {"hint": "focus"}}]}),
                 );
-                self.update(&session, json!({"sessionUpdate": "usage_update", "used": 50, "size": 1000}));
+                self.update(
+                    &session,
+                    json!({"sessionUpdate": "usage_update", "used": 50, "size": 1000,
+                    "cost": {"amount": 0.25, "currency": "USD"}}),
+                );
+                self.update(
+                    &session,
+                    json!({"sessionUpdate": LIMITS_UPDATE,
+                    "limits": [{"window": "five_hour", "usedPercent": 19.0, "resetsMs": 5000.0}]}),
+                );
                 self.update(&session, json!({"sessionUpdate": "session_info_update", "title": "Lexer fix"}));
                 self.say(&session, "Hi");
                 self.update(
@@ -358,6 +369,10 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
         assert_eq!((modes.via, modes.current.as_deref()), (AgentConfigVia::Mode, Some("ask")));
         assert_eq!(t.commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["review"]);
         assert_eq!(t.usage.as_ref().map(|u| (u.used, u.size)), Some((50, 1000)));
+        assert_eq!(
+            t.usage.as_ref().and_then(|u| u.cost.clone()),
+            Some(Box::new(AgentCost { amount: 0.25, currency: "USD".into() }))
+        );
         assert_eq!(t.title, "Lexer fix", "the agent's title replaces the prompt's first line");
     }
     mgr.set_config(&task.id, "mode", "code".into()).await.unwrap();
@@ -369,6 +384,18 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
         let events = events.lock();
         assert!(
             events.iter().any(|e| matches!(e, AgentEvent::Task { task } if task.status == AgentStatus::NeedsInput))
+        );
+        let limits = events.iter().find_map(|e| match e {
+            AgentEvent::Limits { provider, limits } => Some((provider.as_str(), limits.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            limits,
+            Some((
+                task.provider.as_str(),
+                vec![AgentLimit { window: "five_hour".into(), used_percent: 19.0, resets_ms: Some(5000.0) }]
+            )),
+            "an agent's usage limits are its provider's"
         );
         let last_entry = events.iter().rev().find_map(|e| match e {
             AgentEvent::Entry { index, entry, .. } if !matches!(entry, AgentEntry::User { .. }) => {
@@ -772,6 +799,18 @@ fn retry_updates_become_a_countdown() {
     assert_eq!(retry_of(&json!({"sessionUpdate": RETRY_UPDATE}), 0.0), None, "no attempt");
 }
 
+#[test]
+fn usage_limits_and_cost_skip_what_is_malformed() {
+    let limits = config::limits_of(&json!({"sessionUpdate": LIMITS_UPDATE, "limits": [
+        {"window": "seven_day", "usedPercent": 140.0},
+        {"window": "", "usedPercent": 10.0},
+        {"window": "five_hour"},
+    ]}));
+    assert_eq!(limits, [AgentLimit { window: "seven_day".into(), used_percent: 100.0, resets_ms: None }]);
+    let usage = config::usage_of(&json!({"used": 1, "size": 2, "cost": {"amount": -1.0, "currency": "USD"}}));
+    assert_eq!(usage.map(|u| u.cost), Some(None), "a negative cost is dropped, the context use kept");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     let tmp = tempfile::tempdir().unwrap();
@@ -941,4 +980,132 @@ async fn task_project_root_controls_local_and_worktree_repositories() {
         std::fs::write(member.join("file.txt"), "original\n").unwrap();
     }
     assert_eq!(git(&["worktree", "list", "--porcelain"]).matches("worktree ").count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_providers_updates_registry_install_clears_stale_probes_and_notifies_subscribers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    let fake_bin = tmp.path().join(if cfg!(windows) { "copilot.cmd" } else { "copilot" });
+    std::fs::write(&fake_bin, "").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let agent = Arc::new(FakeAgent::default());
+    let connector: Connector = {
+        let agent = agent.clone();
+        Arc::new(move |_spec, _cwd, client, _stderr| {
+            let (a, b) = duplex(1 << 20);
+            let (ar, aw) = tokio::io::split(a);
+            let (br, bw) = tokio::io::split(b);
+            let server = Peer::connect_framed(br, bw, agent.clone(), Framing::Lines);
+            agent.servers.lock().push(server);
+            Ok(Peer::connect_framed(ar, aw, client, Framing::Lines))
+        })
+    };
+    let mgr = AgentManager::with_connector(
+        AgentPaths {
+            project_root: tmp.path().to_path_buf(),
+            store_dir: tmp.path().join("store"),
+            worktrees_dir: tmp.path().join("worktrees"),
+            models_file: tmp.path().join("models.json"),
+            custom_agents_dir: Some(agents_dir.clone()),
+            home_dir: None,
+        },
+        tokio::runtime::Handle::current(),
+        connector,
+    );
+
+    // Seed a stale failed probe for copilot before installing its custom TOML.
+    mgr.shared.probes.lock().insert(
+        "copilot".into(),
+        AgentProbe {
+            provider: "copilot".into(),
+            name: None,
+            version: None,
+            protocol: "ACP".into(),
+            capabilities: AgentCapabilities::default(),
+            auth_methods: Vec::new(),
+            error: Some("copilot --acp was not found on PATH.".into()),
+        },
+    );
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = events.clone();
+    mgr.subscribe(Arc::new(move |ev| events_sink.lock().push(ev)));
+
+    let toml = format!(
+        "name = \"GitHub Copilot\"\ncommand = {:?}\nargs = [\"--acp\", \"--stdio\"]\n",
+        fake_bin.to_string_lossy()
+    );
+    std::fs::write(agents_dir.join("copilot.toml"), toml).unwrap();
+
+    mgr.reload_providers();
+
+    assert!(events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)));
+    assert!(!mgr.shared.probes.lock().contains_key("copilot"));
+
+    let copilot = mgr.providers().into_iter().find(|p| p.id == "copilot").unwrap();
+    assert!(copilot.installed);
+    assert!(copilot.command.contains(&*fake_bin.to_string_lossy()));
+
+    let probe = mgr.probe("copilot", false).await.unwrap();
+    assert!(probe.error.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
+    let new = || NewAgentTask {
+        project_root: None,
+        prompt: text("again"),
+        provider: "claude".into(),
+        config: Vec::new(),
+        isolation: Isolation::Local,
+        base: None,
+    };
+    let live =
+        |mgr: &AgentManager, id: &str| mgr.task(id).unwrap().live.lock().as_ref().is_some_and(|l| !l.peer.is_closed());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(live(&mgr, &task.id));
+    // The process is stopped once the task stays idle…
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id));
+    assert!(agent.servers.lock()[0].is_closed(), "its connection is closed");
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready, "not an error");
+    // …and the next message starts it again on the same session.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().contains(&"session/load".to_owned()));
+    assert_eq!(
+        mgr.entries(&task.id, None).unwrap().iter().filter(|e| matches!(e, AgentEntry::Agent { .. })).count(),
+        2
+    );
+
+    // A new turn before the delay ran out keeps the agent.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(live(&mgr, &task.id));
+    mgr.shutdown();
+
+    // An agent that can't reload its session keeps running: stopping it would lose the conversation.
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent { no_load: true, ..FakeAgent::default() });
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(live(&mgr, &task.id));
+    mgr.shutdown();
 }

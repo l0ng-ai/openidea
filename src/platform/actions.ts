@@ -140,8 +140,13 @@ export function actionToggled(action: Action | undefined): boolean | undefined {
   }
 }
 
-type ActionListener = (id: string, arg: unknown) => void;
+/** How the user started an action (for listeners such as plugins' `action-performed`). */
+export type ActionSource = "keyboard" | "menu" | "toolbar" | "contextMenu" | "search" | "other";
+
+type ActionListener = (id: string, arg: unknown, source: ActionSource) => void;
 const listeners = new Set<ActionListener>();
+/** Set by `executeActionFrom` for the duration of the synchronous dispatch. */
+let currentSource: ActionSource = "other";
 /** Actions running synchronously inside another action's `run`. */
 let nesting = 0;
 
@@ -166,7 +171,7 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
   if (nesting === 0)
     for (const l of listeners)
       try {
-        l(id, arg);
+        l(id, arg, currentSource);
       } catch (e) {
         console.error("action listener failed", e);
       }
@@ -183,4 +188,15 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
     console.error(`action ${id} failed`, e);
   }
   return true;
+}
+
+/** `executeAction`, telling listeners how the user started it. */
+export function executeActionFrom(source: ActionSource, id: string, arg?: unknown): Promise<boolean> {
+  const previous = currentSource;
+  currentSource = source;
+  try {
+    return executeAction(id, arg);
+  } finally {
+    currentSource = previous;
+  }
 }

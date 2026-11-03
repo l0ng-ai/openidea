@@ -11,6 +11,7 @@ import { indentUnit } from "@codemirror/language";
 import { isolateHistory } from "@codemirror/commands";
 import type { EditorState, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
+import type { ExternalFormatter } from "@/bindings";
 import { commands, IpcError } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { shortcutLabel } from "@/platform/keymap";
@@ -24,6 +25,7 @@ import {
 import { useProject } from "@/platform/project";
 import { CONTRIBUTED_FORMAT, contributedAt, whenSynced, type ContributedFormatter } from "@/editor/api";
 import { docOf, lspRequest, reportLspError } from "./lsp";
+import { formatIndentFacet } from "../core/cm/setup";
 import { offsetToPos, textEditsToChanges } from "./positions";
 import { tx, txTemplate } from "@/platform/i18n";
 import { showHint } from "./hint";
@@ -71,27 +73,41 @@ function formattedHint(view: EditorView, lines: number) {
   });
 }
 
-/** LSP `FormattingOptions`: with spaces the indent width is the indent unit, not the tab size. */
+/**
+ * LSP `FormattingOptions`: with spaces the indent width is the indent unit, not the tab size.
+ * An explicit Code Style override replaces the editor's indent; the server's formatter
+ * profile carries the same override, so both agree.
+ */
 export function formatOptionsOf(state: EditorState): { tabSize: number; insertSpaces: boolean } {
+  const style = state.facet(formatIndentFacet)[0];
+  if (style)
+    return style.insertSpaces
+      ? { tabSize: style.indentSize ?? style.tabSize, insertSpaces: true }
+      : { tabSize: style.tabSize, insertSpaces: false };
   const unit = state.facet(indentUnit);
   return unit.includes("\t")
     ? { tabSize: state.tabSize, insertSpaces: false }
     : { tabSize: unit.length || state.tabSize, insertSpaces: true };
 }
 
+interface FormatDocumentOptions {
+  explicit: boolean;
+  selectionOnly?: boolean;
+  onSave?: boolean;
+  /** Runs this external formatter whatever the settings select (Reformat with Prettier/oxfmt). */
+  tool?: ExternalFormatter;
+}
+
 export async function formatDocument(
   view: EditorView,
-  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean } = { explicit: true },
+  opts: FormatDocumentOptions = { explicit: true },
 ): Promise<FormatResult> {
   const result = await format(view, opts);
   if (opts.explicit && result.applied) formattedHint(view, result.lines);
   return result;
 }
 
-async function format(
-  view: EditorView,
-  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean },
-): Promise<FormatResult> {
+async function format(view: EditorView, opts: FormatDocumentOptions): Promise<FormatResult> {
   const { project, settings } = useProject.getState();
   const guard = formatGuardOptions(settings);
   const path = docOf(view)?.path;
@@ -101,7 +117,7 @@ async function format(
     return NOTHING;
   }
   const own = contributedAt<ContributedFormatter>(view.state, CONTRIBUTED_FORMAT, 0);
-  if (own) {
+  if (own && !opts.tool) {
     if (opts.onSave && !settings?.editor?.formatOnSave) return NOTHING;
     return applyContributedFormat(view, own, opts, guard);
   }
@@ -116,21 +132,26 @@ async function format(
   const options = formatOptionsOf(state);
   let edits;
   try {
-    edits = await lspRequest(() => commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave }));
+    edits = await lspRequest(() =>
+      commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
+    );
   } catch (e) {
-    if (e instanceof IpcError && e.data?.type === "tool" && e.data.tool === "prettier") {
+    if (e instanceof IpcError && e.data?.type === "tool" && (e.data.tool === "prettier" || e.data.tool === "oxfmt")) {
+      const tool = e.data.tool;
       if (e.kind === "notFound" && e.data.missing) {
-        await executeAction("tools.promptInstall", { name: "prettier", sticky: !opts.onSave });
+        await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave });
       } else if (e.kind !== "cancelled") {
         notifications().notify({
           group: "tools",
           level: "error",
-          title: tx("Prettier formatting failed"),
+          title: tool === "oxfmt" ? tx("oxfmt formatting failed") : tx("Prettier formatting failed"),
           body:
             e.kind === "timedOut"
-              ? tx("Prettier formatting timed out")
+              ? tool === "oxfmt"
+                ? tx("oxfmt formatting timed out")
+                : tx("Prettier formatting timed out")
               : createElement("span", { className: styles.diagnostics }, e.message),
-          key: `prettier-format-error:${doc.path}`,
+          key: `${tool}-format-error:${doc.path}`,
           sticky: false,
         });
       }
@@ -148,7 +169,7 @@ async function format(
   }
   view.dispatch({
     changes,
-    userEvent: "format",
+    userEvent: "format.reformat",
     annotations: isolateHistory.of("full"),
     scrollIntoView: false,
   });
@@ -204,7 +225,7 @@ export async function formatLines(view: EditorView, from: number, to: number): P
 function applyContributedFormat(
   view: EditorView,
   format: ContributedFormatter,
-  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean },
+  opts: FormatDocumentOptions,
   guard: FormatGuardOptions,
 ): FormatResult {
   const state = view.state;
@@ -222,7 +243,12 @@ function applyContributedFormat(
     if (opts.explicit) showHint(view, "No lines changed: content is already properly formatted");
     return NOTHING;
   }
-  view.dispatch({ changes, userEvent: "format", annotations: isolateHistory.of("full"), scrollIntoView: false });
+  view.dispatch({
+    changes,
+    userEvent: "format.reformat",
+    annotations: isolateHistory.of("full"),
+    scrollIntoView: false,
+  });
   return { applied: true, changes: changes.length, lines: formattedLines(state.doc, changes) };
 }
 

@@ -1,0 +1,38 @@
+id = "openidea.graphviz"
+name = "Graphviz"
+version = "0.1.0"
+description = "Graphviz DOT files (.dot, .gv) with a live preview beside the text: rendered as you type with any layout engine, syntax errors in the editor and the Problems view, export to SVG and PNG."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: live preview (Graphviz compiled to WebAssembly), layout engines, zoom, errors as problems, SVG and PNG export."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-view:preview"]
+
+[capabilities]
+# Problems: published for the project's file (project.read), on the lines
+# Graphviz names (editor.read: the previewed text).
+required = ["editor.read", "project.read"]
+
+[[contributes.customEditors]]
+id = "preview"
+title = "Preview"
+patterns = ["*.dot", "*.gv"]
+priority = "default"
+layout = "split"
+web = "web/index.html"
+
+[[contributes.languages]]
+path = "languages/dot.toml"
+
+[[contributes.fileIcons]]
+id = "graphviz"
+patterns = ["*.dot", "*.gv"]
+icon = "icons/graphviz.svg"
+iconDark = "icons/graphviz_dark.svg"
+
+[[contributes.fileTemplates]]
+id = "graph"
+name = "Graphviz Graph"
+extension = "dot"
+path = "templates/graph.dot"

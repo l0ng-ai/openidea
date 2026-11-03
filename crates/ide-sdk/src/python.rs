@@ -1,7 +1,7 @@
 //! Python environments: creating virtualenvs and managing packages with pip
 //! (or `uv pip` for environments created by uv, which ship without pip).
 
-use crate::exec::{query, stream, which};
+use crate::exec::{query_in, stream, which};
 use crate::{Sdk, bin_dir, exe, venv_of};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -32,11 +32,27 @@ pub fn create_venv(
     if let Some(parent) = location.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let args = vec!["-m".to_owned(), "venv".to_owned(), location.to_string_lossy().into_owned()];
-    stream(base, &args, None, &[], cancel, on_line)?;
+    stream(base, &venv_args(location), None, &[], cancel, on_line)?;
     let python = location.join(bin_dir()).join(exe("python"));
     crate::discover::python_sdk(&python, "venv", location.parent().and_then(Path::parent))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
+}
+
+/// Arguments of `base -m venv location`. `-I` (isolated mode) keeps the working
+/// directory off `sys.path`: a project's `logging.py` or `typing.py` there would
+/// otherwise shadow the standard library modules venv imports. (`-P` does just
+/// that but needs Python 3.11.)
+pub(crate) fn venv_args(location: &Path) -> Vec<String> {
+    vec!["-I".to_owned(), "-m".to_owned(), "venv".to_owned(), location.to_string_lossy().into_owned()]
+}
+
+/// A fresh, empty, private directory to run `python -m …` / `python -c …` in. Python
+/// puts the working directory first on `sys.path` for those, and the IDE's own (or a
+/// project's) could hold modules that shadow the standard library or pip. Not `-I`:
+/// that also drops the user site, hiding `pip install --user` packages. `None` (the
+/// inherited directory) if it cannot be created.
+pub(crate) fn neutral_dir() -> Option<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("openidea-python-").tempdir().ok()
 }
 
 /// How packages of an interpreter are managed.
@@ -47,7 +63,9 @@ enum Installer {
 }
 
 fn has_pip(python: &Path) -> bool {
-    query(python, &["-m", "pip", "--version"], Duration::from_secs(10)).is_some()
+    let dir = neutral_dir();
+    query_in(python, &["-m", "pip", "--version"], dir.as_ref().map(|d| d.path()), &[], Duration::from_secs(10))
+        .is_some()
 }
 
 fn installer(python: &Path) -> IdeResult<Installer> {
@@ -95,7 +113,8 @@ pub fn list_packages(python: &Path, cancel: &CancellationToken) -> IdeResult<Vec
     }
     let installer = installer(python)?;
     let (program, args) = pip_command(python, &installer, &["list", "--format", "json"]);
-    let out = stream(&program, &args, None, &pip_env(python), cancel, &|_| {})?;
+    let dir = neutral_dir();
+    let out = stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, &|_| {})?;
     let mut packages = parse_pip_list(&out)?;
     packages.sort_by_key(|p| p.name.to_lowercase());
     Ok(packages)
@@ -107,11 +126,23 @@ pub(crate) fn parse_pip_list(out: &str) -> IdeResult<Vec<PythonPackage>> {
     serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected pip output: {e}")))
 }
 
-/// Installs (or upgrades, with `upgrade`) a requirement such as `requests` or `django==5.0`.
+/// A requirement naming a local path (`.`, `./pkg`, `../lib[dev]`) made absolute
+/// against `base` (the project root): pip runs in [`neutral_dir`], not the project.
+pub(crate) fn resolve_requirement(requirement: &str, base: Option<&Path>) -> IdeResult<String> {
+    if !requirement.starts_with('.') {
+        return Ok(requirement.to_owned());
+    }
+    let base = base.ok_or_else(|| IdeError::invalid("a relative path needs an open project"))?;
+    Ok(base.join(requirement).to_string_lossy().into_owned())
+}
+
+/// Installs (or upgrades, with `upgrade`) a requirement such as `requests` or `django==5.0`;
+/// relative paths (`./pkg`) are resolved against `project_root`.
 pub fn install_package(
     python: &Path,
     requirement: &str,
     upgrade: bool,
+    project_root: Option<&Path>,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<()> {
@@ -119,14 +150,16 @@ pub fn install_package(
     if requirement.is_empty() || requirement.starts_with('-') {
         return Err(IdeError::invalid("enter a package name or requirement"));
     }
+    let requirement = resolve_requirement(requirement, project_root)?;
     let installer = installer(python)?;
     let mut sub = vec!["install"];
     if upgrade {
         sub.push("--upgrade");
     }
-    sub.push(requirement);
+    sub.push(&requirement);
     let (program, args) = pip_command(python, &installer, &sub);
-    stream(&program, &args, None, &pip_env(python), cancel, on_line).map(|_| ())
+    let dir = neutral_dir();
+    stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
 }
 
 pub fn uninstall_package(
@@ -141,5 +174,6 @@ pub fn uninstall_package(
     }
     let installer = installer(python)?;
     let (program, args) = pip_command(python, &installer, &["uninstall", "-y", name]);
-    stream(&program, &args, None, &pip_env(python), cancel, on_line).map(|_| ())
+    let dir = neutral_dir();
+    stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
 }

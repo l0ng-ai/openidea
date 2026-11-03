@@ -45,6 +45,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   // Agents installed in Settings (its own window) show up when this one is back in front.
   useEffect(() => {
     const refresh = () => void refreshProviders();
+    refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, []);
@@ -66,7 +67,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   }, [root, project?.workspace]);
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
-  const probe = useProbe(provider?.installed ? provider.id : null);
+  const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -164,7 +165,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   detail: tx("edits your files directly"),
                 },
               ]}
-              onChange={(isolation) => updateDraft({ isolation })}
+              onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
             />
           )}
           {isolation === "local" && current && (
@@ -224,7 +225,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
 }
 
 /** What the agent reports about itself when it starts (no session is opened), once per agent. */
-function useProbe(provider: string | null): AgentProbe | null {
+function useProbe(provider: string | null, command?: string): AgentProbe | null {
   const [probe, setProbe] = useState<AgentProbe | null>(null);
   useEffect(() => {
     if (!provider) return;
@@ -235,6 +236,6 @@ function useProbe(provider: string | null): AgentProbe | null {
     return () => {
       live = false;
     };
-  }, [provider]);
+  }, [provider, command]);
   return probe?.provider === provider ? probe : null;
 }

@@ -3,9 +3,11 @@ import { act, render, screen } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { IdeError } from "@/bindings";
-import { registerAction } from "@/platform/actions";
+import { getAction, registerAction } from "@/platform/actions";
+import { commands, IpcError } from "@/platform/ipc";
+import { useEditorRegistry } from "@/editor/api";
+import { registerLspActions } from "./actions";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { IpcError } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
 import { Balloons } from "@/workbench/Notifications";
@@ -18,7 +20,6 @@ import {
 import { formatDocument } from "./format";
 import * as lsp from "./lsp";
 
-const tool = { type: "tool", tool: "prettier", missing: false } as const;
 const views: EditorView[] = [];
 const viewFor = (path = "/project/file.css") => {
   const view = new EditorView({
@@ -43,7 +44,9 @@ afterEach(() => {
   _resetI18nForTests();
 });
 
-describe("external formatter errors", () => {
+describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
+  const tool = { type: "tool", tool: name, missing: false } as const;
+  const display = name === "prettier" ? "Prettier" : name;
   it("uses structured missing-tool information to request the shared install prompt", async () => {
     const prompt = vi.fn();
     const dispose = registerAction({
@@ -54,9 +57,9 @@ describe("external formatter errors", () => {
     try {
       failWith({ kind: "notFound", message: "unrelated diagnostic", data: { ...tool, missing: true } });
       await formatDocument(viewFor());
-      expect(prompt).toHaveBeenCalledWith({ name: "prettier", sticky: true });
+      expect(prompt).toHaveBeenCalledWith({ name, sticky: true });
       await formatDocument(viewFor(), { explicit: false, onSave: true });
-      expect(prompt).toHaveBeenLastCalledWith({ name: "prettier", sticky: false });
+      expect(prompt).toHaveBeenLastCalledWith({ name, sticky: false });
       expect(useNotifications.getState().items).toHaveLength(0);
     } finally {
       dispose();
@@ -95,7 +98,7 @@ describe("external formatter errors", () => {
       for (let i = 0; i < 3; i++) await formatDocument(view, { explicit: false, onSave: true });
       const notes = useNotifications.getState().items;
       expect(notes).toHaveLength(1);
-      expect(notes[0]).toMatchObject({ sticky: false, title: "Prettier 格式化失败" });
+      expect(notes[0]).toMatchObject({ sticky: false, title: `${display} 格式化失败` });
       expect(balloonTimeout(notes[0]!)).toBe(10000);
       render(<Balloons />);
       expect(screen.getByRole("alert")).toHaveTextContent(stderr);
@@ -115,10 +118,34 @@ describe("external formatter errors", () => {
     const request = failWith({ kind: "timedOut", message: "arbitrary backend text", data: tool });
     const view = viewFor();
     await formatDocument(view);
-    expect(useNotifications.getState().items[0]).toMatchObject({ body: "Prettier 格式化超时", sticky: false });
+    expect(useNotifications.getState().items[0]).toMatchObject({ body: `${display} 格式化超时`, sticky: false });
     clearNotifications();
     request.mockRejectedValue(new IpcError({ kind: "cancelled", message: "cancelled", data: tool }));
     await formatDocument(view);
     expect(useNotifications.getState().items).toHaveLength(0);
+  });
+});
+
+describe("Reformat with Prettier / oxfmt", () => {
+  it.each([
+    ["code.reformatWithPrettier", "prettier"],
+    ["code.reformatWithOxfmt", "oxfmt"],
+  ])("%s asks the backend for %s whatever the settings select", async (id, tool) => {
+    vi.spyOn(lsp, "lspRequest").mockImplementation(async (request) => {
+      await request();
+      return [] as never;
+    });
+    const lspFormat = vi.spyOn(commands, "lspFormat").mockResolvedValue({ status: "ok", data: [] });
+    const view = viewFor("/project/app.ts");
+    const previous = useEditorRegistry.getState().active;
+    const dispose = registerLspActions();
+    try {
+      useEditorRegistry.setState({ active: { view, ctx: view.state.facet(lsp.lspDoc)! } as never });
+      await getAction(id)!.run({ ctx: {} } as never);
+      await vi.waitFor(() => expect(lspFormat).toHaveBeenCalledWith(1, null, expect.objectContaining({ tool })));
+    } finally {
+      dispose();
+      useEditorRegistry.setState({ active: previous });
+    }
   });
 });

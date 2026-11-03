@@ -408,6 +408,10 @@ describe("parser selection", () => {
     expect(frameworkFor(cfg("cargo", "cargo", ["test"]))).toBe("cargo");
     expect(frameworkFor(cfg("npm", "pnpm", ["run", "test"]))).toBe("js");
     expect(frameworkFor(cfg("pytest", "uv", ["run", "pytest"]))).toBe("pytest");
+    expect(frameworkFor(cfg("django-test", ".venv/bin/python", ["manage.py", "test"]))).toBe("unittest");
+    expect(frameworkFor(cfg("shell", "python3 manage.py test polls"))).toBe("unittest");
+    expect(frameworkFor(cfg("python", ".venv/bin/python", ["manage.py", "test"]))).toBe("unittest");
+    expect(frameworkFor(cfg("python", ".venv/bin/python", ["-m", "pytest"]))).toBe("pytest");
     expect(frameworkFor(cfg("go", "go", ["test", "./..."]))).toBe("go");
     expect(frameworkFor(cfg("gradle", "./gradlew", ["test"]))).toBe("jvm");
     expect(frameworkFor(cfg("shell", "npx vitest run"))).toBe("js");
@@ -417,9 +421,14 @@ describe("parser selection", () => {
   it("the combined parser understands any supported format", () => {
     const r = results(
       createTestParser(cfg("make", "make", ["test"])),
-      "test a ... ok\n--- PASS: TestB (0.00s)\nok  \tpkg\t0.1s",
+      "test a ... ok\n--- PASS: TestB (0.00s)\nok  \tpkg\t0.1s\ntest_c (app.tests.CTests.test_c) ... ok\n" +
+        "Finished (0.5s)\ncompile (gcc.exe)",
     );
     expect(leaf(r, "a")?.own).toBe("passed");
+    expect(leaf(r, "app.tests", "CTests", "test_c")?.own).toBe("passed");
+    // Lines of other tools that only look like a unittest header make no tests.
+    expect(r.roots.map((n) => n.name)).not.toContain("0");
+    expect(r.roots.map((n) => n.name)).not.toContain("gcc");
     expect(leaf(r, "pkg", "TestB")?.own).toBe("passed");
   });
 });

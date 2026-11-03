@@ -101,8 +101,13 @@ async fn intellij_java_formatter_preserves_manual_breaks_and_wraps_long_lines() 
         async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
     })
     .await;
-    let edits =
-        mgr.format(doc, None, ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false }).await;
+    let edits = mgr
+        .format(
+            doc,
+            None,
+            ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false, tool: None },
+        )
+        .await;
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
     let mut document = ide_text::Document::new(source);
     document.apply_edits(&edits.unwrap()).unwrap();
@@ -124,9 +129,12 @@ async fn missing_binary_is_reported_with_install_hint() {
         install_hint: Some("npm i -g nope-ls".into()),
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     };
     let (mgr, events) = manager(dir.path(), LanguageRegistry::from_configs(vec![lang("nope", "nope", server)]));
     let path = dir.path().join("a.nope");
@@ -188,6 +196,102 @@ async fn ty_python_end_to_end() {
     retry("ty diagnostics", Duration::from_secs(30), || {
         let found = events.lock().iter().any(
             |event| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == "ty" && !items.is_empty()),
+        );
+        async move { found.then_some(()) }
+    })
+    .await;
+}
+
+/// Ruff next to basedpyright in a project configured for Ruff: its lint
+/// diagnostics, the only formatter and the only Organize Imports and Fix All.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires ruff and basedpyright on PATH"]
+async fn ruff_next_to_basedpyright_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("pyproject.toml"), "[tool.ruff.lint]\nselect = [\"F\", \"I\"]\n").unwrap();
+    let path = root.join("example.py");
+    let source = "import sys\nimport os\n\nx  =  os.getcwd( )\n";
+    std::fs::write(&path, source).unwrap();
+    let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
+    python.language_servers.retain(|server| matches!(server.name.as_str(), "basedpyright" | "ruff"));
+    assert_eq!(python.language_servers.len(), 2);
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("python"), 1, source);
+    for name in ["basedpyright", "ruff"] {
+        retry(name, Duration::from_secs(60), || {
+            let status = last_status(&events, name);
+            if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+                panic!("{name} failed: {msg:?}");
+            }
+            async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+        })
+        .await;
+    }
+    // F401 (`sys` unused) and I001 (unsorted imports).
+    let codes = retry("ruff diagnostics", Duration::from_secs(30), || {
+        let codes: Option<Vec<String>> = events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { source, items, .. } if source == "ruff" && !items.is_empty() => {
+                Some(items.iter().filter_map(|d| d.code.clone()).collect())
+            }
+            _ => None,
+        });
+        async move { codes }
+    })
+    .await;
+    assert!(codes.iter().any(|c| c == "F401") && codes.iter().any(|c| c == "I001"), "{codes:?}");
+
+    let options = ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false, tool: None };
+    let edits = mgr.format(doc, None, options).await.unwrap();
+    assert!(!edits.is_empty() && edits.iter().all(|e| e.range.start.line == 3), "{edits:?}");
+
+    let whole = Range::new(Pos::new(0, 0), Pos::new(4, 0));
+    for kind in ["source.organizeImports", "source.fixAll"] {
+        let actions = mgr.code_actions(doc, whole, vec![kind.into()]).await.unwrap();
+        let kinds: Vec<&str> = actions.iter().filter_map(|a| a.kind.as_deref()).collect();
+        assert_eq!(kinds, [format!("{kind}.ruff")], "{actions:?}");
+        let action = mgr.resolve_code_action(doc, actions[0].clone()).await.unwrap();
+        let edit = action.edit.expect("an edit");
+        assert!(!edited_lines(&edit, &path).is_empty(), "{edit:?}");
+    }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires pyrefly on PATH"]
+async fn pyrefly_python_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("example.py");
+    let source = "def greet(name: str) -> str:\n    return name\n\nresult = greet('Ada')\nbad: int = 'wrong'\n";
+    std::fs::write(&path, source).unwrap();
+    // Pyrefly only reports type errors in projects with a Pyrefly configuration.
+    std::fs::write(root.join("pyrefly.toml"), "").unwrap();
+    let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
+    python.language_servers.retain(|server| server.name == "pyrefly");
+    assert_eq!(python.language_servers.len(), 1);
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("python"), 1, source);
+    retry("pyrefly ready", Duration::from_secs(30), || {
+        let status = last_status(&events, "pyrefly");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("pyrefly failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    let defs = retry("pyrefly definition", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move { mgr.goto(doc, Pos::new(3, 10), GotoKind::Definition).await.ok().filter(|d| !d.is_empty()) }
+    })
+    .await;
+    assert_eq!(defs[0].path, path);
+    assert_eq!(defs[0].range.start.line, 0);
+    retry("pyrefly diagnostics", Duration::from_secs(30), || {
+        let found = events.lock().iter().any(
+            |event| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == "pyrefly" && !items.is_empty()),
         );
         async move { found.then_some(()) }
     })
@@ -294,9 +398,12 @@ async fn typescript_language_server_end_to_end() {
         install_hint: None,
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     };
     let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![lang("typescript", "ts", server)]));
     let doc = DocId::next();
@@ -340,9 +447,12 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         install_hint: None,
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     }
 }
 
@@ -412,7 +522,7 @@ fn edited_lines(edit: &ide_core::WorkspaceEdit, path: &Path) -> Vec<u32> {
         .files
         .iter()
         .filter_map(|f| match f {
-            ide_core::FileEdit::Edit { path: p, edits } if p.to_path_buf() == path => {
+            ide_core::FileEdit::Edit { path: p, edits, .. } if p.to_path_buf() == path => {
                 Some(edits.iter().map(|e| e.range.start.line))
             }
             _ => None,

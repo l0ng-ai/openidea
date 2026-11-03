@@ -137,25 +137,32 @@ export const LINK_HANDLER: ILinkHandler = {
 export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>, cwd: string) {
   const selection = link.line ? { line: link.line - 1, col: Math.max(0, (link.col ?? 1) - 1) } : undefined;
   const path = resolvePath(link.path, cwd);
-  const name = link.path.split("/").pop() ?? link.path;
+  const rel = link.path.replace(/\\/g, "/");
+  const name = rel.split("/").pop() ?? rel;
   try {
     const slash = path.lastIndexOf("/");
-    const entries = await call(commands.fsReadDir(path.slice(0, slash) || "/"));
+    const entries = await call(commands.fsReadDir(slash > 0 ? path.slice(0, slash) : "/"));
     if (entries.some((e) => e.name === name && e.kind !== "dir")) {
       await editorService().openFile(path, { selection, focus: true });
       return;
     }
   } catch {
-    /* fall back to a project-wide lookup by file name */
+    /* fall back to a project-wide lookup */
   }
-  try {
-    const [hit] = await call(commands.findFiles(name, 1));
-    if (hit && hit.path.endsWith(name)) {
-      await editorService().openFile(hit.path, { selection, focus: true });
-      return;
+  // The basename alone is ambiguous (`a/x.ts` vs `b/x.ts`): rank the link's
+  // directory part too and verify the hit actually sits on that path, settling
+  // for a basename match only when the link names no directory.
+  for (const q of rel === name ? [name] : [rel, name]) {
+    try {
+      const hits = await call(commands.findFiles(q, 5));
+      const hit = hits.find((h) => h.relPath === q || h.relPath.endsWith(`/${q}`));
+      if (hit) {
+        await editorService().openFile(hit.path, { selection, focus: true });
+        return;
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
   notifications().notify({ level: "warning", title: "File not found", body: link.path });
 }
@@ -279,7 +286,7 @@ export class TerminalSession {
       }),
     );
     this.disposables.push(
-      { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.remotePasteTarget) },
+      { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
@@ -291,14 +298,16 @@ export class TerminalSession {
     void this.pasteClipboard();
   };
 
-  private remotePasteTarget = () => {
+  private clipboardTarget = () => {
     const remote = useRemote.getState().session;
     const id = this.ptyId;
-    if (!remote || id === null || this.disposed) return null;
+    if (id === null || this.disposed) return null;
     const generation = this.generation;
     return {
       id,
-      supported: remote.commands.includes("term_store_image"),
+      supported: !remote || remote.commands.includes("term_store_image"),
+      remote: !!remote,
+      shell: this.snapshot.title,
       current: () =>
         !this.disposed &&
         this.ptyId === id &&
@@ -308,8 +317,8 @@ export class TerminalSession {
   };
 
   pasteClipboard() {
-    if (this.remotePasteTarget()) this.focus();
-    return pasteTerminalClipboard((text) => this.paste(text), this.remotePasteTarget);
+    if (this.clipboardTarget()) this.focus();
+    return pasteTerminalClipboard((text) => this.paste(text), this.clipboardTarget);
   }
   /** Applies Settings › Tools › Terminal changes to a live session. */
   applySettings(t: TerminalSettingsValid) {
