@@ -18,7 +18,7 @@ import {
   T,
 } from "@/ui";
 import type { OutlineItem } from "@/platform/ipc";
-import { usePreviewOnlyLine } from "@/features/viewers/markdown/live";
+import { useShownLine } from "@/editor/api";
 import { badgeKind, basename, openLocation } from "../common/open";
 import { useTracking } from "../common/tracking";
 import {
@@ -144,7 +144,7 @@ export function StructureView() {
   const error = useOutline((s) => s.error);
   const autoscroll = useStructureOptions((s) => s.autoscrollFromSource);
   const caret = useTracking((s) => s.caret);
-  const previewLine = usePreviewOnlyLine(path);
+  const shownLine = useShownLine(path);
   const collapsed = useCollapsed((s) => s.keys);
   const nodes = useOutlineNodes();
   const tree = useRef<TreeHandle>(null);
@@ -161,10 +161,10 @@ export function StructureView() {
   // around the line on screen of a Markdown file shown Preview only.
   const caretPath = useMemo(() => {
     if (!autoscroll) return [];
-    if (previewLine !== null) return symbolPathAt(nodes, { line: previewLine, col: 0 });
+    if (shownLine !== null) return symbolPathAt(nodes, { line: shownLine, col: 0 });
     if (!caret || caret.path !== path) return [];
     return symbolPathAt(nodes, { line: caret.line, col: caret.col });
-  }, [autoscroll, caret, previewLine, path, nodes]);
+  }, [autoscroll, caret, shownLine, path, nodes]);
   const caretKey = caretPath[caretPath.length - 1] ?? null;
 
   useEffect(() => {

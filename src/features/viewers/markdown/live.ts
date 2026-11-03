@@ -9,7 +9,6 @@ import { create } from "zustand";
 import { registerEditorContribution } from "@/editor/api";
 import { fontZoom } from "@/editor/core/cm/prefs";
 import { isMarkdownPath } from "../fileKinds";
-import { modeOf, useMarkdownModes } from "./modes";
 
 export interface LiveMarkdown {
   text: string;
@@ -25,8 +24,6 @@ export interface LiveMarkdown {
   caretLine: number;
   /** Bumped with `caretLine`, so going to the same place again still scrolls. */
   caretSeq: number;
-  /** 0-based source line at the top of a Preview only preview, once it has been shown. */
-  previewLine: number | null;
 }
 
 export const useLiveMarkdown = create<Record<string, LiveMarkdown | undefined>>(() => ({}));
@@ -42,7 +39,6 @@ function publish(path: string, patch: Partial<LiveMarkdown>) {
       fontZoom: 0,
       caretLine: 0,
       caretSeq: 0,
-      previewLine: null,
       previewTop: 0,
     };
     return { [path]: { ...prev, ...patch } };
@@ -103,17 +99,6 @@ function livePlugin(path: string) {
       }
     },
   );
-}
-
-export function setPreviewLine(path: string, line: number) {
-  if (useLiveMarkdown.getState()[path]?.previewLine !== line) publish(path, { previewLine: line });
-}
-
-/** The source line on screen when `path` is shown Preview only: it stands in for the hidden editor's caret. */
-export function usePreviewOnlyLine(path: string | null): number | null {
-  const previewOnly = useMarkdownModes((s) => path !== null && isMarkdownPath(path) && modeOf(s, path) === "preview");
-  const line = useLiveMarkdown((s) => (path ? (s[path]?.previewLine ?? null) : null));
-  return previewOnly ? line : null;
 }
 
 export function registerMarkdownLiveSource(): () => void {

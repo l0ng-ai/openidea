@@ -29,7 +29,6 @@ describe("selectable read-only surfaces", () => {
           fontZoom: 0,
           caretLine: 0,
           caretSeq: 0,
-          previewLine: null,
           previewTop: 0,
         },
       }),

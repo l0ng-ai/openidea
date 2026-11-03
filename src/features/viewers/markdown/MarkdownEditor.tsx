@@ -20,9 +20,10 @@ import {
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
+import { setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
-import { publishPreviewTop, setPreviewLine, useLiveMarkdown } from "./live";
+import { publishPreviewTop, useLiveMarkdown } from "./live";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
@@ -188,13 +189,16 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     if (sync) return;
     root.scrollTop = previewOffsetForLine(blocksOf(root), caretLine, root.scrollHeight);
     scrolledTo.current = root.scrollTop;
-    setPreviewLine(path, caretLine);
+    setShownLine(path, caretLine);
   }, [caretSeq, caretLine, sync, path]);
 
-  // Preview only: the line on screen when shown, then as the user scrolls.
+  // Preview only: the line on screen when shown, then as the user scrolls;
+  // cleared when the editor is back or the preview goes away.
   useEffect(() => {
     const root = ref.current;
-    if (root && !sync) setPreviewLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+    if (!root || sync) return;
+    setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+    return () => setShownLine(path, null);
   }, [sync, path]);
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
 
@@ -206,7 +210,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       const own = scrolledTo.current !== null && Math.abs(root.scrollTop - scrolledTo.current) < 1;
       if (own) return;
       scrolledTo.current = null;
-      setPreviewLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+      setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
     });
   };
 
