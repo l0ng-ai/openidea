@@ -73,6 +73,7 @@ import {
 } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+import { isUnityProject, showUnityAttach } from "./unity";
 
 function hasProject() {
   return !!useProject.getState().project;
@@ -83,6 +84,7 @@ async function ensureConfigs() {
 }
 
 async function runSelected() {
+  if (isUnityProject()) return;
   await ensureConfigs();
   if (currentFileSelected()) return runCurrentFile(false);
   const config = selectedConfig();
@@ -99,6 +101,7 @@ async function runSelected() {
 }
 
 async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
+  if (isUnityProject()) return showUnityAttach();
   if (config.kind === "compound") {
     if (!(await prepareLaunch(config, chain))) return;
     const children = compoundChildren(config, useRun.getState().configs);
@@ -139,6 +142,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
 }
 
 async function debugSelected() {
+  if (isUnityProject()) return showUnityAttach();
   await ensureConfigs();
   if (currentFileSelected()) return runCurrentFile(true);
   const config = selectedConfig();
@@ -150,6 +154,7 @@ async function debugSelected() {
 }
 
 async function runContext(debug: boolean, arg?: unknown) {
+  if (isUnityProject()) return debug ? showUnityAttach() : undefined;
   if (!(await runContextAction(debug, arg))) nothingToRun();
 }
 
@@ -258,6 +263,7 @@ function scheduleReload() {
 }
 
 export function activate(): () => void {
+  setContext("run.unityProject", isUnityProject());
   const disposers: Array<() => void> = [
     registerToolWindow({
       id: "run",
@@ -305,7 +311,7 @@ export function activate(): () => void {
         title: "Run",
         category: "Run",
         icon: "run",
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         run: () => runSelected(),
       },
       {
@@ -317,12 +323,20 @@ export function activate(): () => void {
         run: () => debugSelected(),
       },
       {
+        id: "run.attachUnity",
+        title: "Attach to Unity Process",
+        category: "Run",
+        icon: "debug",
+        when: "projectOpen && run.unityProject",
+        run: () => showUnityAttach(),
+      },
+      {
         id: "run.runContext",
         title: "Run Context Configuration",
         description: "Run the test or program in the active file",
         category: "Run",
         icon: "run",
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         keywords: ["run file", "run test"],
         run: ({ arg }) => runContext(false, arg),
       },
@@ -356,7 +370,7 @@ export function activate(): () => void {
         title: "Rerun",
         category: "Run",
         icon: "rerun",
-        when: "projectOpen && activeToolWindow == 'run'",
+        when: "projectOpen && !run.unityProject && activeToolWindow == 'run'",
         run: () => rerunActive(),
       },
       {
@@ -365,7 +379,7 @@ export function activate(): () => void {
         description:
           'Run a configuration (hold Shift to debug); the title bar widget passes "select" to only select one',
         category: "Run",
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         run: async ({ arg }) => {
           if (useRun.getState().chooserOpen || chooserJustClosed()) {
             useRun.setState({ chooserOpen: false });
@@ -383,6 +397,7 @@ export function activate(): () => void {
         keywords: ["choose and debug configuration"],
         when: "projectOpen",
         run: async () => {
+          if (isUnityProject()) return showUnityAttach();
           if (useRun.getState().chooserOpen || chooserJustClosed()) {
             useRun.setState({ chooserOpen: false });
             return;
@@ -456,7 +471,7 @@ export function activate(): () => void {
         title: "Run Configuration",
         category: "Run",
         hidden: true,
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
@@ -517,6 +532,7 @@ export function activate(): () => void {
       setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
     useProject.subscribe((s, prev) => {
+      setContext("run.unityProject", !!s.project?.unity);
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       resetRuns();
       useStackTraces.setState({ tabs: [], dialog: null });
@@ -561,5 +577,6 @@ export function activate(): () => void {
     clearTimeout(reloadTimer);
     disposers.reverse().forEach((d) => d());
     resetRuns();
+    setContext("run.unityProject", false);
   };
 }

@@ -4,6 +4,7 @@ import { BarButton, Icon, IconButton, Menu, type MenuItem } from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
+import { useProject } from "@/platform/project";
 import { runExecutors, useRunExecutors, useDebugRunSessions } from "@/workbench/contributions";
 import { configIcon } from "./configs";
 import { useRemoteLabel } from "./remote";
@@ -14,6 +15,51 @@ import styles from "./Run.module.css";
 
 /** Title bar: configuration chooser, Run / Debug, and Rerun / Stop while running. */
 export function RunWidget() {
+  const unity = useProject((s) => !!s.project?.unity);
+  return unity ? <UnityRunWidget /> : <ConfigurationRunWidget />;
+}
+
+function UnityRunWidget() {
+  const tx = useTx();
+  const running = useRun((s) => s.sessions.some((x) => x.status === "running" || x.status === "starting"));
+  const debugging = useDebugRunSessions((s) => s.sessions.length > 0);
+  return (
+    <div className={styles.widget}>
+      <span className={styles.widgetName}>{tx("Unity Editor")}</span>
+      <span className={styles.widgetButtons}>
+        <IconButton
+          icon="run"
+          size="large"
+          iconSize={18}
+          className={clsx(styles.widgetButton, styles.widgetRun)}
+          title={tx("Run this project in Unity Editor")}
+          disabled
+        />
+        <IconButton
+          icon="debug"
+          size="large"
+          iconSize={18}
+          className={styles.widgetButton}
+          title={tx("Attach to Unity Process")}
+          shortcut={shortcutLabel("run.debug")}
+          onClick={() => void executeAction("run.attachUnity")}
+        />
+        {(running || debugging) && (
+          <IconButton
+            icon="stop-filled"
+            size="large"
+            iconSize={16}
+            className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
+            title={tx("Stop IDE Sessions")}
+            onClick={() => void executeAction("run.stop")}
+          />
+        )}
+      </span>
+    </div>
+  );
+}
+
+function ConfigurationRunWidget() {
   const tx = useTx();
   const label = useRemoteLabel();
   const configs = useRun((s) => s.configs);

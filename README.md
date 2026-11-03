@@ -70,6 +70,11 @@ hides generated folders and `.meta` files. Its options menu has independent
 provides the full directory tree. Unity caches and build output are excluded from indexing and search by
 default, independently of `.gitignore`.
 
+The Unity title bar disables Run: start the project in Unity Editor. Debug is
+labelled **Attach to Unity Process** and currently opens a notice explaining
+that Unity debugger attachment is not yet supported. It does not launch a
+regular C# configuration. The normal Run shortcut is disabled for Unity projects.
+
 Inside `Assets`, rename and move preserve the asset's `.meta` file and GUID,
 including undo. Delete includes the sidecar and snapshots both paths in Local
 History; the asset and sidecar are grouped in the recycle bin with a

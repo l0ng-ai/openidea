@@ -1,4 +1,9 @@
 {
+  "Unity Editor": "Unity 编辑器",
+  "Run this project in Unity Editor": "请在 Unity 编辑器中运行此项目",
+  "Attach to Unity Process": "附加到 Unity 进程",
+  "Stop IDE Sessions": "停止 IDE 会话",
+  "Run this project in Unity Editor. Debugging requires attaching to the Unity Editor process. Unity debugger attachment is not supported in this version yet.": "请在 Unity 编辑器中运行此项目。调试需要附加到 Unity 编辑器进程，当前版本尚未支持 Unity 附加调试。",
   "The language server JDK ({path}) must be a full JDK with jdk.compiler, jdk.jdi and jdk.unsupported for Java language support and debugging. jdtls needs JDK {version} or newer. Download JDK {version}, choose a full JDK in {setting}, or set it to Auto.": "语言服务器 JDK（{path}）必须是包含 jdk.compiler、jdk.jdi 和 jdk.unsupported 的完整 JDK，才能支持 Java 语言功能和调试。jdtls 需要 JDK {version} 或更高版本。请下载 JDK {version}，在 {setting} 中选择完整 JDK，或设为自动。",
   "Apple's clangd does not run clang-tidy, so checks from .clang-tidy are not shown. Install clangd (LLVM) to get them.": "Apple 的 clangd 不运行 clang-tidy，因此不会显示 .clang-tidy 中配置的检查。请安装 clangd（LLVM）以启用这些检查。",
   "Newer dependency version available": "有更新的依赖版本可用",
