@@ -682,17 +682,24 @@ impl Project {
         self.with_repo_at(None, f)
     }
 
+    pub(crate) fn with_disk_sync<T>(&self, f: impl FnOnce() -> IdeResult<T>) -> IdeResult<T> {
+        let result = f();
+        // Failed operations can also leave changed files (for example merge conflicts).
+        self.documents.sync_after_disk_change();
+        result
+    }
+
     /// Runs a VCS operation that rewrites the working tree (checkout, merge,
     /// rebase, pull, reset, stash, rollback): Local History gets a label and a
     /// snapshot of every locally changed file before, and a label after.
-    /// `None` runs `f` like [`with_repo`](Self::with_repo) (operations that keep the working tree).
+    /// Clean buffers follow the resulting files before returning; `None` omits the history labels.
     pub fn with_repo_recorded<T>(
         &self,
         at: Option<&Path>,
         operation: Option<&str>,
         f: impl FnOnce(&Repo) -> IdeResult<T>,
     ) -> IdeResult<T> {
-        let Some(name) = operation else { return self.with_repo_at(at, f) };
+        let Some(name) = operation else { return self.with_disk_sync(|| self.with_repo_at(at, f)) };
         self.history_label(&format!("Before {name}"));
         if let Ok(changed) = self.with_repo_at(at, |r| r.status()) {
             for file in changed.iter().take(HISTORY_BATCH_LIMIT) {
@@ -701,7 +708,7 @@ impl Project {
                 }
             }
         }
-        let result = self.with_repo_at(at, f);
+        let result = self.with_disk_sync(|| self.with_repo_at(at, f));
         self.history_label(&format!("After {name}"));
         result
     }

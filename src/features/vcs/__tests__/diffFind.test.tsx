@@ -40,6 +40,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
 }));
 
 import { DiffEditor } from "../DiffEditor";
+import type { DiffData } from "../diffInput";
 
 const diff = (right: object) =>
   ({
@@ -74,6 +75,24 @@ const press = async (index: number, code: string, shift = false) => {
 afterEach(() => useKeymap.setState({ overrides: {} }));
 
 describe("Find in the diff viewer", () => {
+  it("preserves external focus when loading and changing a working-tree preview", async () => {
+    const preview = (input: EditorInput) => (
+      <>
+        <button>Changes tree</button>
+        <DiffEditor input={input} />
+      </>
+    );
+    const { rerender } = render(preview(working));
+    const tree = screen.getByRole("button", { name: "Changes tree" });
+    tree.focus();
+    const oldPane = await pane(1);
+    expect(tree).toHaveFocus();
+    rerender(preview({ ...working, key: "diff:b.ts", data: { ...(working.data as DiffData), path: "/p/b.ts" } }));
+    await waitFor(() => expect(oldPane.dom.isConnected).toBe(false));
+    await pane(1);
+    expect(tree).toHaveFocus();
+  });
+
   it("opens the editor's find bar from the keymap and closes it with Esc", async () => {
     useKeymap.setState({ overrides: KEYMAP });
     render(<DiffEditor input={revisions} />);

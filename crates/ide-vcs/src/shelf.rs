@@ -19,6 +19,8 @@ struct Info {
     #[serde(default)]
     branch: Option<String>,
     files: Vec<crate::ChangedFile>,
+    #[serde(default)]
+    repo: Option<ide_core::IpcPath>,
 }
 
 fn now_ms() -> f64 {
@@ -67,6 +69,7 @@ pub fn list(shelf: &Path) -> IdeResult<Vec<ShelvedChangeList>> {
             name: id.clone(),
             time_ms: 0.0,
             branch: None,
+            repo: None,
             files: std::fs::read_to_string(dir.join(PATCH))
                 .map(|p| {
                     crate::patch::parse_patch(&p)
@@ -81,6 +84,7 @@ pub fn list(shelf: &Path) -> IdeResult<Vec<ShelvedChangeList>> {
             name: info.name,
             time_ms: info.time_ms,
             branch: info.branch,
+            repo: info.repo,
             files: crate::patch::parse_patch(&std::fs::read_to_string(dir.join(PATCH))?)
                 .into_iter()
                 .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path })
@@ -96,6 +100,11 @@ pub fn patch_of(shelf: &Path, id: &str) -> IdeResult<String> {
     Ok(std::fs::read_to_string(entry_dir(shelf, id)?.join(PATCH))?)
 }
 
+/// The repository captured when the shelf was made; legacy shelves used the primary repository.
+pub fn repository(shelf: &Path, id: &str) -> IdeResult<Option<PathBuf>> {
+    Ok(read_info(&entry_dir(shelf, id)?).and_then(|info| info.repo).map(|repo| repo.into_path_buf()))
+}
+
 pub fn delete(shelf: &Path, id: &str) -> IdeResult<()> {
     std::fs::remove_dir_all(entry_dir(shelf, id)?)?;
     Ok(())
@@ -107,8 +116,13 @@ pub fn rename(shelf: &Path, id: &str, name: &str) -> IdeResult<()> {
         return Err(IdeError::invalid("name must not be empty"));
     }
     let dir = entry_dir(shelf, id)?;
-    let mut info =
-        read_info(&dir).unwrap_or(Info { name: String::new(), time_ms: now_ms(), branch: None, files: vec![] });
+    let mut info = read_info(&dir).unwrap_or(Info {
+        name: String::new(),
+        time_ms: now_ms(),
+        branch: None,
+        repo: None,
+        files: vec![],
+    });
     info.name = name.to_string();
     std::fs::write(dir.join(INFO), serde_json::to_vec_pretty(&info).map_err(|e| IdeError::internal(e.to_string()))?)?;
     Ok(())
@@ -134,7 +148,13 @@ pub(crate) fn shelve(r: &Repo, shelf: &Path, name: &str, rel_paths: &[String]) -
     }
     let dir = shelf.join(&id);
     std::fs::create_dir_all(&dir)?;
-    let info = Info { name: name.to_string(), time_ms: now_ms(), branch: r.branch_info()?.head, files: files.clone() };
+    let info = Info {
+        name: name.to_string(),
+        time_ms: now_ms(),
+        branch: r.branch_info()?.head,
+        files: files.clone(),
+        repo: Some(r.root().to_path_buf().into()),
+    };
     let write = || -> IdeResult<()> {
         std::fs::write(dir.join(PATCH), patch.as_bytes())?;
         std::fs::write(
@@ -148,7 +168,7 @@ pub(crate) fn shelve(r: &Repo, shelf: &Path, name: &str, rel_paths: &[String]) -
         return Err(e);
     }
     revert_files(r, &files)?;
-    Ok(ShelvedChangeList { id, name: info.name, time_ms: info.time_ms, branch: info.branch, files })
+    Ok(ShelvedChangeList { id, name: info.name, time_ms: info.time_ms, branch: info.branch, repo: info.repo, files })
 }
 
 /// Restores `files` to HEAD in both index and working tree; files absent from HEAD are removed.
@@ -318,7 +338,7 @@ pub fn diff_files(r: &Repo, shelf: &Path, id: &str) -> IdeResult<Vec<ShelfDiffFi
 }
 
 /// Import into the shelf without applying to the working tree.
-pub fn import_patch(shelf: &Path, name: &str, patch: &str) -> IdeResult<()> {
+pub fn import_patch(shelf: &Path, name: &str, patch: &str, repo: Option<&Path>) -> IdeResult<()> {
     let files = crate::patch::parse_patch(patch);
     if files.is_empty() || sections(patch).len() != files.len() {
         return Err(IdeError::invalid("no file changes found in the patch"));
@@ -334,6 +354,7 @@ pub fn import_patch(shelf: &Path, name: &str, patch: &str) -> IdeResult<()> {
         name: name.to_string(),
         time_ms: now_ms(),
         branch: None,
+        repo: repo.map(|r| r.to_path_buf().into()),
         files: files
             .into_iter()
             .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path })
