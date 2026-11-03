@@ -422,15 +422,22 @@ fn capitalize(s: &str) -> String {
 /// blocks and inline code spans.
 pub fn prose_regions(text: &str) -> Vec<Region> {
     let mut out = Vec::new();
-    let mut fence: Option<&str> = None;
+    // The open fence: its character and length.
+    let mut fence: Option<(char, usize)> = None;
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
         let start = offset;
         offset += line.len();
         let trimmed = line.trim_start();
-        let marker = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m));
+        let marker = ['`', '~'].into_iter().find_map(|c| {
+            let n = trimmed.len() - trimmed.trim_start_matches(c).len();
+            (n >= 3).then_some((c, n))
+        });
         match (fence, marker) {
-            (Some(open), Some(m)) if m == open => {
+            // CommonMark: a closing fence uses the same character, is at least as
+            // long as the opening one and has no info string, so a ```` fence can
+            // show a ``` block.
+            (Some((open, open_len)), Some((c, n))) if c == open && n >= open_len && trimmed[n..].trim().is_empty() => {
                 fence = None;
                 continue;
             }
@@ -719,6 +726,14 @@ mod tests {
         let regions = prose_regions(text);
         let spans: Vec<_> = regions.iter().map(|r| &text[r.start..r.end]).collect();
         assert_eq!(spans, ["Some prose ", " here\n", "more\n"]);
+    }
+
+    #[test]
+    fn markdown_fences_close_on_a_matching_fence_only() {
+        let text = "Example:\n````markdown\n```rust\nfn wrng() {}\n```\n````\nmore\n~~~\n```\nnot clsed\n~~~~\nend\n";
+        let regions = prose_regions(text);
+        let spans: Vec<_> = regions.iter().map(|r| &text[r.start..r.end]).collect();
+        assert_eq!(spans, ["Example:\n", "more\n", "end\n"]);
     }
 
     #[test]
