@@ -755,14 +755,18 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
       return null;
     }
-    say(`Cannot resolve the classpath: ${message}\n`, "stderr");
+    const beginRule =
+      /beginRule|does not match outer scope rule/i.test(message) &&
+      " Multi-module Maven classpath conflict in jdtls; retry, or run `mvn -pl <module> spring-boot:run`.";
+    const detail = `${message}${beginRule || ""}`;
+    say(`Cannot resolve the classpath: ${detail}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
     notifications().notify({
       group: "run",
       level: "error",
       title: `Cannot run '${config.name}'`,
-      body: message,
+      body: detail,
       actions,
     });
     return null;

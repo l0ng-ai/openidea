@@ -269,6 +269,16 @@ fn not_imported(e: &IdeError) -> bool {
         || m.contains("cannot find")
 }
 
+/// Eclipse Jobs scheduling-rule conflicts from m2e while resolving a multi-module classpath.
+///
+/// `java.project.getClasspaths` runs under the launch module's rule; m2e may refresh a
+/// dependency module POM under a nested rule (`Attempted to beginRule: P/dep, does not
+/// match outer scope rule: P/app`). Retrying after a short wait usually clears it.
+fn scheduling_conflict(e: &IdeError) -> bool {
+    let m = e.message.to_ascii_lowercase();
+    m.contains("attempted to beginrule") || m.contains("does not match outer scope rule")
+}
+
 /// The java-debug bundle is not loaded into jdtls.
 fn missing_bundle(e: &IdeError) -> bool {
     let m = e.message.to_ascii_lowercase();
@@ -418,7 +428,8 @@ impl LspManager {
         .await
     }
 
-    /// Like [`jdtls_command`](Self::jdtls_command), retried while the project is still importing.
+    /// Like [`jdtls_command`](Self::jdtls_command), retried while the project is still importing
+    /// or while m2e hits a transient Eclipse scheduling-rule conflict.
     async fn jdtls_project_command(
         &self,
         path: &Path,
@@ -432,6 +443,10 @@ impl LspManager {
                 Err(e) if not_imported(&e) && Instant::now() < deadline => {
                     tracing::debug!("{command}: {e}; waiting for the project import");
                     cancellable_wait(cancel, tokio::time::sleep(Duration::from_millis(1500))).await?;
+                }
+                Err(e) if scheduling_conflict(&e) && Instant::now() < deadline => {
+                    tracing::debug!("{command}: {e}; retrying after scheduling-rule conflict");
+                    cancellable_wait(cancel, tokio::time::sleep(Duration::from_millis(500))).await?;
                 }
                 r => return r,
             }
@@ -538,15 +553,38 @@ impl LspManager {
             }
             _ => (Vec::new(), 0),
         };
-        let cp = self.java_classpath(module, test, cancel).await?;
+        // Pause autobuild around getClasspaths unless a caller already did (delegated
+        // Maven launches hold [`JavaExternalBuild`] across this call). Otherwise m2e can
+        // refresh a sibling module POM under a nested Eclipse scheduling rule and fail
+        // with beginRule / outer scope conflicts (#933).
+        let pause = {
+            let (server, _) = self.jdtls(module, cancel).await?;
+            if server.java_autobuild_suspended.load(std::sync::atomic::Ordering::SeqCst) {
+                None
+            } else {
+                Some(self.java_external_build(module, cancel).await?)
+            }
+        };
+        let cp = self.java_classpath(module, test, cancel).await;
         let java_home = match self.java_vm_location(module, cancel).await {
             Ok(home) => home,
-            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+            Err(e) if e.kind == ErrorKind::Cancelled => {
+                drop(pause);
+                return Err(e);
+            }
             Err(e) => {
                 tracing::debug!("java.project.getSettings: {e}");
                 None
             }
         };
+        let cp = match cp {
+            Ok(cp) => cp,
+            Err(e) => {
+                drop(pause);
+                return Err(e);
+            }
+        };
+        drop(pause);
         Ok(JavaLaunchInfo {
             build,
             project_root: cp.project_root,
@@ -859,5 +897,10 @@ mod tests {
         assert!(not_imported(&e));
         assert!(missing_bundle(&IdeError::invalid("No delegateCommandHandler for vscode.java.startDebugSession")));
         assert!(!missing_bundle(&e));
+        let rule = IdeError::invalid(
+            "Attempted to beginRule: P/tuitui-framework, does not match outer scope rule: P/tuitui-admin",
+        );
+        assert!(scheduling_conflict(&rule));
+        assert!(!scheduling_conflict(&e));
     }
 }
