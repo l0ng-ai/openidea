@@ -131,6 +131,8 @@ export function startPointerDrag(
       ghost.classList.add(styles.ghost!);
       ghost.setAttribute("aria-hidden", "true");
       Object.assign(ghost.style, {
+        // Inline: the copied classes (a tab's `position: relative`) can load after `.ghost`.
+        position: "fixed",
         left: `${r.left}px`,
         top: `${r.top}px`,
         width: `${r.width}px`,
