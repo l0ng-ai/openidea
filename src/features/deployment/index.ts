@@ -15,6 +15,7 @@ import { autoUploadOn, registerDeploymentActions } from "./actions";
 import { DeploymentDialogs } from "./Dialogs";
 import { transferMenuEntries } from "./model";
 import { REMOTE_HOST_WINDOW, useDeployment } from "./store";
+import { installDeploymentEditorHost } from "./windowBridge";
 
 /** Deployed URL of the path the last menu was prepared for. */
 let webUrlFor: { path: string; url: string | null } | null = null;
@@ -70,6 +71,7 @@ export function activate(): () => void {
     unsubFocus,
     unsubProject,
     registerDeploymentActions(),
+    installDeploymentEditorHost(),
     registerToolWindow({
       id: REMOTE_HOST_WINDOW,
       title: "Remote Host",

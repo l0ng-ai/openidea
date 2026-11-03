@@ -179,6 +179,7 @@ pub fn run() {
                 macos::forget_fullscreen(window.label());
             }
             window_groups::destroyed(window.app_handle(), window.label());
+            windows::close_deployment_window(window.app_handle(), window.label());
             if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
                 let _ = settings.destroy();
             }
@@ -188,7 +189,7 @@ pub fn run() {
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.forget(window.label());
             }
-            if !windows::is_settings_window(window.label()) {
+            if windows::auxiliary_parent(window.label()).is_none() {
                 windows::continue_quit(window.app_handle(), Some(window.label()));
             }
         }
@@ -234,7 +235,7 @@ fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     match windows::target_window(app) {
         Some(w) => {
             // Settings is modal for its project window: only app-level items get through, to the parent.
-            let label = match windows::settings_parent(w.label()) {
+            let label = match windows::auxiliary_parent(w.label()) {
                 Some(parent)
                     if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
                 {

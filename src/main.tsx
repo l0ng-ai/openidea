@@ -9,6 +9,8 @@ import { installKeyboardDispatcher } from "./platform/keymap";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
+import { DeploymentWindow, activateDeploymentWindow } from "./features/deployment/window";
+import { deploymentWindowParent } from "./features/deployment/windowBridge";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -21,8 +23,12 @@ installRepeatedDoubleClick();
 
 // The native Settings window (`settings-<parent>`) loads this page too.
 const settingsParent = settingsWindowParent();
+const deploymentParent = deploymentWindowParent();
 
-if (settingsParent !== null) {
+if (deploymentParent !== null) {
+  activateSecondaryWindow();
+  activateDeploymentWindow();
+} else if (settingsParent !== null) {
   activateSecondaryWindow();
   activateSettingsWindowFeatures(settingsParent);
 } else {
@@ -44,8 +50,10 @@ if (settingsParent !== null) {
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>{settingsParent !== null ? <SettingsWindow /> : <Workbench />}</React.StrictMode>,
+  <React.StrictMode>
+    {deploymentParent !== null ? <DeploymentWindow /> : settingsParent !== null ? <SettingsWindow /> : <Workbench />}
+  </React.StrictMode>,
 );
 hideSplash();
 // Views split out of the start-up bundle load in the background once the UI is up.
-if (settingsParent === null) prefetchLazyComponents();
+if (settingsParent === null && deploymentParent === null) prefetchLazyComponents();

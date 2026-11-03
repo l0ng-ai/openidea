@@ -752,6 +752,8 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**  Opens or focuses this project's independent deployment comparison window. */
+	windowOpenDeployment: (server: string, paths: string[], background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_deployment", { server, paths, background })),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
@@ -772,6 +774,8 @@ export const commands = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Deployment comparison window: server and local selection to compare. */
+	deployment: DeploymentLaunch | null,
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -2539,6 +2543,11 @@ export type DeploymentCoverage = {
 	skipped: TransferError[],
 };
 
+export type DeploymentLaunch = {
+	server: string,
+	paths: IpcPath[],
+};
+
 export type DeploymentMapping = {
 	/**  Project-relative folder, or absolute inside the project; empty = the project root. */
 	local?: string,
@@ -4204,6 +4213,8 @@ export type Launch = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Deployment comparison window: server and local selection to compare. */
+	deployment: DeploymentLaunch | null,
 };
 
 export type LaunchConfig = {

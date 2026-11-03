@@ -87,6 +87,19 @@ pub async fn window_open_settings(
     windows::open_settings_window(&app, &window, page, new_projects, background)
 }
 
+/// Opens or focuses this project's independent deployment comparison window.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_deployment(
+    app: AppHandle,
+    window: WebviewWindow,
+    server: String,
+    paths: Vec<PathBuf>,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_deployment_window(&app, &window, server, paths, background)
+}
+
 /// Focuses the next / previous window (⌘` / ⇧⌘`).
 #[tauri::command]
 #[specta::specta]

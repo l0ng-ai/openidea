@@ -209,7 +209,15 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
-export function DiffEditor({ input, toolbarActions }: { input: EditorInput; toolbarActions?: ReactNode }) {
+export function DiffEditor({
+  input,
+  toolbarActions,
+  initialMode,
+}: {
+  input: EditorInput;
+  toolbarActions?: ReactNode;
+  initialMode?: DiffMode;
+}) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
   const [attached, setAttached] = useState<Attached | null>(null);
@@ -217,7 +225,10 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   /** Text of the sides that are not live documents. */
   const [statics, setStatics] = useState<{ a: string | null; b: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [opts, setOptsState] = useState<DiffViewOptions>(loadDiffOptions);
+  const [opts, setOptsState] = useState<DiffViewOptions>(() => {
+    const saved = loadDiffOptions();
+    return initialMode ? { ...saved, mode: initialMode } : saved;
+  });
   const [lang, setLang] = useState<Extension | null>(null);
   const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);

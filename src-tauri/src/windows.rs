@@ -28,6 +28,7 @@ pub const LAUNCH_EVENT: &str = "openidea://launch";
 const MAIN: &str = "main";
 const PREFIX: &str = "project-";
 const SETTINGS_PREFIX: &str = "settings-";
+const DEPLOYMENT_PREFIX: &str = "deployment-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
@@ -47,6 +48,15 @@ pub struct Launch {
     pub settings_page: Option<String>,
     /// Settings windows: edit the global layer only ("Settings for New Projects").
     pub new_projects: bool,
+    /// Deployment comparison window: server and local selection to compare.
+    pub deployment: Option<DeploymentLaunch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentLaunch {
+    pub server: String,
+    pub paths: Vec<ide_core::IpcPath>,
 }
 
 /// A project folder on the host of an SSH configuration.
@@ -140,6 +150,24 @@ pub fn is_settings_window(label: &str) -> bool {
     settings_parent(label).is_some()
 }
 
+pub fn deployment_parent(label: &str) -> Option<&str> {
+    label.strip_prefix(DEPLOYMENT_PREFIX)
+}
+
+pub fn auxiliary_parent(label: &str) -> Option<&str> {
+    settings_parent(label).or_else(|| deployment_parent(label))
+}
+
+pub fn deployment_label(parent: &str) -> String {
+    format!("{DEPLOYMENT_PREFIX}{parent}")
+}
+
+pub fn close_deployment_window(app: &AppHandle, parent: &str) {
+    if let Some(w) = app.get_webview_window(&deployment_label(parent)) {
+        let _ = w.destroy();
+    }
+}
+
 pub fn settings_label(parent: &str) -> String {
     format!("{SETTINGS_PREFIX}{parent}")
 }
@@ -151,9 +179,9 @@ pub fn close_settings_window(app: &AppHandle, parent: &str) {
     }
 }
 
-/// Project windows (everything but settings windows), for counting and cycling.
+/// Project windows (excluding auxiliary windows), for counting and cycling.
 pub fn project_window_labels(app: &AppHandle) -> Vec<String> {
-    sorted_labels(app.webview_windows().keys().map(String::as_str).filter(|l| !is_settings_window(l)))
+    sorted_labels(app.webview_windows().keys().map(String::as_str).filter(|l| auxiliary_parent(l).is_none()))
 }
 
 /// Sort key: `main` first, then `project-<n>` by n, then anything else.
@@ -230,7 +258,7 @@ pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
 /// The window whose open project is `root` (already canonical).
 pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow> {
     let state = app.try_state::<AppState>()?;
-    app.webview_windows().into_iter().filter(|(label, _)| !is_settings_window(label)).find_map(|(label, w)| {
+    app.webview_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
         let project = state.project(&label).ok()?;
         (project.root == root && !project.light).then_some(w)
     })
@@ -771,6 +799,62 @@ pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
     }
 }
 
+/// Opens or focuses an independent comparison sharing `parent`'s project.
+pub fn open_deployment_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    server: String,
+    paths: Vec<PathBuf>,
+    background: Option<String>,
+) -> IdeResult<()> {
+    let parent_label = AppState::owner_window(parent.label());
+    // Resolve before creating a window, so a stale action cannot compare another project.
+    app.state::<AppState>().project(parent_label)?;
+    let label = deployment_label(parent_label);
+    let launch = Launch {
+        deployment: Some(DeploymentLaunch { server, paths: paths.into_iter().map(Into::into).collect() }),
+        ..Default::default()
+    };
+    app.state::<WindowsState>().set_launch(&label, launch);
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
+        focus(&existing);
+        return Ok(());
+    }
+    let parent = app.get_webview_window(parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
+    let mut config = window_config(app)?;
+    config.label = label.clone();
+    config.title = "Deployment Comparison".into();
+    (config.width, config.height) = (1400.0, 900.0);
+    (config.min_width, config.min_height) = (Some(800.0), Some(500.0));
+    config.center = false;
+    config.visible = false;
+    config.maximized = false;
+    config.fullscreen = false;
+    config.drag_drop_enabled = false;
+    if let Some(color) = background.as_deref().and_then(hex_color) {
+        config.background_color = Some(color);
+    }
+    // A top-level native window can move to another monitor and has its own taskbar entry.
+    let window = WebviewWindowBuilder::from_config(app, &config)
+        .and_then(|b| dev_font_preferences(b).build())
+        .map_err(|e| IdeError::internal(format!("cannot create deployment window: {e}")))?;
+    #[cfg(target_os = "linux")]
+    decorate_csd(&window);
+    apply_zoom(app, &window);
+    #[cfg(target_os = "macos")]
+    align_titlebar(app, &window);
+    #[cfg(target_os = "macos")]
+    let placement = fit_settings_window(&window, &parent);
+    #[cfg(not(target_os = "macos"))]
+    let placement = place_settings_window(&window, &parent);
+    if let Err(e) = placement {
+        tracing::warn!("cannot place deployment window: {e}");
+    }
+    focus(&window);
+    Ok(())
+}
+
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
 /// separate window centred over its parent, sized like IDEA's Settings.
 pub fn open_settings_window(
@@ -1246,6 +1330,19 @@ mod tests {
         assert_eq!(settings_parent("main"), None);
         assert!(is_settings_window("settings-project-1"));
         assert!(!is_settings_window("project-1"));
+    }
+
+    #[test]
+    fn deployment_comparisons_share_their_own_project_without_becoming_project_windows() {
+        assert_eq!(deployment_label("project-2"), "deployment-project-2");
+        assert_eq!(AppState::owner_window("deployment-project-2"), "project-2");
+        assert_eq!(AppState::owner_window("deployment-main"), "main");
+        let labels = ["deployment-main", "project-2", "main", "settings-main", "deployment-project-2"];
+        assert_eq!(
+            sorted_labels(labels.into_iter().filter(|label| auxiliary_parent(label).is_none())),
+            ["main", "project-2"]
+        );
+        assert!(!is_settings_window("deployment-project-2"));
     }
 
     #[test]

@@ -1,14 +1,14 @@
 //! IPC commands of `ide_host::ops::doc` (the shared implementation).
 
 use crate::state::AppState;
-use ide_core::{ChangeSet, DocId, IdeResult, OutlineItem, Range};
+use ide_core::{ChangeSet, DocId, IdeEvent, IdeResult, OutlineItem, Range};
 #[allow(unused_imports)]
 pub use ide_host::ops::doc::*;
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
 use ide_workspace::{DocumentInfo, HistoryEntry};
 use std::path::PathBuf;
-use tauri::{State, Window};
+use tauri::{Emitter, Manager, State, Window};
 
 /// Opens a document. Async: reading and decoding a large file must not block
 /// the main thread (synchronous commands run on it).
@@ -38,8 +38,22 @@ pub async fn doc_edit(
     changes: ChangeSet,
 ) -> IdeResult<u32> {
     let host = state.host.clone();
-    let window = window.label().to_owned();
-    blocking(move || ide_host::ops::doc::edit(&host, &window, doc, base_version, changes)).await
+    let label = window.label().to_owned();
+    let patch = changes.changes.clone();
+    let version = blocking(move || ide_host::ops::doc::edit(&host, &label, doc, base_version, changes)).await?;
+    // File-backed diff panes share the project's document with the main editor.
+    // UI edits normally only need an acknowledgement in their own webview;
+    // the other webview needs the corresponding patch to stay in sync.
+    let owner = AppState::owner_window(window.label());
+    let peer = if owner == window.label() { crate::windows::deployment_label(owner) } else { owner.to_owned() };
+    if window.app_handle().get_webview_window(&peer).is_some() {
+        let _ = window.emit_to(
+            peer.as_str(),
+            crate::events::IDE_EVENT,
+            IdeEvent::DocPatched { doc, base_version, version, changes: patch, workspace_edit: false },
+        );
+    }
+    Ok(version)
 }
 
 #[tauri::command]
