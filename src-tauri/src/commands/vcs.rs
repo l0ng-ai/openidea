@@ -656,8 +656,13 @@ pub fn vcs_changelists_save(window: Window, state: State<'_, AppState>, changeli
 /// Create Patch › Save to file.
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_write_patch(state: State<'_, AppState>, path: PathBuf, patch: String) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_write_patch(&state.host, "", path, patch).await
+pub async fn vcs_write_patch(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    patch: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_write_patch(&state.host, window.label(), path, patch).await
 }
 
 #[tauri::command]
