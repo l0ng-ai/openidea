@@ -62,6 +62,7 @@ import { tx } from "@/platform/i18n";
 import {
   CONFIGURATION_NAVIGATION_MAX_AGE,
   configurationNavigationRevision,
+  navigationWord,
   hasConfigurationNavigation,
   invalidateConfigurationNavigation,
   isConfigurationDocument,
@@ -344,7 +345,7 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
   const links = knownLinks(view);
   const ref = (links && linkReference(view.state.doc, links, pos)) ?? textReference(view.state.doc, pos);
   if (ref) return { from: ref.from, to: ref.to, link: true };
-  const word = view.state.wordAt(pos);
+  const word = navigationWord(view, pos);
   return word && word.from < word.to ? { from: word.from, to: word.to, link: false } : null;
 }
 

@@ -12,7 +12,7 @@ const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { _emitEditorEvent } = await import("@/editor/api");
 const { lspDoc } = await import("./lsp");
 const { navigationExtension } = await import("./navigation");
-const { requestNavigation, invalidateConfigurationNavigation, installConfigurationNavigationEvents } =
+const { requestNavigation, invalidateConfigurationNavigation, installConfigurationNavigationEvents, navigationWord } =
   await import("./configurationNavigation");
 
 const target: Location = {
@@ -49,6 +49,16 @@ afterEach(() => {
 });
 
 describe("configuration navigation result reuse", () => {
+  it.each(["yaml", "properties"])("%s names include separators but exclude syntax and adjacent values", (language) => {
+    const view = editor(1, language, '  "spring.datasource.driver-class-name": example.Driver');
+    for (const offset of [3, 9, 20, 26, 32, 35]) {
+      const range = navigationWord(view, offset)!;
+      expect(view.state.sliceDoc(range.from, range.to)).toBe("spring.datasource.driver-class-name");
+    }
+    expect(navigationWord(view, 1)).toBeNull();
+    expect(navigationWord(view, 39)).toBeNull();
+  });
+
   it("shares an in-flight hover lookup with a click anywhere in the same key", async () => {
     let resolve!: (r: Awaited<ReturnType<typeof commands.lspGoto>>) => void;
     lspGoto.mockImplementationOnce(

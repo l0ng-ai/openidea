@@ -607,6 +607,18 @@ describe("modifier-hover navigation recovery", () => {
     },
   );
 
+  it.each(["yaml", "properties"])("%s underlines the entire hyphenated configuration name", async (language) => {
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    const view = editor("driver-class-name: example.Driver", language);
+    for (const pos of [1, 6, 8, 12, 15]) {
+      move(view, pos);
+      await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("driver-class-name"));
+    }
+    await gotoTargets(view, "definition", 14);
+    expect(cmd.lspGoto).toHaveBeenCalledOnce();
+    expect(openFile).toHaveBeenCalledOnce();
+  });
+
   it("invalidates the hover marker after dependencies change", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([target]));
     const view = editor("port: 8080", "yaml");

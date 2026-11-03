@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { test, expect, type Page } from "@playwright/test";
 
 async function keyPosition(page: Page) {
-  const line = page.locator("#config .cm-line").filter({ hasText: "agent-id" });
+  const line = page.locator("#config .cm-line").filter({ hasText: "driver-class-name" });
   const box = (await line.boundingBox())!;
   // Skip the two-space indentation, land within the actual key.
   return { x: box.x + 45, y: box.y + box.height / 2 };
@@ -10,7 +10,7 @@ async function keyPosition(page: Page) {
 async function open(page: Page) {
   await page.addInitScript(() => Object.defineProperty(Navigator.prototype, "platform", { get: () => "MacIntel" }));
   await page.goto("/e2e/configurationNavigation.html");
-  await expect(page.locator("#config .cm-content")).toContainText("agent-id");
+  await expect(page.locator("#config .cm-content")).toContainText("driver-class-name");
 }
 async function metrics(page: Page) {
   return page.evaluate(() =>
@@ -34,7 +34,7 @@ test("modifier hover and repeated clicks share results; editing Java invalidates
   const key = await keyPosition(page);
   await page.keyboard.down("Meta");
   await page.mouse.move(key.x, key.y);
-  await expect(page.locator(".cm-lsp-link")).toHaveText("agent-id");
+  await expect(page.locator(".cm-lsp-link")).toHaveText("driver-class-name");
   await expect(page.locator(".cm-lsp-link")).toHaveCSS("cursor", "pointer");
   await expect(page.locator(".cm-lsp-link")).toHaveCSS("color", "rgb(33, 92, 200)");
   expect((await metrics(page)).hoverRequests).toBe(0);
@@ -85,7 +85,7 @@ test("ordinary hover still shows configuration documentation", async ({ page }) 
   await open(page);
   const key = await keyPosition(page);
   await page.mouse.move(key.x, key.y);
-  await expect(page.locator(".cm-lsp-hover")).toContainText("dingtalk.agent-id String");
+  await expect(page.locator(".cm-lsp-hover")).toContainText("dingtalk.driver-class-name String");
   expect((await metrics(page)).requests).toBe(0);
   expect((await metrics(page)).hoverRequests).toBeGreaterThan(0);
 });

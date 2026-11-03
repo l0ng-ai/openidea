@@ -42,7 +42,10 @@ commands.lspGoto = async () => {
 };
 commands.lspHover = async () => {
   hoverRequests++;
-  return { status: "ok", data: { contents: { kind: "plaintext", value: "dingtalk.agent-id String" }, range: null } };
+  return {
+    status: "ok",
+    data: { contents: { kind: "plaintext", value: "dingtalk.driver-class-name String" }, range: null },
+  };
 };
 commands.lspDocumentLinks = async () => ({ status: "ok", data: [] });
 commands.lspDocumentHighlights = async () => ({ status: "ok", data: [] });
@@ -60,7 +63,7 @@ const java = new EditorView({
 const config = new EditorView({
   parent: configHost,
   state: EditorState.create({
-    doc: "dingtalk:\n  agent-id: demo\n",
+    doc: "dingtalk:\n  driver-class-name: demo\n",
     extensions: [
       EditorState.languageData.of(() => [{ wordChars: "-" }]),
       lspDoc.of({ doc: 1, path: "/fixture/application.yml", language: "yaml", uiMode: "YAML", readOnly: false }),

@@ -39,6 +39,19 @@ export function isConfigurationDocument(view: EditorView): boolean {
   return language === "yaml" || language === "properties";
 }
 
+/** Configuration names include hyphens and dots even when the editor's
+ * language word rules split them. Share this range between decoration and lookup. */
+export function navigationWord(view: EditorView, offset: number): { from: number; to: number } | null {
+  if (!isConfigurationDocument(view)) return view.state.wordAt(offset);
+  const line = view.state.doc.lineAt(offset);
+  const nameChar = /[\p{L}\p{N}_.$-]/u;
+  let from = offset - line.from;
+  let to = from;
+  while (from > 0 && nameChar.test(line.text[from - 1]!)) from--;
+  while (to < line.text.length && nameChar.test(line.text[to]!)) to++;
+  return from < to ? { from: line.from + from, to: line.from + to } : null;
+}
+
 /** Indexing/refresh can be progress from this very lookup. Do not cancel an
  * explicit click when its own server task finishes; simply don't retain that
  * answer. Source edits/restarts still invalidate the request generation. */
@@ -51,7 +64,7 @@ function refreshConfigurationNavigation() {
 
 export function hasConfigurationNavigation(view: EditorView, offset: number): boolean {
   const doc = docOf(view);
-  const word = view.state.wordAt(offset);
+  const word = navigationWord(view, offset);
   if (!doc || !word) return false;
   const entry = results.get(`${doc.doc}:${word.from}:${word.to}`);
   return (
@@ -66,7 +79,7 @@ export function hasConfigurationNavigation(view: EditorView, offset: number): bo
 
 export function requestNavigation(view: EditorView, offset: number, kind: GotoKind): Promise<Location[]> {
   const doc = docOf(view)!;
-  const word = view.state.wordAt(offset);
+  const word = navigationWord(view, offset);
   if (!isConfigurationDocument(view) || kind !== "definition" || !word)
     return lspRequest(() => commands.lspGoto(doc.doc, offsetToPos(view.state.doc, offset), kind));
   const key = `${doc.doc}:${word.from}:${word.to}`;
