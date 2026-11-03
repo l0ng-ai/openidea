@@ -226,7 +226,7 @@ export async function runRemote(
         group: "vcs",
         level: "info",
         key: "vcs.remote",
-        title: one ? `Pushed ${plural(one.commits, "commit")} to ${one.to}` : `${doneTitle} successful`,
+        title: one ? pushedTitle(one.commits, one.to) : `${doneTitle} successful`,
         body: lastLine && !/%/.test(lastLine) ? lastLine : undefined,
       });
     }
@@ -267,6 +267,10 @@ const headCommit = (repo: string | null) =>
   );
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** "Pushed 3 commits to origin/main", translated per count. */
+const pushedTitle = (n: number, to: string) =>
+  n === 1 ? tx`Pushed ${n} commit to ${to}` : tx`Pushed ${n} commits to ${to}`;
 
 /** IDEA's Update Project result: "N files updated in M commits" with View Commits. */
 async function notifyUpdated(updated: readonly UpdatedRange[]) {
