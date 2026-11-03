@@ -1,7 +1,7 @@
 /** The project open in this window. */
 import { confirmProjectTrust } from "./projectTrust";
 import { create } from "zustand";
-import { call, commands, type ProjectInfo, type Settings } from "./ipc";
+import { call, commands, isTauri, type ProjectInfo, type Settings } from "./ipc";
 import { isVirtualUri, virtualContainer, virtualName, virtualParent } from "./virtualDocs";
 
 interface ProjectState {
@@ -48,10 +48,31 @@ export function startupLaunchHandled(): Promise<void> {
   return (startupLaunch ?? Promise.resolve()).catch(() => {});
 }
 
+async function enterProjectWindow() {
+  if (isTauri()) {
+    try {
+      await call(commands.windowEnterProject());
+    } catch {
+      /* ignore in tests/unsupported */
+    }
+  }
+}
+
+async function enterWelcomeWindow() {
+  if (isTauri()) {
+    try {
+      await call(commands.windowEnterWelcome());
+    } catch {
+      /* ignore in tests/unsupported */
+    }
+  }
+}
+
 export async function openProject(path: string): Promise<ProjectInfo> {
   await confirmProjectTrust(path, "local");
   useProject.setState({ opening: true });
   try {
+    await enterProjectWindow();
     const project = await call(commands.openProject(path));
     useProject.setState({ project, settings: project.settings, lightEdit: false });
     return project;
@@ -62,6 +83,7 @@ export async function openProject(path: string): Promise<ProjectInfo> {
 
 /** Switches this window to LightEdit for the loose file `path` (kept when already in LightEdit). */
 export async function openLightEdit(path: string): Promise<void> {
+  await enterProjectWindow();
   const settings = await call(commands.lightEditOpen(path));
   useProject.setState({ project: null, settings, lightEdit: true });
 }
@@ -69,6 +91,7 @@ export async function openLightEdit(path: string): Promise<void> {
 export async function closeProject() {
   await commands.closeProject();
   useProject.setState({ project: null, lightEdit: false });
+  await enterWelcomeWindow();
 }
 
 export async function loadSettings() {

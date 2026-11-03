@@ -731,6 +731,10 @@ export const commands = {
 	 *  `ssh_config` (Remote Development); a new window connects itself.
 	 */
 	windowOpenRemote: (sshConfig: string, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { sshConfig, path, newWindow })),
+	/**  Transitions this window to project geometry and records its mode as project. */
+	windowEnterProject: () => typedError<null, IdeError>(__TAURI_INVOKE("window_enter_project")),
+	/**  Transitions this window to welcome geometry and records its mode as welcome. */
+	windowEnterWelcome: () => typedError<null, IdeError>(__TAURI_INVOKE("window_enter_welcome")),
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**

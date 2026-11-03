@@ -85,7 +85,8 @@ pub fn run() {
         tauri_plugin_window_state::Builder::default()
             .with_state_flags(window_state_flags())
             // One remembered geometry shared by every project's settings window.
-            .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
+            .skip_initial_state("main")
+            .map_label(windows::mapped_window_label)
             .build(),
     );
     let app = app
@@ -165,6 +166,12 @@ pub fn run() {
     .on_window_event(|window, event| match event {
         #[cfg(target_os = "linux")]
         tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
+        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+            if let Some(state) = window.try_state::<AppState>() {
+                let is_welcome = windows::is_welcome_window(window.label());
+                windows::record_current_geometry(window, is_welcome, &state.window_geometries);
+            }
+        }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -210,6 +217,9 @@ pub fn run() {
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
+                if let Ok(config_dir) = app.path().app_config_dir() {
+                    state.window_geometries.read().save(&config_dir);
+                }
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }

@@ -69,7 +69,24 @@ pub async fn window_open_remote(
 #[tauri::command]
 #[specta::specta]
 pub async fn window_new(app: AppHandle) -> IdeResult<String> {
-    windows::create_window(&app, None).map(|w| w.label().to_owned())
+    let w = windows::create_window(&app, None)?;
+    windows::set_welcome_window(w.label(), true);
+    let _ = windows::enter_welcome(&app, &w);
+    Ok(w.label().to_owned())
+}
+
+/// Transitions this window to project geometry and records its mode as project.
+#[tauri::command]
+#[specta::specta]
+pub fn window_enter_project(app: AppHandle, window: WebviewWindow) -> IdeResult<()> {
+    windows::enter_project(&app, &window)
+}
+
+/// Transitions this window to welcome geometry and records its mode as welcome.
+#[tauri::command]
+#[specta::specta]
+pub fn window_enter_welcome(app: AppHandle, window: WebviewWindow) -> IdeResult<()> {
+    windows::enter_welcome(&app, &window)
 }
 
 /// Opens this window's Settings window on `page` (or focuses it and navigates);

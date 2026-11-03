@@ -14,10 +14,11 @@ use crate::state::AppState;
 use crate::theme_frame::builtin_frame;
 use ide_core::settings::AppearanceSettings;
 use ide_core::{IdeError, IdeResult};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::utils::config::{Color, WindowConfig};
@@ -31,6 +32,187 @@ const SETTINGS_PREFIX: &str = "settings-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+
+pub const WELCOME_DEFAULT_SIZE: (f64, f64) = (800.0, 550.0);
+pub const WELCOME_MIN_SIZE: (f64, f64) = (720.0, 460.0);
+pub const PROJECT_DEFAULT_SIZE: (f64, f64) = (1440.0, 900.0);
+pub const PROJECT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
+const GEOMETRY_FILE: &str = "window-geometry.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub width: f64,
+    pub height: f64,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub maximized: bool,
+}
+
+impl WindowGeometry {
+    pub fn welcome_default() -> Self {
+        Self { width: WELCOME_DEFAULT_SIZE.0, height: WELCOME_DEFAULT_SIZE.1, x: None, y: None, maximized: false }
+    }
+
+    pub fn project_default() -> Self {
+        Self { width: PROJECT_DEFAULT_SIZE.0, height: PROJECT_DEFAULT_SIZE.1, x: None, y: None, maximized: false }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppWindowGeometries {
+    pub welcome: WindowGeometry,
+    pub project: WindowGeometry,
+}
+
+impl Default for AppWindowGeometries {
+    fn default() -> Self {
+        Self { welcome: WindowGeometry::welcome_default(), project: WindowGeometry::project_default() }
+    }
+}
+
+impl AppWindowGeometries {
+    pub fn load(config_dir: &Path) -> Self {
+        let path = config_dir.join(GEOMETRY_FILE);
+        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self, config_dir: &Path) {
+        let path = config_dir.join(GEOMETRY_FILE);
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+static WELCOME_WINDOWS: RwLock<Option<HashSet<String>>> = RwLock::new(None);
+
+pub fn is_welcome_window(label: &str) -> bool {
+    let guard = WELCOME_WINDOWS.read();
+    if let Some(set) = guard.as_ref() { set.contains(label) } else { label == MAIN }
+}
+
+pub fn set_welcome_window(label: &str, is_welcome: bool) {
+    let mut guard = WELCOME_WINDOWS.write();
+    let set = guard.get_or_insert_with(HashSet::new);
+    if is_welcome {
+        set.insert(label.to_owned());
+    } else {
+        set.remove(label);
+    }
+}
+
+#[allow(dead_code)]
+pub fn mapped_window_label(label: &str) -> &str {
+    if is_settings_window(label) {
+        "settings"
+    } else if is_welcome_window(label) {
+        "welcome"
+    } else {
+        label
+    }
+}
+
+pub fn enter_project(app: &AppHandle, window: &WebviewWindow) -> IdeResult<()> {
+    if let Some(state) = app.try_state::<AppState>() {
+        if is_welcome_window(window.label()) {
+            record_current_geometry(&window.as_ref().window(), true, &state.window_geometries);
+        }
+        set_welcome_window(window.label(), false);
+
+        let project = state.window_geometries.read().project.clone();
+        let _ = window.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
+            width: PROJECT_MIN_SIZE.0,
+            height: PROJECT_MIN_SIZE.1,
+        })));
+
+        if project.maximized {
+            let _ = window.maximize();
+        } else {
+            if window.is_maximized().unwrap_or(false) {
+                let _ = window.unmaximize();
+            }
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: project.width.max(PROJECT_MIN_SIZE.0),
+                height: project.height.max(PROJECT_MIN_SIZE.1),
+            }));
+            if let (Some(x), Some(y)) = (project.x, project.y) {
+                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            } else {
+                let _ = window.center();
+            }
+        }
+
+        if let Ok(config_dir) = app.path().app_config_dir() {
+            state.window_geometries.read().save(&config_dir);
+        }
+    }
+    Ok(())
+}
+
+pub fn enter_welcome(app: &AppHandle, window: &WebviewWindow) -> IdeResult<()> {
+    if let Some(state) = app.try_state::<AppState>() {
+        if !is_welcome_window(window.label()) {
+            record_current_geometry(&window.as_ref().window(), false, &state.window_geometries);
+        }
+        set_welcome_window(window.label(), true);
+
+        if window.is_maximized().unwrap_or(false) {
+            let _ = window.unmaximize();
+        }
+
+        let welcome = state.window_geometries.read().welcome.clone();
+        let _ = window.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
+            width: WELCOME_MIN_SIZE.0,
+            height: WELCOME_MIN_SIZE.1,
+        })));
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: welcome.width.max(WELCOME_MIN_SIZE.0),
+            height: welcome.height.max(WELCOME_MIN_SIZE.1),
+        }));
+
+        if let (Some(x), Some(y)) = (welcome.x, welcome.y) {
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+        } else {
+            let _ = window.center();
+        }
+
+        if let Ok(config_dir) = app.path().app_config_dir() {
+            state.window_geometries.read().save(&config_dir);
+        }
+    }
+    Ok(())
+}
+
+pub fn record_current_geometry(window: &tauri::Window, is_welcome: bool, geometries: &RwLock<AppWindowGeometries>) {
+    if is_settings_window(window.label()) {
+        return;
+    }
+    let Ok(scale) = window.scale_factor() else { return };
+    let Ok(maximized) = window.is_maximized() else { return };
+    let Ok(pos) = window.outer_position() else { return };
+    let Ok(size) = window.outer_size() else { return };
+    let pos = pos.to_logical::<f64>(scale);
+    let size = size.to_logical::<f64>(scale);
+
+    let mut g = geometries.write();
+    if is_welcome {
+        if !maximized && size.width >= WELCOME_MIN_SIZE.0 && size.height >= WELCOME_MIN_SIZE.1 {
+            g.welcome.width = size.width;
+            g.welcome.height = size.height;
+            g.welcome.x = Some(pos.x);
+            g.welcome.y = Some(pos.y);
+            g.welcome.maximized = false;
+        }
+    } else {
+        g.project.maximized = maximized;
+        if !maximized && size.width >= PROJECT_MIN_SIZE.0 && size.height >= PROJECT_MIN_SIZE.1 {
+            g.project.width = size.width;
+            g.project.height = size.height;
+            g.project.x = Some(pos.x);
+            g.project.y = Some(pos.y);
+        }
+    }
+}
 
 /// What a freshly opened window should do once its frontend is up.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -298,6 +480,41 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
     }
+
+    if is_welcome_window(&config.label) {
+        let welcome = state
+            .as_ref()
+            .map(|s| s.window_geometries.read().welcome.clone())
+            .unwrap_or_else(WindowGeometry::welcome_default);
+        config.width = welcome.width.max(WELCOME_MIN_SIZE.0);
+        config.height = welcome.height.max(WELCOME_MIN_SIZE.1);
+        config.min_width = Some(WELCOME_MIN_SIZE.0);
+        config.min_height = Some(WELCOME_MIN_SIZE.1);
+        config.maximized = false;
+        if let (Some(x), Some(y)) = (welcome.x, welcome.y) {
+            config.x = Some(x);
+            config.y = Some(y);
+            config.center = false;
+        } else {
+            config.center = true;
+        }
+    } else {
+        let project = state
+            .as_ref()
+            .map(|s| s.window_geometries.read().project.clone())
+            .unwrap_or_else(WindowGeometry::project_default);
+        config.width = project.width.max(PROJECT_MIN_SIZE.0);
+        config.height = project.height.max(PROJECT_MIN_SIZE.1);
+        config.min_width = Some(PROJECT_MIN_SIZE.0);
+        config.min_height = Some(PROJECT_MIN_SIZE.1);
+        config.maximized = project.maximized;
+        if let (Some(x), Some(y)) = (project.x, project.y) {
+            config.x = Some(x);
+            config.y = Some(y);
+            config.center = false;
+        }
+    }
+
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
@@ -352,6 +569,11 @@ fn align_titlebar(app: &AppHandle, window: &WebviewWindow) {
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
 pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
+    let has_launch = app
+        .try_state::<WindowsState>()
+        .and_then(|w| w.pending(MAIN))
+        .is_some_and(|l| l.project.is_some() || !l.files.is_empty() || l.remote.is_some());
+    set_welcome_window(MAIN, !has_launch);
     build_project_window(app, window_config(app)?)
 }
 
@@ -388,6 +610,7 @@ fn create_window_for(
     let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
+    set_welcome_window(&label, false);
     let mut config = window_config(app)?;
     config.label = label.clone();
     if let Some(title) = title {
