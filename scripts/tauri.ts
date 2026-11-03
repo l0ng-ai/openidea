@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { claimSession, preferredVitePort, withDevConfig, worktreeId, worktreeRoot } from "./dev-session.ts";
 import type { DevSession } from "./dev-session.ts";
+import { checkRustToolchain, withDevBuildDefaults } from "./dev-toolchain.ts";
 
 const require = createRequire(import.meta.url);
 const cli = require.resolve("@tauri-apps/cli/tauri.js");
@@ -65,6 +66,7 @@ async function main(): Promise<number> {
   }
   let vite: import("vite").ViteDevServer | undefined;
   try {
+    await checkRustToolchain();
     const { createServer } = await import("vite");
     vite = await createServer({
       root: worktreeRoot,
@@ -75,7 +77,7 @@ async function main(): Promise<number> {
     if (!session.devUrl) throw new Error("Vite did not expose a development URL");
     console.log(JSON.stringify(session, null, 2));
     console.log("Use pnpm dev:status after the app starts to find its MCP port.");
-    return await runCli(withDevConfig(args, session.devUrl));
+    return await runCli(withDevConfig(withDevBuildDefaults(args), session.devUrl));
   } finally {
     await vite?.close();
     claim.server.close();

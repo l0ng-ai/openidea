@@ -45,6 +45,21 @@ IDEA analyses Python more deeply, so "ready" doesn't mean the same work on
 both sides. Both are measured from the outside, the same way: see
 [`perf/compare`](perf/compare) to run it on your machine and projects.
 
+## Run locally
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev:app
+```
+
+The desktop launcher checks the Rust toolchain before starting Vite. Development
+builds default to one Cargo job and omit Rust debug information for the desktop
+package to reduce peak memory. Explicit Cargo arguments remain supported, for
+example `pnpm dev:app -- -j 2 --config profile.dev.package.openidea.debug=1`.
+If startup reports a memory allocation failure, save your work and close unused
+memory-heavy applications before retrying. `pnpm dev:status` checks whether this
+worktree's desktop app is running.
+
 ## Unity projects
 
 Open a Unity project's root folder (containing `Assets` and
