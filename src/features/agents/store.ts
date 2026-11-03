@@ -37,6 +37,8 @@ export interface Draft {
   /** Settings chosen for the next task, by option id (reset when the agent changes). */
   config: Record<string, string>;
   isolation: Isolation;
+  /** The user picked `isolation`: otherwise a task runs in the local checkout. */
+  isolationChosen?: boolean;
   /** `null`: the current branch. */
   base: string | null;
 }
@@ -96,7 +98,16 @@ function save(key: string, value: unknown) {
   }
 }
 
-const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "worktree", base: null };
+const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "local", base: null };
+
+/**
+ * The saved New Task settings. A worktree is used only when the user picked it: drafts
+ * saved before that choice was recorded carried the old default (`worktree`) instead.
+ */
+export function savedDraft(saved: Partial<Draft>): Draft {
+  const draft = { ...fallbackDraft, ...saved };
+  return draft.isolationChosen ? draft : { ...draft, isolation: "local" };
+}
 
 export const useAgents = create<AgentsState>(() => ({
   loaded: false,
@@ -106,7 +117,7 @@ export const useAgents = create<AgentsState>(() => ({
   entries: new Map(),
   changes: new Map(),
   providers: [],
-  draft: { ...fallbackDraft, ...load<Partial<Draft>>(DRAFT_KEY, {}) },
+  draft: savedDraft(load<Partial<Draft>>(DRAFT_KEY, {})),
   composers: new Map(),
   lastComposer: HOME,
   history: load<string[]>(HISTORY_KEY, []),
