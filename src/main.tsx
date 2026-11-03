@@ -5,6 +5,8 @@ import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
 import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
+import { guessOs } from "./platform/platformInfo";
+import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
@@ -18,6 +20,7 @@ if (import.meta.env.DEV && isTauri()) {
 }
 
 installRepeatedDoubleClick();
+if (guessOs() === "macos") installReorderedTapClick();
 
 // The native Settings window (`settings-<parent>`) loads this page too.
 const settingsParent = settingsWindowParent();
