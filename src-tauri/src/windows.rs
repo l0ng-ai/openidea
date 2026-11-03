@@ -789,12 +789,19 @@ pub fn opened_paths(urls: &[tauri::Url]) -> Vec<PathBuf> {
 
 /// What a window opens for a command-line path: a folder as its project, a file in LightEdit.
 pub fn path_launch(path: PathBuf) -> Launch {
-    if let Some(remote) = wsl_launch(&path) {
-        Launch { remote: Some(remote), ..Default::default() }
-    } else if path.is_dir() {
-        Launch { project: Some(path.into()), ..Default::default() }
-    } else {
+    let is_dir = path.is_dir();
+    launch_for(path, is_dir)
+}
+
+/// [`path_launch`] once the path is known to be a folder or not: only a WSL *folder* is a
+/// remote project, a file of the share stays a LightEdit file.
+fn launch_for(path: PathBuf, is_dir: bool) -> Launch {
+    if !is_dir {
         Launch { files: vec![path.into()], ..Default::default() }
+    } else if let Some(remote) = wsl_launch(&path) {
+        Launch { remote: Some(remote), ..Default::default() }
+    } else {
+        Launch { project: Some(path.into()), ..Default::default() }
     }
 }
 
@@ -1119,6 +1126,17 @@ mod tests {
         assert_eq!((launch.project, launch.files), (None, vec![file.into()]));
     }
 
+    #[test]
+    fn first_launch_keeps_wsl_files_apart_from_wsl_folders() {
+        let share = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\app");
+        let folder = launch_for(share.clone(), true);
+        let remote =
+            RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
+        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote), None, 0));
+        let file = launch_for(share.join("main.py"), false);
+        assert_eq!((file.remote, file.project, file.files.len()), (None, None, 1));
+    }
+
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
     }
@@ -1239,7 +1257,7 @@ mod tests {
         // Another distro's folder is a different project.
         let other = Holds::Wsl { distro: format!("{distro}-other"), path: linux_path.into() };
         assert!(!other.is_wsl_folder(&remote));
-        assert_eq!(path_launch(p(share)).remote, Some(remote));
+        assert_eq!(launch_for(p(share), true).remote, Some(remote));
     }
 
     #[test]
