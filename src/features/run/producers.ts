@@ -972,7 +972,7 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
 export function produceContext(input: ContextInput, env: ToolEnv): Produced | null {
   if (input.content !== undefined && input.line !== undefined) {
     const targets = fileTargets(input, input.content.slice(0, 400_000));
-    const inner = innermostTarget(input.content, targets, input.line, /\.py$/.test(input.path));
+    const inner = innermostTarget(input.content, targets, input.line, /\.(py|rb)$/.test(input.path));
     if (inner) {
       const p = elementProduction(input, env, inner);
       if (p) return p;
@@ -997,7 +997,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   let element: RunTarget | null = null;
   if (produced.scope === "element") {
     const targets = fileTargets(input, (input.content ?? "").slice(0, 400_000));
-    element = innermostTarget(input.content ?? "", targets, input.line ?? 0, /\.py$/.test(input.path));
+    element = innermostTarget(input.content ?? "", targets, input.line ?? 0, /\.(py|rb)$/.test(input.path));
     if (!element || element.kind === "main" || element.kind === "generate") return [produced];
   } else if (!produced.config.isTest) {
     return [produced];

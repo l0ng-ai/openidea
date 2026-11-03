@@ -67,9 +67,12 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
 function rubyVerbose<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T): T {
   if (config.kind === "rspec") return config;
   if (config.kind === "rake") {
-    return config.args.some((a) => a.startsWith("TESTOPTS="))
+    const at = config.args.findIndex((a) => a.startsWith("TESTOPTS="));
+    if (at < 0) return { ...config, args: [...config.args, "TESTOPTS=-v"] };
+    // Options already given (`--name=Class#test_x`): add ours unless verbosity was chosen.
+    return /(^|\s)(-v|--verbose)(\s|$)/.test(config.args[at]!)
       ? config
-      : { ...config, args: [...config.args, "TESTOPTS=-v"] };
+      : { ...config, args: config.args.map((a, i) => (i === at ? `${a} -v` : a)) };
   }
   const chosen = config.args.some((a) => a === "-v" || a === "--verbose");
   return chosen ? config : { ...config, args: [...config.args, "-v"] };

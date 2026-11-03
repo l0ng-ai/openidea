@@ -110,7 +110,11 @@ describe("Ruby test reporting", () => {
     expect(withTestReporting(cfg("ruby", "ruby", ["a_test.rb", "-v"])).args).toEqual(["a_test.rb", "-v"]);
     expect(withTestReporting(cfg("rake", "rake", ["test", "TESTOPTS=--seed 1"])).args).toEqual([
       "test",
-      "TESTOPTS=--seed 1",
+      "TESTOPTS=--seed 1 -v",
+    ]);
+    expect(withTestReporting(cfg("rake", "rake", ["test", "TESTOPTS=--name=Foo#test_a"])).args).toEqual([
+      "test",
+      "TESTOPTS=--name=Foo#test_a -v",
     ]);
     // RSpec has no parser yet: untouched.
     expect(withTestReporting(cfg("rspec", "rspec", ["spec"])).args).toEqual(["spec"]);
