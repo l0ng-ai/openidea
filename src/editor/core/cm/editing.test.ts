@@ -313,6 +313,31 @@ describe("fallback indentation for GDScript", () => {
   });
 });
 
+describe("fallback indentation for NEON", () => {
+  const neon = [
+    EditorState.tabSize.of(4),
+    indentUnit.of("    "),
+    commentTokens({
+      id: "neon",
+      name: "NEON",
+      extensions: ["neon"],
+      uiMode: null,
+      lineComment: "#",
+      blockComment: null,
+      indent: { tabSize: 4, insertSpaces: true },
+    }),
+  ];
+
+  it("indents after a key with no value, and not after a key with one", () => {
+    const opened = make("services:|", neon);
+    insertNewlineAndIndent(opened);
+    expect(show(opened)).toBe("services:\n    |");
+    const closed = make("a: 1|", neon);
+    insertNewlineAndIndent(closed);
+    expect(show(closed)).toBe("a: 1\n|");
+  });
+});
+
 describe("fallback indentation boundaries", () => {
   const fallback = (id: string, lineComment = "#") =>
     commentTokens({

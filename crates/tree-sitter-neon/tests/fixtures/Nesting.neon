@@ -1,0 +1,12 @@
+level1:
+    level2a:
+        level3: value
+    level2b:
+        level3a: one
+        level3b: two
+        level3c:
+            level4: deep
+    level2c: flat
+
+sibling:
+    key: val

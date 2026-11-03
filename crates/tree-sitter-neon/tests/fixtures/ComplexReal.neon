@@ -1,0 +1,26 @@
+section1:
+    -
+        in: %rootDir%
+        classes:
+            - *
+        exclude:
+            classes:
+                - *Data
+                - *DTO
+            having:
+                - Foo\Bar\Baz
+                - Qux\Quux\Corge
+                - Throwable
+
+section2:
+    item.first: Foo\Bar\Factory(%PARAM_A%, %PARAM_B%, ::intval(%PARAM_C%), encryption: tls)
+    item.second:
+        setup:
+            - addFilter(myFilter, @App\Filter\MyFilter)
+            - addFilter(otherFilter, @App\Filter\OtherFilter)
+    - Foo\Bar\Credentials(%CLIENT_ID%, %CLIENT_SECRET%)
+    - Foo\Bar\Provider([clientId: %CLIENT_ID%, clientSecret: %CLIENT_SECRET%, redirectUri: %REDIRECT_URI%])
+    - Foo\Bar\Webhook(%WEBHOOK_URL%)
+    - Foo\Bar\DirectoryProvider(%rootDir%)
+    - Foo\Bar\LockFactory(Foo\Bar\Store\SemaphoreStore())
+    - Foo\Bar\ImageManager(Foo\Bar\Drivers\Gd\Driver())

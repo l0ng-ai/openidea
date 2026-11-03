@@ -1,0 +1,14 @@
+simple_list: [1, 2, 3]
+simple_hash: {a: 1, b: 2}
+empty_list: []
+empty_hash: {}
+nested: [[1, 2], [3, 4]]
+nested_hash: {a: {b: c}}
+mixed: [a, b, c: 1, d: 2]
+trailing_comma: [1, 2, 3,]
+with_spaces: [ Mon, Tue, Wed ]
+multiline_inline:
+    - [a, b, c]
+    - {x: 1, y: 2}
+single_item: [only]
+nested_deep: {a: [1, {b: [2, 3]}]}

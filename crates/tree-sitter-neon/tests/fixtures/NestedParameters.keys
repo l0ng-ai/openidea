@@ -1,0 +1,11 @@
+ok
+0:parameters
+1:doctrine
+2:test123
+1:simple
+0:doctrine
+1:dbal
+2:connections
+3:default
+4:driver
+4:name

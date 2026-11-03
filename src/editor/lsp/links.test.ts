@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
-import { fragmentOffset, linkReference, looksLikePath, textReference } from "./links";
+import { fragmentOffset, linkReference, looksLikePath, neonReference, textReference } from "./links";
 
 const at = (src: string, marker = "|") => {
   const offset = src.indexOf(marker);
@@ -56,5 +56,47 @@ describe("links and fragments", () => {
     expect(fragmentOffset(html, "/i.html", "main")).toBe(html.indexOf("id="));
     expect(fragmentOffset("# Intro\n\n## Getting Started!\n", "/r.md", "getting-started")).toBe(9);
     expect(fragmentOffset("x", "/i.html", "nope")).toBeNull();
+  });
+});
+
+describe("neonReference", () => {
+  const neon = (src: string, path = "/p/phpstan.neon") => {
+    const { text, offset } = at(src);
+    return neonReference(text, offset, path);
+  };
+
+  it("finds a bare path in a list, as a value and among arguments", () => {
+    expect(neon("scanFiles:\n    - app/adm|iner.php\n")).toMatchObject({ kind: "path", value: "app/adminer.php" });
+    expect(neon("includes: vendor/rules.ne|on # x\n")).toMatchObject({ value: "vendor/rules.neon" });
+    expect(neon("a: Foo(b.ph|p, c)\n")).toMatchObject({ value: "b.php" });
+  });
+
+  it("covers the whole literal but drops a leading parameter from the path", () => {
+    const { text, offset } = at("- %rootDir%/src/a.p|hp\n");
+    const ref = neonReference(text, offset, "/p/phpstan.neon")!;
+    expect(ref).toMatchObject({ value: "src/a.php", from: 2 });
+    expect(ref.to).toBe(text.line(1).to);
+  });
+
+  it("takes any value only when asked, and never a key", () => {
+    const { text, offset } = at("paths:\n    - ap|p\n");
+    expect(neonReference(text, offset, "/p/phpstan.neon")).toBeNull();
+    expect(neonReference(text, offset, "/p/phpstan.neon", true)).toMatchObject({ kind: "path", value: "app" });
+    const stub = at("stubFiles:\n    - phpstan-plu|gin.stub\n");
+    expect(neonReference(stub.text, stub.offset, "/p/phpstan.neon", true)).toMatchObject({
+      value: "phpstan-plugin.stub",
+      from: stub.text.line(2).from + 6,
+      to: stub.text.line(2).to,
+    });
+    expect(neonReference(stub.text, stub.offset, "/p/phpstan.neon")).toMatchObject({ value: "phpstan-plugin.stub" });
+    const key = at("serv|ices:\n");
+    expect(neonReference(key.text, key.offset, "/p/phpstan.neon", true)).toBeNull();
+  });
+
+  it("ignores other values, comments and catalogues", () => {
+    expect(neon("a: Europe/Pra|gue\n")).toBeNull();
+    expect(neon("# see app/a.p|hp\n")).toBeNull();
+    expect(neon("a: 1 # see app/a.p|hp\n")).toBeNull();
+    expect(neon("a: app/a.p|hp\n", "/p/messages.cs.neon")).toBeNull();
   });
 });

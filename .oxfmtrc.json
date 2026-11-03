@@ -14,7 +14,8 @@
     "pnpm-lock.yaml",
     "**/*.toml",
     "fixtures",
-    "crates/**/tests/fixtures"
+    "crates/**/tests/fixtures",
+    "crates/tree-sitter-neon/src"
   ],
   "overrides": [
     {

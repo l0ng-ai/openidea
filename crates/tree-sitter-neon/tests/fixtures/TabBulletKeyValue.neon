@@ -1,0 +1,5 @@
+parameters:
+	ignoreErrors:
+		- identifier: assign.propertyType
+		  path: app/Http/Web/
+		  message: '#Form::\$on(Success|Error)#'

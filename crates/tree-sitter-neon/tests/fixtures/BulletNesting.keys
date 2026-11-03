@@ -1,0 +1,15 @@
+ok
+0:simple_bullets
+0:nested_bullets
+1:name
+1:age
+1:name
+1:age
+0:bullet_with_inline
+1:key
+1:another
+1:single
+0:mixed_levels
+1:items
+1:config
+2:enabled

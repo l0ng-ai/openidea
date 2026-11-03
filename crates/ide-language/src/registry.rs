@@ -53,6 +53,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("lua", include_str!("../../../languages/lua.toml")),
     ("makefile", include_str!("../../../languages/makefile.toml")),
     ("markdown", include_str!("../../../languages/markdown.toml")),
+    ("neon", include_str!("../../../languages/neon.toml")),
     ("nix", include_str!("../../../languages/nix.toml")),
     ("objective-c", include_str!("../../../languages/objective-c.toml")),
     ("objective-cpp", include_str!("../../../languages/objective-cpp.toml")),
@@ -378,6 +379,7 @@ mod tests {
     const UI_MODES: &[&str] = &[
         "AsciiDoc",
         "Batch",
+        "NEON",
         "C",
         "C++",
         "CQL",
@@ -793,6 +795,7 @@ mod tests {
             (".zshrc", "shellscript"),
             ("Build.ps1", "powershell"),
             ("build.bat", "bat"),
+            ("services.neon", "neon"),
             ("run.cmd", "bat"),
             ("schema.sql", "sql"),
             ("api.http", "http"),

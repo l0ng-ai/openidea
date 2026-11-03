@@ -1,0 +1,7 @@
+parameters:
+    appDir: /var/www
+
+settings:
+    errorTemplate: '%appDir%/Http/Web/@Templates/Error/500.phtml'
+    cachePath: %appDir%/cache
+    standalone: %appDir%

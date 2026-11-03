@@ -1,0 +1,14 @@
+discovery:
+    -
+        in: %appDir%
+        classes:
+            - *
+        exclude:
+            classes:
+                - *Data
+                - *DTO
+            having:
+                - Nette\Application\UI\Template
+                - Doctrine\ORM\Mapping\Entity
+                - Doctrine\ORM\Mapping\Embeddable
+                - Throwable

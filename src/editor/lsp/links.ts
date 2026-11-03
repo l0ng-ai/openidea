@@ -14,6 +14,7 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { executeAction } from "@/platform/actions";
 import { editorService } from "@/workbench/contributions";
 import { lspRequest } from "./lsp";
+import { isNeonFilePath, isNeonTranslation, neonFileKind } from "@/editor/core/cm/neonFileKind";
 import { rangeToOffsets } from "./positions";
 
 export type Reference =
@@ -98,6 +99,41 @@ export function textReference(text: Text, offset: number): Reference | null {
     return { kind: "path", from: line.from + from, to: line.from + from + value.length, value };
   }
   return null;
+}
+
+const NEON_VALUE = /(^|[\s,=([{-])(%[a-zA-Z_][\w.-]*%[/\\]?)?([^\s,:=()[\]{}"'#]+)(?=$|[\s,:=)\]}#])/g;
+
+/**
+ * A bare path in a NEON file, as in `- app/adminer.php` or `%rootDir%/a.neon`,
+ * without the leading parameter. By default only what reads as a file, which can be
+ * underlined unseen; `anyValue` also takes what only the file system can tell from
+ * a word, such as the folder in `- app`. Catalogues hold prose instead.
+ */
+export function neonReference(text: Text, offset: number, path: string, anyValue = false): Reference | null {
+  if (isNeonTranslation(neonFileKind(path.slice(path.lastIndexOf("/") + 1)))) return null;
+  const line = text.lineAt(offset);
+  const col = offset - line.from;
+  const comment = line.text.search(/(?:^|\s)#/);
+  if (comment >= 0 && col > comment) return null;
+  for (const m of line.text.matchAll(NEON_VALUE)) {
+    const start = m.index + m[1]!.length;
+    const end = m.index + m[0].length;
+    if (col < start || col > end) continue;
+    const isKey = /^[ \t]*[:=]/.test(line.text.slice(end));
+    if (!isNeonFilePath(m[3]!) && (!anyValue || isKey)) return null;
+    return { kind: "path", from: line.from + start, to: line.from + end, value: m[3]! };
+  }
+  return null;
+}
+
+/** The reference in the text at `offset`, with what only `doc`'s language knows about. */
+export function docTextReference(
+  text: Text,
+  offset: number,
+  doc: EditorDocContext | null | undefined,
+): Reference | null {
+  const ref = textReference(text, offset);
+  return ref ?? (doc?.language === "neon" && !doc.virtual ? neonReference(text, offset, doc.path) : null);
 }
 
 async function isFile(path: string): Promise<boolean> {
@@ -185,11 +221,16 @@ export async function followReference(ref: Reference): Promise<void> {
  */
 export async function referenceAt(view: EditorView, doc: EditorDocContext, offset: number): Promise<Reference | null> {
   const link = linkReference(view.state.doc, await documentLinks(view, doc), offset);
-  const ref = textReference(view.state.doc, offset);
+  const ref =
+    textReference(view.state.doc, offset) ??
+    (doc.language === "neon" && !doc.virtual ? neonReference(view.state.doc, offset, doc.path, true) : null);
   if (link?.kind !== "file") {
     if (link) return link;
     if (!ref || doc.virtual) return ref?.kind === "url" ? ref : null;
-    return resolvePath(ref, doc.path);
+    const resolved = await resolvePath(ref, doc.path);
+    // NEON paths are relative to the file, then to the project root (`/x` in the backend).
+    if (resolved || ref.kind !== "path" || doc.language !== "neon") return resolved;
+    return resolvePath({ ...ref, value: `/${ref.value}` }, doc.path);
   }
   if (await isFile(link.path)) return link;
   // Servers resolve `/x` against the file system or workspace root; web roots (`public/`) are ours.

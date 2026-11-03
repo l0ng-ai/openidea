@@ -1,0 +1,11 @@
+parameters:
+    doctrine:
+        test123: abc
+    simple: value
+
+doctrine:
+    dbal:
+        connections:
+            default:
+                driver: %doctrine.test123%
+                name: %simple%

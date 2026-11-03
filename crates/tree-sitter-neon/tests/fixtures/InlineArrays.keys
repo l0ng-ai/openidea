@@ -1,0 +1,13 @@
+ok
+0:simple_list
+0:simple_hash
+0:empty_list
+0:empty_hash
+0:nested
+0:nested_hash
+0:mixed
+0:trailing_comma
+0:with_spaces
+0:multiline_inline
+0:single_item
+0:nested_deep

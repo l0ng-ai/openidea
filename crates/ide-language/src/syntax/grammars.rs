@@ -371,6 +371,16 @@ pub(crate) static SPECS: &[Spec] = &[
         constructors: NONE,
     },
     Spec {
+        name: "neon",
+        language: tree_sitter_neon::LANGUAGE,
+        outline: outline!("neon"),
+        highlights: None,
+        fold_nodes: &["pair", "bullet", "string"],
+        fold_bodies: NONE,
+        imports: NONE,
+        constructors: NONE,
+    },
+    Spec {
         name: "toml",
         language: tree_sitter_toml_ng::LANGUAGE,
         outline: outline!("toml"),

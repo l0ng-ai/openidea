@@ -1,0 +1,5 @@
+parameters:
+    editorUrl: 'editor://open?file=%%file%%&line=%%line%%'
+    editorUrlTitle: '%%relFile%%:%%line%%'
+    mixed: '%%escaped%% and %realVar%'
+    normalVar: %appDir%

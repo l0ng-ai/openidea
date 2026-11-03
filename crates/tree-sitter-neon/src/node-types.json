@@ -1,0 +1,261 @@
+[
+  {
+    "type": "array",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "bullet",
+          "named": true
+        },
+        {
+          "type": "pair",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "array_pair",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "key",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "value",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "bullet",
+    "named": true,
+    "fields": {
+      "value": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "value",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "pair",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "document",
+    "named": true,
+    "root": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "array",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "inline_array",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "array_pair",
+          "named": true
+        },
+        {
+          "type": "value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "key",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "pair",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "key",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "value",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "parameters",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "array_pair",
+          "named": true
+        },
+        {
+          "type": "value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "string",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "value",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "inline_array",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "parameters",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "(",
+    "named": false
+  },
+  {
+    "type": ")",
+    "named": false
+  },
+  {
+    "type": ",",
+    "named": false
+  },
+  {
+    "type": "-",
+    "named": false
+  },
+  {
+    "type": ":",
+    "named": false
+  },
+  {
+    "type": "=",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
+    "named": false
+  },
+  {
+    "type": "comment",
+    "named": true,
+    "extra": true
+  },
+  {
+    "type": "literal",
+    "named": true
+  },
+  {
+    "type": "{",
+    "named": false
+  },
+  {
+    "type": "}",
+    "named": false
+  }
+]

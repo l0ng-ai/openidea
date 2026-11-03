@@ -49,7 +49,15 @@ import {
 import { showHint, showPendingHint } from "./hint";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { identifierAt, readManyFileLines } from "./files";
-import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
+import {
+  documentLinks,
+  followReference,
+  docTextReference,
+  knownLinks,
+  linkReference,
+  neonReference,
+  referenceAt,
+} from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
@@ -334,8 +342,13 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
   const pos = view.posAtCoords({ x, y }, false);
   if (pos == null) return null;
   const links = knownLinks(view);
-  const ref = (links && linkReference(view.state.doc, links, pos)) ?? textReference(view.state.doc, pos);
+  const ref =
+    (links && linkReference(view.state.doc, links, pos)) ?? docTextReference(view.state.doc, pos, docOf(view));
   if (ref) return { from: ref.from, to: ref.to, link: true };
+  const doc = docOf(view);
+  // A NEON value may name a file whatever its dashes: the whole of it is probed, not a word of it.
+  const value = doc?.language === "neon" && !doc.virtual ? neonReference(view.state.doc, pos, doc.path, true) : null;
+  if (value) return { from: value.from, to: value.to, link: false };
   const word = view.state.wordAt(pos);
   return word && word.from < word.to ? { from: word.from, to: word.to, link: false } : null;
 }
@@ -358,6 +371,7 @@ async function probeNavigation(view: EditorView, offset: number): Promise<{ info
     if (!navigable && WEB_LANGUAGES.has(doc.language) && !doc.virtual)
       navigable = !!(await lspRequest(() => commands.webGoto(doc.doc, pos)).catch(() => null))?.targets.length;
   }
+  if (!navigable && doc?.language === "neon") navigable = !!(await referenceAt(view, doc, offset));
   if (!navigable) return null;
   return { info: null };
 }

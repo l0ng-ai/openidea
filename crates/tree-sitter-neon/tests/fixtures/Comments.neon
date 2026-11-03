@@ -1,0 +1,16 @@
+# Top level comment
+first: value
+
+# Comment between sections
+second: value # inline comment
+
+list:
+    # Comment inside block
+    - item1
+    - item2 # comment after item
+    # Another comment
+    - item3
+
+nested:
+    # Before key
+    key: val

@@ -1,0 +1,13 @@
+parameters:
+    level: 8
+    fileExtensions:
+        - php
+    paths:
+        - app
+    ignoreErrors:
+        - identifier: foo.bar
+          path: app/Http/
+          message: '#some pattern#'
+        - identifier: baz.qux
+    settings:
+        reportUnmatchedIgnoredErrors: false
