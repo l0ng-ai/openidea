@@ -583,7 +583,7 @@ export interface DocumentAttachment {
   readOnly: boolean;
   /** Add to the view (one view at a time). */
   extension: Extension;
-  save(): Promise<void>;
+  save(options?: { exact?: boolean }): Promise<void>;
   /** Detach; the document closes when nothing else shows it. */
   release(): void;
 }
