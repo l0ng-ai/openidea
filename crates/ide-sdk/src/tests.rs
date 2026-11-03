@@ -1043,6 +1043,39 @@ fn node_on_the_search_path_keeps_its_version_manager_as_source() {
 }
 
 #[test]
+fn php_sources_and_selected_interpreter() {
+    let home = Path::new("/home/me");
+    let source = |p: &str| crate::discover::php_source(Path::new(p), Some(home));
+    assert_eq!(source("/home/me/.phpbrew/php/php-8.3.1/bin/php"), "phpbrew");
+    assert_eq!(source("/home/me/.config/herd-lite/bin/php"), "herd");
+    assert_eq!(source("/opt/homebrew/opt/php@8.2/bin/php"), "homebrew");
+    assert_eq!(source("/home/me/bin/php"), "path");
+
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    assert_eq!(crate::apply::php_dir(tmp.path(), &s), None);
+    s.languages.php.interpreter = "/opt/php82/bin/php".into();
+    assert_eq!(crate::apply::php_dir(tmp.path(), &s), Some("/opt/php82/bin".into()));
+    let mut configs = vec![
+        run("php", "php", &["artisan", "serve"]),
+        run("phpunit", "vendor/bin/phpunit", &[]),
+        run("composer", "composer", &["run-script", "test"]),
+        run("npm", "npm", &["run", "dev"]),
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, "/opt/php82/bin/php");
+    // Scripts with a `#!/usr/bin/env php` shebang find the selected PHP first on `PATH`.
+    for c in &configs[..3] {
+        assert!(c.env["PATH"].starts_with("/opt/php82/bin"), "{}: {:?}", c.kind, c.env.get("PATH"));
+    }
+    assert_eq!(configs[1].command, "vendor/bin/phpunit");
+    assert!(configs[3].env.get("PATH").is_none_or(|p| !p.contains("php82")));
+}
+
+#[test]
 fn go_constraints_change_only_protocol_settings() {
     use serde_json::json;
     let tmp = tempfile::tempdir().unwrap();

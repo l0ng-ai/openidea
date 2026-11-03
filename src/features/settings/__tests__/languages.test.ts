@@ -68,6 +68,7 @@ describe("language pages", () => {
       "Java",
       "Node.js",
       "Python Interpreter",
+      "PHP",
       "Prettier",
       "Rust",
       "TypeScript",

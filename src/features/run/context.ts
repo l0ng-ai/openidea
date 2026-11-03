@@ -5,6 +5,7 @@
  */
 import type { RunConfig } from "@/platform/ipc";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
 import { isWindows } from "./jvmTypes";
 
@@ -19,6 +20,7 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
     /^test_.*\.py$|_test\.py$/.test(name) ||
     (django && name === "tests.py") ||
     /_test\.go$/.test(name) ||
+    /Test\.php$/.test(name) ||
     /(Test|Tests|Spec|IT)\.(kt|java|scala|groovy)$/.test(name) ||
     (/(^|\/)tests\/[^/]+\.rs$/.test(relPath) && name !== "mod.rs")
   )
@@ -39,6 +41,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 function testKinds(relPath: string): string[] {
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
+  if (/\.php$/.test(relPath)) return ["phpunit"];
   if (/\.go$/.test(relPath)) return ["go"];
   if (/\.rs$/.test(relPath)) return ["cargo"];
   if (/\.(kt|java|scala|groovy)$/.test(relPath)) return ["gradle", "maven"];
@@ -160,6 +163,8 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
     case "pytest":
     case "python":
       return derived(base, relPath, { args: [...base.args, file] });
+    case "phpunit":
+      return derived(base, relPath, { args: phpunitArgs(base.args, { target: file }) });
     case "django-test": {
       const tests = djangoTestsOf(base, [djangoLabel(file)]);
       return tests ? derived(base, relPath, tests) : null;

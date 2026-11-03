@@ -28,6 +28,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
+  php: { interpreter: string };
   rust: {
     toolchain: string;
     stdlib: string;
@@ -78,6 +79,7 @@ export type FolderListKey =
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   node: { interpreter: "", packageManager: "" },
+  php: { interpreter: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
@@ -159,6 +161,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const l = obj(raw);
   const py = obj(l.python);
   const node = obj(l.node);
+  const php = obj(l.php);
   const rust = obj(l.rust);
   const go = obj(l.go);
   const tags = obj(go.buildTags);
@@ -177,6 +180,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
     },
+    php: { interpreter: text(php.interpreter, d.php.interpreter) },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),
       stdlib: text(rust.stdlib, d.rust.stdlib),

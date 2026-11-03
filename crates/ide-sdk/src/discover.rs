@@ -15,6 +15,7 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
     let mut out = match kind {
         SdkKind::Python => python(root),
         SdkKind::Node => node(),
+        SdkKind::Php => php(),
         SdkKind::PackageManager => package_managers(),
         SdkKind::Rust => rust(),
         SdkKind::Go => go(),
@@ -35,7 +36,7 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
         SdkKind::Go => Some(Tool::Go),
         SdkKind::Jdk => Some(Tool::Java),
         SdkKind::Maven => Some(Tool::Maven),
-        SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript => None,
+        SdkKind::Php | SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript => None,
     }
 }
 
@@ -248,6 +249,94 @@ pub(crate) fn node_source(path: &Path, home: Option<&Path>) -> &'static str {
     });
     managed.or_else(|| version_managers::manager_of(path)).unwrap_or_else(|| {
         if path.parent().is_some_and(ide_core::tool_path::is_system_dir) { "system" } else { "path" }
+    })
+}
+
+/// Where a PHP on the search path comes from: its version manager or distribution,
+/// "system" for one of the system's own bin directories, "path" for anything else.
+pub(crate) fn php_source(path: &Path, home: Option<&Path>) -> &'static str {
+    let under = |dir: &str| home.is_some_and(|h| path.starts_with(h.join(dir)));
+    if under(".phpbrew") {
+        "phpbrew"
+    } else if under(".phpenv") {
+        "phpenv"
+    } else if under(".config/herd-lite") || under("Library/Application Support/Herd") {
+        "herd"
+    } else if path.starts_with("/opt/homebrew") || path.starts_with("/usr/local/opt") {
+        "homebrew"
+    } else if let Some(manager) = version_managers::manager_of(path) {
+        manager
+    } else if path.parent().is_some_and(ide_core::tool_path::is_system_dir) {
+        "system"
+    } else {
+        "path"
+    }
+}
+
+/// `php` CLIs: every one on `PATH`, Homebrew's versioned formulae, PHP version managers,
+/// Laravel Herd, and the usual Windows distributions (XAMPP, Laragon).
+fn php() -> Vec<Sdk> {
+    let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
+    let home = home_dir();
+    for p in executables_in("php", std::env::split_paths(&search_path())) {
+        if version_managers::is_shim(&p) {
+            continue;
+        }
+        let source = php_source(&p, home.as_deref());
+        found.push((p, source));
+    }
+    let named = |dir: &Path, prefix: &str| -> Vec<PathBuf> {
+        subdirs(dir)
+            .into_iter()
+            .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(prefix)))
+            .collect()
+    };
+    for opt in ["/opt/homebrew/opt", "/usr/local/opt"] {
+        for d in named(Path::new(opt), "php") {
+            found.push((d.join("bin").join(exe("php")), "homebrew"));
+        }
+    }
+    for d in named(Path::new("/usr/local"), "php") {
+        found.push((d.join("bin").join(exe("php")), "system"));
+    }
+    if let Some(home) = &home {
+        for v in subdirs(&home.join(".phpbrew/php")).into_iter().rev() {
+            found.push((v.join("bin").join(exe("php")), "phpbrew"));
+        }
+        for v in subdirs(&home.join(".phpenv/versions")).into_iter().rev() {
+            found.push((v.join("bin").join(exe("php")), "phpenv"));
+        }
+        found.push((home.join(".config/herd-lite/bin").join(exe("php")), "herd"));
+        let herd = home.join("Library/Application Support/Herd/bin");
+        for entry in std::fs::read_dir(&herd).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("php") && !name.contains('-') && entry.path().is_file() {
+                found.push((entry.path(), "herd"));
+            }
+        }
+    }
+    if cfg!(windows) {
+        found.push((PathBuf::from(r"C:\xampp\php\php.exe"), "xampp"));
+        found.push((PathBuf::from(r"C:\php\php.exe"), "system"));
+        for d in subdirs(Path::new(r"C:\laragon\bin\php")) {
+            found.push((d.join("php.exe"), "laragon"));
+        }
+    }
+    let found = dedupe_by_real_path(found);
+    par_map(&found, |(path, source)| {
+        let version = query(path, &["-r", "echo PHP_VERSION;"], VERSION_TIMEOUT)?;
+        let version = version.trim().to_owned();
+        if version.is_empty() {
+            return None;
+        }
+        Some(Sdk {
+            path: path.clone().into(),
+            name: format!("PHP {version}"),
+            version: Some(version),
+            source: (*source).to_owned(),
+            home: path.parent().and_then(Path::parent).map(Into::into),
+            extra: None,
+        })
     })
 }
 
