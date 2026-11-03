@@ -73,6 +73,29 @@ pub(crate) fn import_failure_hint(root: &Path, message: &str, windows: bool) -> 
 mod tests {
     use super::*;
 
+    /// A path Windows does not resolve to a device (`\\?\`): the only way to create a
+    /// file named `nul` there. Elsewhere such names are ordinary files.
+    fn verbatim(path: &Path) -> PathBuf {
+        let text = path.to_string_lossy();
+        if cfg!(windows) && !text.starts_with(r"\\?\") {
+            PathBuf::from(format!(r"\\?\{text}"))
+        } else {
+            path.to_path_buf()
+        }
+    }
+
+    /// Writes `root` / `parts` (joined per component: verbatim paths take no `/`).
+    fn write(root: &Path, parts: &[&str], text: &str) {
+        let path = parts.iter().fold(root.to_path_buf(), |path, part| path.join(part));
+        std::fs::create_dir_all(verbatim(path.parent().unwrap())).unwrap();
+        std::fs::write(verbatim(&path), text).unwrap();
+    }
+
+    /// Removes a tree that may hold reserved names, which a plain path cannot delete on Windows.
+    fn remove(dir: tempfile::TempDir) {
+        let _ = std::fs::remove_dir_all(verbatim(&dir.keep()));
+    }
+
     #[test]
     fn reserved_device_names() {
         for name in [
@@ -121,14 +144,11 @@ mod tests {
     fn import_failure_names_the_reserved_entries() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join("module/src")).unwrap();
-        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
-        // Legal outside Windows, which is where these tests run.
-        std::fs::write(root.join("nul"), "54 bytes of shell output").unwrap();
-        std::fs::write(root.join("module/aux.txt"), "").unwrap();
-        std::fs::write(root.join("node_modules/x/con"), "").unwrap();
-        std::fs::write(root.join("module/src/Null.java"), "class Null {}").unwrap();
-        std::fs::write(root.join(".gitignore"), "nul\nnode_modules/\n").unwrap();
+        write(root, &["nul"], "54 bytes of shell output");
+        write(root, &["module", "aux.txt"], "");
+        write(root, &["node_modules", "x", "con"], "");
+        write(root, &["module", "src", "Null.java"], "class Null {}");
+        write(root, &[".gitignore"], "nul\nnode_modules/\n");
         let message = "Initialization failed | java.lang.IllegalArgumentException: Path must include project and resource name: /bkbits-parent | at UnifiedTree.createChildNodeFromFileSystem(UnifiedTree.java:320)";
 
         let hint = import_failure_hint(root, message, true).unwrap();
@@ -143,17 +163,18 @@ mod tests {
         assert_eq!(import_failure_hint(root, "Initialization failed | java.lang.NullPointerException", true), None);
         assert_eq!(import_failure_hint(root, message, false), None);
         let clean = tempfile::tempdir().unwrap();
-        std::fs::write(clean.path().join("pom.xml"), "<project/>").unwrap();
+        write(clean.path(), &["pom.xml"], "<project/>");
         assert_eq!(import_failure_hint(clean.path(), message, true), None);
+        remove(dir);
     }
 
     #[test]
     fn reports_a_bounded_number_of_entries() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..30 {
-            std::fs::create_dir(dir.path().join(format!("m{i}"))).unwrap();
-            std::fs::write(dir.path().join(format!("m{i}/nul")), "").unwrap();
+            write(dir.path(), &[&format!("m{i}"), "nul"], "");
         }
         assert_eq!(reserved_entries(dir.path()).len(), MAX_REPORTED);
+        remove(dir);
     }
 }
