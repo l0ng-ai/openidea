@@ -103,6 +103,7 @@ const OWN_MODES = [
     extensions: ["erb", "rhtml"],
     load: () => import("./erb").then((m) => m.erb()),
   }),
+  LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
   LanguageDescription.of({
     name: "Astro",
     extensions: ["astro"],
@@ -225,14 +226,18 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
+// @lezer/java tags annotations as plain identifiers.
+export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
+  "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
+};
+
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
   TypeScript: JS_TAGS,
   JSX: JS_TAGS,
   TSX: JS_TAGS,
-  // @lezer/java tags annotations as plain identifiers.
-  Java: { "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation },
+  Java: JAVA_TAGS,
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,

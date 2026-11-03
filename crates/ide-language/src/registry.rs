@@ -46,6 +46,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("javascriptreact", include_str!("../../../languages/javascriptreact.toml")),
     ("json", include_str!("../../../languages/json.toml")),
     ("jsonc", include_str!("../../../languages/jsonc.toml")),
+    ("jsp", include_str!("../../../languages/jsp.toml")),
     ("julia", include_str!("../../../languages/julia.toml")),
     ("kotlin", include_str!("../../../languages/kotlin.toml")),
     ("latex", include_str!("../../../languages/latex.toml")),
@@ -523,6 +524,7 @@ mod tests {
         "Vue",
         "Angular Template",
         "ERB",
+        "JSP",
         "Astro",
     ];
 
@@ -805,6 +807,8 @@ mod tests {
             ("a.less", "less"),
             ("App.vue", "vue"),
             ("App.svelte", "svelte"),
+            ("index.jsp", "jsp"),
+            ("WEB-INF/tags/card.tag", "jsp"),
             ("index.astro", "astro"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),
