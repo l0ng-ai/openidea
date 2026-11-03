@@ -89,7 +89,9 @@ async function pickServer(title: string, paths: string[]): Promise<DeploymentSer
   if (!coverage) return null;
   const servers = configured.filter((server) => coverage.some((c) => c.server === server.id && c.paths.length));
   if (!servers.length) {
-    notifyNoCoverage();
+    // One server: say why, as an explicit upload to it would.
+    if (configured.length === 1) notifyNoCoverage(configured[0], coverage[0]?.skipped);
+    else notifyNoCoverage();
     return null;
   }
   const labels = servers.map(serverLabel);
@@ -367,6 +369,18 @@ export function registerDeploymentActions(): () => void {
         const targets = paths.length ? paths : [target];
         void pickServer("Sync with Deployed to", targets).then((server) => server && openSync(server, targets));
       },
+    },
+    {
+      id: "deployment.syncWithDefault",
+      title: "Sync with Deployed to Default Server",
+      description: "Compare local files with the default deployment server and synchronize them",
+      category: CATEGORY,
+      when,
+      keywords: ["deploy", "sftp", "compare", "synchronize", "remote", "diff"],
+      run: withTargets(async (paths) => {
+        const server = await defaultServer("Sync with Deployed to", paths);
+        if (server) await openSync(server, paths);
+      }),
     },
     {
       id: "deployment.deleteFromServer",

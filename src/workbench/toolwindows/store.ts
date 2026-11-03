@@ -86,6 +86,7 @@ export interface ToolWindowLayoutState {
   focusRequest: { id: string; seq: number } | null;
   /** Visible set stashed by "Hide All" so pressing it again restores. */
   stashed: SlotRecord | null;
+  stashedMaximized: ToolWindowAnchor | null;
   /** Per-window placement overrides (persisted). */
   placements: Readonly<Record<string, ToolWindowPlacement>>;
   /** User choice of stripe buttons (opened → added, "Hide" → removed); persisted. */
@@ -105,6 +106,7 @@ const initial = (): ToolWindowLayoutState => ({
   mounted: new Set(Object.values(DEFAULT_VISIBLE).filter((v): v is string => !!v)),
   focusRequest: null,
   stashed: null,
+  stashedMaximized: null,
   placements: {},
   stripeButtons: {},
   distractionFreeStash: null,
@@ -465,10 +467,10 @@ export function hideAllToolWindows() {
   const anyVisible = SLOTS.some((slot) => s.visible[slot]);
   if (anyVisible) {
     const hadFocus = !!s.focused;
-    update({ stashed: { ...s.visible }, visible: { ...NONE }, maximized: null });
+    update({ stashed: { ...s.visible }, stashedMaximized: s.maximized, visible: { ...NONE }, maximized: null });
     if (hadFocus) focusEditor();
   } else if (s.stashed) {
-    update({ visible: { ...s.stashed }, stashed: null });
+    update({ visible: { ...s.stashed }, maximized: s.stashedMaximized, stashed: null, stashedMaximized: null });
   }
 }
 

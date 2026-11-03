@@ -942,3 +942,78 @@ async fn task_project_root_controls_local_and_worktree_repositories() {
     }
     assert_eq!(git(&["worktree", "list", "--porcelain"]).matches("worktree ").count(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_providers_updates_registry_install_clears_stale_probes_and_notifies_subscribers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    let fake_bin = tmp.path().join(if cfg!(windows) { "copilot.cmd" } else { "copilot" });
+    std::fs::write(&fake_bin, "").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let agent = Arc::new(FakeAgent::default());
+    let connector: Connector = {
+        let agent = agent.clone();
+        Arc::new(move |_spec, _cwd, client, _stderr| {
+            let (a, b) = duplex(1 << 20);
+            let (ar, aw) = tokio::io::split(a);
+            let (br, bw) = tokio::io::split(b);
+            let server = Peer::connect_framed(br, bw, agent.clone(), Framing::Lines);
+            agent.servers.lock().push(server);
+            Ok(Peer::connect_framed(ar, aw, client, Framing::Lines))
+        })
+    };
+    let mgr = AgentManager::with_connector(
+        AgentPaths {
+            project_root: tmp.path().to_path_buf(),
+            store_dir: tmp.path().join("store"),
+            worktrees_dir: tmp.path().join("worktrees"),
+            models_file: tmp.path().join("models.json"),
+            custom_agents_dir: Some(agents_dir.clone()),
+            home_dir: None,
+        },
+        tokio::runtime::Handle::current(),
+        connector,
+    );
+
+    // Seed a stale failed probe for copilot before installing its custom TOML.
+    mgr.shared.probes.lock().insert(
+        "copilot".into(),
+        AgentProbe {
+            provider: "copilot".into(),
+            name: None,
+            version: None,
+            protocol: "ACP".into(),
+            capabilities: AgentCapabilities::default(),
+            auth_methods: Vec::new(),
+            error: Some("copilot --acp was not found on PATH.".into()),
+        },
+    );
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = events.clone();
+    mgr.subscribe(Arc::new(move |ev| events_sink.lock().push(ev)));
+
+    let toml = format!(
+        "name = \"GitHub Copilot\"\ncommand = {:?}\nargs = [\"--acp\", \"--stdio\"]\n",
+        fake_bin.to_string_lossy()
+    );
+    std::fs::write(agents_dir.join("copilot.toml"), toml).unwrap();
+
+    mgr.reload_providers();
+
+    assert!(events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)));
+    assert!(!mgr.shared.probes.lock().contains_key("copilot"));
+
+    let copilot = mgr.providers().into_iter().find(|p| p.id == "copilot").unwrap();
+    assert!(copilot.installed);
+    assert!(copilot.command.contains(&*fake_bin.to_string_lossy()));
+
+    let probe = mgr.probe("copilot", false).await.unwrap();
+    assert!(probe.error.is_none());
+}

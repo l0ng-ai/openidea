@@ -114,8 +114,19 @@ export const toggleSkipTests = () =>
 export const toggleGradleOffline = () =>
   updateSettings((s) => ({ ...s, gradle: { ...s.gradle, offline: !s.gradle.offline } }));
 
+/** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
+export const PROFILE_RELOAD_DELAY_MS = 800;
+let profileReload: ReturnType<typeof setTimeout> | undefined;
+
 export function setProfile(id: string, checked: boolean) {
   updateSettings((s) => ({ ...s, maven: { ...s.maven, profiles: { ...s.maven.profiles, [id]: checked } } }));
+  // The Java language server and Build Project resolve the project with the profiles of the
+  // last sync, so a new choice reloads it (IDEA re-imports on a profile change too).
+  clearTimeout(profileReload);
+  profileReload = setTimeout(() => {
+    profileReload = undefined;
+    requestSync("maven");
+  }, PROFILE_RELOAD_DELAY_MS);
 }
 
 export function readHistory(tool: BuildTool): string[] {
@@ -142,6 +153,41 @@ export function pushHistory(tool: BuildTool, line: string) {
 // Model
 
 let generation = 0;
+let externalChange = false;
+
+/**
+ * A build file changed outside the editor (VCS update, another tool): the next model load
+ * reloads a build it finds stale, IDEA's default "Reload after external changes". Edits in
+ * the editor only show "Load … Changes".
+ */
+export function noteExternalBuildChange() {
+  externalChange = true;
+}
+
+/** How long after the IDE saves a build file its file-system events still count as that save. */
+const IDE_SAVE_WINDOW_MS = 5000;
+/** Build files the IDE saved, with when: their file-system events are edits made in the IDE. */
+const savedByIde = new Map<string, number>();
+
+/** The IDE saved `path` (an editor save, not a tool rewriting it). */
+export function noteIdeSave(path: string, now = Date.now()) {
+  savedByIde.set(path, now);
+}
+
+/**
+ * Whether any of the changed build files was written by something other than the IDE's own
+ * save: a VCS update or a tool, also when the file is open in an editor tab.
+ */
+export function changedOutsideIde(paths: readonly string[], now = Date.now()): boolean {
+  let external = false;
+  for (const path of paths) {
+    const at = savedByIde.get(path);
+    if (at !== undefined && now - at <= IDE_SAVE_WINDOW_MS) continue;
+    savedByIde.delete(path);
+    external = true;
+  }
+  return external;
+}
 
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
@@ -167,6 +213,11 @@ export async function loadModel(): Promise<void> {
     ]);
     if (gen !== generation) return;
     useBuild.setState({ model, configs, loading: false, error: null });
+    if (externalChange) {
+      externalChange = false;
+      const maven = model.maven;
+      if (maven?.stale && maven.syncedAt !== null && !useBuild.getState().syncing.maven) void syncTool("maven");
+    }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });
   }
@@ -229,6 +280,15 @@ export function initialExpanded(tool: BuildTool, model: BuildModel): Set<string>
 
 const TITLES: Record<BuildTool, string> = { maven: "Syncing Maven projects", gradle: "Syncing Gradle projects" };
 
+/** Tools to sync again once their running sync ends: its options changed meanwhile. */
+const queuedSyncs = new Set<BuildTool>();
+
+/** Syncs `tool` now, or right after the sync in progress (which used the previous options). */
+export function requestSync(tool: BuildTool) {
+  if (useBuild.getState().syncing[tool]) queuedSyncs.add(tool);
+  else void syncTool(tool);
+}
+
 /** Reloads all projects of `tool` from the build tool itself (effective POM, dependency tree, task list). */
 export async function syncTool(tool: BuildTool): Promise<void> {
   const state = useBuild.getState();
@@ -277,6 +337,7 @@ export async function syncTool(tool: BuildTool): Promise<void> {
   } finally {
     if (useBuild.getState().syncing[tool]?.request === request) setSync(undefined);
     upsertTask({ id: taskId, title: TITLES[tool], message: null, fraction: 1, done: true });
+    if (queuedSyncs.delete(tool) && gen === generation) void syncTool(tool);
   }
 }
 
@@ -290,6 +351,9 @@ export function cancelSync(tool: BuildTool) {
 
 export function resetBuild() {
   generation++;
+  clearTimeout(profileReload);
+  profileReload = undefined;
+  queuedSyncs.clear();
   useAnalyzer.setState({ pom: null });
   for (const tool of ["maven", "gradle"] as const) {
     cancelSync(tool);

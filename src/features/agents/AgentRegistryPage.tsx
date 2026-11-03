@@ -1,15 +1,16 @@
 /**
- * Settings › Tools › Agents: agents of the ACP Registry this machine can run, with
- * Install / Update / Remove. Installs run in the background with progress; leaving the
- * page cancels one.
+ * Settings › Tools › Agents: the launch command of built-in agents (Claude Code…), and
+ * agents of the ACP Registry this machine can run, with Install / Update / Remove.
+ * Installs run in the background with progress; leaving the page cancels one.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRegistry, RegistryAgent, RequestId } from "@/bindings";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
-import { Badge, Button, ProgressBar, SearchField, Spinner, T } from "@/ui";
+import { Badge, Button, Icon, ProgressBar, SearchField, Spinner, T, Tabs } from "@/ui";
 import { confirm } from "@/workbench/messages";
+import { providerIcon } from "./model";
 import {
   DISTRIBUTION_LABEL,
   afterInstall,
@@ -17,9 +18,12 @@ import {
   matchesQuery,
   rowActions,
   sortAgents,
+  tauriCommands,
   tauriRegistry,
+  type CommandsBackend,
   type RegistryBackend,
 } from "./registry";
+import { BuiltinAgents } from "./BuiltinAgents";
 import styles from "./AgentRegistry.module.css";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -34,11 +38,37 @@ interface Job {
 export function AgentRegistryPage({
   onChanged,
   backend = tauriRegistry,
+  commandBackend = tauriCommands,
 }: {
   /** An agent was installed, updated or removed (the agent list changed). */
   onChanged?: () => void;
   backend?: RegistryBackend;
+  commandBackend?: CommandsBackend;
 }) {
+  const [tab, setTab] = useState("builtin");
+  return (
+    <div className={styles.body}>
+      <Tabs
+        variant="compact"
+        className={styles.tabs}
+        items={[
+          { id: "builtin", label: "Built-in" },
+          { id: "registry", label: "ACP Registry" },
+        ]}
+        activeId={tab}
+        onSelect={setTab}
+        aria-label={tx("Agents")}
+      />
+      {tab === "builtin" ? (
+        <BuiltinAgents backend={commandBackend} onChanged={onChanged} />
+      ) : (
+        <RegistryList backend={backend} onChanged={onChanged} />
+      )}
+    </div>
+  );
+}
+
+function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChanged?: () => void }) {
   const [registry, setRegistry] = useState<AgentRegistry | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -213,6 +243,7 @@ function AgentRow({
     <li className={styles.row} aria-labelledby={titleId}>
       <div className={styles.main}>
         <div className={styles.titleLine}>
+          <Icon name={providerIcon(agent.id)} size={16} />
           <span id={titleId} className={styles.name}>
             {agent.name}
           </span>

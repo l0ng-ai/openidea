@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
 import { SeController, type SeDeps, type SeSnapshot } from "../everywhere/controller";
+import { buildRows } from "../everywhere/model";
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -193,5 +194,31 @@ describe("SeController", () => {
     c.run({ query: "needle", tab: "text", includeNonProject: false, fileSet: "test", extra: {} });
     await flush();
     expect(searchText.mock.calls.at(-1)![1].scope).toEqual({ kind: "fileSet", set: "test" });
+  });
+});
+
+describe("Endpoints in the All tab", () => {
+  it("answers a request path with the controller method that serves it", async () => {
+    const routes = [
+      {
+        method: "POST",
+        url: "/deeplink/menu/search",
+        controller: "DeepLinkController",
+        methodName: "searchMenus",
+        path: "/p/tg-tenant-server/src/main/java/DeepLinkController.java",
+        rel: "tg-tenant-server/src/main/java/DeepLinkController.java",
+        line: 45,
+        col: 4,
+      },
+    ];
+    const { c, last } = setup({ root: () => "/p", routes: async () => routes });
+    c.run({ query: "/tg-tenant/deeplink/menu/search", tab: "all", includeNonProject: false, extra: {} });
+    await flush();
+    const section = last().sections.get("endpoints");
+    expect(section?.items).toHaveLength(1);
+    expect(section?.items[0]).toMatchObject({ kind: "symbol", container: "DeepLinkController.searchMenus", line: 45 });
+    // The All tab mixes its sections into one list; an endpoint has to be in it.
+    const rows = buildRows(last().sections, { headers: false, mix: "/tg-tenant/deeplink/menu/search" });
+    expect(rows.map((r) => (r.kind === "symbol" ? r.container : r.kind))).toContain("DeepLinkController.searchMenus");
   });
 });

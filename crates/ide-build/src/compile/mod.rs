@@ -158,8 +158,11 @@ fn detect_dir(dir: &Path, model: &BuildModel, root: &Path) -> Option<BuildSystem
 }
 
 /// `root/rel`, without a trailing separator for the root itself.
+/// `root` / `rel`, joined per `/`-separated component: on Windows a single join of
+/// `a/b` keeps the `/`, and such a path does not compare equal to the same directory
+/// as other tools (JDT LS) spell it.
 fn subdir(root: &Path, rel: &str) -> PathBuf {
-    if rel.is_empty() { root.to_path_buf() } else { root.join(rel) }
+    rel.split('/').filter(|part| !part.is_empty()).fold(root.to_path_buf(), |path, part| path.join(part))
 }
 
 fn rel_str(root: &Path, dir: &Path) -> String {
@@ -185,8 +188,10 @@ pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path
         None => None,
     };
     let dir = module_dir.clone().unwrap_or_else(|| root.to_path_buf());
+    // A folder of sibling projects has no build file itself; its Maven projects are built one by one.
     let system = detect_dir(&dir, model, root)
         .or_else(|| if model.gradle.is_some() { Some(BuildSystem::Gradle) } else { None })
+        .or_else(|| model.maven.as_ref().filter(|m| !m.projects.is_empty()).map(|_| BuildSystem::Maven))
         .ok_or_else(|| IdeError::not_found("no supported build system (Maven, Gradle, Cargo, Go, TypeScript) found"))?;
     let module = module_dir.as_deref().filter(|d| *d != root);
     let title = match module {
@@ -735,11 +740,11 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
             .iter()
             .flat_map(|s| {
                 ["classes/kotlin", "classes/groovy", "classes/scala", "classes/java", "resources"]
-                    .map(|d| module.join("build").join(d).join(s))
+                    .map(|d| subdir(module, &format!("build/{d}/{s}")))
             })
             .collect(),
-        BuildSystem::Maven if test => vec![module.join("target/test-classes"), module.join("target/classes")],
-        BuildSystem::Maven => vec![module.join("target/classes")],
+        BuildSystem::Maven if test => vec![subdir(module, "target/test-classes"), subdir(module, "target/classes")],
+        BuildSystem::Maven => vec![subdir(module, "target/classes")],
         _ => Vec::new(),
     };
     dirs.into_iter().filter(|d| d.is_dir()).collect()
@@ -748,6 +753,30 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Launch outputs use the platform separator throughout, so they compare equal to
+    /// the same directories as JDT LS reports them.
+    #[test]
+    fn launch_dirs_use_one_separator() {
+        let root = tempfile::tempdir().unwrap();
+        let module = subdir(root.path(), "parent/app");
+        for dir in ["target/classes", "target/test-classes", "build/classes/java/main", "build/resources/test"] {
+            std::fs::create_dir_all(subdir(&module, dir)).unwrap();
+        }
+        let foreign = if std::path::MAIN_SEPARATOR == '\\' { '/' } else { '\\' };
+        let dirs = [
+            launch_class_dirs(BuildSystem::Maven, &module, true),
+            launch_class_dirs(BuildSystem::Gradle, &module, true),
+        ]
+        .concat();
+        assert_eq!(dirs.len(), 4, "{dirs:?}");
+        for dir in &dirs {
+            let suffix = dir.strip_prefix(root.path()).unwrap().to_string_lossy().into_owned();
+            assert!(!suffix.contains(foreign), "{suffix}");
+        }
+        assert_eq!(subdir(root.path(), ""), root.path());
+        assert_eq!(subdir(root.path(), "a//b/"), root.path().join("a").join("b"));
+    }
 
     fn write(root: &Path, rel: &str, text: &str) {
         let p = root.join(rel);
@@ -812,6 +841,17 @@ mod tests {
         assert_eq!(
             (p.steps[0].program.as_str(), p.steps[0].args.as_slice()),
             ("pnpm", &["run".to_owned(), "build".to_owned()][..])
+        );
+
+        let siblings = tmp.path().join("siblings");
+        write(&siblings, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
+        write(&siblings, "system/pom.xml", "<project><artifactId>system</artifactId></project>");
+        let model = crate::load(&siblings, &tmp.path().join("cache3"), None);
+        let p = plan(&siblings, &model, BuildKind::Build, None).unwrap();
+        assert_eq!(p.system, BuildSystem::Maven);
+        assert_eq!(
+            p.steps.iter().map(|s| s.cwd.clone()).collect::<Vec<_>>(),
+            [siblings.join("core"), siblings.join("system")]
         );
 
         let none = tmp.path().join("none");

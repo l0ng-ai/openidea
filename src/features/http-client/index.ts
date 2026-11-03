@@ -28,6 +28,7 @@ import {
   menuGroupItems,
   springEditorExtension,
 } from "./spring/editor";
+import { registerSpringEndpointProvider } from "./spring/routeIndex";
 
 const SPRING_WHEN = "editorLangId == java || editorLangId == kotlin";
 
@@ -112,6 +113,7 @@ async function newRequest(directory?: string) {
 
 export function activate(): () => void {
   const disposers = [
+    registerSpringEndpointProvider(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetHttpClient();
     }),

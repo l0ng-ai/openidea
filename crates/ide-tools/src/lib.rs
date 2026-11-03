@@ -472,6 +472,19 @@ impl Tools {
         cmd
     }
 
+    /// `python` started in an empty private directory: Python puts the working directory
+    /// first on `sys.path` for `-c` / `-m`, and the IDE's own (inherited from wherever it
+    /// was launched, e.g. a project) could hold modules that shadow the standard library,
+    /// pip or the tool being probed. Not `-I`: that also hides `pip install --user` packages.
+    fn python_command(&self, python: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = self.command(python);
+        let dir = self.root.join(".python-cwd");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            cmd.current_dir(dir);
+        }
+        cmd
+    }
+
     fn python(&self) -> Option<PathBuf> {
         self.which_any(&["python3", "python"])
     }
@@ -538,6 +551,15 @@ impl Tools {
             .and_then(|dir| self.exe_in(&dir, spec.commands[0]))
             .is_some();
         if managed || self.method_missing(spec.method).is_some() { fallback } else { spec.method }
+    }
+
+    /// [`Method::label`], naming the installer that will actually run: a virtualenv is
+    /// made with uv when it is on `PATH` (see `install_venv`).
+    fn method_label(&self, method: Method) -> &'static str {
+        match method {
+            Method::PipVenv { .. } if self.which("uv").is_some() => "uv (virtualenv)",
+            m => m.label(),
+        }
     }
 
     /// Requirement check for installing `spec` right now.
@@ -624,7 +646,7 @@ impl Tools {
             status,
             path: path.map(Into::into),
             version,
-            install_method: Some(self.install_method(spec).label().to_string()),
+            install_method: Some(self.method_label(self.install_method(spec)).to_string()),
             can_install: unavailable_reason.is_none() && !bundled,
             unavailable_reason,
             can_uninstall,
@@ -699,7 +721,7 @@ impl Tools {
                 }
                 // Importable by the default interpreter (pip install --user / a system package).
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::OnPath, Some(python), parse_version(&out)),
@@ -708,7 +730,7 @@ impl Tools {
             }
             Method::PipUser { module, .. } => {
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::Installed, Some(python), parse_version(&out)),
@@ -796,7 +818,9 @@ impl Tools {
         let result = (|| {
             std::fs::create_dir_all(&self.root)?;
             let method = self.install_method(spec);
-            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, method.label()) });
+            emit(InstallEvent::Line {
+                text: format!("Installing {} via {}…", spec.display, self.method_label(method)),
+            });
             match method {
                 Method::Bundled { .. } => {
                     bundled::install(&self.root, spec)?;
@@ -999,10 +1023,10 @@ impl Tools {
                 c.args(["pip", "install", "--python"]).arg(&python).arg(package);
                 run_streamed(c, cancel, emit)?;
             } else {
-                let mut c = self.command(self.python().expect("checked"));
+                let mut c = self.python_command(self.python().expect("checked"));
                 c.args(["-m", "venv"]).arg(&venv);
                 run_streamed(c, cancel, emit)?;
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", package]);
                 run_streamed(c, cancel, emit)?;
             }
@@ -1021,7 +1045,7 @@ impl Tools {
     fn install_pip_user(&self, package: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
         let python = self.python().expect("checked");
         let pip = |extra: &[&str]| {
-            let mut c = self.command(&python);
+            let mut c = self.python_command(&python);
             c.args(["-m", "pip", "install", "--user", "--upgrade", "--disable-pip-version-check"])
                 .args(extra)
                 .arg(package);
@@ -1058,7 +1082,7 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = python_lib_dir(&self.root, spec.name);
         std::fs::create_dir_all(&lib)?;
-        let mut c = self.command(self.python().expect("checked"));
+        let mut c = self.python_command(self.python().expect("checked"));
         c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
             .arg(&lib)
             .args(["--only-binary=:all:", "--platform", "any", "--implementation", "py"])
@@ -1218,7 +1242,7 @@ impl Tools {
             Method::PipUser { package, .. } => {
                 let python = self.python().ok_or_else(|| IdeError::unavailable("python3 not found"))?;
                 let pip = |extra: &[&str]| {
-                    let mut c = self.command(&python);
+                    let mut c = self.python_command(&python);
                     c.args(["-m", "pip", "uninstall", "-y", "--disable-pip-version-check"]).args(extra).arg(package);
                     run_collect(c, &cancel, &quiet)
                 };

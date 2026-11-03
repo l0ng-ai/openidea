@@ -82,6 +82,9 @@ describe("detachTab", () => {
     ctrl.start();
     await ctrl.openFile(path, { focus: false });
     const [pane, id] = current();
+    // Clean documents skip saving entirely, so the document must be dirty for
+    // the mocked save failure to be reached.
+    ctrl.slotFor(id)!.dispatchLocal({ changes: { from: 0, to: 8, insert: "edited" } });
     vi.spyOn(backend, "save").mockRejectedValue(new Error("save failed"));
     expect(await ctrl.detachTab(pane, id)).toBe(false);
     expect(hasTab(id)).toBe(true);

@@ -27,7 +27,9 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
 
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
+  ruby: { interpreter: string };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
+  php: { interpreter: string };
   rust: {
     toolchain: string;
     stdlib: string;
@@ -50,6 +52,8 @@ export interface LanguagesValid {
     gradle: { jvm: string; distribution: "wrapper" | "local"; home: string; userHome: string };
     maven: { home: string; userSettings: string; localRepository: string; unlinkedProjects: string[] };
   };
+  /** Preview font size in px; `null` follows the editor font size. */
+  markdown: { previewFontSize: number | null };
 }
 
 export interface ProjectStructureValid {
@@ -77,7 +81,9 @@ export type FolderListKey =
 
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
+  ruby: { interpreter: "" },
   node: { interpreter: "", packageManager: "" },
+  php: { interpreter: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
@@ -109,6 +115,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "" },
     maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
   },
+  markdown: { previewFontSize: null },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -138,6 +145,9 @@ export function normalizeFolder(path: string): string {
     .replace(/^\/+|\/+$/g, "");
 }
 
+/** A stored preview font size within IDEA's 8..72, or `null` (follow the editor font). */
+const previewSize = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? Math.min(72, Math.max(8, Math.round(v))) : null;
 const folders = (v: unknown): string[] =>
   Array.isArray(v)
     ? [
@@ -158,7 +168,9 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const d = DEFAULT_LANGUAGES;
   const l = obj(raw);
   const py = obj(l.python);
+  const ruby = obj(l.ruby);
   const node = obj(l.node);
+  const php = obj(l.php);
   const rust = obj(l.rust);
   const go = obj(l.go);
   const tags = obj(go.buildTags);
@@ -168,15 +180,18 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const java = obj(l.java);
   const maven = obj(java.maven);
   const gradle = obj(java.gradle);
+  const markdown = obj(l.markdown);
   return {
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
       activateVirtualenv: bool(py.activateVirtualenv, d.python.activateVirtualenv),
     },
+    ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     node: {
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
     },
+    php: { interpreter: text(php.interpreter, d.php.interpreter) },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),
       stdlib: text(rust.stdlib, d.rust.stdlib),
@@ -225,7 +240,27 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         unlinkedProjects: folders(maven.unlinkedProjects),
       },
     },
+    markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
   };
+}
+
+/**
+ * Markdown preview (and notebook Markdown cell) font size in px: Languages &
+ * Frameworks › Markdown, else the editor font size, as IDEA defaults it.
+ */
+export function markdownPreviewFontSize(settings: unknown): number {
+  const s = obj(settings);
+  const editorSize = obj(s.editor).fontSize;
+  return (
+    previewSize(obj(obj(s.languages).markdown).previewFontSize) ??
+    // 13: the editor's default font size.
+    (typeof editorSize === "number" && editorSize > 0 ? editorSize : 13)
+  );
+}
+
+/** Reactive `markdownPreviewFontSize` of the open project. */
+export function useMarkdownPreviewFontSize(): number {
+  return useProject((s) => markdownPreviewFontSize(s.settings));
 }
 
 export function validateProjectStructure(raw: unknown): ProjectStructureValid {

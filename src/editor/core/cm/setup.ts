@@ -2,7 +2,7 @@
  * The base extension set of every text editor, with compartments for the
  * parts that change at runtime (language, settings, contributions).
  */
-import { Compartment, EditorState, Prec, type Extension, type Range } from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec, type Extension, type Range } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -154,12 +154,25 @@ export function hardWrapAt(settings: EditorSettings | undefined, info: LanguageI
   return (info && style.languages[info.id]?.hardWrapAt) || style.hardWrapAt;
 }
 
-export function indentExtension(indent: EffectiveIndent): Extension {
+/** `format`: the indent Reformat Code asks for (see `formatIndentFacet`); `null` keeps the editor's. */
+export function indentExtension(indent: EffectiveIndent, format: EffectiveIndent | null = null): Extension {
   return [
+    formatIndentFacet.of(format),
     EditorState.tabSize.of(indent.tabSize),
     indentUnit.of(indent.insertSpaces ? " ".repeat(Math.max(1, indent.indentSize ?? indent.tabSize)) : "\t"),
   ];
 }
+
+/**
+ * Indentation explicit reformat requests use: the Code Style without the file's
+ * detected indents (detection affects editing, reformatting uses the configured
+ * style, as in IDEA). Set only when the language has an explicit Tabs and Indents
+ * override — unset, formatting keeps the editor's indent, the status bar choice
+ * included.
+ */
+export const formatIndentFacet = Facet.define<EffectiveIndent | null>({
+  combine: (values) => [values.find((v) => v !== null) ?? null],
+});
 
 export function fontExtension(settings: EditorSettings | undefined): Extension {
   const vars: string[] = [];
@@ -297,6 +310,8 @@ export interface SetupOptions {
   docLength: number;
   /** Effective indentation of the document (detected / overridden); computed when absent. */
   indent?: EffectiveIndent;
+  /** Indentation for Reformat Code (`formatIndentFacet`); the editor's when absent. */
+  formatIndent?: EffectiveIndent | null;
   /** Soft wraps toggled for this file (View › Active Editor › Soft-Wrap). */
   wrapOverride?: boolean | null;
   /** Extra extensions owned by the slot (update listeners, focus handlers). */
@@ -358,7 +373,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     keymap.of([...closeBracketsKeymap, ...editorBaseKeymap, indentWithTab]),
     compartments.language.of(o.language ?? []),
     compartments.comments.of(commentTokens(o.info, o.ctx.language)),
-    compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info))),
+    compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info), o.formatIndent)),
     compartments.readOnly.of(readOnlyExtension(o.ctx.readOnly)),
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),
     compartments.sticky.of(stickyExtension(o.settings)),
