@@ -354,23 +354,25 @@ export function LocalChangesView() {
   const preview = useCommit((s) => s.diffPreview);
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
   const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
-  const tree = <ChangesTree mode="local" />;
-  if (!preview) return tree;
   return (
     <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
       <SplitPanel defaultSize="50%" minSize="20%">
-        {tree}
+        <ChangesTree mode="local" />
       </SplitPanel>
-      <SplitHandle />
-      <SplitPanel defaultSize="50%" minSize="120px">
-        {path ? (
-          <DiffEditor input={diffInput(workingDiffData(path))} />
-        ) : (
-          <EmptyState>
-            <T>Select a file to preview its changes</T>
-          </EmptyState>
-        )}
-      </SplitPanel>
+      {preview && (
+        <>
+          <SplitHandle />
+          <SplitPanel defaultSize="50%" minSize="120px">
+            {path ? (
+              <DiffEditor input={diffInput(workingDiffData(path))} />
+            ) : (
+              <EmptyState>
+                <T>Select a file to preview its changes</T>
+              </EmptyState>
+            )}
+          </SplitPanel>
+        </>
+      )}
     </SplitGroup>
   );
 }

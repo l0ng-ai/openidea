@@ -103,4 +103,28 @@ describe("Local Changes diff preview (#710)", () => {
     expect(screen.getByText("No local changes")).toBeTruthy();
     expect(localStorage.getItem("openidea.vcs.diffPreview")).toBe("false");
   });
+
+  it("keeps the tree selection when the preview is toggled off and on", () => {
+    useVcs.setState({
+      status: ["a.ts", "b.ts"].map((name) => ({
+        path: `/p/${name}`,
+        relPath: name,
+        staged: null,
+        unstaged: "modified" as const,
+        renamedFrom: null,
+      })),
+    });
+    render(<LocalChangesView />);
+    const tree = screen.getByRole("tree", { name: "Changes" });
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Home" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(screen.getByText("b.ts").closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+    act(() => setDiffPreview(false));
+    expect(screen.getByText("b.ts").closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+    act(() => setDiffPreview(true));
+    expect(screen.getByText("b.ts").closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("diff-preview")).toHaveAttribute("data-path", "/p/b.ts");
+  });
 });
