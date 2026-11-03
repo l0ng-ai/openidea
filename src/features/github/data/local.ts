@@ -16,7 +16,7 @@ import { notifications } from "@/workbench/contributions";
 import { errorMessage } from "../api/client";
 import type { GHCommitFile, GHPullRequest } from "../api/types";
 import { loadPullRequestData } from "./pullRequest";
-import { nameWithOwner, requireConnection } from "./repository";
+import { connectedRoot, nameWithOwner, requireConnection } from "./repository";
 
 /** The running operation (checkout, fetch for a diff) with its last output line. */
 export const useGhBusy = create<{ busy: { title: string; line: string; request: RequestId } | null }>(() => ({
@@ -67,7 +67,7 @@ export function cancelBusy() {
 export async function checkoutPullRequest(number: number): Promise<boolean> {
   // The command resolves with nothing (`null`), which `withBusy` reports as a failure.
   const done = await withBusy(`Checking out #${number}…`, async (r, out) => {
-    await call(commands.ghPrCheckout(r, number, out));
+    await call(commands.ghPrCheckout(connectedRoot(), r, number, out));
     return true;
   });
   if (done === null) return false;
@@ -87,9 +87,10 @@ export async function prepareDiff(pr: GHPullRequest): Promise<PrDiffRevisions | 
   const key = `${pr.number}:${pr.headRefOid}:${pr.baseRefOid}`;
   const hit = diffCache.get(key);
   if (hit) return hit;
-  const repo = nameWithOwner(requireConnection().coordinates);
+  const { coordinates, root } = requireConnection();
+  const repo = nameWithOwner(coordinates);
   const revs = await withBusy(`Fetching #${pr.number}…`, (r, out) =>
-    call(commands.ghPrPrepareDiff(r, pr.number, pr.headRefOid, pr.baseRefOid, pr.baseRefName, repo, out)),
+    call(commands.ghPrPrepareDiff(root, r, pr.number, pr.headRefOid, pr.baseRefOid, pr.baseRefName, repo, out)),
   );
   if (revs) diffCache.set(key, revs);
   return revs;
@@ -185,7 +186,7 @@ export async function openInWorktree(number: number): Promise<void> {
   if (!revs) return;
   const path = `${String(revs.root).replace(/[\\/]+$/, "")}_PR_${number}`;
   const added = await withBusy(`Creating worktree for #${number}…`, async () => {
-    await call(commands.vcsAddWorktree(null, path, pr.headRefOid, null));
+    await call(commands.vcsAddWorktree(revs.root, path, pr.headRefOid, null));
     return true;
   });
   if (added) await executeAction("file.openInNewWindow", path);

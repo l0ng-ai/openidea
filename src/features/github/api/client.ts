@@ -1,6 +1,6 @@
 /**
- * GitHub API access through gh (`commands.ghApi`, which runs `gh api` in the project root
- * with gh's authentication), like IntelliJ's `GithubApiRequestExecutor`:
+ * GitHub API access through gh (`commands.ghApi`, which runs `gh api` in the connected local
+ * repository with gh's authentication), like IntelliJ's `GithubApiRequestExecutor`:
  *
  *   const data = await graphql<{ repository: … }>(findRepository, { repoOwner, repoName });
  *   const page = await rest<GHLabelDto[]>("GET", `${repoPath()}/labels?per_page=100`);
@@ -39,7 +39,9 @@ export function graphqlData<T>(text: string): T {
 /** Runs a document from `queries.ts` with `variables` (undefined values are dropped). */
 export async function graphql<T>(doc: string, variables: Record<string, unknown> = {}): Promise<T> {
   const body = JSON.stringify({ query: withFragments(doc), variables: definedOnly(variables) });
-  const text = await call(commands.ghApi({ method: "POST", endpoint: "graphql", body, paginate: false }));
+  const text = await call(
+    commands.ghApi(current?.root ?? null, { method: "POST", endpoint: "graphql", body, paginate: false }),
+  );
   return graphqlData<T>(text);
 }
 
@@ -59,7 +61,7 @@ export async function rest<T>(
   opts: { paginate?: boolean } = {},
 ): Promise<T> {
   const text = await call(
-    commands.ghApi({
+    commands.ghApi(current?.root ?? null, {
       method,
       endpoint,
       body: body === undefined ? null : JSON.stringify(body),
@@ -80,10 +82,12 @@ export function parseRest<T>(text: string, paginated: boolean): T {
 // ---------------------------------------------------------------------------
 // The connected repository
 
-let current: (GHRepositoryCoordinates & { id: string | null }) | null = null;
+let current: (GHRepositoryCoordinates & { id: string | null; root?: string | null }) | null = null;
 
-/** Set by `data/repository.ts` when the tool window connects (null: disconnected). */
-export function setCurrentRepository(repo: (GHRepositoryCoordinates & { id: string | null }) | null) {
+/** Set by `data/repository.ts` when the tool window connects (null: disconnected); `root`: its local repository. */
+export function setCurrentRepository(
+  repo: (GHRepositoryCoordinates & { id: string | null; root?: string | null }) | null,
+) {
   current = repo;
 }
 
