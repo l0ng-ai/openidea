@@ -1,6 +1,6 @@
 use crate::apply::{
     apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    terminal_activation, tsdk,
+    terminal_activation, tsdk, without_derived,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -152,6 +152,8 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("pytest", "uv", &["run", "pytest", "-x"]),
         run("npm", "npm", &["run", "dev"]),
         run("shell", "python3", &["x.py"]),
+        run("django-test", "uv", &["run", "python", "manage.py", "test"]),
+        run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, "/opt/py/bin/python3");
@@ -161,6 +163,11 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
+    // Django tests run on the selected interpreter, like `manage.py runserver`.
+    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].args, ["manage.py", "test"]);
+    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
 fn fake_jdk(dir: &Path) {
@@ -254,10 +261,10 @@ fn language_server_settings_disable_add_and_override() {
     let mut s = Settings::default();
     s.language_servers.insert("pylsp".into(), LanguageServerSettings { enabled: false, ..Default::default() });
     s.language_servers.insert(
-        "ruff".into(),
+        "pylyzer".into(),
         LanguageServerSettings {
-            command: "ruff".into(),
-            args: Some(vec!["server".into()]),
+            command: "pylyzer".into(),
+            args: Some(vec!["--server".into()]),
             languages: vec!["python".into()],
             root_markers: vec!["pyproject.toml".into()],
             ..Default::default()
@@ -265,17 +272,42 @@ fn language_server_settings_disable_add_and_override() {
     );
     let defined = [server("basedpyright"), server("pylsp")];
     let names = |v: Vec<LanguageServerConfig>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
-    assert_eq!(names(language_servers("python", &defined, &s)), ["basedpyright", "ruff"]);
+    assert_eq!(names(language_servers("python", &defined, &s)), ["basedpyright", "pylyzer"]);
     assert_eq!(names(language_servers("rust", &[server("rust-analyzer")], &s)), ["rust-analyzer"]);
 
     // Listed with the tools even while disabled.
     let mut langs = ide_language::LanguageRegistry::load(None).unwrap().all();
     with_custom_servers(&mut langs, &s);
     let python = langs.iter().find(|l| l.id.as_str() == "python").unwrap();
+    let mut pylyzer = python.language_servers.iter().find(|c| c.name == "pylyzer").unwrap().clone();
+    assert_eq!(pylyzer.root_markers, ["pyproject.toml"]);
+    server_launch_overrides(&mut pylyzer, &s);
+    assert_eq!((pylyzer.command.as_str(), pylyzer.args.as_slice()), ("pylyzer", &["--server".to_string()][..]));
+
+    // A hand-defined server named like a built-in one only overrides how it
+    // launches: languages and root markers stay the built-in definition's.
+    s.language_servers.insert(
+        "ruff".into(),
+        LanguageServerSettings {
+            command: "/opt/ruff".into(),
+            args: Some(vec!["server".into(), "--preview".into()]),
+            languages: vec!["python".into()],
+            root_markers: vec!["pyproject.toml".into()],
+            ..Default::default()
+        },
+    );
+    let mut langs = ide_language::LanguageRegistry::load(None).unwrap().all();
+    with_custom_servers(&mut langs, &s);
+    let python = langs.iter().find(|l| l.id.as_str() == "python").unwrap();
+    assert_eq!(python.language_servers.iter().filter(|c| c.name == "ruff").count(), 1);
     let mut ruff = python.language_servers.iter().find(|c| c.name == "ruff").unwrap().clone();
-    assert_eq!(ruff.root_markers, ["pyproject.toml"]);
+    assert_eq!(ruff.root_markers, ["ruff.toml", ".ruff.toml", "pyproject.toml#tool.ruff"]);
+    assert!(ruff.require_root_marker);
     server_launch_overrides(&mut ruff, &s);
-    assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", &["server".to_string()][..]));
+    assert_eq!(
+        (ruff.command.as_str(), ruff.args.as_slice()),
+        ("/opt/ruff", &["server".to_string(), "--preview".to_string()][..])
+    );
 
     s.language_servers.insert(
         "rust-analyzer".into(),
@@ -319,8 +351,13 @@ fn jdtls_jdk_setting() {
     .unwrap();
     assert!(jdtls_jdk(tmp.path(), &s).unwrap_err().contains("full JDK"));
     // A chosen path that is not a JDK is an error, not a silent fallback.
-    s.languages.java.jdtls_jdk = "missing".into();
+    std::fs::create_dir(tmp.path().join("not-a-jdk")).unwrap();
+    s.languages.java.jdtls_jdk = "not-a-jdk".into();
     assert!(jdtls_jdk(tmp.path(), &s).unwrap_err().contains("is not a JDK home"));
+    // A JDK removed after it was chosen (a version manager upgraded it) says so.
+    s.languages.java.jdtls_jdk = "jdk17.0.1".into();
+    let err = jdtls_jdk(tmp.path(), &s).unwrap_err();
+    assert!(err.contains("jdk17.0.1 does not exist") && err.contains("Languages & Frameworks › Java"), "{err}");
 }
 
 #[test]
@@ -1070,4 +1107,85 @@ fn go_modules_configure_gopls_in_place_and_commands_with_explicit_run_overrides(
     let mut cleared = server("gopls");
     configure_server(&mut cleared, tmp.path(), tmp.path(), &Settings::default());
     assert_eq!(cleared.settings.unwrap()["env"], json!({}));
+}
+
+#[test]
+fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let touch = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "").unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    let mut s = Settings::default();
+    s.languages.python.interpreter = fake_venv(root, ".venv").to_string_lossy().into_owned();
+    s.languages.node.interpreter = touch("node/bin/node");
+    touch("rustup/toolchains/stable/bin/cargo");
+    s.languages.rust.toolchain = root.join("rustup/toolchains/stable").to_string_lossy().into_owned();
+    touch("go/bin/go");
+    s.languages.go.goroot = root.join("go").to_string_lossy().into_owned();
+    s.languages.go.gopath = root.join("gopath").to_string_lossy().into_owned();
+    s.languages.go.modules.env = BTreeMap::from([("GOPROXY".into(), "https://proxy.example".into())]);
+    fake_jdk(&root.join("jdk17"));
+    s.languages.java.jdk = root.join("jdk17").to_string_lossy().into_owned();
+    touch("maven/bin/mvn");
+    s.languages.java.maven.home = root.join("maven").to_string_lossy().into_owned();
+    s.languages.ruby.interpreter = touch("ruby/bin/ruby");
+    touch("ruby/bin/bundle");
+    s.tools.insert("godot".into(), ide_core::settings::ToolSettings { path: touch("Godot/godot") });
+
+    let saved = |kind: &str, command: &str, args: &[&str], env: &[(&str, &str)]| {
+        let mut c = run(kind, command, args);
+        c.detected = false;
+        c.env = env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        c
+    };
+    // As the user saved them: bare tools, only their own environment.
+    let configs = [
+        saved("python", "python", &["app.py"], &[]),
+        saved("pytest", ".venv/bin/pytest", &["-x"], &[("FOO", "1")]),
+        saved("npm", "npm", &["run", "dev"], &[]),
+        saved("cargo", "cargo", &["run"], &[]),
+        saved("go", "go", &["run", "."], &[]),
+        saved("go", "go", &["mod", "tidy"], &[("GOPROXY", "off")]),
+        saved("maven", "mvn", &["package"], &[]),
+        saved("tomcat", "catalina", &[], &[]),
+        saved("ruby", "ruby", &["app.rb"], &[]),
+        saved("rake", "bundle", &["exec", "rake"], &[("RAILS_ENV", "test")]),
+        saved("godot", "godot", &["--path", "."], &[]),
+        // The user's own values that merely look like derived ones stay.
+        saved("cargo", "/opt/rust/bin/cargo", &["build"], &[("PATH", "/custom/bin")]),
+        saved("maven", "mvn", &["verify"], &[("JAVA_HOME", "/other/jdk")]),
+        saved("python", "python", &["x.py"], &[("VIRTUAL_ENV", "/elsewhere/venv")]),
+    ];
+    for user in configs {
+        let mut loaded = user.clone();
+        apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
+        assert_ne!(loaded, user, "{} {}: settings apply to it", user.kind, user.command);
+        let stored = without_derived(&loaded, root, &s);
+        assert_eq!(stored, user, "{} {}: saved as the user left it", user.kind, user.command);
+        let mut reloaded = stored;
+        apply_to_run_configs(std::slice::from_mut(&mut reloaded), root, &s);
+        assert_eq!(reloaded, loaded, "{} {}: runs the same after a save", user.kind, user.command);
+    }
+
+    // Another bare name for the interpreter comes back as the interpreter's own.
+    let mut loaded = saved("python", "python3", &["app.py"], &[]);
+    apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
+    assert_eq!(without_derived(&loaded, root, &s).command, exe("python"));
+
+    // A saved configuration follows a later interpreter change instead of a frozen PATH.
+    let mut loaded = saved("ruby", "ruby", &["app.rb"], &[]);
+    apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
+    let mut next = without_derived(&loaded, root, &s);
+    s.languages.ruby.interpreter = touch("ruby2/bin/ruby");
+    apply_to_run_configs(std::slice::from_mut(&mut next), root, &s);
+    let ruby2 = root.join("ruby2/bin");
+    assert_eq!(next.command, ruby2.join("ruby").to_string_lossy());
+    assert!(next.env["PATH"].starts_with(&*ruby2.to_string_lossy()), "{}", next.env["PATH"]);
 }

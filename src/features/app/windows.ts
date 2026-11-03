@@ -23,7 +23,7 @@ import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";
-import { cycleWindowTab } from "@/platform/windowGroups";
+import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
 
 export const LAUNCH_EVENT = "openidea://launch";
@@ -222,6 +222,20 @@ export async function consumeLaunch(): Promise<void> {
   }
 }
 
+/** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */
+function closeProjectTabs(side: "others" | "left" | "right"): Action["run"] {
+  return async ({ arg }) => {
+    const tabs = useWindowGroup.getState().tabs;
+    const keep = typeof arg === "string" ? arg : tabs.find((tab) => tab.current)?.label;
+    const index = tabs.findIndex((tab) => tab.label === keep);
+    if (!keep || index < 0) return;
+    const labels = tabs
+      .filter((_, i) => (side === "left" ? i < index : side === "right" ? i > index : i !== index))
+      .map((tab) => tab.label);
+    if (labels.length) await call(commands.windowGroupCloseTabs(keep, labels));
+  };
+}
+
 export function windowActions(): Action[] {
   return [
     {
@@ -301,6 +315,27 @@ export function windowActions(): Action[] {
       run: async ({ arg }) => {
         if (typeof arg === "string") await call(commands.windowGroupClose(arg));
       },
+    },
+    {
+      id: "window.closeOtherTabs",
+      title: "Close Other Project Tabs",
+      category: t("app.category.window"),
+      when: "windowGrouped",
+      run: closeProjectTabs("others"),
+    },
+    {
+      id: "window.closeTabsToLeft",
+      title: "Close Project Tabs to the Left",
+      category: t("app.category.window"),
+      when: "windowGrouped",
+      run: closeProjectTabs("left"),
+    },
+    {
+      id: "window.closeTabsToRight",
+      title: "Close Project Tabs to the Right",
+      category: t("app.category.window"),
+      when: "windowGrouped",
+      run: closeProjectTabs("right"),
     },
     {
       id: "window.reorderTabs",

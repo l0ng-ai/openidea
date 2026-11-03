@@ -30,6 +30,7 @@ import { showContextMenu } from "@/ui";
 import { baseExtensions, compartments, contributionExtensions } from "../cm/setup";
 import { gutterMenuItems, inGutterMenuArea } from "../gutterMenu";
 import type { DocModel } from "./document";
+import type { WorkspaceHistoryTarget } from "./workspaceHistory";
 import { isNavigation } from "./navHistory";
 
 export interface SlotHost {
@@ -52,6 +53,8 @@ export interface Reveal {
 
 export class EditorSlot {
   state: EditorState;
+  private historyTarget: WorkspaceHistoryTarget;
+  private detachHistory: () => void;
   view: EditorView | null = null;
   handle: TextEditorHandle | null = null;
   private scroll: StateEffect<unknown> | null = null;
@@ -71,6 +74,14 @@ export class EditorSlot {
     private host: SlotHost,
     init?: { from?: EditorSlot; reveal?: Reveal },
   ) {
+    this.historyTarget = {
+      path: model.path,
+      state: () => this.currentState(),
+      dispatch: (tr) => {
+        if (this.view) this.view.dispatch(tr);
+        else this.state = tr.state;
+      },
+    };
     const source = init?.from;
     this.state = EditorState.create({
       doc: model.sync.localText,
@@ -82,6 +93,7 @@ export class EditorSlot {
         language: model.language,
         docLength: model.sync.localText.length,
         indent: model.effectiveIndent(),
+        formatIndent: model.formatIndent(),
         wrapOverride: model.softWrapOverride,
         extra: this.slotExtensions(),
       }),
@@ -91,6 +103,7 @@ export class EditorSlot {
     else if (source) this.scroll = source.scroll;
     if (init?.reveal) this.pendingReveal = init.reveal;
     model.addSlot(this);
+    this.detachHistory = model.manager.workspaceHistory.attach(this.historyTarget);
   }
 
   get ctx(): EditorDocContext {
@@ -103,6 +116,7 @@ export class EditorSlot {
 
   private slotExtensions() {
     return [
+      this.model.manager.workspaceHistory.extension(this.historyTarget),
       documentSynced.of(() => this.model.sync.whenIdle()),
       EditorView.updateListener.of((u) => {
         for (const l of this.listeners) l(u);
@@ -170,6 +184,7 @@ export class EditorSlot {
 
   dispose() {
     if (this.disposed) return;
+    this.detachHistory();
     this.unmount();
     this.disposed = true;
     this.model.removeSlot(this);
@@ -184,6 +199,7 @@ export class EditorSlot {
   private onTransactions(trs: readonly Transaction[], view: EditorView) {
     view.update(trs);
     let selection = false;
+    let reformatted = false;
     let navigatedFrom: { line: number; col: number } | undefined;
     for (const tr of trs) {
       if (!navigatedFrom && tr.selection && isNavigation(tr)) {
@@ -202,8 +218,10 @@ export class EditorSlot {
         )
           this.host.onUserEdit(this, tr);
       }
+      if (tr.docChanged && tr.isUserEvent("format.reformat")) reformatted = true;
       if (tr.selection || tr.docChanged) selection = true;
     }
+    if (reformatted) this.model.redetectIndent();
     if (selection) this.host.onSelection(this, navigatedFrom);
   }
 
@@ -216,6 +234,7 @@ export class EditorSlot {
     const tr = this.state.update(spec);
     this.state = tr.state;
     if (tr.docChanged) this.model.onLocal(tr.changes, this);
+    if (tr.docChanged && tr.isUserEvent("format.reformat")) this.model.redetectIndent();
   }
 
   /** Applies changes that are already in the model (other slot / backend). */

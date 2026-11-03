@@ -36,6 +36,12 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
         .or_else(|| pinned::pinned_python(root))
 }
 
+/// The project Ruby: the configured one, else the `.ruby-version` / mise / asdf
+/// install, else `ruby` on PATH.
+pub fn ruby_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
+    setting_path(root, &s.languages.ruby.interpreter).or_else(|| crate::ruby::project_ruby(root))
+}
+
 /// The configured `node` executable's directory, else the `bin` of the Node.js the
 /// project pins for mise / asdf.
 pub(crate) fn node_dir(root: &Path, s: &Settings) -> Option<PathBuf> {
@@ -78,7 +84,7 @@ fn jdk_setting(root: &Path, value: &str) -> Option<Result<crate::java::Jdk, Path
 /// The project JDK (`languages.java.jdk`), else the JDK the project pins for mise / asdf.
 pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
     match jdk_setting(root, &s.languages.java.jdk) {
-        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("project JDK {} is not a JDK home", p.display())).ok(),
+        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("project JDK {}", not_a_jdk(p))).ok(),
         None => pinned::pinned_install(root, Tool::Java).and_then(|(dir, _)| pinned::jdk_in_install(&dir)),
     }
 }
@@ -92,10 +98,19 @@ pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, 
             Err(crate::java::server_jdk_incomplete_message(&jdk, jdk.major.max(crate::java::JDTLS_MIN_JAVA)))
         }
         Some(Ok(jdk)) => Ok(Some(jdk)),
-        Some(Err(p)) => Err(format!(
-            "The language server JDK {} is not a JDK home (Settings › Languages & Frameworks › Java).",
-            p.display()
-        )),
+        Some(Err(p)) => {
+            Err(format!("The language server JDK {} (Settings › Languages & Frameworks › Java).", not_a_jdk(&p)))
+        }
+    }
+}
+
+/// Why the configured JDK path `p` is not used: gone (e.g. a version manager removed
+/// it on upgrade) or not a JDK.
+fn not_a_jdk(p: &Path) -> String {
+    if p.exists() {
+        format!("{} is not a JDK home", p.display())
+    } else {
+        format!("{} does not exist; choose another JDK or clear the setting to detect one", p.display())
     }
 }
 
@@ -195,7 +210,7 @@ pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
     }
 }
 
-const PYTHON_SERVERS: [&str; 6] = ["basedpyright", "pyright", "ty", "pylsp", "jedi-language-server", "ruff"];
+const PYTHON_SERVERS: [&str; 7] = ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff"];
 
 fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
@@ -615,15 +630,16 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
+    let ruby = ruby_interpreter(root, s);
 
     for c in configs.iter_mut() {
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" => {
+            "python" | "pytest" | "django-test" => {
                 if let Some(py) = &explicit_python {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
-                    if c.kind == "python" && (runner || is_python_command(&c.command)) {
+                    if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };
@@ -700,6 +716,26 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry(key).or_insert(value);
                 }
             }
+            "ruby" | "rake" | "rspec" => {
+                if let Some(ruby) = &ruby
+                    && let Some(bin) = crate::ruby::bin_dir_of(ruby)
+                {
+                    // `ruby`, `bundle`, `rake`, `rspec` of the chosen interpreter when installed
+                    // alongside it; the rest (a project `bin/rspec` binstub) stays as is.
+                    let name = Path::new(&c.command).file_name().map(|n| n.to_string_lossy().into_owned());
+                    if let Some(name) = name
+                        && matches!(name.as_str(), "ruby" | "bundle" | "rake" | "rspec" | "gem" | "irb")
+                        && !c.command.contains('/')
+                        && !c.command.contains('\\')
+                    {
+                        let exe = bin.join(exe(&name));
+                        if exe.is_file() {
+                            c.command = exe.to_string_lossy().into_owned();
+                        }
+                    }
+                    path_dirs.push(bin);
+                }
+            }
             "maven" | "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
@@ -731,6 +767,47 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
             c.env.insert("PATH".into(), path_with(&dirs));
         }
     }
+}
+
+/// `config` as it should be saved: without what [`apply_to_run_configs`] derives from
+/// settings, so a configuration read from the run list, edited and saved keeps following
+/// Languages & Frameworks instead of freezing today's toolchain (and the IDE's whole
+/// `PATH`) into `run.toml`. A value counts as derived when applying settings to the
+/// configuration without it produces it again: an environment entry (`PATH`,
+/// `VIRTUAL_ENV`, `JAVA_HOME`, `GOROOT`, …) or an absolute command its bare name
+/// resolves to (the project interpreter, a toolchain's `cargo` / `go`, Maven's `mvn`).
+pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConfig {
+    let applied = |c: &RunConfig| {
+        let mut c = c.clone();
+        apply_to_run_configs(std::slice::from_mut(&mut c), root, s);
+        c
+    };
+    let mut out = config.clone();
+    // Until nothing changes: some entries are derived only once others are gone
+    // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`).
+    while let Some(key) = out
+        .env
+        .iter()
+        .find(|(key, value)| {
+            let mut probe = out.clone();
+            probe.env.remove(*key);
+            applied(&probe).env.get(*key) == Some(*value)
+        })
+        .map(|(key, _)| key.clone())
+    {
+        out.env.remove(&key);
+    }
+    let path = Path::new(&config.command);
+    if path.is_absolute()
+        && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
+    {
+        let mut probe = out.clone();
+        probe.command = name.clone();
+        if applied(&probe).command == config.command {
+            out.command = name;
+        }
+    }
+    out
 }
 
 fn sh_quote(s: &str) -> String {

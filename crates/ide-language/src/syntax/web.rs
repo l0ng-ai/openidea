@@ -6,7 +6,7 @@
 //! `<style>` elements of HTML documents and feed the symbol index (see
 //! [`super::Syntax::tags`]), so a lookup is an exact index query.
 
-use super::lines::{LineIndex, utf16_to_byte};
+use super::lines::{LineIndex, byte_at};
 use super::{Grammar, parse};
 use crate::SymbolTag;
 use ide_core::{Pos, Range, SymbolKind};
@@ -128,15 +128,6 @@ pub(crate) fn definitions(g: &Grammar, css: Option<&Grammar>, tree: &Tree, text:
         });
     }
     out
-}
-
-fn byte_at(text: &str, pos: Pos) -> Option<usize> {
-    let mut start = 0;
-    for _ in 0..pos.line {
-        start += text[start..].find('\n')? + 1;
-    }
-    let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
-    Some(start + utf16_to_byte(&text[start..line_end], pos.col as usize))
 }
 
 /// The whitespace-separated token of `value` (starting at byte `base`) around byte `at`.

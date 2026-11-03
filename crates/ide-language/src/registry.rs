@@ -22,6 +22,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
     ("dotenv", include_str!("../../../languages/dotenv.toml")),
     ("elixir", include_str!("../../../languages/elixir.toml")),
+    ("erb", include_str!("../../../languages/erb.toml")),
     ("erlang", include_str!("../../../languages/erlang.toml")),
     ("fsharp", include_str!("../../../languages/fsharp.toml")),
     ("gitattributes", include_str!("../../../languages/gitattributes.toml")),
@@ -44,6 +45,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("javascriptreact", include_str!("../../../languages/javascriptreact.toml")),
     ("json", include_str!("../../../languages/json.toml")),
     ("jsonc", include_str!("../../../languages/jsonc.toml")),
+    ("jsp", include_str!("../../../languages/jsp.toml")),
     ("julia", include_str!("../../../languages/julia.toml")),
     ("kotlin", include_str!("../../../languages/kotlin.toml")),
     ("latex", include_str!("../../../languages/latex.toml")),
@@ -520,6 +522,8 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "ERB",
+        "JSP",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -553,7 +557,7 @@ mod tests {
     fn alternative_servers_are_fallbacks() {
         let reg = reg();
         for (lang, servers) in [
-            ("python", vec!["basedpyright", "pyright", "ty"]),
+            ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
@@ -602,6 +606,32 @@ mod tests {
             assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
             assert_eq!(served("apps/api/main.ts"), None, "{lang}");
         }
+    }
+
+    #[test]
+    fn ruff_serves_python_files_only_below_its_config() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("python")).unwrap();
+        let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
+        // After the fallbacks: hover, rename and symbols stay with the type checker.
+        assert_eq!(names, ["basedpyright", "pyright", "ty", "pyrefly", "ruff"]);
+        let ruff = cfg.language_servers.iter().find(|s| s.name == "ruff").unwrap();
+        assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", ["server".to_string()].as_slice()));
+        assert!(ruff.require_root_marker && !ruff.fallback);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["lint", "dot", "pyproject", "plain"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("lint/ruff.toml"), "").unwrap();
+        std::fs::write(root.join("dot/.ruff.toml"), "").unwrap();
+        std::fs::write(root.join("pyproject/pyproject.toml"), "[tool.ruff]\nline-length = 100\n").unwrap();
+        std::fs::write(root.join("plain/pyproject.toml"), "[project]\nname = \"plain\"\n").unwrap();
+        let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &ruff.root_markers);
+        for dir in ["lint", "dot", "pyproject"] {
+            assert_eq!(served(&format!("{dir}/pkg/main.py")), Some(root.join(dir)), "{dir}");
+        }
+        assert_eq!(served("plain/main.py"), None);
     }
 
     #[test]
@@ -750,6 +780,7 @@ mod tests {
             ("AppDelegate.m", "objective-c"),
             ("a.rb", "ruby"),
             ("Gemfile", "ruby"),
+            ("show.html.erb", "erb"),
             ("index.php", "php"),
             ("init.lua", "lua"),
             ("main.dart", "dart"),
@@ -774,6 +805,8 @@ mod tests {
             ("a.less", "less"),
             ("App.vue", "vue"),
             ("App.svelte", "svelte"),
+            ("index.jsp", "jsp"),
+            ("WEB-INF/tags/card.tag", "jsp"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),
             ("tsconfig.app.json", "jsonc"),
