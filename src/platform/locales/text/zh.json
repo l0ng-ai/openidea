@@ -5703,5 +5703,7 @@
   "Usage limits": "用量限额",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "账户的 5 小时和每周限额，在智能体报告时显示（Claude Code）",
   "Session cost": "会话花费",
-  "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)": "智能体报告的本会话目前花费（按 API 价格计算，订阅账户也会显示）"
+  "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)": "智能体报告的本会话目前花费（按 API 价格计算，订阅账户也会显示）",
+  "Build and run using": "构建和运行使用",
+  "Gradle runs a main class as a JavaExec task on its source set's runtime classpath (Gradle's resource processing included). OpenIDEA launches it on the Java language server's classpath.": "Gradle 以 JavaExec 任务在源集的运行时类路径上运行主类（包括 Gradle 的资源处理）。OpenIDEA 在 Java 语言服务器的类路径上启动它。"
 }

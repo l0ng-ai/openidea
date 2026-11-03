@@ -118,6 +118,9 @@ export const EXECUTION_PAGES: PageSpec[] = [
     group: BUILD_GROUP,
     order: 358,
     keywords: [
+      "Build and run using",
+      "delegate",
+      "JavaExec",
       "Gradle JVM",
       "JDK",
       "JAVA_HOME",

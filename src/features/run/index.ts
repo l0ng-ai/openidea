@@ -47,6 +47,7 @@ import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
+import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
 import {
@@ -117,6 +118,12 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
     await launchProduced(compiled, true);
+    return;
+  }
+  // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
+  const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  if (delegated) {
+    await debugWithAgent(delegated);
     return;
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
