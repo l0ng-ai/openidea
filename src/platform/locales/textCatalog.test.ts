@@ -151,6 +151,7 @@ const UNTRANSLATED = new Set<string>([
   "OpenIDEA",
   "Spring Boot",
   "PostgreSQL",
+  "Pyrefly",
   "Pyright",
   "pytest",
   "Rust",

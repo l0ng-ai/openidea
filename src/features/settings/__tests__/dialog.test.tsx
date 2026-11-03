@@ -22,6 +22,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { registerAction, executeAction } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { useKeymap } from "@/platform/keymap";
 import { ContextMenuHost } from "@/ui";
@@ -29,6 +30,8 @@ import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
 import { openSettings, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
+import { SettingsWindow } from "../window/SettingsWindow";
+import dialogStyles from "../dialog/SettingsDialog.module.css";
 import { activate } from "..";
 import { MessagesHost } from "@/workbench/messages";
 
@@ -468,6 +471,23 @@ describe("Settings dialog", () => {
     const dialog = await openDialog("appearance");
     expect(within(dialog).getByRole("button", { name: "Theme" })).toHaveTextContent("Islands Light");
     expect(within(dialog).getByLabelText("UI font size")).toHaveValue("13");
+  });
+});
+
+describe("native Settings window root", () => {
+  it("marks the window edge on Linux, whose frameless windows get no compositor shadow", () => {
+    const saved = usePlatform.getState();
+    usePlatform.setState({ os: "linux" });
+    let view = render(<SettingsWindow />);
+    let root = document.querySelector(`.${dialogStyles.window}`);
+    expect(root).toHaveClass(dialogStyles.windowEdge!);
+    view.unmount();
+    usePlatform.setState({ os: "windows" });
+    view = render(<SettingsWindow />);
+    root = document.querySelector(`.${dialogStyles.window}`);
+    expect(root).not.toHaveClass(dialogStyles.windowEdge!);
+    view.unmount();
+    usePlatform.setState(saved);
   });
 });
 

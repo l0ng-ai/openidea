@@ -549,6 +549,7 @@ pub struct LanguagesSettings {
     pub typescript: TypeScriptSettings,
     pub prettier: PrettierSettings,
     pub java: JavaSettings,
+    pub ruby: RubySettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -610,6 +611,13 @@ impl Default for PythonSettings {
 #[serde(default, rename_all = "camelCase")]
 pub struct PhpSettings {
     /// `php` CLI executable; empty = the one on `PATH`.
+    pub interpreter: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RubySettings {
+    /// Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH).
     pub interpreter: String,
 }
 

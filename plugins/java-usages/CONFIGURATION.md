@@ -53,14 +53,17 @@ files for disk discovery. It does not guess a global association from matching
 text in unrelated projects.
 
 Indexing is lazy. The first explicit navigation/search builds a compact snapshot;
-ordinary typing, code-lens probes and bulk scoped reference analysis do not start indexing. At most eight project snapshots are
+ordinary typing, code-lens probes, bulk scoped reference analysis, and Java Go to Definition / Ctrl+hover outside a `@Value` or property-lookup argument (checked with the bundled tree-sitter grammar) do not start indexing. At most eight project snapshots are
 retained, with a shared 100,000-association retention cap. Records contain property names, element handles and source locations;
 ASTs and bindings are discarded after indexing. A lexical prefilter avoids AST
 construction for ordinary Java units, but every accepted association is resolved
-semantically. Warm requests reuse the snapshot. Java model/reconcile changes
-invalidate it conservatively, including dependent-type changes; open working-copy
-content fingerprints also prevent stale answers before reconciliation. This is
-**snapshot invalidation**, not a fully incremental Java semantic index.
+semantically. Warm requests reuse the snapshot. Java model changes (sources on
+disk, classpath, archives) invalidate it conservatively, including dependent-type
+changes; a fingerprint of working copies with unsaved changes covers edits before
+they are saved. Opening or closing an editor, reconciling, building, and non-Java
+resource changes (configuration files are parsed by the client; metadata files are
+checked by timestamp) keep it. This is **snapshot invalidation**, not a fully
+incremental Java semantic index.
 
 Metadata/JAR timestamps are checked before reuse. The client caches parsed disk
 configuration files by modification time and size (at most 100,000 cached keys), overlays open buffers, and

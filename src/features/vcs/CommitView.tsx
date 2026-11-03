@@ -8,6 +8,7 @@ import { tx } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { dirname } from "@/platform/project";
+import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
 import {
   Button,
   Checkbox,
@@ -398,6 +399,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
+  const projectRoots = useEffectiveRoots();
   const roots = useMemo(
     () => buildChangeTree(status, root, groupByDir, lists, repos),
     [status, root, groupByDir, lists, repos],
@@ -524,6 +526,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           getLabel={nodeText}
           getDirectory={(n) => (n.path && n.type !== "group" ? (n.type === "dir" ? n.path : dirname(n.path)) : null)}
           getChildren={(n) => n.children}
+          rowClassName={(n) =>
+            n.type !== "group" && n.path && isTestFile(n.path, projectRoots) ? styles.testFile : undefined
+          }
           isExpandable={(n) => n.type !== "file"}
           expanded={expanded}
           onExpandedChange={(_next, node, open) =>

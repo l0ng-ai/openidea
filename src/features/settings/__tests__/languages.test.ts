@@ -35,6 +35,14 @@ describe("languages settings", () => {
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 
+  it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
+    expect(validateSettings({}).languages.ruby.interpreter).toBe("");
+    expect(validateLanguages({ ruby: { interpreter: 42 } }).ruby.interpreter).toBe("");
+    const settings = validateSettings({ languages: { ruby: { interpreter: " /opt/ruby/bin/ruby " } } });
+    expect(settings.languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+    expect(validateSettings(settings).languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+  });
+
   it("keeps Prettier opt-in on save and normalizes its enabled languages", () => {
     expect(validateLanguages({}).prettier).toMatchObject({ prefer: false, runOnSave: false, path: "" });
     expect(
@@ -70,6 +78,7 @@ describe("language pages", () => {
       "Python Interpreter",
       "PHP",
       "Prettier",
+      "Ruby",
       "Rust",
       "TypeScript",
     ]);
