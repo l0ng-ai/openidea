@@ -14,7 +14,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
@@ -56,6 +56,8 @@ pub(crate) struct Session {
     progress: Mutex<HashMap<String, TaskId>>,
     pub kotlin_relay: Mutex<Option<crate::kotlin_jdwp::StartupRelay>>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
+    /// Legacy UnityDebug resumes the VM while draining its initial assembly/thread events.
+    pub unity_startup_activity: Mutex<Instant>,
 }
 
 /// Adapters that only match files by their resolved path: Godot maps a script to
@@ -99,6 +101,7 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             kotlin_relay: Mutex::new(None),
             kotlin_mirror: Mutex::new(None),
+            unity_startup_activity: Mutex::new(Instant::now()),
         }
     }
 
@@ -331,6 +334,17 @@ pub(crate) async fn event_loop(
 }
 
 async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut body: Value) {
+    if s.adapter == "unity"
+        && (event == "thread"
+            || (event == "output"
+                && body.get("output").and_then(Value::as_str).is_some_and(|text| {
+                    text.starts_with("Loaded assembly:")
+                        || text.starts_with("Thread started:")
+                        || text.starts_with("Resolved pending breakpoint")
+                })))
+    {
+        *s.unity_startup_activity.lock() = Instant::now();
+    }
     if let Some(mirror) = s.kotlin_mirror.lock().as_ref() {
         mirror.translate(&mut body);
     }

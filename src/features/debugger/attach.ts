@@ -7,6 +7,7 @@ import type { AttachKind, AttachableProcess, LaunchConfig } from "@/platform/ipc
 import { javaAttachConfig } from "./java";
 
 export const KIND_LABELS: Record<AttachKind, string> = {
+  unity: "Unity Editor",
   java: "Java (JDWP)",
   node: "Node.js",
   python: "Python (debugpy)",
@@ -14,7 +15,7 @@ export const KIND_LABELS: Record<AttachKind, string> = {
   native: "Native (LLDB)",
 };
 
-const KIND_ORDER: AttachKind[] = ["java", "node", "python", "go", "native"];
+const KIND_ORDER: AttachKind[] = ["unity", "java", "node", "python", "go", "native"];
 
 export type AttachRow =
   | { kind: "group"; key: string; label: string; count: number }
@@ -63,6 +64,15 @@ function base(p: AttachableProcess, cwd: string, extra: Record<string, unknown>)
 export async function attachConfig(p: AttachableProcess, root: string): Promise<LaunchConfig> {
   const skip = workflowSettings().debugger.skipLibraryCode;
   switch (p.kind) {
+    case "unity":
+      return {
+        ...base(p, root, {
+          name: `Unity Editor (${p.pid})`,
+          path: `${root}/Library/EditorInstance.json`,
+          __exceptionOptions: [],
+        }),
+        adapter: "unity",
+      };
     case "java":
       return javaAttachConfig(
         { name: `${p.name} (${p.pid})`, module: "", hostName: p.host ?? "localhost", port: p.port! },

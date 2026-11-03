@@ -17,6 +17,7 @@ struct Script {
     start_debugging: bool,
     ignore_configuration_done: bool,
     source_path: Option<String>,
+    empty_thread_responses: usize,
 }
 
 struct FakeLauncher {
@@ -49,6 +50,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut r = BufReader::new(r);
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
+    let mut thread_requests = 0;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -153,7 +155,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     json!({"type": "event", "event": "breakpoint", "body": {"reason": "changed", "breakpoint": {"id": 1, "verified": false, "message": "moved", "line": 9, "source": {"path": script.source_path}}}})
                 );
             }
-            "threads" => ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]})),
+            "threads" => {
+                thread_requests += 1;
+                if thread_requests <= script.empty_thread_responses {
+                    ok!(msg, json!({"threads": []}));
+                } else {
+                    ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]}));
+                }
+            }
             "stackTrace" => ok!(
                 msg,
                 json!({"stackFrames": [
@@ -421,6 +430,26 @@ async fn stop_terminates_and_disconnects() {
     assert!(h.manager.sessions(None).is_empty());
     h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
     assert!(h.manager.threads(id).await.is_err());
+}
+
+#[tokio::test]
+async fn unity_attach_waits_for_mono_and_disconnects_without_terminating_editor() {
+    let h = harness(Script { empty_thread_responses: 2, ..Script::default() });
+    let id = h
+        .start(LaunchConfig {
+            adapter: "unity".into(),
+            request: "attach".into(),
+            program: None,
+            extra_json: Some(json!({ "name": "Unity Editor (42)", "__exceptionOptions": [] }).to_string()),
+            ..config()
+        })
+        .await
+        .unwrap();
+    assert!(h.commands().iter().filter(|c| *c == "threads").count() >= 3);
+    assert_eq!(h.request("attach")["arguments"]["name"], "Unity Editor (42)");
+    h.manager.stop(id).await.unwrap();
+    assert!(!h.commands().iter().any(|c| c == "launch" || c == "terminate"));
+    assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], false);
 }
 
 #[tokio::test]

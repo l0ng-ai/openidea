@@ -37,6 +37,7 @@ import {
 } from "./state";
 import { DebuggerOverlays } from "./ui/Overlays";
 import { REMOTE_TYPES } from "./remote";
+import { useOverlays } from "./ui/popoverStore";
 
 export function activate(): () => void {
   useDebugRunSessions.setState({
@@ -98,6 +99,7 @@ export function activate(): () => void {
     useProject.subscribe((s, prev) => {
       const root = s.project?.root ?? null;
       if (root !== (prev.project?.root ?? null) || s.project?.trusted !== prev.project?.trusted) {
+        useOverlays.setState({ attach: null });
         resetSessions();
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);

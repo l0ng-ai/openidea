@@ -11,6 +11,7 @@ describe("missing debug adapters", () => {
   });
 
   it("offers the managed install of a missing adapter binary", () => {
+    expect(missingAdapter("unity", unavailable("debug adapter `unity` not found"))?.tool).toBe("unity-debug");
     const e = unavailable(
       "debug adapter `js-debug` not found (`js-debug-adapter` is neither installed by OpenIDEA nor on PATH)",
     );

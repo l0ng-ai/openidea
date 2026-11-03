@@ -6,6 +6,7 @@ import { IpcError } from "@/platform/ipc";
 
 /** Adapters the tools installer can provide (adapter id → tool name). */
 const INSTALLABLE: Record<string, { tool: string; title: string }> = {
+  unity: { tool: "unity-debug", title: "Unity Debugger is not installed" },
   "kotlin-debug-adapter": { tool: "kotlin-debug-adapter", title: "The Kotlin debugger is not installed" },
   netcoredbg: { tool: "netcoredbg", title: "netcoredbg is not installed" },
   debugpy: { tool: "debugpy", title: "debugpy is not installed" },

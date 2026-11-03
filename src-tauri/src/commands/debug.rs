@@ -256,6 +256,15 @@ pub async fn debug_attachable_processes(state: State<'_, AppState>) -> IdeResult
     ide_host::ops::debug::debug_attachable_processes(&state.host, "").await
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_unity_processes(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<attach::AttachableProcess>> {
+    ide_host::ops::debug::debug_unity_processes(&state.host, window.label()).await
+}
+
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 #[tauri::command]

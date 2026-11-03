@@ -19,7 +19,9 @@ import { attachConfig, attachDetail, attachRows, matchesFilter } from "../attach
 const proc = (p: Partial<AttachableProcess> & Pick<AttachableProcess, "pid" | "kind">): AttachableProcess => ({
   name: p.kind,
   commandLine: `${p.kind} app`,
-  adapter: { java: "java-debug", node: "js-debug", python: "debugpy", go: "delve", native: "codelldb" }[p.kind],
+  adapter: { unity: "unity", java: "java-debug", node: "js-debug", python: "debugpy", go: "delve", native: "codelldb" }[
+    p.kind
+  ],
   host: null,
   port: null,
   ...p,
@@ -41,6 +43,15 @@ const list = [
 ];
 
 describe("Attach to Process popup model", () => {
+  it("attaches the chosen Unity Editor by its exact ID without launching or using a native adapter", async () => {
+    const launch = await attachConfig(proc({ pid: 1234, kind: "unity", name: "Unity Editor" }), "/game");
+    expect(launch).toMatchObject({ adapter: "unity", request: "attach", program: null, cwd: "/game" });
+    expect(JSON.parse(launch.extraJson!)).toEqual({
+      name: "Unity Editor (1234)",
+      path: "/game/Library/EditorInstance.json",
+      __exceptionOptions: [],
+    });
+  });
   it("groups processes by debugger in IDEA's order with counts", () => {
     const rows = attachRows(list, "");
     expect(rows.filter((r) => r.kind === "group").map((r) => r.kind === "group" && `${r.label}:${r.count}`)).toEqual([

@@ -70,10 +70,31 @@ hides generated folders and `.meta` files. Its options menu has independent
 provides the full directory tree. Unity caches and build output are excluded from indexing and search by
 default, independently of `.gitignore`.
 
-The Unity title bar disables Run: start the project in Unity Editor. Debug is
-labelled **Attach to Unity Process** and currently opens a notice explaining
-that Unity debugger attachment is not yet supported. It does not launch a
-regular C# configuration. The normal Run shortcut is disabled for Unity projects.
+The Unity title bar disables Run: start the project in Unity Editor. Debug and
+the Debug shortcut open **Attach to Unity Process**. Open the project in Unity,
+enable **Preferences > External Tools > Editor Attaching** and switch Unity's
+code optimization to **Debug Mode**, then choose its Editor process and attach.
+The current project's process is listed first with its project path. Set C#
+breakpoints in OpenIDEA and enter Play mode in Unity; the existing debugger views
+provide stepping, stack frames, locals and expression evaluation. Stop disconnects
+the debugger without closing the Editor. Run shortcuts remain disabled.
+
+If the adapter is missing, choose **Install Unity Debugger** in the process
+picker (or install it in **Settings > Language Servers**). The managed download
+pins the MIT-licensed [Unity debugger adapter](https://github.com/Unity-Technologies/vscode-unity-debug)
+3.0.1 and verifies its SHA-256. An existing adapter can be selected with the
+`unity-debug` tool path. Windows uses `UnityDebug.exe`; macOS/Linux require Mono
+and the managed installer creates a Mono wrapper. Custom paths on those platforms
+must point to an executable wrapper. This upstream adapter is archived; compatibility
+with every Unity release is not guaranteed. This integration targets local Unity
+Editor processes; attaching to standalone players is not included.
+
+Verified on Windows with Unity 2022.3.40f1c1; macOS/Linux have not been tested yet.
+The integration smoke test uses an isolated Unity 2022.3 Editor project to verify
+discovery, attachment, breakpoints, locals, evaluation, stepping and disconnecting
+while paused without terminating the Editor. Set `OPENIDEA_UNITY_EDITOR` and
+`OPENIDEA_UNITY_ADAPTER` to the Editor and adapter executables, then run
+`cargo test -p ide-dap --test unity -- --ignored --nocapture` to repeat it.
 
 Inside `Assets`, rename and move preserve the asset's `.meta` file and GUID,
 including undo. Delete includes the sidecar and snapshots both paths in Local
@@ -98,7 +119,7 @@ C# editing uses the existing `csharp-ls` integration. Generate the C# project
 files in Unity's **Preferences > External Tools** first; the IDE refreshes the
 missing-project-files notice when they appear. Detecting the project does not
 verify that the language server has loaded every Unity assembly. This initial
-support does not include Unity editor synchronization or attach debugging.
+support does not include Unity editor synchronization.
 Filesystem operations are tested with fixture projects; coordination with a
 running Unity AssetDatabase is not yet implemented.
 

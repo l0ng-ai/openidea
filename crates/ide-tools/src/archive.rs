@@ -338,6 +338,15 @@ pub fn env_wrapper(bin_dir: &Path, command: &str, target: &Path, env: &[(&str, &
 }
 
 pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResult<PathBuf> {
+    link_executable_with_runtime(bin_dir, command, target, None)
+}
+
+pub fn link_executable_with_runtime(
+    bin_dir: &Path,
+    command: &str,
+    target: &Path,
+    runtime: Option<&str>,
+) -> IdeResult<PathBuf> {
     fs::create_dir_all(bin_dir)?;
     #[cfg(unix)]
     {
@@ -347,7 +356,8 @@ pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResul
         }
         let quoted = target.to_string_lossy().replace('\'', r"'\''");
         // A Node script without a shebang (e.g. js-debug's dapDebugServer.js) runs through `node`.
-        let runner = if target.extension().is_some_and(|e| e == "js") { "node " } else { "" };
+        let runner = runtime.or_else(|| target.extension().is_some_and(|e| e == "js").then_some("node"));
+        let runner = runner.map(|r| format!("{r} ")).unwrap_or_default();
         fs::write(&link, format!("#!/bin/sh\nexec {runner}'{quoted}' \"$@\"\n"))?;
         make_executable(&link)?;
         make_executable(target)?;
@@ -356,7 +366,8 @@ pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResul
     #[cfg(not(unix))]
     {
         let link = bin_dir.join(format!("{command}.cmd"));
-        let runner = if target.extension().is_some_and(|e| e == "js") { "node " } else { "" };
+        let runner = runtime.or_else(|| target.extension().is_some_and(|e| e == "js").then_some("node"));
+        let runner = runner.map(|r| format!("{r} ")).unwrap_or_default();
         fs::write(&link, format!("@echo off\r\n{runner}\"{}\" %*\r\n", target.display()))?;
         Ok(link)
     }
@@ -476,6 +487,34 @@ mod tests {
         extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
         assert!(!tmp.path().join("escape.txt").exists());
         assert!(dest.join("ok.txt").exists());
+    }
+
+    #[test]
+    fn unity_vsix_wrapper_preserves_managed_assemblies_and_uses_mono_on_unix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("unity.vsix");
+        zip_file(
+            &archive,
+            &[
+                ("extension/bin/UnityDebug.exe", b"adapter", 0o644),
+                ("extension/bin/UnityDebug.exe.config", b"runtime config", 0o644),
+                ("extension/bin/Mono.Debugger.Soft.dll", b"dependency", 0o644),
+            ],
+        );
+        let dest = tmp.path().join("install with spaces");
+        extract(&archive, ArchiveKind::Zip, &dest, "unity-debug", &CancellationToken::new()).unwrap();
+        let target = locate(&dest, &["UnityDebug.exe".into()]).unwrap();
+        let wrapper =
+            link_executable_with_runtime(&dest.join("bin"), "unity-debug", &target, cfg!(unix).then_some("mono"))
+                .unwrap();
+        let script = fs::read_to_string(wrapper).unwrap();
+        assert!(script.contains(&*target.to_string_lossy()));
+        #[cfg(unix)]
+        assert!(script.contains("exec mono '") && script.contains("\"$@\""));
+        #[cfg(windows)]
+        assert!(script.contains("\" %*") && !script.contains("mono "));
+        assert_eq!(fs::read(target.with_extension("exe.config")).unwrap(), b"runtime config");
+        assert_eq!(fs::read(target.parent().unwrap().join("Mono.Debugger.Soft.dll")).unwrap(), b"dependency");
     }
 
     #[test]

@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled, registerAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { ProjectInfo, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { MessagesHost } from "@/workbench/messages";
 import { useDebugRunSessions, type DebugRunSession } from "@/workbench/contributions";
 import { applicationConfig } from "./application";
 import { activate } from "./index";
@@ -94,27 +93,20 @@ it("disables Unity Run even with a selected configuration or a running session",
   await vi.waitFor(() => expect(session.stop).toHaveBeenCalledOnce());
 });
 
-it("explains Unity attachment from the Debug button and shortcut without launching a debugger", async () => {
+it("opens Unity attachment from the Debug button and shortcut without selecting a run configuration", async () => {
   openUnity();
-  render(
-    <>
-      <RunWidget />
-      <MessagesHost />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Attach to Unity Process" }));
-  expect(screen.getByRole("dialog", { name: "Attach to Unity Process" })).toBeInTheDocument();
-  expect(screen.getByText(/Unity debugger attachment is not supported in this version yet/)).toBeInTheDocument();
-  // A repeated shortcut shares the same explanation instead of stacking dialogs.
-  let pending: Promise<unknown>;
-  act(() => {
-    pending = executeAction("run.debug");
-  });
-  expect(screen.getAllByRole("dialog")).toHaveLength(1);
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "OK" }));
-    await pending;
-  });
+  const attach = vi.fn();
+  const unregister = registerAction({ id: "debug.attachUnity", title: "Attach", run: attach });
+  try {
+    render(<RunWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Attach to Unity Process" }));
+    await act(async () => {
+      await executeAction("run.debug");
+    });
+    expect(attach).toHaveBeenCalledTimes(2);
+  } finally {
+    unregister();
+  }
   expect(useRun.getState().chooserOpen).toBe(false);
   expect(useRun.getState().sessions).toHaveLength(0);
 });
