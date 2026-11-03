@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTestParser, frameworkFor, withTestReporting } from "./index";
-import { phpunitArgs, phpunitFilter, phpunitParser, withTeamcity } from "./phpunit";
+import { phpunitArgs, phpunitFilter, phpunitParser, TeamcityOutput, withTeamcity } from "./phpunit";
 import { TestResults } from "./results";
 import type { TestEvent } from "./types";
 
@@ -81,6 +81,22 @@ describe("phpunitParser", () => {
     ])
       results.apply(parser.feed(l));
     expect(results.counts()).toMatchObject({ passed: 1, failed: 1 });
+  });
+});
+
+describe("TeamcityOutput", () => {
+  it("feeds every line to the tree but keeps service messages out of the console", () => {
+    const results = new TestResults();
+    const parser = phpunitParser();
+    const output = new TeamcityOutput((line) => results.apply(parser.feed(line)));
+    const shown =
+      output.feed(
+        "PHPUnit 11.5 by Sebastian Bergmann\n##teamcity[testSuiteStarted name='CalcTest']\n##teamcity[testStar",
+      ) +
+      output.feed("ted name='testAdd']\r\n##teamcity[testFinished name='testAdd' duration='1']\nOK (1 test") +
+      output.end();
+    expect(shown).toBe("PHPUnit 11.5 by Sebastian Bergmann\nOK (1 test\n");
+    expect(results.counts()).toMatchObject({ passed: 1 });
   });
 });
 

@@ -3,7 +3,7 @@
  * suite and test event, with the exact `Class::method` names and failure details. Tests are reported as
  * `[...suites, test]`: the configured suite (`Unit`), the class, then the method (with its data set).
  */
-import type { TestEvent, TestOutputParser } from "./types";
+import { TestStdout, type TestEvent, type TestOutputParser } from "./types";
 
 const MESSAGE_RE = /^\s*##teamcity\[(\w+)((?:\s+[\w.-]+='(?:[^|']|\|.)*')*)\s*\]\s*$/;
 const ATTR_RE = /([\w.-]+)='((?:[^|']|\|.)*)'/g;
@@ -187,4 +187,11 @@ export function phpunitFilter(paths: readonly (readonly string[])[]): string {
     else parts.add(`${escapePattern(last)}::.*`);
   }
   return `/(${[...parts].join("|")})$/`;
+}
+
+/** Console text of a `--teamcity` run: the service messages only feed the test tree, as in PhpStorm. */
+export class TeamcityOutput extends TestStdout {
+  constructor(feedLine: (line: string) => void) {
+    super(feedLine, (line) => (MESSAGE_RE.test(line) ? "" : line + "\n"));
+  }
 }
