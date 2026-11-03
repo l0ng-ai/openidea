@@ -8,6 +8,8 @@
   "Built-in agents": "内置智能体",
   "Custom executable": "自定义可执行文件",
   "Found on PATH": "已在 PATH 中找到",
+  "Launch command": "启动命令",
+  "Sign in": "登录",
   "Leave empty to find the executable on PATH. Changes apply to new sessions.": "留空以从 PATH 查找可执行文件。更改对新会话生效。",
   "Newer dependency version available": "有更新的依赖版本可用",
   "Not found": "未找到",
