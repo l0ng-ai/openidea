@@ -632,7 +632,7 @@ export const TOOLS_PAGES: PageSpec[] = [
     keywords: ["agent", "claude", "codex", "usage", "quota", "rate limit", "cost", "tokens", "meter"],
     sections: [
       {
-        title: "Shown Below the Prompt",
+        title: "Shown in the Task Header",
         options: [
           { kind: "toggle", key: "agents.showContextUsage", label: "Context window usage" },
           { kind: "toggle", key: "agents.showWorkTime", label: "Time spent on the task" },

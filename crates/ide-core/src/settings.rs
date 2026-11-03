@@ -63,7 +63,7 @@ pub struct Settings {
     pub agents: AgentSettings,
 }
 
-/// What the meters under an agent task's composer show.
+/// What the meters in an agent task's header show.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentSettings {

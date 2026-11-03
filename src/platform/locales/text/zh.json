@@ -5673,7 +5673,7 @@
   "Weekly Opus limit": "每周 Opus 限额",
   "Weekly Sonnet limit": "每周 Sonnet 限额",
   "Chat": "聊天",
-  "Shown Below the Prompt": "在输入框下方显示",
+  "Shown in the Task Header": "在任务标题栏中显示",
   "Context window usage": "上下文窗口用量",
   "Time spent on the task": "任务耗时",
   "Usage limits": "用量限额",

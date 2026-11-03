@@ -229,7 +229,7 @@ describe("session state across tasks and hosts", () => {
   });
 });
 
-describe("meters below the prompt", () => {
+describe("meters in the task header", () => {
   afterEach(() => {
     useProject.setState({ settings: null });
     useAgents.setState({ limits: new Map() });

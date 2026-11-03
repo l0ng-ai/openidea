@@ -92,7 +92,7 @@ export interface ValidSettings extends WorkflowSettings {
   tools: Record<string, { path: string }>;
   /** Settings › Language Servers, by server name (as the backend sends them). */
   languageServers: Record<string, LanguageServerEntry>;
-  /** Tools › Agents › Chat: the meters under an agent task's composer. */
+  /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
 }
 

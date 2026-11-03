@@ -1338,7 +1338,7 @@ export type AgentRetry = {
 	error: string | null,
 };
 
-/**  What the meters under an agent task's composer show. */
+/**  What the meters in an agent task's header show. */
 export type AgentSettings = {
 	/**  Context window use. */
 	showContextUsage?: boolean,
