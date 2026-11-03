@@ -1,6 +1,7 @@
 # Contributing to OpenIDEA
 
 These rules apply to everyone, and to any coding agent working on their behalf.
+Project layout, coding rules, commands and checks are in [AGENTS.md](AGENTS.md).
 
 ## Issues
 

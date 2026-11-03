@@ -89,20 +89,30 @@ Run what CI runs for the parts you touched:
   a time, not chained in one shell call that may hit the 10-minute tool timeout.
 - `pnpm tauri dev` does a full debug build. Clippy only checks the code, so a passing clippy
   doesn't make the first launch fast.
-- Use `pnpm tauri dev` / `pnpm dev:app` for parallel worktrees, not the raw
-  `pnpm exec tauri dev` CLI. The wrapper starts Vite on a worktree-derived port
-  (automatically advancing if occupied), passes its actual URL to Tauri,
-  and reports an existing launcher instead of starting
-  another for the same worktree. HMR uses the Vite port.
-- Debug app identity, data, settings, logs and single-instance scope follow the
-  canonical worktree path captured at build time, independent of launch cwd.
-  Launching the same debug binary again focuses its existing instance and forwards
-  its path argument. Different worktrees and the installed release can coexist.
-  `--release` uses normal release identity and bypasses the development wrapper.
-- Keep concurrent worktrees' Cargo output directories separate; do not point
-  `CARGO_TARGET_DIR` or `target` symlinks at the same directory.
-- MCP bridge ports are dynamic (9223–9322). Use `pnpm dev:status`, connect to the
-  reported port, verify identifier/cwd, and pass `appIdentifier: <port>` explicitly.
-  Do not assume the default MCP session belongs to this worktree.
+
+## Parallel worktrees
+
+Several worktrees can be developed and run side by side.
+
+- Create one per task: `git worktree add ../<name> -b <branch> origin/main`, then
+  `pnpm install` in it.
+- Launch with `pnpm tauri dev` / `pnpm dev:app`, not the raw `pnpm exec tauri dev` CLI. The
+  wrapper starts Vite on a worktree-derived port (advancing if occupied), passes its actual
+  URL to Tauri, and reports an existing launcher instead of starting another for the same
+  worktree. HMR uses the Vite port.
+- Debug app identity, data, settings, logs and single-instance scope follow the canonical
+  worktree path captured at build time, independent of launch cwd. Launching the same debug
+  binary again focuses its existing instance and forwards its path argument. Different
+  worktrees and the installed release can coexist. `--release` uses normal release identity
+  and bypasses the development wrapper.
+- MCP bridge ports are dynamic (9223–9322). Use `pnpm dev:status`, connect to the reported
+  port, verify identifier/cwd, and pass `appIdentifier: <port>` explicitly. Do not assume the
+  default MCP session belongs to this worktree.
+- Keep each worktree's Cargo output directory separate; do not point `CARGO_TARGET_DIR` or
+  `target` symlinks at a shared directory.
+- Each worktree's first build is cold (around 5 minutes) and its Cargo output takes
+  15–30 GB. Avoid running several heavy builds on one machine at the same time.
 - Stop only processes started for the current worktree/session. Never use broad
-  process-name kills such as `pkill openidea` to clean up a development session.
+  process-name kills such as `pkill openidea`.
+- When done: stop that worktree's app and dev session, delete its build output, then
+  `git worktree remove ../<name>`.
