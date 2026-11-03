@@ -587,6 +587,12 @@ const GUTTER = editorPage({
             { t: "custom", label: "Bookmarks", component: () => <GutterGroup id="bookmarks" label="Bookmarks" /> },
             {
               t: "custom",
+              label: "MyBatis mapper",
+              keywords: ["mybatis", "mapper", "statement", "namespace"],
+              component: () => <GutterGroup id="mybatis" label="MyBatis mapper declarations" />,
+            },
+            {
+              t: "custom",
               label: "Implemented and overridden",
               keywords: ["implementations", "subclasses", "inheritors"],
               component: () => <GutterGroup id="inheritors" label="Implemented and overridden declarations" />,

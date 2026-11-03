@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.acme.orders.UserMapper">
+    <!-- An <sql> fragment shares the id space but binds nothing, so it gets no icon. -->
+    <sql id="columns">
+        id, name, dept
+    </sql>
+
+    <select id="findById" resultType="com.acme.orders.User">
+        SELECT
+        <include refid="columns"/>
+        FROM t_user WHERE id = #{id}
+    </select>
+
+    <select id="findById" databaseId="mysql" resultType="com.acme.orders.User">
+        SELECT * FROM t_user WHERE id = #{id}
+    </select>
+
+    <update id="updateDept" parameterType="map">
+        UPDATE t_user SET dept = #{dept} WHERE id = #{id}
+    </update>
+</mapper>
