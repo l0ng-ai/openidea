@@ -26,14 +26,13 @@ const vimInsert = StateField.define<boolean>({
 });
 
 interface ImeComposition {
-  /** Start of the selection the composition replaced. */
+  /** The span the composition occupies now: the replaced selection, mapped through its changes. */
   from: number;
+  to: number;
   /** Selection contents replaced by the composition. */
   before: string;
   /** Selection before the composition, to restore it afterwards. */
   selection: { anchor: number; head: number };
-  /** Last change CodeMirror read from the composing DOM. */
-  last: { from: number; text: string } | null;
   /** The text the IME committed. */
   ended: string | null;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -57,30 +56,20 @@ function finishImeComposition(view: EditorView) {
   const cm = getCM(view);
   if (!cm) return;
   const insert = !!cm.state.vim?.insertMode;
-  const { last, before, selection, ended } = composition;
-  let cleaned = false;
-  if (last && last.text.length > 0) {
-    const to = last.from + last.text.length;
-    if (view.state.sliceDoc(last.from, to) === last.text) {
-      view.dispatch({
-        changes: { from: last.from, to, insert: before },
-        selection,
-        annotations: [Transaction.addToHistory.of(false), transientChange.of(true)],
-      });
-      cleaned = true;
-    }
-  } else if (before && view.state.sliceDoc(composition.from, composition.from + before.length) !== before) {
-    // The IME cancelled after the preedit had already been removed.
+  const { from, to, before, selection, ended } = composition;
+  // The whole span, not the last change CodeMirror read: its changes are minimal diffs, so a
+  // commit sharing a prefix or suffix with the preedit (`かんじを` → `漢字を`) touches only part of it.
+  if (view.state.sliceDoc(from, to) !== before) {
     view.dispatch({
-      changes: { from: composition.from, insert: before },
+      changes: { from, to, insert: before },
       selection,
       annotations: [Transaction.addToHistory.of(false), transientChange.of(true)],
     });
-    cleaned = true;
-  }
-  const main = view.state.selection.main;
-  if (!cleaned && (main.anchor !== selection.anchor || main.head !== selection.head)) {
-    view.dispatch({ selection, annotations: transientChange.of(true) });
+  } else {
+    const main = view.state.selection.main;
+    if (main.anchor !== selection.anchor || main.head !== selection.head) {
+      view.dispatch({ selection, annotations: transientChange.of(true) });
+    }
   }
   // Dead keys and ASCII compositions are Vim commands (`^`, `` ` ``, letters);
   // CJK commits are text and must not move the cursor or consume a pending operator.
@@ -97,9 +86,9 @@ const imeHandlers = EditorView.domEventHandlers({
     const range = view.state.selection.main;
     imeCompositions.set(view, {
       from: range.from,
+      to: range.to,
       before: view.state.sliceDoc(range.from, range.to),
       selection: { anchor: range.anchor, head: range.head },
-      last: null,
       ended: null,
       timer: undefined,
     });
@@ -128,28 +117,27 @@ const imeHandlers = EditorView.domEventHandlers({
 });
 
 /** Let CodeMirror apply the composing text; it is removed when the IME ends. */
-const imeInput = EditorView.inputHandler.of((view, from, _to, text) => {
+const imeInput = EditorView.inputHandler.of((view) => {
   const composition = imeCompositions.get(view);
   if (!composition) return false;
   const cm = getCM(view);
   if (cm?.state.vim && !cm.state.vim.insertMode && cm.state.vimPlugin) {
     cm.state.vimPlugin.useNextTextInput = false;
   }
-  composition.last = { from, text };
   return false;
 });
 
-/** Remember the net change of the composition, including commits CodeMirror
- * reports after `compositionend`. */
+/** Keeps the composition's span current, including commits CodeMirror reports after
+ * `compositionend`: composing text at its edges belongs to it, other edits there don't. */
 const imeTracker = ViewPlugin.define((view) => ({
   update(update) {
     const composition = imeCompositions.get(view);
     if (!composition) return;
     for (const tr of update.transactions) {
-      if (!tr.docChanged || !tr.isUserEvent("input.type.compose")) continue;
-      tr.changes.iterChanges((_fromA, _toA, fromB, _toB, inserted) => {
-        composition.last = { from: fromB, text: inserted.toString() };
-      });
+      if (!tr.docChanged) continue;
+      const compose = tr.isUserEvent("input.type.compose");
+      composition.from = tr.changes.mapPos(composition.from, compose ? -1 : 1);
+      composition.to = Math.max(composition.from, tr.changes.mapPos(composition.to, compose ? 1 : -1));
     }
   },
 }));

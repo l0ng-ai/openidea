@@ -144,6 +144,25 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
+  it("removes a whole composition whose commit shares text with the preedit", async () => {
+    const view = makeView([vimExtension()]);
+    const composition = (type: string, data: string) =>
+      view.contentDOM.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
+
+    view.dispatch({ selection: { anchor: 4 } });
+    composition("compositionstart", "");
+    view.dispatch({ changes: { from: 4, insert: "かんじを" }, userEvent: "input.type.compose.start" });
+    // CodeMirror reports the conversion as a minimal diff: the shared `を` is not part of it.
+    view.dispatch({ changes: { from: 4, to: 7, insert: "漢字" }, userEvent: "input.type.compose" });
+    expect(view.state.doc.toString()).toBe("one 漢字をtwo\nthree");
+    composition("compositionend", "漢字を");
+    await tick();
+
+    expect(view.state.doc.toString()).toBe("one two\nthree");
+    expect(view.state.selection.main.head).toBe(4);
+    view.destroy();
+  });
+
   it("replays a dead-key composition as a Vim command and keeps insert-mode IME input", async () => {
     const view = makeView();
     const content = view.contentDOM;
