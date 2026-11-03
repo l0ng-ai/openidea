@@ -140,12 +140,15 @@ fn detail_filters_connect_visible_ancestors_without_changing_revision_parents() 
     let dir = tmp.path();
     git(dir, &["init", "-q"]);
     let a = commit(dir, "a", "keep root");
-    let b = commit(dir, "b", "hidden middle");
+    commit(dir, "b", "hidden middle");
+    git(dir, &["commit", "--amend", "--no-edit", "--author=Other <other@example.com>"]);
+    let b = git(dir, &["rev-parse", "HEAD"]);
     let c = commit(dir, "a", "keep tip");
     let repo = Repo::discover(dir).unwrap().unwrap();
     for q in [
         LogQuery { text: Some("keep".into()), ..Default::default() },
         LogQuery { path: Some("a".into()), ..Default::default() },
+        LogQuery { authors: vec!["Test".into()], authors_exact: true, ..Default::default() },
     ] {
         let page = repo.log(&LogQuery { limit: 1, ..q.clone() }).unwrap();
         assert_eq!(page[0].id, c);
