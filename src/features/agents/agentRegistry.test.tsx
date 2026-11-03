@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
-import { tx } from "@/platform/i18n";
+import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage as RegistryPage } from "./AgentRegistryPage";
@@ -368,6 +368,43 @@ describe("Built-in executable overrides", () => {
   const apply = () => screen.getByRole("button", { name: "Apply" });
   const field = () => screen.getByRole("textbox", { name: "Executable" });
 
+  it("follows locale changes in tabs and renders login commands as inline code", async () => {
+    const commands = new FakeCommands();
+    commands.list = [
+      claudeProvider("claude"),
+      {
+        ...claudeProvider("codex"),
+        id: "codex",
+        name: "Codex",
+        defaultProgram: "codex",
+        commandOverridden: false,
+        installed: false,
+      },
+    ];
+    const section = await openCommands(commands);
+    expect(within(section).getByText("claude", { selector: "p code" })).toBeInTheDocument();
+    expect(screen.getByText("Found on PATH")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Claude Code" })).toBeInTheDocument();
+    try {
+      await act(async () => {
+        await setLocale("zh");
+      });
+      expect(screen.getByRole("option", { name: "Codex 未找到" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "内置" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "ACP 注册表" })).toBeInTheDocument();
+      await act(async () => {
+        await setLocale("en");
+      });
+      expect(screen.getByRole("option", { name: "Codex Not found" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Built-in" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "ACP Registry" })).toBeInTheDocument();
+    } finally {
+      await act(async () => {
+        await setLocale("en");
+      });
+    }
+  });
+
   it("reports when providers cannot be read (no trusted project)", async () => {
     const commands = new FakeCommands();
     commands.providers.mockRejectedValue(new IpcError({ kind: "unavailable", message: "restricted" }));
@@ -413,7 +450,7 @@ describe("Built-in executable overrides", () => {
     ];
     await openCommands(commands);
     fireEvent.change(field(), { target: { value: "/unsaved/claude" } });
-    fireEvent.mouseDown(screen.getByRole("option", { name: "Codex Found" }));
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Codex" }));
     fireEvent.change(field(), { target: { value: "/unsaved/codex" } });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(commands.saved).toEqual([]);
@@ -511,7 +548,7 @@ describe("Built-in executable overrides", () => {
     ];
     const changed = vi.fn();
     await openCommands(commands, changed);
-    expect(screen.getByRole("option", { name: "Claude Code Found" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Claude Code" })).toBeInTheDocument();
     const codex = screen.getByRole("option", { name: "Codex Not found" });
     fireEvent.change(field(), { target: { value: "/custom/claude" } });
     fireEvent.mouseDown(codex);

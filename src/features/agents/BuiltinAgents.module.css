@@ -7,7 +7,8 @@
   overflow: hidden;
 }
 .master {
-  flex: 0 0 240px;
+  flex: 0 0 300px;
+  padding: 6px;
   border-right: 1px solid var(--border);
 }
 .agentRow {
@@ -42,12 +43,21 @@
 }
 .launch {
   display: block;
-  margin: 8px 0 24px;
+  margin: 8px 0 0;
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+.status {
+  margin: 6px 0 24px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.hint code {
+  font-family: var(--font-mono);
+  color: var(--fg);
 }
 .label {
   display: block;

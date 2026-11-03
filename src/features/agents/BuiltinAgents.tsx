@@ -1,7 +1,7 @@
 /** Built-in launch settings; each executable is staged independently until Apply. */
 import { useCallback, useEffect, useState } from "react";
 import type { AgentProvider } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, useTx } from "@/platform/i18n";
 import { Badge, Button, Icon, IconButton, Input, List, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { providerIcon } from "./model";
@@ -9,9 +9,11 @@ import type { CommandsBackend } from "./registry";
 import styles from "./BuiltinAgents.module.css";
 
 function Status({ agent }: { agent: AgentProvider }) {
+  const translate = useTx();
+  if (!agent.commandOverridden && agent.installed) return null;
   return (
-    <Badge tone={agent.commandOverridden ? "accent" : agent.installed ? "success" : "warning"}>
-      {agent.commandOverridden ? tx("Custom") : agent.installed ? tx("Found") : tx("Not found")}
+    <Badge tone={agent.commandOverridden ? "accent" : "warning"}>
+      {agent.commandOverridden ? translate("Custom") : translate("Not found")}
     </Badge>
   );
 }
@@ -50,7 +52,7 @@ export function BuiltinAgents({ backend, onChanged }: { backend: CommandsBackend
         getKey={(p) => p.id}
         activeIndex={selected}
         onActiveChange={setSelected}
-        rowHeight={44}
+        rowHeight={32}
         aria-label={tx("Built-in agents")}
         renderItem={(p) => (
           <div className={styles.agentRow}>
@@ -100,6 +102,15 @@ function Details({
         <h3>{agent.name}</h3>
       </div>
       <code className={styles.launch}>{launch}</code>
+      <p className={styles.status}>
+        {agent.commandOverridden ? (
+          <T>Custom executable</T>
+        ) : agent.installed ? (
+          <T>Found on PATH</T>
+        ) : (
+          <T>Not found on PATH</T>
+        )}
+      </p>
       {agent.commandEditable ? (
         <>
           <label className={styles.label} htmlFor={`agent-executable-${agent.id}`}>
@@ -150,7 +161,7 @@ function Details({
       )}
       {agent.loginHint && (
         <p className={styles.hint}>
-          <T>{agent.loginHint}</T>
+          <LoginHint text={agent.loginHint} />
         </p>
       )}
       {error && (
@@ -160,4 +171,12 @@ function Details({
       )}
     </section>
   );
+}
+
+/** Login hints are plain text with optional backtick-delimited command spans. */
+function LoginHint({ text }: { text: string }) {
+  const translate = useTx();
+  return translate(text)
+    .split(/(`[^`]+`)/g)
+    .map((part, i) => (i % 2 === 1 ? <code key={i}>{part.slice(1, -1)}</code> : part));
 }

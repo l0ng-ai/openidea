@@ -50,9 +50,10 @@ export function AgentRegistryPage({
     <div className={styles.body}>
       <Tabs
         variant="compact"
+        className={styles.tabs}
         items={[
-          { id: "builtin", label: tx("Built-in") },
-          { id: "registry", label: tx("ACP Registry") },
+          { id: "builtin", label: "Built-in" },
+          { id: "registry", label: "ACP Registry" },
         ]}
         activeId={tab}
         onSelect={setTab}
