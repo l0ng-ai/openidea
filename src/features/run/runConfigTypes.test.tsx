@@ -180,7 +180,9 @@ describe("configuration types", () => {
 
   it("ruby types default to Bundler for rake and rspec and mark rspec as tests", () => {
     expect(newConfigOfType(typeFor("rake")!, [])).toMatchObject({ command: "bundle", args: ["exec", "rake"] });
-    expect(newConfigOfType(typeFor("ruby")!, [])).toMatchObject({ command: "ruby", args: [] });
+    const ruby = newConfigOfType(typeFor("ruby")!, []);
+    expect(ruby).toMatchObject({ command: "ruby", args: [] });
+    expect(formParams(ruby)).toEqual({ command: "", bundler: "", rubyArgs: "", script: "", scriptArgs: "" });
     const rspec = newConfigOfType(typeFor("rspec")!, []);
     expect(rspec).toMatchObject({ command: "bundle", args: ["exec", "rspec"], isTest: true });
     expect(withParams(rspec, { bundler: "", target: "spec/a_spec.rb", options: "-fd" })).toMatchObject({
@@ -242,9 +244,9 @@ describe("configuration types", () => {
       options: "--trace",
       task: "test TEST=test/a_test.rb",
     });
-    expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });  
+    expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });
   });
-  
+
   it("Django tests round-trip commandLine / paramsFrom and always report to the test tree", () => {
     const django = typeFor("django-test")!;
     expect(django.debugAdapter).toBe("debugpy");

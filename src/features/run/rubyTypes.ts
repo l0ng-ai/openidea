@@ -115,7 +115,12 @@ export const rubyScriptType: RunConfigTypeContribution = {
     const u = unwrap(c, "ruby");
     if (!u) return null;
     const at = operandIndex(u.rest, RUBY_VALUE_OPTIONS, looksLikeScript);
-    if (at < 0) return null;
+    // A new configuration (`ruby`, nothing else) opens in the form with the script still to fill in;
+    // options without a script (`ruby -e …`, `ruby -v`) stay a plain command.
+    if (at < 0)
+      return u.rest.length
+        ? null
+        : { command: u.command, bundler: u.bundler, rubyArgs: "", script: "", scriptArgs: "" };
     return {
       command: u.command,
       bundler: u.bundler,
