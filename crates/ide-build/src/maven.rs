@@ -1208,6 +1208,40 @@ impl UnlinkedProjects {
         self.poms.iter().map(String::as_str)
     }
 
+    /// The POMs the Java language server should import when an unlinked POM is a module of a
+    /// linked reactor, else `None` (excluding the unlinked directories is enough then).
+    ///
+    /// jdtls imports an aggregator together with all of its modules, whatever its import
+    /// exclusions say, so a reactor keeping an unlinked module is left out; its other linked
+    /// modules are listed on their own. Such an aggregator (`pom` packaging) has no sources.
+    pub fn import_poms(&self, model: &MavenModel) -> Option<Vec<String>> {
+        let linked: Vec<&MavenProject> = model.projects.iter().filter(|p| !self.contains(&p.pom)).collect();
+        if !linked.iter().any(|p| p.modules.iter().any(|m| self.contains(m))) {
+            return None;
+        }
+        let by_pom: std::collections::HashMap<String, &MavenProject> =
+            model.projects.iter().map(|p| (normalized_pom(&p.pom), p)).collect();
+        // Whether `pom`'s module tree reaches an unlinked POM.
+        let reaches_unlinked = |pom: &str| {
+            let mut seen = std::collections::HashSet::new();
+            let mut pending = vec![normalized_pom(pom)];
+            while let Some(pom) = pending.pop() {
+                if !seen.insert(pom.clone()) {
+                    continue;
+                }
+                let Some(project) = by_pom.get(&pom) else { continue };
+                for module in &project.modules {
+                    if self.contains(module) {
+                        return true;
+                    }
+                    pending.push(normalized_pom(module));
+                }
+            }
+            false
+        };
+        Some(linked.into_iter().filter(|p| !reaches_unlinked(&p.pom)).map(|p| normalized_pom(&p.pom)).collect())
+    }
+
     pub fn filter(&self, model: &mut MavenModel) {
         model.projects.retain(|p| !self.contains(&p.pom));
         for project in &mut model.projects {
@@ -1992,5 +2026,52 @@ mod linkage_tests {
         let mut restored = original.clone();
         UnlinkedProjects::from_model(&original, &MavenSettings::default()).filter(&mut restored);
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn language_server_imports_reactor_modules_individually_once_one_is_unlinked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // r ─┬─ x
+        //    ├─ y ─┬─ y/y1
+        //    │     └─ y/y2
+        //    └─ z          other/ is a separate root.
+        for (dir, modules) in [
+            ("r", "<modules><module>x</module><module>y</module><module>z</module></modules>"),
+            ("r/x", ""),
+            ("r/y", "<modules><module>y1</module><module>y2</module></modules>"),
+            ("r/y/y1", ""),
+            ("r/y/y2", ""),
+            ("r/z", ""),
+            ("other", ""),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(
+                root.join(dir).join("pom.xml"),
+                format!("<project><artifactId>{dir}</artifactId>{modules}</project>"),
+            )
+            .unwrap();
+        }
+        let model = load_with_repo(root, None);
+        let cases: [(&[&str], Option<&[&str]>); 5] = [
+            // Nothing unlinked, or whole roots: the import exclusions do it.
+            (&[], None),
+            (&["other/pom.xml"], None),
+            (&["r/pom.xml"], None),
+            // A module of a linked reactor: every other linked POM, minus the aggregators above it.
+            (&["r/y/y1/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/y/y2/pom.xml", "r/z/pom.xml"])),
+            (&["./r/y/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/z/pom.xml"])),
+        ];
+        for (unlinked, expected) in cases {
+            let settings = MavenSettings {
+                unlinked_projects: unlinked.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            };
+            let mut poms = UnlinkedProjects::from_model(&model, &settings).import_poms(&model);
+            if let Some(poms) = &mut poms {
+                poms.sort();
+            }
+            assert_eq!(poms, expected.map(|e| e.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{unlinked:?}");
+        }
     }
 }

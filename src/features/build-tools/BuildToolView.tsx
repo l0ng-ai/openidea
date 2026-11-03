@@ -306,8 +306,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
       else items.push({ label: "Create Run Configuration…", icon: "edit", run: () => void createRunConfig(config) });
     }
     if (node.kind === "mavenProject") {
-      if (!node.project.aggregated)
-        items.push({ kind: "action", action: "maven.unlinkProjects", arg: { pom: node.project.pom } });
+      items.push({ kind: "action", action: "maven.unlinkProjects", arg: { pom: node.project.pom } });
       items.push(
         {
           label: "Open pom.xml",

@@ -34,7 +34,10 @@ vi.mock("@/platform/ipc", async (original) => {
 });
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open }));
 vi.mock("@/workbench/messages", () => ({ confirm: mocks.confirm }));
-vi.mock("@/ui", async (original) => ({ ...(await original<typeof import("@/ui")>()), showContextMenu: mocks.menu }));
+vi.mock("@/ui", async (original) => ({
+  ...(await original<typeof import("@/ui")>()),
+  showContextMenu: mocks.menu,
+}));
 
 const model: BuildModel = {
   gradle: null,
@@ -69,7 +72,9 @@ const model: BuildModel = {
 let dispose: () => void;
 beforeEach(async () => {
   vi.clearAllMocks();
-  mocks.get.mockResolvedValue({ languages: { java: { maven: { unlinkedProjects: [] } } } });
+  mocks.get.mockResolvedValue({
+    languages: { java: { maven: { unlinkedProjects: [] } } },
+  });
   mocks.set.mockResolvedValue({});
   mocks.model.mockResolvedValue(model);
   mocks.configs.mockResolvedValue([]);
@@ -91,7 +96,12 @@ it("offers unlink on a root's context menu and persists a confirmed project sett
   fireEvent.contextMenu(screen.getByText("project-a"));
   expect(mocks.menu).toHaveBeenCalledWith(
     expect.anything(),
-    expect.arrayContaining([expect.objectContaining({ action: "maven.unlinkProjects", arg: { pom: "a/pom.xml" } })]),
+    expect.arrayContaining([
+      expect.objectContaining({
+        action: "maven.unlinkProjects",
+        arg: { pom: "a/pom.xml" },
+      }),
+    ]),
   );
   await act(async () => {
     await executeAction("maven.unlinkProjects", { pom: "a/pom.xml" });
@@ -101,24 +111,83 @@ it("offers unlink on a root's context menu and persists a confirmed project sett
   expect(mocks.model).toHaveBeenCalledTimes(2);
 });
 
-it("does not unlink modules or write after cancelled confirmation", async () => {
+it("does not write after cancelled confirmation", async () => {
   mocks.confirm.mockResolvedValue(false);
   await executeAction("maven.unlinkProjects", { pom: "a/pom.xml" });
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
   expect(mocks.set).not.toHaveBeenCalled();
-  act(() =>
-    useBuild.setState({
-      model: { ...model, maven: { ...model.maven!, projects: [{ ...model.maven!.projects[0]!, aggregated: true }] } },
+});
+
+it("unlinks a module of a linked reactor so only the modules in use are imported", async () => {
+  const root = model.maven!.projects[0]!;
+  const child = {
+    ...root,
+    pom: "a/child/pom.xml",
+    dir: "a/child",
+    artifactId: "child",
+    displayName: "child-module",
+    packaging: "jar",
+    parent: "a/pom.xml",
+    aggregated: true,
+  };
+  const reactor: BuildModel = {
+    ...model,
+    maven: {
+      ...model.maven!,
+      projects: [{ ...root, modules: ["a/child/pom.xml"] }, child],
+    },
+  };
+  mocks.model.mockResolvedValue(reactor);
+  mocks.get.mockResolvedValue({
+    languages: { java: { maven: { unlinkedProjects: ["b/pom.xml"] } } },
+  });
+  await act(async () => {
+    useBuild.setState({ model: reactor });
+  });
+  render(<MavenView />);
+  fireEvent.contextMenu(await screen.findByText("child-module"));
+  expect(mocks.menu).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.arrayContaining([
+      expect.objectContaining({
+        action: "maven.unlinkProjects",
+        arg: { pom: "a/child/pom.xml" },
+      }),
+    ]),
+  );
+  await act(async () => {
+    await executeAction("maven.unlinkProjects", { pom: "a/child/pom.xml" });
+  });
+  expect(mocks.confirm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: expect.stringContaining("Java language server stops importing them"),
     }),
   );
-  render(<MavenView />);
-  await executeAction("maven.unlinkProjects", { pom: "a/pom.xml" });
-  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+  expect(mocks.set).toHaveBeenCalledWith(
+    "project",
+    "languages.java.maven.unlinkedProjects",
+    '["b/pom.xml","a/child/pom.xml"]',
+  );
+});
+
+it("ignores a POM that is not in the Maven model", async () => {
+  await executeAction("maven.unlinkProjects", { pom: "missing/pom.xml" });
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(mocks.set).not.toHaveBeenCalled();
 });
 
 it("re-adds a picked POM using the plus button and preserves other unlinked roots", async () => {
-  mocks.get.mockResolvedValue({ languages: { java: { maven: { unlinkedProjects: ["a/pom.xml", "b/pom.xml"] } } } });
+  mocks.get.mockResolvedValue({
+    languages: {
+      java: { maven: { unlinkedProjects: ["a/pom.xml", "b/pom.xml"] } },
+    },
+  });
   mocks.open.mockResolvedValue("/p/a/pom.xml");
-  act(() => useBuild.setState({ model: { ...model, maven: { ...model.maven!, projects: [] } } }));
+  act(() =>
+    useBuild.setState({
+      model: { ...model, maven: { ...model.maven!, projects: [] } },
+    }),
+  );
   render(<MavenView />);
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Add Maven Projects" }));

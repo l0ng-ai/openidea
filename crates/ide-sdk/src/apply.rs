@@ -236,7 +236,14 @@ fn merge(base: &mut Value, layer: Value) {
 }
 
 /// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
-pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, excluded_poms: &[PathBuf]) {
+/// `build_files` (`file:` URIs), when given, are the only build files jdtls imports: the
+/// exclusions cannot leave out a module of a reactor jdtls imports.
+pub fn configure_maven_import(
+    cfg: &mut LanguageServerConfig,
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    build_files: Option<&[String]>,
+) {
     if cfg.name != "jdtls" {
         return;
     }
@@ -268,6 +275,9 @@ pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, exclu
     }
     if !excluded_poms.is_empty() {
         merge_init_options(cfg, json!({"settings": {"java": {"import": {"exclusions": exclusions}}}}));
+        if let Some(files) = build_files {
+            merge_init_options(cfg, json!({"projectConfigurations": files}));
+        }
         if let Some(settings) = &mut cfg.settings {
             merge(
                 settings,
@@ -948,12 +958,27 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
         merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
-        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()]);
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()], None);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&json!("**/custom")));
         assert!(exclusions.contains(&json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));
         assert!(exclusions.contains(&json!(tmp.path().join("a/child").to_string_lossy().replace('\\', "/"))));
         assert!(cfg.args[1].starts_with("/cache/jdtls-maven-"));
+        assert!(options.get("projectConfigurations").is_none());
+    }
+
+    #[test]
+    fn import_lists_the_build_files_when_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        let files = ["file:///p/r/x/pom.xml".to_owned(), "file:///p/build.gradle".to_owned()];
+        configure_maven_import(&mut cfg, tmp.path(), &["r/y/pom.xml".into()], Some(&files));
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(files));
+        // Nothing unlinked: jdtls finds the build files itself.
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_maven_import(&mut cfg, tmp.path(), &[], Some(&files));
+        assert!(serde_json::to_value(cfg.initialization_options).unwrap().get("projectConfigurations").is_none());
     }
 }
