@@ -45,7 +45,7 @@ pub fn render(template: Template, vars: &Vars) -> Vec<(String, String)> {
             .replace("__NAME__", vars.name)
             .replace("__CRATE__", &crate_name)
             .replace("__SDK__", vars.sdk.unwrap_or(""))
-            // The theme files come from templates/theme-plugin.
+            // The theme files come from the Harbor Night plugin.
             .replace("harbor-night", &slug)
             .replace("Harbor Night", vars.name)
     };
@@ -210,8 +210,8 @@ path = "themes/__SLUG__.theme.json"
 editor-scheme = "themes/__SLUG__.scheme.json"
 "#;
 
-const THEME_UI: &str = include_str!("../../../../../templates/theme-plugin/themes/harbor-night.theme.json");
-const THEME_SCHEME: &str = include_str!("../../../../../templates/theme-plugin/themes/harbor-night.scheme.json");
+const THEME_UI: &str = include_str!("../../../../../plugins/official/harbor-night/themes/harbor-night.theme.json");
+const THEME_SCHEME: &str = include_str!("../../../../../plugins/official/harbor-night/themes/harbor-night.scheme.json");
 
 const ICON_MANIFEST: &str = r#"id = "__ID__"
 name = "__NAME__"

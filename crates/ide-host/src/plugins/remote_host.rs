@@ -421,6 +421,7 @@ impl RemotePlugins {
                     c.arg("view")?,
                     c.arg("viewport")?,
                     c.arg("doc")?,
+                    c.arg("editor")?,
                 )
                 .await
             }
@@ -438,6 +439,7 @@ impl RemotePlugins {
                     c.arg("view")?,
                     c.arg("event")?,
                     c.arg("doc")?,
+                    c.arg("editor")?,
                 )
                 .await
             }

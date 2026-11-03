@@ -1,12 +1,13 @@
-# A theme plugin is data only: no `wasm`, no permissions, nothing to compile.
-# Rename the id, name and files when you start your own theme from this template.
-id = "theme-harbor-night"
-name = "Harbor Night Theme"
+# A theme plugin is data only: no `wasm`, no capabilities, nothing to compile.
+# `openidea-plugin new --template theme` starts a new theme from this one.
+id = "openidea.harbor-night"
+name = "Harbor Night"
 version = "1.0.0"
-description = "Example dark theme: slate surfaces, a teal accent and a warm syntax palette."
+description = "A dark theme: slate surfaces, a teal accent and a warm syntax palette."
 authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
 change-notes = "1.0.0 — first release."
-openidea-api = "0.1"
+engines.openidea = "^1.0"
 
 # One entry per theme. `editor-scheme` is optional: its tokens are merged over
 # the theme's (IntelliJ's .theme.json + .icls pair).

@@ -116,7 +116,7 @@ fn sample(name: &str) -> PathBuf {
 }
 
 fn theme_template() -> PathBuf {
-    repo().join("templates/theme-plugin")
+    repo().join("plugins/official/harbor-night")
 }
 
 fn misbehave_pkg() -> PathBuf {
@@ -640,7 +640,7 @@ fn contribution_only_plugins() {
     let theme = f.install(&theme_template());
     assert_eq!(theme.status, PluginStatus::Static);
     assert!(!theme.has_code);
-    assert_eq!(f.theme_kinds("theme-harbor-night")[0].0, "harbor-night");
+    assert_eq!(f.theme_kinds("openidea.harbor-night")[0].0, "harbor-night");
     let lang = f.install(&sample("language-toy"));
     assert_eq!(lang.status, PluginStatus::Static);
     assert_eq!(f.host.languages()[0].id.as_str(), "toy");
@@ -648,14 +648,14 @@ fn contribution_only_plugins() {
     assert!(f.run("language-toy", "x", None).unwrap_err().contains("no code"));
 
     f.take_events();
-    let active = f.host.set_theme(Some(("theme-harbor-night", "harbor-night"))).unwrap().unwrap();
+    let active = f.host.set_theme(Some(("openidea.harbor-night", "harbor-night"))).unwrap().unwrap();
     assert_eq!(active.theme.tokens["--bg-app"], "#14171c");
     assert_eq!(active.theme.tokens["--syn-string"], "#9ccc7a");
     assert!(f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::ThemeChanged { theme: Some(_) })));
     assert_eq!(f.host.list(None).active_theme, Some(active));
 
     // Disabling the plugin withdraws its theme and language.
-    f.host.set_enabled("theme-harbor-night", false).unwrap();
+    f.host.set_enabled("openidea.harbor-night", false).unwrap();
     assert!(f.host.active_theme().is_none());
     assert!(f.take_events().iter().any(|(_, e)| *e == PluginEvent::ThemeChanged { theme: None }));
     f.host.set_enabled("language-toy", false).unwrap();
@@ -668,10 +668,10 @@ fn theme_template_installs_with_its_editor_scheme() {
     let f = fixture(Limits::default());
     let info = f.install(&theme_template());
     assert_eq!(info.status, PluginStatus::Static);
-    assert_eq!(f.theme_kinds("theme-harbor-night"), [("harbor-night".to_owned(), ThemeKind::Dark)]);
+    assert_eq!(f.theme_kinds("openidea.harbor-night"), [("harbor-night".to_owned(), ThemeKind::Dark)]);
     // The scheme file is copied with the package and merged over the UI tokens.
-    assert!(f.installed("theme-harbor-night").join("themes/harbor-night.scheme.json").is_file());
-    let active = f.host.set_theme(Some(("theme-harbor-night", "harbor-night"))).unwrap().unwrap();
+    assert!(f.installed("openidea.harbor-night").join("themes/harbor-night.scheme.json").is_file());
+    let active = f.host.set_theme(Some(("openidea.harbor-night", "harbor-night"))).unwrap().unwrap();
     let tokens = &active.theme.tokens;
     assert!(
         tokens.contains_key("--bg-app") && tokens.contains_key("--syn-keyword") && tokens.contains_key("--ansi-red")
@@ -751,7 +751,7 @@ fn state_persists_across_restarts() {
     f.install(&sample("hello"));
     f.install(&theme_template());
     f.host.set_enabled("hello", false).unwrap();
-    f.host.set_theme(Some(("theme-harbor-night", "harbor-night"))).unwrap();
+    f.host.set_theme(Some(("openidea.harbor-night", "harbor-night"))).unwrap();
     f.host.set_theme_frame(Some("#1f252e")).unwrap();
 
     let again = PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
@@ -1395,17 +1395,17 @@ fn catalog_lists_sample_packages() {
 
     let catalog = f.host.catalog(&[
         repo().join("crates/ide-plugin/tests/fixtures"),
-        repo().join("templates"),
+        repo().join("plugins/official"),
         tmp.path().to_path_buf(),
     ]);
     let ids: Vec<&str> = catalog.iter().map(|c| c.id.as_str()).collect();
-    for id in ["hello", "theme-harbor-night", "language-toy", "x"] {
+    for id in ["hello", "openidea.harbor-night", "language-toy", "x"] {
         assert!(ids.contains(&id), "{id} missing from {ids:?}");
     }
     let hello = catalog.iter().find(|c| c.id == "hello").unwrap();
     assert!(hello.has_code && hello.problem.is_none() && hello.change_notes.is_some());
     assert_eq!(hello.contributions.iter().find(|c| c.point == "commands").unwrap().count, 2);
-    let theme = catalog.iter().find(|c| c.id == "theme-harbor-night").unwrap();
+    let theme = catalog.iter().find(|c| c.id == "openidea.harbor-night").unwrap();
     assert!(!theme.has_code);
     assert_eq!(theme.contributions[0].count, 1);
     let x = catalog.iter().find(|c| c.id == "x").unwrap();
@@ -1737,6 +1737,52 @@ fn official_checkstyle_checks_on_save() {
     assert_eq!(info.stats.crashes, 0);
 }
 
+/// License Header: reported when a file opens, fixed through the provider,
+/// and a project scan in a task reports the rest.
+#[test]
+fn official_license_header_reports_fixes_and_scans() {
+    let f = fixture(Limits::default());
+    let info = f.install(&official("license-header"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    let a = f.project.join("src/a.rs");
+    let b = f.project.join("src/b.py");
+    std::fs::write(&a, "fn a() {}\n").unwrap();
+    std::fs::write(&b, "#!/usr/bin/env python3\nprint()\n").unwrap();
+    let diagnostics = |path: &Path| {
+        f.workspace.diagnostics.lock().get(&("openidea.license-header".into(), path.to_path_buf())).cloned()
+    };
+
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(a.to_string_lossy().into_owned())]);
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(20)));
+    let d = diagnostics(&a).expect("published on open");
+    assert_eq!((d.len(), d[0].code.as_deref()), (1, Some("missing-license-header")));
+    assert!(diagnostics(&b).is_none(), "only the opened file");
+
+    let doc = ide_plugin::ProviderDocument {
+        path: b.clone(),
+        language: "python".into(),
+        version: 1,
+        text: std::fs::read_to_string(&b).unwrap(),
+    };
+    let actions = f.host.provide_code_actions(&doc, ide_core::Range::default());
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    let edit = &actions[0].1.edits[0].1[0];
+    assert_eq!(edit.range.start.line, 1, "after the shebang");
+    assert!(
+        edit.new_text.starts_with("# Copyright (c) 20")
+            && edit.new_text.contains("# SPDX-License-Identifier: Apache-2.0")
+    );
+
+    f.host.run_command("openidea.license-header", "scan", None, f.inv()).unwrap();
+    assert_eq!(diagnostics(&b).map(|d| d.len()), Some(1), "found by the scan");
+    std::fs::write(&a, "// Copyright (c) 2026 X\nfn a() {}\n").unwrap();
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(a.to_string_lossy().into_owned())]);
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(20)));
+    assert_eq!(diagnostics(&a).map(|d| d.len()), Some(0), "cleared once the header is there");
+}
+
 /// MyBatis Navigator: interface ↔ XML through the providers, on a
 /// real project tree (`find-files`), within the edit-path budget.
 #[test]
@@ -1866,6 +1912,34 @@ fn sample_plugin_tool_window_with_a_tree() {
     for point in ["menus", "keymaps", "statusBar", "views"] {
         assert!(f.host.ui_items(point).is_empty(), "{point}");
     }
+}
+
+/// Regex Tester: an `html` body its script talks to; the plugin answers in
+/// view messages, in UTF-16 offsets.
+#[test]
+fn official_regex_tester_answers_its_page() {
+    let f = fixture(Limits::default());
+    let info = f.install(&official("regex-tester"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    let view = f.host.render_view("openidea.regex-tester", "regex", None, f.inv()).unwrap();
+    let ide_plugin::ViewBody::Html(page) = &view.body else { panic!("{view:?}") };
+    assert!(page.contains("openidea.postMessage") && page.contains(r#"{"flags":"m"}"#));
+
+    f.take_events();
+    let run = serde_json::json!({ "op": "run", "seq": 3, "pattern": r"(\d+)", "flags": "", "text": "é 12 345" });
+    let event = ide_plugin::ViewEvent::Message { text: run.to_string() };
+    f.host.view_event("openidea.regex-tester", "regex", event, f.inv()).unwrap();
+    let reply = f
+        .take_events()
+        .into_iter()
+        .find_map(|(_, e)| match e {
+            PluginEvent::ViewMessage { view, message, .. } if view == "regex" => Some(message),
+            _ => None,
+        })
+        .expect("a reply");
+    let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!((reply["seq"].clone(), reply["count"].clone()), (serde_json::json!(3), serde_json::json!(2)));
+    assert_eq!(reply["matches"][0]["groups"][0], serde_json::json!([2, 4]));
 }
 
 /// A tree filled from a pinned program's output, and a terminal for the
@@ -2075,34 +2149,8 @@ fn listing_while_projects_change_does_not_deadlock() {
 /// file icon, template and language — no code.
 #[test]
 fn official_excalidraw_installs_and_serves_its_page() {
-    // Its page is built by plugins/build.sh, not checked in: the package's own
-    // files, with a stand-in for the build (what build.sh checks it produces).
     let tmp = tempfile::tempdir().unwrap();
-    let pkg = tmp.path().join("excalidraw");
-    let src = official("excalidraw");
-    for entry in std::fs::read_dir(&src).unwrap().flatten() {
-        let name = entry.file_name();
-        if ["web", "web-src", "web.sources"].iter().any(|n| name == *n) {
-            continue;
-        }
-        let to = pkg.join(&name);
-        if entry.path().is_dir() {
-            copy_dir(&entry.path(), &to);
-        } else {
-            std::fs::create_dir_all(&pkg).unwrap();
-            std::fs::copy(entry.path(), to).unwrap();
-        }
-    }
-    std::fs::create_dir_all(pkg.join("web/assets")).unwrap();
-    std::fs::create_dir_all(pkg.join("web/fonts/Virgil")).unwrap();
-    std::fs::write(
-        pkg.join("web/index.html"),
-        r#"<!doctype html><html><head><script type="module" src="./assets/index.js"></script></head></html>"#,
-    )
-    .unwrap();
-    std::fs::write(pkg.join("web/assets/index.js"), "export {};").unwrap();
-    std::fs::write(pkg.join("web/fonts/Virgil/Virgil-Regular.woff2"), b"wOF2").unwrap();
-
+    let pkg = with_stand_in_page(&official("excalidraw"), tmp.path());
     let f = fixture(Limits::default());
     let info = f.install(&pkg);
     assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
@@ -2120,6 +2168,66 @@ fn official_excalidraw_installs_and_serves_its_page() {
     assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
     assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
     assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
+}
+
+/// A copy of the official plugin at `src` in `dir`, with a stand-in for its
+/// built page (`web/` is built by plugins/build.sh, not checked in; build.sh
+/// checks what the build produces): an entry loading a script and a font by
+/// relative URL.
+fn with_stand_in_page(src: &Path, dir: &Path) -> PathBuf {
+    let pkg = dir.join(src.file_name().unwrap());
+    std::fs::create_dir_all(&pkg).unwrap();
+    for entry in std::fs::read_dir(src).unwrap().flatten() {
+        let name = entry.file_name();
+        if ["web", "web-src", "web.sources", "target"].iter().any(|n| name == *n) {
+            continue;
+        }
+        let to = pkg.join(&name);
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &to)
+        } else {
+            std::fs::copy(entry.path(), to).map(|_| ()).unwrap()
+        }
+    }
+    std::fs::create_dir_all(pkg.join("web/assets")).unwrap();
+    std::fs::create_dir_all(pkg.join("web/fonts/Virgil")).unwrap();
+    std::fs::write(
+        pkg.join("web/index.html"),
+        r#"<!doctype html><html><head><script type="module" src="./assets/index.js"></script></head></html>"#,
+    )
+    .unwrap();
+    std::fs::write(pkg.join("web/assets/index.js"), "export {};").unwrap();
+    std::fs::write(pkg.join("web/fonts/Virgil/Virgil-Regular.woff2"), b"wOF2").unwrap();
+    pkg
+}
+
+/// Graphviz: a web view with code. What the page reports about the graph
+/// becomes the previewed file's problems.
+#[test]
+fn official_graphviz_turns_its_pages_reports_into_problems() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fixture(Limits::default());
+    let info = f.install(&with_stand_in_page(&official("graphviz"), tmp.path()));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "split");
+    assert!(f.host.languages().iter().any(|l| l.id.as_str() == "dot"));
+    assert!(f.host.web_page("openidea.graphviz", "preview").is_ok());
+
+    std::fs::write(f.project.join("flow.dot"), "digraph {\n  a -> \n}\n").unwrap();
+    let editor = f.workspace.open("flow.dot", &[]);
+    let inv = Invocation { editor: Some(editor), ..f.inv() };
+    let report =
+        r#"{"op":"problems","items":[{"line":3,"message":"syntax error in line 3 near '}'","level":"error"}]}"#;
+    let event = ide_plugin::ViewEvent::Message { text: report.into() };
+    f.host.view_event("openidea.graphviz", "preview", event, inv.clone()).unwrap();
+    let path = f.project.join("flow.dot");
+    let problems =
+        |f: &Fixture| f.workspace.diagnostics.lock().get(&("openidea.graphviz".into(), path.clone())).cloned();
+    let d = problems(&f).expect("published");
+    assert_eq!((d.len(), d[0].range.start.line), (1, 2));
+    let cleared = ide_plugin::ViewEvent::Message { text: r#"{"op":"problems","items":[]}"#.into() };
+    f.host.view_event("openidea.graphviz", "preview", cleared, inv).unwrap();
+    assert_eq!(problems(&f).map(|d| d.len()), Some(0));
 }
 
 /// Zips `dir` as an archiver does: the folder itself at the top, plus macOS metadata.

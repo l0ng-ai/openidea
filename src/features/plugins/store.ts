@@ -6,14 +6,13 @@ import type {
   CatalogPlugin,
   Consent,
   MarketPlugin,
-  PluginEditor,
   PluginInfo,
   PluginStatus,
   UiContribution,
 } from "@/bindings";
-import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
 import { pluginsBackend, type PluginsBackend } from "./backend";
+import { editorContext } from "./editorContext";
 
 export const SETTINGS_PAGE_ID = "plugins";
 
@@ -335,27 +334,11 @@ export function commandTitle(pluginId: string, commandId: string): string {
   return typeof title === "string" ? title : commandId;
 }
 
-/** The focused text editor as a command's context: path, language, selections (line / UTF-16 column). */
-function focusedEditor(): PluginEditor | null {
-  const editor = activeEditor();
-  if (!editor?.ctx.path) return null;
-  const { doc, selection } = editor.view.state;
-  const pos = (offset: number) => {
-    const line = doc.lineAt(offset);
-    return { line: line.number - 1, col: offset - line.from };
-  };
-  return {
-    path: editor.ctx.path,
-    language: editor.ctx.language,
-    selections: selection.ranges.map((r) => ({ start: pos(r.from), end: pos(r.to) })),
-  };
-}
-
 /** Runs a plugin command from an action; failures become notifications. */
 export async function runPluginCommand(pluginId: string, commandId: string, arg: string | null = null) {
   const title = commandTitle(pluginId, commandId);
   try {
-    return await pluginsBackend().runCommand(pluginId, commandId, arg, focusedEditor());
+    return await pluginsBackend().runCommand(pluginId, commandId, arg, editorContext());
   } catch (e) {
     await refreshPlugins();
     const status = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.status;

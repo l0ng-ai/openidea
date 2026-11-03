@@ -26,6 +26,7 @@ import type {
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
+import { editorContext } from "./editorContext";
 
 export interface PluginsBackend {
   list(): Promise<PluginsSnapshot>;
@@ -165,9 +166,11 @@ export const tauriPluginsBackend: PluginsBackend = {
     });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
-  renderView: (pluginId, view, viewport, doc) => call(commands.pluginViewRender(pluginId, view, viewport, doc)),
+  // A tool window's calls (no `doc`) carry the window's active editor.
+  renderView: (pluginId, view, viewport, doc) =>
+    call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
   viewEvent: async (pluginId, view, event, doc) => {
-    await call(commands.pluginViewEvent(pluginId, view, event, doc));
+    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
   },
   webPageUrl: async (pluginId, view) => {
     const page = await call(commands.pluginWebPage(pluginId, view));
@@ -230,7 +233,7 @@ function ensureSubscribed() {
 // ---------------------------------------------------------------------------
 // Browser simulation: the bundled sample plugins, with `hello` implemented in JS.
 
-// templates/theme-plugin, abridged.
+// plugins/official/harbor-night, abridged.
 const SAMPLE_THEMES: ActiveTheme["theme"][] = [
   {
     id: "harbor-night",

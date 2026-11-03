@@ -1,6 +1,6 @@
 /**
- * Builds the page into ../web (checked in, like the official plugins'
- * dist/plugin.wasm). Relative URLs throughout: the IDE serves the page from
+ * Builds the page into ../web (not checked in: plugins/build.sh builds it).
+ * Relative URLs throughout: the IDE serves the page from
  * the plugin package under its own URL scheme. Excalidraw's fonts are copied
  * next to it; the page points Excalidraw at them (src/assets.ts).
  */

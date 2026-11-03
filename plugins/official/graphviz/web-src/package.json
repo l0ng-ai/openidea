@@ -1,0 +1,19 @@
+{
+  "name": "openidea-plugin-graphviz-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The Graphviz plugin's preview page; `pnpm build` writes it to ../web.",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@viz-js/viz": "3.31.0"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^5.0.5"
+  }
+}

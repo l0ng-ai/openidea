@@ -1,12 +1,13 @@
-# Theme plugin template
+# Harbor Night
 
-A complete OpenIDEA theme plugin with one worked example, **Harbor Night**: a
-dark theme with slate surfaces, a teal accent and a warm syntax palette. Copy
-this folder to start your own theme. Full documentation, the token reference
-and porting guides are in [`docs/plugins/themes.md`](../../docs/plugins/themes.md).
+An OpenIDEA theme plugin, **Harbor Night**: a dark theme with slate surfaces, a
+teal accent and a warm syntax palette. It is also where new themes start:
+`openidea-plugin new --template theme` copies its theme files, or copy this
+folder. Full documentation, the token reference and porting guides are in
+[`docs/plugins/themes.md`](../../../docs/plugins/themes.md).
 
 ```
-theme-plugin/
+harbor-night/
 ├─ plugin.toml                          # manifest: id, name, version, the theme files
 └─ themes/
    ├─ harbor-night.theme.json           # UI colours, every themeable token, grouped like tokens.css
@@ -17,8 +18,9 @@ A theme plugin is data only: no code, no WebAssembly, no build step.
 
 ## Make your own
 
-1. Copy the folder, for example to `~/openidea-themes/theme-my-theme`.
-2. In `plugin.toml`, change `id` (lowercase, `a-z 0-9 - _`), `name`,
+1. Run `openidea-plugin new --template theme`, or copy the folder, for
+   example to `~/openidea-themes/my-theme`.
+2. In `plugin.toml`, change `id` (lowercase, `a-z 0-9 - _ .`), `name`,
    `description`, `authors` and the two paths.
 3. Rename the theme files. In the theme file, set `id`, `name` and `kind`
    (`"dark"` or `"light"`, the built-in base for anything you leave out).
@@ -49,5 +51,5 @@ JSON or values are reported in Settings › Plugins with the file and line.
 
 ## Licence
 
-The template and Harbor Night are part of OpenIDEA (Apache-2.0). When you port
+Harbor Night is part of OpenIDEA (Apache-2.0). When you port
 someone else's theme, keep its licence and credit its authors.

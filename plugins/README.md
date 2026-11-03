@@ -14,6 +14,7 @@ menus, settings) need no code at all.
 ```
 plugins/
 └─ official/
+   ├─ harbor-night/           # data only: a colour theme (UI and editor scheme)
    ├─ material-icons/         # data only: a file icon theme
    ├─ solidity/               # language + syntax provider + run configurations
    ├─ string-tools/           # 26 text commands, versioned multi-cursor edits
@@ -23,7 +24,10 @@ plugins/
    ├─ ai-completion/          # inline completion over the network, secrets
    ├─ mybatis/                # navigation, gutter markers, completion across files
    ├─ csv-editor/             # custom editor sharing the text document
-   └─ excalidraw/             # web view custom editor, file icons, a template
+   ├─ excalidraw/             # web view custom editor, file icons, a template
+   ├─ graphviz/               # web view with code: live preview, problems from the page, a language
+   ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
+   └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
 ```
@@ -384,7 +388,10 @@ plugin's editor, or through _Open With_ for `option`. For a custom editor
 `ctx.editor()` is its document: read it with `document()` and change it with
 `apply_edits(version, …)` — the text editor of the same file follows,
 Undo / Redo are one history with it, and Save, the dirty mark and the close
-prompts are the document's. _Open as Text_ opens the text editor.
+prompts are the document's. _Open as Text_ opens the text editor. For a
+tool window `ctx.editor()` is the window's active text editor, as for a
+command, so a view's buttons can act on what the user is editing (a click in
+the tool window doesn't change which editor that is).
 
 `layout` puts a custom editor beside the text editor instead of in a tab of
 its own: with `"split"` or `"preview"` the file opens in the text editor,
@@ -454,7 +461,9 @@ IDE shortcuts the page doesn't handle itself (Save, Close, Find Action…) still
 work while it has focus; editing keys (⌘C, ⌘V, ⌘Z…) stay with the page. With
 the `clipboard` capability the page may use `navigator.clipboard`.
 `plugins/official/excalidraw` is a complete example: a Vite + React page in
-`web-src/`, built into `web/` by `plugins/build.sh`. The built page is not
+`web-src/`, built into `web/` by `plugins/build.sh`. `plugins/official/graphviz`
+pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
+sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
 checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
 before installing the plugin from the repository.
 
@@ -537,8 +546,8 @@ values (no `url()`, `;`, braces); `//` and `/* */` comments are allowed. A
 manifest theme entry may add `editor-scheme = "themes/x.scheme.json"` (editor
 colours, merged over the theme). Pick a theme in Settings › Plugins › _Apply_.
 
-Start with `openidea-plugin new <dir> --template theme` (or
-[`templates/theme-plugin`](../templates/theme-plugin)); the full guide, token
+Start with `openidea-plugin new <dir> --template theme` (or a copy of
+[`official/harbor-night`](official/harbor-night)); the full guide, token
 reference and IntelliJ / VS Code porting tables are in
 [`docs/plugins/themes.md`](../docs/plugins/themes.md).
 

@@ -382,7 +382,8 @@ pub async fn plugin_line_markers(
     ide_host::ops::lsp::plugin_line_markers(&state.host, window.label(), doc).await
 }
 
-/// Content of a plugin view (`doc`: the document of a custom editor).
+/// Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
+/// a tool window, the window's active editor, as commands get it).
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_view_render(
@@ -392,12 +393,13 @@ pub async fn plugin_view_render(
     view: String,
     viewport: Option<ide_plugin::Viewport>,
     doc: Option<ide_core::DocId>,
+    editor: Option<PluginEditor>,
 ) -> IdeResult<ide_plugin::View> {
     let plugins = state.plugins.clone();
-    ide_host::plugins::views::render(&state.host, plugins, window.label(), plugin_id, view, viewport, doc).await
+    ide_host::plugins::views::render(&state.host, plugins, window.label(), plugin_id, view, viewport, doc, editor).await
 }
 
-/// A user action in a plugin view or custom editor.
+/// A user action in a plugin view or custom editor (`doc`, `editor`: as for rendering).
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_view_event(
@@ -407,9 +409,10 @@ pub async fn plugin_view_event(
     view: String,
     event: ide_plugin::ViewEvent,
     doc: Option<ide_core::DocId>,
+    editor: Option<PluginEditor>,
 ) -> IdeResult<()> {
     let plugins = state.plugins.clone();
-    ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc).await
+    ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc, editor).await
 }
 
 /// The page of a plugin's web view or custom editor (`web = …`).
