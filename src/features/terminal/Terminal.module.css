@@ -40,6 +40,28 @@
   min-height: 0;
 }
 
+/* tab drag & drop target on a group: an edge splits, the middle joins (the editor's look) */
+.dropZone {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.drop-left {
+  right: 50%;
+}
+.drop-right {
+  left: 50%;
+}
+.drop-top {
+  bottom: 50%;
+}
+.drop-bottom {
+  top: 50%;
+}
+
 .panel {
   position: absolute;
   inset: 0;
