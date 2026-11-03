@@ -159,7 +159,7 @@ impl StructureService {
             let runnable = body.is_some_and(|b| {
                 members(*b).into_iter().any(|n| {
                     if !matches!(n.kind(), "method_declaration" | "function_declaration")
-                        || !n.child_by_field_name("name").is_some_and(|id| text(id, snap.text) == "main")
+                        || n.child_by_field_name("name").is_none_or(|id| text(id, snap.text) != "main")
                     {
                         return false;
                     }

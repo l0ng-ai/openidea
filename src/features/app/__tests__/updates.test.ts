@@ -41,6 +41,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 const { checkForUpdates, installUpdate, notifyUpdate, progressText, CHECK_TASK_ID, INSTALL_TASK_ID, UPDATE_KEY } =
   await import("../updates");
 const { provideNotificationService } = await import("@/workbench/contributions");
+const { useProject } = await import("@/platform/project");
 const { useTasks } = await import("@/workbench/tasks");
 
 type Note = Parameters<NotificationService["notify"]>[0];
@@ -59,6 +60,7 @@ beforeEach(() => {
   check = deferred();
   provideNotificationService({ notify: (n) => void notes.push(n), expire: (k) => void expired.push(k) });
   useTasks.setState({ tasks: [] });
+  useProject.setState({ project: null, lightEdit: false });
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -162,6 +164,23 @@ describe("Check for Updates", () => {
     await done;
     expect(notes.at(-1)?.title).toBe(title);
     expect(task(CHECK_TASK_ID)?.done).toBe(true);
+  });
+
+  it("shows the check in a balloon where there is no status bar (the welcome screen)", async () => {
+    const done = checkForUpdates();
+    expect(notes[0]).toMatchObject({ level: "info", title: "Checking for updates…", key: UPDATE_KEY });
+    check.resolve(ok({ enabled: true, update: null }));
+    await done;
+    expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.21 is up to date", key: UPDATE_KEY });
+  });
+
+  it("leaves the check to the status bar in a project window", async () => {
+    useProject.setState({ project: { root: "/p", name: "p", trusted: true, isGit: false, settings: {} } as never });
+    const done = checkForUpdates();
+    expect(notes).toHaveLength(0);
+    check.resolve(ok({ enabled: true, update: null }));
+    await done;
+    expect(notes.at(-1)?.title).toBe("OpenIDEA 0.1.21 is up to date");
   });
 });
 

@@ -53,6 +53,7 @@ describe("inspections tree", () => {
       "Python",
       "SQL",
       "TypeScript",
+      "Version control",
     ]);
     const python = find(tree, "group:Python")!;
     expect(python.children.map((n) => n.id)).toEqual(["lsp:basedpyright", "lsp:ruff"]);

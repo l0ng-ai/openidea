@@ -91,12 +91,12 @@ pub async fn plugin_set_enabled(state: State<'_, AppState>, id: String, enabled:
     blocking(move || host.set_enabled(&id, enabled)).await
 }
 
-/// Installs the plugin package in `path` (a folder with `plugin.toml`).
+/// Installs the plugin package at `path`: a folder, its `plugin.toml`, or a `.zip` of the folder.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_install_dir(state: State<'_, AppState>, path: PathBuf) -> IdeResult<PluginInfo> {
     let host = state.plugins.clone();
-    blocking(move || host.install_from_dir(&path)).await
+    blocking(move || host.install_from_path(&path)).await
 }
 
 /// Plugin packages available locally for installation: `<resources>/plugins`

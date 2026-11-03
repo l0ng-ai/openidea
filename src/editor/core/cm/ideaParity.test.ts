@@ -23,7 +23,7 @@ import {
   foldSelectionEffects,
 } from "./folding";
 import { columnModeExtension, extendBlock, toggleColumnMode } from "./columnMode";
-import { nearestMark, unfoldAround } from "./lanes";
+import { nearestMark, scrollbarThumb, unfoldAround } from "./lanes";
 import { lineRangeSelection } from "./gutterDrag";
 import { matchBraceTarget } from "./caretCommands";
 import { overwriteField, toggleOverwrite } from "./overwrite";
@@ -289,6 +289,16 @@ describe("error stripe", () => {
     expect(nearestMark(marks, 15)?.pos).toBe(1);
     expect(nearestMark(marks, 27)?.pos).toBe(2);
     expect(nearestMark(marks, 21)).toBeNull();
+  });
+
+  it("finds the scrollbar thumb the marks must let through", () => {
+    // Nothing to scroll: no thumb.
+    expect(scrollbarThumb(0, 400, 400)).toBeNull();
+    // A quarter of the document visible: a 100px thumb, at the top, then at the bottom.
+    expect(scrollbarThumb(0, 1600, 400)).toEqual({ top: 0, bottom: 100 });
+    expect(scrollbarThumb(1200, 1600, 400)).toEqual({ top: 300, bottom: 400 });
+    // A long document keeps the 32px minimum thumb; halfway down it sits mid-track.
+    expect(scrollbarThumb(49800, 100000, 400)).toEqual({ top: 184, bottom: 216 });
   });
 
   it("unfolds what hides the target line", () => {

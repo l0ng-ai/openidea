@@ -301,11 +301,12 @@ function initialExpanded(root: string | null, mode: ViewMode, members = get().me
         r.scope === "scratches" && r.path ? [r.path] : [],
       ),
     );
-  const persisted = mode === "project" ? (readJson<string[]>(expandedKey(root)) ?? []) : [];
-  const roots = members ?? [root];
-  const expanded = new Set(persisted.filter((p) => roots.some((r) => isSameOrInside(p, r))));
-  roots.forEach((r) => expanded.add(r));
-  return expanded;
+  // The tree as the user left it, like IDEA: a collapsed project root stays collapsed, and
+  // nodes outside it (content roots, contributed roots) stay open.
+  // Keys of nodes that no longer exist are inert. Only a first open expands the roots.
+  const persisted = mode === "project" ? readJson<string[]>(expandedKey(root)) : null;
+  if (persisted) return new Set(persisted);
+  return new Set(members ?? [root]);
 }
 
 function persistExpanded() {
@@ -547,7 +548,7 @@ let revealSeq = 0;
 export function revealPath(path: string, focus = false) {
   const { expanded } = get();
   const project = get().root;
-  const root = project && isSameOrInside(path, project) ? project : project ? extraRootOf(path) : null;
+  const root = project ? (memberRootOf(path) ?? (isSameOrInside(path, project) ? project : extraRootOf(path))) : null;
   if (!root) return false;
   // Library folders sit below group nodes (External Libraries › SDK), keyed in their own namespace.
   const model = currentModel();
@@ -567,6 +568,16 @@ export function revealPath(path: string, focus = false) {
   return true;
 }
 
+/**
+ * The linked workspace project containing `path`, if any (the innermost one). A
+ * workspace's root is its own directory; its projects are separate top-level roots.
+ */
+function memberRootOf(path: string): string | null {
+  let found: string | null = null;
+  for (const m of get().members ?? []) if (isSameOrInside(path, m) && (!found || m.length > found.length)) found = m;
+  return found;
+}
+
 /** The contributed folder (scratches, a library root…) containing `path`, if any. */
 export function extraRootOf(path: string): string | null {
   for (const r of extraFolders(projectViewRoots(useProjectViewRoots.getState().roots)))
@@ -582,7 +593,7 @@ export function modeShows(path: string): boolean {
     case "project":
       return true;
     case "projectFiles":
-      return isSameOrInside(path, root);
+      return memberRootOf(path) !== null || (!get().members && isSameOrInside(path, root));
     case "scratches":
       return projectViewRoots(useProjectViewRoots.getState().roots).some(
         (r) => r.scope === "scratches" && r.path !== undefined && isSameOrInside(path, r.path),

@@ -1,5 +1,5 @@
 /**
- * Settings › Languages & Frameworks › Go / Java / Node.js / Rust / TypeScript and
+ * Settings › Languages & Frameworks › Go / Java / Node.js / PHP / Rust / TypeScript and
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
@@ -104,6 +104,54 @@ export function NodePage() {
         <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
           <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
         </Row>
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PHP
+
+export function PhpPage() {
+  const [interpreter] = useSetting<string>("languages.php.interpreter");
+  const { list } = useDetected("php");
+  const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
+  return (
+    <div className={styles.page}>
+      <Section title="CLI Interpreter">
+        <SdkRow
+          k="languages.php.interpreter"
+          label="PHP interpreter"
+          kind="php"
+          emptyLabel="Default"
+          emptyDetail="php on PATH"
+          browseTitle="Select PHP Interpreter"
+          aria-label="PHP interpreter"
+          hint="Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
+        />
+        {selected?.version && <Row label="Version">{selected.version}</Row>}
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ruby
+
+export function RubyPage() {
+  return (
+    <div className={styles.page}>
+      <Section>
+        <SdkRow
+          k="languages.ruby.interpreter"
+          label="Ruby interpreter"
+          kind="ruby"
+          emptyLabel="Auto"
+          emptyDetail=".ruby-version / mise / asdf, else ruby on PATH"
+          browseTitle="Select Ruby Interpreter"
+          aria-label="Ruby interpreter"
+          hint="Runs the ruby, rake and rspec configurations and lists the standard library and gems under External Libraries. Installs from rbenv, rvm, chruby, mise and asdf are detected."
+        />
       </Section>
     </div>
   );

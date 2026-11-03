@@ -39,8 +39,8 @@ pub async fn fs_copy_merge(
 
 #[tauri::command]
 #[specta::specta]
-pub fn fs_read_dir(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
-    fs::read_dir(&state.host, window.label(), path)
+pub async fn fs_read_dir(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
+    fs::read_dir(&state.host, window.label(), path).await
 }
 
 /// Creates an empty file; inside a project, honours the EditorConfig

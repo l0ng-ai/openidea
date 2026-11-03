@@ -89,6 +89,24 @@ describe("detectRunTargets", () => {
     ]);
   });
 
+  it("python: unittest TestCase subclasses in tests.py (Django's default test module)", () => {
+    const src = [
+      "from django.test import TestCase",
+      "class QuestionTests(TestCase):",
+      "    def test_recent(self):",
+      "        pass",
+      "class Helper(Mixin):",
+      "    def test_no(self): pass",
+    ].join("\n");
+    expect(pick(detectRunTargets(src, "polls/tests.py", true))).toEqual([
+      [1, "suite", "QuestionTests"],
+      [2, "test", "QuestionTests/test_recent"],
+    ]);
+    expect(pick(detectRunTargets(src, "polls/models.py", true))).toEqual([]);
+    // Outside Django projects `tests.py` is a script: no test targets.
+    expect(pick(detectRunTargets(src, "polls/tests.py"))).toEqual([]);
+  });
+
   it("go and jvm", () => {
     expect(
       pick(detectRunTargets("package x\n\nfunc TestAdd(t *testing.T) {}\nfunc helper() {}", "pkg/add_test.go")),
@@ -159,6 +177,27 @@ describe("targetConfig", () => {
     ]);
     expect(first("class TestC:\n    def test_a(self): pass", "tests/test_c.py").args).toEqual([
       "tests/test_c.py::TestC::test_a",
+    ]);
+    // pytest also collects TestCase subclasses.
+    expect(first("class QTests(TestCase):\n    def test_a(self): pass", "app/test_q.py").args).toEqual([
+      "app/test_q.py::QTests::test_a",
+    ]);
+    const django = [cfg({ id: "django:test", kind: "django-test", command: "python3", args: ["manage.py", "test"] })];
+    const test = detectRunTargets("class QTests(TestCase):\n    def test_a(self): pass", "polls/tests.py", true)[1]!;
+    expect(targetConfig(test, "polls/tests.py", django)!.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.QTests.test_a",
+    ]);
+    // A module-level function or a plain class: unittest's loader would call it, so no Django run.
+    const fn = detectRunTargets("def test_top():\n    pass", "polls/tests.py", true)[0]!;
+    expect(targetConfig(fn, "polls/tests.py", django)).toBeNull();
+    // Relative to the working directory, where manage.py is.
+    const nested = [{ ...django[0]!, cwd: "backend" }];
+    expect(targetConfig(test, "backend/polls/tests/test_q.py", nested)!.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.test_q.QTests.test_a",
     ]);
     expect(first("func TestAdd(t *testing.T) {}", "pkg/add_test.go").args).toEqual([
       "test",
@@ -235,5 +274,46 @@ describe("Go test targets", () => {
       target: ".",
       pattern: "^TestNew$/^child_case$",
     });
+  });
+});
+
+describe("php (PHPUnit)", () => {
+  const src = [
+    "<?php", // 0
+    "namespace App\\Tests;",
+    "use PHPUnit\\Framework\\TestCase;",
+    "final class CalcTest extends TestCase", // 3
+    "{",
+    "    public function testAdd(): void {}", // 5
+    "    #[Test]",
+    "    public function subtracts(): void {}", // 7
+    "    /** @test */",
+    "    public function multiplies(): void {}", // 9
+    "    public function helper(): void {}",
+    "    private function testHidden(): void {}",
+    "}",
+    "class Helper {}",
+    "    public function testNotInTestClass() {}",
+  ].join("\n");
+
+  it("finds test classes and test methods", () => {
+    expect(pick(detectRunTargets(src, "tests/CalcTest.php"))).toEqual([
+      [3, "suite", "CalcTest"],
+      [5, "test", "CalcTest/testAdd"],
+      [7, "test", "CalcTest/subtracts"],
+      [9, "test", "CalcTest/multiplies"],
+    ]);
+  });
+
+  it("ignores files that are not tests", () => {
+    expect(detectRunTargets(src, "src/Calc.php")).toEqual([]);
+  });
+
+  it("runs a method with --filter ahead of the file", () => {
+    const phpunit = cfg({ id: "phpunit", kind: "phpunit", command: "vendor/bin/phpunit" });
+    const target = detectRunTargets(src, "tests/CalcTest.php")[1]!;
+    const run = targetConfig(target, "tests/CalcTest.php", [phpunit], src);
+    expect(run?.args).toEqual(["--filter", "/(CalcTest::testAdd( with data set .*)?)$/", "tests/CalcTest.php"]);
+    expect(run?.command).toBe("vendor/bin/phpunit");
   });
 });

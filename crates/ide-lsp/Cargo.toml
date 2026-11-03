@@ -24,6 +24,7 @@ globset.workspace = true
 ignore.workspace = true
 toml.workspace = true
 percent-encoding = "2"
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { installRepeatedDoubleClick } from "@/platform/doubleClick";
 import { getContext } from "@/platform/context";
 import { provideEditorService, registerProjectViewRoot, type EditorService } from "@/workbench/contributions";
 import { activate } from "./index";
@@ -172,6 +173,9 @@ describe("ProjectView", () => {
     act(() => setViewOption("previewTab", true));
     fireEvent.click(content, { detail: 1 });
     expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: true, focus: false });
+    openFile.mockClear();
+    fireEvent.click(content, { detail: 3 });
+    expect(openFile).not.toHaveBeenCalled();
     act(() => setViewOption("previewTab", false));
   });
 
@@ -205,6 +209,37 @@ describe("ProjectView", () => {
     click(1, { shiftKey: true });
     expect(rows()).toContain("App.kt");
     act(() => setViewOption("singleClickExpand", false));
+  });
+
+  it("toggles folders once for each rapid double-click pair", async () => {
+    const uninstall = installRepeatedDoubleClick();
+    try {
+      const { row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      const content = () => row("src").querySelector("[data-project-path]")!;
+      // WebKit fires `dblclick` only for the second click of a burst, never for the 4th or 6th.
+      const burst = (clicks: number) => {
+        for (let detail = 1; detail <= clicks; detail++) {
+          fireEvent.mouseDown(row("src"), { detail });
+          fireEvent.click(content(), { detail });
+          if (detail === 2) fireEvent.doubleClick(content(), { detail });
+        }
+      };
+      // Double-click mode toggles once per pair; single-click mode once per odd click.
+      let expanded = false;
+      for (const singleClickExpand of [false, true]) {
+        act(() => setViewOption("singleClickExpand", singleClickExpand));
+        for (const clicks of [2, 4, 6, 3, 5]) {
+          burst(clicks);
+          const toggles = singleClickExpand ? Math.ceil(clicks / 2) : Math.floor(clicks / 2);
+          if (toggles % 2) expanded = !expanded;
+          await waitFor(() => expect(rows().includes("App.kt")).toBe(expanded));
+        }
+      }
+    } finally {
+      uninstall();
+      act(() => setViewOption("singleClickExpand", false));
+    }
   });
 
   it("cancels a new file when its name field loses focus", async () => {
