@@ -12,7 +12,10 @@
  * grammar for Java); the other half is read from the project through
  * `mapperStore`, so an XML file that is not open still lights up its methods.
  * Both are recomputed a beat after each edit and whenever the index learns about
- * a changed file; the icons follow Settings › Editor › General › Gutter Icons.
+ * a changed file. Turning the icons off — Settings › Editor › General › Gutter
+ * Icons › MyBatis mapper declarations, or the master switch — hides the gutter
+ * column and leaves the context actions alone, which is what the other gutter
+ * icon groups do.
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text, type Transaction } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
@@ -21,8 +24,6 @@ import { debounce, docOf } from "@/editor/lsp/lsp";
 import { locationItems, navigateTo, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
 import { tx } from "@/platform/i18n";
-import { editorPrefs } from "@/platform/editorSettings";
-import { useProject } from "@/platform/project";
 import { gutterIconMarkup } from "@/ui";
 import { parseJavaMapper } from "./java";
 import { parseMapperXml } from "./xml";
@@ -143,15 +144,11 @@ class MarkersPlugin {
   private refresh = debounce(() => void this.run(), DEBOUNCE_MS);
   private generation = 0;
   private offCleared: () => void;
-  private offSettings: () => void;
 
   constructor(private view: EditorView) {
     this.refresh();
     // The other half may have been created, renamed or deleted meanwhile.
     this.offCleared = onMapperIndexCleared(() => this.refresh());
-    this.offSettings = useProject.subscribe((state, previous) => {
-      if (state.settings !== previous.settings) this.refresh();
-    });
   }
 
   update(u: ViewUpdate) {
@@ -177,8 +174,7 @@ class MarkersPlugin {
     try {
       const found = await mapperAnalysis(side, text.toString(), side === "java" ? javaMask(view.state) : undefined);
       if (gen !== this.generation || view.state.doc !== text || !view.dom.isConnected) return;
-      // Settings › Editor › General › Gutter Icons hides the icons, not the offers.
-      this.show(editorPrefs().showGutterIcons ? place(text, found.markers) : [], place(text, found.generations));
+      this.show(place(text, found.markers), place(text, found.generations));
     } catch (e) {
       console.debug("[mybatis] mapper markers", e);
     }
@@ -187,13 +183,12 @@ class MarkersPlugin {
   destroy() {
     this.refresh.cancel();
     this.offCleared();
-    this.offSettings();
     this.generation++;
   }
 }
 
 /** Opens the single target, or the chooser over several. */
-export async function openMapperTargets(marker: MapperMarker, anchor: { x: number; y: number }) {
+async function openMapperTargets(marker: MapperMarker, anchor: { x: number; y: number }) {
   if (marker.targets.length === 1) {
     await navigateTo(marker.targets[0]!);
     return;

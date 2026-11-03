@@ -12,7 +12,7 @@ something to show.
 | `python-app/`    | Python 3.10+, pytest                                            | `python -m tasks.cli` (from `src/`) | `pytest`             | `OPENIDEA_FAIL=1 pytest`                  | unused imports in `models.py`                            |
 | `go-app/`        | Go 1.22+                                                        | `go run ./cmd/server`               | `go test ./...`      | `OPENIDEA_FAIL=1 go test ./...`           | unused `fmt.Sprintf` result in `internal/store/store.go` |
 | `kotlin-gradle/` | JDK 21, Gradle 8 (no wrapper)                                   | `gradle run`                        | `gradle test`        | `gradle test -PopenideaFail`              | unused variable in `App.kt`                              |
-| `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
+| `polyglot/`      | Go, Java, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 `fixtures/eslint.config.js` keeps them out of the IDE's own lint run.
@@ -119,3 +119,23 @@ language detection and highlighting.
 - [ ] Language Servers lists each tool with languages, status (Installed / On PATH /
       Missing) and version; Install streams progress and can be cancelled;
       Uninstall removes managed tools. Nothing downloads without clicking Install.
+
+### MyBatis mapper (`polyglot/service`)
+
+- [ ] `UserMapper.java`: an icon on `findById` (bound twice) and none on
+      `selectByName`, `countAll` or `insertUser`.
+- [ ] Clicking `findById`'s icon opens the chooser over the two `databaseId`
+      statements; picking one lands on its `<select>` and highlights the tag.
+- [ ] `UserMapper.xml`: an icon on each `findById` statement — the `<sql>`
+      fragment and `updateDept`, which has no method, get none. A click returns to
+      the method name.
+- [ ] `⌥Enter` on `selectByName` offers both `Generate Statement for selectByName`
+      and `Generate @Param Annotations`; on `insertUser` the same two; on `countAll`
+      nothing at all (its SQL is in an `@Select` and it has no parameters).
+- [ ] Generating a statement selects the SQL line, adds the element before
+      `</mapper>` at the indent of the existing children, and leaves the tab dirty.
+- [ ] `⌥Enter` → Generate on `OrderMapper.findById` creates
+      `src/main/resources/com/acme/orders/OrderMapper.xml` with the header, writes
+      the statement, and lights up the icon on the Java side without a restart.
+- [ ] Settings › Editor › General › Gutter Icons off hides the icons and keeps the
+      `⌥Enter` offers.

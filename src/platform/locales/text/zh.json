@@ -6072,5 +6072,7 @@
   "Cannot Generate @Param Annotations": "无法生成 @Param 注解",
   "Cannot create the file": "无法创建文件",
   "Not a mapper XML of this interface": "该文件不是此接口的 mapper XML",
-  "The document changed; retry": "文档已更改，请重试"
+  "The document changed; retry": "文档已更改，请重试",
+  "MyBatis mapper": "MyBatis Mapper",
+  "MyBatis mapper declarations": "MyBatis Mapper 声明"
 }

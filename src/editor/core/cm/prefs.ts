@@ -430,6 +430,7 @@ const noSurround = EditorView.inputHandler.of((view, from, to, text) => {
 export const GUTTER_ICON_GROUPS = [
   { id: "run", gutterClass: "cm-openidea-gutter-run" },
   { id: "bookmarks", gutterClass: "cm-openidea-bookmarks" },
+  { id: "mybatis", gutterClass: "cm-openidea-gutter-mybatis" },
   { id: "inheritors", gutterClass: "cm-openidea-gutter-lineMarkers" },
   { id: "supers", gutterClass: "cm-openidea-gutter-lineMarkers" },
 ] as const;
