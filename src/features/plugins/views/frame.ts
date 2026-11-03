@@ -4,7 +4,13 @@
  * access) under a CSP that allows only its own inline scripts and styles and
  * `data:` images — no network. `openidea.postMessage` / `openidea.onMessage`
  * are its only way to the plugin.
+ *
+ * The IDE theme reaches the frame as `data-theme="light|dark"` on its root and
+ * the `--openidea-*` variables of {@link FRAME_THEME_TOKENS}, kept current
+ * without reloading the frame; `openidea.theme` / `openidea.onThemeChange` give
+ * the same to scripts (canvas drawing, say).
  */
+import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 
 export const FRAME_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:";
@@ -12,27 +18,110 @@ export const FRAME_CSP =
 /** Marks frame ↔ workbench messages. */
 export const FRAME_TAG = "openidea-view";
 
-const BRIDGE = `
+/**
+ * The theme variables a frame gets: public name → IDE token. Part of the
+ * plugin API: names are only ever added, so the IDE's own tokens can change.
+ */
+export const FRAME_THEME_TOKENS = {
+  "--openidea-bg": "--bg-island",
+  "--openidea-bg-elevated": "--bg-elev",
+  "--openidea-bg-hover": "--bg-hover",
+  "--openidea-bg-selected": "--bg-tree-selected",
+  "--openidea-bg-input": "--bg-input",
+  "--openidea-fg": "--fg",
+  "--openidea-fg-strong": "--fg-strong",
+  "--openidea-fg-muted": "--fg-muted",
+  "--openidea-border": "--border",
+  "--openidea-accent": "--accent",
+  "--openidea-fg-on-accent": "--fg-on-accent",
+  "--openidea-link": "--link",
+  "--openidea-focus-ring": "--focus-ring",
+  "--openidea-danger": "--danger",
+  "--openidea-warning": "--warning",
+  "--openidea-success": "--success",
+  "--openidea-info": "--info",
+} as const;
+
+/** Non-colour variables: public name → IDE token. */
+const FRAME_FONT_TOKENS = {
+  "--openidea-font-ui": "--font-ui",
+  "--openidea-font-mono": "--font-mono",
+  "--openidea-font-size": "--fs-ui",
+} as const;
+
+export interface FrameTheme {
+  dark: boolean;
+  /** `--openidea-*` → a concrete value (colours resolved, no `var()`: the frame has no IDE stylesheet). */
+  vars: Record<string, string>;
+}
+
+/** Font stacks and sizes only; anything that could leave its declaration is dropped. */
+const safeValue = (v: string) => v.length <= 400 && !/[<>{};\\]/.test(v);
+
+/** The IDE theme as a frame sees it, read from the root element's tokens. */
+export function frameTheme(root: HTMLElement = document.documentElement): FrameTheme {
+  const vars: Record<string, string> = {};
+  for (const [name, token] of Object.entries(FRAME_THEME_TOKENS)) {
+    const c = resolveTokenColor(token, root);
+    if (c) vars[name] = toRgb(c);
+  }
+  if (typeof getComputedStyle !== "undefined") {
+    const css = getComputedStyle(root);
+    for (const [name, token] of Object.entries(FRAME_FONT_TOKENS)) {
+      const v = css.getPropertyValue(token).trim();
+      if (v && safeValue(v)) vars[name] = v;
+    }
+  }
+  return { dark: root.dataset.theme !== "light", vars };
+}
+
+/** The message that updates a loaded frame's theme. */
+export const frameThemeMessage = (theme: FrameTheme) => ({ tag: FRAME_TAG, theme });
+
+const bridge = (initial: FrameTheme) => `
 (() => {
   const listeners = [];
+  const themeListeners = [];
+  const root = document.documentElement;
+  let theme = null;
+  let applied = [];
+  const applyTheme = (t) => {
+    if (!t || typeof t !== "object" || !t.vars || typeof t.vars !== "object") return;
+    const vars = {};
+    for (const [k, v] of Object.entries(t.vars)) if (k.startsWith("--openidea-") && typeof v === "string") vars[k] = v;
+    for (const k of applied) if (!(k in vars)) root.style.removeProperty(k);
+    for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
+    applied = Object.keys(vars);
+    root.dataset.theme = t.dark ? "dark" : "light";
+    theme = Object.freeze({ dark: !!t.dark, vars: Object.freeze(vars) });
+    for (const l of themeListeners) { try { l(theme); } catch (err) { console.error(err); } }
+  };
+  applyTheme(${JSON.stringify(initial).replace(/</g, "\\u003c")});
   window.addEventListener("message", (e) => {
     if (e.source !== window.parent || !e.data || e.data.tag !== "${FRAME_TAG}") return;
+    if (e.data.theme) { applyTheme(e.data.theme); return; }
     for (const l of listeners) { try { l(String(e.data.text)); } catch (err) { console.error(err); } }
   });
   window.openidea = Object.freeze({
     postMessage: (text) => window.parent.postMessage({ tag: "${FRAME_TAG}", text: String(text) }, "*"),
     onMessage: (fn) => { if (typeof fn === "function") listeners.push(fn); },
+    get theme() { return theme; },
+    onThemeChange: (fn) => { if (typeof fn === "function") themeListeners.push(fn); },
   });
 })();`;
 
-/** `html` wrapped with the CSP, the message bridge and base styles. */
-export function frameDocument(html: string, dark: boolean): string {
-  const scheme = dark ? "dark" : "light";
+const BASE_STYLE =
+  "html[data-theme=light]{color-scheme:light}html[data-theme=dark]{color-scheme:dark}" +
+  "body{margin:8px;color:var(--openidea-fg);font-family:var(--openidea-font-ui,system-ui,sans-serif);" +
+  "font-size:var(--openidea-font-size,13px)}a{color:var(--openidea-link)}";
+
+/** `html` wrapped with the CSP, the message bridge, the theme and base styles. */
+export function frameDocument(html: string, theme: FrameTheme): string {
   return [
-    '<!doctype html><html><head><meta charset="utf-8">',
+    `<!doctype html><html data-theme="${theme.dark ? "dark" : "light"}"><head><meta charset="utf-8">`,
     `<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">`,
-    `<style>:root{color-scheme:${scheme}}body{margin:8px;font:13px system-ui,sans-serif}</style>`,
-    `<script>${BRIDGE}</script>`,
+    `<style>${BASE_STYLE}</style>`,
+    `<script>${bridge(theme)}</script>`,
     "</head><body>",
     html,
     "</body></html>",

@@ -384,6 +384,23 @@ inline scripts and styles and `data:` images, no network, no IDE API — and
 talks to the plugin only through `openidea.postMessage(text)` /
 `openidea.onMessage(fn)` (`ViewEvent::Message`, `host::post_view_message`).
 
+The frame follows the IDE theme without reloading: its root carries
+`data-theme="light|dark"` and these CSS variables, with concrete colour
+values (the body already uses the text colour, UI font and size):
+
+| Variable                                                                                                          | Meaning                                                          |
+| ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `--openidea-bg`, `--openidea-bg-elevated`, `--openidea-bg-hover`, `--openidea-bg-selected`, `--openidea-bg-input` | Surfaces (the frame itself is transparent)                       |
+| `--openidea-fg`, `--openidea-fg-strong`, `--openidea-fg-muted`                                                    | Text                                                             |
+| `--openidea-border`, `--openidea-focus-ring`, `--openidea-link`                                                   | Lines, focus, links                                              |
+| `--openidea-accent`, `--openidea-fg-on-accent`                                                                    | Accent and text on it                                            |
+| `--openidea-danger`, `--openidea-warning`, `--openidea-success`, `--openidea-info`                                | Status colours                                                   |
+| `--openidea-font-ui`, `--openidea-font-mono`, `--openidea-font-size`                                              | Fonts (web fonts the IDE bundles are not available in the frame) |
+
+Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
+`openidea.onThemeChange(fn)`, for drawing on a canvas, say. Variables are only
+ever added.
+
 ### Settings
 
 ```toml

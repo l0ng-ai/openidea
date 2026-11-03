@@ -9,7 +9,7 @@ import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, syncUiContributions } from "../projection";
 import { pluginMenuItems, withPluginSetting } from "../uiPoints";
 import { matchesPattern } from "../views/customEditor";
-import { FRAME_CSP, frameDocument } from "../views/frame";
+import { FRAME_CSP, FRAME_TAG, frameDocument, frameTheme, type FrameTheme } from "../views/frame";
 import { PluginView, treeNodes, wantedViewport } from "../views/PluginView";
 import { bumpView } from "../views/viewStore";
 
@@ -56,12 +56,77 @@ describe("view helpers", () => {
   });
 
   it("confines HTML bodies: CSP without network, a message bridge", () => {
-    const doc = frameDocument("<p>hi</p>", true);
+    const doc = frameDocument("<p>hi</p>", { dark: true, vars: {} });
     expect(doc).toContain(`content="${FRAME_CSP}"`);
     expect(FRAME_CSP).toContain("default-src 'none'");
     expect(FRAME_CSP).not.toMatch(/https?:|connect-src/);
     expect(doc).toContain("window.openidea = Object.freeze");
     expect(doc.indexOf("Content-Security-Policy")).toBeLessThan(doc.indexOf("<p>hi</p>"));
+  });
+
+  it("reads the frame theme from the IDE tokens, resolved and sanitised", () => {
+    const root = document.documentElement;
+    const before = root.dataset.theme;
+    root.style.setProperty("--fg", "#112233");
+    root.style.setProperty("--font-ui", "Inter, sans-serif");
+    root.style.setProperty("--font-mono", "x}</style><script>alert(1)</script>");
+    try {
+      root.dataset.theme = "light";
+      const light = frameTheme();
+      expect(light.dark).toBe(false);
+      expect(light.vars["--openidea-fg"]).toBe("rgb(17, 34, 51)");
+      expect(light.vars["--openidea-font-ui"]).toBe("Inter, sans-serif");
+      expect(light.vars).not.toHaveProperty("--openidea-font-mono");
+      root.dataset.theme = "dark";
+      root.dataset.contrast = "high";
+      expect(frameTheme().dark).toBe(true);
+    } finally {
+      for (const p of ["--fg", "--font-ui", "--font-mono"]) root.style.removeProperty(p);
+      delete root.dataset.contrast;
+      if (before === undefined) delete root.dataset.theme;
+      else root.dataset.theme = before;
+    }
+  });
+
+  it("puts the theme into the frame document without letting a value end the script", () => {
+    const doc = frameDocument("<p>hi</p>", { dark: true, vars: { "--openidea-fg": "</script><b>" } });
+    expect(doc).toContain('<html data-theme="dark">');
+    expect(doc).not.toContain("</script><b>");
+    expect(doc).toContain("\\u003c/script>");
+  });
+
+  it("applies posted themes inside the frame, replacing the previous variables", () => {
+    const doc = frameDocument("", {
+      dark: false,
+      vars: { "--openidea-fg": "rgb(1, 2, 3)", "--openidea-accent": "red" },
+    });
+    const script = /<script>([\s\S]*)<\/script>/.exec(doc)![1]!;
+    const root = document.documentElement;
+    const before = root.dataset.theme;
+    const seen: unknown[] = [];
+    try {
+      new Function(script)();
+      const api = (
+        window as unknown as { openidea: { theme: FrameTheme; onThemeChange(fn: (t: FrameTheme) => void): void } }
+      ).openidea;
+      expect(root.style.getPropertyValue("--openidea-fg")).toBe("rgb(1, 2, 3)");
+      expect(api.theme.dark).toBe(false);
+      api.onThemeChange((t) => seen.push(t));
+      // jsdom's postMessage has no `source`, so dispatch the event as the parent would.
+      const send = (t: unknown) =>
+        window.dispatchEvent(new MessageEvent("message", { data: { tag: FRAME_TAG, theme: t }, source: window }));
+      send({ dark: true, vars: { "--openidea-fg": "rgb(9, 9, 9)", "--not-ours": "x" } });
+      expect(root.dataset.theme).toBe("dark");
+      expect(root.style.getPropertyValue("--openidea-fg")).toBe("rgb(9, 9, 9)");
+      expect(root.style.getPropertyValue("--openidea-accent")).toBe("");
+      expect(root.style.getPropertyValue("--not-ours")).toBe("");
+      expect(seen).toHaveLength(1);
+    } finally {
+      for (const p of ["--openidea-fg", "--openidea-accent"]) root.style.removeProperty(p);
+      delete (window as unknown as { openidea?: unknown }).openidea;
+      if (before === undefined) delete root.dataset.theme;
+      else root.dataset.theme = before;
+    }
   });
 
   it("matches custom editor file name patterns", () => {
@@ -183,6 +248,30 @@ describe("PluginView", () => {
     city = "Paris";
     bumpView("csv", "table");
     expect(await screen.findByText("Paris")).toBeInTheDocument();
+  });
+
+  it("keeps an HTML body loaded across theme switches and posts the new theme to it", async () => {
+    const html: View = { toolbar: [], body: { kind: "html", value: "<p>chart</p>" }, status: null };
+    setPluginsBackend(backendWith(() => html, []));
+    const root = document.documentElement;
+    const before = root.dataset.theme;
+    root.dataset.theme = "light";
+    try {
+      const { container } = render(<PluginView pluginId="charts" view="chart" />);
+      await waitFor(() => expect(container.querySelector("iframe")).not.toBeNull());
+      const frame = container.querySelector("iframe")!;
+      const srcDoc = frame.getAttribute("srcdoc");
+      expect(srcDoc).toContain('<html data-theme="light">');
+      const post = vi.spyOn(frame.contentWindow!, "postMessage");
+      root.dataset.theme = "dark";
+      await waitFor(() =>
+        expect(post).toHaveBeenCalledWith({ tag: FRAME_TAG, theme: expect.objectContaining({ dark: true }) }, "*"),
+      );
+      expect(frame.getAttribute("srcdoc")).toBe(srcDoc);
+    } finally {
+      if (before === undefined) delete root.dataset.theme;
+      else root.dataset.theme = before;
+    }
   });
 
   it("shows a message when the plugin fails", async () => {

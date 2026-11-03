@@ -6,7 +6,15 @@
  * (`viewChanged`), from `revision` (a custom editor's document changed), or
  * from the table scrolling to rows it hasn't got.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import {
@@ -22,7 +30,8 @@ import {
   type MenuItem,
 } from "@/ui";
 import { pluginsBackend } from "../backend";
-import { FRAME_TAG, frameDocument } from "./frame";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
+import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
 import { onViewMessage, useViewRevision } from "./viewStore";
 import styles from "./PluginView.module.css";
 
@@ -456,8 +465,15 @@ function HtmlBody({
   view: string;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
-  const dark = typeof document !== "undefined" && document.documentElement.dataset.theme === "dark";
-  const srcDoc = useMemo(() => frameDocument(html, dark), [html, dark]);
+  // The theme at load time is in the document; later changes are posted, so a
+  // theme switch doesn't reload the frame and lose its state.
+  const srcDoc = useMemo(() => frameDocument(html, frameTheme()), [html]);
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
+  const postTheme = useCallback(
+    () => frame.current?.contentWindow?.postMessage(frameThemeMessage(frameTheme()), "*"),
+    [],
+  );
+  useEffect(postTheme, [theme, postTheme]);
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
@@ -476,5 +492,15 @@ function HtmlBody({
   }, [pluginId, view, send]);
 
   // No `allow-same-origin`: an opaque origin without access to the IDE.
-  return <iframe ref={frame} className={styles.frame} title={view} sandbox="allow-scripts" srcDoc={srcDoc} />;
+  // `onLoad` re-sends the theme in case it changed between building `srcDoc` and the frame loading.
+  return (
+    <iframe
+      ref={frame}
+      className={styles.frame}
+      title={view}
+      sandbox="allow-scripts"
+      srcDoc={srcDoc}
+      onLoad={postTheme}
+    />
+  );
 }
