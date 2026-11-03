@@ -5,6 +5,7 @@ import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
 import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
+import { installErrorLogging } from "./platform/errorLog";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
@@ -18,6 +19,7 @@ if (import.meta.env.DEV && isTauri()) {
 }
 
 installRepeatedDoubleClick();
+installErrorLogging();
 
 // The native Settings window (`settings-<parent>`) loads this page too.
 const settingsParent = settingsWindowParent();
