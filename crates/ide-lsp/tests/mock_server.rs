@@ -8,11 +8,11 @@ use ide_lsp::types::*;
 use ide_lsp::{LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 // ------------------------------------------------------------------ mock server
@@ -1334,11 +1334,12 @@ async fn navigation_rename_format_and_decorations() {
         h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
-    assert!(h
-        .mgr
-        .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
-        .await
-        .is_err());
+    assert!(
+        h.mgr
+            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+            .await
+            .is_err()
+    );
 
     s.respond("textDocument/semanticTokens/full", json!({ "data": [0, 3, 3, 0, 1, 1, 0, 3, 0, 0] }));
     let tokens = h.mgr.semantic_tokens(doc).await.unwrap().unwrap();
@@ -1725,14 +1726,15 @@ async fn class_file_opening_routes_sources_and_binary_documents() {
     ]));
     let archive = Some((PathBuf::from("/m2/lib.jar"), "p/Outer$1.class".into()));
     assert_eq!(h.mgr.java_class_file(Path::new("/m2/lib.jar!/p/Outer$1.class"), archive).await.unwrap(), jdt);
-    assert!(h
-        .mgr
-        .java_class_file(
-            Path::new("/other/lib.jar!/p/Outer.class"),
-            Some(("/other/lib.jar".into(), "p/Outer.class".into()))
-        )
-        .await
-        .is_err());
+    assert!(
+        h.mgr
+            .java_class_file(
+                Path::new("/other/lib.jar!/p/Outer.class"),
+                Some(("/other/lib.jar".into(), "p/Outer.class".into()))
+            )
+            .await
+            .is_err()
+    );
 
     let sources = h.root.join("src/main/java");
     std::fs::create_dir_all(sources.join("p")).unwrap();

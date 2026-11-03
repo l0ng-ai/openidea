@@ -17,11 +17,7 @@ pub fn is_local(entry: &Path) -> bool {
 }
 
 pub fn data_path(data: &Path, local: &Path, entry: &Path) -> PathBuf {
-    if is_local(entry) {
-        local.join(entry)
-    } else {
-        data.join(entry)
-    }
+    if is_local(entry) { local.join(entry) } else { data.join(entry) }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,11 +27,7 @@ enum Action {
 }
 
 fn action(same_root: bool, source_exists: bool, target_exists: bool) -> Action {
-    if same_root || !source_exists || target_exists {
-        Action::Skip
-    } else {
-        Action::Rename
-    }
+    if same_root || !source_exists || target_exists { Action::Skip } else { Action::Rename }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,11 +37,7 @@ enum RenameFailure {
 }
 
 fn rename_failure(error: &io::Error) -> RenameFailure {
-    if error.kind() == io::ErrorKind::CrossesDevices {
-        RenameFailure::Copy
-    } else {
-        RenameFailure::KeepSource
-    }
+    if error.kind() == io::ErrorKind::CrossesDevices { RenameFailure::Copy } else { RenameFailure::KeepSource }
 }
 
 /// Only Windows splits these paths. Renames are cheap; cross-volume copies run in
@@ -219,11 +207,7 @@ fn rename_missing(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 fn remove_entry(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
+    if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
 }
 
 fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
@@ -486,9 +470,11 @@ mod tests {
         assert!(old.join("payload").exists());
         assert!(copy_then_remove(&tmp.path().join("missing"), &tmp.path().join("new")).is_err());
         assert!(!tmp.path().join("new").exists());
-        assert!(!fs::read_dir(tmp.path())
-            .unwrap()
-            .flatten()
-            .any(|e| e.file_name().to_string_lossy().starts_with(".migration-")));
+        assert!(
+            !fs::read_dir(tmp.path())
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(".migration-"))
+        );
     }
 }

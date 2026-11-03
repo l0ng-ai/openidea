@@ -5,12 +5,12 @@
 //! jdtls is started on demand for the module, so a run configuration works
 //! without a Java editor open.
 
-use crate::server::{Running, Server};
 use crate::LspManager;
+use crate::server::{Running, Server};
 use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use specta::Type;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

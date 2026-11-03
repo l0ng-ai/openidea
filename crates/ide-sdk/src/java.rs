@@ -29,11 +29,7 @@ pub fn parse_release(release: &str) -> Option<u32> {
     let v = line.trim().trim_matches('"');
     let mut parts = v.split(['.', '_', '-', '+']);
     let first: u32 = parts.next()?.parse().ok()?;
-    if first == 1 {
-        parts.next()?.parse().ok()
-    } else {
-        Some(first)
-    }
+    if first == 1 { parts.next()?.parse().ok() } else { Some(first) }
 }
 
 /// The JDK at `home`, if it is one (a `release` file and `bin/java`).
@@ -584,11 +580,7 @@ fn parse_java_version(v: &str) -> Option<u32> {
     let v = v.trim().trim_matches(['"', '\'']);
     let mut parts = v.split('.');
     let first: u32 = parts.next()?.trim().parse().ok()?;
-    if first == 1 {
-        parts.next()?.trim().parse().ok()
-    } else {
-        Some(first)
-    }
+    if first == 1 { parts.next()?.trim().parse().ok() } else { Some(first) }
 }
 
 #[cfg(test)]

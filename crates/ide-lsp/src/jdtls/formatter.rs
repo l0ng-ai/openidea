@@ -1,6 +1,6 @@
+use ide_core::IdeResult;
 use ide_core::editor_settings::LanguageCodeStyle;
 use ide_core::settings::LanguageServerSettings;
-use ide_core::IdeResult;
 use ide_language::LanguageServerConfig;
 use serde_json::json;
 use std::path::Path;
@@ -202,7 +202,7 @@ mod tests {
                 };
                 if layer != "initialization" {
                     let value = json!({"java": {"format": {"settings": {"profile": "Protocol"}}}});
-                    overrides.settings = Some(if layer == "wrapped" { json!({ "settings": value }) } else { value });
+                    overrides.settings = Some(if layer == "wrapped" { json!({"settings": value}) } else { value });
                 }
                 let mut cfg = config("jdtls");
                 let style = LanguageCodeStyle {
