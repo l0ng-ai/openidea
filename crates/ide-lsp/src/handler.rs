@@ -111,6 +111,10 @@ impl ClientHandler {
     }
 
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
+        // Problems come only from servers used for `diagnostics`.
+        if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
+            return;
+        }
         let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {

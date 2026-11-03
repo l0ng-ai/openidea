@@ -131,6 +131,16 @@ pub struct LanguageServerConfig {
     /// basedpyright): only used while none of those is installed.
     #[serde(default)]
     pub fallback: bool,
+    /// What the server is used for (`completion`, `code-action`, `diagnostics`,
+    /// … `FEATURES` in `ide-lsp/src/caps.rs`); empty means everything. The other
+    /// capabilities it announces are ignored, so a refactoring-only server next
+    /// to the language's own one adds no completion, hover or formatting.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Code action kinds kept from the server, matched like LSP's `only`
+    /// (`refactor` keeps `refactor.extract`); empty keeps every kind.
+    #[serde(default)]
+    pub code_action_kinds: Vec<String>,
     /// Newest Java release the server runs on (kotlin-language-server: 21). A
     /// newer `JAVA_HOME` is replaced by the newest installed JDK that fits.
     #[serde(default)]

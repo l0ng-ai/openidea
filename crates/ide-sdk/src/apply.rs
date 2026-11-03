@@ -541,6 +541,8 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         }),
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
@@ -562,11 +564,17 @@ pub fn server_launch_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     }
 }
 
-/// Environment, `initializationOptions` and `workspace/configuration` settings
-/// from Settings › Language Servers; applied last so they win over derived values.
+/// Environment, features, `initializationOptions` and `workspace/configuration`
+/// settings from Settings › Language Servers; applied last so they win over derived values.
 pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     let Some(ls) = s.language_servers.get(&cfg.name) else { return };
     cfg.env.extend(ls.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    if let Some(features) = &ls.features {
+        cfg.features = features.clone();
+    }
+    if let Some(kinds) = &ls.code_action_kinds {
+        cfg.code_action_kinds = kinds.clone();
+    }
     if let Some(options) = &ls.initialization_options {
         merge_init_options(cfg, options.clone());
     }

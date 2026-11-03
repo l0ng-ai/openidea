@@ -157,6 +157,16 @@ pub struct LanguageServerSettings {
     pub languages: Vec<String>,
     /// Files marking a workspace root for a server defined here (`pyproject.toml`).
     pub root_markers: Vec<String>,
+    /// Replaces the definition's `features`: what the server is used for
+    /// (`code-action`, `hover`, …); an empty list means everything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub features: Option<Vec<String>>,
+    /// Replaces the definition's `code-action-kinds` (`refactor`); an empty
+    /// list keeps every kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub code_action_kinds: Option<Vec<String>>,
 }
 
 impl Default for LanguageServerSettings {
@@ -170,6 +180,8 @@ impl Default for LanguageServerSettings {
             settings: None,
             languages: Vec::new(),
             root_markers: Vec::new(),
+            features: None,
+            code_action_kinds: None,
         }
     }
 }
