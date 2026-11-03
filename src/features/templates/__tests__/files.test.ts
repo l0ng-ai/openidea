@@ -70,15 +70,17 @@ describe("file naming", () => {
     expect(withKind(css, kind("css"))).toBe(css);
   });
 
-  it("prefills fixed names (Dockerfile, .editorconfig, .gitignore)", () => {
+  it("prefills fixed names (Dockerfile, .editorconfig, .gitignore, go.mod)", () => {
     for (const [id, name] of [
       ["dockerfile", "Dockerfile"],
       ["editorconfig", ".editorconfig"],
       ["gitignore", ".gitignore"],
+      ["go-mod", "go"],
     ] as const) {
       const t = tpl(id);
       expect(t.defaultName).toBe(name);
-      expect(planFile(t, "/p", t.defaultName!)?.path).toBe(`/p/${name}`);
+      const ext = t.extension ? `.${t.extension}` : "";
+      expect(planFile(t, "/p", t.defaultName!)?.path).toBe(`/p/${name}${ext}`);
     }
   });
 

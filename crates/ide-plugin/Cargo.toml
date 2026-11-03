@@ -15,8 +15,7 @@ toml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
+tempfile.workspace = true
+zip.workspace = true
 wasmtime = { version = "49.0.4", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "parallel-compilation"] }
 wasmtime-wasi = { version = "49.0.4", default-features = false, features = ["p2"] }
-
-[dev-dependencies]
-tempfile.workspace = true
