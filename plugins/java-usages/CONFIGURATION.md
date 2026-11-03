@@ -53,7 +53,7 @@ files for disk discovery. It does not guess a global association from matching
 text in unrelated projects.
 
 Indexing is lazy. The first explicit navigation/search builds a compact snapshot;
-ordinary typing, code-lens probes and bulk scoped reference analysis do not start indexing. At most eight project snapshots are
+ordinary typing, code-lens probes, bulk scoped reference analysis, and Java Go to Definition / Ctrl+hover outside a `@Value` or property-lookup argument (checked with the bundled tree-sitter grammar) do not start indexing. At most eight project snapshots are
 retained, with a shared 100,000-association retention cap. Records contain property names, element handles and source locations;
 ASTs and bindings are discarded after indexing. A lexical prefilter avoids AST
 construction for ordinary Java units, but every accepted association is resolved
