@@ -504,6 +504,10 @@
   align-self: flex-start;
   margin: 8px 12px;
 }
+/* Below "Edit configuration templates…". */
+.editImportLink {
+  margin-top: 0;
+}
 .footerRun {
   display: inline-flex;
   align-items: center;

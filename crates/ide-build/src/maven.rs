@@ -245,7 +245,8 @@ struct RawPom {
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
     profiles: Vec<RawProfile>,
-    /// `<build><plugins>` `maven-compiler-plugin` `<release>` / `<source>`.
+    /// `maven-compiler-plugin` `<release>` / `<source>` of `<build><plugins>`, else of
+    /// `<pluginManagement>`.
     compiler_release: Option<String>,
 }
 
@@ -300,6 +301,16 @@ fn read_build(e: &Element, plugins: &mut Vec<RawPlugin>, managed: &mut Vec<RawPl
     managed.extend(e.list("build/pluginManagement/plugins", "plugin").into_iter().filter_map(read_plugin));
 }
 
+/// `maven-compiler-plugin` `<release>` / `<source>` among the plugins at `path`.
+fn compiler_level(project: &Element, path: &str) -> Option<String> {
+    project
+        .list(path, "plugin")
+        .into_iter()
+        .find(|p| p.text_of("artifactId").as_deref() == Some("maven-compiler-plugin"))
+        .and_then(|p| p.child("configuration"))
+        .and_then(|c| c.text_of("release").or_else(|| c.text_of("source")))
+}
+
 fn read_raw(project: &Element) -> RawPom {
     let parent = project.child("parent").and_then(|p| {
         Some(ParentRef {
@@ -328,13 +339,8 @@ fn read_raw(project: &Element) -> RawPom {
         ..RawPom::default()
     };
     read_build(project, &mut pom.plugins, &mut pom.managed_plugins);
-    if let Some(c) = pom.plugins.iter().position(|p| p.artifact_id == "maven-compiler-plugin") {
-        let plugin =
-            project.list("build/plugins", "plugin").into_iter().filter(|p| p.text_of("artifactId").is_some()).nth(c);
-        if let Some(cfg) = plugin.and_then(|p| p.child("configuration")) {
-            pom.compiler_release = cfg.text_of("release").or_else(|| cfg.text_of("source"));
-        }
-    }
+    pom.compiler_release =
+        compiler_level(project, "build/plugins").or_else(|| compiler_level(project, "build/pluginManagement/plugins"));
     for p in project.list("profiles", "profile") {
         let mut profile = RawProfile {
             id: p.text_of("id").unwrap_or_else(|| "default".into()),
@@ -411,6 +417,9 @@ struct Inherited {
     managed: Vec<RawDep>,
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
+    /// The nearest `maven-compiler-plugin` `<release>` / `<source>`: a module usually
+    /// inherits its compiler level from the parent's (managed) plugin configuration.
+    compiler_release: Option<String>,
     /// `<id>`, `activeByDefault`: profiles of the POM and its ancestors —
     /// Maven lets a child enable a parent's profiles with `-P`.
     profiles: Vec<(String, bool)>,
@@ -538,6 +547,9 @@ impl Resolver {
         merge_by(&mut ctx.deps, &pom.deps, RawDep::key);
         merge_plugins(&mut ctx.plugins, &pom.plugins);
         merge_plugins(&mut ctx.managed_plugins, &pom.managed_plugins);
+        if pom.compiler_release.is_some() {
+            ctx.compiler_release = pom.compiler_release.clone();
+        }
         for p in pom.profiles.iter().filter(|p| p.active_by_default) {
             merge_by(&mut ctx.properties, &p.properties, |(k, _)| k.clone());
             merge_by(&mut ctx.deps, &p.deps, RawDep::key);
@@ -1123,7 +1135,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
         let jv = ["maven.compiler.release", "java.version", "maven.compiler.source", "maven.compiler.target"]
             .iter()
             .find_map(|k| props.get(*k).map(|v| i(v)))
-            .or_else(|| pom.compiler_release.as_deref().map(i))
+            .or_else(|| ctx.compiler_release.as_deref().map(i))
             .and_then(|v| java_version(&v));
 
         // The project can activate the profiles of its own POM and its ancestors'.
@@ -1556,6 +1568,52 @@ mod tests {
         let model = load_with_repo(root, None);
         assert_eq!(model.projects[0].modules, ["core/pom.xml"]);
         assert!(model.projects.iter().any(|p| p.pom == "core/pom.xml" && p.aggregated));
+    }
+
+    #[test]
+    fn modules_inherit_the_compiler_level_of_the_parent_plugin_configuration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let parent = |build: &str| {
+            format!(
+                r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+                  <modules><module>core</module><module>app</module></modules>
+                  <properties><jdk>17</jdk></properties>{build}</project>"#
+            )
+        };
+        let child = |name: &str, build: &str| {
+            format!(
+                r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent>
+                  <artifactId>{name}</artifactId>{build}</project>"#
+            )
+        };
+        let compiler = |level: &str| {
+            format!(
+                "<plugin><artifactId>maven-compiler-plugin</artifactId><configuration><source>{level}</source></configuration></plugin>"
+            )
+        };
+        let versions = |model: &MavenModel| -> Vec<(String, Option<u32>)> {
+            model.projects.iter().map(|p| (p.pom.clone(), p.java_version)).collect()
+        };
+        let app_build = format!("<build><plugins>{}</plugins></build>", compiler("21"));
+        write(root, "core/pom.xml", &child("core", ""));
+        write(root, "app/pom.xml", &child("app", &app_build));
+        for build in [
+            format!("<build><pluginManagement><plugins>{}</plugins></pluginManagement></build>", compiler("${jdk}")),
+            format!("<build><plugins>{}</plugins></build>", compiler("1.8")),
+        ] {
+            write(root, "pom.xml", &parent(&build));
+            let expected = if build.contains("1.8") { 8 } else { 17 };
+            assert_eq!(
+                versions(&load_with_repo(root, None)),
+                [
+                    ("pom.xml".to_owned(), Some(expected)),
+                    ("core/pom.xml".to_owned(), Some(expected)),
+                    ("app/pom.xml".to_owned(), Some(21)),
+                ],
+                "{build}"
+            );
+        }
     }
 
     #[test]

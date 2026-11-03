@@ -30,6 +30,7 @@ export function WindowGroupTabs() {
                 drag.current = { label: tab.label, x: e.clientX, moved: false };
             }}
             onPointerMove={(e) => {
+              if (drag.current && !(e.buttons & 1)) drag.current = null; // reordered macOS tap, not a drag
               if (drag.current && Math.abs(e.clientX - drag.current.x) > 5) {
                 drag.current.moved = true;
                 e.currentTarget.setPointerCapture(e.pointerId);

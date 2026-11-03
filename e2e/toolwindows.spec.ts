@@ -31,6 +31,46 @@ test("⌥F12 opens the Terminal tool window and toggles it closed", async ({ wor
   await expect(terminal).toBeHidden();
 });
 
+test("Split Right gives the Terminal a tab group with its own header; Unsplit merges it back", async ({
+  workbench: page,
+}) => {
+  const terminal = page.getByRole("region", { name: "Terminal" });
+  const strips = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await page.keyboard.press("Alt+F12");
+  await expect(strips.getByRole("tab", { name: "Local" })).toBeVisible();
+
+  await strips.getByRole("tab", { name: "Local" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /^Split Right/ }).click();
+  await expect(strips).toHaveCount(2);
+  await expect(strips.nth(1).getByRole("tab", { name: "Local (2)" })).toHaveAttribute("aria-selected", "true");
+  // One header per group: the title in the first, the window's buttons in the last.
+  await expect(terminal.locator("header")).toHaveCount(2);
+  await expect(terminal.locator("header").nth(0)).toContainText("Terminal");
+  await expect(terminal.locator("header").nth(1).getByRole("button", { name: "Options", exact: true })).toHaveCount(1);
+  await expect(terminal.locator("header").nth(0).getByRole("button", { name: "Options", exact: true })).toHaveCount(0);
+  if (process.env.OPENIDEA_E2E_SHOTS) await terminal.screenshot({ path: process.env.OPENIDEA_E2E_SHOTS });
+
+  await strips.nth(1).getByRole("tab", { name: "Local (2)" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Unsplit" }).click();
+  await expect(strips).toHaveCount(1);
+  await expect(strips.getByRole("tab")).toHaveText(["Local", "Local (2)"]);
+  await expect(terminal.locator("header")).toHaveCount(1);
+});
+
+test("closing the last tab of a terminal group focuses its neighbour", async ({ workbench: page }) => {
+  const terminal = page.getByRole("region", { name: "Terminal" });
+  const strips = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await page.keyboard.press("Alt+F12");
+  await strips.getByRole("tab", { name: "Local" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /^Split Right/ }).click();
+  await expect(strips).toHaveCount(2);
+  await strips.nth(1).getByRole("button", { name: "Close Tab", exact: true }).click();
+  await expect(strips).toHaveCount(1);
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await page.keyboard.press("Meta+t");
+  await expect(strips.getByRole("tab")).toHaveCount(2);
+});
+
 test("⌘⇧F12 hides all tool windows and restores them", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+6");
   await expect(page.getByRole("region", { name: "Problems" })).toBeVisible();

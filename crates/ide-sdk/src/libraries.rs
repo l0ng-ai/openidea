@@ -11,7 +11,7 @@
 //! JDK's `src.zip` and the Maven / Gradle dependency jars (source attachments resolved by JDT).
 
 use crate::exe;
-use crate::exec::{query, query_in, which};
+use crate::exec::{query_in, which};
 use ide_core::settings::Settings;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -157,7 +157,9 @@ fn python_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
 
 /// Standard library and site-packages folders of a Python interpreter.
 pub fn python_libraries(python: &Path, root: Option<&Path>) -> Option<LibraryGroup> {
-    let out = query(python, &["-c", PYTHON_PATHS], QUERY_TIMEOUT)?;
+    // In a neutral directory: the working directory comes first on `sys.path` for `-c`.
+    let dir = crate::python::neutral_dir();
+    let out = query_in(python, &["-c", PYTHON_PATHS], dir.as_ref().map(|d| d.path()), &[], QUERY_TIMEOUT)?;
     let name = crate::discover::python_sdk(python, "system", root).map(|s| s.name).unwrap_or_else(|| "Python".into());
     group(name, "python", library_roots(parse_python_paths(&out)))
 }

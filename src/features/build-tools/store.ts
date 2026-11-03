@@ -23,6 +23,7 @@ import {
   type SyncProgress,
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
+import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
@@ -73,6 +74,14 @@ export const useBuild = create<BuildState>(() => ({
   executeOpen: null,
   current: {},
 }));
+
+// Shared with the features that follow the build (run, Project view).
+useBuild.subscribe((s) => {
+  const shared = useBuildModel.getState();
+  const gradleOffline = s.settings.gradle.offline;
+  if (shared.root !== s.root || shared.model !== s.model || shared.gradleOffline !== gradleOffline)
+    useBuildModel.setState({ root: s.root, model: s.model, gradleOffline });
+});
 
 // ---------------------------------------------------------------------------
 // Settings (per project)
@@ -189,6 +198,9 @@ export function changedOutsideIde(paths: readonly string[], now = Date.now()): b
   return external;
 }
 
+/** Root whose never-synced Gradle build was imported on open (once per open). */
+let autoImported: string | null = null;
+
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
   const root = useProject.getState().project?.root ?? null;
@@ -217,6 +229,11 @@ export async function loadModel(): Promise<void> {
       externalChange = false;
       const maven = model.maven;
       if (maven?.stale && maven.syncedAt !== null && !useBuild.getState().syncing.maven) void syncTool("maven");
+    }
+    // Like IDEA, a Gradle build is imported when first opened; later changes wait for Reload.
+    if (model.gradle && model.gradle.syncedAt === null && autoImported !== root) {
+      autoImported = root;
+      void syncTool("gradle");
     }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });

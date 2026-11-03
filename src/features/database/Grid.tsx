@@ -282,8 +282,10 @@ export function Grid(props: GridProps) {
     e.stopPropagation();
     const startX = e.clientX;
     const start = widths[col] ?? 100;
-    const move = (ev: globalThis.MouseEvent) =>
+    const move = (ev: globalThis.MouseEvent) => {
+      if (!(ev.buttons & 1)) return up();
       setWidths((w) => w.map((x, i) => (i === col ? Math.max(40, start + ev.clientX - startX) : x)));
+    };
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);

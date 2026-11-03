@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -217,6 +219,7 @@ function StripeHandle({
     document.body.style.cursor = "col-resize";
     let next = { names, width, px: start };
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       const r = resolve(start + sign * (ev.clientX - origin));
       if (r.names !== next.names) onPreview(r.names);
       next = r;
@@ -312,6 +315,8 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
   };
   const onMove = (ev: globalThis.PointerEvent) => {
     if (!ghost) {
+      // Reordered macOS tap: no button held, so not a drag (see pointerDrag.ts).
+      if (!(ev.buttons & 1)) return finish(false);
       if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD) return;
       const r = button.getBoundingClientRect();
       ghost = button.cloneNode(true) as HTMLElement;
@@ -326,6 +331,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
       document.body.appendChild(ghost);
       useStripeDrag.setState({ id, drop: null });
     }
+    if (!(ev.buttons & 1)) return;
     place(ev.clientX, ev.clientY);
     const drop = stripeDropAt(ev.clientX, ev.clientY);
     const cur = useStripeDrag.getState().drop;
@@ -553,35 +559,72 @@ function staticHeaderMenu(items: MenuItem[] | undefined): (id: string) => MenuIt
 
 const noTitleMenu = (): { label: string; items: MenuItem[] } | null => null;
 
-function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: boolean }) {
-  const ref = useRef<HTMLElement>(null);
-  const focusRequest = useToolWindowLayout((s) => s.focusRequest);
+/** The tool window around its content, for `ToolWindowHeader` and `useOwnToolWindowHeader`. */
+const ToolWindowFrame = createContext<{ tw: ToolWindowContribution; setOwnHeader: (own: boolean) => void } | null>(
+  null,
+);
+
+/**
+ * Takes the header over from the tool window while `own` is true: its content
+ * then places `ToolWindowHeader`s itself, as IDEA gives each cell of a split
+ * tool window (the Terminal's Split Right / Split Down) its own header.
+ */
+export function useOwnToolWindowHeader(own: boolean) {
+  const setOwnHeader = useContext(ToolWindowFrame)?.setOwnHeader;
+  useLayoutEffect(() => {
+    if (!setOwnHeader || !own) return;
+    setOwnHeader(true);
+    return () => setOwnHeader(false);
+  }, [setOwnHeader, own]);
+}
+
+export interface ToolWindowHeaderProps {
+  /** Shows the window's title (a split's first cell). */
+  title?: boolean;
+  /** Shows the window's own buttons: header actions, ⋮ options and hide (a split's last cell). */
+  actions?: boolean;
+  /** Its tab strip is the one Close Tab (⌘W) acts on. */
+  closeTarget?: boolean;
+  /** Content tabs, after the title. */
+  children?: ReactNode;
+}
+
+/** A header row of the tool window whose content renders it (see `useOwnToolWindowHeader`). */
+export function ToolWindowHeader({
+  title = true,
+  actions = true,
+  closeTarget = false,
+  children,
+}: ToolWindowHeaderProps) {
+  const tw = useContext(ToolWindowFrame)?.tw;
+  if (!tw) return null;
+  return (
+    <HeaderRow tw={tw} title={title} actions={actions}>
+      <TabStripRegistry.Provider value={closeTarget ? contentTabRegistry(tw.id) : null}>
+        {children}
+      </TabStripRegistry.Provider>
+    </HeaderRow>
+  );
+}
+
+function HeaderRow({
+  tw,
+  title,
+  actions,
+  children,
+}: {
+  tw: ToolWindowContribution;
+  title: boolean;
+  actions: boolean;
+  children?: ReactNode;
+}) {
   const maximized = useToolWindowLayout((s) => s.maximized === tw.anchor);
   const [moreOpen, setMoreOpen] = useState(false);
   const [titleOpen, setTitleOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLButtonElement>(null);
-  const Content = tw.component;
   const Actions = tw.headerActions;
-  const Tabs = tw.headerContent;
-
-  useEffect(() => {
-    if (!focusRequest || focusRequest.id !== tw.id || hidden) return;
-    const raf = requestAnimationFrame(() => {
-      const root = ref.current;
-      if (!root) return;
-      const body = root.querySelector<HTMLElement>("[data-toolwindow-body]");
-      // Like IDEA, activation focuses the content (a field, list or tree), never a button or
-      // link: a scripted focus on one draws its focus ring (an empty view's "New…" link).
-      const content = [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
-        (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
-      );
-      if (body && !content && !body.hasAttribute("tabindex")) body.tabIndex = -1;
-      const target = body?.querySelector<HTMLElement>("[data-autofocus]") ?? content ?? body ?? root;
-      target.focus({ preventScroll: true });
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [focusRequest, tw.id, hidden]);
+  const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
 
   const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
   const own = useHeaderMenu(tw.id);
@@ -602,6 +645,104 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
   ];
 
   return (
+    <header
+      className={clsx(styles.header, tw.headerContent && styles.headerTabbed)}
+      onDoubleClick={(e) => e.target === e.currentTarget && toggleMaximizeToolWindow(tw.id)}
+    >
+      {!showTitle ? null : titleItems.length > 0 ? (
+        <>
+          <button
+            ref={titleRef}
+            type="button"
+            className={styles.titleButton}
+            aria-haspopup="menu"
+            aria-expanded={titleOpen}
+            onClick={() => setTitleOpen((v) => !v)}
+          >
+            <span className={styles.title}>
+              <T>{titleMenu?.label ?? tw.title}</T>
+            </span>
+            <Icon name="chevron-down" size={12} className={styles.titleChevron} />
+          </button>
+          <Menu
+            open={titleOpen}
+            onClose={() => setTitleOpen(false)}
+            anchor={titleRef}
+            items={titleItems}
+            aria-label={titleMenu ? tx`${tw.title} views` : tx`${tw.title} view options`}
+          />
+        </>
+      ) : (
+        <span className={clsx(styles.title, styles.titlePlain)}>
+          <T>{tw.title}</T>
+        </span>
+      )}
+      {children && <div className={clsx(styles.headerContent, !showTitle && styles.headerContentOnly)}>{children}</div>}
+      <div className={styles.headerSpacer} />
+      {actions && (
+        <>
+          <div className={styles.headerActions}>
+            {Actions && <Actions id={tw.id} />}
+            <IconButton
+              ref={moreRef}
+              icon="more"
+              title="Options"
+              size="small"
+              iconSize={16}
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((v) => !v)}
+            />
+            <IconButton
+              icon="minus"
+              title="Hide"
+              shortcut={shortcutLabel("toolwindow.hideActive")}
+              size="small"
+              iconSize={16}
+              onClick={() => hideToolWindow(tw.id)}
+            />
+          </div>
+          <Menu
+            open={moreOpen}
+            onClose={() => setMoreOpen(false)}
+            anchor={moreRef}
+            items={more}
+            placement="bottom-end"
+            aria-label={tx`${tw.title} options`}
+          />
+        </>
+      )}
+    </header>
+  );
+}
+
+function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: boolean }) {
+  const ref = useRef<HTMLElement>(null);
+  const focusRequest = useToolWindowLayout((s) => s.focusRequest);
+  const [ownHeader, setOwnHeader] = useState(false);
+  const frame = useMemo(() => ({ tw, setOwnHeader }), [tw]);
+  const Content = tw.component;
+  const Tabs = tw.headerContent;
+
+  useEffect(() => {
+    if (!focusRequest || focusRequest.id !== tw.id || hidden) return;
+    const raf = requestAnimationFrame(() => {
+      const root = ref.current;
+      if (!root) return;
+      const body = root.querySelector<HTMLElement>("[data-toolwindow-body]");
+      // Like IDEA, activation focuses the content (a field, list or tree), never a button or
+      // link: a scripted focus on one draws its focus ring (an empty view's "New…" link).
+      const content = [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
+        (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
+      );
+      if (body && !content && !body.hasAttribute("tabindex")) body.tabIndex = -1;
+      const target = body?.querySelector<HTMLElement>("[data-autofocus]") ?? content ?? body ?? root;
+      target.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [focusRequest, tw.id, hidden]);
+
+  return (
     <section
       ref={ref}
       className={styles.window}
@@ -610,78 +751,19 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       hidden={hidden}
       tabIndex={-1}
     >
-      <header
-        className={clsx(styles.header, Tabs && styles.headerTabbed)}
-        onDoubleClick={(e) => e.target === e.currentTarget && toggleMaximizeToolWindow(tw.id)}
-      >
-        {Tabs && tw.tabsReplaceTitle ? null : titleItems.length > 0 ? (
-          <>
-            <button
-              ref={titleRef}
-              type="button"
-              className={styles.titleButton}
-              aria-haspopup="menu"
-              aria-expanded={titleOpen}
-              onClick={() => setTitleOpen((v) => !v)}
-            >
-              <span className={styles.title}>
-                <T>{titleMenu?.label ?? tw.title}</T>
-              </span>
-              <Icon name="chevron-down" size={12} className={styles.titleChevron} />
-            </button>
-            <Menu
-              open={titleOpen}
-              onClose={() => setTitleOpen(false)}
-              anchor={titleRef}
-              items={titleItems}
-              aria-label={titleMenu ? tx`${tw.title} views` : tx`${tw.title} view options`}
-            />
-          </>
-        ) : (
-          <span className={clsx(styles.title, styles.titlePlain)}>
-            <T>{tw.title}</T>
-          </span>
-        )}
-        {Tabs && (
-          <div className={clsx(styles.headerContent, tw.tabsReplaceTitle && styles.headerContentOnly)}>
+      {!ownHeader && (
+        <HeaderRow tw={tw} title actions>
+          {Tabs && (
             <TabStripRegistry.Provider value={contentTabRegistry(tw.id)}>
               <Tabs id={tw.id} />
             </TabStripRegistry.Provider>
-          </div>
-        )}
-        <div className={styles.headerSpacer} />
-        <div className={styles.headerActions}>
-          {Actions && <Actions id={tw.id} />}
-          <IconButton
-            ref={moreRef}
-            icon="more"
-            title="Options"
-            size="small"
-            iconSize={16}
-            aria-haspopup="menu"
-            aria-expanded={moreOpen}
-            onClick={() => setMoreOpen((v) => !v)}
-          />
-          <IconButton
-            icon="minus"
-            title="Hide"
-            shortcut={shortcutLabel("toolwindow.hideActive")}
-            size="small"
-            iconSize={16}
-            onClick={() => hideToolWindow(tw.id)}
-          />
-        </div>
-        <Menu
-          open={moreOpen}
-          onClose={() => setMoreOpen(false)}
-          anchor={moreRef}
-          items={more}
-          placement="bottom-end"
-          aria-label={tx`${tw.title} options`}
-        />
-      </header>
+          )}
+        </HeaderRow>
+      )}
       <div className={styles.body} data-toolwindow-body="">
-        <Content id={tw.id} />
+        <ToolWindowFrame.Provider value={frame}>
+          <Content id={tw.id} />
+        </ToolWindowFrame.Provider>
       </div>
     </section>
   );
@@ -734,6 +816,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
     document.body.style.cursor = stacked ? "row-resize" : "col-resize";
     let ratio: number | null = null;
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       ratio = ratioOf(m.clamp(m.first + (stacked ? ev.clientY : ev.clientX) - origin), m.total);
       apply(m.areas, ratio);
     };
@@ -885,6 +968,7 @@ function GapHandle({
     document.body.style.cursor = vertical ? "col-resize" : "row-resize";
     let next = m.size;
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       const raw = m.size + sign * ((vertical ? ev.clientX : ev.clientY) - origin);
       // Dragged past half the minimum: collapse, as IDEA does.
       next = raw < MIN[anchor] / 2 ? 0 : clamp(raw, m.max);

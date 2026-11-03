@@ -4,6 +4,7 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_core::{IdeError, IdeResult};
 use ide_run::RunConfig;
+use ide_run::import::{RunImport, RunImportSource};
 
 pub async fn run_dotnet_resolve(host: &Host, window: &str, config: RunConfig, debug: bool) -> IdeResult<RunConfig> {
     host.require_trust(window)?;
@@ -103,6 +104,25 @@ pub fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
 pub fn run_save_templates(host: &Host, window: &str, templates: Vec<RunConfig>) -> IdeResult<()> {
     let root = host.project(window)?.root.clone();
     ide_run::save_templates(&root, &templates)
+}
+
+/// Project files run configurations can be imported from (`.vscode/launch.json`).
+pub fn run_import_sources(host: &Host, window: &str) -> IdeResult<Vec<RunImportSource>> {
+    let root = host.project(window)?.root.clone();
+    Ok(ide_run::import::available(&root))
+}
+
+/// Configurations read from `source`, not saved; names already in `existing` (the
+/// configurations being edited) are skipped.
+pub fn run_import_configs(
+    host: &Host,
+    window: &str,
+    source: RunImportSource,
+    existing: Vec<RunConfig>,
+) -> IdeResult<RunImport> {
+    host.require_trust(window)?;
+    let root = host.project(window)?.root.clone();
+    ide_run::import_configs(&root, source, &existing)
 }
 
 /// The environment runs inherit when "Include system environment variables" is on.
@@ -240,6 +260,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("run_templates", |c| async move { run_templates(&c.host, &c.window) });
     d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?) });
+    d.add("run_import_sources", |c| async move { run_import_sources(&c.host, &c.window) });
+    d.add("run_import_configs", |c| async move {
+        run_import_configs(&c.host, &c.window, c.arg("source")?, c.arg("existing")?)
+    });
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
     d.add("run_gradle_jvm_args_script", |c| async move {
         run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
