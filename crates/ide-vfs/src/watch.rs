@@ -277,6 +277,15 @@ impl DirState {
                 self.watch_tree(path, true, &mut discovered);
             }
         }
+        // VCS metadata directories (`.git`, `.git/worktrees/<name>`) need
+        // watches too: a worktree registered in the main gitdir writes its
+        // entry below `.git/worktrees`, and the events in a gitdir created
+        // during this batch would otherwise never be seen.
+        for path in &batch.vcs {
+            if !self.watched.lock().contains(path) && path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                self.watch_tree(path, false, &mut discovered);
+            }
+        }
         for path in &batch.removed {
             self.unwatch_tree(path);
         }
@@ -415,15 +424,29 @@ impl EventFilter {
         let idx = comps.iter().position(|c| *c == ".git")?;
         let rest = &comps[idx + 1..];
         Some(match rest {
-            [one] => *one == "HEAD" || *one == "index" || *one == "packed-refs",
-            [first, ..] => *first == "refs" && !rest.last().is_some_and(|l| l.to_string_lossy().ends_with(".lock")),
-            [] => false,
+            // `refs` and `worktrees` are directories whose creation is itself a
+            // registration event (`git init`, the first `git worktree add`);
+            // they must surface even though the depth below them is handled
+            // separately.
+            [one] => matches!(one.to_str(), Some("HEAD" | "index" | "packed-refs" | "refs" | "worktrees" | "info")),
+            [first, ..] => {
+                let metadata = *first == "refs"
+                    // Linked-worktree gitdirs: a worktree added or removed below
+                    // the project writes its HEAD here.
+                    || *first == "worktrees";
+                metadata && !rest.last().is_some_and(|l| l.to_string_lossy().ends_with(".lock"))
+            }
+            // The `.git` path itself: a linked worktree's `.git` is a plain
+            // file (gitfile), and it is the only marker a new worktree writes
+            // inside its own directory.
+            [] => true,
         })
     }
 
     /// Whether a directory deserves its own watch in per-directory mode: not
-    /// excluded or git-ignored; inside `.git` only the directory itself and
-    /// `refs/` (HEAD, index and refs are what VCS refresh needs).
+    /// excluded or git-ignored; inside `.git` the directory itself, `refs/`
+    /// and `worktrees/` (HEAD, index, refs and worktree metadata are what VCS
+    /// refresh needs).
     pub fn should_watch_dir(&self, dir: &Path) -> bool {
         let Ok(rel) = dir.strip_prefix(&self.root) else { return false };
         if rel.as_os_str().is_empty() {
@@ -435,6 +458,7 @@ impl EventFilter {
             return match rest.as_slice() {
                 [] => true,
                 [first, ..] if *first == "refs" => true,
+                [first, ..] if *first == "worktrees" => true,
                 [only] => *only == "info",
                 _ => false,
             };
@@ -690,7 +714,18 @@ mod tests {
         assert_eq!(g(".git/refs/heads/main"), Some(true));
         assert_eq!(g(".git/refs/heads/main.lock"), Some(false));
         assert_eq!(g(".git/objects/aa/bb"), Some(false));
-        assert_eq!(g(".git"), Some(false));
+        // The `.git` path itself: a repo dir, or a linked worktree's gitfile.
+        assert_eq!(g(".git"), Some(true));
+        assert_eq!(g("wt/.git"), Some(true));
+        // Linked-worktree gitdir metadata below the main repository.
+        assert_eq!(g(".git/worktrees/wt/HEAD"), Some(true));
+        assert_eq!(g(".git/worktrees/wt/index.lock"), Some(false));
+        // The depth-1 directories themselves: `git init` or the first
+        // `git worktree add` creates them in an already-watched gitdir.
+        assert_eq!(g(".git/refs"), Some(true));
+        assert_eq!(g(".git/worktrees"), Some(true));
+        assert_eq!(g(".git/info"), Some(true));
+        assert_eq!(g(".git/objects"), Some(false));
     }
 
     #[test]
@@ -744,6 +779,9 @@ mod tests {
         assert!(!w("build") && w("src/build"));
         assert!(w(".git") && w(".git/refs") && w(".git/refs/heads") && w(".git/info"));
         assert!(!w(".git/objects") && !w(".git/objects/ab") && !w(".git/logs"));
+        // Linked-worktree gitdirs are watched so worktrees added below the
+        // project while it is open are discovered.
+        assert!(w(".git/worktrees") && w(".git/worktrees/wt") && w(".git/worktrees/wt/rebase-merge"));
         assert!(!filter.should_watch_dir(Path::new("/elsewhere")));
         // Excludes are replaced in place (Watcher::set_excludes).
         *filter.excludes.write() = ExcludeMatcher::new(&["gen".into()]);
@@ -859,6 +897,51 @@ mod tests {
         std::fs::write(root.join("src/after-drop.txt"), "x").unwrap();
         std::thread::sleep(Duration::from_millis(400));
         assert_eq!(batches.lock().len(), n, "no events after drop");
+    }
+
+    #[test]
+    fn per_directory_mode_follows_worktree_registrations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        for d in ["wt", ".git/refs/heads"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // The worktree's gitfile is written before any watch on the worktree
+        // directory could register it — the same window a real
+        // `git worktree add` runs into.
+        std::fs::write(root.join("wt/.git"), "gitdir: ../.git/worktrees/wt\n").unwrap();
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        let sink: SharedSink = Arc::new(|_e: IdeEvent| {});
+        let watcher = {
+            let batches = batches.clone();
+            Watcher::start_with(
+                &root,
+                Vec::new(),
+                sink,
+                Box::new(move |b| batches.lock().push(b.clone())),
+                WatchMode::PerDirectory,
+            )
+            .unwrap()
+        };
+        // Registering the worktree in the main gitdir surfaces as VCS metadata
+        // (the deepest directory itself may be created before its parent gains
+        // a watch, so `.git/worktrees` is the event that reliably fires)...
+        std::fs::create_dir_all(root.join(".git/worktrees/wt")).unwrap();
+        assert!(
+            wait_for(&batches, |b| b.iter().any(|b| b.vcs.contains(&root.join(".git/worktrees")))),
+            "{:?}",
+            batches.lock()
+        );
+        // ...and the registered gitdir gains a watch, so writes inside it are
+        // seen even though nothing reported the directory itself.
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::write(root.join(".git/worktrees/wt/HEAD"), "ref: refs/heads/topic\n").unwrap();
+        assert!(
+            wait_for(&batches, |b| b.iter().any(|b| b.vcs.contains(&root.join(".git/worktrees/wt/HEAD")))),
+            "{:?}",
+            batches.lock()
+        );
+        drop(watcher);
     }
 
     #[test]
