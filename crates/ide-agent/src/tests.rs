@@ -9,6 +9,8 @@ struct FakeAgent {
     /// Every connection's agent side, kept open.
     servers: Mutex<Vec<Peer>>,
     calls: Mutex<Vec<String>>,
+    /// Without `loadSession` (a session lives only as long as its process).
+    no_load: bool,
 }
 
 impl FakeAgent {
@@ -89,7 +91,7 @@ impl Handler for FakeAgent {
                 if params.pointer("/clientCapabilities/subagents").is_some_and(Value::is_object) {
                     self.calls.lock().push("subagents".into());
                 }
-                Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true,
+                Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !self.no_load,
                     "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true}}}}))
             }
             "session/new" => Ok(json!({"sessionId": "s1",
@@ -1053,4 +1055,57 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
 
     let probe = mgr.probe("copilot", false).await.unwrap();
     assert!(probe.error.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
+    let new = || NewAgentTask {
+        project_root: None,
+        prompt: text("again"),
+        provider: "claude".into(),
+        config: Vec::new(),
+        isolation: Isolation::Local,
+        base: None,
+    };
+    let live =
+        |mgr: &AgentManager, id: &str| mgr.task(id).unwrap().live.lock().as_ref().is_some_and(|l| !l.peer.is_closed());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(live(&mgr, &task.id));
+    // The process is stopped once the task stays idle…
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id));
+    assert!(agent.servers.lock()[0].is_closed(), "its connection is closed");
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready, "not an error");
+    // …and the next message starts it again on the same session.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().contains(&"session/load".to_owned()));
+    assert_eq!(
+        mgr.entries(&task.id, None).unwrap().iter().filter(|e| matches!(e, AgentEntry::Agent { .. })).count(),
+        2
+    );
+
+    // A new turn before the delay ran out keeps the agent.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(live(&mgr, &task.id));
+    mgr.shutdown();
+
+    // An agent that can't reload its session keeps running: stopping it would lose the conversation.
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent { no_load: true, ..FakeAgent::default() });
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(live(&mgr, &task.id));
+    mgr.shutdown();
 }
