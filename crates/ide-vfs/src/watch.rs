@@ -416,14 +416,24 @@ impl EventFilter {
         let rest = &comps[idx + 1..];
         Some(match rest {
             [one] => *one == "HEAD" || *one == "index" || *one == "packed-refs",
-            [first, ..] => *first == "refs" && !rest.last().is_some_and(|l| l.to_string_lossy().ends_with(".lock")),
-            [] => false,
+            [first, ..] => {
+                let metadata = *first == "refs"
+                    // Linked-worktree gitdirs: a worktree added or removed below
+                    // the project writes its HEAD here.
+                    || *first == "worktrees";
+                metadata && !rest.last().is_some_and(|l| l.to_string_lossy().ends_with(".lock"))
+            }
+            // The `.git` path itself: a linked worktree's `.git` is a plain
+            // file (gitfile), and it is the only marker a new worktree writes
+            // inside its own directory.
+            [] => true,
         })
     }
 
     /// Whether a directory deserves its own watch in per-directory mode: not
-    /// excluded or git-ignored; inside `.git` only the directory itself and
-    /// `refs/` (HEAD, index and refs are what VCS refresh needs).
+    /// excluded or git-ignored; inside `.git` the directory itself, `refs/`
+    /// and `worktrees/` (HEAD, index, refs and worktree metadata are what VCS
+    /// refresh needs).
     pub fn should_watch_dir(&self, dir: &Path) -> bool {
         let Ok(rel) = dir.strip_prefix(&self.root) else { return false };
         if rel.as_os_str().is_empty() {
@@ -435,6 +445,7 @@ impl EventFilter {
             return match rest.as_slice() {
                 [] => true,
                 [first, ..] if *first == "refs" => true,
+                [first, ..] if *first == "worktrees" => true,
                 [only] => *only == "info",
                 _ => false,
             };
@@ -690,7 +701,12 @@ mod tests {
         assert_eq!(g(".git/refs/heads/main"), Some(true));
         assert_eq!(g(".git/refs/heads/main.lock"), Some(false));
         assert_eq!(g(".git/objects/aa/bb"), Some(false));
-        assert_eq!(g(".git"), Some(false));
+        // The `.git` path itself: a repo dir, or a linked worktree's gitfile.
+        assert_eq!(g(".git"), Some(true));
+        assert_eq!(g("wt/.git"), Some(true));
+        // Linked-worktree gitdir metadata below the main repository.
+        assert_eq!(g(".git/worktrees/wt/HEAD"), Some(true));
+        assert_eq!(g(".git/worktrees/wt/index.lock"), Some(false));
     }
 
     #[test]
@@ -744,6 +760,9 @@ mod tests {
         assert!(!w("build") && w("src/build"));
         assert!(w(".git") && w(".git/refs") && w(".git/refs/heads") && w(".git/info"));
         assert!(!w(".git/objects") && !w(".git/objects/ab") && !w(".git/logs"));
+        // Linked-worktree gitdirs are watched so worktrees added below the
+        // project while it is open are discovered.
+        assert!(w(".git/worktrees") && w(".git/worktrees/wt") && w(".git/worktrees/wt/rebase-merge"));
         assert!(!filter.should_watch_dir(Path::new("/elsewhere")));
         // Excludes are replaced in place (Watcher::set_excludes).
         *filter.excludes.write() = ExcludeMatcher::new(&["gen".into()]);

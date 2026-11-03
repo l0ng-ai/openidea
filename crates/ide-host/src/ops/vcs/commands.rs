@@ -729,7 +729,13 @@ pub async fn vcs_add_worktree(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_recorded(repo.as_deref(), None, |r| r.add_worktree(&path, &commitish, new_branch.as_deref()))
+        let result = project
+            .with_repo_recorded(repo.as_deref(), None, |r| r.add_worktree(&path, &commitish, new_branch.as_deref()));
+        // A worktree below the project is a new repository: rescan so its files
+        // join the status and gutter queries (the watcher picks the gitfile up
+        // too, but only as a debounced event later).
+        project.refresh_repositories();
+        result
     })
     .await
 }
@@ -743,7 +749,12 @@ pub async fn vcs_remove_worktree(
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force))).await
+    blocking(move || {
+        let result = project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force));
+        project.refresh_repositories();
+        result
+    })
+    .await
 }
 
 pub async fn vcs_compare_scope(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<CompareScope> {

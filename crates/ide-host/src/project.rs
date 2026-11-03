@@ -325,15 +325,21 @@ impl Host {
                             sink.emit(IdeEvent::ProjectRootsChanged { root: root.clone().into() });
                         }
                     }
-                    // A repository was cloned / initialised / removed below the project: its
-                    // `.git/HEAD` (the watcher reports nothing else of `.git`) appeared or went.
+                    // A repository was cloned / initialised / removed below the project:
+                    // its `.git/HEAD` appeared or went. A linked worktree's `.git` is a
+                    // plain gitfile, and that file is the only marker written inside the
+                    // worktree itself, so the `.git` path counts too.
                     let known = repos.read().roots();
                     let git_dirs = changed.iter().chain(&batch.removed).chain(&batch.vcs).any(|p| {
-                        let Some(dir) = p.ends_with(".git/HEAD").then(|| p.parent().and_then(Path::parent)).flatten()
-                        else {
-                            return false;
+                        let dir = if p.ends_with(".git/HEAD") {
+                            p.parent().and_then(Path::parent)
+                        } else if p.ends_with(".git") {
+                            p.parent()
+                        } else {
+                            None
                         };
-                        known.iter().any(|r| r == dir) != p.is_file()
+                        let Some(dir) = dir else { return false };
+                        known.iter().any(|r| r == dir) != p.exists()
                     });
                     if git_dirs {
                         scan_repositories(&root, &repos, &settings, &sink);
