@@ -813,6 +813,17 @@ export interface SettingsForm {
   useValue(key: string): unknown;
   /** Stages a value; `null` removes the key on Apply. */
   set(key: string, value: unknown): void;
+  /** Values stored outside settings JSON; the writer runs on Apply / OK and returns the saved value. */
+  useExternal<T>(
+    key: string,
+    base: T,
+    apply: (value: T) => Promise<T>,
+  ): {
+    value: T;
+    current: T;
+    set(value: T): void;
+    saving: boolean;
+  };
 }
 
 export const SettingsFormContext = createContext<SettingsForm | null>(null);
@@ -1315,6 +1326,41 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
   return [...runAnythingProviders.values()].sort(
     (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Project endpoints supplied by framework features for request-path search.
+
+export interface EndpointEntry {
+  /** `GET`, `POST`, … */
+  method: string;
+  /** Class-level and method-level mapping joined; `{var}` kept. */
+  url: string;
+  controller: string;
+  methodName: string;
+  path: string;
+  rel: string;
+  line: number;
+  col: number;
+}
+
+export interface EndpointProvider {
+  id: string;
+  endpoints(root: string): Promise<EndpointEntry[]>;
+}
+
+const endpointProviders = new Map<string, EndpointProvider>();
+
+export function registerEndpointProvider(p: EndpointProvider): () => void {
+  endpointProviders.set(p.id, p);
+  return () => {
+    if (endpointProviders.get(p.id) === p) endpointProviders.delete(p.id);
+  };
+}
+
+export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+  if (!root) return [];
+  return (await Promise.all([...endpointProviders.values()].map((p) => p.endpoints(root)))).flat();
 }
 
 // ---------------------------------------------------------------------------

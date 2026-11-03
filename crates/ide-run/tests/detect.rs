@@ -372,13 +372,19 @@ fn python_projects() {
         ("manage.py", ""),
     ]);
     let c = detect(dir.path());
-    assert_eq!(ids(&c), ["django:runserver", "python:module:mypkg", "pytest"]);
+    // pytest stays ahead of `manage.py test`: the first test configuration is the default for context runs.
+    assert_eq!(ids(&c), ["django:runserver", "python:module:mypkg", "pytest", "django:test"]);
     let pytest = find(&c, "pytest");
     assert_eq!(cmdline(pytest), "uv run pytest");
     assert!(pytest.is_test);
     assert_eq!(pytest.debug_adapter.as_deref(), Some("debugpy"));
     assert_eq!(cmdline(find(&c, "python:module:mypkg")), "uv run python -m mypkg");
     assert_eq!(cmdline(find(&c, "django:runserver")), "uv run python manage.py runserver");
+    let django = find(&c, "django:test");
+    assert_eq!(cmdline(django), "uv run python manage.py test");
+    assert_eq!(django.kind, "django-test");
+    assert!(django.is_test);
+    assert_eq!(django.debug_adapter.as_deref(), Some("debugpy"));
 
     let dir = project(&[("pytest.ini", "[pytest]\n"), ("poetry.lock", "")]);
     assert_eq!(cmdline(find(&detect(dir.path()), "pytest")), "poetry run pytest");
@@ -398,6 +404,7 @@ fn python_virtualenv() {
     let c = detect(dir.path());
     assert_eq!(cmdline(find(&c, "pytest")), ".venv/bin/pytest");
     assert_eq!(cmdline(find(&c, "django:runserver")), ".venv/bin/python manage.py runserver");
+    assert_eq!(cmdline(find(&c, "django:test")), ".venv/bin/python manage.py test");
 }
 
 #[cfg(unix)]
@@ -720,4 +727,104 @@ fn cmake_profile_build_configures_only_without_a_cache() {
             assert_eq!(find(&configs, "cmake:profile:0:test").extras.before_launch[0].target, build.id);
         }
     }
+}
+
+#[test]
+fn php_phpunit_project() {
+    let dir = project(&[
+        (
+            "composer.json",
+            r#"{"require-dev":{"phpunit/phpunit":"^11"},"scripts":{"test":"phpunit","post-install-cmd":"x","lint":"phpcs"}}"#,
+        ),
+        ("phpunit.xml.dist", "<phpunit/>"),
+        ("vendor/bin/phpunit", ""),
+        ("vendor/bin/phpunit.bat", ""),
+    ]);
+    let c = detect(dir.path());
+    // PHPUnit comes before the generic `composer test` so it is the default test runner.
+    assert_eq!(ids(&c), ["composer:lint", "phpunit", "composer:test"]);
+    let phpunit = find(&c, "phpunit");
+    // Windows runs the `.bat` launcher; the extensionless file is a shebang script.
+    assert_eq!(cmdline(phpunit), if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" });
+    assert_eq!(phpunit.kind, "phpunit");
+    assert!(phpunit.is_test);
+    assert_eq!(phpunit.debug_adapter.as_deref(), Some("php-debug"));
+    assert!(find(&c, "composer:test").is_test);
+    assert!(!find(&c, "composer:lint").is_test);
+}
+
+#[test]
+fn php_detection_needs_a_marker() {
+    let dir = project(&[("index.php", "<?php")]);
+    assert!(detect(dir.path()).is_empty());
+    let dir = project(&[("phpunit.xml", "<phpunit/>")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "phpunit")), "phpunit");
+    let dir = project(&[("composer.json", "{}")]);
+    assert!(detect(dir.path()).is_empty());
+}
+
+#[test]
+fn ruby_projects_list_rake_tasks_rspec_and_rails() {
+    let rakefile = "\
+require 'rake/testtask'
+
+desc \"Build it\"
+task :build do
+  sh 'make'
+end
+task \"lint\" => [:build]
+task deploy: :build do |t|
+  puts t
+end
+namespace :db do
+  desc 'Migrate'
+  task :migrate, [:version] do |t, args|
+    puts args
+  end
+  namespace :schema do
+    task :load
+  end
+end
+Rake::TestTask.new do |t|
+  t.libs << 'test'
+end
+task default: :build
+";
+    let dir = project(&[
+        ("Gemfile", "source 'https://rubygems.org'\ngem 'rspec'\n"),
+        ("Rakefile", rakefile),
+        ("bin/rails", "#!/usr/bin/env ruby\n"),
+        ("spec/a_spec.rb", ""),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(
+        ids(&c),
+        [
+            "rails:server",
+            "rake:build",
+            "rake:lint",
+            "rake:deploy",
+            "rake:db:migrate",
+            "rake:db:schema:load",
+            "rake:test",
+            "rake:default",
+            "rspec"
+        ]
+    );
+    assert_eq!(cmdline(find(&c, "rails:server")), "ruby bin/rails server");
+    assert_eq!(cmdline(find(&c, "rake:db:migrate")), "bundle exec rake db:migrate");
+    assert_eq!(find(&c, "rake:db:migrate").kind, "rake");
+    assert!(find(&c, "rake:test").is_test);
+    assert_eq!(cmdline(find(&c, "rspec")), "bundle exec rspec");
+    assert!(find(&c, "rspec").is_test);
+    assert_eq!(find(&c, "rake:build").extras.folder.as_deref(), Some("Rake"));
+}
+
+#[test]
+fn ruby_without_bundler_runs_bare_tools() {
+    let dir = project(&[("Rakefile", "task :test\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rake:test"]);
+    assert_eq!(cmdline(&c[0]), "rake test");
+    assert!(detect(project(&[("a.rb", "puts 1\n")]).path()).is_empty());
 }

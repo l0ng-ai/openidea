@@ -4,6 +4,7 @@ import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
 import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
+import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
@@ -15,6 +16,8 @@ if (import.meta.env.DEV && isTauri()) {
   const [{ invoke }, { emit }] = await Promise.all([import("@tauri-apps/api/core"), import("@tauri-apps/api/event")]);
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ ??= { core: { invoke }, event: { emit } };
 }
+
+installRepeatedDoubleClick();
 
 // The native Settings window (`settings-<parent>`) loads this page too.
 const settingsParent = settingsWindowParent();

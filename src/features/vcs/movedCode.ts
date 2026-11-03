@@ -5,6 +5,8 @@ import { tx } from "@/platform/i18n";
 import { chunkDecorations } from "./cm";
 import { getDiffInsights } from "./diffOptions";
 
+const movedLine = Decoration.line({ class: "cm-diffMoved" });
+
 class MovedCodeLink extends WidgetType {
   constructor(
     readonly target: number,
@@ -75,8 +77,14 @@ function decorations(view: EditorView, words: boolean): DecorationSet {
               ];
         })
       : [];
+    // Whole lines, not the text: the chunk's own background already shows the change.
+    const lines = [];
+    for (let line = view.state.doc.lineAt(from); ; line = view.state.doc.line(line.number + 1)) {
+      lines.push(movedLine.range(line.from));
+      if (line.to >= to - 1 || line.number === view.state.doc.lines) break;
+    }
     return [
-      Decoration.mark({ class: "cm-diffMoved" }).range(from, to),
+      ...lines,
       ...edits,
       Decoration.widget({ widget: new MovedCodeLink(target, line, m.changes.length > 0), side: 1 }).range(
         view.state.doc.lineAt(from).to,
@@ -89,11 +97,7 @@ function decorations(view: EditorView, words: boolean): DecorationSet {
 export const movedCodeHighlights = (words: boolean) => [
   chunkDecorations((view) => decorations(view, words)),
   EditorView.baseTheme({
-    ".cm-diffMoved": {
-      backgroundColor: "color-mix(in srgb, var(--diff-modified) 70%, transparent)",
-      textDecoration: "underline dotted",
-      textUnderlineOffset: "3px",
-    },
+    ".cm-diffMoved": { boxShadow: "inset 3px 0 0 color-mix(in srgb, var(--accent) 70%, transparent)" },
     ".cm-diffMoveEdit-deleted": { backgroundColor: "color-mix(in srgb, var(--diff-deleted) 85%, transparent)" },
     ".cm-diffMoveEdit-inserted": { backgroundColor: "color-mix(in srgb, var(--diff-inserted) 85%, transparent)" },
     ".cm-diffMoveLink": {

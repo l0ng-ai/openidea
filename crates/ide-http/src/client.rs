@@ -57,6 +57,16 @@ pub fn shared() -> IdeResult<reqwest::Client> {
     Ok(client)
 }
 
+/// `url`, with `http://` in front unless it starts with a scheme: a `://` later
+/// on (`localhost:8080/login?next=http://…`) does not count.
+pub(crate) fn with_scheme(url: &str) -> String {
+    let has_scheme = url.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    });
+    if has_scheme { url.to_owned() } else { format!("http://{url}") }
+}
+
 /// HTTP Proxy › Check connection: GETs `url` through `proxy` (the settings as
 /// edited, not yet applied). Any response but `407` counts as connected.
 pub async fn check_connection(proxy: &ProxySettings, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
@@ -64,7 +74,7 @@ pub async fn check_connection(proxy: &ProxySettings, url: &str, cancel: &Cancell
         return Err(IdeError::invalid(problem));
     }
     let url = url.trim();
-    let url = if url.contains("://") { url.to_owned() } else { format!("http://{url}") };
+    let url = with_scheme(url);
     let client = build(proxy)?;
     let request = client.get(&url).timeout(Duration::from_secs(30));
     let response = tokio::select! {

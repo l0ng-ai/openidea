@@ -88,6 +88,24 @@ fn maven_sync_goals(effective: &Path, offline: bool) -> Vec<String> {
     ]
 }
 const GRADLE_CACHE: &str = "gradle.json";
+const MAVEN_PROFILES: &str = "maven-profiles.json";
+
+/// The Maven profiles (`-P` entries, `!id` deactivates) the project was last synced
+/// with: what the IDE resolves it with besides `mvn` (the Java language server, Build Project).
+pub fn maven_profiles(cache_dir: &Path) -> Vec<String> {
+    read_cache(cache_dir, MAVEN_PROFILES).unwrap_or_default()
+}
+
+/// Records the profiles of a sync for [`maven_profiles`]; `true` when they changed.
+pub fn save_maven_profiles(cache_dir: &Path, profiles: &[String]) -> IdeResult<bool> {
+    if maven_profiles(cache_dir) == profiles {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(cache_dir)?;
+    let json = serde_json::to_vec(profiles).map_err(|e| IdeError::internal(e.to_string()))?;
+    std::fs::write(cache_dir.join(MAVEN_PROFILES), json)?;
+    Ok(true)
+}
 
 fn read_cache<T: DeserializeOwned>(dir: &Path, name: &str) -> Option<T> {
     serde_json::from_slice(&std::fs::read(dir.join(name)).ok()?).ok()

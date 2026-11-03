@@ -1,7 +1,8 @@
 /**
  * Live Markdown source for the preview: an editor contribution on Markdown
- * files publishes the document text (debounced while typing) and the first
- * visible line of the editor (for scroll sync), per path.
+ * files publishes the document text (debounced while typing), the first
+ * visible line of the editor (for scroll sync) and caret moves (so a Preview
+ * only preview follows navigation in its hidden editor), per path.
  */
 import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { create } from "zustand";
@@ -17,6 +18,12 @@ export interface LiveMarkdown {
   scrollSeq: number;
   /** The editor's font zoom in px; the preview scales its text by the same amount. */
   fontZoom: number;
+  /** The preview div's own scrollTop, kept so Preview Only survives a remount. */
+  previewTop: number;
+  /** 0-based caret line, set when the caret moves without an edit (navigation). */
+  caretLine: number;
+  /** Bumped with `caretLine`, so going to the same place again still scrolls. */
+  caretSeq: number;
 }
 
 export const useLiveMarkdown = create<Record<string, LiveMarkdown | undefined>>(() => ({}));
@@ -25,9 +32,22 @@ const TEXT_DELAY = 120;
 
 function publish(path: string, patch: Partial<LiveMarkdown>) {
   useLiveMarkdown.setState((s) => {
-    const prev = s[path] ?? { text: "", topLine: 0, scrollSeq: 0, fontZoom: 0 };
+    const prev = s[path] ?? {
+      text: "",
+      topLine: 0,
+      scrollSeq: 0,
+      fontZoom: 0,
+      caretLine: 0,
+      caretSeq: 0,
+      previewTop: 0,
+    };
     return { [path]: { ...prev, ...patch } };
   });
+}
+
+/** Records the preview's own scroll offset, published by the preview's scroll listener. */
+export function publishPreviewTop(path: string, top: number) {
+  publish(path, { previewTop: top });
 }
 
 function topLineOf(view: EditorView): number {
@@ -54,10 +74,18 @@ function livePlugin(path: string) {
         view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
       }
 
+      private publishCaret() {
+        const caretLine = this.view.state.doc.lineAt(this.view.state.selection.main.head).number - 1;
+        publish(path, { caretLine, caretSeq: (useLiveMarkdown.getState()[path]?.caretSeq ?? 0) + 1 });
+      }
+
       update(u: ViewUpdate) {
         const zoom = u.state.field(fontZoom, false) ?? 0;
         if (zoom !== (u.startState.field(fontZoom, false) ?? 0)) publish(path, { fontZoom: zoom });
-        if (!u.docChanged) return;
+        if (!u.docChanged) {
+          if (u.selectionSet) this.publishCaret();
+          return;
+        }
         clearTimeout(this.timer);
         this.timer = setTimeout(() => publish(path, { text: this.view.state.doc.toString() }), TEXT_DELAY);
       }

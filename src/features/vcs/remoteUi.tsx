@@ -95,6 +95,18 @@ export function outgoingQuery(upstream: string | null): { branch: string; range:
   return upstream ? { branch: "HEAD", range: "@{u}..HEAD", limit: 1000 } : { branch: "HEAD", range: null, limit: 50 };
 }
 
+/**
+ * Outgoing commits of one repository in the multi-repository Push dialog. `@{u}` no
+ * longer resolves once the upstream branch was deleted on the remote (the tracking
+ * config remains, `upstream_of` still reports it), so the range query falls back to
+ * recent history and the repository stays in the list, pushable.
+ */
+export async function pushRepoCommits(root: string, branch: BranchInfo): Promise<Commit[]> {
+  if (!branch.head) return [];
+  const q = outgoingQuery(branch.upstream);
+  return logOf(q.branch, q.limit, q.range, root).catch(() => logOf(q.branch, 50, null, root));
+}
+
 export interface PushTarget {
   /** Local branch to push (default: the current one). */
   branch?: string;
@@ -148,13 +160,12 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let alive = true;
-    // A repository that cannot be read (e.g. its upstream branch was deleted) is left out.
+    // A repository whose branch info cannot be read is left out; a deleted upstream
+    // branch falls back to recent history (pushRepoCommits) and stays pushable.
     Promise.allSettled(
       roots.map(async (root) => {
         const branch = await call(commands.vcsBranchInfo(root));
-        const q = outgoingQuery(branch.upstream);
-        const commits = branch.head ? await logOf(q.branch, q.limit, q.range, root) : [];
-        return { root, branch, commits };
+        return { root, branch, commits: await pushRepoCommits(root, branch) };
       }),
     ).then((results) => {
       if (!alive) return;
