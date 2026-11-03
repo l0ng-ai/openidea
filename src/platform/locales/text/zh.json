@@ -5581,5 +5581,11 @@
   "External file changes sync may be slow": "外部文件更改同步可能较慢",
   "recursive": "递归",
   "Java project import failed": "Java 项目导入失败",
-  "The Java project cannot be imported because these files use a name Windows reserves for devices: {paths}. Delete or rename them, then restart the Java language server.": "无法导入 Java 项目，因为这些文件使用了 Windows 保留的设备名：{paths}。请删除或重命名这些文件，然后重启 Java 语言服务器。"
+  "The Java project cannot be imported because these files use a name Windows reserves for devices: {paths}. Delete or rename them, then restart the Java language server.": "无法导入 Java 项目，因为这些文件使用了 Windows 保留的设备名：{paths}。请删除或重命名这些文件，然后重启 Java 语言服务器。",
+  "This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.": "此文件不在所属 Java 模块的源码目录中：只报告语法错误，跳转和补全不可用。",
+  "This file does not belong to an imported Java project: only syntax errors are reported, and navigation and completion don't work.": "此文件不属于已导入的 Java 项目：只报告语法错误，跳转和补全不可用。",
+  "This Go file belongs to no package of the workspace: code insight is limited.": "此 Go 文件不属于工作区中的任何包：代码洞察功能受限。",
+  "This Rust file is not included in any crate: rust-analyzer can't offer code insight for it.": "此 Rust 文件未包含在任何 crate 中：rust-analyzer 无法为它提供代码洞察。",
+  "Reload Maven Projects": "重新加载 Maven 项目",
+  "Reload Gradle Project": "重新加载 Gradle 项目"
 }
