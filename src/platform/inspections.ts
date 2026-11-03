@@ -223,6 +223,9 @@ export interface BuiltinInspection {
 export const SPELLING_PRODUCER = "spelling";
 export const SPELLING_INSPECTION = "builtin:spelling";
 
+/** Syntax errors of the built-in parser, for files no language server checks. */
+export const SYNTAX_ERRORS_PRODUCER = "syntax";
+
 export const DEPENDENCY_PRODUCER = "dependency-versions";
 export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
 
@@ -255,6 +258,15 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     group: "Cargo",
     description: "Reports newer crate versions that Cargo.toml requirements do not already allow.",
     defaultLevel: "weakWarning",
+  },
+  {
+    id: "builtin:syntax",
+    producer: SYNTAX_ERRORS_PRODUCER,
+    name: "Syntax errors",
+    group: "General",
+    description:
+      "Reports code the built-in parser cannot read, in files no language server checks (none is configured for the language, or it is not installed, stopped or crashed). A running language server reports syntax errors itself.",
+    defaultLevel: "error",
   },
   {
     id: "builtin:file-references",
