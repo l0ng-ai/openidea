@@ -18,22 +18,33 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
+import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 
-/** Settings › Tools › Agents (also used by the Settings window). */
+/** Settings › Tools › Agents and Settings › Tools › MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: REGISTRY_PAGE,
-    title: "Agents",
-    group: "Tools",
-    order: 500,
-    keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
-    component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-  });
+  const disposers = [
+    registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Agents",
+      group: "Tools",
+      order: 500,
+      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
+      component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
+    }),
+    registerSettingsPage({
+      id: MCP_PAGE,
+      title: "MCP Servers",
+      group: "Tools",
+      order: 510,
+      keywords: ["mcp", "model context protocol", "servers", "tools", "agent", "copilot", "plugins"],
+      component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
+    }),
+  ];
+  return () => disposers.forEach((d) => d());
 }
 
 export function activate(): () => void {
@@ -124,6 +135,16 @@ export function activate(): () => void {
         icon: "plugin",
         keywords: ["agent", "acp", "registry", "install", "update"],
         run: () => void executeAction("file.settings", REGISTRY_PAGE),
+      },
+      {
+        id: "agents.mcpServers",
+        title: "MCP Servers…",
+        description:
+          "Opens Settings › Tools › MCP Servers: configures User, Workspace, Plugin, and Built-In MCP servers.",
+        category: "Agents",
+        icon: "settings",
+        keywords: ["mcp", "model context protocol", "servers", "tools", "agent", "copilot"],
+        run: () => void executeAction("file.settings", MCP_PAGE),
       },
       {
         id: "agents.sendToAgent",

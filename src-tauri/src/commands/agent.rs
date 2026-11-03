@@ -4,7 +4,7 @@ use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
     AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    NewAgentTask,
+    McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -67,6 +67,39 @@ pub async fn agent_registry_install(
 #[specta::specta]
 pub async fn agent_registry_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
     agent::registry_remove(&state.host, window.label(), id).await
+}
+
+/// Lists configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_list(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_list(&state.host, window.label())
+}
+
+/// Creates or updates a User or Workspace MCP server and returns the updated list.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_save(window: Window, state: State<'_, AppState>, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_save(&state.host, window.label(), input)
+}
+
+/// Enables or disables an MCP server and returns the updated list.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_set_enabled(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_set_enabled(&state.host, window.label(), id, enabled)
+}
+
+/// Removes a User or Workspace MCP server and returns the updated list.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_remove(&state.host, window.label(), id)
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project

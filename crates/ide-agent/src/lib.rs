@@ -10,6 +10,7 @@
 mod acp;
 mod config;
 mod conversation;
+pub mod mcp;
 mod model;
 mod native;
 mod provider;
@@ -331,6 +332,26 @@ impl AgentManager {
         *self.shared.providers.write() = specs;
         self.shared.probes.lock().clear();
         self.shared.emit(AgentEvent::Providers);
+    }
+
+    /// Lists all configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes.
+    pub fn mcp_list(&self) -> Vec<McpServer> {
+        mcp::list_servers(&self.shared.paths, None)
+    }
+
+    /// Creates or updates a User or Workspace MCP server and returns the updated list.
+    pub fn mcp_save(&self, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
+        mcp::save_server(&self.shared.paths, None, input).map_err(IdeError::invalid)
+    }
+
+    /// Enables or disables an MCP server and returns the updated list.
+    pub fn mcp_set_enabled(&self, id: &str, enabled: bool) -> IdeResult<Vec<McpServer>> {
+        mcp::set_server_enabled(&self.shared.paths, None, id, enabled).map_err(IdeError::invalid)
+    }
+
+    /// Removes a User or Workspace MCP server and returns the updated list.
+    pub fn mcp_remove(&self, id: &str) -> IdeResult<Vec<McpServer>> {
+        mcp::remove_server(&self.shared.paths, None, id).map_err(IdeError::invalid)
     }
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
@@ -1193,14 +1214,16 @@ impl Task {
         let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
+        let mcp_servers = mcp::acp_mcp_servers(&self.shared.paths, &cwd, &provider_id, &init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
 
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": [] }), None).await;
+            let loaded: Result<Value, RpcError> = peer
+                .request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers }), None)
+                .await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1213,7 +1236,7 @@ impl Task {
             Some(s) => s,
             None => {
                 let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": [] }), None)
+                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": mcp_servers }), None)
                     .await
                     .map_err(|e| match e {
                         RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {

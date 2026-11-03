@@ -5,8 +5,8 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    NewAgentTask,
+    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentPaths, AgentProbe, AgentPrompt, AgentProvider, AgentQueued,
+    AgentTask, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_tools::InstallEvent;
@@ -183,6 +183,51 @@ pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
 }
 
+fn fallback_mcp_paths(host: &Host) -> AgentPaths {
+    AgentPaths {
+        project_root: std::path::PathBuf::new(),
+        store_dir: host.data_dir.join("agents").join("global"),
+        worktrees_dir: std::path::PathBuf::new(),
+        models_file: host.data_dir.join("agents").join("models.json"),
+        custom_agents_dir: Some(host.config_dir.join("agents")),
+        home_dir: dirs::home_dir(),
+    }
+}
+
+/// Lists configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes.
+pub fn mcp_list(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
+    match host.project(window) {
+        Ok(project) => Ok(project.agents.mcp_list()),
+        Err(_) => Ok(ide_agent::mcp::list_servers(&fallback_mcp_paths(host), None)),
+    }
+}
+
+/// Creates or updates a User or Workspace MCP server and returns the updated list.
+pub fn mcp_save(host: &Host, window: &str, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
+    match host.project(window) {
+        Ok(project) => project.agents.mcp_save(input),
+        Err(_) => ide_agent::mcp::save_server(&fallback_mcp_paths(host), None, input).map_err(IdeError::invalid),
+    }
+}
+
+/// Enables or disables an MCP server and returns the updated list.
+pub fn mcp_set_enabled(host: &Host, window: &str, id: String, enabled: bool) -> IdeResult<Vec<McpServer>> {
+    match host.project(window) {
+        Ok(project) => project.agents.mcp_set_enabled(&id, enabled),
+        Err(_) => {
+            ide_agent::mcp::set_server_enabled(&fallback_mcp_paths(host), None, &id, enabled).map_err(IdeError::invalid)
+        }
+    }
+}
+
+/// Removes a User or Workspace MCP server and returns the updated list.
+pub fn mcp_remove(host: &Host, window: &str, id: String) -> IdeResult<Vec<McpServer>> {
+    match host.project(window) {
+        Ok(project) => project.agents.mcp_remove(&id),
+        Err(_) => ide_agent::mcp::remove_server(&fallback_mcp_paths(host), None, &id).map_err(IdeError::invalid),
+    }
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
@@ -192,6 +237,13 @@ pub(crate) fn register(d: &mut Dispatcher) {
         registry_install(&c.host, &c.window, c.arg("id")?, c.arg("request")?, c.sender("onEvent")?).await
     });
     d.add("agent_registry_remove", |c| async move { registry_remove(&c.host, &c.window, c.arg("id")?).await });
+    d.add("agent_mcp_list", |c| async move { mcp_list(&c.host, &c.window) });
+    d.add("agent_mcp_save", |c| async move { mcp_save(&c.host, &c.window, c.arg("input")?) });
+    d.add(
+        "agent_mcp_set_enabled",
+        |c| async move { mcp_set_enabled(&c.host, &c.window, c.arg("id")?, c.arg("enabled")?) },
+    );
+    d.add("agent_mcp_remove", |c| async move { mcp_remove(&c.host, &c.window, c.arg("id")?) });
     d.add("agent_commands", |c| async move { commands(&c.host, &c.window, c.arg("provider")?, c.arg("task")?).await });
     d.add("agent_entries", |c| async move { entries(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_create", |c| async move { create(&c.host, &c.window, c.arg("request")?).await });
