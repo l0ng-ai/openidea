@@ -53,7 +53,8 @@ pub fn load_linked(
     settings: &ide_core::settings::MavenSettings,
 ) -> BuildModel {
     let maven = maven::is_maven_project(root).then(|| {
-        let mut m = maven::load_with_repo(root, maven_repo.or_else(maven::default_local_repo));
+        let profiles = sync::maven_profiles(cache_dir);
+        let mut m = maven::load_with(root, maven_repo.or_else(maven::default_local_repo), &profiles);
         maven::UnlinkedProjects::from_model(&m, settings).filter(&mut m);
         sync::apply_maven_cache(root, cache_dir, &mut m);
         m
