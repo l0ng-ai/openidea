@@ -365,6 +365,13 @@ impl Host {
                 }),
             )?
         };
+        if let Some(reason) = watcher.polling() {
+            sink.emit(IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Warning,
+                title: "External file changes sync may be slow".into(),
+                body: Some(reason.into()),
+            });
+        }
 
         // Scratch files live outside the project; watch them too so the
         // Project view and open editors follow changes made there.
