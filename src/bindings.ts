@@ -87,6 +87,11 @@ export const commands = {
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**
+	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
+	 */
+	agentSetCommand: (id: string, command: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_command", { id, command })),
+	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 	 */
@@ -499,7 +504,7 @@ export const commands = {
 	 */
 	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
 	/**  Clones a repository (Get from VCS). Works without an open project. */
-	vcsClone: (request: RequestId, url: string, dest: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, onOutput })),
+	vcsClone: (request: RequestId, url: string, dest: string, depth: number | null, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, depth, onOutput })),
 	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
 	/**
@@ -1004,7 +1009,7 @@ export const commands = {
 	remotePath: string,
 	webUrl: string | null,
 } | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
-	deployServerRoot: (server: string) => typedError<string, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
+	deployServerRoot: (server: string) => typedError<DeploymentRoot, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
 	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
 	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
@@ -1114,6 +1119,9 @@ export type AgentCommand = {
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
 };
+
+/**  Why the executable cannot be changed in built-in agent settings. */
+export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
 
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
@@ -1247,6 +1255,15 @@ export type AgentProvider = {
 	name: string,
 	/**  The command line that starts its ACP server. */
 	command: string,
+	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
+	program: string,
+	args: string[],
+	defaultProgram: string | null,
+	defaultArgs: string[],
+	loginHint: string | null,
+	commandOverridden: boolean,
+	commandEditable: boolean,
+	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
@@ -1363,6 +1380,8 @@ export type AppInfo = {
 	version: string,
 	platform: string,
 	configDir: IpcPath,
+	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
+	wayland: boolean,
 };
 
 export type AppMetrics = {
@@ -2485,12 +2504,18 @@ export type DeploymentCoverage = {
 };
 
 export type DeploymentMapping = {
-	/**  Project-relative folder; empty = the project root. */
+	/**  Project-relative folder, or absolute inside the project; empty = the project root. */
 	local?: string,
 	/**  Remote folder, relative to the server root (a leading `/` is the root too). */
 	deployment?: string,
 	/**  Web path, relative to the server's URL. */
 	web?: string,
+};
+
+/**  Resolved root and project mappings of the Remote Host browser. */
+export type DeploymentRoot = {
+	root: string,
+	mappings: ResolvedMapping[],
 };
 
 /**  A deployment filesystem and how project folders map onto it. */
@@ -3046,6 +3071,19 @@ export type ExpressionAt = {
 	hasError: boolean,
 };
 
+/**  A formatter that runs outside the language servers, with its own settings group. */
+export type ExternalFormatter = "prettier" | "oxfmt";
+
+/**  An external formatter (Prettier, oxfmt) and the languages it formats. */
+export type ExternalFormatterSettings = {
+	/**  Empty path: project node_modules, managed installation, then PATH. */
+	path?: string,
+	languages?: string[],
+	/**  Prefer this formatter even when a language server offers formatting. */
+	prefer?: boolean,
+	runOnSave?: boolean,
+};
+
 /**  Tools › External Tools entry. */
 export type ExternalTool = {
 	id?: string,
@@ -3235,6 +3273,8 @@ export type FormatOptions = {
 	tabSize: number,
 	insertSpaces: boolean,
 	onSave?: boolean,
+	/**  External formatter to run whatever the settings select. */
+	tool?: ExternalFormatter | null,
 };
 
 /**  One occurrence of a duplicated code fragment. */
@@ -4071,12 +4111,15 @@ export type LanguageServerSettings_Serialize = {
 export type LanguagesSettings = {
 	python?: PythonSettings,
 	node?: NodeSettings,
+	php?: PhpSettings,
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
-	prettier?: PrettierSettings,
+	prettier?: ExternalFormatterSettings,
+	oxfmt?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
+	markdown?: MarkdownSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -4305,6 +4348,12 @@ export type ManifestDependency = {
 	/**  UTF-16 offsets of the string's contents (quotes excluded). */
 	from: number,
 	to: number,
+};
+
+/**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
+export type MarkdownSettings = {
+	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
+	previewFontSize?: number | null,
 };
 
 export type Markup = {
@@ -4666,6 +4715,11 @@ export type Permission =
 /**  `insert-text`, `replace-selection`. */
 "editor-write";
 
+export type PhpSettings = {
+	/**  `php` CLI executable; empty = the one on `PATH`. */
+	interpreter?: string,
+};
+
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their commands changed: re-fetch `plugin_list`. */
@@ -4825,15 +4879,6 @@ export type PreparedRequest = {
 	url: string,
 	headers: ([string, string])[],
 	body: string | null,
-};
-
-export type PrettierSettings = {
-	/**  Empty path: project node_modules, managed installation, then PATH. */
-	path?: string,
-	languages?: string[],
-	/**  Prefer Prettier even when a language server offers formatting. */
-	prefer?: boolean,
-	runOnSave?: boolean,
 };
 
 /**  Memory of one row of the breakdown. */
@@ -5287,6 +5332,12 @@ export type RequestId = number;
 /**  `git reset` modes offered by Reset Current Branch to Here. */
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
+/**  A mapping resolved by the backend for the Remote Host browser. */
+export type ResolvedMapping = {
+	local: IpcPath,
+	deployment: string,
+};
+
 export type ReviewEvent = "approve" | "requestChanges" | "comment";
 
 /**  A file changed across several commits: its content at `before` ↔ at `after`. */
@@ -5517,6 +5568,8 @@ export type Sdk = {
 
 /**  What [`detect`] looks for. */
 export type SdkKind = "python" | "node" | 
+/**  `php` CLI executables. */
+"php" | 
 /**  npm / pnpm / yarn executables. */
 "packageManager" | "rust" | "go" | "typeScript" | 
 /**  JDK homes. */

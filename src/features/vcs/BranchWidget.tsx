@@ -232,9 +232,11 @@ function OptionsButton({ hasTags }: { hasTags: boolean }) {
 
 /** Entries IDEA puts at the top of the Branches popup while an operation is stopped. */
 export function operationActions(op: InProgress | null, conflicts: number): PopupAction[] {
-  if (!op) return [];
   const out: PopupAction[] = [];
+  // Conflicts are resolved whether or not an operation is stopped: applying a stash, or the
+  // autostash of a pull, leaves them with none in progress.
   if (conflicts) out.push({ id: "vcs.resolveConflicts", label: "Resolve Conflicts…", icon: "warning" });
+  if (!op) return out;
   const ids: Record<InProgress, Array<[string, string]>> = {
     rebase: [
       ["vcs.rebase.continue", "Continue Rebase"],

@@ -3,6 +3,8 @@ import { registerActions } from "@/platform/actions";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Grid } from "./Grid";
+import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
+import { exportData } from "./export";
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -70,5 +72,61 @@ describe("database grid", () => {
       [0, 0, "new"],
       [0, 1, "other"],
     ]);
+  });
+});
+
+describe("large database cells", () => {
+  const full = JSON.stringify({ text: "\u8bf4\u660e text \u6df7\u5408 ".repeat(200_000), tail: "complete" });
+  const columns = [{ name: "payload", type: "jsonb" }];
+
+  it("preserves short values and truncates only beyond the preview limit", () => {
+    for (const value of ["", "hello", "\u4e2d".repeat(CELL_PREVIEW_LIMIT)]) expect(cellPreview(value)).toBe(value);
+    expect(cellPreview(full)).toBe(full.slice(0, CELL_PREVIEW_LIMIT) + "\u2026");
+    expect(cellPreview("a".repeat(999) + "\ud83d\ude00tail")).toBe("a".repeat(999) + "\u2026");
+  });
+
+  it("bounds rendered text while copying and exporting the complete value", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<Grid columns={columns} rowCount={1} value={() => full} />);
+    const cell = screen.getByRole("gridcell");
+    expect(cell.textContent).toBe(cellPreview(full));
+    expect(cell.title).toBe(full.slice(0, 2000));
+    fireEvent.mouseDown(cell, { button: 0 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenCalledWith(full);
+    expect(JSON.parse(exportData("json", { columns, rows: [[full]], table: "big", driver: "postgres" }))).toEqual([
+      { payload: full },
+    ]);
+  });
+
+  it("edits the full large value in a dialog and supports cancel and apply", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={columns} rowCount={1} value={() => full} editable onEdit={onEdit} />);
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor.value).toBe(full);
+    fireEvent.change(editor, { target: { value: full + "changed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: full + "changed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, full + "changed");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps short values in the inline editor and preserves null display", () => {
+    const onEdit = vi.fn();
+    const { rerender } = render(<Grid columns={columns} rowCount={1} value={() => "short"} editable onEdit={onEdit} />);
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    expect(screen.getByRole("textbox").tagName).toBe("INPUT");
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "updated" } });
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    expect(onEdit).toHaveBeenCalledWith(0, 0, "updated");
+    rerender(<Grid columns={columns} rowCount={1} value={() => null} />);
+    expect(screen.getByRole("gridcell").textContent).toBe("<null>");
   });
 });

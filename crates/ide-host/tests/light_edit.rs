@@ -116,7 +116,7 @@ async fn light_windows_stay_restricted_when_folder_trust_changes() {
         "main",
         doc.id,
         None,
-        ide_lsp::types::FormatOptions { tab_size: 2, insert_spaces: true, on_save: false },
+        ide_lsp::types::FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None },
     )
     .await
     .unwrap_err();
