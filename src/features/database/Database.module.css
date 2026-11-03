@@ -292,7 +292,9 @@
 
 /* Inline statement errors in consoles. */
 :global(.cm-openidea-db-error) {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-underline-offset: 3px;
 }
 
