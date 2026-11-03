@@ -307,6 +307,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     let window = WebviewWindowBuilder::from_config(app, &config)
         .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    #[cfg(target_os = "linux")]
+    decorate_csd(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -327,6 +329,17 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         }
     }
     Ok(window)
+}
+
+/// Wayland: tao already makes frameless windows client-side decorated (an empty GTK title bar, so
+/// the compositor adds no frame), but undecorated GTK windows get no shadow or resize margin.
+/// Decorating keeps that empty title bar, so GTK adds the theme's shadow and resize edges and
+/// nothing else. X11 has no such title bar: decorating there would bring back the WM frame.
+#[cfg(target_os = "linux")]
+fn decorate_csd(window: &WebviewWindow) {
+    if crate::linux_window_state::is_wayland() {
+        let _ = window.set_decorations(true);
+    }
 }
 
 /// Sets the saved IDE zoom before the page loads; applied later by the frontend,
@@ -800,13 +813,19 @@ pub fn open_settings_window(
     #[cfg(target_os = "linux")]
     crate::linux_window_state::prepare(app, &mut config);
     let builder = WebviewWindowBuilder::from_config(app, &config);
-    // AppKit child windows can disappear when dragged to another display's Space.
-    // The settings label already tracks ownership and parent-close cleanup.
-    #[cfg(not(target_os = "macos"))]
+    // Windows: an owned child (WS_POPUP) of a borderless parent gets no DWM
+    // shadow, leaving the frameless settings window flat against its parent.
+    // Ownership is tracked by the `settings-<parent>` label instead
+    // (parent-close cleanup, menu modality), so only Linux keeps the native
+    // parent link. AppKit child windows can disappear when dragged to another
+    // display's Space, so macOS keeps it too.
+    #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
     let window = builder
         .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
+    #[cfg(target_os = "linux")]
+    decorate_csd(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -887,7 +906,12 @@ pub(super) fn place_settings_window(window: &WebviewWindow, parent: &WebviewWind
     let size = parent.outer_size()?.to_logical::<f64>(scale);
     let own_scale = window.scale_factor()?;
     let own = window.outer_size()?.to_logical::<f64>(own_scale);
-    let inner = window.inner_size()?.to_logical::<f64>(own_scale);
+    // On Wayland, the frame is GTK's CSD shadow margin, which tao's inner size includes.
+    #[cfg(target_os = "linux")]
+    let inner = crate::linux_window_state::content_size(&window.as_ref().window())?;
+    #[cfg(not(target_os = "linux"))]
+    let inner = window.inner_size()?;
+    let inner = inner.to_logical::<f64>(own_scale);
     let frame = (own.width - inner.width, own.height - inner.height);
     let bounds = fit_bounds(
         (pos.x, pos.y, size.width, size.height),

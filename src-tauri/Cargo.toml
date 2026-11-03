@@ -79,6 +79,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # Used only by the debug font-restriction override; Cargo dependency cfg cannot test debug_assertions.
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration", "WKPreferences"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Wayland detection and the client size without GTK's CSD shadow (linux_window_state.rs).
+gtk = "0.18"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

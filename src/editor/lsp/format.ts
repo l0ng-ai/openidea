@@ -161,7 +161,7 @@ async function format(
   }
   view.dispatch({
     changes,
-    userEvent: "format",
+    userEvent: "format.reformat",
     annotations: isolateHistory.of("full"),
     scrollIntoView: false,
   });
@@ -235,7 +235,12 @@ function applyContributedFormat(
     if (opts.explicit) showHint(view, "No lines changed: content is already properly formatted");
     return NOTHING;
   }
-  view.dispatch({ changes, userEvent: "format", annotations: isolateHistory.of("full"), scrollIntoView: false });
+  view.dispatch({
+    changes,
+    userEvent: "format.reformat",
+    annotations: isolateHistory.of("full"),
+    scrollIntoView: false,
+  });
   return { applied: true, changes: changes.length, lines: formattedLines(state.doc, changes) };
 }
 
