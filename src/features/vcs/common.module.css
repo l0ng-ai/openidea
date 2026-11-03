@@ -125,6 +125,24 @@
   flex-direction: column;
   padding: 0 14px 14px;
 }
+/* Push dialogs: the outgoing commits' changed files below the commits, the diff beside them. */
+.pushChanges {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pushChanges .comparison {
+  height: min(360px, 45vh);
+  padding: 0 14px 14px;
+}
+.pushChangesTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0 14px 6px;
+  color: var(--fg-subtle);
+}
 .todoList {
   margin: 8px 0 0;
   padding-left: 18px;
