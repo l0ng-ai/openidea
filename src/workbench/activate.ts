@@ -15,7 +15,7 @@ import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
 import { installFileDrop } from "./fileDrop";
 import { installFocusTracking } from "./focus";
-import { clearNotifications, installNotifyEvents, notificationServiceImpl } from "./notificationStore";
+import { clearProjectNotifications, installNotifyEvents, notificationServiceImpl } from "./notificationStore";
 import {
   NOTIFICATIONS_TOOL_WINDOW,
   NotificationsHeaderActions,
@@ -51,7 +51,7 @@ export function activateWorkbench(): () => void {
   const unsubProject = useProject.subscribe((s, prev) => {
     if (s.project?.root === prev.project?.root && s.lightEdit === prev.lightEdit) return;
     // The previous project's notifications (and their actions) no longer apply.
-    if (prev.project) clearNotifications();
+    if (prev.project) clearProjectNotifications();
     onProject(s.project?.root ?? null);
   });
 
