@@ -64,11 +64,18 @@ class OverviewLane {
   private lastKey = "";
   /** The last pointer position over the editor, to re-check the thumb when it scrolls. */
   private pointer: { x: number; y: number } | null = null;
+  /**
+   * The scrollbar thumb drawn over the marks: the native one sits under the lane, so a mark
+   * the height of the lane (a new file) would hide it (#1014).
+   */
+  private thumb: HTMLElement;
 
   constructor(private view: EditorView) {
     this.dom = document.createElement("div");
     this.dom.className = "cm-openidea-overview";
     this.dom.setAttribute("aria-hidden", "true");
+    this.thumb = document.createElement("div");
+    this.thumb.className = "cm-openidea-overviewThumb";
     this.dom.addEventListener("mousedown", this.onMouseDown);
     view.dom.addEventListener("mousemove", this.onPointerMove);
     view.dom.addEventListener("mouseleave", this.onPointerLeave);
@@ -153,7 +160,29 @@ class OverviewLane {
         c.className = "cm-openidea-overviewCaret";
         c.style.top = `${caret}${unit}`;
         frag.appendChild(c);
+        frag.appendChild(this.thumb);
         this.dom.replaceChildren(frag);
+      },
+    });
+    this.scheduleThumb();
+  }
+
+  private scheduleThumb() {
+    this.view.requestMeasure({
+      key: this.thumb,
+      read: (view) => {
+        const s = view.scrollDOM;
+        const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
+        // The lane starts at the top of the editor, the scrollbar at the top of the scroller.
+        const offset = s.getBoundingClientRect().top - this.dom.getBoundingClientRect().top;
+        // Inset by the thumb's 2px transparent border (global.css).
+        return thumb && { top: thumb.top + offset + 2, height: thumb.bottom - thumb.top - 4 };
+      },
+      write: (thumb) => {
+        this.thumb.style.display = thumb ? "" : "none";
+        if (!thumb) return;
+        this.thumb.style.top = `${thumb.top}px`;
+        this.thumb.style.height = `${thumb.height}px`;
       },
     });
   }
@@ -187,6 +216,7 @@ class OverviewLane {
   };
 
   private onScroll = () => {
+    this.scheduleThumb();
     if (this.pointer) this.updateThumbPassThrough();
   };
 
@@ -218,4 +248,7 @@ class OverviewLane {
   }
 }
 
-export const overviewLane: Extension = ViewPlugin.fromClass(OverviewLane);
+export const overviewLane: Extension = [
+  ViewPlugin.fromClass(OverviewLane),
+  EditorView.editorAttributes.of({ class: "cm-openidea-withOverview" }),
+];
