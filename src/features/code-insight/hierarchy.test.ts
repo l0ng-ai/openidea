@@ -54,6 +54,8 @@ const callHierarchy = vi.fn((): { items: HierarchyItem[]; incomplete: References
   incomplete: null,
 }));
 const cancelRequest = vi.fn(async () => undefined);
+// The positions a hierarchy request is answered at; anything else is "no symbol".
+let servedAt = (pos: { line: number; col: number }) => pos.line === 2 && pos.col === 7;
 
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
@@ -66,7 +68,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       cancelRequest,
       lspCallHierarchy: async (_request: number, _doc: number, pos: { line: number; col: number }) => {
         // The server prepares a hierarchy only on the method name.
-        if (pos.line !== 2 || pos.col !== 7) throw new real.IpcError({ kind: "notFound", message: "No symbol" });
+        if (!servedAt(pos)) throw new real.IpcError({ kind: "notFound", message: "No symbol" });
         return callHierarchy();
       },
     },
@@ -83,6 +85,7 @@ vi.mock("./ipc", async (orig) => ({
 const {
   enclosingDeclaration,
   hierarchyTarget,
+  loadChildren,
   refreshHierarchy,
   resetHierarchy,
   showHierarchy,
@@ -142,5 +145,25 @@ describe("hierarchy", () => {
     resetHierarchy();
     expect(cancelRequest).toHaveBeenCalledTimes(1);
     answer({ items: [item("stale")], incomplete: null });
+  });
+
+  it("keeps a caller that repeats an ancestor a recursion leaf", async () => {
+    servedAt = () => true; // `main` calls itself: every level answers with the same item.
+    try {
+      useHierarchy.setState({ mode: "call", direction: "incoming" });
+      await showHierarchy("call");
+      const [top] = useHierarchy.getState().children.get(ROOT_ID) ?? [];
+      expect(top?.item.name).toBe("main");
+      expect(top?.recursion).toBeUndefined();
+      await loadChildren(top!);
+      const nested = useHierarchy.getState().children.get(top!.id)?.[0];
+      expect(nested?.item.name).toBe("main");
+      expect(nested?.recursion).toBe(true);
+      // The leaf carries no expandable children, so the tree never requests it again.
+      expect(useHierarchy.getState().children.get(nested!.id)).toEqual([]);
+      expect(useHierarchy.getState().failed.size).toBe(0);
+    } finally {
+      servedAt = (pos) => pos.line === 2 && pos.col === 7;
+    }
   });
 });

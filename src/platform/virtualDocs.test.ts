@@ -19,6 +19,15 @@ describe("virtual document URIs", () => {
     expect(virtualName(JDT)).toBe("SpringApplication.class");
     expect(virtualParent(JDT)).toBe("jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot");
     expect(virtualContainer(JDT)).toBe("spring-boot-4.1.1.jar › org.springframework.boot");
+    // `jar:` targets (official Kotlin LSP, sources jars), in both URI forms.
+    for (const prefix of ["jar:///", "jar:file:///"])
+      expect(
+        virtualContainer(
+          `${prefix}home/me/.m2/repository/spring-boot-3.5.16-sources.jar!/org/springframework/boot/SpringApplicationExtensions.kt`,
+        ),
+      ).toBe("spring-boot-3.5.16-sources.jar › org.springframework.boot");
+    expect(virtualContainer("jar:///tmp/my%20libs/a.jar!/Root.class")).toBe("a.jar");
+    expect(virtualName("jar:///tmp/a.jar!/org/x/Y.class")).toBe("Y.class");
   });
 
   it("makes path helpers URI-aware", () => {

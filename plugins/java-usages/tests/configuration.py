@@ -200,6 +200,33 @@ try:
     warm = []
     for _ in range(20):
         start = time.perf_counter(); query('app.time-out'); warm.append(time.perf_counter() - start)
+    # The snapshot stays warm across editor activity that cannot change it:
+    # opening/closing another file, a full build, and an edit once it is saved.
+    generation = query('app.time-out')['generation']
+    other = source_dir / 'demo/NotSpring.java'
+    other_text = other.read_text()
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': other.as_uri(), 'languageId': 'java', 'version': 1, 'text': other_text}}})
+    assert query('app.time-out')['generation'] == generation, 'opening an editor rebuilt the index'
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didClose', 'params': {'textDocument': {'uri': other.as_uri()}}})
+    request('java/buildWorkspace', True)
+    assert query('app.time-out')['generation'] == generation, 'closing an editor or building rebuilt the index'
+    saved_text = other_text + '// saved\n'
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': other.as_uri(), 'languageId': 'java', 'version': 1, 'text': other_text}}})
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didChange', 'params': {'textDocument': {'uri': other.as_uri(), 'version': 2}, 'contentChanges': [{'text': saved_text}]}})
+    other.write_text(saved_text)
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didSave', 'params': {'textDocument': {'uri': other.as_uri()}}})
+    after_save = query('app.time-out')['generation']
+    assert query('app.time-out')['generation'] == after_save, 'a saved editor keeps rebuilding the index'
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didClose', 'params': {'textDocument': {'uri': other.as_uri()}}})
+    after_close = query('app.time-out')['generation']
+    assert query('app.time-out')['generation'] == after_close
+    # A source added on disk still invalidates it.
+    added = write('demo/Added.java', 'package demo; @org.springframework.boot.context.properties.ConfigurationProperties("added") class Added { int size; }')
+    send({'jsonrpc': '2.0', 'method': 'workspace/didChangeWatchedFiles', 'params': {'changes': [{'uri': added.as_uri(), 'type': 1}]}})
+    deadline = time.monotonic() + 30
+    while not query('added.size')['locations']:
+        assert time.monotonic() < deadline, 'a new source on disk did not reach the index'
+        time.sleep(0.2)
     # Unsaved changes must replace old keys, and closing must restore disk keys.
     changed = source.replace('prefix="app"', 'prefix="edited"').replace('${app.time-out:30}', '${edited.timeout:30}')
     send({'jsonrpc': '2.0', 'method': 'textDocument/didChange', 'params': {'textDocument': {'uri': file.as_uri(), 'version': 2}, 'contentChanges': [{'text': changed}]}})
@@ -211,7 +238,7 @@ try:
     send({'jsonrpc': '2.0', 'method': 'textDocument/didClose', 'params': {'textDocument': {'uri': file.as_uri()}}})
     restored = query('app.nested.url')
     assert restored['locations'], restored
-    evidence = {'stress': os.environ.get('OPENIDEA_CONFIGURATION_STRESS') == '1', 'editRebuildMs': edit_ms, 'cases': results, 'warmMedianMs': sorted(warm)[len(warm)//2] * 1000, 'warmMaxMs': max(warm) * 1000}
+    evidence = {'stress': os.environ.get('OPENIDEA_CONFIGURATION_STRESS') == '1', 'editRebuildMs': edit_ms, 'cases': results, 'warmMedianMs': sorted(warm)[len(warm)//2] * 1000, 'warmMaxMs': max(warm) * 1000, 'generations': [generation, after_save, after_close]}
     (work / 'evidence.json').write_text(json.dumps(evidence, indent=2))
     print(json.dumps(evidence, indent=2))
 finally:

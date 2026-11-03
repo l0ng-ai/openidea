@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-libra
 import { afterEach } from "vitest";
 import type { ShelvedChangeList } from "@/bindings";
 
-const mocks = vi.hoisted(() => ({ openDiff: vi.fn(), execute: vi.fn(), ipc: vi.fn(), patch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ openDiff: vi.fn(), execute: vi.fn(), ipc: vi.fn(), patch: vi.fn(), probe: vi.fn() }));
 vi.mock("../diffInput", async (original) => ({
   ...(await original<typeof import("../diffInput")>()),
   openDiff: mocks.openDiff,
@@ -19,13 +19,16 @@ vi.mock("@/platform/ipc", async (original) => ({
     ...(await original<typeof import("@/platform/ipc")>()).commands,
     vcsShelves: () => Promise.resolve(null),
     vcsShelfDiff: () => Promise.resolve(null),
-    fsProbe: () => Promise.resolve(null),
+    fsProbe: mocks.probe,
     vcsShelfPatch: mocks.patch,
+    vcsUnshelve: () => Promise.resolve(null),
   },
 }));
-import { ShelfPanel, copyShelfPatch, shelfDiffs, shelfTarget, showShelfDiff, useShelf } from "../shelf";
+import { ShelfPanel, copyShelfPatch, shelfDiffs, shelfTarget, showShelfDiff, unshelve, useShelf } from "../shelf";
 import { useCommit } from "../commitStore";
 import { useVcs } from "../store";
+import { useChangelists } from "../changelists";
+import { VcsDialogHost } from "../dialogs";
 import { ContextMenuHost } from "@/ui";
 import { registerVcsActions } from "../actions";
 import { getAction, isActionKeyEnabled } from "@/platform/actions";
@@ -37,6 +40,7 @@ const entry: ShelvedChangeList = {
   name: "Work",
   timeMs: 0,
   branch: null,
+  repo: null,
   files: [
     { path: "a.txt", kind: "modified", oldPath: null },
     { path: "b.txt", kind: "added", oldPath: null },
@@ -51,7 +55,7 @@ const diffs = [
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.patch.mockResolvedValue(null);
-  useVcs.setState({ root: "/repo" });
+  useVcs.setState({ root: "/repo", roots: [], repo: null, available: false, status: [] });
   useCommit.setState({ selectedShelf: "work\u0000a.txt" });
   useShelf.setState({ shelves: [entry], loaded: true, diffs: { work: diffs } });
   mocks.ipc.mockResolvedValueOnce([entry]).mockResolvedValue(diffs);
@@ -102,6 +106,64 @@ describe("shelf scope and diffs", () => {
     mocks.ipc.mockRejectedValue(new Error("missing"));
     await showShelfDiff({ id: "work", path: "a.txt" }, true);
     expect(mocks.openDiff).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ["same root", "/repo", ["/repo"], "/repo", "src/a.txt", "/repo/src/a.txt"],
+    ["项目A under a non-git project", "/project", ["/project/项目A"], null, "src/a.txt", "/project/项目A/src/a.txt"],
+    [
+      "second repo with the same file name",
+      "/project",
+      ["/project/A", "/project/B"],
+      "/project/B",
+      "src/a.txt",
+      "/project/B/src/a.txt",
+    ],
+    ["project below the repo", "/repo/subproject", ["/repo"], null, "src/a.txt", "/repo/src/a.txt"],
+    [
+      "Windows stored separators",
+      "C:/project",
+      ["C:/project/项目A"],
+      "C:/project/项目A",
+      "src\\a.txt",
+      "C:/project/项目A/src/a.txt",
+    ],
+  ])("maps saved and local diffs to the owning repo: %s", async (_name, root, roots, repo, path, expected) => {
+    useVcs.setState({ root, roots, repo: roots[0] ?? null });
+    useShelf.setState({
+      shelves: [{ ...entry, repo }],
+      diffs: { work: [{ path, before: "base", after: "shelved", patch: "patch" }] },
+    });
+    expect(shelfDiffs({ id: "work" })[0]?.path).toBe(expected);
+    mocks.ipc.mockReset().mockImplementation(async () => {
+      if (mocks.probe.mock.lastCall?.[0] !== expected) throw new Error("wrong local file");
+      return { binary: false };
+    });
+    await showShelfDiff({ id: "work" }, true);
+    expect(mocks.probe).toHaveBeenLastCalledWith(expected);
+    expect(mocks.openDiff).toHaveBeenCalledWith(expect.objectContaining({ path: expected }), { preview: true });
+  });
+  it("keeps legacy shelves on the primary repo after selecting another repo", () => {
+    useVcs.setState({ root: "/project", roots: ["/project/A", "/project/B"], repo: "/project/B" });
+    expect(shelfDiffs({ id: "work", path: "a.txt" }, true)[0]?.path).toBe("/project/A/a.txt");
+  });
+  it.each([
+    ["/project", "/project/项目A", "src/a.txt", "项目A/src/a.txt"],
+    ["/repo/subproject", "/repo", "src/a.txt", "/repo/src/a.txt"],
+    ["C:/project", "C:/project/项目A", "src\\a.txt", "项目A/src/a.txt"],
+  ])("assigns unshelved paths to the project changelist from %s", async (root, repo, path, expected) => {
+    useVcs.setState({ root, roots: [repo] });
+    useChangelists.setState({
+      loaded: false,
+      state: { lists: [{ id: "target", name: "Target", comment: "" }], active: "target", files: {} },
+    });
+    mocks.ipc
+      .mockReset()
+      .mockResolvedValueOnce({ applied: [path], conflicts: [] })
+      .mockResolvedValue([]);
+    render(<VcsDialogHost />);
+    act(() => unshelve({ ...entry, repo }));
+    fireEvent.click(screen.getByRole("button", { name: "Unshelve" }));
+    await waitFor(() => expect(useChangelists.getState().state.files).toEqual({ [expected]: "target" }));
   });
   it("copies only the selected file patch through the scoped patch command", async () => {
     const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard");
