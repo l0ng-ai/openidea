@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { getCM, Vim } from "@replit/codemirror-vim";
@@ -135,6 +135,67 @@ describe("Vim engine", () => {
     expect(cm.state.vim?.insertMode).toBe(false);
     Vim.handleKey(cm as never, "v", "user");
     expect(useVimMode.getState().mode).toBe("visual");
+    view.destroy();
+  });
+});
+
+describe("Normal-mode IME composition guard", () => {
+  const DOC = "one two\nthree";
+
+  const compose = (type: string, view: EditorView) =>
+    view.contentDOM.dispatchEvent(new CompositionEvent(type, { bubbles: true }));
+
+  /** Runs every input handler the way CM6 does; returns the first one that claimed the input. */
+  const runInput = (view: EditorView, text: string): boolean => {
+    const { from, to } = view.state.selection.main;
+    const insert = () => view.state.update(view.state.replaceSelection(text), { userEvent: "input.type" });
+    return view.state.facet(EditorView.inputHandler).some((h) => h(view, from, to, text, insert));
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("swallows composition output in Normal mode, pinyin letters and the commit alike", () => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    compose("compositionstart", view);
+    expect(runInput(view, "j")).toBe(true); // A pinyin letter must not run the motion.
+    expect(runInput(view, "nihao")).toBe(true); // Candidates must not reach the document.
+    expect(runInput(view, "你好")).toBe(true); // Nor the commit.
+    expect(view.state.doc.toString()).toBe(DOC);
+    expect(view.state.selection.main.head).toBe(0);
+    expect(cm.state.vim?.insertMode).toBe(false);
+    view.destroy();
+  });
+
+  it("keeps Insert-mode composition output flowing to the document", () => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    Vim.handleKey(cm as never, "i", "user");
+    compose("compositionstart", view);
+    const insert = () => view.state.update(view.state.replaceSelection("你好"), { userEvent: "input.type" });
+    expect(runInput(view, "你好")).toBe(false); // Handlers leave it to CM6's default insert.
+    view.dispatch(insert());
+    expect(view.state.doc.toString()).toBe(`你好${DOC}`);
+    view.destroy();
+  });
+
+  it("keeps guarding a commit that lands just after compositionend, then stands down", () => {
+    const view = makeView();
+    const clock = vi.spyOn(Date, "now");
+    compose("compositionstart", view);
+    compose("compositionend", view);
+    expect(runInput(view, "你好")).toBe(true);
+    clock.mockReturnValue(Date.now() + 500);
+    expect(runInput(view, "你好")).toBe(false); // Ordinary input again: nothing to swallow.
+    expect(view.state.doc.toString()).toBe(DOC);
+    view.destroy();
+  });
+
+  it("leaves the package's own \\0\\0 end-composition marker to it", () => {
+    const view = makeView();
+    compose("compositionstart", view);
+    expect(runInput(view, "\0\0")).toBe(true); // Claimed by the package, not swallowed silently.
+    expect(view.state.doc.toString()).toBe(DOC);
     view.destroy();
   });
 });

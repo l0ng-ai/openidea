@@ -25,6 +25,44 @@ const escapeClosesPopupsFirst = EditorView.domEventHandlers({
   },
 });
 
+/**
+ * IME output in Normal mode must not reach the document: while candidates are
+ * composing, the browser feeds every intermediate string through the input
+ * handlers, and the vim package treats single characters as key presses (so
+ * pinyin letters run motions) but lets longer text fall through to a plain
+ * insert (#1056). Swallow composition-driven input — single characters
+ * included — outside Insert mode; a commit can arrive just after
+ * `compositionend` (WebKit), hence the short grace window. The package's own
+ * `\0\0` end-composition marker and everything in Insert mode stay its.
+ */
+const composition = new WeakMap<EditorView, { active: boolean; endedAt: number }>();
+const COMPOSE_GRACE_MS = 100;
+
+const normalModeImeGuard = [
+  EditorView.domEventHandlers({
+    compositionstart: (_e, view) => {
+      composition.set(view, { active: true, endedAt: 0 });
+      return false;
+    },
+    compositionend: (_e, view) => {
+      const st = composition.get(view);
+      if (st) {
+        st.active = false;
+        st.endedAt = Date.now();
+      }
+      return false;
+    },
+  }),
+  EditorView.inputHandler.of((view, _from, _to, text) => {
+    if (text === "\0\0") return false; // The package's own end-composition marker.
+    const cm = getCM(view);
+    const vim = cm?.state.vim;
+    if (!vim || vim.insertMode || cm.curOp?.isVimOp) return false;
+    const st = composition.get(view);
+    return !!st && (st.active || Date.now() - st.endedAt <= COMPOSE_GRACE_MS);
+  }),
+];
+
 const modeTracker = ViewPlugin.define((view) => {
   const cm = getCM(view);
   let state: VimModeState = { mode: cm?.state.vim?.insertMode ? "insert" : "normal", sub: null };
@@ -74,7 +112,7 @@ const vimTheme = EditorView.theme({
 export function vimExtension(): Extension {
   defineExCommands();
   return [
-    Prec.highest([escapeClosesPopupsFirst, vim(), modeTracker]),
+    Prec.highest([escapeClosesPopupsFirst, ...normalModeImeGuard, vim(), modeTracker]),
     vimTheme,
     EditorView.editorAttributes.of({ [VIM_EDITOR_ATTR]: "true" }),
   ];
