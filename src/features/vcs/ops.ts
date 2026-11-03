@@ -188,6 +188,7 @@ export async function runRemote(
     // repositories that have nothing to pull from (detached HEAD, e.g. submodules; no upstream).
     const failures: string[] = [];
     const updated: UpdatedRange[] = [];
+    const pushed: Array<{ to: string; commits: number }> = [];
     for (const repo of repos) {
       const name = repos.length > 1 && repo ? repoName(repo) : null;
       if (name) logConsole("info", name);
@@ -200,6 +201,12 @@ export async function runRemote(
       }
       try {
         const before = op.op === "pull" || op.op === "pullFrom" ? await headCommit(repo) : null;
+        // The push summary counts what the push carries: the commits the branch is
+        // ahead of its upstream before the push (pushing does not move the local head).
+        if (op.op === "push" || (op.op === "pushBranch" && !op.target)) {
+          const info = await call(commands.vcsBranchInfo(repo)).catch(() => null);
+          if (info?.upstream && info.ahead > 0) pushed.push({ to: info.upstream, commits: info.ahead });
+        }
         await call(commands.vcsRemote(repo, request, op, channel));
         const after = before ? await headCommit(repo) : null;
         if (before && after && before !== after) updated.push({ repo, from: before, to: after });
@@ -212,14 +219,17 @@ export async function runRemote(
     if (failures.length) throw new Error(failures.join("\n"));
     lastRemoteError = null;
     if (op.op === "pull" || op.op === "pullFrom") await notifyUpdated(updated);
-    else
+    else {
+      // One repository's push names what went out; a partial multi-repo push stays generic.
+      const one = pushed.length === 1 ? pushed[0] : null;
       notifications().notify({
         group: "vcs",
         level: "info",
         key: "vcs.remote",
-        title: `${doneTitle} successful`,
+        title: one ? pushedTitle(one.commits, one.to) : `${doneTitle} successful`,
         body: lastLine && !/%/.test(lastLine) ? lastLine : undefined,
       });
+    }
     return true;
   } catch (e) {
     const cancelled = isCancelled(e);
@@ -257,6 +267,10 @@ const headCommit = (repo: string | null) =>
   );
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** "Pushed 3 commits to origin/main", translated per count. */
+const pushedTitle = (n: number, to: string) =>
+  n === 1 ? tx`Pushed ${n} commit to ${to}` : tx`Pushed ${n} commits to ${to}`;
 
 /** IDEA's Update Project result: "N files updated in M commits" with View Commits. */
 async function notifyUpdated(updated: readonly UpdatedRange[]) {
