@@ -281,6 +281,23 @@ fn hex_color(hex: &str) -> Option<Color> {
     serde_json::from_value(serde_json::Value::String(hex.to_owned())).ok()
 }
 
+/// Tao sets the small window icon, while Windows uses the big icon for the taskbar.
+#[cfg(target_os = "windows")]
+fn set_windows_taskbar_icon(window: &WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ICON_BIG, ICON_SMALL, SendMessageW, WM_GETICON, WM_SETICON};
+
+    if let Ok(hwnd) = window.hwnd() {
+        // The small icon is owned by the window's Tao state and stays valid for its lifetime.
+        unsafe {
+            let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+            let icon = SendMessageW(hwnd, WM_GETICON, ICON_SMALL as usize, 0);
+            if icon != 0 {
+                SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon);
+            }
+        }
+    }
+}
+
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
@@ -303,6 +320,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     let window = WebviewWindowBuilder::from_config(app, &config)
         .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    #[cfg(target_os = "windows")]
+    set_windows_taskbar_icon(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -803,6 +822,8 @@ pub fn open_settings_window(
     let window = builder
         .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
+    #[cfg(target_os = "windows")]
+    set_windows_taskbar_icon(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
