@@ -142,3 +142,13 @@ export function previewOffsetForLine(
   const t = Math.min(1, (line - a.line) / Math.max(1, nextLine - a.line));
   return a.top + t * (nextTop - a.top);
 }
+
+/** Source line of the block at the top of a preview scrolled to `offset`: the first one if none is above it. */
+export function previewLineAtOffset(blocks: ReadonlyArray<{ line: number; top: number }>, offset: number): number {
+  let line = blocks[0]?.line ?? 0;
+  for (const b of blocks) {
+    if (b.top > offset + 1) break;
+    line = b.line;
+  }
+  return line;
+}

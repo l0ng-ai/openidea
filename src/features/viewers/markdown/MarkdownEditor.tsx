@@ -1,7 +1,9 @@
 /**
  * Text editor wrapper of Markdown files: the editor, a live preview, or both
  * side by side, switched from the tab strip or a floating toolbar. The
- * preview follows the editor's scroll position in the split layout.
+ * preview follows the editor's scroll position in the split layout; Preview
+ * only, it follows navigation in the hidden editor and reports the line on
+ * screen (Structure's Autoscroll from Source).
  */
 import {
   useDeferredValue,
@@ -20,11 +22,18 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
-import { useLiveMarkdown } from "./live";
+import { setPreviewLine, useLiveMarkdown } from "./live";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
-import { ANCHOR_PREFIX, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
+import {
+  ANCHOR_PREFIX,
+  previewLineAtOffset,
+  previewOffsetForLine,
+  renderMarkdown,
+  resolveLink,
+  slugify,
+} from "./render";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -74,17 +83,29 @@ export function MarkdownEditor({
   );
 }
 
+const blocksOf = (root: HTMLElement) =>
+  [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
+    line: Number(el.dataset.line),
+    top: el.offsetTop,
+  }));
+
 function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const text = useLiveMarkdown((s) => s[path]?.text);
   const fontZoom = useLiveMarkdown((s) => s[path]?.fontZoom ?? 0);
   const topLine = useLiveMarkdown((s) => s[path]?.topLine ?? 0);
   const scrollSeq = useLiveMarkdown((s) => s[path]?.scrollSeq ?? 0);
+  const caretLine = useLiveMarkdown((s) => s[path]?.caretLine ?? 0);
+  const caretSeq = useLiveMarkdown((s) => s[path]?.caretSeq ?? 0);
   const deferred = useDeferredValue(text ?? "");
   const html = useMemo(() => renderMarkdown(deferred), [deferred]);
   const ref = useRef<HTMLDivElement>(null);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
   const [diagramsDrawn, setDiagramsDrawn] = useState(0);
+  const seenCaret = useRef(caretSeq);
+  /** scrollTop set by navigation, whose scroll event isn't the user's. */
+  const scrolledTo = useRef<number | null>(null);
+  const scrollFrame = useRef(0);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
   useLayoutEffect(() => {
@@ -137,12 +158,38 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root || !sync) return;
-    const blocks = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
-      line: Number(el.dataset.line),
-      top: el.offsetTop,
-    }));
-    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks, topLine, root.scrollHeight);
+    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocksOf(root), topLine, root.scrollHeight);
   }, [html, topLine, scrollSeq, sync, diagramsDrawn]);
+
+  // Preview only: go where the hidden editor's caret was sent (Structure, Go to Symbol…).
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root || caretSeq === seenCaret.current) return;
+    seenCaret.current = caretSeq;
+    if (sync) return;
+    root.scrollTop = previewOffsetForLine(blocksOf(root), caretLine, root.scrollHeight);
+    scrolledTo.current = root.scrollTop;
+    setPreviewLine(path, caretLine);
+  }, [caretSeq, caretLine, sync, path]);
+
+  // Preview only: the line on screen when shown, then as the user scrolls.
+  useEffect(() => {
+    const root = ref.current;
+    if (root && !sync) setPreviewLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+  }, [sync, path]);
+  useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
+
+  const onScroll = () => {
+    const root = ref.current;
+    if (!root || sync || scrollFrame.current) return;
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = 0;
+      const own = scrolledTo.current !== null && Math.abs(root.scrollTop - scrolledTo.current) < 1;
+      if (own) return;
+      scrolledTo.current = null;
+      setPreviewLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+    });
+  };
 
   const onClick = (e: MouseEvent) => {
     const a = (e.target as Element).closest("a");
@@ -171,6 +218,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       role="document"
       aria-label={tx("Markdown preview")}
       onClick={onClick}
+      onScroll={onScroll}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
