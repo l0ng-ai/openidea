@@ -18,7 +18,8 @@ use std::time::SystemTime;
 
 pub use words::{MIN_WORD_CHARS, WordSpan, words};
 
-/// Where a region's words come from; strings and comments understand escapes.
+/// Where a region's words come from; strings understand escapes, comments and
+/// prose skip backslash commands (`\brief`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegionKind {
     Comment,
