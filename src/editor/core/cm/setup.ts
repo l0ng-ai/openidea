@@ -154,8 +154,10 @@ export function hardWrapAt(settings: EditorSettings | undefined, info: LanguageI
   return (info && style.languages[info.id]?.hardWrapAt) || style.hardWrapAt;
 }
 
-export function indentExtension(indent: EffectiveIndent): Extension {
+/** `format`: the indent Reformat Code asks for (see `formatIndentFacet`); `null` keeps the editor's. */
+export function indentExtension(indent: EffectiveIndent, format: EffectiveIndent | null = null): Extension {
   return [
+    formatIndentFacet.of(format),
     EditorState.tabSize.of(indent.tabSize),
     indentUnit.of(indent.insertSpaces ? " ".repeat(Math.max(1, indent.indentSize ?? indent.tabSize)) : "\t"),
   ];
@@ -308,6 +310,8 @@ export interface SetupOptions {
   docLength: number;
   /** Effective indentation of the document (detected / overridden); computed when absent. */
   indent?: EffectiveIndent;
+  /** Indentation for Reformat Code (`formatIndentFacet`); the editor's when absent. */
+  formatIndent?: EffectiveIndent | null;
   /** Soft wraps toggled for this file (View › Active Editor › Soft-Wrap). */
   wrapOverride?: boolean | null;
   /** Extra extensions owned by the slot (update listeners, focus handlers). */
@@ -369,7 +373,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     keymap.of([...closeBracketsKeymap, ...editorBaseKeymap, indentWithTab]),
     compartments.language.of(o.language ?? []),
     compartments.comments.of(commentTokens(o.info, o.ctx.language)),
-    compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info))),
+    compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info), o.formatIndent)),
     compartments.readOnly.of(readOnlyExtension(o.ctx.readOnly)),
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),
     compartments.sticky.of(stickyExtension(o.settings)),

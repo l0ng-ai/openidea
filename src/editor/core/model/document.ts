@@ -49,7 +49,6 @@ import {
   effectiveIndent,
   foldingFor,
   fontExtension,
-  formatIndentFacet,
   heavyExtension,
   indentExtension,
   lineNumbersExtension,
@@ -443,7 +442,7 @@ export class DocModel {
     const indent = this.effectiveIndent();
     this.setMeta({ indent: { tabSize: indent.tabSize, insertSpaces: indent.insertSpaces } });
     const effects = [
-      compartments.indent.reconfigure([indentExtension(indent), formatIndentFacet.of(this.formatIndent())]),
+      compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
       compartments.sticky.reconfigure(stickyExtension(editor)),
       compartments.font.reconfigure(fontExtension(editor)),
