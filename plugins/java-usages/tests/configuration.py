@@ -131,6 +131,13 @@ name = {'Darwin': 'config_mac', 'Windows': 'config_win'}.get(platform.system(), 
 names = ([name + '_arm'] if platform.machine().lower() in ('arm64', 'aarch64') else []) + [name]
 (config / 'config.ini').write_bytes(next(home / n / 'config.ini' for n in names if (home / n / 'config.ini').exists()).read_bytes())
 log = (work / 'stderr.log').open('w')
+if os.environ.get('OPENIDEA_CONFIGURATION_STRESS') == '1':
+    for number in range(10):
+        extra = work / f'z-warmup-{number}'
+        (extra / 'src').mkdir(parents=True)
+        (extra / '.project').write_text(f'<projectDescription><name>z-warmup-{number}</name><buildSpec/><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>')
+        (extra / '.classpath').write_text('<classpath><classpathentry kind="src" path="src"/><classpathentry kind="output" path="bin"/></classpath>')
+
 proc = subprocess.Popen(['java', '-Declipse.application=org.eclipse.jdt.ls.core.id1', '-Dosgi.bundles.defaultStartLevel=4', '-Declipse.product=org.eclipse.jdt.ls.core.product', '-Xmx1G', '--add-modules=ALL-SYSTEM', '--add-opens', 'java.base/java.util=ALL-UNNAMED', '--add-opens', 'java.base/java.lang=ALL-UNNAMED', '-jar', str(next((home / 'plugins').glob('org.eclipse.equinox.launcher_*.jar'))), '-configuration', str(config), '-data', str(work / 'metadata')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
 messages = queue.Queue()
 lock = threading.Lock()
@@ -177,12 +184,44 @@ try:
     send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': file.as_uri(), 'languageId': 'java', 'version': 1, 'text': source}}})
     request('java/buildWorkspace', True)
     assert 'openidea.java.configuration' in init['capabilities']['executeCommandProvider']['commands'], init
-    results = {}
+    preferred_configs = [(project / 'application.yml').as_uri()]
+    if os.environ.get('OPENIDEA_CONFIGURATION_STRESS') == '1':
+        preferred_configs.append((work / 'z-warmup-9' / 'application.yml').as_uri())
+    def warmup(action='start'):
+        return request('workspace/executeCommand', {'command': 'openidea.java.configuration.warmup', 'arguments': [action, preferred_configs]})
+    # Queuing is cheap and idempotent; no foreground configuration query has run.
+    queued_at = time.perf_counter()
+    queued = warmup()
+    queue_seconds = time.perf_counter() - queued_at
+    assert not queued['completed'] and not queued['active'], queued
+    assert queued['scheduled'] and queued['pending'] > 0, queued
+    repeated = warmup()
+    assert repeated['pending'] == queued['pending'], (queued, repeated)
+    cancel_warmup = os.environ.get('OPENIDEA_CONFIGURATION_CANCEL_WARMUP') == '1'
+    if cancel_warmup:
+        cancelled = warmup('cancel')
+        assert not cancelled['scheduled'] and cancelled['pending'] == 0, cancelled
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        warmed = warmup('status')
+        if not warmed['scheduled']: break
+        time.sleep(.1)
+    assert not warmed['scheduled'], warmed
+    assert bool(warmed['completed']) != cancel_warmup, warmed
+    assert len(warmed['completed']) <= 8, warmed
+    if not cancel_warmup and os.environ.get('OPENIDEA_CONFIGURATION_STRESS') == '1':
+        assert '=z-warmup-9' in warmed['completed'], 'open configuration module lost priority to alphabetically earlier modules'
+    assert warmup()['pending'] == 0, 'duplicate readiness requeued completed modules'
+    results = {'prewarm': {'queueSeconds': queue_seconds, 'seconds': time.perf_counter() - queued_at, 'response': warmed}}
     for key in ['app', 'vendor', 'app.time-out', 'app.enabled', 'app.inherited', 'app.nested.url', 'app.clients[0].url', 'app.routes.east.url', 'app.tags[0]', 'app.labels.region', 'app.labels[region.name]', 'constructor.remote-name', 'record.name', 'bean.url', 'app.backup', 'app.required', 'vendor.port', 'extra.url']:
         start = time.perf_counter()
         result = query(key)
         results[key] = {'seconds': time.perf_counter() - start, 'response': result}
         assert result['locations'], (key, result)
+    if not cancel_warmup:
+        assert results['app']['response']['buildId'] in warmed['completed'].values(), ('first navigation rebuilt prewarmed index', results['app'], warmed)
+    cancelled = warmup('cancel')
+    assert not cancelled['scheduled'] and cancelled['pending'] == 0, cancelled
     attached = request('java/classFileContents', {'uri': results['vendor.port']['response']['locations'][0]['uri']})
     assert attached and 'LibrarySettings' in attached and 'port' in attached, attached
     if spring_jar:
@@ -231,6 +270,7 @@ try:
     unrelated = query('app.inherited')
     assert unrelated['buildId'] == stable, ('unrelated edit rebuilt index', stable, unrelated)
     send({'jsonrpc': '2.0', 'method': 'textDocument/didChange', 'params': {'textDocument': {'uri': base_file.as_uri(), 'version': 2}, 'contentChanges': [{'text': base_source.replace('inherited', 'renamed')} ]}})
+    request('textDocument/documentSymbol', {'textDocument': {'uri': base_file.as_uri()}})
     renamed = query('app.renamed')
     assert renamed['locations'] and renamed['buildId'] != stable, ('dependent unsaved edit not indexed', renamed)
     assert not query('app.inherited')['locations']
@@ -240,13 +280,22 @@ try:
     # contents changed. Restoring the dependency must restore inherited targets.
     classpath = project / '.classpath'
     original_classpath = classpath.read_text()
-    classpath.write_text(original_classpath.replace('<classpathentry kind="src" path="/configuration-base"/>', ''))
-    send({'jsonrpc': '2.0', 'method': 'workspace/didChangeWatchedFiles', 'params': {'changes': [{'uri': classpath.as_uri(), 'type': 2}]}})
-    request('java/buildWorkspace', True)
+    def change_classpath(text):
+        classpath.write_text(text)
+        send({'jsonrpc': '2.0', 'method': 'workspace/didChangeWatchedFiles', 'params': {'changes': [{'uri': classpath.as_uri(), 'type': 2}]}})
+        # Watched-file notifications schedule an asynchronous classpath update.
+        # buildWorkspace alone is not a barrier for that update.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            message = messages.get(timeout=max(1, deadline - time.monotonic()))
+            transcript.append(message)
+            if message.get('method') == 'language/eventNotification' and message['params'].get('eventType') == 100:
+                if message['params'].get('data', '').rstrip('/').endswith('/project'): break
+        else: raise AssertionError('JDT did not report the classpath update')
+        request('java/buildWorkspace', True)
+    change_classpath(original_classpath.replace('<classpathentry kind="src" path="/configuration-base"/>', ''))
     assert not query('app.inherited')['locations'], 'removed source dependency left stale targets'
-    classpath.write_text(original_classpath)
-    send({'jsonrpc': '2.0', 'method': 'workspace/didChangeWatchedFiles', 'params': {'changes': [{'uri': classpath.as_uri(), 'type': 2}]}})
-    request('java/buildWorkspace', True)
+    change_classpath(original_classpath)
     assert query('app.inherited')['locations'], 'restored source dependency was not indexed'
     stable = query('app.time-out')['buildId']
     warm = []

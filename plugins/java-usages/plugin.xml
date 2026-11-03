@@ -6,6 +6,7 @@
     </delegateCommandHandler>
     <delegateCommandHandler class="ai.openidea.configuration.ConfigurationCommand">
       <command id="openidea.java.configuration"/>
+      <command id="openidea.java.configuration.warmup"/>
     </delegateCommandHandler>
   </extension>
 </plugin>

@@ -29,7 +29,11 @@ pub fn parse_release(release: &str) -> Option<u32> {
     let v = line.trim().trim_matches('"');
     let mut parts = v.split(['.', '_', '-', '+']);
     let first: u32 = parts.next()?.parse().ok()?;
-    if first == 1 { parts.next()?.parse().ok() } else { Some(first) }
+    if first == 1 {
+        parts.next()?.parse().ok()
+    } else {
+        Some(first)
+    }
 }
 
 /// The JDK at `home`, if it is one (a `release` file and `bin/java`).
@@ -580,7 +584,11 @@ fn parse_java_version(v: &str) -> Option<u32> {
     let v = v.trim().trim_matches(['"', '\'']);
     let mut parts = v.split('.');
     let first: u32 = parts.next()?.trim().parse().ok()?;
-    if first == 1 { parts.next()?.trim().parse().ok() } else { Some(first) }
+    if first == 1 {
+        parts.next()?.trim().parse().ok()
+    } else {
+        Some(first)
+    }
 }
 
 #[cfg(test)]
@@ -1173,7 +1181,7 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.2.1.jar");
+    let extension = data_dir.join("java-usages-1.2.2.jar");
     let bytes = include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         clean_usages_bundles(data_dir, &extension);

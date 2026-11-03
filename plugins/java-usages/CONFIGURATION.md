@@ -57,8 +57,26 @@ modules, skips nested independent modules and build output, and honors ignore
 files for disk discovery. It does not guess a global association from matching
 text in unrelated projects.
 
-Indexing is lazy. The first explicit navigation/search builds a compact snapshot;
-ordinary typing, code-lens probes and bulk scoped reference analysis do not start indexing. At most eight project snapshots are
+Trusted projects with a root Maven/Gradle/Eclipse build marker start Java after
+an idle startup delay, even without a Java editor open. After JDT reports
+ServiceReady and compiler defaults have been applied, the app queues configuration
+prewarming. A low-priority, system Eclipse job waits for workspace builds, then
+warms one imported Java project at a time, preferring modules with open YAML/properties files, then open Java
+buffers. Duplicate readiness notifications do not repeat completed work.
+
+The queue holds at most 64 modules; each attempt has a cooperative 30-second
+budget. It stops adding indexes at the existing retention limits and never evicts
+an index to make room for background work. Large workspaces beyond those limits,
+standalone source roots without a build marker, and failed/cancelled warmups keep
+on-demand navigation. No cache is persisted across sessions. Closing the project
+shuts down its server and work queue; untrusted projects do not start Java.
+
+Index builds use cancellable per-project locks: a lookup in the same project can
+reuse the background build, while another project does not wait for its scan.
+The shared cache lock only protects publication/eviction, not parsing. Automatic
+warmup does not run a build or search each configuration key; it prepares the same
+compact snapshot as navigation. Ordinary typing, code-lens probes and bulk scoped
+reference analysis do not start additional indexing. At most eight project snapshots are
 retained, with a shared 100,000-association retention cap. Records contain property names, element handles and source locations;
 ASTs and bindings are discarded after indexing. A lexical prefilter avoids AST
 construction for ordinary Java units, but every accepted association is resolved
@@ -82,8 +100,7 @@ click when its own server task finishes; that answer is not cached.
 Errors and empty results are not retained in the shared target cache. A local
 hover marker may briefly remember a missing target (one second) to avoid flooding
 servers on mouse moves. Late answers from an invalidated generation cannot
-navigate or repopulate the cache. These caches are per window and bounded; there
-is no eager workspace scan or new background indexer.
+navigate or repopulate the cache. These caches are per window and bounded; the background warmup shares the same server-side index and bounds.
 
 Metadata/JAR timestamps are checked before reuse. The client caches parsed disk
 configuration files by modification time and size (at most 100,000 cached keys), overlays open buffers, and
@@ -94,7 +111,7 @@ Bounds: 20,000 Java units, 100,000 associations per snapshot, 2 MiB per candidat
 metadata/configuration file (Java source: 2M UTF-16 units), 1,024-character property names, 2,000 configuration files/results, 50,000 filesystem
 entries per root, and depth limits on recursive bindings/YAML. Java requests and
 references are cancellable. File/association scan limits and unreadable files carry the
-existing incomplete-result indicator; unsupported syntax keys are omitted. First navigation can take seconds on a
+existing incomplete-result indicator; unsupported syntax keys are omitted. Navigation before prewarm completes can still take seconds on a
 cold project; classpath import and source download remain owned by JDT LS.
 
 ## Deliberate limits

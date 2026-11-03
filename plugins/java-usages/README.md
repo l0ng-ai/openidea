@@ -57,7 +57,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.2.1.jar`, and added alongside existing initialization bundles.
+`java-usages-1.2.2.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -73,6 +73,10 @@ Version 1.2.0 adds the configuration command; its reproducible SHA-256 is
 Version 1.2.1 scopes configuration-index invalidation to source dependencies and
 adds bounded key-match reuse; its reproducible SHA-256 is
 `be557ff0718bbc045e005f427531f94b3fb6925358c82fa6cc19ba17d5ae011d`.
+
+Version 1.2.2 adds bounded background configuration prewarming and per-project
+index builds; its reproducible SHA-256 is
+`bc2ecba7ff0f59f9cc6a69cb0c70864486c8ba92c597226cb577e94b5b778a7e`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

@@ -8,11 +8,11 @@ use ide_lsp::types::*;
 use ide_lsp::{LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 // ------------------------------------------------------------------ mock server
@@ -1334,12 +1334,11 @@ async fn navigation_rename_format_and_decorations() {
         h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
-    assert!(
-        h.mgr
-            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
-            .await
-            .is_err()
-    );
+    assert!(h
+        .mgr
+        .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+        .await
+        .is_err());
 
     s.respond("textDocument/semanticTokens/full", json!({ "data": [0, 3, 3, 0, 1, 1, 0, 3, 0, 0] }));
     let tokens = h.mgr.semantic_tokens(doc).await.unwrap().unwrap();
@@ -1726,22 +1725,21 @@ async fn class_file_opening_routes_sources_and_binary_documents() {
     ]));
     let archive = Some((PathBuf::from("/m2/lib.jar"), "p/Outer$1.class".into()));
     assert_eq!(h.mgr.java_class_file(Path::new("/m2/lib.jar!/p/Outer$1.class"), archive).await.unwrap(), jdt);
-    assert!(
-        h.mgr
-            .java_class_file(
-                Path::new("/other/lib.jar!/p/Outer.class"),
-                Some(("/other/lib.jar".into(), "p/Outer.class".into()))
-            )
-            .await
-            .is_err()
-    );
+    assert!(h
+        .mgr
+        .java_class_file(
+            Path::new("/other/lib.jar!/p/Outer.class"),
+            Some(("/other/lib.jar".into(), "p/Outer.class".into()))
+        )
+        .await
+        .is_err());
 
     let sources = h.root.join("src/main/java");
     std::fs::create_dir_all(sources.join("p")).unwrap();
     let source = sources.join("p/Outer.java");
     std::fs::write(&source, "package p; class Outer {} ").unwrap();
     s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
-    s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
+    s.respond("workspace/executeCommand", json!({ "org.eclipse.jdt.ls.core.sourcePaths": [sources] }));
     for class in ["Outer", "Outer$Nested", "Outer$1"] {
         let path = h.root.join(format!("target/classes/p/{class}.class"));
         let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
@@ -2723,7 +2721,7 @@ async fn gopls_interactive_command_validates_before_execution_and_applies_edits(
             let reply: Value = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(s.peer().request(
                     "workspace/applyEdit",
-                    json!({"edit": edit}),
+                    json!({ "edit": edit }),
                     None,
                 ))
             })
@@ -3004,4 +3002,52 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
     let result = h.mgr.goto(doc, Pos::new(0, 2), GotoKind::Definition).await.unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_prewarm_starts_java_without_an_open_editor_and_waits_for_import() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration.warmup"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    h.mgr.prewarm_java_configuration();
+    h.mgr.prewarm_java_configuration();
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let config = h.root.join("application.yml");
+    h.mgr.did_open(DocId::next(), &config, &LanguageId::new("yaml"), 1, "app: {}\n");
+    s.peer().notify("language/status", json!({"type": "ServiceReady"})).unwrap();
+    eventually(|| {
+        s.requested("workspace/executeCommand").iter().any(|p| p["command"] == "openidea.java.configuration.warmup")
+    })
+    .await;
+    let requests = s.requested("workspace/executeCommand");
+    let warmup = requests.iter().find(|p| p["command"] == "openidea.java.configuration.warmup").unwrap();
+    assert_eq!(warmup["arguments"], json!(["start", [uri_of(&config)]]));
+    assert!(s.notified("textDocument/didOpen").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_prewarm_respects_trust_shutdown_and_non_java_roots() {
+    let mut fixtures = Vec::new();
+    for mode in ["untrusted", "closed", "non-java"] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        if mode != "non-java" {
+            std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+        }
+        if mode == "untrusted" {
+            h.mgr.set_execution_allowed(false);
+        }
+        h.mgr.prewarm_java_configuration();
+        if mode == "closed" {
+            h.mgr.shutdown_all().await;
+        }
+        fixtures.push(h);
+    }
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    for h in fixtures {
+        assert_eq!(h.launcher.state("jdtls").launches.load(Ordering::SeqCst), 0);
+    }
 }

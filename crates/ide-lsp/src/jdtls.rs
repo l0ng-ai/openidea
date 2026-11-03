@@ -5,12 +5,12 @@
 //! jdtls is started on demand for the module, so a run configuration works
 //! without a Java editor open.
 
-use crate::LspManager;
 use crate::server::{Running, Server};
+use crate::LspManager;
 use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use specta::Type;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -325,12 +325,68 @@ impl LspManager {
         Ok(changed)
     }
 
+    /// Start Java in trusted build-root projects during idle startup, so configuration
+    /// navigation can warm after import even when no Java editor has been opened.
+    pub fn prewarm_java_configuration(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        self.runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let Some(mgr) = weak.upgrade() else { return };
+            if mgr.shutting_down.load(std::sync::atomic::Ordering::Acquire)
+                || !mgr.execution_allowed.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            let root = mgr.project_root.clone();
+            let java_project = tokio::task::spawn_blocking(move || {
+                ["pom.xml", "build.gradle", "build.gradle.kts", ".classpath"]
+                    .iter()
+                    .any(|name| root.join(name).is_file())
+            })
+            .await
+            .unwrap_or(false);
+            if java_project {
+                for server in mgr.servers_for(&LanguageId::new("java"), &mgr.project_root) {
+                    if server.name == SERVER {
+                        mgr.ensure_started(&server);
+                    }
+                }
+            }
+        });
+    }
+
     pub(crate) fn java_import_ready(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let mgr = self.clone();
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
             if let Err(e) = mgr.java_configure_compiler(&server, &run).await {
                 tracing::warn!("jdtls: cannot apply compiler defaults: {e}");
+            }
+            // The extension only queues bounded, low-priority work; this request
+            // never waits for the configuration index itself to be built.
+            const WARMUP: &str = "openidea.java.configuration.warmup";
+            if server.running_gen(generation).is_some()
+                && run.caps.read().commands().iter().any(|command| command == WARMUP)
+            {
+                let preferred: Vec<_> = mgr
+                    .docs
+                    .lock()
+                    .values()
+                    .filter(|doc| matches!(doc.language.as_str(), "yaml" | "properties"))
+                    .map(|doc| doc.uri.to_string())
+                    .collect();
+                let result = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    run.peer.request::<_, Value>(
+                        "workspace/executeCommand",
+                        json!({"command": WARMUP, "arguments": ["start", preferred]}),
+                        None,
+                    ),
+                )
+                .await;
+                if !matches!(result, Ok(Ok(_))) {
+                    tracing::debug!("jdtls: configuration warmup unavailable; retaining on-demand navigation");
+                }
             }
         });
     }
@@ -696,7 +752,7 @@ mod tests {
         for wrapped in [false, true] {
             let mut cfg = java_config();
             let settings = json!({"java": {"project": {"referencedLibraries": ["vendor/*.jar"]}}});
-            cfg.settings = Some(if wrapped { json!({"settings": settings}) } else { settings });
+            cfg.settings = Some(if wrapped { json!({ "settings": settings }) } else { settings });
             configure_source_paths(&mut cfg, Some(vec!["custom".into()]));
             let settings = crate::handler::all_settings(&cfg);
             assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["vendor/*.jar"]));
