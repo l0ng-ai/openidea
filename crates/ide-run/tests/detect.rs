@@ -738,12 +738,14 @@ fn php_phpunit_project() {
         ),
         ("phpunit.xml.dist", "<phpunit/>"),
         ("vendor/bin/phpunit", ""),
+        ("vendor/bin/phpunit.bat", ""),
     ]);
     let c = detect(dir.path());
     // PHPUnit comes before the generic `composer test` so it is the default test runner.
     assert_eq!(ids(&c), ["composer:lint", "phpunit", "composer:test"]);
     let phpunit = find(&c, "phpunit");
-    assert_eq!(cmdline(phpunit), "vendor/bin/phpunit");
+    // Windows runs the `.bat` launcher; the extensionless file is a shebang script.
+    assert_eq!(cmdline(phpunit), if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" });
     assert_eq!(phpunit.kind, "phpunit");
     assert!(phpunit.is_test);
     assert_eq!(phpunit.debug_adapter.as_deref(), Some("php-debug"));
