@@ -1235,6 +1235,71 @@ async fn open_java_files_are_checked_again_after_a_project_update() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
+    use std::io::Write;
+    let jar = |path: &Path, entries: &[(&str, &str)]| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, text) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    };
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path().join("org/springframework/boot/spring-boot/3.5.16");
+    let source = "package org.springframework.boot\n\ninline fun <reified T : Any> runApplication(vararg args: String) =\n    SpringApplication.run(T::class.java, *args)\n";
+    jar(
+        &dir.join("spring-boot-3.5.16.jar"),
+        &[("org/springframework/boot/SpringApplicationExtensionsKt.class", "\u{0}")],
+    );
+    jar(
+        &dir.join("spring-boot-3.5.16-sources.jar"),
+        &[("org/springframework/boot/SpringApplicationExtensions.kt", source)],
+    );
+    let other = repo.path().join("acme/lib/1.0/lib-1.0.jar");
+    jar(&other, &[("acme/Thing.class", "\u{0}")]);
+    let jar_uri = |jar: &Path, entry: &str| format!("jar://{}!/{entry}", uri_of(jar).trim_start_matches("file://"));
+    let r = |l: u32, c0: u32, c1: u32| json!({"start":{"line":l,"character":c0},"end":{"line":l,"character":c1}});
+
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["decompile"] });
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", caps)], &[]);
+    let (doc, _) = h.open("Main.kt", "fun main(args: Array<String>) {\n    runApplication<App>(*args)\n}\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let s = h.launcher.state("kotlin-lsp");
+
+    // A class with a cached sources jar: navigation lands on the declaration in its source.
+    let class =
+        jar_uri(&dir.join("spring-boot-3.5.16.jar"), "org/springframework/boot/SpringApplicationExtensionsKt.class");
+    s.respond("textDocument/definition", json!({ "uri": class, "range": r(7, 43, 57) }));
+    let defs = h.mgr.goto(doc, Pos::new(1, 8), GotoKind::Definition).await.unwrap();
+    let sources =
+        jar_uri(&dir.join("spring-boot-3.5.16-sources.jar"), "org/springframework/boot/SpringApplicationExtensions.kt");
+    assert_eq!(
+        defs,
+        vec![ide_core::Location { path: sources.clone().into(), range: rng(2, 29, 2, 43), uri: Some(sources.clone()) }]
+    );
+    let vd = h.mgr.virtual_document(&sources).await.unwrap();
+    assert_eq!((vd.text.as_str(), vd.title.as_str(), vd.decompiled), (source, "SpringApplicationExtensions.kt", false));
+    assert_eq!(vd.language_id.as_str(), "kotlin");
+    // The class URI itself (from usages, say) shows the same source.
+    assert_eq!(h.mgr.virtual_document(&class).await.unwrap().text, source);
+    assert!(s.requested("workspace/executeCommand").is_empty(), "no server round trip for cached sources");
+
+    // No sources jar: the server's `decompile` command.
+    let thing = jar_uri(&other, "acme/Thing.class");
+    s.respond("textDocument/definition", json!({ "uri": thing, "range": r(0, 6, 11) }));
+    let defs = h.mgr.goto(doc, Pos::new(1, 8), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].uri.as_deref(), Some(thing.as_str()), "kept as the server returned it");
+    s.respond("workspace/executeCommand", json!({ "code": "package acme\n\nclass Thing", "language": "kotlin" }));
+    let vd = h.mgr.virtual_document(&thing).await.unwrap();
+    assert_eq!(vd.text, "package acme\n\nclass Thing");
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0], json!({ "command": "decompile", "arguments": [thing] }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
