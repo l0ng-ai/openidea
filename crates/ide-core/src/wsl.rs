@@ -48,7 +48,7 @@ pub fn is_valid_distro(name: &str) -> bool {
 /// and its error messages, UTF-8 for what a command inside the distro prints.
 pub fn decode_output(raw: &[u8]) -> String {
     if raw.starts_with(&[0xff, 0xfe]) || raw.get(1) == Some(&0) {
-        let units: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let units: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
         String::from_utf16_lossy(&units)
     } else {
         String::from_utf8_lossy(raw).into_owned()
@@ -77,10 +77,10 @@ pub fn list_distros() -> Vec<String> {
         let mut cmd = std::process::Command::new(EXE);
         cmd.args(["-l", "-q"]);
         crate::process::prepare(&mut cmd);
-        return match cmd.output() {
+        match cmd.output() {
             Ok(out) if out.status.success() => parse_distro_list(&out.stdout),
             _ => Vec::new(),
-        };
+        }
     }
     #[cfg(not(windows))]
     Vec::new()
