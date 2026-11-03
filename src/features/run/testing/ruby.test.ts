@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseAll, withTestReporting, frameworkFor } from "./index";
 import { TestResults, nodeStatus } from "./results";
-import { rubyParser } from "./ruby";
+import { RubyTestOutput, rubyParser } from "./ruby";
 
 // Captured from `ruby -Ilib test/mixed_test.rb -v --seed 1` (Minitest 6.0.6).
 const MINITEST = `Run options: -v --seed 1
@@ -123,5 +123,100 @@ describe("Ruby test reporting", () => {
   it("is the framework of Ruby configurations", () => {
     expect(frameworkFor(cfg("ruby", "ruby", []))).toBe("ruby");
     expect(frameworkFor(cfg("rake", "bundle", ["exec", "rake", "test"]))).toBe("ruby");
+  });
+});
+
+// Captured from a run with the IDE's reporter (Minitest 6.0.6): records end with their own newline, so the
+// progress dots stay on one line once they are taken out.
+const M = "@@OPENIDEA@@";
+const F = "/p/test/mixed_test.rb";
+const REPORTER_STREAM = [
+  "# Running:",
+  "",
+  `${M}{"t":"start","c":"MixedTest","n":"test_pass","f":"${F}","l":4}`,
+  `.${M}{"t":"result","c":"MixedTest","n":"test_pass","s":"passed","d":0.000063,"f":"${F}","l":4,"m":""}`,
+  `${M}{"t":"start","c":"MixedTest","n":"test_fail","f":"${F}","l":5}`,
+  `F${M}{"t":"result","c":"MixedTest","n":"test_fail","s":"failed","d":0.000054,"f":"${F}","l":5,"m":"Expected: 4\\n  Actual: 3"}`,
+  `${M}{"t":"start","c":"MixedTest","n":"test_prints","f":"${F}","l":8}`,
+  "hello from test",
+  `.${M}{"t":"result","c":"MixedTest","n":"test_prints","s":"passed","d":0.000007,"f":"${F}","l":8,"m":""}`,
+  `${M}{"t":"start","c":"MixedTest","n":"test_skip","f":"${F}","l":7}`,
+  `S${M}{"t":"result","c":"MixedTest","n":"test_skip","s":"skipped","d":0.000006,"f":"${F}","l":7,"m":"later"}`,
+  "",
+  `${M}{"t":"summary","runs":4,"failures":1,"errors":0,"skips":1,"d":0.0011}`,
+  "Finished in 0.001124s",
+  "",
+].join("\n");
+
+describe("the IDE's Minitest reporter", () => {
+  const collect = (chunks: string[]) => {
+    const lines: string[] = [];
+    const out = new RubyTestOutput((line) => lines.push(line));
+    const text = chunks.map((c) => out.feed(c)).join("") + out.end();
+    return { text, records: lines.filter((l) => l.includes(M)), lines };
+  };
+
+  it("takes the records out of the console, exactly as Minitest prints them without it", () => {
+    const { text, records } = collect([REPORTER_STREAM]);
+    expect(text).toBe("# Running:\n\n.Fhello from test\n.S\nFinished in 0.001124s\n");
+    expect(records).toHaveLength(9);
+    expect(records.every((r) => r.includes(M))).toBe(true);
+  });
+
+  it("is the same however the output is cut into chunks", () => {
+    const whole = collect([REPORTER_STREAM]);
+    const chars = collect(REPORTER_STREAM.split(""));
+    const odd = collect(REPORTER_STREAM.match(/[\s\S]{1,7}/g)!);
+    expect(chars).toEqual(whole);
+    expect(odd).toEqual(whole);
+  });
+
+  it("drops a record cut off by the end of the process, not the text before it", () => {
+    expect(collect([`abc${M}{"t":"sta`]).text).toBe("abc");
+    expect(collect(["no marker @@OPEN"]).text).toBe("no marker @@OPEN\n");
+  });
+
+  describe("results", () => {
+    const parser = rubyParser();
+    const results = new TestResults();
+    for (const l of collect([REPORTER_STREAM]).lines) results.apply(parser.feed(l));
+    // The console's own text arrives too: the same results, printed.
+    for (const l of ["MixedTest#test_pass = 0.00 s = .", "1 runs, 1 assertions, 0 failures, 0 errors, 0 skips"])
+      results.apply(parser.feed(l));
+    const node = (name: string) => results.get(["MixedTest", name].join("\u0000"))!;
+
+    it("builds the tree with statuses, times and failure text", () => {
+      expect(nodeStatus(node("test_pass"))).toBe("passed");
+      expect(nodeStatus(node("test_fail"))).toBe("failed");
+      expect(nodeStatus(node("test_skip"))).toBe("skipped");
+      expect(node("test_fail").output).toEqual(["Expected: 4", "  Actual: 3"]);
+      expect(node("test_pass").durationMs).toBeCloseTo(0.063, 3);
+    });
+
+    it("gives every test its real file and line, passed or not", () => {
+      for (const [name, line] of [
+        ["test_pass", 4],
+        ["test_fail", 5],
+        ["test_prints", 8],
+        ["test_skip", 7],
+      ] as const)
+        expect(node(name).location).toEqual({ path: F, line, resolve: "path" });
+    });
+
+    it("summarises from the reporter, and ignores the repeated text", () => {
+      expect(results.summary).toMatchObject({ passed: 2, failed: 1, skipped: 1 });
+      expect(results.get("MixedTest")!.children).toHaveLength(4);
+    });
+  });
+
+  it("a real location replaces the place to search for", () => {
+    const results = new TestResults();
+    results.apply(parseAll(rubyParser(), "MixedTest#test_pass = 0.00 s = ."));
+    const id = ["MixedTest", "test_pass"].join("\u0000");
+    expect(results.get(id)!.location?.resolve).toBe("rubyTest");
+    results.apply([
+      { type: "location", path: ["MixedTest", "test_pass"], location: { path: F, line: 4, resolve: "path" } },
+    ]);
+    expect(results.get(id)!.location).toEqual({ path: F, line: 4, resolve: "path" });
   });
 });

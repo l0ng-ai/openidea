@@ -15,7 +15,7 @@
  * 7 runs, 5 assertions, 1 failures, 1 errors, 1 skips
  * ```
  */
-import { parseDuration, type TestEvent, type TestOutputParser, type TestStatus } from "./types";
+import { parseDuration, TestStdout, type TestEvent, type TestOutputParser, type TestStatus } from "./types";
 
 // A class may be a spec description with spaces (`Spec style#test_0001_works`).
 const RESULT_RE = /^(.+?)#(\S+) = ([\d.]+ s) = ([.FES])$/;
@@ -44,7 +44,81 @@ const located = (path: string[]): TestEvent => ({
   location: { path: path[1]!, className: path[0], resolve: "rubyTest" },
 });
 
+/** Starts a record of the IDE's own Minitest reporter (`ide-run/src/ruby_reporter`); a JSON object follows. */
+export const RECORD_MARK = "@@OPENIDEA@@";
+
+interface ReporterRecord {
+  t: "start" | "result" | "summary";
+  c?: string;
+  n?: string;
+  s?: "passed" | "failed" | "skipped";
+  /** Seconds. */
+  d?: number | null;
+  f?: string | null;
+  l?: number | null;
+  m?: string;
+  runs?: number;
+  failures?: number;
+  errors?: number;
+  skips?: number;
+}
+
+/** What a reporter record says: the test's real file and line, its status, time and failure text. */
+function fromRecord(json: string): TestEvent[] {
+  let r: ReporterRecord;
+  try {
+    r = JSON.parse(json) as ReporterRecord;
+  } catch {
+    return [];
+  }
+  if (r.t === "summary") {
+    const failed = (r.failures ?? 0) + (r.errors ?? 0);
+    const skipped = r.skips ?? 0;
+    return [
+      {
+        type: "summary",
+        passed: Math.max(0, (r.runs ?? 0) - failed - skipped),
+        failed,
+        skipped,
+        durationMs: typeof r.d === "number" ? Math.round(r.d * 1000 * 1000) / 1000 : undefined,
+      },
+    ];
+  }
+  if (!r.c || !r.n) return [];
+  const path = [r.c, r.n];
+  const events: TestEvent[] = [];
+  if (r.t === "start") events.push({ type: "start", path });
+  if (r.t === "result" && r.s) {
+    events.push({
+      type: "result",
+      path,
+      status: r.s,
+      durationMs: typeof r.d === "number" ? Math.round(r.d * 1000 * 1000) / 1000 : undefined,
+    });
+    for (const line of (r.m ?? "").split("\n")) if (line) events.push({ type: "output", path, line });
+  }
+  if (r.f && r.l) {
+    events.push({ type: "location", path, location: { path: r.f, line: r.l, resolve: "path" } });
+  }
+  return events;
+}
+
+/**
+ * The console side of the reporter: a record ends with its own newline, so what the line holds before the
+ * marker (a progress dot) is all the console shows of it.
+ */
+export class RubyTestOutput extends TestStdout {
+  constructor(feedLine: (line: string) => void) {
+    super(feedLine, (line) => {
+      const at = line.indexOf(RECORD_MARK);
+      return at < 0 ? line + "\n" : line.slice(0, at);
+    });
+  }
+}
+
 export function rubyParser(): TestOutputParser {
+  /** The reporter's records are the source of results; the text is then ignored (it would repeat them). */
+  let records = false;
   const seen = new Set<string>();
   /** The test's own location, once. */
   const locate = (path: string[]): TestEvent[] => {
@@ -60,6 +134,12 @@ export function rubyParser(): TestOutputParser {
 
   return {
     feed(line) {
+      const mark = line.indexOf(RECORD_MARK);
+      if (mark >= 0) {
+        records = true;
+        return fromRecord(line.slice(mark + RECORD_MARK.length));
+      }
+      if (records) return [];
       const events: TestEvent[] = [];
       let m: RegExpExecArray | null;
 
