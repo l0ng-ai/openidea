@@ -71,10 +71,28 @@ export function buildTodoQuery(s: TodoSettings, scope: SearchScope = { kind: "pr
   };
 }
 
-const COMMENT_MARKER = /(\/\/|\/\*|^\s*\*|#|--|<!--|;|%|\{-|\(\*|"""|''')/;
+// 注释开符，行内任意位置（行首或空白后）都算：// /* <!-- # -- {- (* 。
+// `*` `;` `%` `"""` `'''` 是代码字符，只在行首算注释（LINE_START_MARKER）。
+const INLINE_MARKER = /(\/\/|\/\*|<!--|#|--|\{-|\(\*)/g;
+const LINE_START_MARKER = /^\s*(?:\*|;|%|"""|''')/;
+// 关键字必须"引领"注释：最后一个开符与关键字之间只允许空白和文档注释
+// 装饰（/** 的斜杠星号）。`// fixed the TODO bug`、`/** …，TODO 待办 */`
+// 是在正文里"提及"TODO，不是任务标记。
+const BETWEEN_MARKER_AND_KEYWORD = /^[\s*/]*$/;
+// 长行被后端截断（ide-search line.rs：textOffset > 0）时 prefix 不始于真实行首，
+// "引领"规则无从判定——退回只查开符存在，宁误报不漏报。
+const LENIENT_MARKER = /(\/\/|\/\*|<!--|#|--|\{-|\(\*|\*|;|%|"""|''')/;
 
-export function looksLikeComment(prefix: string): boolean {
-  return COMMENT_MARKER.test(prefix);
+export function looksLikeComment(prefix: string, truncated = false): boolean {
+  if (truncated) return LENIENT_MARKER.test(prefix);
+  // 取最后一个合法开符的位置：代码中间的 http://、a--b、"a#b" 不开注释。
+  let end = -1;
+  const head = LINE_START_MARKER.exec(prefix);
+  if (head) end = head[0].length;
+  for (const m of prefix.matchAll(INLINE_MARKER)) {
+    if (m.index === 0 || /\s/.test(prefix[m.index - 1]!)) end = m.index + m[0].length;
+  }
+  return end >= 0 && BETWEEN_MARKER_AND_KEYWORD.test(prefix.slice(end));
 }
 
 function cleanText(text: string): string {
@@ -96,7 +114,7 @@ export function itemsFromMatches(fm: FileMatches, s: TodoSettings): TodoItem[] {
       const matched = lm.text.slice(start, end);
       const p = patternFor(s, matched);
       if (!p) continue;
-      if (s.commentsOnly && !looksLikeComment(lm.text.slice(0, start))) continue;
+      if (s.commentsOnly && !looksLikeComment(lm.text.slice(0, start), lm.textOffset > 0)) continue;
       out.push({
         path: fm.path,
         line: lm.line,
@@ -125,7 +143,7 @@ export function scanText(path: string, text: string, s: TodoSettings): TodoItem[
     }
     const p = patternFor(s, m[0]);
     if (!p) continue;
-    if (s.commentsOnly && !looksLikeComment(text.slice(lineStart, idx))) continue;
+    if (s.commentsOnly && !looksLikeComment(text.slice(lineStart, idx), false)) continue;
     out.push({ path, line, col: idx - lineStart, keyword: p.keyword.trim(), text: cleanText(m[0]) });
   }
   return out;

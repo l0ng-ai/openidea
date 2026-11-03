@@ -27,6 +27,7 @@ import {
   T,
 } from "@/ui";
 import { previewText } from "./ipc";
+import { PreviewEditor } from "./PreviewEditor";
 import {
   BUILTIN_TODO_SCOPES,
   activePatterns,
@@ -529,6 +530,28 @@ export function TodoView() {
 
 function TodoPreview({ node }: { node: Node | null }) {
   const item = node?.kind === "item" ? node.item : (node?.group.items[0] ?? null);
+  // Session-local, deliberately not persisted: editing is an explicit opt-in
+  // each time the tool window opens, so previews start read-only.
+  const [editable, setEditable] = useState(false);
   const highlights = item ? [{ line: item.line, ranges: [[item.col, item.col + item.text.length] as const] }] : [];
-  return <SourcePreview path={item?.path ?? null} line={item?.line ?? 0} highlights={highlights} load={previewText} />;
+  return (
+    <div className={styles.previewPane}>
+      <div className={styles.previewBar}>
+        <label className={styles.previewToggle}>
+          <input
+            type="checkbox"
+            checked={editable}
+            onChange={(e) => setEditable(e.target.checked)}
+            aria-label={tx("Allow editing")}
+          />
+          <T>Allow editing</T>
+        </label>
+      </div>
+      {item && editable ? (
+        <PreviewEditor path={item.path} line={item.line} col={item.col} />
+      ) : (
+        <SourcePreview path={item?.path ?? null} line={item?.line ?? 0} highlights={highlights} load={previewText} />
+      )}
+    </div>
+  );
 }

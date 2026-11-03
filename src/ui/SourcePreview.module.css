@@ -11,6 +11,10 @@
   font-size: var(--fs-ui);
   line-height: 19px;
   color: var(--fg);
+  /* The workbench disables selection globally; preview text stays selectable/copyable. */
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 .empty {
   display: flex;

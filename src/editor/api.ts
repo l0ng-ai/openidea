@@ -559,6 +559,10 @@ export interface DocumentAttachment {
   path: string;
   /** Current document text; build the view's state from it. */
   text(): string;
+  /** Whether the document has unsaved changes (mirrors the editor tab's dot). */
+  dirty(): boolean;
+  /** The document's language mode name (backend-assigned, as the editor tabs use). */
+  uiMode(): string | null;
   readOnly: boolean;
   /** Add to the view (one view at a time). */
   extension: Extension;
