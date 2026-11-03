@@ -286,6 +286,17 @@ export const openideaTheme = EditorView.theme({
   ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
   // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
   ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
+  // The lane draws the thumb over its marks (#1014); the native one only takes the drag.
+  "&.cm-openidea-withOverview .cm-scroller::-webkit-scrollbar-thumb:vertical": { backgroundColor: "transparent" },
+  ".cm-openidea-overviewThumb": {
+    position: "absolute",
+    right: "2px",
+    width: "6px",
+    borderRadius: "3px",
+    background: "var(--scrollbar-thumb)",
+    pointerEvents: "none",
+  },
+  ".cm-openidea-overview-onThumb .cm-openidea-overviewThumb": { background: "var(--scrollbar-thumb-hover)" },
   ".cm-openidea-overviewCaret": {
     position: "absolute",
     left: "2px",
