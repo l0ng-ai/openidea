@@ -6,7 +6,7 @@
  * the forked JVM (`-Dopenidea.run.debug`), not to the Gradle daemon.
  */
 import RUN_SCRIPT from "./gradleRun.gradle?raw";
-import { useBuild } from "@/features/build-tools/store";
+import { useBuildModel } from "@/platform/buildModel";
 import { call, commands, isTauri, type GradleModel, type RunConfig } from "@/platform/ipc";
 import { findJavaModule, isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import { useProject } from "@/platform/project";
@@ -109,7 +109,7 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
   if (!isTauri() || !isJvmApplication(config)) return null;
   const { project, settings } = useProject.getState();
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
-  const { model, settings: build } = useBuild.getState();
+  const { model, gradleOffline } = useBuildModel.getState();
   if (!model?.gradle) return null;
   const module = config.module ?? (await findJavaModule(config));
   if (module === null) return null;
@@ -117,7 +117,7 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
     root: project.root,
     gradle: model.gradle,
     script: "",
-    offline: build.gradle.offline,
+    offline: gradleOffline,
     configurationCache: false,
   };
   if (!delegatedGradleConfig(config, module, ctx)) return null;

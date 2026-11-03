@@ -1,7 +1,7 @@
 /** Project view: the "project" tool window, its file operations and actions. */
 import { onEditorEvent, openEditorPaths } from "@/editor/api";
 import { onIdeEvent } from "@/platform/ipc";
-import { useBuild } from "@/features/build-tools/store";
+import { useBuildModel } from "@/platform/buildModel";
 import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
 import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
@@ -76,7 +76,7 @@ export function activate(): () => void {
     const own = project && !project.workspace;
     const paths = own ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
     // The Build tool window's model (one load per build change), not a load of our own.
-    const build = useBuild.getState();
+    const build = useBuildModel.getState();
     const gradleProjects = build.root === project?.root ? (build.model?.gradle?.projects ?? []) : [];
     const rootName = gradleProjects.find((p) => p.path === ":")?.name ?? "";
     const groups = own && project ? gradleModuleGroups(gradleProjects, rootName, project.root) : [];
@@ -99,7 +99,7 @@ export function activate(): () => void {
     );
   };
   syncContentRoots();
-  const unsubGradleRoots = useBuild.subscribe((s, prev) => {
+  const unsubGradleRoots = useBuildModel.subscribe((s, prev) => {
     if (s.model !== prev.model || s.root !== prev.root) syncContentRoots();
   });
   const unsubContentRoots = useProject.subscribe((s, prev) => {

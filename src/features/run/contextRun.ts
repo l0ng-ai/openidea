@@ -9,7 +9,7 @@ import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { validateProjectStructure } from "@/platform/languageSettings";
-import { useBuild } from "@/features/build-tools/store";
+import { useBuildModel } from "@/platform/buildModel";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { showContextMenu, type MenuItem } from "@/ui";
 import {
@@ -48,7 +48,9 @@ async function ensureConfigs() {
 export function projectContentRoots(): string[] {
   const own = validateProjectStructure(useProject.getState().settings?.projectStructure).contentRoots;
   // The build model keeps the folders of modules outside the project absolute.
-  const gradle = (useBuild.getState().model?.gradle?.projects ?? []).map((p) => p.dir).filter((d) => isAbsolute(d));
+  const gradle = (useBuildModel.getState().model?.gradle?.projects ?? [])
+    .map((p) => p.dir)
+    .filter((d) => isAbsolute(d));
   return [...new Set([...own, ...gradle])];
 }
 

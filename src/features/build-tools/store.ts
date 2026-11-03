@@ -23,6 +23,7 @@ import {
   type SyncProgress,
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
+import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
@@ -73,6 +74,14 @@ export const useBuild = create<BuildState>(() => ({
   executeOpen: null,
   current: {},
 }));
+
+// Shared with the features that follow the build (run, Project view).
+useBuild.subscribe((s) => {
+  const shared = useBuildModel.getState();
+  const gradleOffline = s.settings.gradle.offline;
+  if (shared.root !== s.root || shared.model !== s.model || shared.gradleOffline !== gradleOffline)
+    useBuildModel.setState({ root: s.root, model: s.model, gradleOffline });
+});
 
 // ---------------------------------------------------------------------------
 // Settings (per project)
