@@ -25,10 +25,20 @@
   background: var(--danger);
 }
 
-/* Disabled / muted: hollow circle. */
+/* Disabled: hollow circle. */
 .disabled::before {
   background: transparent;
   border: 1.5px solid var(--danger);
+}
+
+/* Mute Breakpoints (expui breakpointMuted). */
+.muted::before {
+  border-radius: 0;
+  background: url("../../../ui/expui/breakpoints/breakpointMuted.svg") center / contain no-repeat;
+}
+
+:global(:root[data-theme^="dark"]) .muted::before {
+  background-image: url("../../../ui/expui/breakpoints/breakpointMuted_dark.svg");
 }
 
 /* Not bound by the adapter. */
