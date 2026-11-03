@@ -552,12 +552,13 @@ pub async fn vcs_clone(
     request: RequestId,
     url: String,
     dest: PathBuf,
+    depth: Option<u32>,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
     apply_git_executable(&host.global_settings.effective());
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {
-        ide_vcs::clone(&url, &dest, &cancel, &|line| {
+        ide_vcs::clone(&url, &dest, depth, &cancel, &|line| {
             let _ = on_output.send(line);
         })
     })
@@ -1070,7 +1071,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
         |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?).await },
     );
     d.add("vcs_clone", |c| async move {
-        vcs_clone(&c.host, &c.window, c.arg("request")?, c.arg("url")?, c.arg("dest")?, c.sender("onOutput")?).await
+        vcs_clone(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("url")?,
+            c.arg("dest")?,
+            c.arg("depth")?,
+            c.sender("onOutput")?,
+        )
+        .await
     });
     d.add("vcs_init", |c| async move { vcs_init(&c.host, &c.window, c.arg("dir")?).await });
     d.add("vcs_git_version", |c| async move { vcs_git_version(&c.host, &c.window, c.arg("path")?).await });

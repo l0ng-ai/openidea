@@ -53,6 +53,13 @@ pub(crate) fn node_dir(root: &Path, s: &Settings) -> Option<PathBuf> {
     }
 }
 
+/// The directory of the configured `php` executable (it also holds the matching `phpize`,
+/// `pecl`…): put on the `PATH` so `#!/usr/bin/env php` scripts such as `vendor/bin/phpunit`
+/// and Composer run on the selected interpreter.
+pub(crate) fn php_dir(root: &Path, s: &Settings) -> Option<PathBuf> {
+    setting_path(root, &s.languages.php.interpreter).and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
 /// The configured Rust toolchain's `bin` directory and rustup toolchain name.
 pub(crate) fn rust_bin(root: &Path, s: &Settings) -> Option<(PathBuf, Option<String>)> {
     let dir = setting_path(root, &s.languages.rust.toolchain)?;
@@ -467,6 +474,10 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if let Some(dir) = node_dir(root, s) {
         path_dirs.push(dir);
     }
+    // PHP servers (phpactor, `php intelephense`-style wrappers) on the selected PHP.
+    if let Some(dir) = php_dir(root, s) {
+        path_dirs.push(dir);
+    }
 
     if !path_dirs.is_empty() {
         let dirs: Vec<&Path> = path_dirs.iter().map(PathBuf::as_path).collect();
@@ -624,6 +635,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let python = python_interpreter(root, s);
     let pm = non_empty(&s.languages.node.package_manager);
     let node = node_dir(root, s);
+    let php = setting_path(root, &s.languages.php.interpreter);
     let rust = rust_bin(root, s);
     let go = goroot(root, s);
     let gopath = setting_path(root, &s.languages.go.gopath);
@@ -672,6 +684,14 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
                 if let Some(dir) = &node {
                     path_dirs.push(dir.clone());
+                }
+            }
+            "php" | "phpunit" | "composer" => {
+                if let Some(php) = &php {
+                    if c.kind == "php" && c.detected && c.command == "php" {
+                        c.command = php.to_string_lossy().into_owned();
+                    }
+                    path_dirs.extend(php.parent().map(Path::to_path_buf));
                 }
             }
             "cargo" => {
@@ -767,6 +787,47 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
             c.env.insert("PATH".into(), path_with(&dirs));
         }
     }
+}
+
+/// `config` as it should be saved: without what [`apply_to_run_configs`] derives from
+/// settings, so a configuration read from the run list, edited and saved keeps following
+/// Languages & Frameworks instead of freezing today's toolchain (and the IDE's whole
+/// `PATH`) into `run.toml`. A value counts as derived when applying settings to the
+/// configuration without it produces it again: an environment entry (`PATH`,
+/// `VIRTUAL_ENV`, `JAVA_HOME`, `GOROOT`, …) or an absolute command its bare name
+/// resolves to (the project interpreter, a toolchain's `cargo` / `go`, Maven's `mvn`).
+pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConfig {
+    let applied = |c: &RunConfig| {
+        let mut c = c.clone();
+        apply_to_run_configs(std::slice::from_mut(&mut c), root, s);
+        c
+    };
+    let mut out = config.clone();
+    // Until nothing changes: some entries are derived only once others are gone
+    // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`).
+    while let Some(key) = out
+        .env
+        .iter()
+        .find(|(key, value)| {
+            let mut probe = out.clone();
+            probe.env.remove(*key);
+            applied(&probe).env.get(*key) == Some(*value)
+        })
+        .map(|(key, _)| key.clone())
+    {
+        out.env.remove(&key);
+    }
+    let path = Path::new(&config.command);
+    if path.is_absolute()
+        && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
+    {
+        let mut probe = out.clone();
+        probe.command = name.clone();
+        if applied(&probe).command == config.command {
+            out.command = name;
+        }
+    }
+    out
 }
 
 fn sh_quote(s: &str) -> String {

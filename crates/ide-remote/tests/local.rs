@@ -112,6 +112,30 @@ async fn local_deployment_and_browser_share_all_paths() {
     assert!(!remote_file.exists());
 }
 
+/// #877: the mapping as IntelliJ shows it, an absolute local path and `/` on the server.
+#[tokio::test]
+async fn absolute_local_mapping_uploads_like_intellij() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let target = tmp.path().join("target");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(root.join("src/a.txt"), "content").unwrap();
+    let mut settings = settings(&target);
+    let mapping = &mut settings.deployment.servers[0].mappings[0];
+    mapping.local = root.to_string_lossy().into_owned();
+    mapping.deployment = "/".into();
+    settings.deployment.servers[0].excluded_paths.clear();
+    let file = root.join("src/a.txt");
+    assert_eq!(ide_remote::coverage(&settings, &root, std::slice::from_ref(&file))[0].paths.len(), 1);
+    let report = service(tmp.path())
+        .upload(&settings, &root, Some("local"), &[file], CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!((report.files, report.skipped), (1, 0), "{report:?}");
+    assert_eq!(std::fs::read_to_string(target.join("src/a.txt")).unwrap(), "content");
+}
+
 #[tokio::test]
 async fn self_upload_download_and_aliases_never_destroy_content() {
     let tmp = tempfile::tempdir().unwrap();
@@ -261,4 +285,37 @@ async fn coverage_matches_transfers_without_connecting() {
     settings.deployment.servers[0].mappings.clear();
     assert_eq!(ide_remote::coverage(&settings, &root, &[root.join("assets/b.txt")])[0].paths.len(), 1);
     assert!(ide_remote::coverage(&settings, &root, &[root.join("../outside")])[0].paths.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_mappings_resolve_symlinks_and_download_to_the_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let target = tmp.path().join("mounted");
+    let alias = tmp.path().join("project-link");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    std::fs::write(target.join("a.txt"), "from the server").unwrap();
+    let mut settings = settings(&target);
+    settings.deployment.servers[0].mappings = vec![DeploymentMapping {
+        local: alias.to_string_lossy().into_owned(),
+        deployment: ".".into(),
+        ..Default::default()
+    }];
+    let service = service(tmp.path());
+    let resolved = service.server_info(&settings, Some(&root), "local").await.unwrap();
+    assert_eq!(resolved.root, target.to_string_lossy());
+    assert_eq!(resolved.mappings.len(), 1);
+    assert_eq!(resolved.mappings[0].local.to_path_buf(), root);
+    assert_eq!(resolved.mappings[0].deployment, resolved.root);
+    let local = resolved.mappings[0].local.to_path_buf().join("a.txt");
+    let report = service
+        .download(&settings, &root, None, std::slice::from_ref(&local), CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!(report.files, 1);
+    assert!(report.errors.is_empty());
+    assert_eq!(std::fs::read_to_string(local).unwrap(), "from the server");
 }

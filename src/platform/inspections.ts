@@ -225,6 +225,10 @@ export const SPELLING_INSPECTION = "builtin:spelling";
 export const DEPENDENCY_PRODUCER = "dependency-versions";
 export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
 
+/** Conflict markers left in a file by a merge, rebase, cherry-pick or stash that stopped on conflicts. */
+export const CONFLICT_MARKERS_PRODUCER = "merge-conflict-markers";
+export const CONFLICT_MARKERS_INSPECTION = "builtin:merge-conflict-markers";
+
 /** IDEA's Typo options: which parts of source files are checked (plain text always is). */
 export const SPELLING_OPTIONS = {
   code: "processCode",
@@ -234,6 +238,15 @@ export const SPELLING_OPTIONS = {
 
 /** Checks the IDE runs itself (not a language server). */
 export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
+  {
+    id: CONFLICT_MARKERS_INSPECTION,
+    producer: CONFLICT_MARKERS_PRODUCER,
+    name: "Unresolved merge conflict markers",
+    group: "Version control",
+    description:
+      "Reports the <<<<<<<, ======= and >>>>>>> lines a merge leaves in a file, whatever its language and whether or not a language server is installed.",
+    defaultLevel: "error",
+  },
   {
     id: DEPENDENCY_INSPECTION,
     producer: DEPENDENCY_PRODUCER,

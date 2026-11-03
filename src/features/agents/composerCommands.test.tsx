@@ -42,6 +42,14 @@ const claude: AgentProvider = {
   installed: true,
   config: [],
   source: { kind: "builtin" },
+  program: "claude",
+  args: [],
+  defaultProgram: "claude",
+  defaultArgs: [],
+  loginHint: null,
+  commandOverridden: false,
+  commandEditable: true,
+  commandReadOnlyReason: null,
   // Offered by the agent's last session in this project.
   commands: [command("compact", "Free up context")],
 };
