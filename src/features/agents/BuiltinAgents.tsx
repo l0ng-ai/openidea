@@ -2,19 +2,26 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AgentProvider } from "@/bindings";
 import { tx, useTx } from "@/platform/i18n";
-import { Badge, Button, Icon, IconButton, Input, List, Spinner, T } from "@/ui";
+import clsx from "clsx";
+import { Button, Icon, IconButton, Input, List, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { providerIcon } from "./model";
 import type { CommandsBackend } from "./registry";
 import styles from "./BuiltinAgents.module.css";
 
+/** Trailing list tag: a missing agent is a normal state, so it is muted rather than a warning. */
 function Status({ agent }: { agent: AgentProvider }) {
-  const translate = useTx();
-  if (!agent.commandOverridden && agent.installed) return null;
+  if (agent.commandOverridden)
+    return (
+      <span className={clsx(styles.tag, styles.tagCustom)}>
+        <T>Custom</T>
+      </span>
+    );
+  if (agent.installed) return null;
   return (
-    <Badge tone={agent.commandOverridden ? "accent" : "warning"}>
-      {agent.commandOverridden ? translate("Custom") : translate("Not found")}
-    </Badge>
+    <span className={styles.tag}>
+      <T>Not found</T>
+    </span>
   );
 }
 
@@ -55,7 +62,7 @@ export function BuiltinAgents({ backend, onChanged }: { backend: CommandsBackend
         rowHeight={32}
         aria-label={tx("Built-in agents")}
         renderItem={(p) => (
-          <div className={styles.agentRow}>
+          <div className={clsx(styles.agentRow, !p.installed && !p.commandOverridden && styles.agentMissing)}>
             <Icon name={providerIcon(p.id)} size={16} />
             <span className={styles.agentName}>{p.name}</span> <Status agent={p} />
           </div>
@@ -95,22 +102,28 @@ function Details({
     }
   }, [base, current, saving, refresh]);
   const launch = [agent.defaultProgram, ...agent.defaultArgs].join(" ");
+  const status = agent.commandOverridden
+    ? tx("Custom executable")
+    : agent.installed
+      ? tx("Found on PATH")
+      : tx("Not found on PATH");
   return (
     <section className={styles.details} aria-label={tx`${agent.name} executable`}>
       <div className={styles.title}>
         <Icon name={providerIcon(agent.id)} size={20} />
         <h3>{agent.name}</h3>
       </div>
-      <code className={styles.launch}>{launch}</code>
-      <p className={styles.status}>
-        {agent.commandOverridden ? (
-          <T>Custom executable</T>
-        ) : agent.installed ? (
-          <T>Found on PATH</T>
-        ) : (
-          <T>Not found on PATH</T>
-        )}
-      </p>
+      <div className={styles.subtitle}>
+        <span
+          aria-hidden
+          className={clsx(styles.dot, agent.commandOverridden ? styles.dotCustom : agent.installed && styles.dotFound)}
+        />
+        <span>{status}</span>
+        <span aria-hidden>·</span>
+        <code className={styles.launch} title={tx("Launch command")}>
+          {launch}
+        </code>
+      </div>
       {agent.commandEditable ? (
         <>
           <label className={styles.label} htmlFor={`agent-executable-${agent.id}`}>
@@ -140,9 +153,11 @@ function Details({
                 }
               }}
             />
-            <Button size="small" disabled={saving || !value} onClick={() => set("")}>
-              <T>Reset</T>
-            </Button>
+            {value && (
+              <Button size="small" disabled={saving} onClick={() => set("")}>
+                <T>Reset</T>
+              </Button>
+            )}
           </div>
           <p className={styles.hint}>
             <T>Leave empty to find the executable on PATH. Changes apply to new sessions.</T>
@@ -160,9 +175,14 @@ function Details({
         </p>
       )}
       {agent.loginHint && (
-        <p className={styles.hint}>
-          <LoginHint text={agent.loginHint} />
-        </p>
+        <>
+          <h4 className={styles.section}>
+            <T>Sign in</T>
+          </h4>
+          <p className={styles.hint}>
+            <LoginHint text={agent.loginHint} />
+          </p>
+        </>
       )}
       {error && (
         <p className={styles.error} role="alert">

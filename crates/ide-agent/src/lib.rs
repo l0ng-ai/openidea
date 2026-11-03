@@ -52,6 +52,8 @@ const SESSION_STATE: [&str; 5] =
     ["session_info_update", "config_option_update", "current_mode_update", "available_commands_update", "usage_update"];
 /// A native agent's own update: it is about to retry a failed API request (see [`AgentRetry`]).
 pub(crate) const RETRY_UPDATE: &str = "openidea_retry";
+/// A native agent's own update: the usage limits of its account (see [`AgentLimit`]).
+pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
@@ -1416,6 +1418,13 @@ impl Task {
         if kind == RETRY_UPDATE {
             if !self.replaying.load(Ordering::Acquire) {
                 self.set_retry(retry_of(update, now_ms()));
+            }
+            return;
+        }
+        if kind == LIMITS_UPDATE {
+            if !self.replaying.load(Ordering::Acquire) {
+                let provider = self.state.lock().task.provider.clone();
+                self.shared.emit(AgentEvent::Limits { provider, limits: config::limits_of(update) });
             }
             return;
         }

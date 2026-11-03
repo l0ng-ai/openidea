@@ -35,6 +35,8 @@ pub use discover::{detect, jdk_sdk};
 pub enum SdkKind {
     Python,
     Node,
+    /// `php` CLI executables.
+    Php,
     /// npm / pnpm / yarn executables.
     PackageManager,
     Rust,

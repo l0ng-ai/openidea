@@ -5,6 +5,7 @@
  */
 import type { RunConfig } from "@/platform/ipc";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
 import { isWindows } from "./jvmTypes";
 
@@ -19,6 +20,7 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
     /^test_.*\.py$|_test\.py$/.test(name) ||
     (django && name === "tests.py") ||
     /_test\.go$/.test(name) ||
+    /Test\.php$/.test(name) ||
     /_(spec|test)\.rb$/.test(name) ||
     /(Test|Tests|Spec|IT)\.(kt|java|scala|groovy)$/.test(name) ||
     (/(^|\/)tests\/[^/]+\.rs$/.test(relPath) && name !== "mod.rs")
@@ -40,6 +42,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 function testKinds(relPath: string): string[] {
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
+  if (/\.php$/.test(relPath)) return ["phpunit"];
   if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake"];
   if (/_test\.rb$/.test(relPath)) return ["rake", "rspec"];
   if (/\.go$/.test(relPath)) return ["go"];
@@ -169,6 +172,8 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
     case "python":
     case "rspec":
       return derived(base, relPath, { args: [...base.args, file] });
+    case "phpunit":
+      return derived(base, relPath, { args: phpunitArgs(base.args, { target: file }) });
     case "rake": {
       // `rake test` (minitest) takes the file as TEST=; `rake spec` as SPEC=.
       const task = base.args.at(-1) ?? "";

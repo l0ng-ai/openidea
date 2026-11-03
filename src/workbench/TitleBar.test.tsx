@@ -106,6 +106,35 @@ describe("title bar in Distraction Free Mode (bare)", () => {
   });
 });
 
+describe("expanded main menu in a frameless title bar", () => {
+  it("hides the right-hand toolbar while the menu is expanded and restores it on close", async () => {
+    const platform = usePlatform.getState();
+    const project = useProject.getState();
+    const menuModel = vi
+      .spyOn(commands, "menuModel")
+      .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
+    usePlatform.setState({ os: "windows", framelessTitleBar: true, overlayTitleBar: false });
+    useProject.setState({ settings: { appearance: { mainMenuStyle: "hamburger" } } as Settings });
+    try {
+      render(<TitleBar />);
+      await act(async () => {});
+      const gear = () => screen.queryByRole("button", { name: "IDE and Project Settings" });
+      expect(gear()).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Main Menu" }));
+      await screen.findByRole("menu");
+      expect(gear()).toBeNull();
+      expect(screen.getByRole("menubar")).toBeInTheDocument();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      await act(async () => {});
+      expect(gear()).toBeInTheDocument();
+    } finally {
+      menuModel.mockRestore();
+      usePlatform.setState(platform);
+      useProject.setState(project);
+    }
+  });
+});
+
 describe("merged title bar menu", () => {
   it.each(["windows", "linux", "macos"])(
     "%s keeps toolbar controls available and uses the menu only when frameless",

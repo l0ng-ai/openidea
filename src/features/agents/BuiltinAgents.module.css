@@ -1,6 +1,6 @@
 .split {
   display: flex;
-  flex: 1;
+  flex: none;
   min-height: 320px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
@@ -18,6 +18,20 @@
   width: 100%;
   min-width: 0;
   padding: 0 10px;
+}
+.agentMissing .agentName {
+  color: var(--fg-muted);
+}
+.agentMissing svg {
+  opacity: 0.6;
+}
+.tag {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.tagCustom {
+  color: var(--accent);
 }
 .agentName {
   flex: 1;
@@ -41,19 +55,43 @@
   margin: 0;
   font-size: var(--fs-input-large);
 }
-.launch {
-  display: block;
-  margin: 8px 0 0;
+.subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 6px 0 20px 28px;
   color: var(--fg-muted);
-  font-family: var(--font-mono);
   font-size: var(--fs-small);
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
-.status {
-  margin: 6px 0 24px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+}
+.dotFound {
+  background: var(--success);
+}
+.dotCustom {
+  background: var(--accent);
+}
+.launch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.section {
+  margin: 20px 0 6px;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.section + .hint {
+  margin-top: 0;
 }
 .hint code {
   font-family: var(--font-mono);

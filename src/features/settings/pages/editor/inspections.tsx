@@ -418,7 +418,7 @@ function InspectionRow({
   return (
     <span className={styles.row}>
       <span className={clsx(styles.name, !node.id && styles.groupName, state === "off" && styles.off)}>
-        {node.name}
+        <T>{node.name}</T>
       </span>
       {levelLabel && <span className={styles.level}>{levelLabel}</span>}
       <span className={styles.check}>
@@ -454,7 +454,9 @@ function Details({
   const id = node.id;
   return (
     <div className={styles.details}>
-      <p className={styles.description}>{node.description}</p>
+      <p className={styles.description}>
+        <T>{node.description}</T>
+      </p>
       {id && (
         <div className={styles.severityRow}>
           <span>

@@ -59,6 +59,28 @@ pub struct Settings {
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
     pub cmake: CMakeSettings,
+    /// Tools › Agents › Chat.
+    pub agents: AgentSettings,
+}
+
+/// What the meters in an agent task's header show.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSettings {
+    /// Context window use.
+    pub show_context_usage: bool,
+    /// Time the agent spent on the task.
+    pub show_work_time: bool,
+    /// The account's usage-limit windows (Claude's 5-hour and weekly limits).
+    pub show_usage_limits: bool,
+    /// What the session has cost so far, as the agent reports it.
+    pub show_cost: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
+    }
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -192,6 +214,7 @@ impl Default for Settings {
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
+            agents: AgentSettings::default(),
         }
     }
 }
@@ -543,26 +566,65 @@ impl Default for FileSettings {
 pub struct LanguagesSettings {
     pub python: PythonSettings,
     pub node: NodeSettings,
+    pub php: PhpSettings,
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
-    pub prettier: PrettierSettings,
+    pub prettier: ExternalFormatterSettings,
+    pub oxfmt: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
+    pub markdown: MarkdownSettings,
 }
 
+/// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MarkdownSettings {
+    /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
+    pub preview_font_size: Option<u32>,
+}
+
+impl LanguagesSettings {
+    pub fn formatter(&self, tool: ExternalFormatter) -> &ExternalFormatterSettings {
+        match tool {
+            ExternalFormatter::Prettier => &self.prettier,
+            ExternalFormatter::Oxfmt => &self.oxfmt,
+        }
+    }
+}
+
+/// A formatter that runs outside the language servers, with its own settings group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ExternalFormatter {
+    Prettier,
+    Oxfmt,
+}
+
+impl ExternalFormatter {
+    /// The name of the tool in the tool registry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Prettier => "prettier",
+            Self::Oxfmt => "oxfmt",
+        }
+    }
+}
+
+/// An external formatter (Prettier, oxfmt) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
-pub struct PrettierSettings {
+pub struct ExternalFormatterSettings {
     /// Empty path: project node_modules, managed installation, then PATH.
     pub path: String,
     pub languages: Vec<String>,
-    /// Prefer Prettier even when a language server offers formatting.
+    /// Prefer this formatter even when a language server offers formatting.
     pub prefer: bool,
     pub run_on_save: bool,
 }
 
-impl Default for PrettierSettings {
+impl Default for ExternalFormatterSettings {
     fn default() -> Self {
         Self {
             path: String::new(),
@@ -604,6 +666,13 @@ impl Default for PythonSettings {
     fn default() -> Self {
         Self { interpreter: String::new(), activate_virtualenv: true }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PhpSettings {
+    /// `php` CLI executable; empty = the one on `PATH`.
+    pub interpreter: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -856,6 +925,20 @@ mod tests {
             let restored: Settings = serde_json::from_value(json).unwrap();
             assert_eq!(restored.appearance.show_tool_window_badges, enabled);
         }
+    }
+
+    #[test]
+    fn agent_meters_default_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        assert!(old.agents.show_cost);
+        assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
+        assert!(!Settings::default().agents.show_cost);
+        let mut settings = Settings::default();
+        settings.agents.show_usage_limits = false;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["agents"]["showUsageLimits"], false);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.agents, settings.agents);
     }
 
     #[test]

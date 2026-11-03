@@ -5,6 +5,7 @@ const ipc = vi.hoisted(() => ({
   runSaveConfigs: vi.fn(),
   runConfigs: vi.fn(),
   runTemplates: vi.fn(async () => ({ status: "ok", data: [] })),
+  runImportSources: vi.fn(async () => ({ status: "ok", data: [] })),
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
