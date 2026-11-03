@@ -63,6 +63,10 @@ export function afterRemove(agents: RegistryAgent[], id: string): RegistryAgent[
  * no popularity data and lists alphabetically, which puts small or unrelated projects on top.
  */
 const FEATURED = [
+  "copilot",
+  "gemini",
+  "cursor",
+  "opencode",
   "amp-acp",
   "devin",
   "factory-droid",

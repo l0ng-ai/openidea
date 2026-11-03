@@ -80,9 +80,16 @@ fn builtins() -> Vec<ProviderSpec> {
         .collect()
 }
 
-/// Whether `id` names a built-in agent.
+/// Whether `id` names a built-in agent that needs no registry install (native drivers
+/// and `npx -y` adapters). CLI built-ins (`copilot`, `gemini`, …) can be installed and
+/// updated from the ACP Registry into `<config>/agents/<id>.toml`.
 pub(crate) fn is_builtin(id: &str) -> bool {
-    BUILTIN.iter().any(|b| b.0 == id)
+    BUILTIN.iter().any(|&(bid, _, driver, cmd, _)| bid == id && (driver != Driver::Acp || cmd.first() == Some(&"npx")))
+}
+
+/// Display name of a built-in agent, when `id` is one.
+pub(crate) fn builtin_name(id: &str) -> Option<&'static str> {
+    BUILTIN.iter().find(|&&(bid, _, _, _, _)| bid == id).map(|&(_, name, _, _, _)| name)
 }
 
 /// An agent file, `<config>/agents/<id>.toml`.
@@ -162,7 +169,7 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
             Some(r) => AgentSource::Registry { version: r.version, update: None },
             None => AgentSource::Custom,
         };
-        let spec = ProviderSpec {
+        let mut spec = ProviderSpec {
             name: agent.name.unwrap_or_else(|| id.clone()),
             driver: agent.driver,
             command: agent.command,
@@ -173,7 +180,10 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
             id,
         };
         match specs.iter_mut().find(|s| s.id == spec.id) {
-            Some(existing) => *existing = spec,
+            Some(existing) => {
+                spec.login_hint = existing.login_hint.clone();
+                *existing = spec;
+            }
             None => specs.push(spec),
         }
     }
