@@ -11,7 +11,42 @@ import {
   protectedRegions,
   type FormatGuardOptions,
 } from "@/platform/formatGuard";
-import { dedentsToColumnZero, formatDocument, formattedLines } from "./format";
+import { indentExtension } from "@/editor/core/cm/setup";
+import { dedentsToColumnZero, formatDocument, formatOptionsOf, formattedLines } from "./format";
+
+describe("formatOptionsOf", () => {
+  const stateWith = (...args: Parameters<typeof indentExtension>) =>
+    EditorState.create({ extensions: indentExtension(...args) });
+
+  it("asks for the Code Style override, not the indent detected in the file", () => {
+    // Code Style › Java: tab character, tab size 1; the file was indented with 4 spaces.
+    const state = stateWith({ tabSize: 4, insertSpaces: true }, { tabSize: 1, insertSpaces: false, indentSize: 1 });
+    expect(formatOptionsOf(state)).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
+  it("sends the tab size with tabs and the indent size with spaces", () => {
+    const editor = { tabSize: 8, insertSpaces: true };
+    expect(formatOptionsOf(stateWith(editor, { tabSize: 4, insertSpaces: false, indentSize: 2 }))).toEqual({
+      tabSize: 4,
+      insertSpaces: false,
+    });
+    expect(formatOptionsOf(stateWith(editor, { tabSize: 4, insertSpaces: true, indentSize: 2 }))).toEqual({
+      tabSize: 2,
+      insertSpaces: true,
+    });
+  });
+
+  it("keeps the editor's indent without an override", () => {
+    expect(formatOptionsOf(stateWith({ tabSize: 4, insertSpaces: true, indentSize: 2 }))).toEqual({
+      tabSize: 2,
+      insertSpaces: true,
+    });
+    expect(formatOptionsOf(stateWith({ tabSize: 3, insertSpaces: false }))).toEqual({
+      tabSize: 3,
+      insertSpaces: false,
+    });
+  });
+});
 
 describe("formattedLines", () => {
   const doc = Text.of(["fn  main(){", "let x=1;", "}", "", "fn other() {}"]);

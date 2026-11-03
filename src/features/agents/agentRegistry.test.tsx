@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage as RegistryPage } from "./AgentRegistryPage";
 import { SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
@@ -118,9 +119,10 @@ describe("registry helpers", () => {
       named("zed", "Zed"),
       named("cline", "Cline"),
       named("amp-acp", "Amp"),
+      named("copilot", "GitHub Copilot"),
       named("bob", "Bob", "2.0.9"),
     ]);
-    expect(sorted.map((a) => a.name)).toEqual(["Bob", "Amp", "Cline", "Agoragentic", "Zed"]);
+    expect(sorted.map((a) => a.name)).toEqual(["Bob", "GitHub Copilot", "Amp", "Cline", "Agoragentic", "Zed"]);
   });
 
   it("drops a removed agent this system cannot install again", () => {
@@ -163,6 +165,17 @@ describe("agent picker", () => {
 });
 
 describe("Agents settings page", () => {
+  it("shows the built-in Copilot name and icon in its registry row", async () => {
+    const backend = new FakeBackend();
+    backend.registry = { agents: [agent({ id: "copilot", name: "GitHub Copilot" })], warning: null };
+    render(<AgentRegistryPage backend={backend} />);
+    const copilot = await screen.findByRole("listitem", { name: "GitHub Copilot" });
+    const expected = document.createElement("div");
+    expected.innerHTML = iconMarkup("agent-copilot")!;
+    expect(copilot.querySelector("svg")?.innerHTML).toBe(expected.querySelector("svg")?.innerHTML);
+    expect(copilot.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  });
+
   it("lists registry agents, says they are third-party, and searches them", async () => {
     const backend = new FakeBackend();
     render(<AgentRegistryPage backend={backend} />);

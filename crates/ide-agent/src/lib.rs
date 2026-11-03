@@ -314,7 +314,14 @@ impl AgentManager {
                 source: p.source.clone(),
             })
             .collect();
-        *self.shared.providers.write() = specs;
+        let mut prev = self.shared.providers.write();
+        let mut probes = self.shared.probes.lock();
+        probes.retain(|id, _| {
+            let old = prev.iter().find(|p| &p.id == id);
+            let new = specs.iter().find(|p| &p.id == id);
+            matches!((old, new), (Some(a), Some(b)) if a.command == b.command && a.args == b.args && a.env == b.env)
+        });
+        *prev = specs;
         list
     }
 
@@ -325,6 +332,14 @@ impl AgentManager {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
         provider::set_builtin_command(&dir, id, command.as_deref())
+    }
+
+    /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
+    pub fn reload_providers(&self) {
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        *self.shared.providers.write() = specs;
+        self.shared.probes.lock().clear();
+        self.shared.emit(AgentEvent::Providers);
     }
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
@@ -817,7 +832,8 @@ impl AgentManager {
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
         if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            blocking(move || worktree::remove(&root, &cwd)).await?;
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;

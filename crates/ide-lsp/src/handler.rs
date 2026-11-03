@@ -228,6 +228,10 @@ impl Handler for ClientHandler {
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 match params.get("type").and_then(Value::as_u64) {
+                    Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
+                        tracing::warn!("[{}] {text}", self.server.name);
+                        mgr.report_import_failure(self.server.root.clone(), text.to_owned());
+                    }
                     Some(1) => tracing::warn!("[{}] {text}", self.server.name),
                     Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
                     _ => tracing::debug!("[{}] {text}", self.server.name),

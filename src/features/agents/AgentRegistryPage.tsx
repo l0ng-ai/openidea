@@ -8,9 +8,9 @@ import type { AgentRegistry, RegistryAgent, RequestId } from "@/bindings";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
-import { Badge, Button, Input, ProgressBar, SearchField, Spinner, T } from "@/ui";
+import { Badge, Button, Icon, ProgressBar, SearchField, Spinner, T } from "@/ui";
 import { confirm } from "@/workbench/messages";
-import { useSettingsForm } from "@/workbench/contributions";
+import { providerIcon } from "./model";
 import {
   DISTRIBUTION_LABEL,
   afterInstall,
@@ -274,6 +274,7 @@ function AgentRow({
     <li className={styles.row} aria-labelledby={titleId}>
       <div className={styles.main}>
         <div className={styles.titleLine}>
+          <Icon name={providerIcon(agent.id)} size={16} />
           <span id={titleId} className={styles.name}>
             {agent.name}
           </span>

@@ -86,6 +86,16 @@ pub(crate) fn utf16_len(s: &str) -> u32 {
     if s.is_ascii() { s.len() as u32 } else { s.chars().map(|c| c.len_utf16() as u32).sum() }
 }
 
+/// Byte offset of `pos` (line, UTF-16 column) in `text`; None past the last line.
+pub(crate) fn byte_at(text: &str, pos: Pos) -> Option<usize> {
+    let mut start = 0;
+    for _ in 0..pos.line {
+        start += text[start..].find('\n')? + 1;
+    }
+    let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+    Some(start + utf16_to_byte(&text[start..line_end], pos.col as usize))
+}
+
 pub(crate) fn utf16_to_byte(s: &str, offset: usize) -> usize {
     let mut units = 0;
     for (i, c) in s.char_indices() {

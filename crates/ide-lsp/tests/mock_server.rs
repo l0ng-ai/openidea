@@ -1167,6 +1167,40 @@ async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_launch_serializes_the_classpath_with_the_build_lock() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, _file) = h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+
+    // A launch with a build re-takes the lock after java_build has released it.
+    let info = tokio::time::timeout(
+        Duration::from_secs(30),
+        h.mgr.java_launch(&h.root, false, true, false, &Default::default()),
+    )
+    .await
+    .expect("java_launch deadlocked on the build lock")
+    .unwrap();
+    assert!(info.class_paths.is_empty());
+
+    // The delegated external build holds the lock while java_launch resolves the
+    // classpath; java_launch must not re-take it, or the launch would deadlock.
+    let guard = h.mgr.java_external_build(&h.root, &Default::default()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(30), h.mgr.java_launch(&h.root, false, false, true, &Default::default()))
+        .await
+        .expect("java_launch deadlocked on the delegated external build's lock")
+        .unwrap();
+    drop(guard);
+    let commands: Vec<_> = state
+        .requested("workspace/executeCommand")
+        .iter()
+        .filter_map(|p| p["command"].as_str().map(str::to_owned))
+        .collect();
+    assert!(commands.contains(&"java.project.getClasspaths".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
@@ -3001,7 +3035,84 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
             "start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 6}
         }}),
     );
-    let result = h.mgr.goto(doc, Pos::new(0, 2), GotoKind::Definition).await.unwrap();
+    let result = h.mgr.goto(doc, Pos::new(0, 12), GotoKind::Definition).await.unwrap();
     assert_eq!(result.len(), 1);
+    assert_eq!(s.requested("workspace/executeCommand").len(), 1);
     assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
+
+/// The configuration command indexes the whole project, so Go to Definition (and
+/// every Ctrl+hover probe) consults it only inside a key argument; ordinary Java
+/// symbols in a Spring file go straight to JDT.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_definition_consults_configuration_only_inside_key_arguments() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let text = "class A {\n  @Value(\"${app.port}\") int port;\n  String a() { return env.getProperty(Keys.HOST) + x.getValue(); }\n}\n";
+    let (doc, path) = h.open("A.java", text);
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.respond("workspace/executeCommand", json!({"locations": [], "keys": [], "roots": []}));
+    s.respond(
+        "textDocument/definition",
+        json!({"uri": uri_of(&path), "range": {
+            "start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}
+        }}),
+    );
+    // Field type, field name, method name, the lookup's receiver and name, another call.
+    for pos in [Pos::new(1, 24), Pos::new(1, 28), Pos::new(2, 9), Pos::new(2, 22), Pos::new(2, 28), Pos::new(2, 53)] {
+        assert_eq!(h.mgr.goto(doc, pos, GotoKind::Definition).await.unwrap().len(), 1, "{pos:?}");
+    }
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    assert_eq!(s.requested("textDocument/definition").len(), 6);
+    // Inside a placeholder and a constant lookup key: configuration first, JDT as fallback.
+    for pos in [Pos::new(1, 13), Pos::new(2, 41)] {
+        h.mgr.goto(doc, pos, GotoKind::Definition).await.unwrap();
+    }
+    assert_eq!(s.requested("workspace/executeCommand").len(), 2);
+}
+
+/// JDT LS aborts its Maven import on Windows when the project holds a file with a
+/// reserved device name (`nul` left by `2>nul`); the error names those files there
+/// and stays silent elsewhere, where such names are ordinary files.
+#[tokio::test(flavor = "multi_thread")]
+async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    // A file named `nul` cannot be created through the Win32 namespace; on Windows use the verbatim path.
+    let nul = if cfg!(windows) && !h.root.to_string_lossy().starts_with(r"\\?\") {
+        PathBuf::from(format!(r"\\?\{}", h.root.join("nul").display()))
+    } else {
+        h.root.join("nul")
+    };
+    std::fs::write(&nul, "54 bytes").unwrap();
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let failure = "Initialization failed | java.lang.IllegalArgumentException: Path must include project and resource name: /demo | at UnifiedTree.createChildNodeFromFileSystem(UnifiedTree.java:320)";
+    for _ in 0..2 {
+        s.peer().notify("window/logMessage", json!({ "type": 1, "message": failure })).unwrap();
+    }
+    s.peer().notify("window/showMessage", json!({ "type": 2, "message": "after" })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == "after")))
+        .await;
+    // The scan runs off the RPC thread; give it time to report.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let failures: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Notify { title, body: Some(b), .. } if title == "Java project import failed" => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+    if cfg!(windows) {
+        assert_eq!(failures.len(), 1, "reported once: {failures:?}");
+        assert!(failures[0].contains("nul"), "{failures:?}");
+    } else {
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+    let _ = std::fs::remove_file(&nul);
 }

@@ -1,11 +1,12 @@
 /**
- * Frameless-window resize handles: Windows gives undecorated windows no
- * resize borders, so the title bar's frameless look leaves the window
- * stuck at its launch size. Eight invisible hit areas along the edges
+ * Frameless-window resize handles: Windows and Linux on X11 give undecorated
+ * windows no resize borders, so the title bar's frameless look leaves the
+ * window stuck at its launch size. Eight invisible hit areas along the edges
  * start a native resize drag, like any other desktop app.
  *
  * macOS renders its own overlay title bar but still provides resize
- * handles, so nothing is added there.
+ * handles, and on Wayland GTK draws resize edges in the client-side shadow
+ * (`decorate_csd` in windows.rs), so nothing is added there.
  */
 import { useEffect, useState } from "react";
 import { usePlatform } from "@/platform/platformInfo";
@@ -33,7 +34,8 @@ async function start(dir: Dir) {
 export function WindowResizeHandles() {
   // A frameless window needs them; a decorated one already has native borders.
   const frameless = usePlatform((s) => s.framelessTitleBar);
-  const enabled = isTauri() && frameless;
+  const gtkEdges = usePlatform((s) => s.os === "linux" && s.wayland);
+  const enabled = isTauri() && frameless && !gtkEdges;
   // A maximized or full-screen window has nothing to resize; the edges belong to the content.
   const [sized, setSized] = useState(false);
   useEffect(() => {

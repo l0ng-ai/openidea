@@ -70,13 +70,21 @@ pub async fn registry_install(
     .await
     .map_err(join_err);
     host.end_request(request);
-    result?
+    result??;
+    for project in host.projects() {
+        project.agents.reload_providers();
+    }
+    Ok(())
 }
 
 /// Removes a registry agent: its agent file and installed files.
 pub async fn registry_remove(host: &Host, _window: &str, id: String) -> IdeResult<()> {
     let paths = registry_paths(host);
-    tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)?
+    tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)??;
+    for project in host.projects() {
+        project.agents.reload_providers();
+    }
+    Ok(())
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
