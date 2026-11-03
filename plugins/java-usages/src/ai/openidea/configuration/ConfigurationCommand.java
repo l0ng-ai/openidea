@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.ZipFile;
 import com.google.gson.*;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -28,8 +29,40 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
     private static final String RESOLVER = "org.springframework.core.env.PropertyResolver";
     private static final int MAX_UNITS = 20_000, MAX_ENTRIES = 100_000, MAX_BYTES = 2 * 1024 * 1024;
     private static final AtomicLong REVISION = new AtomicLong();
+    private static final AtomicLong BUILDS = new AtomicLong();
+    private static final Map<String, Long> PROJECT_REVISIONS = new ConcurrentHashMap<>();
     private static final Map<String, Index> CACHE = new LinkedHashMap<>();
-    static { JavaCore.addElementChangedListener(event -> REVISION.incrementAndGet(), ElementChangedEvent.POST_CHANGE | ElementChangedEvent.POST_RECONCILE); }
+    static {
+        JavaCore.addElementChangedListener(event -> {
+            Set<String> changed = new HashSet<>();
+            changedProjects(event.getDelta(), changed);
+            long revision = REVISION.incrementAndGet();
+            for (String project : changed) PROJECT_REVISIONS.merge(project, revision, Math::max);
+        }, ElementChangedEvent.POST_CHANGE | ElementChangedEvent.POST_RECONCILE);
+    }
+
+    // Opening a clean working copy / requesting an AST does not change a binding.
+    // Real content, member, classpath and project changes still invalidate all
+    // snapshots that resolve source through the changed project (including users
+    // of inherited members/constants). No JDT queries or index lock in listeners.
+    private static void changedProjects(IJavaElementDelta delta, Set<String> changed) {
+        int flags = delta.getFlags();
+        int bookkeeping = IJavaElementDelta.F_CHILDREN | IJavaElementDelta.F_AST_AFFECTED | IJavaElementDelta.F_PRIMARY_WORKING_COPY;
+        boolean lifecycle = delta.getElement() instanceof ICompilationUnit &&
+                (flags & IJavaElementDelta.F_PRIMARY_WORKING_COPY) != 0 && (flags & ~bookkeeping) == 0;
+        if (!lifecycle && (delta.getKind() != IJavaElementDelta.CHANGED || (flags & ~bookkeeping) != 0)) {
+            IJavaProject project = delta.getElement().getJavaProject();
+            if (project != null) changed.add(project.getHandleIdentifier());
+            else changed.add("*"); // Global Java-model/options changes affect every scope.
+        }
+        for (IJavaElementDelta child : delta.getAffectedChildren()) changedProjects(child, changed);
+    }
+
+    private static long revision(Set<String> projects) {
+        long result = PROJECT_REVISIONS.getOrDefault("*", 0L);
+        for (String project : projects) result = Math.max(result, PROJECT_REVISIONS.getOrDefault(project, 0L));
+        return result;
+    }
 
     private record Entry(String name, String handle, Location location, boolean relaxed) {}
     private record FileStamp(java.nio.file.attribute.FileTime modified, long size) {}
@@ -37,8 +70,30 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         try { return new FileStamp(Files.getLastModifiedTime(path), Files.size(path)); }
         catch (java.io.IOException e) { return new FileStamp(null, -1); }
     }
-    private record Index(long revision, String workingCopies, List<Entry> entries, List<String> roots,
-            Map<Path, FileStamp> files, boolean incomplete, int parsed) {}
+    private record Index(long revision, long buildId, Set<String> projects, String workingCopies,
+            List<Entry> entries, List<String> roots, Map<Path, FileStamp> files, boolean incomplete, int parsed,
+            Map<String, List<Entry>> matches) {
+        List<Entry> matching(String key, IProgressMonitor monitor) {
+            synchronized (matches) {
+                List<Entry> cached = matches.remove(key);
+                if (cached != null) { matches.put(key, cached); return cached; }
+                List<Entry> found = new ArrayList<>();
+                for (Entry entry : entries) {
+                    check(monitor);
+                    if (ConfigurationCommand.matches(entry.name, key, entry.relaxed)) found.add(entry);
+                }
+                // Retain neither missing keys (import may be incomplete) nor large
+                // match sets. The index itself already owns all entry records.
+                if (!found.isEmpty() && found.size() <= 2000) {
+                    while (!matches.isEmpty() && (matches.size() >= 128 ||
+                            matches.values().stream().mapToInt(List::size).sum() + found.size() > 4096))
+                        matches.remove(matches.keySet().iterator().next());
+                    matches.put(key, List.copyOf(found));
+                }
+                return found;
+            }
+        }
+    }
 
     @Override
     public Object executeCommand(String command, List<Object> args, IProgressMonitor monitor) throws Exception {
@@ -59,7 +114,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
                     JavaLanguageServerPlugin.getPreferencesManager(), monitor);
             if (element != null) selected = element.getHandleIdentifier();
         }
-        for (Entry entry : index.entries) {
+        for (Entry entry : key == null ? index.entries : index.matching(key, monitor)) {
             check(monitor);
             Location location = entry.location;
             if (key != null) {
@@ -108,7 +163,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         }
         return Map.of("locations", locations, "keys", keys, "roots", index.roots,
                 "incomplete", index.incomplete || locations.size() >= 2000,
-                "parsedUnits", index.parsed, "revision", index.revision);
+                "parsedUnits", index.parsed, "revision", index.revision, "buildId", index.buildId);
     }
 
     private static boolean sameUri(String a, String b) {
@@ -150,8 +205,18 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
     }
 
     private static synchronized Index index(IJavaProject project, IProgressMonitor monitor) throws Exception {
-        long revision = REVISION.get();
         String id = project.getHandleIdentifier();
+        Index cached = CACHE.get(id);
+        // Only resolve package roots again after this project's model changed.
+        Set<String> projects = cached == null ? Set.of(id) : cached.projects;
+        IPackageFragmentRoot[] packageRoots = null;
+        if (cached == null || cached.revision != revision(projects)) {
+            packageRoots = project.getAllPackageFragmentRoots();
+            projects = new HashSet<>();
+            projects.add(id);
+            for (IPackageFragmentRoot root : packageRoots) projects.add(root.getJavaProject().getHandleIdentifier());
+        }
+        long revision = revision(projects);
         Map<String, ICompilationUnit> copies = new TreeMap<>();
         for (ICompilationUnit copy : JavaCore.getWorkingCopies(null)) copies.put(copy.getPrimary().getHandleIdentifier(), copy);
         for (ICompilationUnit copy : JavaCore.getWorkingCopies(JavaLanguageServerPlugin.getInstance().getWorkingCopyOwner()))
@@ -159,13 +224,17 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         var digest = java.security.MessageDigest.getInstance("SHA-256");
         for (var entry : copies.entrySet()) {
             check(monitor);
+            // Opening a target for navigation must not invalidate the snapshot.
+            // Unsaved buffers still participate before JDT reconciliation, but
+            // unrelated projects and clean copies no longer get read/hashed.
+            if (!projects.contains(entry.getValue().getJavaProject().getHandleIdentifier()) ||
+                    !entry.getValue().hasUnsavedChanges()) continue;
             digest.update(entry.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             String source = entry.getValue().getSource();
             if (source != null) digest.update(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
         String workingCopies = HexFormat.of().formatHex(digest.digest());
-        Index cached = CACHE.get(id);
-        if (cached != null && cached.revision == revision && cached.workingCopies.equals(workingCopies)) {
+        if (cached != null && cached.revision == revision && cached.projects.equals(projects) && cached.workingCopies.equals(workingCopies)) {
             boolean valid = true;
             for (var entry : cached.files.entrySet()) {
                 check(monitor);
@@ -176,7 +245,8 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         Builder builder = new Builder(monitor);
         Set<String> units = new HashSet<>(), roots = new LinkedHashSet<>();
         int visited = 0;
-        for (IPackageFragmentRoot root : project.getAllPackageFragmentRoots()) {
+        if (packageRoots == null) packageRoots = project.getAllPackageFragmentRoots();
+        for (IPackageFragmentRoot root : packageRoots) {
             check(monitor);
             if (root.getKind() == IPackageFragmentRoot.K_SOURCE) {
                 if (root.getResource() != null && root.getResource().getLocationURI() != null)
@@ -209,7 +279,9 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         // Return project locations as well; the client excludes nested independent modules.
         roots.add(project.getProject().getLocationURI().toString());
         builder.metadataDirectory(project.getProject().getLocation().toFile().toPath().resolve("src/main/resources"), project);
-        Index result = new Index(revision, workingCopies, List.copyOf(builder.entries), List.copyOf(roots), Map.copyOf(builder.files), builder.incomplete, builder.parsed);
+        Index result = new Index(revision, BUILDS.incrementAndGet(), Set.copyOf(projects), workingCopies,
+                List.copyOf(builder.entries), List.copyOf(roots), Map.copyOf(builder.files), builder.incomplete, builder.parsed,
+                new LinkedHashMap<>());
         CACHE.remove(id);
         while (!CACHE.isEmpty() && (CACHE.size() >= 8 ||
                 CACHE.values().stream().mapToInt(value -> value.entries.size()).sum() + result.entries.size() > MAX_ENTRIES))

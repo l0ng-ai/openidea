@@ -45,6 +45,7 @@ const fb = await import("./syntaxFallback");
 const { gotoTargets, navigationExtension, highlightUsages } = await import("./navigation");
 const { startRename, renameNamePart } = await import("./rename");
 const { lspDoc } = await import("./lsp");
+const { invalidateConfigurationNavigation } = await import("./configurationNavigation");
 const { useLspPopup, closePopup } = await import("./popupStore");
 
 const r = (line: number, col: number, endCol: number): Range => ({ start: { line, col }, end: { line, col: endCol } });
@@ -99,6 +100,7 @@ function editor(doc: string, language = "typescript", anchor = 0) {
 }
 
 beforeEach(() => {
+  invalidateConfigurationNavigation();
   for (const f of Object.values(cmd)) f.mockClear();
   openFile.mockClear();
   closePopup();
@@ -582,6 +584,67 @@ describe("modifier-hover navigation recovery", () => {
       }),
     );
   }
+
+  it.each(["yaml", "properties"])(
+    "%s hover underlines without a popup and clicking reuses the target",
+    async (language) => {
+      cmd.lspGoto.mockReturnValueOnce(ok([target]));
+      const view = editor("port: 8080", language);
+      move(view, 1);
+      await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("port"));
+      expect(cmd.lspHover).not.toHaveBeenCalled();
+      view.contentDOM.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          metaKey: mac,
+          ctrlKey: !mac,
+        }),
+      );
+      await vi.waitFor(() => expect(openFile).toHaveBeenCalledOnce());
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
+      expect(view.dom.querySelector(".cm-lsp-nav-info")).toBeNull();
+    },
+  );
+
+  it("invalidates the hover marker after dependencies change", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    const view = editor("port: 8080", "yaml");
+    move(view, 1);
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).not.toBeNull());
+    invalidateConfigurationNavigation();
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    move(view, 1);
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).toBeNull());
+    expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a stuck configuration probe without retaining the late response", async () => {
+    let finish!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspGoto.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const view = editor("port: 8080", "yaml");
+    vi.useFakeTimers();
+    try {
+      move(view, 1);
+      await vi.advanceTimersByTimeAsync(3001);
+      cmd.lspGoto.mockReturnValueOnce(ok([target]));
+      move(view, 1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).not.toBeNull());
+    finish({ status: "ok", data: [] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await gotoTargets(view, "definition", 1);
+    expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+    expect(openFile).toHaveBeenCalledOnce();
+  });
 
   it("shows the link without waiting for documentation", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([target]));

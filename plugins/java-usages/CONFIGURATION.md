@@ -7,6 +7,11 @@ connect to external configuration services.
 
 ## Editor behavior
 
+- **⌘/Ctrl-hover** on YAML / properties shows the navigation underline without
+  an automatic schema/type popup. Ordinary hover and explicit documentation keep
+  their existing behavior.
+- Hover and **Go to Definition** share the target list and in-flight request.
+  Returning to an unchanged editor reuses the result instead of asking JDT again.
 - **Go to Definition** on a YAML / properties key opens binding members and
   literal consumers in Java. Multiple matches use the existing location chooser.
 - **Go to Definition** inside a Java `@Value` placeholder or a constant
@@ -57,10 +62,28 @@ ordinary typing, code-lens probes and bulk scoped reference analysis do not star
 retained, with a shared 100,000-association retention cap. Records contain property names, element handles and source locations;
 ASTs and bindings are discarded after indexing. A lexical prefilter avoids AST
 construction for ordinary Java units, but every accepted association is resolved
-semantically. Warm requests reuse the snapshot. Java model/reconcile changes
-invalidate it conservatively, including dependent-type changes; open working-copy
-content fingerprints also prevent stale answers before reconciliation. This is
-**snapshot invalidation**, not a fully incremental Java semantic index.
+semantically. Warm requests reuse the snapshot, with a bounded per-key match
+cache (128 keys / 4,096 entry references). Java model/reconcile deltas invalidate
+only snapshots whose resolved source projects intersect the change. Opening a
+clean working copy or receiving an AST-only delta does not rebuild the index.
+Unsaved working-copy fingerprints are limited to those source projects; they
+still detect edits before reconciliation. Changes within that dependency scope
+remain conservative: inherited types, constants and classpath changes can affect
+other units. This is **project-scoped snapshot invalidation**, not a fully
+incremental binding graph. Metadata stamps are still validated on warm queries.
+
+The editor retains up to 128 navigation results / 4,096 target locations and
+shares pending requests. It invalidates them on editor edits, file changes,
+discarded buffers, workspace edits, project switches and language-server
+restart/refresh/settling. Results expire after 30 seconds as a backstop for
+unreported semantic changes; stalled probes are retryable after three seconds.
+Server refresh/settling evicts retained answers without swallowing an in-flight
+click when its own server task finishes; that answer is not cached.
+Errors and empty results are not retained in the shared target cache. A local
+hover marker may briefly remember a missing target (one second) to avoid flooding
+servers on mouse moves. Late answers from an invalidated generation cannot
+navigate or repopulate the cache. These caches are per window and bounded; there
+is no eager workspace scan or new background indexer.
 
 Metadata/JAR timestamps are checked before reuse. The client caches parsed disk
 configuration files by modification time and size (at most 100,000 cached keys), overlays open buffers, and
@@ -102,7 +125,9 @@ cargo test -p ide-language -p ide-lsp
 The isolated real-server harness covers custom bindings, inheritance, nesting,
 collections/maps, records, constructor aliases, factory methods, consumers,
 constant keys, negative identity matches, dependency metadata/source locations,
-reverse queries, and unsaved-change/close invalidation. Optional stress fixtures
+reverse queries, clean-target-open reuse, unrelated-project isolation, dependent
+superclass edits and unsaved-change/close invalidation. The returned `buildId`
+lets the harness assert reuse without fragile timing thresholds. Optional stress fixtures
 add 3,000 ordinary units and 100 binding classes; output includes cold/warm/edit
 latencies for the JDT command only, excluding server import, UI and configuration-file discovery. The optional actual Spring Boot JAR checks `server.port`,
 `spring.datasource.url` and `spring.jackson.date-format` through dependency
@@ -112,3 +137,12 @@ Rust tests cover configuration syntax/ranges and the actual manager bridge:
 YAML navigation without YAML definition capabilities, Java native fallback,
 reference merging, profiles, open-buffer overlays and sibling-module exclusion.
 Existing Java usages / read-write integration harnesses remain regression checks.
+
+Frontend regression tests cover hover/click request sharing, source and target
+edits/removal, cache bounds/expiry, server restarts, missing/error answers and
+late-response rejection. `pnpm e2e e2e/configurationNavigation.spec.ts` exercises
+real browser mouse gestures and editor switching with a deliberately delayed
+(500 ms) IPC stub. It records click-to-target-display timings and requires eleven
+warm clicks to share one lookup, plus a new lookup after editing Java. These are
+browser-path measurements, **not** native-desktop or real-server end-to-end timings;
+the real-JDT harness independently verifies semantics and cold/warm JVM timings.

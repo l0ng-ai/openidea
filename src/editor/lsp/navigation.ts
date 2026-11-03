@@ -59,6 +59,14 @@ import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
 import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
+import {
+  CONFIGURATION_NAVIGATION_MAX_AGE,
+  configurationNavigationRevision,
+  hasConfigurationNavigation,
+  invalidateConfigurationNavigation,
+  isConfigurationDocument,
+  requestNavigation,
+} from "./configurationNavigation";
 
 const highlightsBackoff = featureBackoff();
 
@@ -169,7 +177,7 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   try {
     const done = showPendingHint(view, tx`Finding navigation target…`);
     try {
-      locs = dedupeLocations(await gotoAfterEdits(view, () => lspRequest(() => commands.lspGoto(doc.doc, pos, kind))));
+      locs = dedupeLocations(await gotoAfterEdits(view, () => requestNavigation(view, offset, kind)));
     } finally {
       done();
     }
@@ -350,7 +358,7 @@ async function probeNavigation(view: EditorView, offset: number): Promise<{ info
   if (!navigable && doc) {
     const pos = offsetToPos(view.state.doc, offset);
     try {
-      navigable = (await lspRequest(() => commands.lspGoto(doc.doc, pos, "definition"))).length > 0;
+      navigable = (await requestNavigation(view, offset, "definition")).length > 0;
     } catch (e) {
       if (!isUnavailable(e)) throw e;
       navigable = !!(await gotoFallback(view, doc, pos))?.length;
@@ -366,7 +374,8 @@ const linkPlugin = ViewPlugin.fromClass(
   class {
     last: { x: number; y: number } | null = null;
     /** Probe results per word (`from:to`) for the current document. */
-    private probed = new Map<string, { info: NavInfo | null } | null>();
+    private probed = new Map<string, { result: { info: NavInfo | null } | null; at: number }>();
+    private revision = configurationNavigationRevision();
     private probedDoc: Text | null = null;
     private probing: string | null = null;
     private off: () => void;
@@ -424,14 +433,22 @@ const linkPlugin = ViewPlugin.fromClass(
         this.set({ from: target.from, to: target.to, info: null });
         return;
       }
-      if (this.probedDoc !== view.state.doc) {
+      if (this.probedDoc !== view.state.doc || this.revision !== configurationNavigationRevision()) {
+        this.revision = configurationNavigationRevision();
+        this.probeVersion++;
+        clearTimeout(this.probeTimer);
+        this.probing = null;
         this.probed.clear();
         this.probedDoc = view.state.doc;
       }
       const key = `${target.from}:${target.to}`;
-      if (this.probed.has(key)) {
-        const hit = this.probed.get(key);
-        this.set(hit ? { from: target.from, to: target.to, info: hit.info } : null);
+      const hit = this.probed.get(key);
+      if (
+        hit &&
+        Date.now() - hit.at < (hit.result ? CONFIGURATION_NAVIGATION_MAX_AGE : 1000) &&
+        (!hit.result || !isConfigurationDocument(view) || hasConfigurationNavigation(view, target.from))
+      ) {
+        this.set(hit.result ? { from: target.from, to: target.to, info: hit.result.info } : null);
         return;
       }
       const current = view.state.field(linkField);
@@ -448,21 +465,33 @@ const linkPlugin = ViewPlugin.fromClass(
         }
       }, 3000);
       const docAt = view.state.doc;
+      const revision = this.revision;
       void probeNavigation(view, target.from)
         .then((result) => {
-          if (this.disposed || view.state.doc !== docAt || this.probeVersion !== version) return;
+          if (
+            this.disposed ||
+            view.state.doc !== docAt ||
+            this.probeVersion !== version ||
+            revision !== configurationNavigationRevision()
+          )
+            return;
           clearTimeout(this.probeTimer);
-          this.probed.set(key, result);
+          if (this.probed.size >= 128) this.probed.delete(this.probed.keys().next().value!);
+          this.probed.set(key, { result, at: Date.now() });
           if (this.probing !== key) return;
           this.probing = null;
+          if (!result) this.set(null);
           if (result) {
             this.set({ from: target.from, to: target.to, info: null });
+            // Configuration navigation is a link gesture. Plain hover still
+            // shows schema/type documentation; do not cover the key with it here.
+            if (isConfigurationDocument(view)) return;
             // Documentation must never delay the link cursor or underline.
             void requestHover(view, target.from)
               .then((hover) => {
                 if (this.disposed || view.state.doc !== docAt || this.probeVersion !== version || !hover) return;
                 const info = declarationSummary(hover.contents);
-                this.probed.set(key, { info });
+                this.probed.set(key, { result: { info }, at: Date.now() });
                 this.set({ from: target.from, to: target.to, info });
               })
               .catch(() => {});
@@ -700,7 +729,10 @@ const highlightPlugin = ViewPlugin.fromClass(
 export function navigationExtension(): Extension {
   return [
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) editedAt.set(u.view, performance.now());
+      if (u.docChanged) {
+        editedAt.set(u.view, performance.now());
+        invalidateConfigurationNavigation();
+      }
     }),
     linkField,
     linkPlugin,

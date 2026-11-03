@@ -51,7 +51,7 @@ class Settings extends Parent {
     public int getTimeOut() { return timeOut; }
     public void setTimeOut(int value) { timeOut = value; }
 }
-class Parent { boolean enabled; }
+class Parent extends base.BaseSettings { boolean enabled; }
 class Nested { String url; }
 @ConfigurationProperties("record")
 record RecordSettings(String name, int count) {}
@@ -87,6 +87,24 @@ local_metadata.mkdir(parents=True)
     'groups': [{'name': 'extra', 'sourceType': 'demo.Nested', 'type': 'demo.Nested'}],
     'properties': [{'name': 'extra.url', 'sourceType': 'demo.Nested'}]
 }))
+# Imported sibling projects distinguish dependent-source invalidation from
+# unrelated workspace activity. No build tool or network access is involved.
+def java_project(directory, name):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / '.project').write_text(f'<projectDescription><name>{name}</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>')
+    (directory / '.classpath').write_text('<classpath><classpathentry kind="src" path="src"/><classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/><classpathentry kind="output" path="bin"/></classpath>')
+base = work / 'base'
+other = work / 'other'
+java_project(base, 'configuration-base')
+java_project(other, 'configuration-other')
+base_file = base / 'src/base/BaseSettings.java'
+base_file.parent.mkdir(parents=True)
+base_source = 'package base; public class BaseSettings { public String inherited; }'
+base_file.write_text(base_source)
+other_file = other / 'src/other/Other.java'
+other_file.parent.mkdir(parents=True)
+other_source = 'package other; public class Other { int unrelated; }'
+other_file.write_text(other_source)
 # A dependency with metadata and attached source exercises actual library locations.
 libsource = work / 'libsrc/vendor/LibrarySettings.java'
 libsource.parent.mkdir(parents=True)
@@ -106,7 +124,7 @@ with zipfile.ZipFile(sourcejar, 'w') as z:
 (project / '.project').write_text('<projectDescription><name>configuration</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>')
 spring_jar = os.environ.get('OPENIDEA_SPRING_BOOT_JAR')
 extra_classpath = f'<classpathentry kind="lib" path="{pathlib.Path(spring_jar).resolve()}"/>' if spring_jar else ''
-(project / '.classpath').write_text(f'<classpath><classpathentry kind="src" path="src"/><classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/><classpathentry kind="lib" path="{library}" sourcepath="{sourcejar}"/>{extra_classpath}<classpathentry kind="output" path="bin"/></classpath>')
+(project / '.classpath').write_text(f'<classpath><classpathentry kind="src" path="src"/><classpathentry kind="src" path="/configuration-base"/><classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/><classpathentry kind="lib" path="{library}" sourcepath="{sourcejar}"/>{extra_classpath}<classpathentry kind="output" path="bin"/></classpath>')
 config = work / 'config'
 config.mkdir()
 name = {'Darwin': 'config_mac', 'Windows': 'config_win'}.get(platform.system(), 'config_linux')
@@ -154,13 +172,13 @@ def query(key, uri=None, line=0, col=0):
 def names(result):
     return {p['name'] for p in result['keys']}
 try:
-    init = request('initialize', {'processId': None, 'rootUri': project.as_uri(), 'workspaceFolders': [{'uri': project.as_uri(), 'name': 'configuration'}], 'capabilities': {'textDocument': {'definition': {'linkSupport': False}}}, 'initializationOptions': {'bundles': [str(bundle)], 'extendedClientCapabilities': {'classFileContentsSupport': True}, 'settings': {'java': {'import': {'gradle': {'enabled': False}, 'maven': {'enabled': False}}}}}})
+    init = request('initialize', {'processId': None, 'rootUri': work.as_uri(), 'workspaceFolders': [{'uri': work.as_uri(), 'name': 'configuration-workspace'}], 'capabilities': {'textDocument': {'definition': {'linkSupport': False}}}, 'initializationOptions': {'bundles': [str(bundle)], 'extendedClientCapabilities': {'classFileContentsSupport': True}, 'settings': {'java': {'import': {'gradle': {'enabled': False}, 'maven': {'enabled': False}}}}}})
     send({'jsonrpc': '2.0', 'method': 'initialized', 'params': {}})
     send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': file.as_uri(), 'languageId': 'java', 'version': 1, 'text': source}}})
     request('java/buildWorkspace', True)
     assert 'openidea.java.configuration' in init['capabilities']['executeCommandProvider']['commands'], init
     results = {}
-    for key in ['app', 'vendor', 'app.time-out', 'app.enabled', 'app.nested.url', 'app.clients[0].url', 'app.routes.east.url', 'app.tags[0]', 'app.labels.region', 'app.labels[region.name]', 'constructor.remote-name', 'record.name', 'bean.url', 'app.backup', 'app.required', 'vendor.port', 'extra.url']:
+    for key in ['app', 'vendor', 'app.time-out', 'app.enabled', 'app.inherited', 'app.nested.url', 'app.clients[0].url', 'app.routes.east.url', 'app.tags[0]', 'app.labels.region', 'app.labels[region.name]', 'constructor.remote-name', 'record.name', 'bean.url', 'app.backup', 'app.required', 'vendor.port', 'extra.url']:
         start = time.perf_counter()
         result = query(key)
         results[key] = {'seconds': time.perf_counter() - start, 'response': result}
@@ -197,9 +215,44 @@ try:
         col = text.index(needle) + (4 if needle == 'int timeOut;' else (len('env.getProperty(') if needle.startswith('env.') else 4))
         reverse = query(None, file.as_uri(), line, col)
         assert expected in names(reverse), (needle, reverse)
+    # A plain target open/close must not rebuild the semantic index. Reading its
+    # symbols also waits for the server to process the preceding document event.
+    stable = query('app.inherited')['buildId']
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': base_file.as_uri(), 'languageId': 'java', 'version': 1, 'text': base_source}}})
+    request('textDocument/documentSymbol', {'textDocument': {'uri': base_file.as_uri()}})
+    opened = query('app.inherited')
+    assert opened['buildId'] == stable, ('clean target open rebuilt index', stable, opened)
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didClose', 'params': {'textDocument': {'uri': base_file.as_uri()}}})
+    assert query('app.inherited')['buildId'] == stable, 'clean target close rebuilt index'
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': base_file.as_uri(), 'languageId': 'java', 'version': 1, 'text': base_source}}})
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': other_file.as_uri(), 'languageId': 'java', 'version': 1, 'text': other_source}}})
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didChange', 'params': {'textDocument': {'uri': other_file.as_uri(), 'version': 2}, 'contentChanges': [{'text': other_source.replace('unrelated', 'changed')} ]}})
+    request('textDocument/documentSymbol', {'textDocument': {'uri': other_file.as_uri()}})
+    unrelated = query('app.inherited')
+    assert unrelated['buildId'] == stable, ('unrelated edit rebuilt index', stable, unrelated)
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didChange', 'params': {'textDocument': {'uri': base_file.as_uri(), 'version': 2}, 'contentChanges': [{'text': base_source.replace('inherited', 'renamed')} ]}})
+    renamed = query('app.renamed')
+    assert renamed['locations'] and renamed['buildId'] != stable, ('dependent unsaved edit not indexed', renamed)
+    assert not query('app.inherited')['locations']
+    send({'jsonrpc': '2.0', 'method': 'textDocument/didClose', 'params': {'textDocument': {'uri': base_file.as_uri()}}})
+    assert query('app.inherited')['locations'], 'closing dirty dependency must restore disk members'
+    # Reconfiguring the source classpath must invalidate even when no Java
+    # contents changed. Restoring the dependency must restore inherited targets.
+    classpath = project / '.classpath'
+    original_classpath = classpath.read_text()
+    classpath.write_text(original_classpath.replace('<classpathentry kind="src" path="/configuration-base"/>', ''))
+    send({'jsonrpc': '2.0', 'method': 'workspace/didChangeWatchedFiles', 'params': {'changes': [{'uri': classpath.as_uri(), 'type': 2}]}})
+    request('java/buildWorkspace', True)
+    assert not query('app.inherited')['locations'], 'removed source dependency left stale targets'
+    classpath.write_text(original_classpath)
+    send({'jsonrpc': '2.0', 'method': 'workspace/didChangeWatchedFiles', 'params': {'changes': [{'uri': classpath.as_uri(), 'type': 2}]}})
+    request('java/buildWorkspace', True)
+    assert query('app.inherited')['locations'], 'restored source dependency was not indexed'
+    stable = query('app.time-out')['buildId']
     warm = []
     for _ in range(20):
-        start = time.perf_counter(); query('app.time-out'); warm.append(time.perf_counter() - start)
+        start = time.perf_counter(); warm_result = query('app.time-out'); warm.append(time.perf_counter() - start)
+        assert warm_result['buildId'] == stable, ('warm request rebuilt index', stable, warm_result)
     # Unsaved changes must replace old keys, and closing must restore disk keys.
     changed = source.replace('prefix="app"', 'prefix="edited"').replace('${app.time-out:30}', '${edited.timeout:30}')
     send({'jsonrpc': '2.0', 'method': 'textDocument/didChange', 'params': {'textDocument': {'uri': file.as_uri(), 'version': 2}, 'contentChanges': [{'text': changed}]}})
