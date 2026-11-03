@@ -48,7 +48,7 @@ import {
 } from "./syntaxFallback";
 import { showHint, showPendingHint } from "./hint";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
-import { identifierAt, readManyFileLines } from "./files";
+import { readManyFileLines, targetLabel } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
@@ -111,7 +111,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         run: () => navigateTo(l),
       };
     // Server targets: the declared name (speed search matches it), file and line after it.
-    const name = identifierAt(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
+    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
