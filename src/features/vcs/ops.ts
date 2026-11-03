@@ -266,7 +266,9 @@ const headCommit = (repo: string | null) =>
     () => null,
   );
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** Counts for a translated sentence: each variant is its own source text, as "{count} files". */
+const filesText = (n: number) => (n === 1 ? tx`${n} file` : tx`${n} files`);
+const commitsText = (n: number) => (n === 1 ? tx`${n} commit` : tx`${n} commits`);
 
 /** "Pushed 3 commits to origin/main", translated per count. */
 const pushedTitle = (n: number, to: string) =>
@@ -304,7 +306,7 @@ async function notifyUpdated(updated: readonly UpdatedRange[]) {
     group: "vcs",
     level: "info",
     key: "vcs.remote",
-    title: `${plural(files, "file")} updated in ${plural(commits, "commit")}`,
+    title: `${filesText(files)} updated in ${commitsText(commits)}`,
     actions: [
       {
         label: "View Commits",
