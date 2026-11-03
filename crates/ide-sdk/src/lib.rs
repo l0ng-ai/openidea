@@ -19,6 +19,7 @@ pub mod lombok;
 mod npm;
 pub mod pinned;
 pub mod python;
+pub mod ruby;
 mod vue;
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,7 @@ pub enum SdkKind {
     Jdk,
     /// Maven homes.
     Maven,
+    Ruby,
 }
 
 /// One installed interpreter / toolchain.
