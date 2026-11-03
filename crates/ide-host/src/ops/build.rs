@@ -296,7 +296,7 @@ pub async fn build_run(
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
                 let member_cache = cache.join(crate::project::project_key(member));
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
-                let plan = compile::plan(member, &model, kind, file.as_deref())?;
+                let plan = compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?;
                 match &mut combined {
                     Some(combined) => combined.steps.extend(plan.steps),
                     None => combined = Some(plan),
@@ -306,7 +306,13 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            compile::plan(&root, &with_profiles(load(&root, &cache, &settings), &cache), kind, file.as_deref())?
+            compile::plan(
+                &root,
+                &with_profiles(load(&root, &cache, &settings), &cache),
+                kind,
+                file.as_deref(),
+                settings.cmake.profiles.as_deref(),
+            )?
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);

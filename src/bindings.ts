@@ -1759,7 +1759,7 @@ export type BuildResult = {
 	messages: BuildMessage[],
 };
 
-export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript";
+export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake";
 
 export type BuildTool = "maven" | "gradle";
 
