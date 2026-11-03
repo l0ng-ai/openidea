@@ -6,6 +6,7 @@ use crate::{
 use ide_core::{IdeError, IdeEvent, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -170,6 +171,82 @@ pub fn destroyed(app: &AppHandle, caller: &str) {
         });
     }
     changed(app);
+    let advance = state.tab_closes.lock().as_mut().is_some_and(|batch| {
+        let closing = batch.pending.front().is_some_and(|l| l == caller);
+        if closing {
+            batch.pending.pop_front();
+        }
+        closing
+    });
+    if advance {
+        close_next(app);
+    }
+}
+
+/// Tabs left to close; the first one is closing now.
+pub struct TabCloses {
+    keep: String,
+    pending: VecDeque<String>,
+}
+
+/// Closes `labels` one at a time so each project's unsaved-changes prompt is shown in turn, then selects `keep`.
+pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>) -> IdeResult<()> {
+    let state = app.state::<WindowsState>();
+    let members = state
+        .groups
+        .lock()
+        .group(caller)
+        .map(|g| g.members.clone())
+        .ok_or_else(|| IdeError::not_found("This window is not grouped"))?;
+    if !members.iter().any(|m| m == keep) {
+        return Err(IdeError::invalid("The window is not in this group"));
+    }
+    let pending = members.into_iter().filter(|m| m != keep && labels.contains(m)).collect();
+    *state.tab_closes.lock() = Some(TabCloses { keep: keep.to_owned(), pending });
+    close_next(app);
+    Ok(())
+}
+
+/// The closing tab's project vetoed (its unsaved-changes prompt was cancelled): leave the rest open.
+pub fn cancel_close(app: &AppHandle, caller: &str) {
+    let state = app.state::<WindowsState>();
+    let mut batch = state.tab_closes.lock();
+    if batch.as_ref().is_some_and(|b| b.pending.front().is_some_and(|l| l == caller)) {
+        *batch = None;
+    }
+}
+
+fn close_next(app: &AppHandle) {
+    let state = app.state::<WindowsState>();
+    loop {
+        let next = {
+            let mut batch = state.tab_closes.lock();
+            let Some(b) = batch.as_mut() else { return };
+            match b.pending.front() {
+                Some(label) => Ok(label.clone()),
+                None => Err(batch.take().unwrap().keep),
+            }
+        };
+        match next {
+            Ok(label) => {
+                if let Some(window) = app.get_webview_window(&label) {
+                    windows::focus(&window);
+                    if window.close().is_ok() {
+                        return;
+                    }
+                }
+                if let Some(b) = state.tab_closes.lock().as_mut() {
+                    b.pending.pop_front();
+                }
+            }
+            Err(keep) => {
+                if let Some(window) = app.get_webview_window(&keep) {
+                    windows::focus(&window);
+                }
+                return;
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
