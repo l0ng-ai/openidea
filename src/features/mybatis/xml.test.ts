@@ -89,4 +89,24 @@ describe("parseMapperXml", () => {
   it("handles a namespace that is an empty string", () => {
     expect(parseMapperXml('<mapper namespace=""><select id="a"/></mapper>')!.namespace).toBe("");
   });
+
+  it("points at the closing tag of the root", () => {
+    const mapper = parseMapperXml(XML)!;
+    expect(XML.slice(mapper.closeAt, mapper.closeAt + "</mapper>".length)).toBe("</mapper>");
+  });
+
+  it("finds the closing tag of a root with no statements", () => {
+    expect(parseMapperXml('<mapper namespace="N"></mapper>')!.closeAt).toBe('<mapper namespace="N">'.length);
+  });
+
+  it("has no closing tag for a self-closed root, and its body starts past the slash", () => {
+    const text = '<mapper namespace="N"/>';
+    const mapper = parseMapperXml(text)!;
+    expect(mapper.closeAt).toBe(-1);
+    expect(mapper.bodyFrom).toBe(text.length);
+  });
+
+  it("has no closing tag while the root is still being typed", () => {
+    expect(parseMapperXml('<mapper namespace="N">')!.closeAt).toBe(-1);
+  });
 });

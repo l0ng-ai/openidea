@@ -117,6 +117,13 @@ describe("parseJavaMapper", () => {
     expect(method?.sqlAnnotation).toBe("Select");
   });
 
+  it("anchors each parameter on the start of its declaration", () => {
+    const text = "interface I { User find(Long id, @NotNull String name); }";
+    const [id, name] = parseJavaMapper(text)!.methods[0]!.parameters;
+    expect(text.slice(id!.at, text.indexOf(",", id!.at))).toBe("Long id");
+    expect(text.slice(name!.at, text.indexOf(")", name!.at))).toBe("@NotNull String name");
+  });
+
   it("anchors each method on its own line", () => {
     const methods = parseJavaMapper(MAPPER)!.methods;
     expect(methods.map((m) => m.line)).toEqual([5, 6]);

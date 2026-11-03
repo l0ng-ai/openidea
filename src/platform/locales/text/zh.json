@@ -5916,5 +5916,12 @@
   "Statement in {file}": "语句位于 {file}",
   "Mapper method in {file}": "Mapper 方法位于 {file}",
   "Choose Statement of {name} ({count} found)": "选择 {name} 的语句（找到 {count} 个）",
-  "Choose Mapper Method of {name} ({count} found)": "选择 {name} 的 Mapper 方法（找到 {count} 个）"
+  "Choose Mapper Method of {name} ({count} found)": "选择 {name} 的 Mapper 方法（找到 {count} 个）",
+  "Generate Statement for {name}": "为 {name} 生成 XML 语句",
+  "Generate @Param Annotations": "生成 @Param 注解",
+  "Cannot Generate MyBatis Statement": "无法生成 MyBatis 语句",
+  "Cannot Generate @Param Annotations": "无法生成 @Param 注解",
+  "Cannot create the file": "无法创建文件",
+  "Not a mapper XML of this interface": "该文件不是此接口的 mapper XML",
+  "The document changed; retry": "文档已更改，请重试"
 }

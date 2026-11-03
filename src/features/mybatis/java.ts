@@ -33,6 +33,8 @@ const MODIFIERS = /^(?:public|abstract|default|static|final)\s+/;
 
 export interface MapperParameter {
   name: string;
+  /** Offset where the declaration starts (after leading whitespace, before any other annotation) — where `@Param` goes. */
+  at: number;
   /** The `@Param("value")` of this parameter, or null when it has none. */
   paramAnnotation: string | null;
 }
@@ -217,7 +219,11 @@ function readParameters(text: string, shadow: string, from: number, to: number):
     const paramAnnotation = readParamAnnotation(text, shadow, part);
     const nameAt = lastIdentifier(shadow, part.from, part.to);
     if (nameAt < 0) continue;
-    out.push({ name: shadow.slice(nameAt, part.to).trim(), paramAnnotation });
+    out.push({
+      name: shadow.slice(nameAt, part.to).trim(),
+      at: skipSpace(shadow, part.from, part.to),
+      paramAnnotation,
+    });
   }
   return out;
 }

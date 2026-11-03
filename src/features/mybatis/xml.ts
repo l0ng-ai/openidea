@@ -38,46 +38,37 @@ export interface MapperXml {
   namespace: string;
   /** Offset of the namespace value, for jumping from the root line. */
   namespaceAt: number;
+  /** Offset just past the root tag's `>` — past its `/>` when the root is self-closed. */
+  bodyFrom: number;
+  /** Offset of the `<` of `</mapper>`, or -1 for a self-closed or unterminated root. */
+  closeAt: number;
   statements: XmlStatement[];
 }
 
 /** A mapper XML file, or null when it has no `<mapper>` root. */
 export function parseMapperXml(text: string, mask?: MaskSource): MapperXml | null {
   const shadow = blankOut(text, mask ?? scanXml(text));
-  const root = findRoot(shadow);
+  const tags = scanTags(shadow);
+  const root = tags.find((t) => !t.closing && t.name === "mapper");
   if (!root) return null;
-  const namespaceAt = attrValueAt(text, root.tagFrom, root.tagTo, "namespace");
   return {
-    namespace: attrValue(text, root.tagFrom, root.tagTo, "namespace") ?? "",
-    namespaceAt,
-    statements: readStatements(text, shadow, root),
+    namespace: attrValue(text, root.from, root.contentEnd, "namespace") ?? "",
+    namespaceAt: attrValueAt(text, root.from, root.contentEnd, "namespace"),
+    bodyFrom: root.to,
+    closeAt: root.selfClosed
+      ? -1
+      : (tags.find((t) => t.closing && t.name === "mapper" && t.from >= root.to)?.from ?? -1),
+    statements: readStatements(text, tags, root),
   };
 }
 
-interface RootTag {
-  tagFrom: number;
-  tagTo: number;
-  /** Offset just past the `>` of the root open tag. */
-  bodyFrom: number;
-}
-
-/** The `<mapper>` root, or null. `<mapper>` nested in a comment is invisible. */
-function findRoot(shadow: string): RootTag | null {
-  for (const tag of scanTags(shadow)) {
-    if (!tag.closing && tag.name === "mapper") {
-      return { tagFrom: tag.from, tagTo: tag.contentEnd, bodyFrom: tag.to };
-    }
-  }
-  return null;
-}
-
 /** Direct children of the root that are statements, with their line spans. */
-function readStatements(text: string, shadow: string, root: RootTag): XmlStatement[] {
+function readStatements(text: string, tags: Tag[], root: Tag): XmlStatement[] {
   const out: XmlStatement[] = [];
   /** Open elements waiting for their close tag; `level` counts depth below `<mapper>`. */
-  const stack: { tag: Tag; level: number }[] = [{ tag: rootTag(root), level: 0 }];
-  for (const tag of scanTags(shadow)) {
-    if (tag.from < root.bodyFrom) continue;
+  const stack: { tag: Tag; level: number }[] = [{ tag: root, level: 0 }];
+  for (const tag of tags) {
+    if (tag.to <= root.to) continue;
     if (tag.closing) {
       const open = stack[stack.length - 1];
       if (!open || open.tag.name !== tag.name) continue;
@@ -98,19 +89,6 @@ function readStatements(text: string, shadow: string, root: RootTag): XmlStateme
     stack.push({ tag, level });
   }
   return out;
-}
-
-/** The root `<mapper>` as a tag token, for the stack's base entry. */
-function rootTag(root: RootTag): Tag {
-  return {
-    name: "mapper",
-    nameAt: root.tagFrom + 1,
-    from: root.tagFrom,
-    to: root.bodyFrom,
-    contentEnd: root.tagTo,
-    closing: false,
-    selfClosed: true,
-  };
 }
 
 /** A statement record for an open tag, or null when it is not one or has no id. */
