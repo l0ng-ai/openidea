@@ -24,6 +24,10 @@ use tauri::utils::config::{Color, WindowConfig};
 use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuilder};
 
 pub mod cli;
+#[cfg(windows)]
+mod single_instance;
+#[cfg(windows)]
+pub use single_instance::allow_external_launches;
 
 /// Tells a window that a pending launch is waiting for it.
 pub const LAUNCH_EVENT: &str = "openidea://launch";
@@ -766,8 +770,10 @@ pub fn path_launch(path: PathBuf) -> Launch {
 
 /// Second instance launched: route the project/file and its source position together.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
+    tracing::debug!(?args, %cwd, "external editor launch received");
     match cli::parse(&args, Path::new(&cwd)) {
         Ok(Some(launch)) => {
+            tracing::debug!(?launch, "external editor launch parsed");
             let paths = launch.project.into_iter().chain(launch.files).map(|p| p.0).collect();
             if launch.location.is_none() {
                 open_paths(app, paths);
