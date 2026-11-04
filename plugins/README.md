@@ -585,6 +585,84 @@ attributes only, no scripts, event handlers, external references, `url()` or
 entities. Apply a theme in Settings › Plugins; see
 [`official/material-icons`](official/material-icons) for a complete one.
 
+Optional fields:
+
+```json
+{
+  "iconDefinitions": { "rust": { "light": "icons/rust.svg", "dark": "icons/rust_dark.svg" } },
+  "folderOpen": "folder-open",
+  "patterns": [
+    { "pattern": "^.*\\.spec\\.ts$", "icon": "test-ts", "ignoreCase": true },
+    { "pattern": "/fixtures/", "icon": "fixture", "path": true, "group": "tests" },
+    { "pattern": "^src$", "icon": "folder-src", "target": "folder", "openIcon": "folder-src-open" }
+  ],
+  "overrides": { "chevron-right": "arrow-right", "symbol-class": "class" },
+  "groups": [{ "id": "tests", "name": "Tests", "enabled": false }],
+  "choices": [
+    {
+      "id": "arrows", "name": "Arrows", "default": "plain",
+      "options": [
+        { "id": "plain", "name": "Default" },
+        { "id": "plus", "name": "Plus-Minus", "overrides": { "chevron-right": "plus" } }
+      ]
+    }
+  ],
+  "accent": true,
+  "settings": [
+    {
+      "title": "Icons",
+      "items": [
+        { "option": "hideFiles", "invert": true, "label": "Show file icons", "hint": "In trees, lists and tabs" },
+        { "option": "groups", "columns": 2 },
+        { "option": "choice", "choice": "arrows" },
+        { "option": "iconSize", "label": "Icon size", "default": 16 }
+      ]
+    }
+  ]
+}
+```
+
+- `iconDefinitions` values may be `{ "light", "dark" }`; the dark SVG is used
+  in dark themes. Icon ids may not end in `_dark`.
+- `patterns` are regular expressions checked in order, before `fileNames`
+  and `fileExtensions`. `target` is `file` (default) or `folder`; with `path`
+  a pattern matches the whole path (`/` separators) instead of the name;
+  `ignoreCase` ignores case. Patterns that could backtrack badly (a repeated
+  group, too many ways to match one name), lookaround, inline flags and
+  named groups are refused.
+- `openIcon` (folder patterns) and `folderOpen` (other folders) are used for
+  folders holding a file open in the editor when _Hollow folders_ is on.
+- `overrides` replace built-in IDE icons by name (`chevron-right`,
+  `folder-source`, …); symbol icons (`symbol-<kind>`, `class`, `method`, …)
+  are PSI icons.
+- `groups` are packs of patterns the user turns on or off; `enabled` is the
+  default.
+- `choices` are variants the user picks one of; the picked option's
+  `overrides` win over `overrides`.
+- `accent: true`: elements with `data-tint="true"` take the colour the user
+  picks.
+- Elements with `data-themed="true"` take the accent colour of Settings ›
+  Appearance, or the theme's custom accent colour.
+
+- `settings` describe the theme's page in Settings › Plugins › _theme label_;
+  a theme without them has no page. Sections have a `title` and `items`; an
+  item names an `option` the IDE implements, with the theme's `label`,
+  optional `hint` and, where the option needs one, `default`:
+
+  | `option`                                                                   | Control              | Item fields                                          |
+  | -------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------- |
+  | `hideFiles`, `hideFolders`, `hideUiIcons`, `hidePsiIcons`, `hollowFolders` | checkbox             | `invert`: checked means off                          |
+  | `groups`                                                                   | a checkbox per group | `columns` (1–4), `label?` (group names are shown)    |
+  | `choice`                                                                   | the choice's options | `choice` (its id), `label?` (default: its name)      |
+  | `accent`, `monochrome`                                                     | checkbox and colour  | `default` (`#rrggbb`); `accent` needs `accent: true` |
+  | `saturation` (0–20), `opacity` (10–100), `iconSize`, `rowHeight` (px)      | checkbox and number  | `default` within the range                           |
+
+  `iconSize` is 12–32 and `rowHeight` 16–48. Values are kept per theme in
+  `appearance.fileIconThemeOptions` and apply while the theme is selected.
+
+The first icon theme of a plugin is selected when the plugin is installed or
+enabled while no icon theme is.
+
 ## 6. Languages
 
 `languages/<id>.toml` files use the IDE's own language format; see any file in

@@ -5,7 +5,9 @@
  */
 
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
+import type { FileIconThemeOptions } from "@/bindings";
 import { ZOOM_LIMITS } from "@/platform/zoom";
+import { validateIconThemeOptionsMap } from "@/platform/iconThemeOptions";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
 export type OpenProjectIn = "ask" | "new" | "same" | "attach";
@@ -19,6 +21,7 @@ export interface AppearanceExtras {
   preferredDarkTheme: ConcreteTheme;
   /** A plugin's file icon theme (`<pluginId>/<themeId>`); empty for the built-in icons. */
   fileIconTheme: string;
+  fileIconThemeOptions: Record<string, FileIconThemeOptions>;
   zoom: number;
   useCustomFont: boolean;
   uiFontFamily: string;
@@ -73,6 +76,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   preferredLightTheme: "light",
   preferredDarkTheme: "dark",
   fileIconTheme: "",
+  fileIconThemeOptions: {},
   zoom: 100,
   useCustomFont: false,
   uiFontFamily: "Inter",
@@ -127,6 +131,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     preferredDarkTheme: concrete(a.preferredDarkTheme, d.preferredDarkTheme),
     fileIconTheme:
       typeof a.fileIconTheme === "string" && /^[^/\s]+\/[^/\s]+$/.test(a.fileIconTheme) ? a.fileIconTheme : "",
+    fileIconThemeOptions: validateIconThemeOptionsMap(a.fileIconThemeOptions),
     zoom: int(a.zoom, d.zoom, ZOOM_LIMITS),
     useCustomFont: b("useCustomFont"),
     uiFontFamily: typeof a.uiFontFamily === "string" && a.uiFontFamily.trim() ? a.uiFontFamily.trim() : d.uiFontFamily,

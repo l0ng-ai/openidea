@@ -260,7 +260,7 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
                   })
                 }
               />
-              <Icon name={fileIconName(baseName(f.path))} size={14} />
+              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
               <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
                 {baseName(f.path)}
               </span>

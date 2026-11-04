@@ -1596,6 +1596,7 @@ export type AppearanceSettings = {
 	preferredDarkTheme?: string,
 	/**  A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons. */
 	fileIconTheme?: string,
+	fileIconThemeOptions?: { [key in string]: FileIconThemeOptions },
 	/**  IDE zoom in percent (50–300). */
 	zoom?: number,
 	/**  Apply `ui_font_family` / `ui_font_size` (otherwise the theme's). */
@@ -3381,6 +3382,27 @@ export type FileEntry = {
 	targetKind?: EntryKind | null,
 };
 
+/**
+ *  Main toolbar entries per side, in order: title widget ids (`project`,
+ *  `vcs.branch`…) or `action:<id>`. Widgets in neither list nor `hidden`
+ *  (registered later) keep their default place.
+ */
+export type FileIconThemeOptions = {
+	groups?: { [key in string]: boolean },
+	choices?: { [key in string]: string },
+	hideFiles?: boolean,
+	hideFolders?: boolean,
+	hollowFolders?: boolean,
+	hideUiIcons?: boolean,
+	hidePsiIcons?: boolean,
+	monochrome?: string | null,
+	saturation?: number | null,
+	opacity?: number | null,
+	iconSize?: number | null,
+	rowHeight?: number | null,
+	accent?: string | null,
+};
+
 /**  Identifier occurrences in one file (`identifiers_in_files`). */
 export type FileIdentifiers = {
 	path: IpcPath,
@@ -4735,11 +4757,6 @@ export type LogQuery = {
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
 
-/**
- *  Main toolbar entries per side, in order: title widget ids (`project`,
- *  `vcs.branch`…) or `action:<id>`. Widgets in neither list nor `hidden`
- *  (registered later) keep their default place.
- */
 export type MainToolbarSettings = {
 	left?: string[],
 	right?: string[],

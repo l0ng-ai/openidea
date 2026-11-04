@@ -81,7 +81,7 @@ function FileGroup({
     <li className={styles.previewFile}>
       <div className={styles.previewFileRow}>
         <Checkbox checked={included} onChange={onToggle} aria-label={tx`Include ${nameOf(file.path)}`} />
-        <Icon name={fileIconName(nameOf(file.path))} size={14} />
+        <Icon name={fileIconName(nameOf(file.path), file.path)} size={14} />
         <span className={styles.previewName}>{nameOf(file.path)}</span>
         <span className={styles.previewPath}>{relativeTo(root, file.path) || file.path}</span>
         <span className={styles.spacer} />

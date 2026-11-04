@@ -13,6 +13,7 @@ import type {
 import { notifications } from "@/workbench/contributions";
 import { pluginsBackend, type PluginsBackend } from "./backend";
 import { editorContext } from "./editorContext";
+import { iconThemeKey, selectedIconTheme, selectIconTheme } from "./iconThemes";
 
 export const SETTINGS_PAGE_ID = "plugins";
 
@@ -132,10 +133,19 @@ async function withBusy(id: string, title: string, op: () => Promise<unknown>): 
 
 const nameOf = (id: string) => usePlugins.getState().plugins.find((p) => p.id === id)?.name ?? id;
 
-export function setPluginEnabled(id: string, enabled: boolean): Promise<boolean> {
-  return withBusy(id, `Could not ${enabled ? "enable" : "disable"} ${nameOf(id)}`, () =>
+export async function adoptIconTheme(pluginId: string): Promise<void> {
+  if (selectedIconTheme()) return;
+  const first = usePlugins.getState().ui.find((c) => c.pluginId === pluginId && c.point === "iconThemes");
+  const id = (first?.decl as { id?: unknown } | undefined)?.id;
+  if (typeof id === "string") await selectIconTheme(iconThemeKey(pluginId, id));
+}
+
+export async function setPluginEnabled(id: string, enabled: boolean): Promise<boolean> {
+  const done = await withBusy(id, `Could not ${enabled ? "enable" : "disable"} ${nameOf(id)}`, () =>
     pluginsBackend().setEnabled(id, enabled),
   );
+  if (done && enabled) await adoptIconTheme(id);
+  return done;
 }
 
 export function reloadPlugin(id: string): Promise<boolean> {
@@ -287,6 +297,7 @@ export async function installFromDisk(path?: string, packageFile = false): Promi
   }
   if (!dir) return null;
   usePlugins.setState({ installing: true });
+  let installed: string | null = null;
   try {
     const preview = await backend.previewInstall(dir);
     const consent = await askConsent({
@@ -300,6 +311,7 @@ export async function installFromDisk(path?: string, packageFile = false): Promi
     });
     if (!consent) return null;
     const info = await backend.installDir(dir, consent);
+    installed = info.status === "failed" ? null : info.id;
     notifications().notify({
       group: "plugins",
       level: info.status === "failed" ? "warning" : "info",
@@ -313,6 +325,7 @@ export async function installFromDisk(path?: string, packageFile = false): Promi
   } finally {
     usePlugins.setState({ installing: false });
     await refreshPlugins();
+    if (installed) await adoptIconTheme(installed);
   }
 }
 

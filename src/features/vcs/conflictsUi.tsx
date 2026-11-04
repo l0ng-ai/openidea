@@ -126,7 +126,7 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
           }}
           renderItem={(f) => (
             <span className={styles.fileRow} style={{ flex: 1, padding: 0 }}>
-              <Icon name={fileIconName(baseName(f.path))} size={14} />
+              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
               <span className={styles.fileName} style={{ color: "var(--vcs-conflict)" }}>
                 {baseName(f.path)}
               </span>
