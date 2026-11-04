@@ -57,6 +57,23 @@ describe("ImeCommitGate", () => {
     expect(sent).toEqual(["在吗"]);
   });
 
+  it("lets a key the IME did not take through right after a commit", () => {
+    // Punctuation committed directly, then Enter within the commit's timeout: Enter must run.
+    const { gate, rebases } = gateWithRebase();
+    const { sent, emit } = emitter(gate);
+    gate.begin();
+    emit("，");
+    gate.keystroke();
+    emit("\r");
+    expect(sent).toEqual(["，", "\r"]);
+    expect(rebases()).toBe(1);
+    // Outside a commit, or during a composition, a keystroke changes nothing.
+    gate.keystroke();
+    gate.compositionStart();
+    gate.keystroke();
+    expect(rebases()).toBe(1);
+  });
+
   it("starts a new commit on the next IME keystroke even inside the timeout", () => {
     // Two commits can arrive back to back; the second must not be swallowed by the first
     // commit's still-running timeout.

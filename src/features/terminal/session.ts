@@ -421,6 +421,7 @@ export class TerminalSession {
     if (!textarea) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.keyCode === 229) this.ime.begin();
+      else this.ime.keystroke();
     };
     const onInput = (e: InputEvent) => {
       if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.input();

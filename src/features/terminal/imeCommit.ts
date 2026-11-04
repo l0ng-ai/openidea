@@ -101,6 +101,14 @@ export class ImeCommitGate {
     this.timer = this.scheduler.after(() => this.close(), 0);
   }
 
+  /**
+   * A keystroke the IME did not take (Enter, an arrow, a letter typed outside it): the commit
+   * is over, and what that key sends must reach the PTY.
+   */
+  keystroke(): void {
+    if (this.open && !this.composing) this.close();
+  }
+
   /** Whether this emission should reach the PTY. */
   accept(): boolean {
     if (!this.open) return true;
