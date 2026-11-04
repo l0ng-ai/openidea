@@ -1,7 +1,7 @@
 //! Run configurations, terminal commands and builds through the MCP tools (after JetBrains'
 //! `ExecutionToolsetTest`, `TerminalToolsetTest` and `ExecutionUtilTest`).
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::mcp::McpUiRequest;

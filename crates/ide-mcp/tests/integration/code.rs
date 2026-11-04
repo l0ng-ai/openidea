@@ -3,7 +3,7 @@
 //! against gopls. Ported in part from JetBrains' `AnalysisToolsetTest` and
 //! `CodeInsightToolsetTest`.
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use serde_json::{Value, json};

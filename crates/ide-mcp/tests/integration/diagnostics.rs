@@ -1,7 +1,7 @@
 // Ported from JetBrains intellij-community plugins/mcp-server (tests/testSrc/com/intellij/mcpserver/toolsets/DiagnosticsToolsetTest.kt), Apache-2.0.
 //! `get_ide_diagnostics` and the call history.
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::mcp::{McpCallOutcome, McpSettings};

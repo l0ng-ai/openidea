@@ -2,7 +2,7 @@
 //! document layer, language-server tools without servers, editor requests.
 //! Includes the cases of JetBrains' `PatchToolsetTest` and `FileToolsetTest`.
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::mcp::McpUiRequest;

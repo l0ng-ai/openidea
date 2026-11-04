@@ -1,7 +1,7 @@
 // Ported from JetBrains intellij-community plugins/mcp-server (tests/testSrc/com/intellij/mcpserver/McpToolsMarkdownExporterTest.kt), Apache-2.0.
 //! The tools as Markdown.
 
-mod common;
+use crate::common;
 
 use ide_core::mcp::{McpSettings, McpToolKind};
 use ide_mcp::markdown::{generate_markdown, tool_markdown};

@@ -1,7 +1,7 @@
 //! read_file and list_directory_tree against a real project (cases ported from
 //! JetBrains' ReadToolsetTest and FileToolsetTest where they apply).
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::mcp::McpUiRequest;

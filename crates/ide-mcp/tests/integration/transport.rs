@@ -3,7 +3,7 @@
 //! transport, the call history. Ported in part from JetBrains' `TransportTest`,
 //! `ProgressNotificationsTest` and `McpProjectLocationInputsTest`.
 
-mod common;
+use crate::common;
 
 use common::{Harness, PORT, TOKEN};
 use ide_core::mcp::{McpCallOutcome, McpInvocationMode, McpSettings, McpToolKind};

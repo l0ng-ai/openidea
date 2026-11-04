@@ -1,6 +1,6 @@
 //! Repositories and git status through the MCP tools (after JetBrains' `VcsToolsetTest`).
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use serde_json::{Value, json};

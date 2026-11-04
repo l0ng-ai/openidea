@@ -1,6 +1,6 @@
 //! The stdio bridge against the server listening on a real socket.
 
-mod common;
+use crate::common;
 
 use common::{Harness, TOKEN};
 use ide_core::mcp::McpSettings;

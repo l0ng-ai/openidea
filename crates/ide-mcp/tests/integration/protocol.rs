@@ -1,6 +1,6 @@
 //! The MCP protocol over the HTTP handler: initialize, sessions, auth, tools/list, tools/call.
 
-mod common;
+use crate::common;
 
 use common::{Harness, PORT, TOKEN};
 use serde_json::{Value, json};

@@ -1,7 +1,7 @@
 // Ported from JetBrains intellij-community plugins/mcp-server (tests/testSrc/com/intellij/mcpserver/toolsets/UniversalToolsetTest.kt), Apache-2.0.
 //! `execute_tool`: command parsing, argument conversion, dispatch, denials and history.
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::mcp::{McpCallOutcome, McpInvocationMode, McpSettings};

@@ -1,6 +1,6 @@
 //! The database tools against a real SQLite data source of the project.
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::CancellationToken;

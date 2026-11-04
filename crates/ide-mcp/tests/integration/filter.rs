@@ -2,7 +2,7 @@
 //! Tool filtering: masks, filters, the filter context, tool states, experimental tools,
 //! invocation modes and the filter optimizer.
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::mcp::{McpInvocationMode, McpSettings, McpToolKind, McpToolState};

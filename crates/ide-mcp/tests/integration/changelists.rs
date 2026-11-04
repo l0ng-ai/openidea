@@ -1,6 +1,6 @@
 //! Change lists through the MCP tools (after JetBrains' `ChangeListToolsetTest`).
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use serde_json::{Value, json};

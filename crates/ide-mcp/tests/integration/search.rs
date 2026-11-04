@@ -1,7 +1,7 @@
 //! search_text, search_regex, search_file and search_symbol against a real project
 //! (cases ported from JetBrains' SearchToolsetTest where they apply).
 
-mod common;
+use crate::common;
 
 use common::Harness;
 use ide_core::{ChangeSet, TextChange};
