@@ -628,7 +628,6 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         max_java: None,
         launch_error: None,
         tsserver_project: false,
-        watched_files: Vec::new(),
         pinned: None,
     }
 }

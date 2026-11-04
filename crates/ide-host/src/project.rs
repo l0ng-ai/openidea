@@ -56,6 +56,9 @@ pub struct Project {
     pub(crate) watcher: Watcher,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
+    /// Watchers of folders outside the project that language servers registered file
+    /// watchers for (a virtualenv elsewhere, a path dependency).
+    lsp_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
     pub(crate) _scratch_watcher: Option<Watcher>,
     /// A LightEdit window's loose files ([`Host::open_light`]): global settings only,
     /// nothing indexed, no language servers, repositories or project services.
@@ -458,6 +461,7 @@ impl Host {
             kotlin_bridge: Some(kotlin_bridge),
             watcher,
             content_watchers: Mutex::new(content_watchers),
+            lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: scratch_watcher,
             light: false,
         });
@@ -465,6 +469,14 @@ impl Host {
             let weak = Arc::downgrade(&project);
             project.lsp.set_candidates_hook(Box::new(move |q, cancel| {
                 weak.upgrade().map(|p| p.reference_candidates(q, cancel)).unwrap_or_default()
+            }));
+        }
+        {
+            let weak = Arc::downgrade(&project);
+            project.lsp.set_file_watch_roots_hook(Box::new(move |roots| {
+                if let Some(p) = weak.upgrade() {
+                    p.watch_for_language_servers(roots);
+                }
             }));
         }
         {
@@ -582,6 +594,7 @@ impl Host {
             kotlin_bridge: None,
             watcher,
             content_watchers: Mutex::new(Vec::new()),
+            lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,
             light: true,
             root: dir,
@@ -991,6 +1004,30 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
 
 /// Watches a content root outside the project: the index, open documents and
 /// Local History follow its changes like the project folder's.
+impl Project {
+    /// Watches `roots` (outside the project) for the language servers that asked to.
+    fn watch_for_language_servers(&self, roots: Vec<PathBuf>) {
+        let mut watchers = self.lsp_watchers.lock();
+        watchers.retain(|(r, _)| roots.contains(r));
+        for root in roots {
+            if watchers.iter().any(|(r, _)| *r == root) || !root.is_dir() {
+                continue;
+            }
+            let lsp = Arc::downgrade(&self.lsp);
+            let on_change = Box::new(move |batch: &ide_vfs::FsBatch| {
+                if let Some(lsp) = lsp.upgrade() {
+                    lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
+                }
+            });
+            // Not project files: nothing else hears of them.
+            match Watcher::start(&root, Vec::new(), Arc::new(ide_core::NullSink), on_change) {
+                Ok(w) => watchers.push((root, w)),
+                Err(e) => tracing::warn!("language server watcher {}: {e}", root.display()),
+            }
+        }
+    }
+}
+
 fn content_root_watcher(
     dir: &Path,
     excludes: &[String],

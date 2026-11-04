@@ -152,12 +152,6 @@ pub struct LanguageServerConfig {
     /// Register source files with tsserver when no project configuration exists.
     #[serde(default)]
     pub tsserver_project: bool,
-    /// Globs, relative to the server's root, of other files the server hears of
-    /// through `workspace/didChangeWatchedFiles` besides its languages' sources:
-    /// configuration (`pyproject.toml`) and, even inside excluded folders,
-    /// installed libraries (`**/site-packages/**`).
-    #[serde(default)]
-    pub watched_files: Vec<String>,
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,

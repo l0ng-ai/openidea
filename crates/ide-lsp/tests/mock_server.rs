@@ -230,7 +230,6 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
-        watched_files: Vec::new(),
         pinned: None,
     }
 }
@@ -438,59 +437,72 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.shutdown_all().await;
 }
 
-/// `watched-files`: configuration and, inside excluded folders, installed packages
-/// (`uv add` into `.venv`) reach the server, so it resolves new imports without a restart.
+/// A server that registers file watchers hears of what they match, inside excluded folders
+/// too (`uv add` into `.venv`, `go get` rewriting `go.mod`); folders outside the project
+/// that relative patterns name are reported for watching; unregistered, it falls back to
+/// its languages' files.
 #[tokio::test(flavor = "multi_thread")]
-async fn watched_files_config_reaches_the_server_even_inside_excluded_folders() {
-    let h = harness_configured("mock", "mk", &[("mock", incremental_caps())], |cfg| {
-        cfg.watched_files = vec!["pyproject.toml".into(), "**/site-packages".into(), "**/site-packages/**".into()];
-    });
+async fn registered_file_watchers_choose_the_changes_a_server_hears_of() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let roots = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
+    {
+        let roots = roots.clone();
+        h.mgr.set_file_watch_roots_hook(Box::new(move |r| roots.lock().push(r)));
+    }
     h.open("a.mk", "x");
     h.wait_status("mock", ServerStatus::Ready).await;
     let s = h.launcher.state("mock");
+    let outside = tempfile::tempdir().unwrap();
+    let outside = dunce::canonicalize(outside.path()).unwrap();
+    let external = outside.join("venv/lib/site-packages");
+    s.peer()
+        .request::<_, Value>(
+            "client/registerCapability",
+            json!({ "registrations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [
+                { "globPattern": "**/*.{mk,mod}" },
+                { "globPattern": "**/pyrightconfig.json", "kind": 2 },
+                { "globPattern": "**/site-packages/**" },
+                { "globPattern": { "baseUri": uri_of(&external), "pattern": "**" } },
+                { "globPattern": { "baseUri": uri_of(&h.root.join("sub")), "pattern": "**" } },
+            ] } }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![external.clone()]), "only folders outside the project");
+
     let sp = h.root.join(".venv/lib/python3.14/site-packages");
-    // created, modified, removed, excluded folders → the changes the server hears of.
-    type Case<'a> = (&'a [PathBuf], &'a [PathBuf], &'a [PathBuf], &'a [PathBuf], Value);
-    let cases: &[Case] = &[
-        // `uv add`: pyproject.toml rewritten, the package unpacked into the excluded `.venv`.
-        (
-            &[],
-            &[h.root.join("pyproject.toml")],
-            &[],
-            &[sp.clone(), sp.join("scalar_fastapi"), h.root.join(".venv/bin")],
-            json!([
-                { "uri": uri_of(&h.root.join("pyproject.toml")), "type": 2 },
-                { "uri": uri_of(&sp), "type": 1 },
-                { "uri": uri_of(&sp.join("scalar_fastapi")), "type": 1 },
-            ]),
-        ),
-        // `uv remove`: the package's folder goes.
-        (
-            &[],
-            &[],
-            &[sp.join("scalar_fastapi")],
-            std::slice::from_ref(&sp),
-            json!([
-                { "uri": uri_of(&sp.join("scalar_fastapi")), "type": 3 },
-                { "uri": uri_of(&sp), "type": 1 },
-            ]),
-        ),
-    ];
-    for (i, (created, modified, removed, excluded, expected)) in cases.iter().enumerate() {
-        h.mgr.watched_files_changed(created, modified, removed, excluded);
-        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() > i).await;
-        assert_eq!(s.notified("workspace/didChangeWatchedFiles")[i]["changes"], *expected, "case {i}");
-    }
-    // Neither its sources nor its watched files: nothing.
-    let other = tempfile::tempdir().unwrap();
+    let notified = || s.notified("workspace/didChangeWatchedFiles");
     h.mgr.watched_files_changed(
-        &[h.root.join("sub/pyproject.toml")],
-        &[],
-        &[],
-        &[h.root.join("node_modules/x"), other.path().join("site-packages")],
+        &[h.root.join("go.mod"), h.root.join("notes.txt"), h.root.join("pyrightconfig.json")],
+        &[h.root.join("pyrightconfig.json"), external.join("idna/core.py")],
+        &[h.root.join("old.mk")],
+        &[sp.join("idna"), h.root.join("node_modules/x")],
     );
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), cases.len());
+    eventually(|| !notified().is_empty()).await;
+    assert_eq!(
+        notified()[0]["changes"],
+        json!([
+            { "uri": uri_of(&h.root.join("go.mod")), "type": 1 },
+            { "uri": uri_of(&h.root.join("pyrightconfig.json")), "type": 2 },
+            { "uri": uri_of(&external.join("idna/core.py")), "type": 2 },
+            { "uri": uri_of(&h.root.join("old.mk")), "type": 3 },
+            { "uri": uri_of(&sp.join("idna")), "type": 1 },
+        ])
+    );
+
+    s.peer()
+        .request::<_, Value>(
+            "client/unregisterCapability",
+            json!({ "unregisterations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles" }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![]));
+    h.mgr.watched_files_changed(&[h.root.join("go.mod"), h.root.join("b.mk")], &[], &[], &[sp.join("idna")]);
+    eventually(|| notified().len() == 2).await;
+    assert_eq!(notified()[1]["changes"], json!([{ "uri": uri_of(&h.root.join("b.mk")), "type": 1 }]));
     h.mgr.shutdown_all().await;
 }
 

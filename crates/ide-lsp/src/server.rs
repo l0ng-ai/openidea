@@ -27,6 +27,8 @@ pub struct Running {
     pub generation: u64,
     pub peer: Peer,
     pub caps: Arc<RwLock<ServerCaps>>,
+    /// `workspace/didChangeWatchedFiles` registrations.
+    pub watchers: Arc<RwLock<crate::file_watch::FileWatchers>>,
 }
 
 pub enum Conn {
@@ -77,13 +79,14 @@ pub struct Server {
     pub root: PathBuf,
     /// Configuration from the language definition.
     pub config: LanguageServerConfig,
-    /// `config.watched_files`, relative to `root`.
-    watched_files: Option<globset::GlobSet>,
     /// `config` with the settings hook applied, as the current instance was launched.
     effective: Mutex<Option<LanguageServerConfig>>,
     pub resolved_binary: RwLock<Option<PathBuf>>,
     languages: Mutex<Vec<LanguageId>>,
     state: Mutex<State>,
+    /// The instance being initialized, from `initialized` until ready: registrations
+    /// sent right after `initialized` must not be lost.
+    initializing: Mutex<Option<Running>>,
     /// Fired when the instance being started is abandoned (stop / restart while starting).
     start_cancel: Mutex<CancellationToken>,
     phase: watch::Sender<Phase>,
@@ -109,34 +112,18 @@ pub struct Server {
     pub external_refresh_queued: std::sync::atomic::AtomicBool,
 }
 
-fn watched_files_matcher(globs: &[String]) -> Option<globset::GlobSet> {
-    if globs.is_empty() {
-        return None;
-    }
-    let mut set = globset::GlobSetBuilder::new();
-    for g in globs {
-        match globset::GlobBuilder::new(g).literal_separator(true).build() {
-            Ok(glob) => {
-                set.add(glob);
-            }
-            Err(e) => tracing::warn!("watched-files {g:?}: {e}"),
-        }
-    }
-    set.build().ok()
-}
-
 impl Server {
     pub fn new(config: LanguageServerConfig, root: PathBuf, language: LanguageId) -> Self {
         Self {
             id: ServerId::next(),
             name: config.name.clone(),
-            watched_files: watched_files_matcher(&config.watched_files),
             root,
             config,
             effective: Mutex::new(None),
             resolved_binary: RwLock::new(None),
             languages: Mutex::new(vec![language]),
             state: Mutex::new(State { generation: 0, conn: Conn::Idle }),
+            initializing: Mutex::new(None),
             start_cancel: Mutex::new(CancellationToken::new()),
             phase: watch::channel(Phase::Down).0,
             status: Mutex::new((ServerStatus::Stopped, None)),
@@ -181,12 +168,6 @@ impl Server {
 
     pub fn languages(&self) -> Vec<LanguageId> {
         self.languages.lock().clone()
-    }
-
-    /// Whether `path` matches one of the configured `watched-files` globs.
-    pub fn watches_file(&self, path: &Path) -> bool {
-        let Some(set) = &self.watched_files else { return false };
-        path.strip_prefix(&self.root).is_ok_and(|rel| set.is_match(rel))
     }
 
     // ---- instance state machine ----
@@ -235,6 +216,8 @@ impl Server {
             return false;
         }
         st.conn = Conn::Ready(run);
+        drop(st);
+        self.set_initializing(None);
         true
     }
 
@@ -257,6 +240,20 @@ impl Server {
             Conn::Ready(r) => Some(r.clone()),
             _ => None,
         }
+    }
+
+    /// The instance told `initialized`, ready or not.
+    pub fn instance(&self) -> Option<Running> {
+        self.running().or_else(|| self.initializing.lock().clone())
+    }
+
+    /// Generation `generation` once it was told `initialized`, ready or not.
+    pub fn initialized_gen(&self, generation: u64) -> Option<Running> {
+        self.instance().filter(|r| r.generation == generation)
+    }
+
+    pub fn set_initializing(&self, run: Option<Running>) {
+        *self.initializing.lock() = run;
     }
 
     /// The running instance if it is still generation `generation`.
