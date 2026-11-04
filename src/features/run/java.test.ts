@@ -391,7 +391,7 @@ describe("temporary configurations", () => {
     expect(s.temporary).not.toContain(apps[0]!.id);
     expect(s.selectedId).toBe(apps[apps.length - 1]!.id);
     expect(s.configs.filter((c) => c.kind === "application")).toHaveLength(MAX_TEMPORARY);
-    expect(JSON.parse(localStorage.getItem("openidea.run.temporary:/p")!)).toHaveLength(MAX_TEMPORARY);
+    expect(JSON.parse(localStorage.getItem("openidea.run.temporary.v2:/p")!)).toHaveLength(MAX_TEMPORARY);
     // Reusing an existing temporary moves it last instead of duplicating it.
     adoptTemporary(apps[3]!);
     expect(useRun.getState().temporary.at(-1)).toBe(apps[3]!.id);

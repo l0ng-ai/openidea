@@ -647,6 +647,37 @@ fn is_python_command(cmd: &str) -> bool {
 
 const PY_RUNNERS: [&str; 3] = ["uv", "poetry", "pdm"];
 
+/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`).
+fn maven_option_groups(options: &[String]) -> Vec<&[String]> {
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < options.len() {
+        let n = if options[i] == "-s" { 2.min(options.len() - i) } else { 1 };
+        groups.push(&options[i..i + n]);
+        i += n;
+    }
+    groups
+}
+
+/// Whether `args` set what `group` sets: a user settings file, or the local repository.
+fn sets_maven_option(args: &[String], group: &[String]) -> bool {
+    match group.first().map(String::as_str) {
+        Some("-s") => args.iter().any(|a| a == "-s" || a == "--settings" || a.starts_with("--settings=")),
+        Some(flag) => {
+            let key = flag.split_once('=').map_or(flag, |(k, _)| k);
+            args.iter().any(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k) == key)
+        }
+        None => true,
+    }
+}
+
+/// Settings › Maven's options ahead of the goals, each unless the configuration sets it itself.
+fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
+    let missing: Vec<String> =
+        maven_option_groups(options).into_iter().filter(|g| !sets_maven_option(args, g)).flatten().cloned().collect();
+    args.splice(0..0, missing);
+}
+
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
 /// cargo / go configs the selected toolchain, Maven / Gradle the project JDK
@@ -783,24 +814,16 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-                if c.kind == "maven" && c.detected {
-                    if let Some(mvn) = &mvn {
+                if c.kind == "maven" {
+                    // A configuration made or saved in the UI names the literal `mvn` /
+                    // `mvn.cmd`; without a wrapper it cannot start when Maven lives on a
+                    // version manager's shims or a configured home (#328).
+                    if let Some(mvn) = &mvn
+                        && (c.detected || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
+                    {
                         c.command = mvn.to_string_lossy().into_owned();
                     }
-                    if !c.args.starts_with(&mvn_options) {
-                        c.args.splice(0..0, mvn_options.iter().cloned());
-                    }
-                } else if c.kind == "maven"
-                    && matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat")
-                    && let Some(mvn) = &mvn
-                {
-                    // A goal configuration saved from the tool window keeps the
-                    // literal `mvn` / `mvn.cmd` the launcher resolved to; without a
-                    // wrapper it cannot start when Maven lives on a version
-                    // manager's shims or a configured home (#328). Detected configs
-                    // take the Maven options too, but the saved ones already baked
-                    // them into `args`.
-                    c.command = mvn.to_string_lossy().into_owned();
+                    add_maven_options(&mut c.args, &mvn_options);
                 }
             }
             _ => {}
@@ -842,6 +865,19 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
         .map(|(key, _)| key.clone())
     {
         out.env.remove(&key);
+    }
+    // Settings › Maven's options, which applying puts back ahead of the goals.
+    if out.kind == "maven" {
+        let options = maven_options(root, s);
+        let mut probe = out.clone();
+        for group in maven_option_groups(&options) {
+            if let Some(at) = probe.args.windows(group.len()).position(|w| w == group) {
+                probe.args.drain(at..at + group.len());
+            }
+        }
+        if applied(&probe).args == out.args {
+            out.args = probe.args;
+        }
     }
     let path = Path::new(&config.command);
     if path.is_absolute()
