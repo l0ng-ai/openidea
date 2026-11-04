@@ -460,6 +460,8 @@ const MAX_PARENT_DEPTH: usize = 10;
 
 struct Resolver {
     local_repo: Option<PathBuf>,
+    /// The chosen profiles (`-P` entries; `!id` / `-id` deactivates).
+    profiles: Vec<String>,
     poms: HashMap<PathBuf, Option<RawPom>>,
     contexts: HashMap<PathBuf, Inherited>,
 }
@@ -484,8 +486,16 @@ pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
 }
 
 impl Resolver {
-    fn new(local_repo: Option<PathBuf>) -> Self {
-        Self { local_repo, poms: HashMap::new(), contexts: HashMap::new() }
+    fn new(local_repo: Option<PathBuf>, profiles: &[String]) -> Self {
+        Self { local_repo, profiles: profiles.to_vec(), poms: HashMap::new(), contexts: HashMap::new() }
+    }
+
+    /// The active profiles of a POM: the chosen ones, and the `activeByDefault` ones not turned
+    /// off while none of the POM's other profiles is chosen (Maven's rule).
+    fn active<'a>(&self, profiles: &'a [RawProfile]) -> impl Iterator<Item = &'a RawProfile> {
+        let chosen = |id: &str| profile_choice(&self.profiles, id);
+        let any_chosen = profiles.iter().any(|p| chosen(&p.id) == Some(true));
+        profiles.iter().filter(move |p| chosen(&p.id).unwrap_or(p.active_by_default && !any_chosen))
     }
 
     fn pom(&mut self, path: &Path) -> Option<RawPom> {
@@ -550,7 +560,7 @@ impl Resolver {
         if pom.compiler_release.is_some() {
             ctx.compiler_release = pom.compiler_release.clone();
         }
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        for p in self.active(&pom.profiles) {
             merge_by(&mut ctx.properties, &p.properties, |(k, _)| k.clone());
             merge_by(&mut ctx.deps, &p.deps, RawDep::key);
             merge_plugins(&mut ctx.plugins, &p.plugins);
@@ -666,7 +676,7 @@ pub(crate) fn launch_inputs(
         }
         Some(())
     }
-    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo));
+    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo), &[]);
     let mut out = Vec::new();
     for project in projects {
         let dir = root.join(&project.dir);
@@ -1055,8 +1065,32 @@ pub fn load(root: &Path) -> MavenModel {
     load_with_repo(root, default_local_repo())
 }
 
+/// [`load`] with the chosen `profiles` (`-P` entries; `!id` deactivates): their modules,
+/// dependencies and properties are part of the model, those turned off are not.
+pub fn load_with_profiles(root: &Path, profiles: &[String]) -> MavenModel {
+    load_with(root, default_local_repo(), profiles)
+}
+
 pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenModel {
-    let mut resolver = Resolver::new(local_repo);
+    load_with(root, local_repo, &[])
+}
+
+/// The `-P` entries' choice for profile `id`: on, off (`!id` / `-id`), or none (the last wins).
+fn profile_choice(chosen: &[String], id: &str) -> Option<bool> {
+    chosen.iter().rev().find_map(|c| {
+        let c = c.trim();
+        if c == id {
+            Some(true)
+        } else if c.strip_prefix('!').or_else(|| c.strip_prefix('-')) == Some(id) {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn load_with(root: &Path, local_repo: Option<PathBuf>, profiles: &[String]) -> MavenModel {
+    let mut resolver = Resolver::new(local_repo, profiles);
     let mut model = MavenModel::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     // (pom, aggregated)
@@ -1076,7 +1110,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
         let i = |s: &str| interpolate(s, &props);
 
         let mut module_names: Vec<String> = pom.modules.clone();
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        for p in resolver.active(&pom.profiles) {
             module_names.extend(p.modules.iter().cloned());
         }
         let mut modules: Vec<PathBuf> = Vec::new();
@@ -1697,6 +1731,52 @@ mod tests {
         assert_eq!(parent.profiles, ["dev", "extra"]);
         assert_eq!(core.profiles, ["dev", "extra"], "a module inherits its parent's profiles");
         assert!(model.projects.iter().all(|p| p.command == if cfg!(windows) { "mvn.cmd" } else { "mvn" }));
+    }
+
+    #[test]
+    fn chosen_profiles_bring_their_modules_and_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+              <modules><module>core</module></modules>
+              <profiles>
+                <profile><id>flink-1.17</id><activation><activeByDefault>true</activeByDefault></activation>
+                  <modules><module>flink-1.17</module></modules></profile>
+                <profile><id>flink-1.20</id><modules><module>flink-1.20</module></modules>
+                  <dependencies><dependency><groupId>org.apache.flink</groupId><artifactId>flink-core</artifactId><version>1.20.0</version></dependency></dependencies>
+                </profile>
+              </profiles>
+            </project>"#,
+        );
+        for m in ["core", "flink-1.17", "flink-1.20"] {
+            write(
+                root,
+                &format!("{m}/pom.xml"),
+                &format!(
+                    "<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent><artifactId>{m}</artifactId></project>"
+                ),
+            );
+        }
+        let dirs = |m: &MavenModel| m.projects.iter().map(|p| p.dir.clone()).collect::<Vec<_>>();
+        let flink = |m: &MavenModel, dir: &str| {
+            m.projects.iter().find(|p| p.dir == dir).unwrap().dependencies.iter().any(|d| d.artifact_id == "flink-core")
+        };
+
+        let default = load_with(root, None, &[]);
+        assert_eq!(dirs(&default), ["", "core", "flink-1.17"]);
+        assert!(!flink(&default, "core"));
+
+        // Choosing another profile of the POM turns its activeByDefault one off (as `-P` does).
+        let chosen = load_with(root, None, &["flink-1.20".into()]);
+        assert_eq!(dirs(&chosen), ["", "core", "flink-1.20"]);
+        assert!(flink(&chosen, "core"), "a module inherits the chosen profile's dependencies");
+
+        let both = load_with(root, None, &["flink-1.20".into(), "flink-1.17".into()]);
+        assert_eq!(dirs(&both), ["", "core", "flink-1.17", "flink-1.20"]);
+        assert_eq!(dirs(&load_with(root, None, &["!flink-1.17".into()])), ["", "core"]);
     }
 
     #[test]

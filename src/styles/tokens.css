@@ -18,6 +18,13 @@ html {
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --splash-logo-size: 56px;
+  --splash-bar-width: 120px;
+  --splash-bar-height: 2px;
+  --splash-gap: 14px;
+  --splash-offset: 38px;
+  --splash-progress-duration: 4s;
+  --splash-progress-easing: cubic-bezier(0.1, 0.7, 0.3, 1);
   /* surfaces */
   --bg-app: #191a1c;
   --bg-elev: #212326;

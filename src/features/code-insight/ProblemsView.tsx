@@ -301,7 +301,7 @@ export function ProblemsView() {
       );
       return (
         <span className={styles.row}>
-          <Icon name={fileIconName(basename(n.path))} size={16} className={styles.fileIcon} />
+          <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
           <span
             className={clsx(styles.fileName, c.error > 0 && styles.fileError, state.selected && styles.selectedText)}
           >

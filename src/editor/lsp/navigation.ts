@@ -118,7 +118,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       label: name ?? basename(l.path),
       detail: name ? `${basename(l.path)} · ${where}` : where,
       preview,
-      icon: fileIconName(basename(l.path)),
+      icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),
     };
   });

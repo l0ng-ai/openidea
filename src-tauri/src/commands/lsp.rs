@@ -240,6 +240,38 @@ pub async fn lsp_rename(
     ide_host::ops::lsp::lsp_rename(&state.host, window.label(), request, doc, pos, new_name).await
 }
 
+/// The class at `pos` and the members Pull Members Up / Push Members Down can move.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_hierarchy_members(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+) -> IdeResult<HierarchyMembers> {
+    ide_host::ops::lsp::lsp_hierarchy_members(&state.host, window.label(), request, doc, pos, kind).await
+}
+
+/// Checks Pull Members Up / Push Members Down and computes the edit without applying it.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_hierarchy_refactor(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+    target: Option<String>,
+    choices: Vec<HierarchyChoice>,
+) -> IdeResult<HierarchyRefactored> {
+    ide_host::ops::lsp::lsp_hierarchy_refactor(&state.host, window.label(), request, doc, pos, kind, target, choices)
+        .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_format(

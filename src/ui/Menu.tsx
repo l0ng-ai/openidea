@@ -13,7 +13,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import { getAction, isActionEnabled, executeAction, actionToggled } from "@/platform/actions";
+import { getAction, isActionEnabled, executeActionFrom, actionToggled } from "@/platform/actions";
 import { useContextKeys } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, type IconName } from "./icons";
@@ -45,6 +45,8 @@ export type MenuItem =
       checked?: boolean;
       danger?: boolean;
       run?: () => void;
+      /** The pointer or the keyboard made it the active item (not on opening the menu). */
+      onActive?: () => void;
       submenu?: MenuItem[];
     };
 
@@ -58,6 +60,7 @@ interface Resolved {
   checked?: boolean;
   danger?: boolean;
   run?: () => void;
+  onActive?: () => void;
   submenu?: MenuItem[];
 }
 
@@ -84,7 +87,7 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
         shortcut: shortcutLabel(item.action),
         disabled: !!item.disabled || !isActionEnabled(a),
         checked: actionToggled(a),
-        run: () => void executeAction(item.action, item.arg),
+        run: () => void executeActionFrom("menu", item.action, item.arg),
       });
       return;
     }
@@ -132,6 +135,11 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   }, [active, openSub]);
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
 
+  const focusItem = (i: number) => {
+    setActive(i);
+    resolved[i]?.onActive?.();
+  };
+
   const move = (delta: number, from = active) => {
     const n = resolved.length;
     if (!n) return;
@@ -139,7 +147,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
     for (let step = 0; step < n; step++) {
       i = (i + delta + n) % n;
       if (selectable(resolved[i])) {
-        setActive(i);
+        focusItem(i);
         return;
       }
     }
@@ -191,7 +199,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
             const i = (active + s + n) % n;
             const r = resolved[i]!;
             if (selectable(r) && r.label.toLowerCase().startsWith(ch)) {
-              setActive(i);
+              focusItem(i);
               break;
             }
           }
@@ -235,7 +243,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
               )}
               onPointerEnter={() => {
                 if (r.disabled) return;
-                setActive(i);
+                focusItem(i);
                 clearTimeout(hoverTimer.current);
                 hoverTimer.current = setTimeout(() => setOpenSub(hasSub ? i : null), hasSub ? 120 : 200);
               }}

@@ -18,6 +18,7 @@ pub enum DbDriver {
     Mysql,
     /// Microsoft SQL Server.
     SqlServer,
+    Clickhouse,
 }
 
 impl DbDriver {
@@ -27,6 +28,7 @@ impl DbDriver {
             DbDriver::Postgres => Some(5432),
             DbDriver::Mysql => Some(3306),
             DbDriver::SqlServer => Some(1433),
+            DbDriver::Clickhouse => Some(8123),
         }
     }
 }
@@ -253,6 +255,7 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
         "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" => Some(DbDriver::Mysql),
         "sqlserver" | "mssql" | "mssqlserver" => Some(DbDriver::SqlServer),
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
+        "clickhouse" | "http" | "https" => Some(DbDriver::Clickhouse),
         _ => None,
     }
 }
@@ -260,7 +263,7 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
 /// Parses `scheme://[user[:password]@]host[:port][/database][?k=v&…]`, `jdbc:` forms
 /// included, and `sqlite:path`.
 pub fn parse_url(raw: &str) -> IdeResult<ParsedUrl> {
-    let bad = || IdeError::invalid(format!("not a database URL: {raw}"));
+    let bad = || IdeError::invalid("invalid database URL");
     let url = raw.trim();
     let url = url.strip_prefix("jdbc:").or_else(|| url.strip_prefix("JDBC:")).unwrap_or(url);
     let (scheme, rest) = url.split_once(':').ok_or_else(bad)?;
@@ -367,6 +370,15 @@ impl DataSource {
         }
         properties.append(&mut s.properties);
         s.properties = properties;
+        if s.driver == DbDriver::Clickhouse {
+            let raw_url = self.url.trim().to_ascii_lowercase();
+            let url = raw_url.strip_prefix("jdbc:").unwrap_or(&raw_url);
+            if url.starts_with("https://") {
+                s.ssl = DbSslMode::VerifyFull;
+            } else if url.starts_with("http://") {
+                s.ssl = DbSslMode::Disable;
+            }
+        }
         Ok(s)
     }
 
@@ -518,5 +530,32 @@ mod tests {
         assert_eq!(s.url_password().as_deref(), Some("pw"));
         assert!(DataSource { url: "mysql://h/db".into(), ..s.clone() }.resolved().is_err());
         assert_eq!(DataSource { url_only: false, ..s }.resolved().unwrap().host, "localhost");
+    }
+
+    #[test]
+    fn clickhouse_urls_resolve_http_https_and_credentials() {
+        assert_eq!(DbDriver::Clickhouse.default_port(), Some(8123));
+        let source = DataSource {
+            driver: DbDriver::Clickhouse,
+            url_only: true,
+            url: "https://reader:s%40cret@db.example:8443/analytics?max_execution_time=30".into(),
+            ..Default::default()
+        };
+        let resolved = source.resolved().unwrap();
+        assert_eq!(resolved.host, "db.example");
+        assert_eq!(resolved.port, Some(8443));
+        assert_eq!(resolved.database, "analytics");
+        assert_eq!(resolved.user, "reader");
+        assert_eq!(resolved.ssl, DbSslMode::VerifyFull);
+        assert_eq!(source.url_password().as_deref(), Some("s@cret"));
+        assert_eq!(resolved.properties[0].name, "max_execution_time");
+        let http = DataSource { url: "http://localhost/default".into(), ..source.clone() }.resolved().unwrap();
+        assert_eq!(http.ssl, DbSslMode::Disable);
+        let jdbc = DataSource { url: "jdbc:clickhouse://localhost/analytics".into(), ..source.clone() };
+        assert_eq!(jdbc.resolved().unwrap().database, "analytics");
+        let secure = DataSource { url: "https://db.example/default?sslmode=disable".into(), ..source };
+        assert_eq!(secure.resolved().unwrap().ssl, DbSslMode::VerifyFull);
+        let error = parse_url("clickhouse://reader:secret@db.example:invalid/default").unwrap_err();
+        assert!(!error.message.contains("secret"));
     }
 }

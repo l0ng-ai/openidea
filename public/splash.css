@@ -22,8 +22,8 @@ body,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding-bottom: 38px;
+  gap: var(--splash-gap, 14px);
+  padding-bottom: var(--splash-offset, 38px);
   box-sizing: border-box;
   color: var(--fg-muted, var(--boot-fg, #6c707e));
   -webkit-user-select: none;
@@ -40,8 +40,8 @@ body,
   color: var(--fg-muted, var(--boot-fg, #8c8f95));
 }
 .splash-logo {
-  width: 56px;
-  height: 56px;
+  width: var(--splash-logo-size, 56px);
+  height: var(--splash-logo-size, 56px);
 }
 /* 15px Inter: 2048 units per em, the line box from ascender to descender. */
 .splash-wordmark {
@@ -49,8 +49,8 @@ body,
   height: 18.15px;
 }
 .splash-bar {
-  width: 120px;
-  height: 2px;
+  width: var(--splash-bar-width, 120px);
+  height: var(--splash-bar-height, 2px);
   border-radius: 1px;
   overflow: hidden;
   background: rgb(127 127 127 / 0.18);
@@ -63,7 +63,8 @@ body,
   height: 100%;
   background: var(--boot-accent, var(--accent, #3871e1));
   transform-origin: left;
-  animation: splash-fill 4s cubic-bezier(0.1, 0.7, 0.3, 1) both;
+  animation: splash-fill var(--splash-progress-duration, 4s)
+    var(--splash-progress-easing, cubic-bezier(0.1, 0.7, 0.3, 1)) both;
 }
 /* Settings window: a dialog, not a launch. Only the bar, and only if loading takes a while. */
 :root[data-window="settings"] .splash {

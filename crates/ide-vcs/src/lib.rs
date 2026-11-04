@@ -115,6 +115,10 @@ pub struct Commit {
     /// Committer time (Log › View Options › Commit Timestamp).
     #[serde(default)]
     pub commit_time_ms: f64,
+    /// Legacy alias of `graph_dashed`, indexed by displayed parents.
+    #[serde(default)]
+    #[specta(optional)]
+    pub dashed: Vec<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

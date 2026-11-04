@@ -416,6 +416,7 @@ fn log_indexed(
         let shown_parents = if shallow.contains(&id) { Vec::new() } else { visibility.parents(&repo, &parents)? };
         let mut commit = (*record).clone();
         commit.graph_dashed = shown_parents.iter().map(|p| !parents.contains(p)).collect();
+        commit.dashed = if commit.graph_dashed.iter().any(|d| *d) { commit.graph_dashed.clone() } else { Vec::new() };
         commit.graph_parents = Some(shown_parents.iter().map(ToString::to_string).collect());
         if shallow.contains(&id) {
             commit.graph_boundary_parents = commit.parents.clone();

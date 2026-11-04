@@ -946,6 +946,26 @@ export type ContextMenuId =
   | "selectIn"
   | "new";
 
+/**
+ * Entries of the native main menu's open slots (src-tauri/src/menu.rs
+ * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ */
+export interface MenuSlotItem {
+  action: string;
+  arg?: string | null;
+  label: string;
+}
+
+export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));
+
+export function registerMenuSlotItem(slot: string, item: MenuSlotItem): () => void {
+  useMenuSlotItems.setState((s) => ({ slots: { ...s.slots, [slot]: [...(s.slots[slot] ?? []), item] } }));
+  return () =>
+    useMenuSlotItems.setState((s) => ({
+      slots: { ...s.slots, [slot]: (s.slots[slot] ?? []).filter((i) => i !== item) },
+    }));
+}
+
 export interface MenuGroupContext {
   /** Files / directories the menu is for (absolute paths; a virtual URI for virtual documents). */
   paths: string[];
@@ -1092,7 +1112,9 @@ export interface RunConfigTypeField {
   /** Visible lines of a `textarea` (default 4). */
   rows?: number;
   placeholder?: string;
-  options?: ReadonlyArray<{ value: string; label: string }>;
+  options?: ReadonlyArray<{ value: string; label: string; detail?: string }>;
+  /** A `select`'s further options, read when the form shows it (installed JDKs, build modules). */
+  loadOptions?(): Promise<ReadonlyArray<{ value: string; label: string; detail?: string }>>;
   /** Values offered while typing (e.g. the scripts of detected configurations). */
   suggestions?(configs: readonly RunConfig[], params: Readonly<Record<string, string>>): string[];
   required?: boolean;
@@ -1103,6 +1125,8 @@ export interface RunConfigTypeField {
   validate?(value: string, params: Readonly<Record<string, string>>): string | null;
   /** Shown under the control. */
   hint?: string;
+  /** A text field holding a path: a button next to it picks a file or a directory (absolute path). */
+  browse?: "file" | "directory" | ((params: Readonly<Record<string, string>>) => "file" | "directory");
 }
 
 export interface RunConfigTypeContribution {
@@ -1194,6 +1218,24 @@ export function registerOccurrenceNavigator(toolWindow: string, nav: OccurrenceN
 
 export function occurrenceNavigator(toolWindow: string): OccurrenceNavigator | null {
   return occurrenceNavigators.get(toolWindow)?.at(-1) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Edit › Undo / Redo outside text fields and editors
+
+/** Undo / Redo for `focused` in a view with its own history (Project view file operations); true when handled. */
+export type UndoHandler = (command: "undo" | "redo", focused: Element) => boolean;
+
+const undoHandlers = new Set<UndoHandler>();
+
+export function registerUndoHandler(handler: UndoHandler): () => void {
+  undoHandlers.add(handler);
+  return () => void undoHandlers.delete(handler);
+}
+
+/** Offers Undo / Redo to the registered views, latest first. */
+export function runUndoHandlers(command: "undo" | "redo", focused: Element): boolean {
+  return [...undoHandlers].reverse().some((h) => h(command, focused));
 }
 
 /** Registers `nav` (the latest render's) for `toolWindow` while the calling view is mounted. */
@@ -1416,3 +1458,46 @@ export const useDebugRunSessions = create<{
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+
+// ---------------------------------------------------------------------------
+// "Get from Version Control" sources besides a plain URL (IDEA: GitHub, GitLab…),
+// listed in the Clone Repository dialog's sidebar.
+
+export interface CloneSourceProps {
+  /** The repository URL the dialog clones. */
+  url: string;
+  /** Picks a repository: the dialog clones `url` (and derives its directory from it). */
+  onUrl(url: string): void;
+  /** Picks a repository and clones it right away (double-click, Enter). */
+  onClone(url: string): void;
+  disabled: boolean;
+}
+
+export interface CloneSourceContribution {
+  id: string;
+  label: string;
+  icon: string;
+  /** Lower first; "Repository URL" always comes first. */
+  order?: number;
+  component: ComponentType<CloneSourceProps>;
+}
+
+export const useCloneSources = create<{ sources: ReadonlyMap<string, CloneSourceContribution> }>(() => ({
+  sources: new Map(),
+}));
+
+export function registerCloneSource(source: CloneSourceContribution): () => void {
+  useCloneSources.setState((s) => ({ sources: new Map(s.sources).set(source.id, source) }));
+  return () =>
+    useCloneSources.setState((s) => {
+      if (s.sources.get(source.id) !== source) return s;
+      const sources = new Map(s.sources);
+      sources.delete(source.id);
+      return { sources };
+    });
+}
+
+/** Registered clone sources in order. */
+export function cloneSourceList(sources = useCloneSources.getState().sources): CloneSourceContribution[] {
+  return [...sources.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id));
+}

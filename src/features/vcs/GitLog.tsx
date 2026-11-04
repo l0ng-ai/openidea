@@ -21,6 +21,7 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
+import { executeAction } from "@/platform/actions";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
@@ -74,6 +75,7 @@ import {
   setLogBranches,
   setLogFilters,
   toggleCommitSelection,
+  toggleRepository,
   updateLogOptions,
   useGitLog,
 } from "./logStore";
@@ -118,7 +120,7 @@ import {
   useLogContributions,
   type LogColumn,
   type LogContribution,
-} from "./logContributions";
+} from "@/workbench/logContributions";
 import { LogIdContext } from "./logContext";
 import { LogScope } from "./LogScope";
 import { browseRepositoryAt, openExternalLog } from "./RevisionBrowser";
@@ -583,7 +585,9 @@ export function BranchesPanel() {
               ? branchMenu(n.branch, n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current)
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
-                : [];
+                : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
+                  ? REMOTES_MENU
+                  : [];
             const items = n?.repo ? inRepo(n.repo, menu) : menu;
             if (!items.length) return;
             e.preventDefault();
@@ -603,6 +607,9 @@ export function BranchesPanel() {
     </div>
   );
 }
+
+/** IDEA: the Remote node and each remote of the Branches pane offer Manage Remotes…. */
+const REMOTES_MENU: MenuItem[] = [{ label: "Manage Remotes…", run: () => void executeAction("vcs.manageRemotes") }];
 
 // --- filters ----------------------------------------------------------------
 
@@ -843,12 +850,8 @@ function FilterBar() {
                 anchor,
                 repositories.map((repo) => ({
                   label: repoName(repo),
-                  checked: !filters.repositories?.length || filters.repositories.includes(repo),
-                  run: () => {
-                    const before = filters.repositories?.length ? filters.repositories : repositories;
-                    const chosen = before.includes(repo) ? before.filter((r) => r !== repo) : [...before, repo];
-                    setLogFilters({ repositories: chosen.length ? chosen : [repo] });
-                  },
+                  checked: filters.repositories?.includes(repo) ?? false,
+                  run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
                 })),
               ),
             onClear: () => setLogFilters({ repositories: [] }),

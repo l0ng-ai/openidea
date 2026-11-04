@@ -16,6 +16,7 @@ import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isPopupOpen, lazyComponent } from "@/ui";
 import { loadSettings, useProject } from "@/platform/project";
+import { logError } from "@/platform/errorLog";
 import { restoreRemote } from "@/platform/remote";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
@@ -23,6 +24,7 @@ import { LazySettingsDialog, loadBuiltinPages, unloadBuiltinPages } from "./dial
 import {
   closeSettings,
   openSettings,
+  rebaseSettings,
   selectPage,
   setNewProjects,
   setQuery,
@@ -38,8 +40,10 @@ import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
+import { trackIconThemePages } from "./iconThemePages";
 
-export { settingsWindowParent } from "./window/bridge";
+/** Settings-driven runtime state (zoom, fonts, theme) of a secondary window. */
+export const activateRuntimeSettings = trackRuntimeSettings;
 export const SettingsWindow = lazyComponent(() => import("./window/SettingsWindow").then((m) => m.SettingsWindow));
 
 /** Same event as `windows::LAUNCH_EVENT`: a pending launch (page) is waiting. */
@@ -103,6 +107,7 @@ async function showSettings(page?: string, newProjects = false) {
 export function activate(): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     activatePythonStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
@@ -191,6 +196,7 @@ function installWindowKeys(): () => void {
 export function activateSettingsWindow(parent: string): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     unloadBuiltinPages,
     registerActions(settingsActions((page, newProjects) => relaunch({ page, newProjects: !!newProjects }))),
     installActionProxies(parent),
@@ -206,14 +212,24 @@ export function activateSettingsWindow(parent: string): () => void {
     }),
   ];
   void (async () => {
-    await loadBuiltinPages();
-    await restoreRemote();
-    const project = await commands.projectCurrent().catch(() => null);
-    if (project) useProject.setState({ project, settings: project.settings });
-    else await loadSettings().catch((e) => console.warn("cannot load settings", e));
-    // `listenLaunch` may have taken the launch first and applied it already.
-    const launch = await takeLaunch();
-    openSettings(launch?.page, { newProjects: launch?.newProjects ?? useSettingsDialog.getState().newProjects });
-  })();
+    useSettingsDialog.setState({ pagesLoading: true });
+    openSettings();
+    try {
+      const launch = await takeLaunch();
+      relaunch(launch);
+      await Promise.all([
+        loadBuiltinPages().catch((e) => logError("cannot register settings pages", e)),
+        (async () => {
+          await restoreRemote();
+          const project = await commands.projectCurrent().catch(() => null);
+          if (project) useProject.setState({ project, settings: project.settings });
+          else await loadSettings().catch((e) => console.warn("cannot load settings", e));
+          rebaseSettings();
+        })(),
+      ]);
+    } finally {
+      useSettingsDialog.setState({ pagesLoading: false });
+    }
+  })().catch((e) => logError("settings window startup failed", e));
   return () => disposers.reverse().forEach((d) => d());
 }

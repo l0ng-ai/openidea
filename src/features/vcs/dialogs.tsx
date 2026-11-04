@@ -94,7 +94,11 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
           submit();
         }}
       >
-        {label && <label className={styles.fieldLabel}>{label}</label>}
+        {label && (
+          <label className={styles.fieldLabel}>
+            <T>{label}</T>
+          </label>
+        )}
         <Input
           data-autofocus
           aria-label={label ?? title}
@@ -216,7 +220,9 @@ function ChooseManyDialog(props: ChooseManyOptions & { onDone: (r: string[] | nu
         </div>
         {customLabel && (
           <>
-            <label className={styles.fieldLabel}>{customLabel}</label>
+            <label className={styles.fieldLabel}>
+              <T>{customLabel}</T>
+            </label>
             <Input aria-label={customLabel} value={custom} onChange={(e) => setCustom(e.target.value)} />
           </>
         )}

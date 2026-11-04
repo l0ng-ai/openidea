@@ -28,11 +28,31 @@ interface Customizations {
 
 const EMPTY: Customizations = { templates: {}, deleted: [], includes: {}, deletedIncludes: [], code: {} };
 
+/** Templates plugins contribute (`fileTemplates`): treated like built-ins (customised, reset, hidden). */
+let contributed: readonly FileTemplate[] = [];
+
+const isBase = (id: string) => BUILTIN_IDS.has(id) || contributed.some((t) => t.id === id);
+
 export function mergeFileTemplates(c: Pick<Customizations, "templates" | "deleted">): FileTemplate[] {
   const deleted = new Set(c.deleted);
-  const out = BUILTIN_FILE_TEMPLATES.filter((t) => !deleted.has(t.id)).map((t) => c.templates[t.id] ?? t);
-  for (const t of Object.values(c.templates)) if (!BUILTIN_IDS.has(t.id) && !deleted.has(t.id)) out.push(t);
+  const base = [...BUILTIN_FILE_TEMPLATES, ...contributed];
+  const out = base.filter((t) => !deleted.has(t.id)).map((t) => c.templates[t.id] ?? t);
+  for (const t of Object.values(c.templates)) if (!isBase(t.id) && !deleted.has(t.id)) out.push(t);
   return out;
+}
+
+/** Adds a plugin's template to the New menu until the returned function is called. */
+export function addContributedFileTemplate(t: FileTemplate): () => void {
+  contributed = [...contributed.filter((x) => x.id !== t.id), t];
+  refreshMerged();
+  return () => {
+    contributed = contributed.filter((x) => x !== t);
+    refreshMerged();
+  };
+}
+
+function refreshMerged() {
+  useFileTemplates.setState((s) => ({ templates: mergeFileTemplates(s.custom) }));
 }
 
 export function mergeIncludes(c: Pick<Customizations, "includes" | "deletedIncludes">): TemplateFragment[] {
@@ -98,7 +118,7 @@ function commit(custom: Customizations) {
 const custom = () => useFileTemplates.getState().custom;
 
 export const fileTemplates = () => useFileTemplates.getState().templates;
-export const isBuiltinFileTemplate = (id: string) => BUILTIN_IDS.has(id);
+export const isBuiltinFileTemplate = (id: string) => isBase(id);
 
 /** `#parse` lookup over the current scheme's includes, then its code templates. */
 export function templateIncludes(): IncludeResolver {
@@ -115,7 +135,7 @@ export function removeFileTemplate(id: string) {
   const c = custom();
   const templates = { ...c.templates };
   delete templates[id];
-  commit({ ...c, templates, deleted: BUILTIN_IDS.has(id) ? [...new Set([...c.deleted, id])] : c.deleted });
+  commit({ ...c, templates, deleted: isBase(id) ? [...new Set([...c.deleted, id])] : c.deleted });
 }
 
 export function resetFileTemplate(id: string) {
@@ -126,7 +146,7 @@ export function resetFileTemplate(id: string) {
 }
 
 export function isModifiedFileTemplate(id: string): boolean {
-  return BUILTIN_IDS.has(id) && id in custom().templates;
+  return isBase(id) && id in custom().templates;
 }
 
 /** Saves an include; `previous` is its name before a rename. */

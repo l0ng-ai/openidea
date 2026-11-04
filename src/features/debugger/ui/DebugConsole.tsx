@@ -8,6 +8,7 @@ import { spanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
 import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
+import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
@@ -28,6 +29,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const history = useRef<string[]>(readHistory("console"));
   const historyPos = useRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
+  const completion = useExpressionCompletion(inputRef, input, setInput, session);
 
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
@@ -81,6 +83,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (completion.onKeyDown(e)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       void submit();
@@ -148,9 +151,15 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
               ref={inputRef}
               className={styles.evalInput}
               onFocus={() => setConsoleHistoryBrowser(browseHistory)}
-              onBlur={() => setConsoleHistoryBrowser(null)}
+              onBlur={() => {
+                setConsoleHistoryBrowser(null);
+                completion.close();
+              }}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                completion.onInput();
+              }}
               onKeyDown={onKeyDown}
               placeholder={isLive(session) ? "Evaluate in the debug console" : "Session finished"}
               disabled={!isLive(session)}
@@ -158,6 +167,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
               spellCheck={false}
               autoComplete="off"
             />
+            {completion.popup}
           </>
         )}
         <IconButton

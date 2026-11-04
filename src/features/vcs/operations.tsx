@@ -7,9 +7,10 @@ import { commitKey, commitRepo } from "./multiRoot";
 import { useEffect, useMemo, useState } from "react";
 import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange } from "@/bindings";
 import { executeAction } from "@/platform/actions";
-import { call, commands, nextRequestId } from "@/platform/ipc";
-import { Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
+import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
+import { Button, Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { windowBackgroundHex } from "@/workbench/theme";
 import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, fileCount } from "./model";
@@ -165,7 +166,7 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
     {
       progress,
       success,
-      failure: `${controlLabel(op, control)} failed`,
+      failure: tx`${controlLabel(op, control)} failed`,
       onError: control === "abort" ? undefined : conflictsInstead,
     },
   );
@@ -241,8 +242,8 @@ export async function cherryPick(commits: Commit[]) {
     { op: "cherryPick", commits: ordered.map((c) => c.id) },
     {
       progress: "Cherry-picking",
-      success: `Cherry-picked ${label}`,
-      failure: "Cherry-pick failed",
+      success: tx`Cherry-picked ${label}`,
+      failure: tx("Cherry-pick failed"),
       onError: conflictsInstead,
     },
     commitRepo(commits[0]!) ?? currentRepo(),
@@ -256,7 +257,7 @@ export async function revertCommits(commits: Commit[]) {
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
   await runGitOperation(
     { op: "revert", commits: ordered.map((c) => c.id) },
-    { progress: "Reverting", success: `Reverted ${label}`, failure: "Revert failed", onError: conflictsInstead },
+    { progress: "Reverting", success: tx`Reverted ${label}`, failure: tx("Revert failed"), onError: conflictsInstead },
     commitRepo(commits[0]!) ?? currentRepo(),
   );
 }
@@ -294,8 +295,8 @@ function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void
       { op: "reset", commit: rev, mode },
       {
         progress: "Resetting",
-        success: `Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
-        failure: "Reset failed",
+        success: tx`Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
+        failure: tx("Reset failed"),
       },
       repo,
     );
@@ -374,8 +375,8 @@ export async function newTagOn(commit: Commit) {
   });
   if (!r) return;
   const create = () => call(commands.vcsCreateTag(repo, r.value, commit.id, null, false));
-  const ok = await runOp(`Create tag ${r.value}`, create, {
-    success: `Created tag ${r.value} on ${short(commit.id)}`,
+  const ok = await runOp(tx`Create tag ${r.value}`, create, {
+    success: tx`Created tag ${r.value} on ${short(commit.id)}`,
   });
   // Tags are not part of the refs signature that reloads the log.
   if (ok !== undefined) void reloadLog();
@@ -402,9 +403,9 @@ function TagDialog({ onClose }: { onClose: () => void }) {
     onClose();
     const tag = name.trim();
     const ok = await runOp(
-      `Create tag ${tag}`,
+      tx`Create tag ${tag}`,
       () => call(commands.vcsCreateTag(repo, tag, commit.trim() || "HEAD", message || null, force)),
-      { success: `Created tag ${tag}` },
+      { success: tx`Created tag ${tag}` },
     );
     if (ok !== undefined && useGitLog.getState().commits.length) void reloadLog();
   };
@@ -460,31 +461,32 @@ export function showCompareWithLocal(commit: Commit) {
 
 /** Files that differ between `rev` (a commit or branch) and the working tree. */
 export function showDiffWithWorkingTree(rev: string, label = rev) {
-  openDialog((close) => <ChangesBetweenDialog from={{ rev, label }} to={null} onClose={close} />);
+  showComparison({ rev, label }, null);
 }
 
 /** IDEA's Compare Versions of two Git Log commits: files that differ between them, older first. */
 export function showCompareVersions(older: Commit, newer: Commit) {
-  openDialog((close) => (
-    <ChangesBetweenDialog
-      from={{ rev: older.id, label: short(older.id) }}
-      to={{ rev: newer.id, label: short(newer.id) }}
-      onClose={close}
-    />
-  ));
+  showComparison({ rev: older.id, label: short(older.id) }, { rev: newer.id, label: short(newer.id) });
 }
 
 /** Files that differ between two revisions (e.g. two branches from Compare with Current). */
 export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to) {
-  openDialog((close) => (
-    <ChangesBetweenDialog from={{ rev: from, label: fromLabel }} to={{ rev: to, label: toLabel }} onClose={close} />
-  ));
+  showComparison({ rev: from, label: fromLabel }, { rev: to, label: toLabel });
 }
 
 export function showPathComparison(paths: string[], rev: string, repositories: string[] | null) {
-  openDialog((close) => (
-    <ChangesBetweenDialog from={{ rev, label: rev }} to={null} scope={{ paths, repositories }} onClose={close} />
-  ));
+  showComparison({ rev, label: rev }, null, { paths, repositories });
+}
+
+function showComparison(from: Revision, to: Revision | null, scope?: ScopedComparison) {
+  if (!isTauri()) {
+    openDialog((close) => <ChangesBetweenDialog from={from} to={to} scope={scope} onClose={close} />);
+    return;
+  }
+  const comparison = { from, to, scope: scope ?? null, repo: currentRepo() };
+  void call(commands.windowOpenComparison(comparison, windowBackgroundHex())).catch((error) =>
+    notifications().notify({ level: "error", title: "Could not open comparison", body: String(error) }),
+  );
 }
 
 interface Revision {
@@ -516,11 +518,18 @@ export function ChangesBetweenDialog({
   to,
   scope,
   onClose,
+  native = false,
+  onCaption,
+  onShowDiff,
 }: {
   from: Revision;
   to: Revision | null;
   scope?: ScopedComparison;
   onClose: () => void;
+  /** Content of the comparison window rather than a dialog: its caption goes to `onCaption`. */
+  native?: boolean;
+  onCaption?: (caption: string) => void;
+  onShowDiff?: (data: DiffData) => void;
 }) {
   const [root] = useState(currentRepoRoot);
   const [repo] = useState(currentRepo);
@@ -607,27 +616,20 @@ export function ChangesBetweenDialog({
   const skipped = result?.skippedPaths.map((path) => displayPath(path)) ?? [];
   const skippedNames = skipped.slice(0, 5).join(", ");
   const skippedLabel = skipped.length > 5 ? tx`${skippedNames} and ${skipped.length - 5} more` : skippedNames;
-  return (
-    <Dialog
-      open
-      title={files ? `${title} — ${count}` : title}
-      onClose={onClose}
-      width={input ? 1100 : 680}
-      buttons={[
-        {
-          label: "Show Diff",
-          role: "default",
-          disabled: !current,
-          onClick: () => {
-            if (current) {
-              void openDiff(diffFor(current));
-              onClose();
-            }
-          },
-        },
-        { label: "Close", role: "cancel" },
-      ]}
-    >
+  const caption = files ? `${title} — ${count}` : title;
+  useEffect(() => {
+    if (native) onCaption?.(caption);
+  }, [native, onCaption, caption]);
+  const showDiff = () => {
+    if (!current) return;
+    if (onShowDiff) onShowDiff(diffFor(current));
+    else {
+      void openDiff(diffFor(current));
+      onClose();
+    }
+  };
+  const contents = (
+    <>
       {error && (
         <div className={styles.error} role="alert">
           {error}
@@ -682,6 +684,34 @@ export function ChangesBetweenDialog({
           }
         />
       ) : null}
+    </>
+  );
+  if (native)
+    return (
+      <div className={styles.comparisonWindow}>
+        <div className={styles.comparisonWindowBody}>{contents}</div>
+        <div className={styles.comparisonWindowFooter}>
+          <Button onClick={onClose}>Close</Button>
+          <Button variant="primary" disabled={!current} onClick={showDiff}>
+            Show Diff
+          </Button>
+        </div>
+      </div>
+    );
+  return (
+    <Dialog
+      open
+      title={caption}
+      onClose={onClose}
+      width={input ? 1100 : 680}
+      resizable="both"
+      className={styles.comparisonDialog}
+      buttons={[
+        { label: "Show Diff", role: "default", disabled: !current, onClick: showDiff },
+        { label: "Close", role: "cancel" },
+      ]}
+    >
+      {contents}
     </Dialog>
   );
 }

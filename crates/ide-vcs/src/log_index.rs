@@ -220,6 +220,7 @@ impl LogIndex {
                 parents: commit.parent_ids().map(|p| p.to_string()).collect(),
                 graph_parents: None,
                 graph_dashed: Vec::new(),
+                dashed: Vec::new(),
                 on_current_branch: None,
                 author: to_string(author.name.trim().as_bstr()),
                 email: to_string(author.email.trim().as_bstr()),

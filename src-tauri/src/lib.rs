@@ -14,6 +14,7 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+mod plugin_web;
 mod remote_dev;
 
 mod state;
@@ -84,13 +85,15 @@ pub fn run() {
     let app = app.plugin(
         tauri_plugin_window_state::Builder::default()
             .with_state_flags(window_state_flags())
-            // One remembered geometry shared by every project's settings window.
-            .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
+            // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
+            .map_label(windows::state_key)
             .build(),
     );
     let app = app
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Files of plugins' web views, for their sandboxed frames.
+    let app = app.register_asynchronous_uri_scheme_protocol(plugin_web::SCHEME, plugin_web::handle);
     // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
     #[cfg(debug_assertions)]
     let app = app.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
@@ -145,6 +148,7 @@ pub fn run() {
         if let Ok(cwd) = std::env::current_dir()
             && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
         {
+            windows::remember_cli_position(&windows, &std::env::args().collect::<Vec<_>>(), &path);
             windows.set_launch("main", windows::path_launch(path));
         }
         let menu_state = menu::MenuState::default();
@@ -178,17 +182,17 @@ pub fn run() {
                 titlebar::forget(window);
                 macos::forget_fullscreen(window.label());
             }
-            window_groups::destroyed(window.app_handle(), window.label());
-            if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
-                let _ = settings.destroy();
-            }
-            if let Some(state) = window.try_state::<AppState>() {
-                state.close_project(window.label());
+            if windows::auxiliary_parent(window.label()).is_none() {
+                window_groups::destroyed(window.app_handle(), window.label());
+                windows::close_auxiliary_windows(window.app_handle(), window.label());
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.close_project(window.label());
+                }
             }
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.forget(window.label());
             }
-            if !windows::is_settings_window(window.label()) {
+            if windows::auxiliary_parent(window.label()).is_none() {
                 windows::continue_quit(window.app_handle(), Some(window.label()));
             }
         }
@@ -233,15 +237,20 @@ fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
-            // Settings is modal for its project window: only app-level items get through, to the parent.
-            let label = match windows::settings_parent(w.label()) {
-                Some(parent)
+            // App-level items of an auxiliary window go to its project window. Settings is modal for it:
+            // nothing else gets through. Others handle their own items; Close Tab closes the window.
+            let label = match windows::auxiliary(w.label()) {
+                Some((_, parent))
                     if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
                 {
                     parent
                 }
-                Some(_) => return,
-                None => w.label(),
+                Some((kind, _)) if kind.modal() => return,
+                Some(_) if route.action == "editor.closeTab" => {
+                    let _ = w.close();
+                    return;
+                }
+                _ => w.label(),
             };
             if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &route) {
                 tracing::warn!("failed to deliver menu event {id}: {e}");

@@ -210,7 +210,7 @@ export async function getFromRevision(changes: readonly LogChange[]) {
   if (!ok) return;
   await saveAll();
   await runOp(
-    "Get from Revision",
+    tx("Get from Revision"),
     async () => {
       for (const c of changes) {
         const path = absolutePath(c.path, c.repo);
@@ -244,7 +244,7 @@ export async function revertSelectedChanges(changes: readonly LogChange[], commi
   if (!ids.length) return;
   const paths = new Set(changes.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path])));
   const outcome = await runOp(
-    "Revert selected changes",
+    tx("Revert selected changes"),
     async () => {
       const patch = filterPatch(
         await call(

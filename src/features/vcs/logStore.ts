@@ -117,6 +117,12 @@ export const emptyFilters = (): LogFilters => ({
   date: null,
 });
 
+/** The Repository filter after clicking `repo`: added when unchecked, removed when checked (none = all). */
+export function toggleRepository(selected: readonly string[] | undefined, repo: string): string[] {
+  const cur = selected ?? [];
+  return cur.includes(repo) ? cur.filter((r) => r !== repo) : [...cur, repo];
+}
+
 /** Any filter other than the text field's toggles is set. */
 export function hasFilters(f: LogFilters): boolean {
   return !!(

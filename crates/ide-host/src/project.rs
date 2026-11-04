@@ -307,6 +307,7 @@ impl Host {
                     index.update(&changed, &batch.removed);
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
+                    lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed);
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&changed);
                     // A framework's root marker (`angular.json`) created or deleted: its

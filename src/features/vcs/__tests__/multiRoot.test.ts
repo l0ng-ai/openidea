@@ -26,6 +26,7 @@ import {
   selectedCommits,
   selectGitTab,
   toggleCommitSelection,
+  toggleRepository,
   useGitLog,
 } from "../logStore";
 import { useVcs } from "../store";
@@ -70,6 +71,16 @@ beforeEach(() => {
 });
 
 describe("multi-root Git log", () => {
+  it("keeps filtered edge hints from both graph metadata formats", () => {
+    const row = { ...commit("tip"), repo: "/a", parents: ["real"], dashed: [true] };
+    expect(graphCommit(row)).toMatchObject({ parents: ["/a\0real"], dashed: [true], edgeTypes: ["filtered"] });
+    expect(graphCommit({ ...row, graphParents: ["visible"], graphDashed: [false] })).toMatchObject({
+      parents: ["/a\0visible"],
+      dashed: [false],
+      edgeTypes: ["normal"],
+    });
+  });
+
   it("merges streams by time without violating each root's topological order", () => {
     const child = { ...commit("child", 1), repo: "a", parents: ["parent"] };
     const parent = { ...commit("parent", 100), repo: "a" };
@@ -153,6 +164,20 @@ describe("multi-root Git log", () => {
     expect(useGitLog.getState().filters.path).toBe("/project/back/main.ts");
     expect((useGitLog.getState().commits as RepoCommit[])[0]?.repo).toBe("/project/back");
     off();
+  });
+
+  it("shows several repositories chosen one click at a time in the Repository filter", async () => {
+    log.mockImplementation(async (repo: string) => ({ status: "ok", data: [commit(repo)] }));
+    let repositories = toggleRepository(undefined, "/project/front");
+    repositories = toggleRepository(repositories, "/project/back");
+    expect(repositories).toEqual(["/project/front", "/project/back"]);
+    useGitLog.setState({ filters: { ...emptyFilters(), repositories } });
+    await reloadLog();
+    expect(new Set((useGitLog.getState().commits as RepoCommit[]).map((c) => c.repo))).toEqual(
+      new Set(["/project/front", "/project/back"]),
+    );
+    expect(toggleRepository(repositories, "/project/front")).toEqual(["/project/back"]);
+    expect(toggleRepository(["/project/back"], "/project/back")).toEqual([]);
   });
 
   it("groups identical local and remote names under distinct repository nodes", () => {

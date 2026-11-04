@@ -116,7 +116,7 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
               reverse,
             };
     const done = await runOp(
-      "Create patch",
+      tx("Create patch"),
       async () => {
         const patch =
           origin.kind === "shelf"
@@ -250,7 +250,7 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
   const run = async () => {
     onClose();
     await saveAll();
-    const outcome = await runOp(`Apply patch (${source})`, () => call(commands.vcsApplyPatch(repo, patch)), {
+    const outcome = await runOp(tx`Apply patch (${source})`, () => call(commands.vcsApplyPatch(repo, patch)), {
       refresh: false,
     });
     if (outcome) await reportApply(outcome, "Patch applied");
@@ -305,7 +305,7 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
                   f.applies ? tx("Applies cleanly") : tx("Does not apply cleanly: a 3-way merge will be attempted")
                 }
               >
-                <Icon name={fileIconName(baseName(f.path))} size={14} />
+                <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
                 <span
                   className={styles.fileName}
                   style={{

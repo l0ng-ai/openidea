@@ -21,13 +21,29 @@ export const EXPORTED_STORAGE = [
   "openidea.toolWindowLayouts.",
 ];
 
+/** IDE-level preferences kept in localStorage, exported with the settings as well. */
+const EXPORTED_KEYS = new Set([
+  "openidea.projectTree.options",
+  "openidea.todo.v1",
+  "openidea.vim.v1",
+  "openidea.vcs.diffOptions",
+  "openidea.vcs.diffPreview",
+  "openidea.vcs.branchesPopup.options",
+  "openidea.merge.autoApplyNonConflicting",
+  "openidea.markdown.defaultMode",
+  "openidea.imageViewer.chessboard",
+  "openidea.welcome.reopenLastProject",
+]);
+
+const isExported = (key: string) => EXPORTED_KEYS.has(key) || EXPORTED_STORAGE.some((p) => key.startsWith(p));
+
 export function exportedStorage(
   storage: Pick<Storage, "length" | "key" | "getItem"> = localStorage,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < storage.length; i++) {
     const key = storage.key(i);
-    if (!key || !EXPORTED_STORAGE.some((p) => key.startsWith(p))) continue;
+    if (!key || !isExported(key)) continue;
     const value = storage.getItem(key);
     if (value !== null) out[key] = value;
   }
@@ -71,7 +87,7 @@ async function importSettings() {
   try {
     const result = await call(commands.settingsImport(path));
     for (const [key, value] of Object.entries(result.storage))
-      if (EXPORTED_STORAGE.some((p) => key.startsWith(p)))
+      if (isExported(key))
         try {
           localStorage.setItem(key, value);
         } catch {
@@ -81,7 +97,7 @@ async function importSettings() {
     notifications().notify({
       level: "info",
       title: "Settings imported",
-      body: "Restart to apply imported templates, macros and layouts.",
+      body: "Restart to apply imported templates, macros, layouts and view options.",
       key: "app.settingsImport",
       sticky: true,
       actions: [{ label: "Restart", run: () => void executeAction("app.restart") }],

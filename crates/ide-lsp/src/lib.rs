@@ -570,7 +570,10 @@ impl LspManager {
                 if let Some(info) = result.get("serverInfo") {
                     tracing::info!("{} initialized: {info}", server.name);
                 }
-                ServerCaps::parse(result.get("capabilities").cloned().unwrap_or_else(|| json!({})))
+                let mut caps = ServerCaps::parse(result.get("capabilities").cloned().unwrap_or_else(|| json!({})));
+                let cfg = server.effective_config();
+                caps.restrict(caps::Restriction::new(&server.name, &cfg.features, &cfg.code_action_kinds));
+                caps
             }
             Err(e) => {
                 tracing::warn!("{}: initialize failed: {e}", server.name);
@@ -1593,8 +1596,14 @@ impl LspManager {
                 Ok(actions) => {
                     let conv = self.conv(t.enc());
                     let acc = out.value.get_or_insert_with(Vec::new);
+                    let caps = t.caps();
                     acc.extend(
-                        actions.unwrap_or_default().into_iter().map(|a| convert::code_action(&conv, a, t.server.id)),
+                        actions
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|a| convert::code_action(&conv, a, t.server.id))
+                            // Servers may ignore `only`, and the kinds kept for this one.
+                            .filter(|a| caps.restriction.keeps_action(a.kind.as_deref())),
                     );
                 }
                 Err(e) => out.fail(e),
@@ -1960,6 +1969,29 @@ impl LspManager {
             let Some(params) = Self::file_op_params(&t, "didRename", &moves) else { continue };
             if let Err(e) = t.run.peer.notify("workspace/didRenameFiles", params) {
                 tracing::debug!("{}: didRenameFiles: {e}", s.name);
+            }
+        }
+    }
+
+    /// Files that changed on disk, outside the editor too (a checkout, another tool): each running
+    /// server hears of those of its languages under its root through `workspace/didChangeWatchedFiles`.
+    /// Without it jdtls's incremental build never sees them, so a launch runs stale classes.
+    pub fn watched_files_changed(&self, created: &[PathBuf], modified: &[PathBuf], removed: &[PathBuf]) {
+        let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        for s in servers {
+            let Some(run) = s.running() else { continue };
+            let languages = s.languages();
+            let changes: Vec<Value> = [(created, 1), (modified, 2), (removed, 3)]
+                .into_iter()
+                .flat_map(|(paths, kind)| paths.iter().map(move |p| (p, kind)))
+                .filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
+                .map(|(p, kind)| json!({ "uri": uri::path_to_uri(p), "type": kind }))
+                .collect();
+            if changes.is_empty() {
+                continue;
+            }
+            if let Err(e) = run.peer.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes })) {
+                tracing::debug!("{}: didChangeWatchedFiles: {e}", s.name);
             }
         }
     }

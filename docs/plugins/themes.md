@@ -17,7 +17,8 @@ my-theme/
    └─ my-theme.scheme.json        # editor colours, optional (IntelliJ: .icls)
 ```
 
-The quickest way to start is to copy [`templates/theme-plugin`](../../templates/theme-plugin).
+The quickest way to start is `openidea-plugin new --template theme`, or a copy of
+[`plugins/official/harbor-night`](../../plugins/official/harbor-night).
 It contains *Harbor Night*, a complete example dark theme that sets every
 themeable token. The rest of this page covers the file format, the token
 reference, porting themes from IntelliJ IDEA and VS Code, and testing.
@@ -106,11 +107,13 @@ built-in theme returns.
 
 There is no build step. The package *is* the folder.
 
-1. Copy `templates/theme-plugin` and rename `id`, `name` and the theme files.
+1. Run `openidea-plugin new --template theme` (or copy
+   `plugins/official/harbor-night`) and rename `id`, `name` and the theme files.
 2. Edit the colours. Keep `kind` truthful (`light` for light backgrounds).
 3. **Install:** *Settings › Plugins › ⚙ › Install Plugin from Disk…* (or the
-   *Install Plugin from Disk…* action) and pick the package's `plugin.toml`, or
-   a `.zip` of the folder. The manifest and the files it references are copied to
+   *Install Plugin from Disk…* action) and pick the package folder, or
+   *Install Plugin from Package File…* and pick its `plugin.toml` or a `.zip` of
+   the folder. The manifest and the files it references are copied to
    `<app-data>/plugins/<id>/`.
 4. **Apply:** in *Settings › Plugins*, select the plugin and press *Apply* next
    to the theme. *Use Default Theme* switches back.
@@ -129,9 +132,29 @@ and credit the original authors in `authors` and `description`.
 
 ### From IntelliJ IDEA (automatic)
 
+To use a theme you already have in IntelliJ, open **Settings › Plugins**, gear
+menu:
+
+- **Import Theme from IntelliJ IDE…** lists the theme plugins installed in the
+  JetBrains IDEs (and Android Studio) on this computer, the theme each IDE uses
+  first. It reads their settings folders: `~/Library/Application Support/JetBrains`
+  (macOS), `%APPDATA%\JetBrains` (Windows), `~/.config/JetBrains` and
+  `~/.local/share/JetBrains` (Linux).
+- **Import IntelliJ Theme from File…** takes a theme plugin downloaded from the
+  JetBrains Marketplace (`.jar`, or a `.zip` with the plugin's `lib/*.jar`) or a
+  `.theme.json` (its `editorScheme` file is read from the same folder).
+
+The whole plugin becomes one OpenIDEA theme plugin, `intellij.<plugin id>`, with
+each of its themes and their editor schemes; it is installed through the usual
+install page and the chosen theme (otherwise the first) is applied. Importing
+the plugin again replaces it. Both are actions too (`plugins.importIntellijTheme`,
+`plugins.importInstalledIntellijTheme`). The conversion is the one described
+below.
+
 `scripts/theme/import-intellij-theme.ts` converts an IntelliJ `.theme.json`,
-and optionally its `.icls` editor scheme, into a ready-to-install plugin. It
-has no dependencies beyond Node 22.
+and optionally its `.icls` editor scheme, into a plugin folder you can edit
+before installing it — the way to port a theme for publishing. It has no
+dependencies beyond Node 22.
 
 ```sh
 pnpm theme:import-intellij path/to/MyTheme.theme.json path/to/MyTheme.icls --out ~/my-theme --author "Original Author"
@@ -176,7 +199,7 @@ ship no `.icls` at all keep the built-in syntax colours.
 | `--bg-toggle-*` | `ToggleButton.onBackground`, `.offBackground`, `.buttonColor` |
 | `--bg-feedback-*`, `--border-feedback-*` | `Banner.infoBackground`, `Banner.errorBorderColor`, … |
 
-The full table is `UI_KEYS` in [`scripts/theme/intellij.ts`](../../scripts/theme/intellij.ts).
+The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../../src/features/plugins/intellijTheme.ts).
 
 #### `.icls` → editor scheme
 

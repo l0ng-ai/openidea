@@ -5,7 +5,7 @@
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
-import { call, commands, onIdeEvent, type RunConfig, type RunImportSource } from "@/platform/ipc";
+import { onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
@@ -35,6 +35,7 @@ import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
+import { openImport } from "./importConfigs";
 import { registerGoActions } from "./goActions";
 import { invalidateGoModules } from "./goModules";
 import { RunWidget } from "./RunWidget";
@@ -70,6 +71,7 @@ import {
   selectedConfig,
   startRun,
   stopSession,
+  trackRecentConfigurations,
   useRun,
 } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
@@ -194,7 +196,12 @@ function configFromArg(arg: unknown): RunConfig | undefined {
  * Stop: in the Run or Debug tool window, the selected tab's process; otherwise the selected
  * configuration's session, or a chooser of every running process.
  */
-function stopAction() {
+/**
+ * Stop. In the Run tool window: its active tab. From the run widget (`arg` "widget"): the selected
+ * configuration's process. Elsewhere (shortcut, menu, Find Action), like IDEA's Stop: the only
+ * stoppable process, or a list of them with Stop All when there are several.
+ */
+function stopAction(arg?: unknown) {
   const ctx = getContext();
   if (ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
     void executeAction("debug.stop");
@@ -209,16 +216,17 @@ function stopAction() {
     }
   }
   const debug = useDebugRunSessions.getState().sessions;
-  const selected = selectedConfig();
-  const compound = compoundTargets(selected, running, debug);
-  if (compound.length) {
-    compound.forEach((s) => s.stop());
-    return;
-  }
-  const target = selectedTarget(useRun.getState().selectedId, running, debug);
-  if (target) {
-    target.stop();
-    return;
+  if (arg === "widget") {
+    const compound = compoundTargets(selectedConfig(), running, debug);
+    if (compound.length) {
+      compound.forEach((s) => s.stop());
+      return;
+    }
+    const target = selectedTarget(useRun.getState().selectedId, running, debug);
+    if (target) {
+      target.stop();
+      return;
+    }
   }
   const items = [
     ...running.map((s): MenuItem => ({
@@ -289,6 +297,7 @@ export function activate(): () => void {
     registerExternalTools(),
     activateStackTrace(),
     listenForApplicationDeactivation(),
+    trackRecentConfigurations(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
@@ -356,7 +365,7 @@ export function activate(): () => void {
         category: "Run",
         icon: "stop",
         when: "projectOpen",
-        run: () => stopAction(),
+        run: ({ arg }) => stopAction(arg),
       },
       {
         id: "run.rerun",
@@ -420,20 +429,15 @@ export function activate(): () => void {
         category: "Run",
         when: "projectOpen",
         keywords: ["launch.json", "vscode", "visual studio code", "debug configuration"],
-        run: async () => {
-          const sources = await call(commands.runImportSources()).catch((): RunImportSource[] => []);
-          if (!sources.includes("vscode")) {
-            notifications().notify({
-              group: "run",
-              level: "info",
-              title: "This project has no .vscode/launch.json",
-              key: "run-import",
-            });
-            return;
-          }
-          await ensureConfigs();
-          useRun.setState({ editorOpen: true, chooserOpen: false, editTarget: null, editImport: "vscode" });
-        },
+        run: () => openImport("vscode"),
+      },
+      {
+        id: "run.importJetbrains",
+        title: "Import Run Configurations from JetBrains (.run, .idea)",
+        category: "Run",
+        when: "projectOpen",
+        keywords: ["pycharm", "webstorm", "intellij", "run.xml", "workspace.xml", "run configuration"],
+        run: () => openImport("jetbrains"),
       },
       {
         id: "run.debugConfig",

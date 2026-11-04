@@ -1,34 +1,48 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { PluginInfo } from "@/bindings";
+import type { PluginInfo, ProjectInfo } from "@/bindings";
 import { _setActiveEditor } from "@/editor/api";
-import { executeAction, getAction } from "@/platform/actions";
-import { useLogContributions } from "@/features/vcs/logContributions";
+import { useLogContributions } from "@/workbench/logContributions";
+import { executeAction, executeActionFrom, getAction, registerAction } from "@/platform/actions";
+import { useProject } from "@/platform/project";
+import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
+import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
-import { applyThemeAttributes, useThemeOverride } from "@/workbench/theme";
+import { applyThemeAttributes, previewTheme, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
 import {
   applyPluginTheme,
-  applyTextToActiveEditor,
+  followThemeSetting,
   PLUGIN_THEME_STYLE_ID,
   handlePluginEvent,
+  providePluginThemePreviews,
   pluginActionId,
-  pluginActions,
   startPluginBridge,
-  syncPluginActions,
+  syncProjection,
 } from "../bridge";
+import { iconResolver, selectedIconTheme, useIconThemes } from "../iconThemes";
+import { markerIcon, placeMarkers } from "../lineMarkerGutter";
+import { SecretsDetails } from "../secrets";
+import { usePluginStatusItems } from "../runtimeUi";
+import { useTasks } from "@/workbench/tasks";
+import { defineBuiltinUiPoints } from "../points";
+import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
 import { catalogState, filterCatalog, filterPlugins, NO_REPOSITORY, PluginsPage } from "../PluginsPage";
 import {
+  adoptIconTheme,
   compareVersions,
+  installFromDisk,
   refreshPlugins,
   runPluginCommand,
   selectPluginTheme,
   setAllInstalledEnabled,
+  setConsentPrompt,
   setPluginEnabled,
   usePlugins,
+  type ConsentRequest,
 } from "../store";
 
 type Note = Parameters<NotificationService["notify"]>[0];
@@ -50,10 +64,23 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     status: "active",
     error: null,
     hasCode: true,
-    permissions: [],
-    commands: [],
-    languages: [],
-    themes: [],
+    capabilities: [],
+    contributions: [],
+    activation: [],
+    warnings: [],
+    stats: {
+      activations: 0,
+      activationMs: 0,
+      calls: 0,
+      errors: 0,
+      maxCallMs: 0,
+      p95CallMs: 0,
+      slowCalls: 0,
+      crashes: 0,
+      reclaims: 0,
+    },
+    publisher: null,
+    previousVersion: null,
     ...partial,
   };
 }
@@ -65,13 +92,17 @@ function editor(doc: string, anchor: number, head = anchor, readOnly = false) {
   return view;
 }
 
+let undefinePoints: () => void = () => {};
+
 beforeEach(() => {
+  undefinePoints = defineBuiltinUiPoints();
   notes = [];
   provideNotificationService({ notify: (n) => void notes.push(n) });
   backend = createMemoryPluginsBackend();
   setPluginsBackend(backend);
   usePlugins.setState({
     plugins: [],
+    ui: [],
     activeTheme: null,
     loaded: false,
     loading: false,
@@ -84,6 +115,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearUiContributions();
+  undefinePoints();
+  setConsentPrompt(null);
   setPluginsBackend(null);
   _setActiveEditor(null);
   view?.destroy();
@@ -92,46 +126,168 @@ afterEach(() => {
 });
 
 describe("plugin actions", () => {
-  it("exposes Git log metadata only to plugins with project-read permission", () => {
-    const column = { id: "status", title: "Status", command: "load-status", width: 120 };
-    const info = plugin({ id: "log-status", logColumns: [column] });
-    const stop = syncPluginActions();
-    try {
-      usePlugins.setState({ plugins: [info] });
-      expect(useLogContributions.getState().providers.has("plugin.log-status.status")).toBe(false);
-      usePlugins.setState({ plugins: [{ ...info, permissions: ["project-read"] }] });
-      expect(useLogContributions.getState().providers.has("plugin.log-status.status")).toBe(true);
-      usePlugins.setState({ plugins: [info] });
-      expect(useLogContributions.getState().providers.has("plugin.log-status.status")).toBe(false);
-    } finally {
-      stop();
-    }
+  it("projects Git log columns with granted project access and disposes them with their plugin", async () => {
+    const item = {
+      pluginId: "log-status",
+      point: "log-columns",
+      key: "status",
+      decl: { id: "status", title: "Status", command: "load-status", width: 120 },
+    };
+    const id = "plugin.log-status.status";
+    syncUiContributions([item], [plugin({ id: "log-status" })]);
+    expect(useLogContributions.getState().providers.has(id)).toBe(false);
+    clearUiContributions();
+    const info = plugin({
+      id: "log-status",
+      status: "inactive",
+      capabilities: [
+        { id: "project.read", granted: true, optional: false, description: "Read the project", risk: "low" },
+      ],
+    });
+    const runCommand = vi.fn(async () => JSON.stringify({ "/a\0tip": "Passed", "/b\0tip": "Failed" }));
+    setPluginsBackend({ ...backend, runCommand });
+    syncUiContributions([item], [info]);
+    const commits = ["/a", "/b"].map((repo) => ({
+      repo,
+      id: "tip",
+      shortId: "tip",
+      parents: [],
+      author: "A",
+      email: "a@example.com",
+      timeMs: 0,
+      summary: "Tip",
+      message: "Tip",
+      refs: [],
+    }));
+    const provider = useLogContributions.getState().providers.get(id)!;
+    expect(await provider.load!(commits, new AbortController().signal)).toEqual(
+      new Map([
+        ["/a\0tip", "Passed"],
+        ["/b\0tip", "Failed"],
+      ]),
+    );
+    expect(runCommand).toHaveBeenCalledWith("log-status", "load-status", JSON.stringify({ commits }), null);
+    syncUiContributions([], [{ ...info, status: "needsConsent" }]);
+    expect(useLogContributions.getState().providers.has(id)).toBe(false);
   });
 
-  it("maps commands of running plugins to plugin.<plugin>.<command> actions", () => {
-    const actions = pluginActions([
-      plugin({ id: "a", name: "Alpha", commands: [{ id: "go", title: "Alpha: Go", category: null }] }),
-      plugin({ id: "b", status: "disabled", commands: [{ id: "x", title: "X", category: "Cat" }] }),
-      plugin({ id: "c", status: "failed", commands: [{ id: "y", title: "Y", category: null }] }),
-    ]);
-    expect(actions.map((a) => a.id)).toEqual(["plugin.a.go"]);
-    expect(actions[0]!.category).toBe("Alpha");
+  it("projects command contributions to plugin.<plugin>.<command> actions", () => {
+    const cmd = (pluginId: string, id: string, extra: Record<string, unknown> = {}) => ({
+      pluginId,
+      point: "commands",
+      key: id,
+      decl: { id, title: `T ${id}`, ...extra },
+    });
+    syncUiContributions(
+      [cmd("a", "go"), cmd("a", "when", { when: "editorFocus", category: "Cat" }), cmd("gone", "x")],
+      [plugin({ id: "a", name: "Alpha" })],
+    );
+    expect(getAction("plugin.a.go")).toMatchObject({ title: "T go", category: "Alpha" });
+    expect(getAction("plugin.a.when")).toMatchObject({ when: "editorFocus", category: "Cat" });
+    expect(getAction("plugin.gone.x")).toBeUndefined();
     expect(pluginActionId("p", "c.d")).toBe("plugin.p.c.d");
+    // Changed declarations are re-projected; removed ones disposed.
+    syncUiContributions([cmd("a", "go", { title: "Renamed" })], [plugin({ id: "a", name: "Alpha" })]);
+    expect(getAction("plugin.a.go")?.title).toBe("Renamed");
+    expect(getAction("plugin.a.when")).toBeUndefined();
+  });
+
+  it("isolates a failing projection (a defect) from the other items", () => {
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void errors.push(args);
+    const live: string[] = [];
+    const undefine = defineUiPoint<{ n: number }>("test.items", {
+      project: ({ decl }) => {
+        if (decl.n === 2) throw new Error("bug");
+        live.push(String(decl.n));
+        return () => live.splice(live.indexOf(String(decl.n)), 1);
+      },
+    });
+    const item = (n: number) => ({ pluginId: "a", point: "test.items", key: String(n), decl: { n } });
+    syncUiContributions([item(1), item(2), item(3)], [plugin({ id: "a" })]);
+    expect(live).toEqual(["1", "3"]);
+    expect(errors).toHaveLength(1);
+    undefine();
+    expect(live).toEqual([]);
+    console.error = original;
   });
 
   it("keeps the registry in sync and runs commands through the backend", async () => {
+    // The bridge defines the points itself (main window).
+    undefinePoints();
+    undefinePoints = () => {};
     const stop = startPluginBridge();
     await refreshPlugins();
     expect(getAction("plugin.hello.insert-date")?.title).toBe("Hello: Insert Date");
     expect(getAction("plugin.hello.word-count")).toBeDefined();
 
-    const v = editor("ab", 1);
+    // Edits come back as document patches; here the command's result shows it ran.
+    const ran: unknown[] = [];
+    const run = backend.runCommand;
+    backend.runCommand = async (...args) => {
+      const out = await run(...args);
+      ran.push(out);
+      return out;
+    };
+    editor("ab", 1);
     await act(() => executeAction("plugin.hello.insert-date"));
-    expect(v.state.doc.toString()).toMatch(/^a\d{4}-\d{2}-\d{2}b$/);
+    expect(ran).toEqual([expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)]);
 
     await setPluginEnabled("hello", false);
     expect(getAction("plugin.hello.insert-date")).toBeUndefined();
     stop();
+  });
+
+  it("reports actions to on-event:action-performed plugins once the project opens and when plugins change", async () => {
+    // Like `authorize_command`: refused until the window's project is open and trusted.
+    let kinds: Awaited<ReturnType<PluginsBackend["eventKinds"]>> = [];
+    const posted: unknown[] = [];
+    setPluginsBackend({
+      ...backend,
+      eventKinds: async () => {
+        if (!useProject.getState().project?.trusted) throw new Error("no project is open in this window");
+        return kinds;
+      },
+      postEvents: async (events) => void posted.push(...events),
+    });
+    const offAction = registerAction({ id: "test.columnMode", title: "Column Mode", run: () => {} });
+    const performed = (n: number) =>
+      Array.from({ length: n }, () => ({
+        kind: "actionPerformed",
+        value: { action: "test.columnMode", title: "Column Mode", source: "menu", shortcut: null },
+      }));
+    undefinePoints();
+    undefinePoints = () => {};
+    kinds = ["action-performed"];
+    const stop = startPluginBridge();
+    try {
+      // Asked at startup, before the project is open: refused.
+      await new Promise((r) => setTimeout(r, 20));
+      await executeActionFrom("menu", "test.columnMode");
+      await new Promise((r) => setTimeout(r, 600));
+      expect(posted).toEqual([]);
+
+      useProject.setState({ project: { root: "/p", trusted: true } as never });
+      await new Promise((r) => setTimeout(r, 20));
+      await executeActionFrom("menu", "test.columnMode");
+      await waitFor(() => expect(posted).toEqual(performed(1)));
+
+      // Declared kinds change with the installed plugins (`commandsChanged`).
+      kinds = [];
+      handlePluginEvent({ type: "commandsChanged" });
+      await new Promise((r) => setTimeout(r, 60));
+      await executeActionFrom("menu", "test.columnMode");
+      kinds = ["action-performed"];
+      handlePluginEvent({ type: "commandsChanged" });
+      await new Promise((r) => setTimeout(r, 60));
+      await executeActionFrom("menu", "test.columnMode");
+      await waitFor(() => expect(posted).toEqual(performed(2)));
+    } finally {
+      stop();
+      offAction();
+      useProject.setState({ project: null });
+    }
   });
 });
 
@@ -168,9 +324,73 @@ describe("store", () => {
     expect(usePlugins.getState().activeTheme).toBeNull();
   });
 
-  it("filters by name, id, author and command title", () => {
+  it("applies the plugin theme the Appearance setting selects, and clears it for a built-in one", async () => {
+    const stop = [syncProjection(), followThemeSetting()];
+    try {
+      useProject.setState({ settings: { appearance: { theme: "plugin:theme-harbor-night/harbor-night" } } as never });
+      await refreshPlugins();
+      await waitFor(() => expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night"));
+      // A built-in theme picked anywhere (here the session override) wins over it.
+      act(() => useThemeOverride.setState({ theme: "solarized-dark" }));
+      await waitFor(() => expect(usePlugins.getState().activeTheme).toBeNull());
+      act(() => useThemeOverride.setState({ theme: null }));
+      await waitFor(() => expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night"));
+    } finally {
+      stop.forEach((s) => s());
+      useThemeOverride.setState({ theme: null });
+      useProject.setState({ settings: null as never });
+    }
+  });
+
+  it("installs from a folder, its plugin.toml, or a package file unpacked first", async () => {
+    setConsentPrompt(async () => ({ optional: [] }));
+    for (const [picked, unpacked] of [
+      ["plugins/hello", null],
+      ["plugins/hello/plugin.toml", null],
+      ["C:\\plugins\\hello\\Plugin.TOML", null],
+      ["/downloads/hello.zip", "/downloads/hello.zip"],
+      ["/downloads/hello-1.0.0.oiplugin", "/downloads/hello-1.0.0.oiplugin"],
+    ] as const) {
+      const unpack = vi.fn(async () => "plugins/hello");
+      const preview = vi.fn();
+      const backend = createMemoryPluginsBackend([], sampleCatalog());
+      setPluginsBackend({
+        ...backend,
+        unpackPackage: unpack,
+        previewInstall: (path) => {
+          preview(path);
+          return backend.previewInstall("plugins/hello");
+        },
+        installDir: (_path, consent) => backend.installDir("plugins/hello", consent),
+      });
+      expect(await installFromDisk(picked)).toBe("hello");
+      expect(unpack.mock.calls).toEqual(unpacked ? [[unpacked]] : []);
+      const folder = unpacked ? "plugins/hello" : picked.replace(/[\\/]plugin\.toml$/i, "");
+      expect(preview).toHaveBeenCalledWith(folder);
+      usePlugins.setState({ plugins: [] });
+    }
+  });
+
+  it("asks for consent before installing and passes the answer on", async () => {
+    const asked: ConsentRequest[] = [];
+    setConsentPrompt(async (req) => {
+      asked.push(req);
+      return { optional: [] };
+    });
+    setPluginsBackend(createMemoryPluginsBackend([], sampleCatalog()));
+    expect(await installFromDisk("plugins/hello")).toBe("hello");
+    expect(asked[0]).toMatchObject({ pluginId: "hello", kind: "install", unsigned: true });
+    expect(asked[0]!.capabilities.map((c) => c.id)).toContain("editor.write");
+
+    setConsentPrompt(async () => null);
+    setPluginsBackend(createMemoryPluginsBackend([], sampleCatalog()));
+    expect(await installFromDisk("plugins/hello")).toBeNull();
+    expect(usePlugins.getState().plugins).toEqual([]);
+  });
+
+  it("filters by name, id, author and contribution", () => {
     const list = [
-      plugin({ id: "a", name: "Alpha", commands: [{ id: "c", title: "Count Words", category: null }] }),
+      plugin({ id: "a", name: "Alpha", contributions: [{ point: "commands", label: "Count Words" }] }),
       plugin({ id: "b", name: "Beta", authors: ["Zed"] }),
     ];
     expect(filterPlugins(list, "count").map((p) => p.id)).toEqual(["a"]);
@@ -217,22 +437,74 @@ describe("bridge events", () => {
     useThemeOverride.setState({ theme: null });
   });
 
-  it("inserts at the cursor and replaces selections", () => {
-    const v = editor("hello world", 6, 11);
-    handlePluginEvent({ type: "replaceSelection", pluginId: "p", text: "there" });
-    expect(v.state.doc.toString()).toBe("hello there");
-    expect(v.state.selection.main).toMatchObject({ from: 6, to: 11 });
-    handlePluginEvent({ type: "insertText", pluginId: "p", text: "!" });
-    expect(v.state.doc.toString()).toBe("hello !");
-    expect(v.state.selection.main.head).toBe(7);
+  it("previews a live plugin's theme in this window without selecting it", () => {
+    const root = document.documentElement;
+    const sheet = () => document.getElementById(PLUGIN_THEME_STYLE_ID)?.textContent ?? null;
+    const setTheme = vi.spyOn(backend, "setTheme");
+    const night = { id: "night", name: "Night", kind: "dark", tokens: { "--bg-app": "#101820" } };
+    const dawn = { id: "dawn", name: "Dawn", kind: "light" as const, tokens: { "--bg-app": "#fff8e7" } };
+    usePlugins.setState({
+      ui: [{ pluginId: "acme", point: "themes", key: "night", decl: night }],
+      activeTheme: { pluginId: "acme", theme: dawn },
+    });
+    applyPluginTheme(usePlugins.getState().activeTheme);
+    const stop = providePluginThemePreviews();
+
+    previewTheme(pluginThemeRef("acme", "night"));
+    expect(sheet()).toContain("--bg-app: #101820;");
+    expect([root.dataset.pluginTheme, root.dataset.theme]).toEqual(["acme/night", "dark"]);
+    // A built-in theme shows without the plugin's tokens.
+    previewTheme("solarized-light");
+    expect(sheet()).toBeNull();
+    expect([root.dataset.theme, root.dataset.colorTheme]).toEqual(["light", "solarized-light"]);
+    // Back to the selected one; nothing was selected on the way.
+    previewTheme(null);
+    expect(sheet()).toContain("--bg-app: #fff8e7;");
+    expect(root.dataset.pluginTheme).toBe("acme/dawn");
+    expect(setTheme).not.toHaveBeenCalled();
+
+    stop();
+    applyPluginTheme(null);
   });
 
-  it("warns instead of editing read-only or missing editors", () => {
-    expect(applyTextToActiveEditor("x", false, "p")).toBe(false);
-    const v = editor("abc", 0, 0, true);
-    expect(applyTextToActiveEditor("x", false, "p")).toBe(false);
-    expect(v.state.doc.toString()).toBe("abc");
-    expect(notes.map((n) => n.level)).toEqual(["warning", "warning"]);
+  it("runs commands with the focused editor's path, language and UTF-16 selections", async () => {
+    const calls: unknown[] = [];
+    setPluginsBackend({
+      ...backend,
+      runCommand: async (...args) => {
+        calls.push(args);
+        return null;
+      },
+    });
+    editor("ab\n😀cd", 3, 7);
+    await runPluginCommand("p", "c");
+    expect(calls).toEqual([
+      [
+        "p",
+        "c",
+        null,
+        {
+          path: "/p/a.txt",
+          language: "plaintext",
+          selections: [{ start: { line: 1, col: 0 }, end: { line: 1, col: 4 } }],
+        },
+      ],
+    ]);
+  });
+
+  it("shows status items and tasks of running plugin code", () => {
+    const item = { text: "main ↑1", tooltip: "Branch", command: "refresh" };
+    handlePluginEvent({ type: "statusItemChanged", pluginId: "git", id: "branch", item });
+    expect(usePluginStatusItems.getState().items.get("git/branch")).toEqual({ pluginId: "git", item });
+    handlePluginEvent({ type: "statusItemChanged", pluginId: "git", id: "branch", item: null });
+    expect(usePluginStatusItems.getState().items.size).toBe(0);
+
+    handlePluginEvent({ type: "taskStarted", pluginId: "git", taskId: "7", title: "Fetching", cancellable: true });
+    handlePluginEvent({ type: "taskProgress", pluginId: "git", taskId: "7", done: 1, total: 4, message: "origin" });
+    const task = useTasks.getState().tasks.find((t) => t.id === "plugin:7")!;
+    expect([task.title, task.fraction, task.message, !!task.cancel]).toEqual(["Fetching", 0.25, "origin", true]);
+    handlePluginEvent({ type: "taskEnded", pluginId: "git", taskId: "7" });
+    expect(useTasks.getState().tasks.find((t) => t.id === "plugin:7")?.done).toBe(true);
   });
 
   it("shows plugin notifications and tracks theme changes", () => {
@@ -253,11 +525,12 @@ describe("PluginsPage", () => {
     // Sorted as returned; first one selected by default.
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Hello");
     expect(screen.getByText("plugin.hello.insert-date")).toBeInTheDocument();
-    expect(screen.getByText("Insert text into the active editor")).toBeInTheDocument();
+    expect(screen.getByText("Change text in the editor")).toBeInTheDocument();
+    expect(screen.getByText("Medium")).toBeInTheDocument();
 
     await user.click(screen.getByRole("checkbox", { name: "Disable Hello" }));
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "Enable Hello" })).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Run Hello: Insert Date" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Run Hello: Insert Date" })).not.toBeInTheDocument();
 
     await user.click(within(list).getByText("Harbor Night Theme"));
     await user.click(screen.getByRole("button", { name: "Apply theme Harbor Night" }));
@@ -266,7 +539,33 @@ describe("PluginsPage", () => {
     await user.type(screen.getByLabelText("Filter plugins"), "toy");
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Toy Language");
-    expect(screen.getByText(".toy")).toBeInTheDocument();
+    expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
+  });
+
+  it("offers the IntelliJ theme imports only in a trusted project's window", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <PluginsPage />
+        <ContextMenuHost />
+      </>,
+    );
+    const imports = async () => {
+      await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
+      const found = ["Import Theme from IntelliJ IDE…", "Import IntelliJ Theme from File…"].filter((name) =>
+        screen.queryByRole("menuitem", { name }),
+      );
+      act(() => hideContextMenu());
+      return found;
+    };
+    // The welcome screen: the host refuses installs without a trusted project.
+    expect(await imports()).toEqual([]);
+    const project = { trusted: false, root: "/p", name: "p", isGit: false } as unknown as ProjectInfo;
+    act(() => useProject.setState({ project }));
+    expect(await imports()).toEqual([]);
+    act(() => useProject.setState({ project: { ...project, trusted: true } }));
+    expect(await imports()).toHaveLength(2);
+    act(() => useProject.setState({ project: null }));
   });
 
   it("restarts a failed plugin instead of disabling it", async () => {
@@ -274,7 +573,7 @@ describe("PluginsPage", () => {
     const user = userEvent.setup();
     render(<PluginsPage />);
     await user.click(await screen.findByRole("button", { name: "Restart" }));
-    await waitFor(() => expect(usePlugins.getState().plugins[0]).toMatchObject({ enabled: true, status: "active" }));
+    await waitFor(() => expect(usePlugins.getState().plugins[0]).toMatchObject({ enabled: true, status: "inactive" }));
   });
 
   it("uninstalls after confirmation", async () => {
@@ -314,6 +613,176 @@ describe("PluginsPage", () => {
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["language-toy"]));
     expect(within(list).getAllByText("Installed").length).toBeGreaterThan(0);
     expect(notes.at(-1)).toMatchObject({ title: "Installed Toy Language 0.1.0" });
+  });
+});
+
+describe("secrets", () => {
+  it("stores and removes a declared secret without showing its value", async () => {
+    const user = userEvent.setup();
+    const items = [{ pluginId: "ai", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } }];
+    render(<SecretsDetails plugin={plugin({ id: "ai" })} items={items} />);
+    expect(await screen.findByText("Not set")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Value of API key"), "sk-1{Enter}");
+    await waitFor(() => expect(screen.getByText("Stored")).toBeInTheDocument());
+    expect(screen.getByLabelText("Value of API key")).toHaveValue("");
+    expect(await backend.secrets("ai")).toEqual([{ name: "api-key", set: true }]);
+    await user.click(screen.getByRole("button", { name: "Remove API key" }));
+    await waitFor(() => expect(screen.getByText("Not set")).toBeInTheDocument());
+    expect(await backend.secrets("ai")).toEqual([]);
+  });
+});
+
+describe("plugin line markers", () => {
+  it("places markers on existing lines and maps their icons", () => {
+    const doc = EditorState.create({ doc: "a\nbb\nccc" }).doc;
+    const marker = (line: number, icon: string | null) => ({ pluginId: "m", line, icon, tooltip: "t", target: null });
+    expect(placeMarkers(doc, [marker(1, "run"), marker(7, null)]).map((m) => m.pos)).toEqual([2]);
+    expect(markerIcon("run")).toBe("gutter-run");
+    expect(markerIcon("implemented")).toBe("gutter-implemented");
+    expect(markerIcon(null)).toBe("gutter-implementing");
+    expect(markerIcon("unknown")).toBe("gutter-implementing");
+  });
+});
+
+describe("marketplace", () => {
+  it("lists the index's plugins and installs one through the install page", async () => {
+    const asked: ConsentRequest[] = [];
+    setConsentPrompt(async (req) => {
+      asked.push(req);
+      return { optional: [] };
+    });
+    const base = createMemoryPluginsBackend([], sampleCatalog());
+    const downloads: string[] = [];
+    setPluginsBackend({
+      ...base,
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        {
+          id: "hello",
+          name: "Hello",
+          version: "1.0.0",
+          description: "From the marketplace",
+          authors: [],
+          publisher: "acme",
+          download: "hello.oiplugin",
+          digest: "x",
+          capabilities: ["editor.write"],
+          installed: null,
+        },
+      ],
+      // The memory backend installs its sample packages by path.
+      marketDownload: async (id) => {
+        downloads.push(id);
+        return "plugins/hello";
+      },
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("Marketplace")).toBeInTheDocument());
+    expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
+    await user.click(within(list).getAllByText("Hello")[0]!);
+    expect(screen.getByText("Signed by acme")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Install" }));
+    await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["hello"]));
+    expect(downloads).toEqual(["hello"]);
+    expect(asked[0]).toMatchObject({ pluginId: "hello", kind: "install" });
+  });
+
+  it("offers to roll back an update", async () => {
+    const base = createMemoryPluginsBackend([
+      plugin({ id: "p", name: "P", version: "2.0.0", previousVersion: "1.0.0" }),
+    ]);
+    const rolled: string[] = [];
+    setPluginsBackend({
+      ...base,
+      rollBack: async (id) => {
+        rolled.push(id);
+        return plugin({ id, name: "P", version: "1.0.0" });
+      },
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    expect(await screen.findByText("Unsigned")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Roll Back to 1.0.0" }));
+    await waitFor(() => expect(rolled).toEqual(["p"]));
+    expect(notes.at(-1)).toMatchObject({ title: "Rolled back P to 1.0.0" });
+  });
+});
+
+describe("icon themes", () => {
+  const iconThemeUi = (pluginId: string, id: string) => ({
+    pluginId,
+    point: "iconThemes",
+    key: id,
+    decl: { id, label: id.toUpperCase(), icons: 1 },
+  });
+
+  it("adopts the first icon theme of a plugin when none is selected", async () => {
+    useIconThemes.setState({ override: undefined });
+    usePlugins.setState({ ui: [iconThemeUi("q", "other"), iconThemeUi("p", "first"), iconThemeUi("p", "second")] });
+    await adoptIconTheme("p");
+    expect(selectedIconTheme()).toBe("p/first");
+    await adoptIconTheme("q");
+    expect(selectedIconTheme()).toBe("p/first");
+    useIconThemes.setState({ override: undefined });
+  });
+
+  it("names each icon theme's settings page after its plugin and theme", () => {
+    syncUiContributions([iconThemeUi("acme.icons", "atom.dark")], [plugin({ id: "acme.icons", name: "Acme" })]);
+    try {
+      expect(useContributedIconThemes.getState().themes.find((t) => t.id === "acme.icons/atom.dark")).toMatchObject({
+        label: "ATOM.DARK",
+        settingsPage: "plugins.acme-icons.atom-dark",
+      });
+    } finally {
+      clearUiContributions();
+    }
+  });
+
+  it("adopts nothing for plugins without icon themes", async () => {
+    useIconThemes.setState({ override: undefined });
+    usePlugins.setState({ ui: [iconThemeUi("q", "other")] });
+    await adoptIconTheme("p");
+    expect(selectedIconTheme()).toBeNull();
+  });
+
+  it("resolves file names, then the longest extension, then the default icon", () => {
+    const theme = iconResolver(
+      {
+        file: "file",
+        fileNames: { "cargo.toml": "cargo" },
+        fileExtensions: { "d.ts": "dts", ts: "ts", toml: "toml" },
+      },
+      (icon) => `ext:p/t/${icon}`,
+      (name) => name !== "ext:p/t/toml",
+    );
+    expect(theme.file("Cargo.toml")).toBe("ext:p/t/cargo");
+    expect(theme.file("a.d.ts")).toBe("ext:p/t/dts");
+    expect(theme.file("a.ts")).toBe("ext:p/t/ts");
+    expect(theme.file("x.toml")).toBe("ext:p/t/file");
+    // No folder icons in this theme: folders keep the built-in ones.
+    expect(theme.folder("src", false)).toBeNull();
+  });
+
+  it("resolves folders by name, then the default (expanded) folder icon", () => {
+    const theme = iconResolver(
+      {
+        file: null,
+        folder: "folder",
+        folderExpanded: "folder-open",
+        fileNames: {},
+        fileExtensions: {},
+        folderNames: { src: "folder-src" },
+      },
+      (icon) => `ext:p/t/${icon}`,
+      () => true,
+    );
+    expect(theme.folder("SRC", true)).toBe("ext:p/t/folder-src");
+    expect(theme.folder("lib", false)).toBe("ext:p/t/folder");
+    expect(theme.folder("lib", true)).toBe("ext:p/t/folder-open");
+    expect(theme.file("a.txt")).toBeNull();
   });
 });
 

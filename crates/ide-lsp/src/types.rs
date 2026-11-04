@@ -389,6 +389,87 @@ pub struct Renamed {
     pub incomplete: Option<ReferencesIncomplete>,
 }
 
+/// IDEA's class-hierarchy refactorings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum HierarchyRefactoring {
+    PullUp,
+    PushDown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HierarchyClass {
+    /// Server-owned identity, passed back as the pull-up destination.
+    pub id: String,
+    pub name: String,
+    pub qualified_name: String,
+    pub interface: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum HierarchyMemberKind {
+    Field,
+    Method,
+    Type,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HierarchyMember {
+    pub id: String,
+    /// `name(Params) : Type`, as the server renders it.
+    pub label: String,
+    pub kind: HierarchyMemberKind,
+    /// The member at the caret.
+    pub selected: bool,
+    /// Can be declared abstract in the destination (pull up) or kept abstract (push down).
+    pub abstractable: bool,
+}
+
+/// The class at a position and what can move: pull-up destinations, or the subclasses
+/// members are pushed into.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HierarchyMembers {
+    pub class_name: String,
+    pub targets: Vec<HierarchyClass>,
+    pub members: Vec<HierarchyMember>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HierarchyChoice {
+    pub id: String,
+    pub make_abstract: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ProblemSeverity {
+    Info,
+    Warning,
+    Error,
+    /// The refactoring can't run at all; there is no edit.
+    Fatal,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RefactoringProblem {
+    pub severity: ProblemSeverity,
+    pub message: String,
+}
+
+/// A checked refactoring: what the server found, and the edit unless a problem is fatal.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HierarchyRefactored {
+    pub problems: Vec<RefactoringProblem>,
+    pub edit: Option<WorkspaceEdit>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CallHierarchy {

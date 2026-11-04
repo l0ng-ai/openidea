@@ -8,6 +8,7 @@
 pub mod application_update;
 pub mod compile;
 pub mod gradle;
+mod gradle_deps;
 pub mod kotlin_bridge;
 pub mod maven;
 pub mod pom_edit;
@@ -17,6 +18,7 @@ pub mod web;
 mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};
+pub use gradle_deps::{GradleDependency, gradle_dependencies};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
 pub use sync::{SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_maven};
 
@@ -53,7 +55,8 @@ pub fn load_linked(
     settings: &ide_core::settings::MavenSettings,
 ) -> BuildModel {
     let maven = maven::is_maven_project(root).then(|| {
-        let mut m = maven::load_with_repo(root, maven_repo.or_else(maven::default_local_repo));
+        let profiles = sync::maven_profiles(cache_dir);
+        let mut m = maven::load_with(root, maven_repo.or_else(maven::default_local_repo), &profiles);
         maven::UnlinkedProjects::from_model(&m, settings).filter(&mut m);
         sync::apply_maven_cache(root, cache_dir, &mut m);
         m
