@@ -190,6 +190,16 @@ describe("mapper gutter", () => {
     expect(view.dom.querySelector(`.${group!.gutterClass} .cm-openidea-mapperMarker`)).not.toBeNull();
   });
 
+  it("draws the icon in the gutter's own monochrome", async () => {
+    const view = javaEditor();
+    await settle();
+    // A single grey tone is what makes the shared pipeline swap it for currentColor;
+    // hard-coding a colour instead would need a `_dark` asset and stay wrong in dark themes.
+    const markup = view.dom.querySelector(".cm-openidea-mapperMarker")!.innerHTML;
+    expect(markup).toContain("currentColor");
+    expect(markup).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+  });
+
   it("stays quiet on an interface that is no mapper", async () => {
     index.xmlFor.mockResolvedValue(null);
     const view = javaEditor("package p;\n\npublic interface Registry {\n    Object lookup(String key);\n}\n");
