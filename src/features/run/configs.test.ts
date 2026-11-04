@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import {
+  categoryOf,
   commandLine,
   duplicateConfig,
   formatArgs,
@@ -14,6 +15,8 @@ import {
   validateConfig,
 } from "./configs";
 import { contextConfig, fileRole } from "./context";
+import { tomcatType } from "./tomcat";
+import { registerRunConfigType } from "@/workbench/contributions";
 import { envFromRows } from "./EnvDialog";
 import { defaultSelection } from "./store";
 
@@ -311,5 +314,39 @@ describe("context configuration", () => {
     const plain = [cfg({ id: "python:module:app", kind: "python", command: "python3", args: ["-m", "app"] })];
     expect(contextConfig("tools/gen.py", plain)).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
     expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+  });
+});
+
+describe("categoryOf", () => {
+  it("maps kinds to their language categories and unlisted ones to Others", () => {
+    expect(categoryOf("spring-boot")).toBe("Java");
+    expect(categoryOf("remote-jvm")).toBe("Java");
+    expect(categoryOf("maven")).toBe("Build Tools");
+    expect(categoryOf("npm")).toBe("JavaScript");
+    expect(categoryOf("node-remote")).toBe("JavaScript");
+    expect(categoryOf("pytest")).toBe("Python");
+    expect(categoryOf("python-remote")).toBe("Python");
+    expect(categoryOf("cargo")).toBe("Rust");
+    expect(categoryOf("go")).toBe("Go");
+    expect(categoryOf("go-test")).toBe("Go");
+    expect(categoryOf("go-remote")).toBe("Go");
+    expect(categoryOf("godot")).toBe("Others");
+    expect(categoryOf("godot-attach")).toBe("Others");
+  });
+
+  it("prefers a registered type's group (Servers, Docker) over the category map", () => {
+    const disposeTomcat = registerRunConfigType(tomcatType);
+    expect(categoryOf("tomcat")).toBe("Servers");
+    disposeTomcat();
+    const dispose = registerRunConfigType({
+      id: "fake-server",
+      label: "Fake",
+      icon: "server",
+      group: "Servers",
+      fields: [],
+      commandLine: () => null,
+    });
+    expect(categoryOf("fake-server")).toBe("Servers");
+    dispose();
   });
 });

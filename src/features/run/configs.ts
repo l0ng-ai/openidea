@@ -5,6 +5,7 @@ import { useRunConfigTypes } from "@/workbench/contributions";
 
 const KIND_LABELS: Record<string, string> = {
   npm: "npm",
+  vue: "Vue",
   deno: "Deno",
   bun: "Bun",
   cargo: "Cargo",
@@ -49,6 +50,62 @@ export function kindLabel(kind: string): string {
   return type?.group ?? type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
 }
 
+/**
+ * The menu category of a run configuration kind, for the Services "Add Service"
+ * menu (IDEA's template groups): a registered type's group (Docker, Servers),
+ * else its language/tool category, else "Others".
+ */
+export const KIND_CATEGORIES: Record<string, string> = {
+  "spring-boot": "Java",
+  application: "Java",
+  native: "Java",
+  "java-file": "Java",
+  kotlin: "Java",
+  kotlinc: "Java",
+  "scala-cli": "Java",
+  "remote-jvm": "Java",
+  maven: "Build Tools",
+  gradle: "Build Tools",
+  cmake: "Build Tools",
+  make: "Build Tools",
+  just: "Build Tools",
+  npm: "JavaScript",
+  vue: "JavaScript",
+  node: "JavaScript",
+  bun: "JavaScript",
+  deno: "JavaScript",
+  "node-remote": "JavaScript",
+  python: "Python",
+  pytest: "Python",
+  "python-remote": "Python",
+  cargo: "Rust",
+  rustc: "Rust",
+  go: "Go",
+  "go-test": "Go",
+  "go-remote": "Go",
+  cc: "C/C++",
+  shell: "Shell",
+  program: "Shell",
+};
+
+/** Category order of the Add Service menu; unlisted categories (plugins) sort after, then "Others". */
+export const CATEGORY_ORDER: readonly string[] = [
+  "Java",
+  "Build Tools",
+  "JavaScript",
+  "Python",
+  "Rust",
+  "Go",
+  "C/C++",
+  "Shell",
+  "Servers",
+  "Docker",
+];
+
+export function categoryOf(kind: string): string {
+  return useRunConfigTypes.getState().types.get(kind)?.group ?? KIND_CATEGORIES[kind] ?? "Others";
+}
+
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
   if (config.isTest) return "check";
   switch (config.kind) {
@@ -61,6 +118,8 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "npm":
     case "bun":
       return "file-npm";
+    case "vue":
+      return "file-vue";
     case "deno":
       return "file-ts";
     case "cargo":
