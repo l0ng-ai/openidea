@@ -1973,6 +1973,29 @@ impl LspManager {
         }
     }
 
+    /// Files that changed on disk, outside the editor too (a checkout, another tool): each running
+    /// server hears of those of its languages under its root through `workspace/didChangeWatchedFiles`.
+    /// Without it jdtls's incremental build never sees them, so a launch runs stale classes.
+    pub fn watched_files_changed(&self, created: &[PathBuf], modified: &[PathBuf], removed: &[PathBuf]) {
+        let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        for s in servers {
+            let Some(run) = s.running() else { continue };
+            let languages = s.languages();
+            let changes: Vec<Value> = [(created, 1), (modified, 2), (removed, 3)]
+                .into_iter()
+                .flat_map(|(paths, kind)| paths.iter().map(move |p| (p, kind)))
+                .filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
+                .map(|(p, kind)| json!({ "uri": uri::path_to_uri(p), "type": kind }))
+                .collect();
+            if changes.is_empty() {
+                continue;
+            }
+            if let Err(e) = run.peer.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes })) {
+                tracing::debug!("{}: didChangeWatchedFiles: {e}", s.name);
+            }
+        }
+    }
+
     /// Checks initialized capabilities, including dynamic registrations, before choosing a formatter.
     pub async fn can_format(&self, doc: DocId) -> IdeResult<bool> {
         let snap = self.snapshot(doc)?;

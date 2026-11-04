@@ -406,6 +406,37 @@ async fn linked_projects_initialize_separate_language_server_roots() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn files_changed_on_disk_reach_the_servers_of_their_language() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("a.mk"), h.root.join("old.mk"));
+    // Other languages and files outside the server's root are left out.
+    let other = h.root.join("notes.txt");
+    let outside = tempfile::tempdir().unwrap().path().join("far.mk");
+    h.mgr.watched_files_changed(
+        &[created.clone(), other],
+        &[modified.clone(), outside],
+        std::slice::from_ref(&removed),
+    );
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([
+            { "uri": uri_of(&created), "type": 1 },
+            { "uri": uri_of(&modified), "type": 2 },
+            { "uri": uri_of(&removed), "type": 3 },
+        ])
+    );
+    // Nothing of its languages: no notification.
+    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[]);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn initialize_and_incremental_sync() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn main() {\n}\n");
