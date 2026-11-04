@@ -131,7 +131,7 @@ impl AppState {
 
     /// The window that owns what `window` starts: a settings window's parent, else `window`.
     pub fn owner_window(window: &str) -> &str {
-        crate::windows::settings_parent(window).unwrap_or(window)
+        crate::windows::auxiliary_parent(window).unwrap_or(window)
     }
 
     /// Opens `root` in `window` and records it in the recent projects.

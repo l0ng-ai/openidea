@@ -5924,5 +5924,9 @@
   "Couldn't create the worktree for #{number}": "无法为 #{number} 创建工作树",
   "Couldn't commit the suggested change": "无法提交建议的更改",
   "Couldn't apply the suggested change": "无法应用建议的更改",
-  "Couldn't resolve the thread": "无法解决讨论串"
+  "Couldn't resolve the thread": "无法解决讨论串",
+  "Could not close comparison": "无法关闭比较窗口",
+  "Could not open comparison": "无法打开比较窗口",
+  "Could not show diff": "无法显示差异",
+  "Back to Changed Files": "返回更改文件列表"
 }

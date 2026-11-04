@@ -3,7 +3,14 @@ import ReactDOM from "react-dom/client";
 import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
-import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
+import {
+  activateComparisonWindowFeatures,
+  activateFeatures,
+  activateSettingsWindowFeatures,
+  ComparisonWindow,
+  SettingsWindow,
+} from "./features";
+import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging } from "./platform/errorLog";
 import { installKeyboardDispatcher } from "./platform/keymap";
@@ -21,12 +28,16 @@ if (import.meta.env.DEV && isTauri()) {
 installRepeatedDoubleClick();
 installErrorLogging();
 
-// The native Settings window (`settings-<parent>`) loads this page too.
-const settingsParent = settingsWindowParent();
+// Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`) load this page too.
+const aux = auxiliaryWindow();
 
-if (settingsParent !== null) {
+if (aux?.kind === "settings") {
   activateSecondaryWindow();
-  activateSettingsWindowFeatures(settingsParent);
+  activateSettingsWindowFeatures(aux.parent);
+} else if (aux?.kind === "comparison") {
+  activateSecondaryWindow();
+  activateComparisonWindowFeatures(aux.parent);
+  installKeyboardDispatcher();
 } else {
   activateWorkbench();
   // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
@@ -46,8 +57,10 @@ if (settingsParent !== null) {
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>{settingsParent !== null ? <SettingsWindow /> : <Workbench />}</React.StrictMode>,
+  <React.StrictMode>
+    {aux?.kind === "settings" ? <SettingsWindow /> : aux?.kind === "comparison" ? <ComparisonWindow /> : <Workbench />}
+  </React.StrictMode>,
 );
 hideSplash();
 // Views split out of the start-up bundle load in the background once the UI is up.
-if (settingsParent === null) prefetchLazyComponents();
+if (!aux) prefetchLazyComponents();
