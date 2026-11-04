@@ -5627,7 +5627,7 @@
   "Java project import failed": "Java 프로젝트 가져오기 실패",
   "The Java project cannot be imported because these files use a name Windows reserves for devices: {paths}. Delete or rename them, then restart the Java language server.": "다음 파일이 Windows에서 장치용으로 예약된 이름을 사용하므로 Java 프로젝트를 가져올 수 없습니다: {paths}. 파일을 삭제하거나 이름을 변경한 후 Java 언어 서버를 다시 시작하세요.",
   "This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.": "이 파일은 해당 Java 모듈의 소스 폴더 밖에 있습니다. 구문 오류만 보고되며 탐색과 코드 완성이 작동하지 않습니다.",
-  "This file does not belong to an imported Java project: only syntax errors are reported, and navigation and completion don't work.": "이 파일은 가져온 Java 프로젝트에 속하지 않습니다. 구문 오류만 보고되며 탐색과 코드 완성이 작동하지 않습니다.",
+  "This file does not belong to an imported Java project: only syntax errors are reported, and only JDK classes resolve.": "이 파일은 가져온 Java 프로젝트에 속하지 않습니다. 구문 오류만 보고되며 JDK 클래스만 확인됩니다.",
   "This Go file belongs to no package of the workspace: code insight is limited.": "이 Go 파일은 작업 공간의 어떤 패키지에도 속하지 않습니다. 코드 인사이트가 제한됩니다.",
   "This Rust file is not included in any crate: rust-analyzer can't offer code insight for it.": "이 Rust 파일은 어떤 crate에도 포함되어 있지 않습니다. rust-analyzer가 코드 인사이트를 제공할 수 없습니다.",
   "Reload Maven Projects": "Maven 프로젝트 다시 로드",
