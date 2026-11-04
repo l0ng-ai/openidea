@@ -35,6 +35,8 @@ These rules are for the sessions that work through `docs/php-engine/ROADMAP.md`.
 
 ## Never
 
+- Never run a command in the background, and never use Monitor, ScheduleWakeup or sub-agents to wait for one. A headless session ends as soon as you stop replying, and nothing ever wakes it up again, so the phase is lost. Run every build and test in the foreground with a long timeout (up to 600000 ms). If a test run would take longer than that, run narrower parts one after another.
+- Never end your reply before the commit is made, or before the phase is blocked and that commit is made.
 - Never weaken, skip or delete an existing test to make things pass.
   - Never add `#[ignore]` to hide a failure. Tests that need installed tools or corpora are ignored by design and say so.
 - Never push. Never switch branches. Never rewrite history (`reset --hard`, `rebase`, `commit --amend` on earlier phases).
