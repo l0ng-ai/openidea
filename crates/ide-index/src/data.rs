@@ -134,6 +134,9 @@ impl FileEntry {
 pub(crate) struct IndexData {
     pub files: Vec<Option<FileEntry>>,
     by_path: HashMap<PathBuf, u32>,
+    /// Every folder holding an indexed file at any depth, keyed by its `rel` with a
+    /// trailing `/`: its absolute path and the number of files below it.
+    pub dirs: HashMap<Box<str>, (PathBuf, u32)>,
     free: Vec<u32>,
     pub file_count: u32,
     pub symbol_count: u32,
@@ -167,6 +170,11 @@ impl IndexData {
             }
         };
         let path = self.files[slot as usize].as_ref().map(|e| e.path.clone()).unwrap_or_default();
+        if let Some(e) = &self.files[slot as usize] {
+            for (rel, abs) in ancestors(e) {
+                self.dirs.entry(rel.into()).or_insert_with(|| (abs.to_owned(), 0)).1 += 1;
+            }
+        }
         self.by_path.insert(path, slot);
         self.file_count += 1;
         self.symbol_count += symbols;
@@ -176,6 +184,14 @@ impl IndexData {
         let slot = self.by_path.remove(path)?;
         let old = self.files[slot as usize].take()?;
         self.free.push(slot);
+        for (rel, _) in ancestors(&old) {
+            if let Some(d) = self.dirs.get_mut(rel) {
+                d.1 -= 1;
+                if d.1 == 0 {
+                    self.dirs.remove(rel);
+                }
+            }
+        }
         self.file_count -= 1;
         self.symbol_count -= old.symbols.len() as u32;
         Some(old)
@@ -197,11 +213,25 @@ impl IndexData {
         self.files.shrink_to_fit();
         self.free.shrink_to_fit();
         self.by_path.shrink_to_fit();
+        self.dirs.shrink_to_fit();
     }
 
     pub(crate) fn paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.by_path.keys()
     }
+}
+
+/// The folders holding `e` (`rel` with a trailing `/`, absolute path), innermost first.
+fn ancestors(e: &FileEntry) -> impl Iterator<Item = (&str, &Path)> {
+    let mut rel = e.dir();
+    let mut abs = e.path.parent();
+    std::iter::from_fn(move || {
+        let path = abs.filter(|_| !rel.is_empty())?;
+        let here = rel;
+        rel = rel[..rel.len() - 1].rfind('/').map_or("", |i| &rel[..=i]);
+        abs = path.parent();
+        Some((here, path))
+    })
 }
 
 #[cfg(test)]
@@ -221,6 +251,23 @@ mod tests {
             ..Default::default()
         };
         FileEntry::new(PathBuf::from("/r").join(path), path.to_owned(), record)
+    }
+
+    #[test]
+    fn dirs_follow_inserts_and_removals() {
+        let mut d = IndexData::default();
+        d.insert(entry("a/b/c.rs", 0));
+        d.insert(entry("a/d.rs", 0));
+        d.insert(entry("a/d.rs", 0));
+        d.insert(entry("top.rs", 0));
+        let mut dirs: Vec<_> = d.dirs.iter().map(|(k, v)| (k.to_string(), v.1)).collect();
+        dirs.sort();
+        assert_eq!(dirs, [("a/".into(), 2), ("a/b/".into(), 1)]);
+        assert_eq!(d.dirs["a/b/"].0, PathBuf::from("/r/a/b"));
+        d.remove(Path::new("/r/a/b/c.rs"));
+        assert!(!d.dirs.contains_key("a/b/"));
+        d.remove_tree(Path::new("/r/a"));
+        assert!(d.dirs.is_empty());
     }
 
     #[test]

@@ -3385,7 +3385,7 @@
   "Not installed": "Non installé",
   "{command} was not found on PATH": "{command} est introuvable dans le PATH",
   "Agent tasks": "Tâches d'agent",
-  "Describe a task for the agent. @ references a file, / runs a command": "Décrivez une tâche pour l'agent. @ référence un fichier, / lance une commande",
+  "Describe a task for the agent. @ references a file or folder, / runs a command": "Décrivez une tâche pour l'agent. @ référence un fichier ou un dossier, / lance une commande",
   "away from your changes": "à l'écart de vos modifications",
   "edits your files directly": "modifie directement vos fichiers",
   "from": "depuis",
