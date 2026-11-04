@@ -2,6 +2,8 @@ name: Language smoke
 # Everyday code intelligence (completion, go to definition, Find Usages, hover, diagnostics
 # with a quick fix, an intention, formatting, rename) per language, against the language
 # server the app starts by default: crates/ide-host/tests/language_smoke.rs.
+# Then running and testing each fixture through the run store and openidea-server
+# (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts.
 on:
   push:
     branches: [main]
@@ -14,12 +16,18 @@ on:
       - "fixtures/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "src/features/run/**"
+      - "src/platform/**"
+      - "smoke/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
       - ".github/workflows/language-smoke.yml"
   workflow_dispatch:
 
 concurrency:
   group: language-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push supersedes a PR's run; on main every merge runs to the end (and saves the cache).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -53,9 +61,10 @@ jobs:
           shared-key: language-smoke
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.language == 'rust' }}
 
-      - if: matrix.language == 'typescript'
-        uses: actions/setup-node@v4
-        with: { node-version: 22 }
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
       - if: matrix.language == 'typescript'
         run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
 
@@ -95,3 +104,7 @@ jobs:
 
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
+
+      - run: pnpm install --frozen-lockfile
+      - run: cargo build --locked -p ide-host --bin openidea-server
+      - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
