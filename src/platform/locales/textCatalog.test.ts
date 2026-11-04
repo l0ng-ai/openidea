@@ -118,6 +118,7 @@ const UNTRANSLATED = new Set<string>([
   "basedpyright",
   "Cargo Check",
   "Clippy",
+  "ClickHouse",
   "CockroachDB",
   "CodeLLDB",
   "CodeLLDB (Rust, C, C++)",

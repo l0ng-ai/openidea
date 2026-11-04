@@ -31,8 +31,10 @@ export async function applySuggestion(
   suggestion: readonly string[],
   commitMessage?: string,
 ): Promise<boolean> {
-  const title = commitMessage ? tx("Committing suggested change") : tx("Applying suggested change");
-  const done = await withBusy(title, async () => {
+  const op = commitMessage
+    ? { title: tx("Committing suggested change"), failure: tx("Couldn't commit the suggested change") }
+    : { title: tx("Applying suggested change"), failure: tx("Couldn't apply the suggested change") };
+  const done = await withBusy(op, async () => {
     const root = await repositoryRoot();
     const abs = `${root}/${target.path}`;
     const text = await call(commands.fsReadText(abs));
@@ -61,7 +63,10 @@ export async function applySuggestion(
     return true;
   });
   if (!done) return false;
-  if (thread.viewerCanResolve) await withBusy(tx("Resolving thread"), () => resolveThread(number, thread.id));
+  if (thread.viewerCanResolve)
+    await withBusy({ title: tx("Resolving thread"), failure: tx("Couldn't resolve the thread") }, () =>
+      resolveThread(number, thread.id),
+    );
   return true;
 }
 

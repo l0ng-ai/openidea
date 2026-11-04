@@ -135,6 +135,47 @@ describe("a pending question", () => {
   });
 });
 
+describe("a pending permission request in the conversation", () => {
+  it("is answered from its line too, and one without options can be cancelled", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 3,
+        title: "ls d:/project",
+        options: [
+          { id: "once", name: "Allow once", kind: "allow_once" },
+          { id: "reject", name: "Reject", kind: "reject_once" },
+        ],
+        chosen: null,
+      },
+    ]);
+    backend.entries.set("B", [
+      { type: "permission", id: 4, title: "The agent asks for permission", options: [], chosen: null },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    const { unmount } = render(<SessionEditor input={input("A")} />);
+    const line = (await screen.findAllByText("ls d:/project")).find((e) =>
+      e.classList.contains(styles.permissionTitle!),
+    )!.parentElement!;
+    const answers = within(line.querySelector<HTMLElement>(`.${styles.permissionAnswers}`)!).getAllByRole("button");
+    expect(answers.map((b) => b.textContent)).toEqual(["Allow once", "Reject"]);
+    fireEvent.click(answers[0]!);
+    await waitFor(() => expect(backend.answers).toEqual([["A", 3, "once"]]));
+    unmount();
+
+    render(<SessionEditor input={input("B")} />);
+    const banner = await screen.findByRole("alert", { name: "The agent asks for permission" });
+    fireEvent.click(within(banner).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 3, "once"],
+        ["B", 4, null],
+      ]),
+    );
+  });
+});
+
 describe("session state across tasks and hosts", () => {
   it("returns to the task conversation when the docked task changes after opening a subagent", async () => {
     const dispose = registerActions(taskActions);
