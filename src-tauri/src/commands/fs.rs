@@ -65,8 +65,8 @@ pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn fs_rename(from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    ide_vfs::rename(&from, &to)
+pub async fn fs_rename(state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
+    fs::rename(&state.host, from, to).await
 }
 
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's

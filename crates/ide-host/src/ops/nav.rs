@@ -3,7 +3,7 @@ use crate::Host;
 use crate::Project;
 use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeResult, IpcPath, Location, Pos};
-use ide_index::{FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
+use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
 use ide_language::{FileReference, WebReference};
 use ide_workspace::file_refs::{self, PathCompletion};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,11 @@ fn reference_roots(project: &Project) -> (PathBuf, Vec<PathBuf>) {
 
 pub fn index_status(host: &Host, window: &str) -> IdeResult<IndexStatus> {
     Ok(host.project(window)?.index.status())
+}
+
+/// The project's file extensions, most common first.
+pub fn index_file_extensions(host: &Host, window: &str) -> IdeResult<Vec<ExtensionCount>> {
+    Ok(host.project(window)?.index.file_extensions())
 }
 
 pub fn find_files(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
@@ -160,6 +165,7 @@ pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) ->
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("index_status", |c| async move { index_status(&c.host, &c.window) });
+    d.add("index_file_extensions", |c| async move { index_file_extensions(&c.host, &c.window) });
     d.add("find_files", |c| async move { find_files(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
     d.add("find_dirs", |c| async move { find_dirs(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
     d.add("find_symbols", |c| async move {

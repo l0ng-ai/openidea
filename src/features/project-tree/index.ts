@@ -1,6 +1,6 @@
 /** Project view: the "project" tool window, its file operations and actions. */
 import { onEditorEvent, openEditorPaths } from "@/editor/api";
-import { onIdeEvent } from "@/platform/ipc";
+import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useBuildModel } from "@/platform/buildModel";
 import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
@@ -33,21 +33,59 @@ import {
   reloadLoadedDirs,
   setChangedFiles,
   setOpenFiles,
+  setViewMode,
   useProjectTree,
 } from "./store";
 
 export function activate(): () => void {
   loadHomeDir();
+  let unityTimer: ReturnType<typeof setTimeout> | undefined;
+  let unityGeneration = 0;
   const sync = () => {
     const p = useProject.getState().project;
     const s = useProjectTree.getState();
     if ((p?.root ?? null) !== s.root || p?.workspace?.projects !== (s.members ?? undefined))
-      initProjectTree(p?.root ?? null, p?.name ?? "", p?.workspace?.projects ?? null);
-    else if (p && p.name !== s.name) useProjectTree.setState({ name: p.name });
+      initProjectTree(p?.root ?? null, p?.name ?? "", p?.workspace?.projects ?? null, p?.unity ?? null);
+    else if (p) {
+      useProjectTree.setState({ name: p.name, unity: p.unity ?? null });
+      if (p.unity && !s.unity && s.mode === "project") setViewMode("unity");
+      if (!p.unity && s.mode === "unity") setViewMode("project");
+    }
   };
   sync();
   const unsubProject = useProject.subscribe((s, prev) => {
+    if (s.project?.root !== prev.project?.root) {
+      unityGeneration++;
+      clearTimeout(unityTimer);
+    }
     if (s.project !== prev.project) sync();
+  });
+  // Unity regenerates these files while the IDE stays open. Refresh only metadata,
+  // retaining the current settings and ignoring replies from a previous project.
+  const unsubUnity = onIdeEvent("fsChanged", (e) => {
+    const project = useProject.getState().project;
+    if (!project || !isTauri()) return;
+    const relevant = [...e.created, ...e.modified, ...e.removed].some((p) => {
+      if (!p.startsWith(project.root + "/")) return false;
+      const rel = p.slice(project.root.length + 1);
+      return (
+        /^(Assets|Packages|ProjectSettings)(\/ProjectVersion\.txt)?$/.test(rel) ||
+        /^[^/]+\.(csproj|sln|slnx)$/i.test(rel)
+      );
+    });
+    if (!relevant) return;
+    const generation = ++unityGeneration;
+    clearTimeout(unityTimer);
+    unityTimer = setTimeout(async () => {
+      try {
+        const fresh = await commands.projectCurrent();
+        const current = useProject.getState().project;
+        if (generation !== unityGeneration || current?.root !== project.root || fresh?.root !== project.root) return;
+        useProject.setState({ project: { ...current, unity: fresh.unity } });
+      } catch {
+        // A project may have closed while the metadata request was in flight.
+      }
+    }, 150);
   });
   // Excluded folders / exclude globs change which entries are `ignored`.
   const unsubExcludes = useProject.subscribe((s, prev) => {
@@ -132,6 +170,11 @@ export function activate(): () => void {
   });
 
   const disposers = [
+    () => {
+      clearTimeout(unityTimer);
+      unityGeneration++;
+      unsubUnity();
+    },
     () => clearTimeout(openTimer),
     unsubEditor,
     unsubDecorations,

@@ -68,6 +68,12 @@ export class TestResults {
     return this.byId.get(id);
   }
 
+  /** The test at `path` has finished with a result. */
+  hasResult(path: readonly string[]): boolean {
+    const own = this.byId.get(path.join(SEP))?.own;
+    return !!own && own !== "running";
+  }
+
   /** Finds a test by a suffix of its path (pytest failure headers name `Class.test`). */
   findBySuffix(suffix: string[]): TestNode | undefined {
     let best: TestNode | undefined;

@@ -50,7 +50,15 @@ import { showHint, showPendingHint } from "./hint";
 import { outsideProjectReason } from "./outsideProject";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { readManyFileLines, targetLabel } from "./files";
-import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
+import {
+  documentLinks,
+  followReference,
+  fragmentOffset,
+  knownLinks,
+  linkReference,
+  referenceAt,
+  textReference,
+} from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
@@ -277,6 +285,14 @@ async function followReferenceAt(view: EditorView, doc: EditorDocContext, offset
   const ref = await referenceAt(view, doc, offset);
   if (!ref) return false;
   try {
+    if (ref.kind === "file" && ref.path === doc.path && ref.fragment) {
+      const target = fragmentOffset(view.state.doc.toString(), doc.path, ref.fragment);
+      if (target !== null) {
+        view.dispatch({ selection: EditorSelection.cursor(target), effects: EditorView.scrollIntoView(target) });
+        view.focus();
+        return true;
+      }
+    }
     await followReference(ref);
   } catch (e) {
     showHint(view, e instanceof Error ? e.message : String(e), { tone: "error" });

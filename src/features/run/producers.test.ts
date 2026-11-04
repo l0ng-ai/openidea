@@ -162,6 +162,31 @@ describe("single-file producers (scratches)", () => {
     expect(produceContext(scratch("hi.py"), env({}))!.missing!.title).toBe("Cannot run 'hi.py'");
   });
 
+  it("Python: a module with relative imports runs with -m from above its top package", () => {
+    const venv = [cfg({ id: "pytest", kind: "pytest", command: ".venv/bin/pytest" })];
+    const packages = new Set([`${ROOT}/src/tasks`, `${ROOT}/src/tasks/sub`]);
+    const at = (path: string, content: string) =>
+      run({ path, root: ROOT, configs: venv, content, pythonPackage: (d) => packages.has(d) });
+    const relative = "from .models import TaskList\n";
+    expect(at(`${ROOT}/src/tasks/cli.py`, relative)).toMatchObject({
+      command: `${ROOT}/.venv/bin/python`,
+      args: ["-m", "tasks.cli"],
+      cwd: "src",
+    });
+    expect(at(`${ROOT}/src/tasks/sub/__main__.py`, "from ..models import X\n")).toMatchObject({
+      args: ["-m", "tasks.sub"],
+      cwd: "src",
+    });
+    // A directory without `__init__.py` is still the module's package; a top-level one runs from the root.
+    expect(at(`${ROOT}/scripts/gen.py`, relative)).toMatchObject({ args: ["-m", "scripts.gen"], cwd: null });
+    // Without relative imports, the file runs as a script.
+    expect(at(`${ROOT}/src/tasks/cli.py`, "import argparse\n")).toMatchObject({
+      command: ".venv/bin/python",
+      args: ["src/tasks/cli.py"],
+      cwd: null,
+    });
+  });
+
   it("shell scripts: the shell of the #! line, else by extension; extensionless files by #!", () => {
     expect(run(scratch("a.sh", "#!/usr/bin/env bash\necho hi"))).toMatchObject({
       command: "/bin/bash",

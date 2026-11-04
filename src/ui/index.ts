@@ -2,6 +2,7 @@ export * from "./icons";
 export * from "./Button";
 export * from "./FloatingToolbar";
 export * from "./Kbd";
+export * from "./Mnemonic";
 export * from "./Tooltip";
 export * from "./Input";
 export * from "./Checkbox";

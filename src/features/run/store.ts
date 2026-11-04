@@ -43,7 +43,7 @@ import {
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
 import { moveToReportedClasses } from "./testing/jvm";
-import { TeamcityOutput } from "./testing/phpunit";
+import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
@@ -54,7 +54,7 @@ import { typeFor } from "./types";
 import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
-import { gradleDelegation } from "./gradleRun";
+import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -342,7 +342,7 @@ function writeTemporary(root: string, configs: RunConfig[]) {
 
 let persisting = 0;
 
-function persistTemporary() {
+export function persistTemporary() {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const { configs, temporary } = useRun.getState();
@@ -567,8 +567,13 @@ function newRuntime(config: RunConfig): SessionRuntime {
     if (tests && parser) tests.apply(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
+  // PHPUnit `--teamcity` and Gradle's test init script report through service messages.
   const stdout =
-    framework === "go" ? new GoTestOutput(feed) : framework === "phpunit" ? new TeamcityOutput(feed) : null;
+    framework === "go"
+      ? new GoTestOutput(feed)
+      : framework === "phpunit" || framework === "jvm"
+        ? new TeamcityOutput(feed)
+        : null;
   const runtime: SessionRuntime = {
     stdout,
     tests,
@@ -802,7 +807,8 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? withTestReporting(launch) : launch;
+    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : launch;
+    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
@@ -921,7 +927,9 @@ function finishSession(sessionId: string, code: number | null) {
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
         if (frameworkFor(session.config) === "jvm") {
           const reports = await jvmReports(session);
-          rt.tests.apply(testReportEvents(reports));
+          const tests = rt.tests;
+          // Tests the run reported already (Gradle's init script, Surefire failures) keep their output.
+          tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
           moveToReportedClasses(
             rt.tests,
             reports.map((r) => r.className),

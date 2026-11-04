@@ -19,7 +19,6 @@ import { tx } from "@/platform/i18n";
 export function MatchText({
   text,
   ranges,
-  active,
   replacement,
   query,
   preserveCase = false,
@@ -27,7 +26,6 @@ export function MatchText({
 }: {
   text: string;
   ranges: ReadonlyArray<readonly [number, number]>;
-  active?: boolean;
   replacement?: string | null;
   query?: Pick<SearchQuery, "pattern" | "isRegex" | "caseSensitive"> | null;
   preserveCase?: boolean;
@@ -51,7 +49,7 @@ export function MatchText({
       );
     } else {
       parts.push(
-        <mark key={i} className={clsx(styles.match, active && styles.matchActive)}>
+        <mark key={i} className={styles.match}>
           {tokenSpans(text, s, e, tokens, "")}
         </mark>,
       );

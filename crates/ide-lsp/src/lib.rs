@@ -23,6 +23,7 @@ mod scope;
 mod server;
 mod tcp;
 mod text;
+mod ts_file_moves;
 mod tsserver_bridge;
 pub mod types;
 mod uri;
@@ -1692,6 +1693,20 @@ impl LspManager {
         Ok(())
     }
 
+    /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions
+    /// can carry commands other editors' extensions run themselves after the edit (vtsls'
+    /// `_typescript.didOrganizeImports`): no server provides those.
+    pub async fn provides_command(&self, doc: DocId, server: Option<ide_core::ServerId>, name: &str) -> bool {
+        let servers = match self.snapshot(doc) {
+            Ok(snap) => snap.servers,
+            Err(_) => self.servers.lock().clone(),
+        };
+        self.ready_targets(&servers, |c| c.commands().iter().any(|c| c == name))
+            .await
+            .iter()
+            .any(|t| server.is_none_or(|s| t.server.id == s))
+    }
+
     async fn command_target(&self, doc: DocId, server: ide_core::ServerId, name: &str) -> IdeResult<Target> {
         let snap = self.snapshot(doc)?;
         self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == name))
@@ -1710,6 +1725,10 @@ impl LspManager {
         answers: Vec<FormAnswer>,
         cancel: CancellationToken,
     ) -> IdeResult<Option<CommandForm>> {
+        // Nothing to ask for a command its server doesn't provide (executing it decides).
+        if !self.provides_command(doc, Some(server), &command.command).await {
+            return Ok(None);
+        }
         let t = self.command_target(doc, server, &command.command).await?;
         let interactive = t.server.name == "gopls"
             && t.caps()
@@ -1992,7 +2011,30 @@ impl LspManager {
             servers.iter().zip(ready).filter_map(|(s, run)| Some(Target { server: s.clone(), run: run? })).collect();
         let mut out = FileRenameEdits::default();
         for t in targets {
-            let Some(params) = Self::file_op_params(&t, "willRename", &moves) else { continue };
+            let Some(params) = Self::file_op_params(&t, "willRename", &moves) else {
+                if t.server.config.tsserver_project && t.caps().commands().iter().any(|c| c == ts_file_moves::COMMAND) {
+                    out.servers.push(t.server.name.clone());
+                    let opened = self.open_for_file_op(&t, &moves);
+                    for (from, to, _) in &moves {
+                        let r: IdeResult<Value> = self
+                            .call(
+                                &t,
+                                "workspace/executeCommand",
+                                ts_file_moves::request(from, to),
+                                Some(&cancel),
+                                LONG_TIMEOUT,
+                            )
+                            .await;
+                        match r {
+                            Ok(result) => out.edit.files.extend(ts_file_moves::edit(&result).files),
+                            Err(e) if e.kind == ErrorKind::Cancelled && cancel.is_cancelled() => return Err(e),
+                            Err(e) => out.errors.push(e.message),
+                        }
+                    }
+                    drop(opened);
+                }
+                continue;
+            };
             out.servers.push(t.server.name.clone());
             let opened = self.open_for_file_op(&t, &moves);
             let r: IdeResult<Option<lsp::WorkspaceEdit>> =

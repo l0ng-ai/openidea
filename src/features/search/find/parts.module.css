@@ -2,12 +2,13 @@
   white-space: pre;
 }
 .match {
-  background: var(--accent-soft);
-  color: var(--fg-strong);
+  background: var(--bg-search-match);
+  color: var(--fg-search-match, inherit);
   border-radius: 2px;
 }
-.matchActive {
-  background: color-mix(in srgb, var(--accent) 30%, transparent);
+/* IDEA paints a hit in one colour over the syntax colours, selected row or not. */
+.match :global([class*="tok-"]) {
+  color: inherit;
 }
 .removed {
   color: var(--fg-subtle);

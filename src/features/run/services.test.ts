@@ -1,8 +1,25 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { DEFAULT_TYPES, readRan, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
+import { useProject } from "@/platform/project";
+
+const ipc = vi.hoisted(() => ({ runConfigs: vi.fn() }));
+vi.mock("@/platform/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/ipc")>()),
+  isTauri: () => true,
+  commands: ipc,
+}));
+
+import {
+  cleanupRemovedProject,
+  DEFAULT_TYPES,
+  readRan,
+  readTypes,
+  runServiceItems,
+  sessionDetail,
+  sessionStatus,
+} from "./services";
 import { startedPort } from "./serverPort";
-import type { RunSession } from "./store";
+import { useRun, type RunSession } from "./store";
 import type { DebugServiceSession } from "@/workbench/contributions";
 
 const config = (id: string, kind: string): RunConfig => ({
@@ -248,9 +265,58 @@ describe("embedded web server port", () => {
     expect(startedPort("o.s.b.web.embedded.netty.NettyWebServer  : Netty started on port 9090")).toBe(9090);
     expect(startedPort("Netty started on port(s): 9091")).toBe(9091);
     expect(startedPort("Undertow started on port(s) 8082 (http)")).toBe(8082);
-    expect(startedPort("Jetty started on port 8083 (http/1.1) with context path '/'")).toBe(8083);
+    expect(startedPort("Jetty started on port 9083 (http/1.1) with context path '/'")).toBe(9083);
     expect(startedPort("Tomcat initialized with port 8080 (http)")).toBeNull();
     expect(startedPort("Started DemoApplication in 1.2 seconds")).toBeNull();
     expect(startedPort("Tomcat started on port 99999")).toBeNull();
+  });
+});
+
+describe("removing a workspace member from Services", () => {
+  const main = { ...config("app", "spring-boot"), cwd: "/w/main" };
+  const vue = { ...config("dev", "npm"), cwd: "/w/vue" };
+
+  beforeEach(() => {
+    localStorage.clear();
+    useProject.setState({ project: { root: "/w/main" } as never });
+    ipc.runConfigs.mockImplementation(async () => ({ status: "ok", data: [main] }));
+  });
+  afterEach(() => {
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], sessions: [], temporary: [], selectedId: null });
+  });
+
+  it("stops and forgets the member's sessions and drops its empty type groups", async () => {
+    useRun.setState({
+      configs: [main, vue],
+      temporary: ["dev"],
+      sessions: [session("s1", main, "finished", 1), session("s2", vue, "running", 2, { runId: 7 })],
+    });
+    localStorage.setItem("openidea.services.runTypes:/w/main", JSON.stringify(["spring-boot", "npm"]));
+    localStorage.setItem("openidea.services.ran:/w/main", JSON.stringify(["app", "dev"]));
+
+    await cleanupRemovedProject("/w/vue");
+
+    const s = useRun.getState();
+    expect(s.sessions.map((x) => x.id)).toEqual(["s1"]);
+    expect(s.configs.map((c) => c.id)).toEqual(["app"]);
+    expect(s.temporary).toEqual([]);
+    expect(readTypes("/w/main")).toEqual(["spring-boot"]);
+    expect(readRan("/w/main")).toEqual(["app"]);
+    expect(ipc.runConfigs).toHaveBeenCalled();
+  });
+
+  it("keeps a type another project still uses, and a sibling with a shared prefix", async () => {
+    const other = { ...config("serve", "npm"), cwd: "/w/main" };
+    const sibling = { ...config("dev2", "npm"), cwd: "/w/vue2" };
+    useRun.setState({ configs: [main, other, vue, sibling], sessions: [] });
+    localStorage.setItem("openidea.services.runTypes:/w/main", JSON.stringify(["npm"]));
+    // What the backend lists once /w/vue is no longer a workspace member.
+    ipc.runConfigs.mockImplementation(async () => ({ status: "ok", data: [main, other, sibling] }));
+
+    await cleanupRemovedProject("/w/vue");
+
+    expect(useRun.getState().configs.map((c) => c.id)).toEqual(["app", "serve", "dev2"]);
+    expect(readTypes("/w/main")).toEqual(["npm"]);
   });
 });
