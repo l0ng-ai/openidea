@@ -2239,6 +2239,11 @@ export type Consent = {
 	 *  ones are implied by consenting at all.
 	 */
 	optional: string[],
+	/**
+	 *  The user accepted a package signed by another key than the installed
+	 *  copy ([`InstallPreview::signer_changed`]).
+	 */
+	signerChange?: boolean,
 };
 
 /**  Build, Execution, Deployment › Console. */
@@ -4142,7 +4147,7 @@ export type IndexEntry = {
 	/**
 	 *  The plugin API versions it loads in (a semver requirement): its
 	 *  manifest's `engines.openidea` and the API its component was built for.
-	 *  Empty: any.
+	 *  Required: an entry without one is offered to no IDE.
 	 */
 	engine?: string,
 	/**  Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know. */
@@ -4304,6 +4309,18 @@ export type InstallPreview = {
 	unsigned: boolean,
 	/**  The verified publisher. */
 	publisher: string | null,
+	/**
+	 *  Replaces an installed copy signed with another key, which didn't
+	 *  endorse this package's (or this one is unsigned): the user confirms it
+	 *  ([`Consent::signer_change`]).
+	 */
+	signerChanged: boolean,
+	/**
+	 *  Something to confirm: a first install, an unsigned package, another
+	 *  signer, or capabilities the installed version wasn't granted or
+	 *  refused. Without, an update installs with the grants it has.
+	 */
+	needsConsent: boolean,
 };
 
 /**  A theme of a plugin installed in a JetBrains IDE. */
@@ -5254,7 +5271,12 @@ export type PluginEditor = {
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
-{ type: "commandsChanged" } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
+{ type: "commandsChanged" } | 
+/**
+ *  The marketplace offers newer versions of installed plugins (announced
+ *  once per set of versions).
+ */
+{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**  A plugin began a task: show it with the background tasks. */
@@ -5361,6 +5383,13 @@ export type PluginStatusItem = {
 	pluginId: string,
 	id: string,
 	item: StatusItem,
+};
+
+/**  A newer version of an installed plugin in the marketplace. */
+export type PluginUpdate = {
+	id: string,
+	name: string,
+	version: string,
 };
 
 export type PluginsSnapshot = {

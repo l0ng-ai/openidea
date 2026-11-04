@@ -38,8 +38,8 @@ pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
 pub const CATEGORIES: &[&str] =
     &["languages", "themes", "icon-themes", "linters", "vcs", "ai", "frameworks", "tools", "other"];
-/// What a manifest may declare in `categories`.
-const MAX_CATEGORIES: usize = 3;
+/// Categories a plugin is listed under; later ones are ignored.
+pub const MAX_CATEGORIES: usize = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Manifest {
@@ -300,9 +300,6 @@ impl Manifest {
                 return Err(format!("duplicate activation event {event}"));
             }
         }
-        if self.declared_categories.len() > MAX_CATEGORIES {
-            return Err(format!("`categories` lists at most {MAX_CATEGORIES}"));
-        }
         for c in &self.declared_categories {
             validate_item_id(c, "category")?;
         }
@@ -342,12 +339,18 @@ impl Manifest {
 }
 
 impl Manifest {
-    /// Its marketplace categories, in [`CATEGORIES`] order: those declared that
-    /// this IDE knows; without any, those its contributions imply (themes,
-    /// icon themes, languages), else `other`.
+    /// Its marketplace categories, in [`CATEGORIES`] order: the first
+    /// [`MAX_CATEGORIES`] declared that this IDE knows; without any, those its
+    /// contributions imply (themes, icon themes, languages), else `other`.
     pub fn categories(&self) -> Vec<String> {
         let pick = |f: &dyn Fn(&str) -> bool| CATEGORIES.iter().filter(|c| f(c)).map(|c| c.to_string()).collect();
-        let mut out: Vec<String> = pick(&|c| self.declared_categories.iter().any(|d| d == c));
+        let mut known: Vec<&str> = Vec::new();
+        for d in &self.declared_categories {
+            if CATEGORIES.contains(&d.as_str()) && !known.contains(&d.as_str()) && known.len() < MAX_CATEGORIES {
+                known.push(d);
+            }
+        }
+        let mut out: Vec<String> = pick(&|c| known.contains(&c));
         if out.is_empty() {
             out = pick(&|c| match c {
                 "themes" => self.contributes.contains_key("themes"),
@@ -474,7 +477,9 @@ mod tests {
         let declared_wins = m("categories = [\"tools\"]\n[[contributes.languages]]\nid = \"l\"\n").unwrap();
         assert_eq!(declared_wins.categories(), ["tools"]);
         assert_eq!(m("").unwrap().categories(), ["other"]);
-        assert!(m("categories = [\"a\", \"b\", \"c\", \"d\"]\n").unwrap_err().contains("at most 3"));
+        // At most three: the first ones declared.
+        let many = m("categories = [\"vcs\", \"ai\", \"vcs\", \"tools\", \"themes\"]\n").unwrap();
+        assert_eq!(many.categories(), ["vcs", "ai", "tools"]);
         assert!(m("categories = [\"Bad Name\"]\n").is_err());
     }
 

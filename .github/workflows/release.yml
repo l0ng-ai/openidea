@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.release.outputs.id }}
+      official_plugin_keys: ${{ steps.plugin-keys.outputs.keys }}
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ env.TAG }}" }
@@ -35,6 +36,20 @@ jobs:
           if [ "$app" != "$TAG" ]; then
             echo "::error::tag $TAG does not match tauri.conf.json version $app"
             exit 1
+          fi
+      # The official plugins' public key (from PLUGIN_SIGNING_KEY, the seed
+      # `openidea-plugin keygen` writes), built into the app: their packages
+      # must carry its signature whatever the marketplace index lists. Without
+      # the secret the app takes the index's word, as development builds do.
+      - id: plugin-keys
+        env:
+          SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            seed="$(printf %s "$SIGNING_KEY" | base64 -d | od -An -tx1 | tr -d ' \n')"
+            key="$(printf '302e020100300506032b657004220420%s' "$seed" | xxd -r -p |
+              openssl pkey -inform DER -pubout -outform DER | tail -c 32 | base64)"
+            echo "keys=$key" >> "$GITHUB_OUTPUT"
           fi
       - id: release
         uses: actions/github-script@v7
@@ -58,6 +73,8 @@ jobs:
   build:
     needs: create-release
     name: Build (${{ matrix.name }})
+    env:
+      OPENIDEA_OFFICIAL_PLUGIN_KEYS: ${{ needs.create-release.outputs.official_plugin_keys }}
     strategy:
       fail-fast: false
       matrix:

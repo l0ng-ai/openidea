@@ -8,8 +8,9 @@
 //! openidea-plugin unlink [dir]
 //! openidea-plugin links                   # list linked folders
 //! openidea-plugin keygen <key-file>       # a publisher's Ed25519 key
+//! openidea-plugin endorse <new-public-key> --key OLD --publisher ID   # vouch for a new key
 //! openidea-plugin pack [dir] [--key F --publisher ID] [--out FILE]   # <id>-<version>.oiplugin
-//! openidea-plugin index <dir> [--publisher ID --name NAME --key F]   # marketplace index.json
+//! openidea-plugin index <dir> [--publisher ID --name NAME --key F [--previous-key F]]   # marketplace index.json
 //! openidea-plugin merge <index> <other-index> --keep ID               # list another index's publishers
 //! ```
 //!
@@ -39,13 +40,19 @@ commands:
   unlink [dir]            stop loading a linked folder
   links                   list linked folders
   keygen <key-file>       create a publisher signing key (keep the file secret)
+  endorse <new-public-key> --key F --publisher ID
+                          print an earlier key's endorsement of a new one (JSON), for an
+                          index the publisher doesn't write with `index --previous-key`
   pack [dir] [--key F --publisher ID] [--out FILE]
                           write <id>-<version>.oiplugin, signed with the key
-  index <dir> [--publisher ID --name NAME --key F] [--out FILE] [--download-base URL]
+  index <dir> [--publisher ID --name NAME --key F [--previous-key F]] [--out FILE]
+        [--download-base URL]
                           write the marketplace index.json for the packages in dir: with a
                           key, register it and list that publisher's plugins (earlier
                           versions stay for older IDEs); without, list only these packages,
-                          each checked against the index's publishers
+                          each checked against the index's publishers. A new key replacing
+                          an earlier one is endorsed with --previous-key, so installed
+                          plugins update to it without asking
   merge <index> <other-index> --keep ID [--out FILE]
                           replace every publisher but ID in index with those of other-index
                           (a path or URL), their plugins and revocations
@@ -63,6 +70,7 @@ fn main() -> ExitCode {
         Some("unlink") => dir_arg(&args[1..]).and_then(|d| link(&d, false)),
         Some("links") => list_links(),
         Some("keygen") => cmd_keygen(&args[1..]),
+        Some("endorse") => cmd_endorse(&args[1..]),
         Some("pack") => cmd_pack(&args[1..]),
         Some("index") => cmd_index(&args[1..]),
         Some("merge") => cmd_merge(&args[1..]),
@@ -368,6 +376,13 @@ fn check(dir: &Path) -> Result<(), String> {
         for c in manifest.unknown_categories() {
             println!("  warning: unknown category {c:?} (ignored); use {}", ide_extension::CATEGORIES.join(", "));
         }
+        if manifest.declared_categories.len() > ide_extension::MAX_CATEGORIES {
+            println!(
+                "  warning: only the first {} known categories are used; {} are declared",
+                ide_extension::MAX_CATEGORIES,
+                manifest.declared_categories.len()
+            );
+        }
         if !manifest.activation.is_empty() {
             let events: Vec<String> = manifest.activation.iter().map(ToString::to_string).collect();
             println!("  activation: {}", events.join(", "));
@@ -500,6 +515,20 @@ fn cmd_keygen(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_endorse(args: &[String]) -> Result<(), String> {
+    let a = Args::parse(args, &[], &["key", "publisher"])?;
+    let usage = "usage: openidea-plugin endorse <new-public-key> --key <earlier-key-file> --publisher ID";
+    let ([new], Some(key), Some(publisher)) = (a.positional.as_slice(), a.value("key"), a.value("publisher")) else {
+        return Err(usage.into());
+    };
+    if !package::publisher_id_ok(publisher) {
+        return Err(format!("invalid publisher id {publisher:?}"));
+    }
+    let endorsement = read_key(key)?.endorse(publisher, new.trim());
+    println!("{}", serde_json::to_string_pretty(&endorsement).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
 /// A fresh scratch directory, removed when dropped.
 fn scratch_dir(what: &str) -> Result<tempfile::TempDir, String> {
     tempfile::Builder::new().prefix(&format!("openidea-plugin-{what}-")).tempdir().map_err(|e| e.to_string())
@@ -546,33 +575,25 @@ fn cmd_pack(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_index(args: &[String]) -> Result<(), String> {
-    let a = Args::parse(args, &[], &["publisher", "name", "key", "out", "download-base"])?;
+    let a = Args::parse(args, &[], &["publisher", "name", "key", "previous-key", "out", "download-base"])?;
     let dir = canonical(&a.dir()?)?;
     let out = a.value("out").map(PathBuf::from).unwrap_or_else(|| dir.join("index.json"));
     let base = a.value("download-base").map(|b| b.trim_end_matches('/'));
     // Revocations and other publishers of an existing index are kept.
     let mut index = match std::fs::read_to_string(&out) {
-        Ok(text) => Index::parse(&text)?,
+        Ok(text) => current_format(Index::parse(&text)?, &out.to_string_lossy())?,
         Err(_) => Index { format: package::INDEX_FORMAT, ..Index::default() },
     };
     let publisher = match (a.value("publisher"), a.value("key")) {
         (Some(publisher), Some(key)) => {
             let key = read_key(key)?;
             let name = a.value("name").unwrap_or(publisher);
-            // Earlier keys of the publisher stay listed (packages they signed remain valid until revoked).
-            let current = key.public_base64();
-            let earlier: Vec<KeyEntry> = index
-                .publishers
-                .iter()
-                .filter(|p| p.id == publisher)
-                .flat_map(|p| p.keys.iter().filter(|k| k.key != current).cloned())
-                .collect();
-            index.publishers.retain(|p| p.id != publisher);
-            let keys: Vec<KeyEntry> =
-                std::iter::once(KeyEntry { key: current, revoked: false }).chain(earlier).collect();
-            index.publishers.push(package::Publisher { id: publisher.into(), name: name.into(), keys });
+            let previous = a.value("previous-key").map(read_key).transpose()?;
+            index.publishers =
+                register_key(std::mem::take(&mut index.publishers), publisher, name, &key, previous.as_ref())?;
             Some(publisher)
         }
+        (None, None) if a.has("previous-key") => return Err("--previous-key goes with --publisher and --key".into()),
         (None, None) => None,
         _ => return Err("--publisher and --key go together".into()),
     };
@@ -642,6 +663,60 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
     write_index(&index, &out)
 }
 
+/// `publishers` with `key` as `publisher`'s current key. Earlier keys stay listed
+/// (packages they signed remain valid until revoked); a key new to the
+/// publisher is endorsed by `previous`, one of them, so installed plugins
+/// signed with it update without asking.
+fn register_key(
+    mut publishers: Vec<package::Publisher>,
+    publisher: &str,
+    name: &str,
+    key: &PublisherKey,
+    previous: Option<&PublisherKey>,
+) -> Result<Vec<package::Publisher>, String> {
+    let current = key.public_base64();
+    let earlier: Vec<KeyEntry> = publishers.iter().filter(|p| p.id == publisher).flat_map(|p| p.keys.clone()).collect();
+    let entry = match earlier.iter().find(|k| k.key == current) {
+        Some(listed) => listed.clone(),
+        None => {
+            let endorsement = match previous {
+                Some(prev) => {
+                    let prev_key = prev.public_base64();
+                    if !earlier.iter().any(|k| k.key == prev_key && !k.revoked) {
+                        return Err(format!("--previous-key is not one of {publisher}'s valid keys in the index"));
+                    }
+                    Some(prev.endorse(publisher, &current))
+                }
+                None => {
+                    if earlier.iter().any(|k| !k.revoked) {
+                        println!(
+                            "  warning: {publisher}'s new key is not endorsed (--previous-key): users who installed \
+                             its plugins will be asked to confirm the change when they update"
+                        );
+                    }
+                    None
+                }
+            };
+            KeyEntry { endorsement, ..KeyEntry::new(current.clone()) }
+        }
+    };
+    let keys = std::iter::once(entry).chain(earlier.into_iter().filter(|k| k.key != current)).collect();
+    publishers.retain(|p| p.id != publisher);
+    publishers.push(package::Publisher { id: publisher.into(), name: name.into(), keys });
+    Ok(publishers)
+}
+
+/// `index`, unless a newer `openidea-plugin` wrote it (rewriting it would drop what this one can't read).
+fn current_format(index: Index, file: &str) -> Result<Index, String> {
+    if index.is_newer() {
+        return Err(format!(
+            "{file}: index format {} is newer than this tool writes; update openidea-plugin",
+            index.format
+        ));
+    }
+    Ok(index)
+}
+
 fn cmd_merge(args: &[String]) -> Result<(), String> {
     let a = Args::parse(args, &[], &["keep", "out"])?;
     let [base, other] = a.positional.as_slice() else {
@@ -649,9 +724,11 @@ fn cmd_merge(args: &[String]) -> Result<(), String> {
     };
     let keep = a.value("keep").ok_or("--keep is required")?;
     let out = a.value("out").unwrap_or(base);
-    let mut index = Index::parse(&std::fs::read_to_string(base).map_err(|e| format!("{base}: {e}"))?)?;
+    let mut index =
+        current_format(Index::parse(&std::fs::read_to_string(base).map_err(|e| format!("{base}: {e}"))?)?, base)?;
     let bytes = read_market_url(other, 16 << 20)?;
-    let mut theirs = Index::parse(&String::from_utf8(bytes).map_err(|_| format!("{other}: not UTF-8"))?)?;
+    let theirs = Index::parse(&String::from_utf8(bytes).map_err(|_| format!("{other}: not UTF-8"))?)?;
+    let mut theirs = current_format(theirs, other)?;
     // Their downloads are relative to their index, not to ours.
     for e in &mut theirs.plugins {
         e.download = resolve_market_href(other, &e.download);
@@ -672,6 +749,25 @@ fn write_index(index: &Index, out: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_key_is_endorsed_by_the_previous_one() {
+        let (k1, k2, k3) =
+            (PublisherKey::from_seed([1; 32]), PublisherKey::from_seed([2; 32]), PublisherKey::from_seed([3; 32]));
+        let first = register_key(Vec::new(), "acme", "ACME", &k1, None).unwrap();
+        let rotated = register_key(first.clone(), "acme", "ACME", &k2, Some(&k1)).unwrap();
+        let index = Index { format: package::INDEX_FORMAT, publishers: rotated.clone(), ..Index::default() };
+        assert!(index.succeeds("acme", &k1.public_base64(), &k2.public_base64()));
+        assert_eq!(rotated[0].keys.len(), 2, "the earlier key stays listed");
+        // Registering the current key again keeps its endorsement.
+        let again = register_key(rotated.clone(), "acme", "ACME", &k2, None).unwrap();
+        assert_eq!(again, rotated);
+        // Only a key the publisher has can endorse.
+        assert!(register_key(first.clone(), "acme", "ACME", &k2, Some(&k3)).unwrap_err().contains("--previous-key"));
+        // Without one the new key is listed unendorsed.
+        let unendorsed = register_key(first, "acme", "ACME", &k3, None).unwrap();
+        assert!(unendorsed[0].keys[0].endorsement.is_none());
+    }
 
     #[test]
     fn names() {
@@ -776,7 +872,7 @@ mod tests {
             publishers: vec![package::Publisher {
                 id: "alice".into(),
                 name: "Alice".into(),
-                keys: vec![KeyEntry { key: keys[1].1.clone(), revoked: false }],
+                keys: vec![KeyEntry::new(keys[1].1.clone())],
             }],
             ..Index::default()
         };

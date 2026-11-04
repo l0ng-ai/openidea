@@ -29,6 +29,7 @@ import { RISK_LABEL, sortByRisk } from "./consent";
 import { itemsOf, uiPoint } from "./projection";
 import {
   compareVersions,
+  isUpdate,
   grantPlugin,
   installFromDisk,
   installFromMarket,
@@ -42,6 +43,7 @@ import {
   setPluginCapability,
   setPluginEnabled,
   uninstallPlugin,
+  updateAllPlugins,
   usePlugins,
 } from "./store";
 import { useProject } from "@/platform/project";
@@ -537,9 +539,15 @@ interface GearActions {
   importInstalledIntellij: () => void;
 }
 
-function gearMenu(plugins: readonly PluginInfo[], actions: GearActions): MenuItem[] {
+function gearMenu(plugins: readonly PluginInfo[], updates: number, actions: GearActions): MenuItem[] {
   const installed = plugins.filter((p) => p.source === "installed");
   return [
+    {
+      label: updates > 0 ? tx`Update All Plugins (${updates})` : "Update All Plugins",
+      disabled: updates === 0,
+      run: () => void updateAllPlugins(),
+    },
+    { kind: "separator" },
     { label: "Install Plugin from Disk…", icon: "package", run: () => actions.install(false) },
     { label: "Install Plugin from Package File…", run: () => actions.install(true) },
     ...(actions.canImport
@@ -671,7 +679,7 @@ function MarketUrlBar() {
 }
 
 function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selected: boolean; onSelect: () => void }) {
-  const update = entry.compatible && entry.installed && compareVersions(entry.version, entry.installed) > 0;
+  const update = isUpdate(entry);
   return (
     <li className={clsx(styles.row, selected && styles.rowSelected)}>
       <button
@@ -703,7 +711,7 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
 
 function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalled: (id: string) => void }) {
   const installing = usePlugins((s) => s.installing);
-  const update = entry.compatible && entry.installed && compareVersions(entry.version, entry.installed) > 0;
+  const update = isUpdate(entry);
   const install = async () => {
     const id = await installFromMarket(entry.id);
     if (id) onInstalled(id);
@@ -819,7 +827,7 @@ export function PluginsPage() {
     const r = e.currentTarget.getBoundingClientRect();
     showContextMenu(
       { x: r.left, y: r.bottom + 2 },
-      gearMenu(plugins, {
+      gearMenu(plugins, (market ?? []).filter(isUpdate).length, {
         canImport: useProject.getState().project?.trusted === true,
         install: (packageFile) => void installFromDisk(undefined, packageFile).then(showInstalled),
         importIntellijFile: () => void importIntellijTheme().then(showInstalled),

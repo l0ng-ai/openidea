@@ -3,17 +3,23 @@
 //! plugins, and revocations. The host keeps the last index it read
 //! (`market-index.json`), checks signatures against it, and disables what it
 //! revokes — at start-up and on every refresh (the desktop refreshes daily).
+//! Release builds pin the official publisher to the keys they were built
+//! with, so no index can sign `openidea.*` plugins with another key.
 
-use super::{PackageFile, PluginHost, PluginSource, PluginStatus};
+use super::{PackageFile, PluginEvent, PluginHost, PluginSource, PluginStatus, PluginUpdate, install};
 use ide_core::{IdeError, IdeResult};
 use ide_extension::package::{self, Index, IndexEntry, PackageSignature, SIGNATURE_FILE};
 use ide_extension::{MANIFEST_FILE, Manifest};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// The official marketplace: the index the release workflow publishes with
 /// the app, next to the signed packages of the official plugins.
 pub const OFFICIAL_INDEX: &str = "https://github.com/l0ng-ai/openidea/releases/latest/download/plugins-index.json";
+
+/// The publisher of the official plugins.
+pub const OFFICIAL_PUBLISHER: &str = "openidea";
 
 /// The last index read, in the plugins directory.
 pub const INDEX_FILE: &str = "market-index.json";
@@ -35,6 +41,30 @@ pub struct MarketPlugin {
     pub installed: Option<String>,
     /// Whether this IDE can load `entry` (the newest version it can, else the newest).
     pub compatible: bool,
+}
+
+impl MarketPlugin {
+    /// A version this IDE can load, newer than the one installed.
+    pub fn is_update(&self) -> bool {
+        let newer = |installed: &String| match (Version::parse(&self.entry.version), Version::parse(installed)) {
+            (Ok(offered), Ok(installed)) => offered > installed,
+            _ => false,
+        };
+        self.compatible && self.installed.as_ref().is_some_and(newer)
+    }
+}
+
+/// The official publisher's keys this IDE was built with
+/// (`OPENIDEA_OFFICIAL_PLUGIN_KEYS`: base64, comma-separated). Development
+/// builds have none: the index decides.
+pub(super) fn built_in_official_keys() -> Vec<String> {
+    let keys = option_env!("OPENIDEA_OFFICIAL_PLUGIN_KEYS").unwrap_or_default();
+    keys.split(',').map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned).collect()
+}
+
+fn pinned(mut index: Index, official_keys: &[String]) -> Index {
+    index.pin_publisher(OFFICIAL_PUBLISHER, "OpenIDEA", official_keys);
+    index
 }
 
 /// Reads `url`: `http(s)://…`, `file://…` or a local path.
@@ -108,9 +138,16 @@ pub fn resolve(base: &str, href: &str) -> String {
 }
 
 impl PluginHost {
-    pub(super) fn load_market_index(dir: &Path) -> Option<Index> {
+    pub(super) fn load_market_index(dir: &Path, official_keys: &[String]) -> Option<Index> {
         let text = std::fs::read_to_string(dir.join(INDEX_FILE)).ok()?;
-        Index::parse(&text).map_err(|e| tracing::warn!("{INDEX_FILE}: {e}")).ok()
+        let index = Index::parse(&text).map_err(|e| tracing::warn!("{INDEX_FILE}: {e}")).ok()?;
+        Some(pinned(index, official_keys))
+    }
+
+    /// Pins the official publisher to `keys` (base64) instead of the built-in
+    /// ones, from the next index read.
+    pub fn set_official_keys(&self, keys: Vec<String>) {
+        *self.official_keys.write() = keys;
     }
 
     /// The marketplace index URL: the user's, else the default (none: no marketplace).
@@ -128,14 +165,16 @@ impl PluginHost {
         self.save_state();
     }
 
-    /// Reads the index again, keeps it, and applies its revocations.
+    /// Reads the index again, keeps it, and applies its revocations. Announces
+    /// updates of installed plugins it hasn't announced yet.
     pub fn refresh_market(&self) -> IdeResult<Vec<MarketPlugin>> {
         let url = self.market_url().ok_or_else(|| IdeError::unavailable("no plugin marketplace is configured"))?;
         let index = read_index(&url)?;
         if let Ok(json) = serde_json::to_string(&index) {
             let _ = std::fs::write(self.plugins_dir.join(INDEX_FILE), json);
         }
-        *self.market.write() = Some(index);
+        let newer = index.is_newer().then_some(index.format);
+        *self.market.write() = Some(pinned(index, &self.official_keys.read()));
         // Trust may have changed: who signed what, what is revoked.
         let installed: Vec<_> =
             self.plugins.read().values().filter(|p| p.source == PluginSource::Installed).cloned().collect();
@@ -144,7 +183,41 @@ impl PluginHost {
             plugin.meta.lock().publisher = publisher;
         }
         self.apply_revocations();
-        Ok(self.market_plugins())
+        if let Some(format) = newer {
+            return Err(IdeError::unavailable(format!(
+                "the marketplace needs a newer OpenIDEA (index format {format}); its revocations still apply"
+            )));
+        }
+        let plugins = self.market_plugins();
+        self.announce_updates(&plugins);
+        Ok(plugins)
+    }
+
+    /// Tells the windows about updates once per set of versions: a later
+    /// refresh offering the same ones says nothing.
+    fn announce_updates(&self, plugins: &[MarketPlugin]) {
+        let updates: Vec<PluginUpdate> = plugins
+            .iter()
+            .filter(|p| p.is_update())
+            .map(|p| PluginUpdate {
+                id: p.entry.id.clone(),
+                name: p.entry.name.clone(),
+                version: p.entry.version.clone(),
+            })
+            .collect();
+        let key: Vec<String> = updates.iter().map(|u| format!("{}@{}", u.id, u.version)).collect();
+        if std::mem::replace(&mut *self.announced_updates.lock(), key.clone()) != key && !updates.is_empty() {
+            self.emit(None, PluginEvent::UpdatesAvailable { updates });
+        }
+    }
+
+    /// Whether the package in `src` would replace the installed `id`'s copy
+    /// with one signed by another key than that copy, without that key's
+    /// endorsement: the user confirms the change of signer.
+    pub(super) fn signer_changed(&self, id: &str, src: &Path) -> bool {
+        let Some(current) = install::active_dir(&self.plugins_dir.join(id)) else { return false };
+        let market = self.market.read();
+        !package::signer_continues(market.as_ref(), read_signature(&current).as_ref(), read_signature(src).as_ref())
     }
 
     /// The plugins of the last index read.

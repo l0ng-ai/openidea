@@ -131,22 +131,39 @@ fn installs_from_before_versioning_keep_working_and_move_on_update() {
 
 /// `hello` as `acme.hello` at `version`, packed and signed with `key`.
 fn signed_hello(dir: &Path, version: &str, key: &PublisherKey, host: &PluginHost) -> (PathBuf, IndexEntry) {
-    let src = variant(&repo().join("crates/ide-plugin/tests/fixtures/hello"), dir, &format!("src-{version}"), |t| {
-        t.replace("id = \"hello\"", "id = \"acme.hello\"")
-            .replace("version = \"0.3.0\"", &format!("version = \"{version}\""))
-    });
+    signed(dir, "acme", version, key, host, |t| t.to_owned())
+}
+
+/// `hello` as `<publisher>.hello` at `version`, its manifest changed by
+/// `edit`, packed and signed with `key`.
+fn signed(
+    dir: &Path,
+    publisher: &str,
+    version: &str,
+    key: &PublisherKey,
+    host: &PluginHost,
+    edit: impl Fn(&str) -> String,
+) -> (PathBuf, IndexEntry) {
+    let id = format!("{publisher}.hello");
+    let src =
+        variant(&repo().join("crates/ide-plugin/tests/fixtures/hello"), dir, &format!("src-{id}-{version}"), |t| {
+            edit(
+                &t.replace("id = \"hello\"", &format!("id = \"{id}\""))
+                    .replace("version = \"0.3.0\"", &format!("version = \"{version}\"")),
+            )
+        });
     let files = host.package_files_of(&src).unwrap();
     let digest = package::package_digest(&src, &files).unwrap();
-    let sig = key.sign("acme", "acme.hello", version, &digest);
-    let out = dir.join(format!("acme.hello-{version}.oiplugin"));
+    let sig = key.sign(publisher, &id, version, &digest);
+    let out = dir.join(format!("{id}-{version}.oiplugin"));
     package::pack(&src, &files, &out, Some(&sig)).unwrap();
     let entry = IndexEntry {
-        id: "acme.hello".into(),
+        id: id.clone(),
         name: "Hello".into(),
         version: version.into(),
         description: String::new(),
         authors: vec![],
-        publisher: "acme".into(),
+        publisher: publisher.into(),
         download: out.file_name().unwrap().to_string_lossy().into_owned(),
         digest,
         capabilities: vec![],
@@ -168,7 +185,7 @@ fn write_index(
         publishers: vec![Publisher {
             id: "acme".into(),
             name: "ACME".into(),
-            keys: vec![KeyEntry { key: key.public_base64(), revoked: key_revoked }],
+            keys: vec![KeyEntry { revoked: key_revoked, ..KeyEntry::new(key.public_base64()) }],
         }],
         plugins,
         revoked,
@@ -312,4 +329,161 @@ fn a_moved_marketplace_is_read_where_it_moved_to() {
     std::fs::write(old.join("index.json"), r#"{"format": 1, "moved": "index.json"}"#).unwrap();
     let err = f.host.refresh_market().unwrap_err();
     assert!(err.message.contains("moved more than"), "{}", err.message);
+}
+
+/// `dir/index.json` listing `publishers` and `plugins`; its path.
+fn index_of(dir: &Path, publishers: Vec<Publisher>, plugins: Vec<IndexEntry>) -> String {
+    let index = Index { format: package::INDEX_FORMAT, publishers, plugins, ..Index::default() };
+    let path = dir.join("index.json");
+    std::fs::write(&path, serde_json::to_string(&index).unwrap()).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn publisher(id: &str, keys: Vec<KeyEntry>) -> Publisher {
+    Publisher { id: id.into(), name: id.into(), keys }
+}
+
+fn updates_announced(events: &Events) -> Vec<Vec<String>> {
+    events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            PluginEvent::UpdatesAvailable { updates } => {
+                Some(updates.iter().map(|u| format!("{} {}", u.id, u.version)).collect())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// What the install page sends for an update it doesn't need to show: the grants the installed version has.
+fn as_granted(preview: &InstallPreview) -> Consent {
+    let optional = preview.capabilities.iter().filter(|c| c.optional && c.granted).map(|c| c.id.clone()).collect();
+    Consent { optional, signer_change: false }
+}
+
+#[test]
+fn updates_keep_their_signer_and_need_no_consent_when_nothing_is_new() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let (k1, k2, k3) =
+        (PublisherKey::from_seed([1; 32]), PublisherKey::from_seed([2; 32]), PublisherKey::from_seed([3; 32]));
+    let same = |t: &str| t.to_owned();
+    let (_, v1) = signed(&market, "acme", "1.0.0", &k1, &f.host, same);
+    f.host.set_market_url(Some(index_of(
+        &market,
+        vec![publisher("acme", vec![KeyEntry::new(k1.public_base64())])],
+        vec![v1.clone()],
+    )));
+    f.host.refresh_market().unwrap();
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    let first = f.host.preview_install(&dir).unwrap();
+    assert!(first.needs_consent && !first.signer_changed, "a first install is confirmed");
+    f.host.install_from_dir(&dir, &Consent::default()).unwrap();
+    assert!(updates_announced(&f.events).is_empty());
+
+    // 1.1.0, same key and needs: announced once, installed with the grants it has.
+    let (_, v11) = signed(&market, "acme", "1.1.0", &k1, &f.host, same);
+    let keys1 = vec![KeyEntry::new(k1.public_base64())];
+    index_of(&market, vec![publisher("acme", keys1.clone())], vec![v1.clone(), v11.clone()]);
+    f.host.refresh_market().unwrap();
+    f.host.refresh_market().unwrap();
+    assert_eq!(updates_announced(&f.events), [["acme.hello 1.1.0"]], "once per set of versions");
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    let preview = f.host.preview_install(&dir).unwrap();
+    assert_eq!(preview.replaces.as_deref(), Some("1.0.0"));
+    assert!(!preview.needs_consent && !preview.signer_changed);
+    assert!(preview.capabilities.iter().all(|c| c.granted), "shows what the installed version was granted");
+    f.host.install_from_dir(&dir, &as_granted(&preview)).unwrap();
+    assert!(f.host.market_plugins().iter().all(|p| !p.is_update()));
+
+    // 1.2.0 asks for something new: the user is asked.
+    let (_, v12) = signed(&market, "acme", "1.2.0", &k1, &f.host, |t| {
+        t.replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = [\"editor.read\", \"editor.write\"]\noptional = [\"net:example.com\"]",
+        )
+    });
+    index_of(&market, vec![publisher("acme", keys1.clone())], vec![v12.clone()]);
+    f.host.refresh_market().unwrap();
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    let preview = f.host.preview_install(&dir).unwrap();
+    assert!(preview.needs_consent && !preview.signer_changed);
+    f.host.install_from_dir(&dir, &Consent::default()).unwrap();
+
+    // 1.3.0 signed with a key the installed one didn't endorse: another signer, the user's call.
+    let (_, v13) = signed(&market, "acme", "1.3.0", &k2, &f.host, same);
+    let keys12 = vec![KeyEntry::new(k1.public_base64()), KeyEntry::new(k2.public_base64())];
+    index_of(&market, vec![publisher("acme", keys12)], vec![v13]);
+    f.host.refresh_market().unwrap();
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    let preview = f.host.preview_install(&dir).unwrap();
+    assert!(preview.signer_changed && preview.needs_consent);
+    let err = f.host.install_from_dir(&dir, &as_granted(&preview)).unwrap_err();
+    assert!(err.message.contains("another key"), "{}", err.message);
+    assert_eq!(f.host.info_of("acme.hello").unwrap().version, "1.2.0", "nothing changed");
+    f.host.install_from_dir(&dir, &Consent { signer_change: true, ..as_granted(&preview) }).unwrap();
+
+    // 1.4.0 signed with k3, which k2 endorsed: a rotation the installed signer vouched for.
+    let (_, v14) = signed(&market, "acme", "1.4.0", &k3, &f.host, same);
+    let keys = vec![
+        KeyEntry { endorsement: Some(k2.endorse("acme", &k3.public_base64())), ..KeyEntry::new(k3.public_base64()) },
+        KeyEntry::new(k2.public_base64()),
+    ];
+    index_of(&market, vec![publisher("acme", keys)], vec![v14]);
+    f.host.refresh_market().unwrap();
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    let preview = f.host.preview_install(&dir).unwrap();
+    assert!(!preview.signer_changed && !preview.needs_consent);
+    f.host.install_from_dir(&dir, &as_granted(&preview)).unwrap();
+    assert_eq!(f.host.info_of("acme.hello").unwrap().version, "1.4.0");
+}
+
+#[test]
+fn an_index_in_a_newer_format_still_revokes() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    f.host.set_market_url(Some(write_index(&market, &key, vec![entry], vec![], false)));
+    f.host.refresh_market().unwrap();
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    f.host.install_from_dir(&dir, &Consent::all()).unwrap();
+
+    let newer = format!(
+        r#"{{"format": {}, "plugins": "a shape this IDE can't read",
+            "revoked": [{{"id": "acme.hello", "reason": "steals tokens"}}]}}"#,
+        package::INDEX_FORMAT + 1
+    );
+    std::fs::write(market.join("index.json"), newer).unwrap();
+    let err = f.host.refresh_market().unwrap_err();
+    assert!(err.message.contains("newer OpenIDEA"), "{}", err.message);
+    let info = f.host.info_of("acme.hello").unwrap();
+    assert_eq!((info.status, info.error.as_deref()), (PluginStatus::Failed, Some("revoked: steals tokens")));
+    assert!(f.host.market_plugins().is_empty());
+}
+
+#[test]
+fn official_plugins_need_the_key_this_ide_was_built_with() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let (root, intruder) = (PublisherKey::from_seed([1; 32]), PublisherKey::from_seed([6; 32]));
+    f.host.set_official_keys(vec![root.public_base64()]);
+    // The index lists the intruder's key for the official publisher.
+    let (_, forged) = signed(&market, OFFICIAL_PUBLISHER, "1.0.0", &intruder, &f.host, |t| t.to_owned());
+    let keys = vec![KeyEntry::new(intruder.public_base64())];
+    f.host.set_market_url(Some(index_of(&market, vec![publisher(OFFICIAL_PUBLISHER, keys.clone())], vec![forged])));
+    f.host.refresh_market().unwrap();
+    let err = f.host.download_market_plugin("openidea.hello").unwrap_err();
+    assert!(err.message.contains("trusted publisher"), "{}", err.message);
+
+    // Signed with the built-in key it installs, whatever keys the index lists.
+    let (_, genuine) = signed(&market, OFFICIAL_PUBLISHER, "1.0.1", &root, &f.host, |t| t.to_owned());
+    index_of(&market, vec![publisher(OFFICIAL_PUBLISHER, keys)], vec![genuine]);
+    f.host.refresh_market().unwrap();
+    let dir = f.host.download_market_plugin("openidea.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().publisher.as_deref(), Some(OFFICIAL_PUBLISHER));
 }
