@@ -375,6 +375,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_completions,
         debug::debug_resume,
         debug::debug_pause,
+        debug::debug_hot_reload,
+        debug::debug_hot_restart,
         debug::debug_step,
         debug::debug_run_to,
         debug::debug_stop,

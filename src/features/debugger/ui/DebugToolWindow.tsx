@@ -197,6 +197,9 @@ export function DebugToolWindow() {
         <ToolButton action="debug.stepInto" icon="step-into" />
         <ToolButton action="debug.stepOut" icon="step-out" />
         <span className={styles.sep} aria-hidden />
+        <ToolButton action="debug.hotReload" icon="rerun" />
+        <ToolButton action="debug.hotRestart" icon="rerun" />
+        <span className={styles.sep} aria-hidden />
         <IconButton
           icon="view-breakpoints"
           action="debug.viewBreakpoints"

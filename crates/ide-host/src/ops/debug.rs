@@ -162,6 +162,14 @@ pub async fn debug_pause(host: &Host, _window: &str, session: DebugSessionId, th
     host.debugger.pause(session, thread_id).await
 }
 
+pub async fn debug_hot_reload(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.hot_reload(session).await
+}
+
+pub async fn debug_hot_restart(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.hot_restart(session).await
+}
+
 pub async fn debug_step(
     host: &Host,
     _window: &str,
