@@ -82,4 +82,27 @@ describe("debug tool window", () => {
     // A multi-line rendering stays on its row.
     expect(screen.getByText(/dtype: object/).textContent).toBe("high    7.86 low     7.66 Name: 772, dtype: object");
   });
+
+  it("closes a session tab and moves the selection to the one left", async () => {
+    useDebug.setState({
+      sessions: {
+        1: { ...session, status: "terminated" },
+        2: { ...session, id: 2, name: "app", status: "terminated" },
+      },
+      active: 1,
+    });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["app"]);
+    expect(useDebug.getState().active).toBe(2);
+    expect(useDebug.getState().sessions).not.toHaveProperty("1");
+  });
+
+  it("leaves nothing selected once the last tab is closed", async () => {
+    useDebug.setState({ sessions: { 3: { ...session, id: 3, status: "terminated" } }, active: 3 });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
+    expect(useDebug.getState().active).toBeNull();
+    expect(useDebug.getState().sessions).toEqual({});
+  });
 });

@@ -26,6 +26,7 @@ import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import {
   addWatch,
+  closeSessionTab,
   evaluate,
   selectFrame,
   selectSession,
@@ -120,6 +121,7 @@ export function DebugTabs() {
     text: s.name,
     icon: "debug",
     italic: s.status === "terminated",
+    closable: true,
     tooltip: statusText(s),
   }));
   return (
@@ -130,6 +132,7 @@ export function DebugTabs() {
       items={items}
       activeId={active != null ? String(active) : null}
       onSelect={(id) => selectSession(+id)}
+      onClose={(id) => void closeSessionTab(+id)}
       panelIdPrefix="openidea-debug"
     />
   );

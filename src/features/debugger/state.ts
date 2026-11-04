@@ -632,6 +632,40 @@ export async function stopSession(id: DebugSessionId, options: { stopProcess?: b
     await call(commands.runStop(root.process)).catch(() => undefined);
 }
 
+/**
+ * Closes a session's tab: a live session is stopped first (as Run does), then the
+ * window forgets it — and its children — so the tab strip cannot grow forever.
+ */
+export async function closeSessionTab(id: DebugSessionId): Promise<boolean> {
+  const s = useDebug.getState().sessions[id];
+  if (!s) return false;
+  if (isLive(s)) await stopSession(s.id);
+  removeSession(s.id);
+  return true;
+}
+
+/** Forgets a session and its children, moving the selection to the newest left. */
+export function removeSession(id: DebugSessionId) {
+  const st = useDebug.getState();
+  const gone = new Set<DebugSessionId>([id]);
+  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+
+  const sessions: Record<number, DebugSession> = {};
+  for (const s of Object.values(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
+  const rest = Object.values(sessions);
+  const console = { ...st.console };
+  for (const goneId of gone) delete console[goneId];
+
+  useDebug.setState({
+    sessions,
+    active: st.active != null && sessions[st.active] ? st.active : (rest.at(-1)?.id ?? null),
+    console,
+  });
+  for (const goneId of gone) owned.delete(goneId);
+  updateExecutionPoint();
+  publishContext();
+}
+
 export async function rerunSession(id: DebugSessionId) {
   const s = useDebug.getState().sessions[id];
   if (!s) return;
