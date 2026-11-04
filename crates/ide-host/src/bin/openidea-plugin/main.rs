@@ -364,6 +364,10 @@ fn check(dir: &Path) -> Result<(), String> {
         } else {
             println!("  code: none (contributions only)");
         }
+        println!("  categories: {}", manifest.categories().join(", "));
+        for c in manifest.unknown_categories() {
+            println!("  warning: unknown category {c:?} (ignored); use {}", ide_extension::CATEGORIES.join(", "));
+        }
         if !manifest.activation.is_empty() {
             let events: Vec<String> = manifest.activation.iter().map(ToString::to_string).collect();
             println!("  activation: {}", events.join(", "));
@@ -616,6 +620,7 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
                 digest,
                 capabilities: m.capabilities.all().map(|c| c.to_string()).collect(),
                 engine: package::engine_requirement(&m.engine, built_for.as_ref()),
+                categories: m.categories(),
             })
         })();
         let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
@@ -790,6 +795,7 @@ mod tests {
         let index = Index::parse(&std::fs::read_to_string(&official_index).unwrap()).unwrap();
         let listed: Vec<_> = index.plugins.iter().map(|e| (e.id.as_str(), e.publisher.as_str())).collect();
         assert_eq!(listed, [("alice.dawn", "alice"), ("openidea.night", "openidea")]);
+        assert_eq!(index.plugins[1].categories, ["themes"], "implied by the theme");
         assert_eq!(index.plugins[1].download, "openidea.night-0.1.0.oiplugin");
         assert!(Path::new(&index.plugins[0].download).is_absolute(), "{}", index.plugins[0].download);
 

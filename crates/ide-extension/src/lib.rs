@@ -27,8 +27,8 @@ mod when;
 pub use capability::{Capability, CapabilityInfo, Risk, host_matches};
 pub use index::ContributionIndex;
 pub use manifest::{
-    ActivationEvent, Capabilities, ENGINE_VERSION, EVENT_KINDS, LEGACY_API, MANIFEST_FILE, Manifest, check_relative,
-    engine_compatible, validate_item_id, validate_plugin_id, validate_point_id,
+    ActivationEvent, CATEGORIES, Capabilities, ENGINE_VERSION, EVENT_KINDS, LEGACY_API, MANIFEST_FILE, Manifest,
+    check_relative, engine_compatible, validate_item_id, validate_plugin_id, validate_point_id,
 };
 pub use point::{Commit, Disposable, ExtensionPoint, MAX_PACKAGE_FILE, Package, Placement, Prepared, decode};
 pub use registry::{ContributionInfo, ExtensionRegistry, PreparedSet};

@@ -79,6 +79,7 @@ authors = ["You <you@example.com>"]
 homepage = "https://example.com"  # optional
 license = "MIT"                   # optional
 change-notes = "1.2.0 — …"        # shown under What's New
+categories = ["tools"]            # marketplace categories, see below
 engines.openidea = "^1.0"         # the plugin API this package needs
 wasm = "dist/plugin.wasm"         # omit for data-only plugins
 activation = ["on-language:markdown"]   # optional, see below
@@ -93,6 +94,12 @@ title = "Word Tools: Count Words"
 category = "Word Tools"           # group in Search Everywhere / Keymap
 when = "editorFocus"              # optional: same expressions as built-in actions
 ```
+
+`categories` (up to 3) file the plugin in the marketplace: `languages`,
+`themes`, `icon-themes`, `linters` (linters and formatters), `vcs`, `ai`,
+`frameworks`, `tools`, `other`. Without them, a plugin contributing themes,
+icon themes or languages is filed under those, any other under `other`.
+Categories an IDE doesn't know are ignored (`check` warns about them).
 
 All paths are relative to the package directory and may not leave it. A
 manifest is validated as a whole: if one contribution is invalid, nothing is
@@ -782,7 +789,8 @@ and the publisher's key, then shows the install page.
 manifest's `engines.openidea`, narrowed to the API its component was built
 for), and a plugin may be listed in several versions. Settings › Plugins
 offers the newest version this IDE can load; when there is none, it shows the
-plugin as incompatible and says which API it needs. Indexing keeps, of each
+plugin as incompatible and says which API it needs. Entries also carry the
+plugin's categories, which Settings › Plugins › Available filters by. Indexing keeps, of each
 plugin, the newest version per API requirement, so users of an older IDE keep
 the last version built for them.
 

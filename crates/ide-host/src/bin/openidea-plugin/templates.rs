@@ -82,6 +82,9 @@ name = "__NAME__"
 version = "0.1.0"
 description = "Adds two sample commands."
 authors = []
+# Marketplace categories (up to 3): languages, themes, icon-themes, linters,
+# vcs, ai, frameworks, tools, other.
+categories = ["tools"]
 engines.openidea = "^1.0"
 # Built by `openidea-plugin build`. The code is loaded the first time one of
 # its commands runs; the commands below show in Find Action before that.

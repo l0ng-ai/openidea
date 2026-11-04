@@ -288,6 +288,9 @@ pub struct IndexEntry {
     /// Empty: any.
     #[serde(default)]
     pub engine: String,
+    /// Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know.
+    #[serde(default)]
+    pub categories: Vec<String>,
 }
 
 impl IndexEntry {
@@ -522,6 +525,7 @@ mod tests {
             digest: "d".into(),
             capabilities: Vec::new(),
             engine: String::new(),
+            categories: Vec::new(),
         }
     }
 

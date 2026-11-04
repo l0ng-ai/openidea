@@ -35,6 +35,11 @@ pub const MANIFEST_FILE: &str = "plugin.toml";
 pub const ENGINE_VERSION: &str = "1.0.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
+/// Marketplace categories, in the order they are shown.
+pub const CATEGORIES: &[&str] =
+    &["languages", "themes", "icon-themes", "linters", "vcs", "ai", "frameworks", "tools", "other"];
+/// What a manifest may declare in `categories`.
+const MAX_CATEGORIES: usize = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Manifest {
@@ -47,6 +52,8 @@ pub struct Manifest {
     pub license: Option<String>,
     /// Release notes of this version (Settings › Plugins › What's New).
     pub change_notes: Option<String>,
+    /// Marketplace categories as declared (see [`Manifest::categories`]).
+    pub declared_categories: Vec<String>,
     /// `engines.openidea` (a semver requirement), or the legacy `openidea-api`.
     pub engine: String,
     /// Written in the 0.1 format.
@@ -166,6 +173,8 @@ struct Raw {
     #[serde(default)]
     change_notes: Option<String>,
     #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
     engines: Option<Engines>,
     /// 0.1 format.
     #[serde(default)]
@@ -243,6 +252,7 @@ impl Manifest {
             homepage: raw.homepage,
             license: raw.license,
             change_notes: raw.change_notes,
+            declared_categories: raw.categories,
             engine,
             legacy,
             wasm: raw.wasm,
@@ -290,6 +300,12 @@ impl Manifest {
                 return Err(format!("duplicate activation event {event}"));
             }
         }
+        if self.declared_categories.len() > MAX_CATEGORIES {
+            return Err(format!("`categories` lists at most {MAX_CATEGORIES}"));
+        }
+        for c in &self.declared_categories {
+            validate_item_id(c, "category")?;
+        }
         for (point, decls) in &self.contributes {
             validate_point_id(point)?;
             if !matches!(decls, toml::Value::Array(_) | toml::Value::Table(_)) {
@@ -322,6 +338,33 @@ impl Manifest {
     /// Whether `cap` is declared (required or optional).
     pub fn declares(&self, cap: &Capability) -> bool {
         self.capabilities.all().any(|c| c.covers(cap))
+    }
+}
+
+impl Manifest {
+    /// Its marketplace categories, in [`CATEGORIES`] order: those declared that
+    /// this IDE knows; without any, those its contributions imply (themes,
+    /// icon themes, languages), else `other`.
+    pub fn categories(&self) -> Vec<String> {
+        let pick = |f: &dyn Fn(&str) -> bool| CATEGORIES.iter().filter(|c| f(c)).map(|c| c.to_string()).collect();
+        let mut out: Vec<String> = pick(&|c| self.declared_categories.iter().any(|d| d == c));
+        if out.is_empty() {
+            out = pick(&|c| match c {
+                "themes" => self.contributes.contains_key("themes"),
+                "icon-themes" => self.contributes.contains_key("iconThemes"),
+                "languages" => self.contributes.contains_key("languages"),
+                _ => false,
+            });
+        }
+        if out.is_empty() {
+            out.push("other".into());
+        }
+        out
+    }
+
+    /// Declared categories this IDE doesn't know (ignored).
+    pub fn unknown_categories(&self) -> Vec<&str> {
+        self.declared_categories.iter().map(String::as_str).filter(|c| !CATEGORIES.contains(c)).collect()
     }
 }
 
@@ -415,6 +458,24 @@ mod tests {
         let err = ActivationEvent::parse("on-event:keystroke").unwrap_err();
         assert!(err.contains("unknown event kind") && err.contains("action-performed"), "{err}");
         assert!(ActivationEvent::parse("on-event:scheduled").is_err(), "declared with on-schedule");
+    }
+
+    #[test]
+    fn categories_are_declared_or_implied() {
+        let head = "id = \"acme.x\"\nname = \"X\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n";
+        let m = |rest: &str| Manifest::parse(&format!("{head}{rest}"));
+        // Declared, in the catalogue's order; unknown ones (a newer IDE's) are ignored.
+        let declared = m("categories = [\"tools\", \"vcs\", \"robots\"]\n").unwrap();
+        assert_eq!(declared.categories(), ["vcs", "tools"]);
+        assert_eq!(declared.unknown_categories(), ["robots"]);
+        // None declared: implied by the contributions, else `other`.
+        let theme = m("[[contributes.themes]]\nid = \"t\"\n[[contributes.languages]]\nid = \"l\"\n").unwrap();
+        assert_eq!(theme.categories(), ["languages", "themes"]);
+        let declared_wins = m("categories = [\"tools\"]\n[[contributes.languages]]\nid = \"l\"\n").unwrap();
+        assert_eq!(declared_wins.categories(), ["tools"]);
+        assert_eq!(m("").unwrap().categories(), ["other"]);
+        assert!(m("categories = [\"a\", \"b\", \"c\", \"d\"]\n").unwrap_err().contains("at most 3"));
+        assert!(m("categories = [\"Bad Name\"]\n").is_err());
     }
 
     #[test]

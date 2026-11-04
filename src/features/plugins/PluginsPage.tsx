@@ -18,6 +18,7 @@ import {
   IconButton,
   Input,
   SearchField,
+  Select,
   Spinner,
   Tabs,
   showContextMenu,
@@ -572,6 +573,71 @@ function gearMenu(plugins: readonly PluginInfo[], actions: GearActions): MenuIte
   ];
 }
 
+const CATEGORIES = [
+  "languages",
+  "themes",
+  "icon-themes",
+  "linters",
+  "vcs",
+  "ai",
+  "frameworks",
+  "tools",
+  "other",
+] as const;
+type Category = (typeof CATEGORIES)[number];
+
+function categoryLabel(c: Category): string {
+  switch (c) {
+    case "languages":
+      return tx("Languages");
+    case "themes":
+      return tx("Themes");
+    case "icon-themes":
+      return tx("Icon Themes");
+    case "linters":
+      return tx("Linters & Formatters");
+    case "vcs":
+      return tx("Version Control");
+    case "ai":
+      return tx("AI");
+    case "frameworks":
+      return tx("Frameworks");
+    case "tools":
+      return tx("Tools");
+    case "other":
+      return tx("Other");
+  }
+}
+
+/** A marketplace plugin's categories this IDE knows; `other` without any. */
+function categoriesOf(m: MarketPlugin): Category[] {
+  const known = CATEGORIES.filter((c) => m.categories?.includes(c));
+  return known.length > 0 ? known : ["other"];
+}
+
+/** Filters the marketplace by category; lists the categories that have plugins. */
+function CategoryFilter({
+  market,
+  value,
+  onChange,
+}: {
+  market: readonly MarketPlugin[];
+  value: Category | "all";
+  onChange: (value: Category | "all") => void;
+}) {
+  const counts = new Map<Category, number>();
+  for (const m of market) for (const c of categoriesOf(m)) counts.set(c, (counts.get(c) ?? 0) + 1);
+  const options = [
+    { value: "all" as const, label: tx("All Categories"), detail: String(market.length) },
+    ...CATEGORIES.filter((c) => counts.has(c)).map((c) => ({
+      value: c,
+      label: categoryLabel(c),
+      detail: String(counts.get(c)),
+    })),
+  ];
+  return <Select aria-label={tx("Category")} value={value} options={options} onChange={onChange} />;
+}
+
 /** The marketplace index URL, editable in place. */
 function MarketUrlBar() {
   const current = usePlugins((s) => s.marketUrl);
@@ -667,6 +733,10 @@ function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalle
             <T>Id</T>
           </dt>
           <dd className={styles.mono}>{entry.id}</dd>
+          <dt>
+            <T>Category</T>
+          </dt>
+          <dd>{categoriesOf(entry).map(categoryLabel).join(", ")}</dd>
           {entry.installed && (
             <>
               <dt>
@@ -706,13 +776,15 @@ export function PluginsPage() {
     void refreshMarket(false);
   }, []);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
+  const [category, setCategory] = useState<Category | "all">("all");
   const marketShown = useMemo(
     () =>
       (market ?? []).filter((m) => {
         const q = query.trim().toLowerCase();
+        if (category !== "all" && !categoriesOf(m).includes(category)) return false;
         return !q || matches([m.name, m.id, m.description, m.publisher, ...(m.authors ?? [])], q);
       }),
-    [market, query],
+    [market, query, category],
   );
   const selectedMarket = marketShown.find((m) => m.id === selectedMarketId) ?? null;
 
@@ -722,7 +794,11 @@ export function PluginsPage() {
   const linked = shown.filter((p) => p.source === "linked");
   const selected = shown.find((p) => p.id === selectedId) ?? shown[0] ?? null;
 
-  const catalogShown = useMemo(() => filterCatalog(catalog ?? [], query), [catalog, query]);
+  // Local packages have no categories: shown only without a category filter.
+  const catalogShown = useMemo(
+    () => (category === "all" ? filterCatalog(catalog ?? [], query) : []),
+    [catalog, query, category],
+  );
   const selectedEntry = catalogShown.find((c) => c.id === selectedCatalogId) ?? catalogShown[0] ?? null;
 
   const showInstalled = (id: string | null) => {
@@ -827,6 +903,11 @@ export function PluginsPage() {
               <li className={styles.marketItem}>
                 <MarketUrlBar />
               </li>
+              {(market?.length ?? 0) > 0 && (
+                <li className={styles.marketItem}>
+                  <CategoryFilter market={market ?? []} value={category} onChange={setCategory} />
+                </li>
+              )}
               {!marketUrl && (
                 <li className={styles.notice} role="note">
                   <Icon name="info" size={14} />
@@ -855,7 +936,7 @@ export function PluginsPage() {
                   }}
                 />
               ))}
-              {catalog && catalogShown.length === 0 && (
+              {catalog && category === "all" && catalogShown.length === 0 && (
                 <li className={styles.listEmpty}>
                   {catalog.length === 0 ? tx("No local plugin packages.") : tx("No plugins match.")}
                 </li>

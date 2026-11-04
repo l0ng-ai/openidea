@@ -151,6 +151,7 @@ fn signed_hello(dir: &Path, version: &str, key: &PublisherKey, host: &PluginHost
         digest,
         capabilities: vec![],
         engine: "^1.0".into(),
+        categories: vec!["tools".into()],
     };
     (out, entry)
 }

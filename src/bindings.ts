@@ -4145,6 +4145,8 @@ export type IndexEntry = {
 	 *  Empty: any.
 	 */
 	engine?: string,
+	/**  Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know. */
+	categories?: string[],
 };
 
 export type IndexStatus = {

@@ -646,6 +646,48 @@ describe("marketplace", () => {
     expect(asked[0]).toMatchObject({ pluginId: "hello", kind: "install" });
   });
 
+  it("filters the marketplace by category", async () => {
+    const entry = (id: string, name: string, categories: string[]) => ({
+      id,
+      name,
+      version: "1.0.0",
+      description: "",
+      authors: [],
+      publisher: "acme",
+      download: `${id}.oiplugin`,
+      digest: "x",
+      capabilities: [],
+      engine: "^1.0",
+      categories,
+      installed: null,
+      compatible: true,
+    });
+    setPluginsBackend({
+      ...createMemoryPluginsBackend([], sampleCatalog()),
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        entry("acme.dusk", "Dusk", ["themes"]),
+        entry("acme.lint", "Lint", ["linters", "tools"]),
+        entry("acme.misc", "Misc", ["robots"]),
+      ],
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("Dusk")).toBeInTheDocument());
+    await user.click(within(list).getByRole("button", { name: "Category" }));
+    const options = within(screen.getByRole("listbox"))
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    expect(options).toEqual(["All Categories3", "Themes1", "Linters & Formatters1", "Tools1", "Other1"]);
+    await user.click(within(screen.getByRole("listbox")).getByText("Tools"));
+    expect(within(list).queryByText("Dusk")).not.toBeInTheDocument();
+    expect(within(list).queryByText("Local")).not.toBeInTheDocument();
+    await user.click(within(list).getByText("Lint"));
+    expect(screen.getByText("Linters & Formatters, Tools")).toBeInTheDocument();
+  });
+
   it("shows a plugin this IDE can't load without installing it", async () => {
     setPluginsBackend({
       ...createMemoryPluginsBackend([], sampleCatalog()),
