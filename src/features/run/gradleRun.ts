@@ -85,18 +85,15 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   };
 }
 
-/** Writes an init script where Gradle can read it; it never changes, so once per session. */
+/**
+ * Writes an init script where Gradle reads it: on the machine that runs the build (the
+ * remote host in remote development). It never changes, so once per session.
+ */
 const scriptPaths = new Map<string, Promise<string>>();
 function writeScript(name: string, text: string): Promise<string> {
   let written = scriptPaths.get(name);
   if (!written) {
-    written = (async () => {
-      const { tempDir, join } = await import("@tauri-apps/api/path");
-      const path = await join(await tempDir(), name);
-      await call(commands.fsDelete(path)).catch(() => {});
-      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(text))));
-      return path;
-    })().catch((e) => {
+    written = call(commands.runGradleInitScript(name, text)).catch((e) => {
       scriptPaths.delete(name);
       throw e;
     });
@@ -121,7 +118,7 @@ export function withTestEvents<T extends Pick<RunConfig, "kind" | "command" | "a
 export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<T> {
   if (!isTauri() || !config.isTest || !isGradleCommand(config)) return config;
   try {
-    return withTestEvents(config, await writeScript("openidea-gradle-tests.gradle", TESTS_SCRIPT));
+    return withTestEvents(config, await writeScript("openidea-gradle-tests", TESTS_SCRIPT));
   } catch (e) {
     console.warn("Gradle test init script not written", e);
     return config;
@@ -150,7 +147,7 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
   };
   if (!delegatedGradleConfig(config, module, ctx)) return null;
   const [script, configurationCache] = await Promise.all([
-    writeScript("openidea-gradle-run.gradle", RUN_SCRIPT),
+    writeScript("openidea-gradle-run", RUN_SCRIPT),
     supportsConfigurationCache(ctx),
   ]);
   return delegatedGradleConfig(config, module, { ...ctx, script, configurationCache });
