@@ -111,8 +111,8 @@ Several worktrees can be developed and run side by side.
   default MCP session belongs to this worktree.
 - Keep each worktree's Cargo output directory separate; do not point `CARGO_TARGET_DIR` or
   `target` symlinks at a shared directory.
-- Each worktree's first build is cold (around 5 minutes) and its Cargo output takes
-  around 9 GB (more as incremental and test builds accumulate). Avoid running several heavy builds on one machine at the same time.
+- Each worktree's first build is cold (several minutes) and `cargo build` output takes
+  around 9 GB; tests, clippy and incremental builds add more. Avoid running several heavy builds on one machine at the same time.
 - Stop only processes started for the current worktree/session. Never use broad
   process-name kills such as `pkill openidea`.
 - When done: stop that worktree's app and dev session, delete its build output, then
