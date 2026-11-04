@@ -562,6 +562,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         configure_vue_typescript(cfg, root, server_root, s);
     }
 
+    // Intelephense reads it as `intelephense.environment.phpVersion` (`workspace/configuration`).
+    if name == "intelephense"
+        && let Some(version) = crate::php::language_level(root, s)
+    {
+        merge_init_options(cfg, json!({ "environment": { "phpVersion": version } }));
+    }
+
     // Node-based servers (`#!/usr/bin/env node`) run on the selected Node.js.
     if let Some(dir) = node_dir(root, s) {
         path_dirs.push(dir);

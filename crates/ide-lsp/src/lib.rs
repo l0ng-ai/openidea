@@ -2510,6 +2510,12 @@ impl LspManager {
         }
     }
 
+    /// [`Self::reconfigure`] on the manager's runtime, for callers outside one (file watchers).
+    pub fn reconfigure_soon(self: &Arc<Self>) {
+        let me = self.clone();
+        self.runtime.spawn(async move { me.reconfigure().await });
+    }
+
     pub async fn reconfigure(&self) {
         if !self.execution_allowed.load(Ordering::Acquire) {
             let servers = self.servers.lock().clone();
