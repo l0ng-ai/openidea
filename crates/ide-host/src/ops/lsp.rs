@@ -46,7 +46,7 @@ pub async fn lsp_completion(
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
     let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
     if items.is_empty() {
-        return result;
+        return Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }));
     }
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
     list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
@@ -222,11 +222,21 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else { return result };
     let found = plugin_call(move || plugins.provide_definition(&d, pos)).await.unwrap_or_default();
     if found.is_empty() {
-        return result;
+        return result.map(without_generated_helpers);
     }
-    let mut out = result.unwrap_or_default();
-    out.extend(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }));
-    Ok(out)
+    Ok(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect())
+}
+
+fn without_generated_helpers(locations: Vec<Location>) -> Vec<Location> {
+    let generated = |l: &Location| {
+        let path = l.path.to_string_lossy().replace('\\', "/");
+        let file = path.rsplit('/').next().unwrap_or(&path);
+        file.starts_with("_ide_helper") || file == ".phpstorm.meta.php" || path.contains("/vendor/_laravel_ide")
+    };
+    if locations.iter().all(generated) {
+        return locations;
+    }
+    locations.into_iter().filter(|l| !generated(l)).collect()
 }
 
 /// Gutter markers from plugins (`line-markers` providers) for `doc`.
@@ -938,6 +948,26 @@ mod tests {
         let edit = TextEdit { range: Range::default(), new_text: "x".into() };
         let eager = plugin_code_action("acme.x", action(vec![("/a".into(), vec![edit])], Some("ref")));
         assert!(eager.edit.is_some() && eager.data.is_none());
+    }
+
+    #[test]
+    fn generated_ide_helpers_give_way_to_real_declarations() {
+        let at = |path: &str| Location { path: path.into(), range: Range::default(), uri: None };
+        let paths =
+            |found: Vec<Location>| found.into_iter().map(|l| l.path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let real = at("/app/app/Models/User.php");
+        let helper = at("/app/_ide_helper_models.php");
+        let meta = at("/app/.phpstorm.meta.php");
+        let vendor = at("/app/vendor/_laravel_idea/_ide_helper.php");
+        assert_eq!(
+            paths(without_generated_helpers(vec![helper.clone(), real.clone(), meta.clone(), vendor])),
+            ["/app/app/Models/User.php"]
+        );
+        assert_eq!(
+            paths(without_generated_helpers(vec![helper.clone(), meta.clone()])),
+            ["/app/_ide_helper_models.php", "/app/.phpstorm.meta.php"]
+        );
+        assert!(without_generated_helpers(Vec::new()).is_empty());
     }
 
     #[test]
