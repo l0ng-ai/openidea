@@ -63,6 +63,8 @@ function backend(overrides: Partial<PluginsBackend> = {}): PluginsBackend {
     replaces: null,
     unsigned: true,
     publisher: null,
+    signerChanged: false,
+    needsConsent: true,
   };
   return {
     ...base,

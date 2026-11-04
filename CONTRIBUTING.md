@@ -31,5 +31,10 @@ Project layout, coding rules, commands and checks are in [AGENTS.md](AGENTS.md).
 - If a change needs a product decision you can't make, ask in the issue and stop
   rather than guessing.
 
+Plugins: pull requests here add or change official plugins (`plugins/official/`)
+and the plugin API. Community plugins live in their authors' repositories and
+are listed through [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins);
+see [`plugins/README.md`](plugins/README.md) § 8.1.
+
 A check on each PR adds `needs-info` when the issue link or the verification
 section is missing, and removes it once they're filled in.
