@@ -49,8 +49,8 @@ Visual style: dark, low-contrast greys, one cool accent
 
 ## Issues & PRs
 
-Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one issue per PR with
-`Closes #<n>`, reproduce first, keep the diff focused, short plain description, and a
+Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
+(`Closes #<n>` when it resolves an issue), reproduce first, keep the diff focused, short plain description, and a
 **How it was verified** section with commands run, results and (for UI) before/after screenshots.
 Unclear product decisions → `needs-decision` and stop.
 
