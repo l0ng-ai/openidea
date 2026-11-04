@@ -345,6 +345,14 @@ impl AgentManager {
         provider::set_builtin_command(&dir, id, command.as_deref())
     }
 
+    /// Sets the environment variables built-in `id` starts with; empty clears them.
+    pub fn set_builtin_env(&self, id: &str, env: std::collections::BTreeMap<String, String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_env(&dir, id, env)
+    }
+
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
     pub fn reload_providers(&self) {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
