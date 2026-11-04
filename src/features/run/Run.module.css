@@ -331,6 +331,22 @@
   flex: none;
   color: var(--fg-subtle);
 }
+/* A running configuration: a dot on its icon. */
+.chooserRunning {
+  position: relative;
+  display: inline-flex;
+}
+.chooserRunning::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  bottom: -1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 1px var(--bg-popup);
+}
 .chooserName {
   flex: 1;
   min-width: 0;
