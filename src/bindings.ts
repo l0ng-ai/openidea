@@ -1116,6 +1116,15 @@ export const commands = {
 	commands: string[],
 } | null>("remote_current"),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
+	/**  The remote ports this window forwards to this machine. */
+	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
+	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
+	 */
+	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
+	/**  Stops forwarding `remote_port`. */
+	remoteStopForwarding: (remotePort: number) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort })),
 	/**
 	 *  Runs a command on the window's remote server; `args` and the result are JSON
 	 *  text. Streaming arguments are `{ "$channel": id }`; their values arrive on
@@ -3462,6 +3471,12 @@ export type FormatOptions = {
 	onSave?: boolean,
 	/**  External formatter to run whatever the settings select. */
 	tool?: ExternalFormatter | null,
+};
+
+/**  A port of the remote host reachable on this machine at `localhost:local_port`. */
+export type ForwardedPort = {
+	remotePort: number,
+	localPort: number,
 };
 
 /**  One occurrence of a duplicated code fragment. */

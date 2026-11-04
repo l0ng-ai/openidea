@@ -5812,5 +5812,16 @@
   "No matching repositories": "没有匹配的仓库",
   "No repositories": "没有仓库",
   "fork": "复刻",
-  "archived": "已归档"
+  "archived": "已归档",
+  "Could not forward port {port}": "无法转发端口 {port}",
+  "Remote port": "远程端口",
+  "Remote port, e.g. 3000": "远程端口，例如 3000",
+  "Forward Port": "转发端口",
+  "No forwarded ports": "没有转发的端口",
+  "Forward a port of the remote host to reach it from this machine, e.g. a web server in a browser.": "转发远程主机的端口后，就能在本机访问它，例如在浏览器中打开 Web 服务。",
+  "Forwarded ports": "已转发的端口",
+  "Open {addr} in Browser": "在浏览器中打开 {addr}",
+  "Copy {addr}": "复制 {addr}",
+  "Stop Forwarding Port {remotePort}": "停止转发端口 {remotePort}",
+  "Ports": "端口"
 }
