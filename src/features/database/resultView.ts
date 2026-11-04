@@ -202,20 +202,35 @@ export interface SearchOptions {
 }
 
 const REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/g;
-const WORD_CHAR = String.raw`[\p{L}\p{N}_$]`;
+const WORD_CHAR = /[\p{L}\p{N}_$]/u;
 
 /** A test of a cell's text against `query`; `null` without a query, `"invalid"` for a bad regex. */
 export function cellMatcher(query: string, options: SearchOptions): ((text: string) => boolean) | null | "invalid" {
   if (!query) return null;
-  let source = options.regex ? query : query.replace(REGEX_SPECIALS, "\\$&");
-  if (options.wholeWord) source = `(?<!${WORD_CHAR})(?:${source})(?!${WORD_CHAR})`;
+  const source = options.regex ? query : query.replace(REGEX_SPECIALS, "\\$&");
   let re: RegExp;
   try {
-    re = new RegExp(source, options.caseSensitive ? "u" : "iu");
+    re = new RegExp(source, options.caseSensitive ? "gu" : "giu");
   } catch {
     return "invalid";
   }
-  return (text) => re.test(text);
+  // Words: a match with no word character on either side (no lookbehind: older WebKit lacks it).
+  return (text) => {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (end === start) {
+        re.lastIndex = start + 1;
+        if (!options.wholeWord) return true;
+        continue;
+      }
+      if (!options.wholeWord || (!WORD_CHAR.test(text[start - 1] ?? "") && !WORD_CHAR.test(text[end] ?? "")))
+        return true;
+    }
+    return false;
+  };
 }
 
 /** The cells matching `test`, row by row; `row` is the position in `rows` (display order). NULL never matches. */
