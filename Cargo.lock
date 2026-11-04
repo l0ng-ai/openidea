@@ -4634,6 +4634,7 @@ dependencies = [
  "proptest",
  "ropey",
  "serde",
+ "similar",
  "specta",
 ]
 
