@@ -1,12 +1,9 @@
 //! The local socket the running app listens on: one JSON [`Request`] line in,
 //! one [`Response`] line out. Unix domain sockets; not available on Windows yet.
 
-use crate::{PROTOCOL_VERSION, Request, Response};
+use crate::{Request, Response};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The socket of the app with bundle identifier `identifier`. The name is a hash:
 /// socket paths are limited to about 100 bytes, and development identifiers are long.
@@ -19,20 +16,24 @@ fn fnv1a(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3))
 }
 
-fn answer(line: &str, handle: &dyn Fn(Request) -> Response) -> Response {
-    match serde_json::from_str::<Request>(line) {
-        Ok(request) if request.version == PROTOCOL_VERSION => handle(request),
-        Ok(request) => Response::Error { message: format!("unsupported request version {}", request.version) },
-        Err(e) => Response::Error { message: format!("invalid request: {e}") },
-    }
-}
-
 #[cfg(unix)]
 mod imp {
     use super::*;
+    use crate::PROTOCOL_VERSION;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    pub(super) fn answer(line: &str, handle: &dyn Fn(Request) -> Response) -> Response {
+        match serde_json::from_str::<Request>(line) {
+            Ok(request) if request.version == PROTOCOL_VERSION => handle(request),
+            Ok(request) => Response::Error { message: format!("unsupported request version {}", request.version) },
+            Err(e) => Response::Error { message: format!("invalid request: {e}") },
+        }
+    }
 
     pub fn send(socket: &Path, request: &Request) -> io::Result<Response> {
         let stream = UnixStream::connect(socket)?;
@@ -113,7 +114,6 @@ pub use imp::serve;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Target;
 
     #[test]
     fn socket_names_separate_identifiers_and_stay_short() {
@@ -123,8 +123,10 @@ mod tests {
         assert_eq!(dev.file_name().unwrap().len(), "openidea-0123456789abcdef.sock".len());
     }
 
+    #[cfg(unix)]
     #[test]
     fn answers_only_its_protocol_version() {
+        use imp::answer;
         let ok = |_: Request| Response::Ok;
         assert_eq!(answer(&serde_json::to_string(&Request::open(vec![])).unwrap(), &ok), Response::Ok);
         let old = r#"{"version":0,"targets":[]}"#;
@@ -145,7 +147,7 @@ mod tests {
             Response::Ok
         })
         .unwrap();
-        let target = Target { path: "/p/a.rs".into(), line: Some(3), column: None };
+        let target = crate::Target { path: "/p/a.rs".into(), line: Some(3), column: None };
         assert_eq!(send(&socket, &Request::open(vec![target.clone()])).unwrap(), Response::Ok);
         assert_eq!(rx.recv().unwrap().targets, vec![target]);
         // A live server keeps its socket.
