@@ -12,6 +12,10 @@ import {
 import { dropSql } from "./objects";
 import {
   aggregates,
+  cellMatcher,
+  findCells,
+  pageFetch,
+  pageWindow,
   chartSeries,
   compareCells,
   distinctValues,
@@ -217,5 +221,75 @@ describe("dropping schema objects", () => {
     expect(dropSql("postgres", { kind: "materializedView", schema: "s", name: "m" }, opts)).toBe(
       "drop materialized view if exists s.m;",
     );
+  });
+});
+
+describe("grid search", () => {
+  const opts = { caseSensitive: false, wholeWord: false, regex: false };
+
+  it("matches cell text with Match Case, Words and Regex", () => {
+    const m = cellMatcher("shang", opts);
+    expect(typeof m).toBe("function");
+    const test = m as (v: string) => boolean;
+    expect(test("Shanghai")).toBe(true);
+    expect(test("Beijing")).toBe(false);
+    expect((cellMatcher("shang", { ...opts, caseSensitive: true }) as (v: string) => boolean)("Shanghai")).toBe(false);
+    const word = cellMatcher("23", { ...opts, wholeWord: true }) as (v: string) => boolean;
+    expect(word("23")).toBe(true);
+    expect(word("123")).toBe(false);
+    expect(word("a 23 b")).toBe(true);
+    const re = cellMatcher(String.raw`^\d\.\d$`, { ...opts, regex: true }) as (v: string) => boolean;
+    expect(re("2.5")).toBe(true);
+    expect(re("10")).toBe(false);
+    // A dot is literal without Regex.
+    expect((cellMatcher("2.5", opts) as (v: string) => boolean)("215")).toBe(false);
+  });
+
+  it("reports no query and a bad regex", () => {
+    expect(cellMatcher("", opts)).toBeNull();
+    expect(cellMatcher("(", { ...opts, regex: true })).toBe("invalid");
+  });
+
+  it("finds the matching cells row by row, skipping NULL", () => {
+    const m = cellMatcher("i", opts) as (v: string) => boolean;
+    expect(findCells([0, 1, 2, 3], 3, value, m)).toEqual([
+      { row: 0, col: 1 },
+      { row: 1, col: 1 },
+      { row: 2, col: 1 },
+    ]);
+    // Display rows are positions in `rows`.
+    expect(findCells([3, 1], 3, value, m)).toEqual([{ row: 1, col: 1 }]);
+  });
+});
+
+describe("result pages", () => {
+  it("describes the rows of a page, IDEA style", () => {
+    expect(pageWindow({ page: 0, pageSize: 500, rows: 500, hasMore: true, total: null })).toEqual({
+      first: 1,
+      last: 500,
+      total: null,
+      lastPage: null,
+    });
+    expect(pageWindow({ page: 1, pageSize: 500, rows: 1, hasMore: false, total: null })).toEqual({
+      first: 501,
+      last: 501,
+      total: 501,
+      lastPage: 1,
+    });
+    expect(pageWindow({ page: 0, pageSize: 100, rows: 100, hasMore: true, total: 1234 })).toMatchObject({
+      total: 1234,
+      lastPage: 12,
+    });
+    expect(pageWindow({ page: 0, pageSize: 100, rows: 0, hasMore: false, total: null })).toEqual({
+      first: 0,
+      last: 0,
+      total: 0,
+      lastPage: 0,
+    });
+  });
+
+  it("slices the rows of a page from a fetch of every row up to it", () => {
+    expect(pageFetch(0, 500)).toEqual({ maxRows: 500, skip: 0 });
+    expect(pageFetch(2, 100)).toEqual({ maxRows: 300, skip: 200 });
   });
 });

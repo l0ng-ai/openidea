@@ -1,6 +1,7 @@
 /**
  * Pure helpers of the result views: IDEA's local filter and client-side sort
- * of loaded rows, the Aggregates of a selection, and the series of the chart.
+ * of loaded rows, search in the grid, paging of console results, the
+ * Aggregates of a selection, and the series of the chart.
  */
 import type { Cell } from "./model";
 
@@ -191,4 +192,98 @@ export function niceTicks(min: number, max: number, count = 5): number[] {
   for (let t = Math.floor(lo / step) * step; t <= hi + step * 1e-9; t += step) out.push(Number(t.toPrecision(12)));
   if (out.at(-1)! < hi) out.push(Number((out.at(-1)! + step).toPrecision(12)));
   return out;
+}
+
+/** IDEA's search options of the grid's search bar. */
+export interface SearchOptions {
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+}
+
+const REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/g;
+const WORD_CHAR = String.raw`[\p{L}\p{N}_$]`;
+
+/** A test of a cell's text against `query`; `null` without a query, `"invalid"` for a bad regex. */
+export function cellMatcher(query: string, options: SearchOptions): ((text: string) => boolean) | null | "invalid" {
+  if (!query) return null;
+  let source = options.regex ? query : query.replace(REGEX_SPECIALS, "\\$&");
+  if (options.wholeWord) source = `(?<!${WORD_CHAR})(?:${source})(?!${WORD_CHAR})`;
+  let re: RegExp;
+  try {
+    re = new RegExp(source, options.caseSensitive ? "u" : "iu");
+  } catch {
+    return "invalid";
+  }
+  return (text) => re.test(text);
+}
+
+/** The cells matching `test`, row by row; `row` is the position in `rows` (display order). NULL never matches. */
+export function findCells(
+  rows: readonly number[],
+  colCount: number,
+  value: (row: number, col: number) => Cell,
+  test: (text: string) => boolean,
+): Array<{ row: number; col: number }> {
+  const out: Array<{ row: number; col: number }> = [];
+  rows.forEach((r, row) => {
+    for (let col = 0; col < colCount; col++) {
+      const v = value(r, col);
+      if (v !== null && test(v)) out.push({ row, col });
+    }
+  });
+  return out;
+}
+
+/** Whether any cell of loaded row `r` matches `test`. */
+export function rowMatches(
+  r: number,
+  colCount: number,
+  value: (row: number, col: number) => Cell,
+  test: (text: string) => boolean,
+): boolean {
+  for (let col = 0; col < colCount; col++) {
+    const v = value(r, col);
+    if (v !== null && test(v)) return true;
+  }
+  return false;
+}
+
+export interface PageState {
+  /** Zero-based page shown. */
+  page: number;
+  pageSize: number;
+  /** Rows on the page. */
+  rows: number;
+  /** More rows follow the page. */
+  hasMore: boolean;
+  /** Counted rows of the whole query, when known. */
+  total: number | null;
+}
+
+export interface PageWindow {
+  /** One-based numbers of the first and last row shown (0 and 0 on an empty page). */
+  first: number;
+  last: number;
+  /** Rows of the whole query: known once counted or on reaching the end. */
+  total: number | null;
+  /** Zero-based last page, when the total is known. */
+  lastPage: number | null;
+}
+
+/** What the pager shows ("1-500 of 501+"). */
+export function pageWindow({ page, pageSize, rows, hasMore, total }: PageState): PageWindow {
+  const offset = page * pageSize;
+  const known = total ?? (hasMore ? null : offset + rows);
+  return {
+    first: rows ? offset + 1 : 0,
+    last: offset + rows,
+    total: known,
+    lastPage: known === null ? null : Math.max(0, Math.ceil(known / pageSize) - 1),
+  };
+}
+
+/** A page is read by fetching every row up to its end and skipping those before it. */
+export function pageFetch(page: number, pageSize: number): { maxRows: number; skip: number } {
+  return { maxRows: (page + 1) * pageSize, skip: page * pageSize };
 }
