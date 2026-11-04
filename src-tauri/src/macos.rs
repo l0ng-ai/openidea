@@ -111,6 +111,11 @@ pub fn is_simple_fullscreen(label: &str) -> bool {
 }
 
 pub fn set_simple_fullscreen(window: &WebviewWindow, on: bool) -> tauri::Result<()> {
+    if !on {
+        // Before the window goes back to its own frame.
+        let target = window.clone();
+        window.run_on_main_thread(move || keep_window_buttons(&target, false))?;
+    }
     window.set_simple_fullscreen(on)?;
     let any = {
         let mut labels = SIMPLE_FULLSCREEN.lock().unwrap();
@@ -120,7 +125,43 @@ pub fn set_simple_fullscreen(window: &WebviewWindow, on: bool) -> tauri::Result<
         }
         !labels.is_empty()
     };
-    window.run_on_main_thread(move || present(any))
+    let target = window.clone();
+    window.run_on_main_thread(move || {
+        present(any);
+        if on {
+            keep_window_buttons(&target, true);
+        }
+    })
+}
+
+thread_local! {
+    /// Minimum sizes of windows in simple fullscreen, restored when they leave it.
+    static MIN_SIZES: std::cell::RefCell<std::collections::HashMap<String, objc2_foundation::NSSize>> =
+        std::cell::RefCell::default();
+}
+
+/// Simple fullscreen drops the title bar and resizing; ours is transparent over the web toolbar,
+/// so keep it and its buttons, the green one (enabled only for a resizable window) leading back
+/// out of fullscreen. A minimum size of the whole screen keeps the edges from being dragged.
+fn keep_window_buttons(window: &WebviewWindow, on: bool) {
+    use objc2_app_kit::NSWindowStyleMask;
+    let Ok(pointer) = window.ns_window() else { return };
+    let native = unsafe { &*pointer.cast::<NSWindow>() };
+    let label = window.label().to_owned();
+    if !on {
+        if let Some(size) = MIN_SIZES.with_borrow_mut(|sizes| sizes.remove(&label)) {
+            native.setMinSize(size);
+        }
+        return;
+    }
+    let Some(screen) = native.screen() else { return };
+    let frame = screen.frame();
+    MIN_SIZES.with_borrow_mut(|sizes| {
+        sizes.entry(label).or_insert_with(|| native.minSize());
+    });
+    native.setMinSize(frame.size);
+    native.setStyleMask(native.styleMask() | NSWindowStyleMask::Titled | NSWindowStyleMask::Resizable);
+    native.setFrame_display(frame, true);
 }
 
 /// Forgets a closed window; true when it was in simple fullscreen.
@@ -132,7 +173,11 @@ pub fn forget_simple_fullscreen(app: &AppHandle, label: &str) -> bool {
         (labels.len() != before, !labels.is_empty())
     };
     if was {
-        let _ = app.run_on_main_thread(move || present(any));
+        let label = label.to_owned();
+        let _ = app.run_on_main_thread(move || {
+            MIN_SIZES.with_borrow_mut(|sizes| sizes.remove(&label));
+            present(any);
+        });
     }
     was
 }
