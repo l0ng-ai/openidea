@@ -6,10 +6,11 @@ import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { AboutOverlay } from "./AboutDialog";
 import { appActions, updateActions } from "./appActions";
 import { checkForUpdatesOnStartup } from "./updates";
+import { cliActions } from "./cliCommand";
 import { installCloseGuard } from "./closeGuard";
 import { TerminationOverlay } from "./termination";
 import { InvalidateCachesOverlay, registerInvalidateCachesActions } from "./InvalidateCaches";
-import { buildInfo } from "./host";
+import { buildInfo, guessOs } from "./host";
 import { KeymapReferenceOverlay } from "./KeymapReference";
 import { LightEditStatus } from "./LightEditStatus";
 import { installLocaleSync, registerLocalizedActions } from "./locale";
@@ -31,6 +32,7 @@ export function activate(): () => void {
   const disposers = [
     installLocaleSync(),
     registerLocalizedActions(() => [...appActions(), ...windowActions()]),
+    registerLocalizedActions(() => (guessOs() === "macos" ? cliActions() : [])),
     registerOverlay({ id: "app.about", component: AboutOverlay }),
     registerOverlay({ id: "app.keymapReference", component: KeymapReferenceOverlay }),
     registerOverlay({ id: "app.invalidateCaches", component: InvalidateCachesOverlay }),
