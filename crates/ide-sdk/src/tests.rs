@@ -357,6 +357,17 @@ fn maven_launch_refreshes_legacy_defaults_but_keeps_user_overrides() {
     prepare_maven_run(&mut explicit, tmp.path(), &s);
     assert_eq!(explicit.command, "/custom/mvn");
     assert_eq!(explicit.args, ["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
+
+    std::fs::create_dir(tmp.path().join("child")).unwrap();
+    std::fs::write(tmp.path().join("child/pom.xml"), "<project/>").unwrap();
+    let mut nested = explicit.clone();
+    nested.id = "maven:test:child".into();
+    nested.detected = false;
+    ide_run::save_user_configs(tmp.path(), &[nested]).unwrap();
+    explicit.id = "context:maven:test:child:src/test/java/ExampleTest.java".into();
+    prepare_maven_run(&mut explicit, tmp.path(), &s);
+    assert_eq!(explicit.command, "/custom/mvn", "an edited child must not fall back to the parent's defaults");
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
 }
 
 #[test]

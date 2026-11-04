@@ -252,12 +252,10 @@ pub fn prepare_maven_run(config: &mut RunConfig, root: &Path, s: &Settings) {
         let id = id.strip_prefix("workspace:").and_then(|id| id.split_once(':')).map_or(id, |(_, id)| id);
         let source = ide_run::detect(root)
             .into_iter()
-            .filter(|base| {
-                base.kind == "maven"
-                    && (id == base.id || id.starts_with(&format!("{}:", base.id)))
-                    && !saved.iter().any(|user| user.id == base.id)
-            })
-            .max_by_key(|base| base.id.len());
+            .chain(saved.iter().cloned())
+            .filter(|base| base.kind == "maven" && (id == base.id || id.starts_with(&format!("{}:", base.id))))
+            .max_by_key(|base| base.id.len())
+            .filter(|base| !saved.iter().any(|user| user.id == base.id));
         if let Some(base) = source.filter(|_| config.extras.params.is_empty()) {
             if let Some(prefix) = maven_settings_prefixes(&config.args)
                 .into_iter()
