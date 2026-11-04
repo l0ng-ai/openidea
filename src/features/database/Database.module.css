@@ -627,9 +627,6 @@
   color: var(--fg-secondary);
   cursor: pointer;
 }
-:global(.cm-openidea-db-banner-close:hover) {
-  background: var(--bg-hover);
-}
 
 /* Parameter info in `VALUES (…)`. */
 :global(.cm-openidea-db-params) {
