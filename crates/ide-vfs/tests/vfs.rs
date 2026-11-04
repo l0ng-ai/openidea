@@ -259,6 +259,47 @@ fn walk_honours_ignores() {
     assert_eq!(found, expected);
 }
 
+#[test]
+fn walk_scopes_gitignore_to_each_repository() {
+    let (_t, r) = root();
+    // An outer repository ignores everything under `projects/`, nested repository included (#1254).
+    write(&r.join("outer/.git/HEAD"), "ref: refs/heads/main\n");
+    write(&r.join("outer/top.txt"), "");
+    write(&r.join("outer/projects/.gitignore"), "*\n!.gitignore\n");
+    write(&r.join("outer/projects/nested/.git/HEAD"), "ref: refs/heads/main\n");
+    write(&r.join("outer/projects/nested/.git/info/exclude"), "local.txt\n");
+    write(&r.join("outer/projects/nested/.gitignore"), "*.log\n");
+    write(&r.join("outer/projects/nested/search-test.txt"), "");
+    write(&r.join("outer/projects/nested/src/a.rs"), "");
+    write(&r.join("outer/projects/nested/debug.log"), "");
+    write(&r.join("outer/projects/nested/local.txt"), "");
+    write(&r.join("outer/projects/plain/file.txt"), "");
+    write(&r.join("loose/.gitignore"), "*.log\n");
+    write(&r.join("loose/a.txt"), "");
+    write(&r.join("loose/b.log"), "");
+
+    let walk = |dir: &str| {
+        let base = r.join(dir);
+        let found = Mutex::new(BTreeSet::new());
+        walk_files(&base, &[], |p| {
+            found.lock().insert(p.strip_prefix(&base).unwrap().to_string_lossy().replace('\\', "/"));
+        });
+        found.into_inner().into_iter().collect::<Vec<_>>()
+    };
+    let cases: [(&str, &[&str]); 4] = [
+        // The nested repository's own rules apply; the outer repository's do not.
+        ("outer/projects/nested", &[".gitignore", "search-test.txt", "src/a.rs"]),
+        // A plain folder inside the outer repository is still governed by it, as in Git.
+        ("outer/projects/plain", &[]),
+        ("outer", &["projects/.gitignore", "top.txt"]),
+        // Outside any repository `.gitignore` still applies.
+        ("loose", &[".gitignore", "a.txt"]),
+    ];
+    for (dir, expected) in cases {
+        assert_eq!(walk(dir), expected, "{dir}");
+    }
+}
+
 fn wait_for(events: &Mutex<Vec<FsBatch>>, pred: impl Fn(&[FsBatch]) -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {

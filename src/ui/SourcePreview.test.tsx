@@ -74,6 +74,7 @@ describe("SourcePreview", () => {
     const { container } = render(<SourcePreview path="/p/a.ts" line={0} load={loadOf("// TODO")} />);
     await screen.findByText("// TODO");
     // The scroll pane is a selection scope: drags stay inside, text stays copyable.
-    expect(container.querySelector("[data-selection-scope]")).toBeTruthy();
+    // Set by an effect, which can run after the text is on screen.
+    await waitFor(() => expect(container.querySelector("[data-selection-scope]")).toBeTruthy());
   });
 });

@@ -16,8 +16,7 @@ Project layout, coding rules, commands and checks are in [AGENTS.md](AGENTS.md).
 
 ## Pull requests
 
-- One issue per PR, linked with `Closes #123`. Feature PRs need a `planned` issue.
-  Docs, CI and pure refactors may skip the issue.
+- One problem per PR. If it resolves an issue, link it with `Closes #123`.
 - Reproduce the problem first, or write a test that fails before the fix.
 - Fix the cause, and check whether the same cause breaks anything nearby.
 - Keep the diff focused. Unrelated refactors go in their own PR.
@@ -36,5 +35,4 @@ and the plugin API. Community plugins live in their authors' repositories and
 are listed through [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins);
 see [`plugins/README.md`](plugins/README.md) § 8.1.
 
-A check on each PR adds `needs-info` when the issue link or the verification
-section is missing, and removes it once they're filled in.
+A check on each PR adds `needs-info` when the verification section is missing, and removes it once it's filled in.

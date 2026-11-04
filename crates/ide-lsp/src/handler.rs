@@ -130,15 +130,8 @@ impl ClientHandler {
         {
             return;
         }
-        let conv = mgr.conv(self.encoding());
-        let items = params
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(|d| convert::diagnostic(&conv, &path, d, &self.server.name))
-            .collect();
-        self.server.set_diagnostics(path.clone(), params.diagnostics);
-        mgr.sink().emit(IdeEvent::Diagnostics { path: path.into(), source: self.server.name.clone(), items });
+        let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
+        mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
     }
 
     fn show_message(&self, mgr: &LspManager, params: &Value) {
@@ -309,8 +302,21 @@ impl Handler for ClientHandler {
                 mgr.sink().emit(IdeEvent::LspRefresh { server: self.server.id, kind });
                 Ok(Value::Null)
             }
-            "workspace/diagnostic/refresh" | "workspace/inlineValue/refresh" => Ok(Value::Null),
+            "workspace/diagnostic/refresh" => {
+                mgr.refresh_pulled_diagnostics(&self.server);
+                Ok(Value::Null)
+            }
+            "workspace/inlineValue/refresh" => Ok(Value::Null),
             other => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {other}"))),
+        }
+    }
+
+    fn after_response(&self, method: &str) {
+        if method == "workspace/configuration"
+            && self.server.config.resync_on_configuration
+            && let Some(mgr) = self.mgr.upgrade()
+        {
+            mgr.resync_documents(&self.server, self.generation);
         }
     }
 }

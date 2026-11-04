@@ -319,15 +319,23 @@ export interface SetupOptions {
 }
 
 /**
- * Tooltips (hints, docs, completion) stay below the editor's top edge: one
- * above the first lines flips below them instead of hiding under the tabs.
+ * Tooltips (hints, docs, completion) stay inside the editor horizontally and
+ * below its top edge. WebKit positions them `absolute` within `.cm-editor`, so
+ * a window-wide right bound makes CodeMirror skip the shift left and the
+ * browser squeezes the box into the space left of the editor's edge.
  */
-const tooltipSpace = tooltips({
-  tooltipSpace: (view) => {
-    const top = view.scrollDOM.getBoundingClientRect().top;
-    return { top, left: 0, right: window.innerWidth, bottom: window.innerHeight };
-  },
-});
+export function tooltipBounds(view: { scrollDOM: Element; dom: Element }) {
+  const { top } = view.scrollDOM.getBoundingClientRect();
+  const { left, right } = view.dom.getBoundingClientRect();
+  return {
+    top,
+    left: Math.max(0, left),
+    right: Math.min(window.innerWidth, right),
+    bottom: window.innerHeight,
+  };
+}
+
+const tooltipSpace = tooltips({ tooltipSpace: tooltipBounds });
 
 export function baseExtensions(o: SetupOptions): Extension {
   return [

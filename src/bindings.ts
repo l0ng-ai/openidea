@@ -469,6 +469,11 @@ export const commands = {
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
+	/**
+	 *  History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
+	 *  editor text. Cancellable with `cancel_request(request)`.
+	 */
+	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
 	/**  Combined changes of several commits, `commits` oldest first. */
@@ -1708,6 +1713,31 @@ export type BlameLine = {
 	author: string,
 	timeMs: number | null,
 	summary: string,
+};
+
+/**  History for Selection: the commits that changed a block of lines, newest first. */
+export type BlockHistory = {
+	/**  The selected lines in HEAD (0-based, inclusive); None when none of them is committed. */
+	headLines: [number, number] | null,
+	revisions: BlockRevision[],
+};
+
+/**  A commit that changed the block, with the block in its first parent and in it. */
+export type BlockRevision = {
+	id: string,
+	shortId: string,
+	author: string,
+	email: string,
+	timeMs: number | null,
+	summary: string,
+	/**  Repository-relative path of the file in this commit (before a later rename). */
+	path: string,
+	/**  The block before the commit; empty when the commit added it. */
+	before: string,
+	after: string,
+	/**  0-based first line of the block before and after the commit. */
+	beforeLine: number,
+	afterLine: number,
 };
 
 export type Branch = {
@@ -4534,6 +4564,8 @@ export type LanguageInfo_Deserialize = {
 	filenames?: string[],
 	/**  First-line regex of the definition (shebangs, `<?php`). */
 	firstLine?: string | null,
+	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
+	scratchTemplate?: string | null,
 };
 
 /**  The UI-facing view of a language. */
@@ -4553,6 +4585,8 @@ export type LanguageInfo_Serialize = {
 	filenames?: string[],
 	/**  First-line regex of the definition (shebangs, `<?php`). */
 	firstLine?: string | null,
+	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
+	scratchTemplate?: string | null,
 };
 
 export type LanguageServerSettings = LanguageServerSettings_Serialize | LanguageServerSettings_Deserialize;
@@ -5261,6 +5295,11 @@ export type PathCompletion = {
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
+	/**
+	 *  PHP version the language server checks the code against (`7.4`); empty = from
+	 *  `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
+	 */
+	languageLevel?: string,
 };
 
 /**  The focused editor when a plugin command is invoked. */

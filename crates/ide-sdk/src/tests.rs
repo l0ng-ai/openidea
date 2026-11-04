@@ -38,6 +38,7 @@ fn server(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
         pinned: None,
     }
 }
@@ -1291,6 +1292,37 @@ fn php_sources_and_selected_interpreter() {
     }
     assert_eq!(configs[1].command, "vendor/bin/phpunit");
     assert!(configs[3].env.get("PATH").is_none_or(|p| !p.contains("php82")));
+}
+
+#[test]
+fn intelephense_gets_the_php_language_level() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let configured = |name: &str, s: &Settings| {
+        let mut cfg = server(name);
+        configure_server(&mut cfg, tmp.path(), tmp.path(), s);
+        cfg
+    };
+    let options = |cfg: LanguageServerConfig| serde_json::to_value(cfg.initialization_options).unwrap();
+
+    // Nothing to resolve: the options stay as they were (the rest depends on the machine's tools).
+    assert_eq!(configured("intelephense", &Settings::default()).initialization_options, None);
+
+    std::fs::write(tmp.path().join("composer.json"), r#"{"require": {"php": "^7.4 || ^8.0"}}"#).unwrap();
+    assert_eq!(
+        options(configured("intelephense", &Settings::default())),
+        json!({"environment": {"phpVersion": "7.4.0"}})
+    );
+    for other in ["phpactor", "basedpyright", "vtsls"] {
+        assert_eq!(options(configured(other, &Settings::default())).get("environment"), None, "{other}");
+    }
+
+    let mut s = Settings::default();
+    s.languages.php.language_level = "8.1".into();
+    let mut cfg = server("intelephense");
+    cfg.initialization_options = Some(toml::Value::try_from(json!({"clearCache": true})).unwrap());
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(options(cfg), json!({"clearCache": true, "environment": {"phpVersion": "8.1.0"}}));
 }
 
 #[test]

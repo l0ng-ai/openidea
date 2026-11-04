@@ -73,7 +73,7 @@ checks cancellation. No Maven download is needed for this harness.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
-python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
+python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
 ```
 
 Then launch the desktop app with `pnpm tauri dev` and open the same Java/Lombok

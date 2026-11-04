@@ -50,6 +50,21 @@ pub async fn vcs_file_at(
     ide_host::ops::vcs::vcs_file_at(&state.host, window.label(), path, rev).await
 }
 
+/// History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
+/// editor text. Cancellable with `cancel_request(request)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+) -> IdeResult<BlockHistory> {
+    ide_host::ops::vcs::vcs_block_history(&state.host, window.label(), request, path, text, lines).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_blame(

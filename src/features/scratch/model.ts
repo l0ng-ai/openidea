@@ -6,6 +6,8 @@ export interface ScratchLanguage {
   name: string;
   /** Extension (without the dot) new scratch files of this language get. */
   ext: string;
+  /** Initial content; `$END$` marks where the caret goes. */
+  template?: string;
 }
 
 /** IDEA's names: `scratch.<ext>`, then `scratch_1.<ext>`, `scratch_2.<ext>`… */
@@ -21,14 +23,32 @@ export function scratchFileName(existing: Iterable<string>, ext: string): string
 
 /** Languages a scratch file can be created for (those with an extension), by name. */
 export function scratchLanguages(
-  langs: ReadonlyArray<{ id: string; name: string; extensions: readonly string[] }>,
+  langs: ReadonlyArray<{ id: string; name: string; extensions: readonly string[]; scratchTemplate?: string | null }>,
 ): ScratchLanguage[] {
   const out: ScratchLanguage[] = [];
   for (const l of langs) {
     const ext = l.extensions.find((e) => e.trim())?.replace(/^\./, "");
-    if (ext) out.push({ id: l.id, name: l.name, ext });
+    if (ext) out.push({ id: l.id, name: l.name, ext, ...(l.scratchTemplate && { template: l.scratchTemplate }) });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+const CARET = "$END$";
+
+/** A new scratch file's text and caret (0-based line, UTF-16 column) from its language's template. */
+export function scratchContent(template: string | undefined): {
+  text: string;
+  caret: { line: number; col: number } | null;
+} {
+  if (!template) return { text: "", caret: null };
+  const at = template.indexOf(CARET);
+  if (at < 0) return { text: template, caret: null };
+  const before = template.slice(0, at);
+  const lines = before.split("\n");
+  return {
+    text: before + template.slice(at + CARET.length).replaceAll(CARET, ""),
+    caret: { line: lines.length - 1, col: lines[lines.length - 1]!.length },
+  };
 }
 
 export interface LanguageRow {

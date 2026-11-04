@@ -81,7 +81,13 @@ export function renderMarkdown(text: string): string {
     }
     html += `<div data-line="${start}">${body}</div>`;
   }
-  return purify().sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ["data-src", "data-line"] });
+  // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
+  return purify().sanitize(html, {
+    USE_PROFILES: { html: true },
+    ADD_ATTR: ["data-src", "data-line"],
+    FORBID_TAGS: ["style", "form"],
+    FORBID_ATTR: ["style"],
+  });
 }
 
 export type LinkTarget =
