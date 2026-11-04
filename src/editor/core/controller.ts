@@ -464,7 +464,13 @@ export class EditorController implements SlotHost {
       pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
     this.restoredViews = new Map(Object.entries(session.files));
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
-    useTabs.setState(state, true);
+    // Not the user picking a tab: a file opening with the project (a launch) keeps its caret and focus.
+    this.admitting = true;
+    try {
+      useTabs.setState(state, true);
+    } finally {
+      this.admitting = false;
+    }
     for (const pane of Object.values(state.panes)) if (pane.active) void this.ensureSlot(pane.active);
   }
 

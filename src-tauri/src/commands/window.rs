@@ -277,6 +277,20 @@ pub fn app_log_location() -> IdeResult<LogLocation> {
     Ok(LogLocation { dir: dir.into(), file: crate::logging::latest_log(dir).map(Into::into) })
 }
 
+/// Links the `openidea` command onto `PATH` (macOS app bundle only); returns the link.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_cli_install() -> IdeResult<ide_core::IpcPath> {
+    tauri::async_runtime::spawn_blocking(crate::cli::install).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Removes the installed `openidea` command; returns the links removed.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_cli_uninstall() -> IdeResult<Vec<ide_core::IpcPath>> {
+    tauri::async_runtime::spawn_blocking(crate::cli::uninstall).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
