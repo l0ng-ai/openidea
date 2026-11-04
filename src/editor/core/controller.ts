@@ -143,7 +143,7 @@ export interface EditorStatus {
 export const useEditorStatus = create<{ status: EditorStatus | null }>(() => ({ status: null }));
 /** Per-tab open errors (file missing, too large…). */
 export const useTabErrors = create<Record<string, string>>(() => ({}));
-/** Per-pane find bar state (open / replace mode); the bar keeps its own query. */
+/** Per-tab find bar state (open / replace mode), like IDEA's per-editor search session. */
 export const useFindBars = create<Record<string, { replace: boolean; seq: number } | undefined>>(() => ({}));
 export const useGotoLine = create<{ open: boolean }>(() => ({ open: false }));
 
@@ -387,6 +387,8 @@ export class EditorController implements SlotHost {
         slot.dispose();
       }
     }
+    const bars = Object.entries(useFindBars.getState()).filter(([id, bar]) => bar && !live.has(id));
+    if (bars.length) useFindBars.setState(Object.fromEntries(bars.map(([id]) => [id, undefined])));
     for (const id of Object.keys(useTabErrors.getState()))
       if (!live.has(id))
         useTabErrors.setState((s) => {
@@ -629,9 +631,8 @@ export class EditorController implements SlotHost {
   }
 
   onEscape(slot: EditorSlot): boolean {
-    const loc = this.locateTab(slot.tabId);
-    if (loc && useFindBars.getState()[loc.paneId]) {
-      useFindBars.setState({ [loc.paneId]: undefined });
+    if (useFindBars.getState()[slot.tabId]) {
+      useFindBars.setState({ [slot.tabId]: undefined });
       return true;
     }
     return false;
