@@ -2336,6 +2336,41 @@ async fn will_and_did_rename_files_honour_filters() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn will_rename_files_asks_tsserver_when_the_server_has_no_file_operations() {
+    // vtsls: no `willRename` filters, but tsserver's `getEditsForFileRename` through its command.
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["typescript.tsserverRequest"] });
+    let h = harness_configured("typescript", "ts", &[("vtsls", caps)], |cfg| cfg.tsserver_project = true);
+    let money = h.root.join("money.ts");
+    let index = h.root.join("index.ts");
+    std::fs::write(&money, "export const one = 1;\n").unwrap();
+    std::fs::write(&index, "import { one } from \"./money\";\n").unwrap();
+    let s = h.launcher.state("vtsls");
+    *s.responder.lock() = Some(Arc::new(move |_, method, p| {
+        (method == "workspace/executeCommand" && p["arguments"][0] == "getEditsForFileRename").then(|| {
+            json!({ "success": true, "body": [{ "fileName": p["arguments"][1]["oldFilePath"].as_str().unwrap().replace("money.ts", "index.ts"),
+                "textChanges": [{ "start": { "line": 1, "offset": 22 }, "end": { "line": 1, "offset": 29 }, "newText": "./lib/money" }] }] })
+        })
+    }));
+    let to = h.root.join("lib/money.ts");
+    let result =
+        h.mgr.will_rename_files(&[(money.clone(), to.clone())], ide_core::CancellationToken::new()).await.unwrap();
+    assert_eq!(result.servers, vec!["vtsls".to_owned()]);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    match &result.edit.files[..] {
+        [FileEdit::Edit { path, edits, version: None }] => {
+            assert_eq!(path, &index);
+            assert_eq!(edits[0].range, rng(0, 21, 0, 28));
+            assert_eq!(edits[0].new_text, "./lib/money");
+        }
+        other => panic!("unexpected edit {other:?}"),
+    }
+    let asked = s.requested("workspace/executeCommand");
+    let asked = asked.iter().find(|r| r["arguments"][0] == "getEditsForFileRename").unwrap();
+    assert_eq!(asked["arguments"][1], json!({ "oldFilePath": money, "newFilePath": to }));
+}
+
 // ------------------------------------------------------------------ inspect code
 
 struct InspectTestHost {
