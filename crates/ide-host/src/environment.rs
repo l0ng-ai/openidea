@@ -130,7 +130,7 @@ impl Environment {
                 baseline.clone()
             };
             let login = login_changes(&|k| std::env::var_os(k), &old, &fresh, &|path| {
-                ide_tools::path_with_tools(&self.data_dir, path)
+                ide_tools::path_with_tools(&ide_tools::app_root(&self.data_dir), path)
             });
             ide_core::process::set_shell_env(fresh);
             self.state.lock().login = login;

@@ -69,20 +69,20 @@ impl Provisioner {
 
 pub(crate) fn prepare(
     cfg: &LanguageServerConfig,
-    data_dir: &Path,
+    tools_root: &Path,
     explicit: bool,
     sink: &SharedSink,
     launch_cancel: &CancellationToken,
 ) {
     let min_java = jdtls_min_java(cfg);
-    let jdks = jdtls_jdks(min_java, data_dir);
+    let jdks = jdtls_jdks(min_java, tools_root);
     // A launch environment override is explicit too, even if it is invalid.
     if !needs_download(explicit || cfg.env.contains_key("JAVA_HOME"), jdtls_runtime(&jdks, min_java).is_some(), false) {
         return;
     }
     PROVISIONER.subscribe(sink);
-    PROVISIONER.run((data_dir.to_path_buf(), min_java), launch_cancel, || {
-        if jdtls_runtime(&jdtls_jdks(min_java, data_dir), min_java).is_some() {
+    PROVISIONER.run((tools_root.to_path_buf(), min_java), launch_cancel, || {
+        if jdtls_runtime(&jdtls_jdks(min_java, tools_root), min_java).is_some() {
             return;
         }
         let id = TaskId::next();
@@ -97,9 +97,9 @@ pub(crate) fn prepare(
             PROVISIONER.emit(IdeEvent::Task { id, title: title.clone(), message, fraction, done, cancellable: !done });
         };
         emit(Some("Eclipse Temurin".into()), None, false);
-        let result = ide_tools::Tools::new(data_dir).download_java_runtime(
+        let result = ide_tools::Tools::new(tools_root).download_java_runtime(
             min_java,
-            &language_server_runtimes_dir(data_dir),
+            &language_server_runtimes_dir(tools_root),
             &cancel,
             &|event| match event {
                 ide_tools::InstallEvent::Line { text } => emit(Some(text), None, false),

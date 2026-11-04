@@ -75,7 +75,10 @@ fn schedule_remote_sync(app: &AppHandle) {
 
 /// Creates the host over `<app-data>/plugins` and loads installed plugins in
 /// the background (no Wasm is instantiated until an activation event).
-pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host::Host>) -> IdeResult<Arc<PluginHost>> {
+/// Creates the host over `<dir>/plugins` and loads installed plugins in the background.
+/// `dir` is the data side of a custom base, the data dir in the default layout
+/// (see `crate::paths`).
+pub fn create_host(app: &AppHandle, dir: &Path, project_host: &Arc<ide_host::Host>) -> IdeResult<Arc<PluginHost>> {
     let projects = Arc::downgrade(project_host);
     let app = app.clone();
     let sink = move |client: Option<&str>, event: PluginEvent| {
@@ -101,7 +104,7 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
         }
         deliver(client, event);
     };
-    let host = Arc::new(PluginHost::new(data_dir.join("plugins"), Arc::new(sink), Limits::default())?);
+    let host = Arc::new(PluginHost::new(dir.join("plugins"), Arc::new(sink), Limits::default())?);
     // Plugin languages join detection, LSP and DAP of every project (forks share the store),
     // and the syntax of the ones without a built-in grammar comes from their plugin.
     project_host.languages.attach_plugins(host.language_store().clone());
