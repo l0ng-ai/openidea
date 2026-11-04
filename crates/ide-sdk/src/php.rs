@@ -1,12 +1,14 @@
 //! The PHP language level: the one chosen in Settings › PHP, else the one the root
 //! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
-//! the Intelephense storage that goes with it; and the stub sets and include paths Intelephense indexes.
+//! the Intelephense storage that goes with it; the stub sets and include paths Intelephense indexes;
+//! and the PHPStan run that checks saved files.
 
 use crate::apply::{merge, merge_init_options, setting_path};
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// A PHP version and where it comes from.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
@@ -137,6 +139,28 @@ pub fn include_paths(root: &Path, s: &Settings) -> Vec<String> {
         .filter_map(|p| setting_path(root, p))
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
+}
+
+/// `vendor/bin/phpstan analyse` of `files` with a JSON report, run from `root` with Xdebug off: in
+/// debug mode it would try to reach a debugger on every run. The selected PHP runs the script
+/// itself (and is first on `PATH`, as for PHPUnit), so a `php8.1` is not replaced by the `php` its
+/// `#!/usr/bin/env php` finds, and Windows needs no `phpstan.bat`, whose `cmd` limits the command
+/// line. `None` when the project has no PHPStan.
+pub fn phpstan_command(root: &Path, s: &Settings, files: &[PathBuf]) -> Option<Command> {
+    let bin = root.join("vendor/bin/phpstan");
+    if !bin.is_file() {
+        return None;
+    }
+    let php = setting_path(root, &s.languages.php.interpreter)
+        .or_else(|| crate::exec::which("php"))
+        .unwrap_or_else(|| PathBuf::from("php"));
+    let mut cmd = Command::new(php);
+    cmd.current_dir(root).arg(bin).args(["analyse", "--error-format=json", "--no-progress"]).args(files);
+    cmd.env("XDEBUG_MODE", "off");
+    if let Some(dir) = crate::apply::php_dir(root, s) {
+        cmd.env("PATH", crate::exec::path_with(&[&dir]));
+    }
+    Some(cmd)
 }
 
 type Version = (u32, u32, u32);
@@ -348,6 +372,58 @@ mod tests {
             include_paths(root, &s),
             [root.join("../platform").to_string_lossy().into_owned(), "/opt/prestashop".to_string()]
         );
+    }
+
+    fn phpstan(root: &Path, s: &Settings) -> Option<Command> {
+        let cmd = phpstan_command(root, s, &[root.join("src").join("A.php"), root.join("src").join("B.php")])?;
+        assert_eq!(cmd.get_current_dir(), Some(root));
+        Some(cmd)
+    }
+
+    fn text(s: &std::ffi::OsStr) -> String {
+        s.to_string_lossy().into_owned()
+    }
+
+    fn env(cmd: &Command) -> Vec<(String, Option<String>)> {
+        cmd.get_envs().map(|(k, v)| (text(k), v.map(text))).collect()
+    }
+
+    #[test]
+    fn phpstan_checks_the_files_on_the_selected_php_without_xdebug() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut s = Settings::default();
+        assert!(phpstan(root, &s).is_none(), "no vendor/bin/phpstan, no run");
+
+        let bin = root.join("vendor/bin/phpstan");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        let cmd = phpstan(root, &s).unwrap();
+        // The PHP on PATH unless one is selected.
+        assert_eq!(Path::new(cmd.get_program()).file_stem(), Some("php".as_ref()));
+        let file = |name: &str| root.join("src").join(name).to_string_lossy().into_owned();
+        assert_eq!(
+            cmd.get_args().map(text).collect::<Vec<_>>(),
+            [
+                &*bin.to_string_lossy(),
+                "analyse",
+                "--error-format=json",
+                "--no-progress",
+                &file("A.php"),
+                &file("B.php")
+            ]
+        );
+        assert_eq!(env(&cmd), [("XDEBUG_MODE".to_string(), Some("off".to_string()))]);
+
+        // A selected PHP runs PHPStan whatever its name, and is first on PATH for what PHPStan starts.
+        let php = root.join("php85/bin").join(crate::exe("php8.5"));
+        s.languages.php.interpreter = php.to_string_lossy().into_owned();
+        let cmd = phpstan(root, &s).unwrap();
+        assert_eq!(cmd.get_program(), php.as_os_str());
+        let env = env(&cmd);
+        let path = env.iter().find(|(k, _)| k == "PATH").and_then(|(_, v)| v.clone()).expect("PATH");
+        assert_eq!(std::env::split_paths(&path).next(), Some(root.join("php85/bin")));
+        assert!(env.contains(&("XDEBUG_MODE".to_string(), Some("off".to_string()))));
     }
 
     #[test]

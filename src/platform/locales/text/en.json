@@ -4,5 +4,9 @@
   "WSL distribution:": "WSL distribution:",
   "WSL distribution": "WSL distribution",
   "Project runs on {label}": "Project runs on {label}",
-  "Forwarding ports is not supported in a WSL project yet": "Forwarding ports is not supported in a WSL project yet"
+  "Forwarding ports is not supported in a WSL project yet": "Forwarding ports is not supported in a WSL project yet",
+  "PHPStan check failed": "PHPStan check failed",
+  "PHPStan ended with {status} and no report": "PHPStan ended with {status} and no report",
+  "Cannot run {program}: {error}": "Cannot run {program}: {error}",
+  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root.": "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root."
 }

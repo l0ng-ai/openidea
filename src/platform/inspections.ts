@@ -299,6 +299,15 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     defaultEnabled: false,
   },
   {
+    id: "builtin:phpstan",
+    producer: "phpstan",
+    name: "PHPStan",
+    group: "PHP",
+    description:
+      "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root.",
+    defaultLevel: "warning",
+  },
+  {
     id: "builtin:sql",
     producer: "sql-inspections",
     name: "Unresolved database references",
