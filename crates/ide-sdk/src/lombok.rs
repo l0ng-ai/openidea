@@ -246,7 +246,7 @@ fn sources_import_lombok(root: &Path) -> bool {
     // Imports precede the first type, after at most a license header.
     const HEAD: u64 = 8 * 1024;
     let mut walker = ignore::WalkBuilder::new(root);
-    ide_vfs::bound_gitignore_to_repo(&mut walker, root).follow_links(false).filter_entry(|e| {
+    walker.require_git(ide_core::ignored::inside_git_repo(root)).follow_links(false).filter_entry(|e| {
         e.depth() == 0
             || !e.file_type().is_some_and(|t| t.is_dir())
             || !OUTPUT_DIRS.contains(&e.file_name().to_string_lossy().as_ref())

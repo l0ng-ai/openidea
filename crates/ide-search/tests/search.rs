@@ -671,3 +671,26 @@ fn archives_are_skipped() {
     let (views, _) = run(p.path(), &query("needle"));
     assert_eq!(paths(&views), ["src/a.txt"]);
 }
+
+#[test]
+fn a_nested_repository_is_not_hidden_by_the_outer_repositorys_gitignore() {
+    // parent/.git, parent/projects/.gitignore ignores everything, parent/projects/nested is its own repository.
+    let p = project(&[
+        ("projects/.gitignore", b"*\n!.gitignore\n"),
+        ("projects/nested/search-test.txt", b"somesss\n"),
+        ("projects/nested/.gitignore", b"*.log\n"),
+        ("projects/nested/debug.log", b"somesss\n"),
+    ]);
+    std::fs::create_dir(p.path().join(".git")).unwrap();
+    std::fs::create_dir(p.path().join("projects/nested/.git")).unwrap();
+    let (views, _) = run(&p.path().join("projects/nested"), &query("somesss"));
+    assert_eq!(paths(&views), ["search-test.txt"], "the nested repository's own .gitignore still applies");
+}
+
+#[test]
+fn a_project_inside_a_repository_keeps_the_repositorys_gitignore() {
+    let p = project(&[(".gitignore", b"build/\n"), ("app/build/out.txt", b"hit\n"), ("app/src/a.txt", b"hit\n")]);
+    std::fs::create_dir(p.path().join(".git")).unwrap();
+    let (views, _) = run(&p.path().join("app"), &query("hit"));
+    assert_eq!(paths(&views), ["src/a.txt"]);
+}
