@@ -946,8 +946,12 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, content).unwrap();
         }
+        // The SDK's lockfile keeps the versions its own CI builds with (the resolver also
+        // looks up the wasm-only dependencies, which may not be downloaded yet).
+        let sdk_lock = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/rust/openidea-plugin/Cargo.lock");
+        std::fs::copy(sdk_lock, plugin.join("Cargo.lock")).unwrap();
         let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-            .args(["test", "--offline", "--manifest-path"])
+            .args(["test", "--manifest-path"])
             .arg(plugin.join("Cargo.toml"))
             .env("CARGO_TARGET_DIR", dir.join("target"))
             .output()
