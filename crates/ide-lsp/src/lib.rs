@@ -1976,15 +1976,27 @@ impl LspManager {
     /// Files that changed on disk, outside the editor too (a checkout, another tool): each running
     /// server hears of those of its languages under its root through `workspace/didChangeWatchedFiles`.
     /// Without it jdtls's incremental build never sees them, so a launch runs stale classes.
-    pub fn watched_files_changed(&self, created: &[PathBuf], modified: &[PathBuf], removed: &[PathBuf]) {
+    /// Files matching a server's `watched-files` go to it too, and so do `excluded_dirs`
+    /// (folders in excluded or ignored trees whose entries came or went) matching them,
+    /// reported as created: a package installed into `.venv` makes the Python servers
+    /// resolve its imports again, without a restart.
+    pub fn watched_files_changed(
+        &self,
+        created: &[PathBuf],
+        modified: &[PathBuf],
+        removed: &[PathBuf],
+        excluded_dirs: &[PathBuf],
+    ) {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
             let Some(run) = s.running() else { continue };
             let languages = s.languages();
+            let source = |p: &PathBuf| languages.contains(&self.languages.detect(p, None));
             let changes: Vec<Value> = [(created, 1), (modified, 2), (removed, 3)]
                 .into_iter()
                 .flat_map(|(paths, kind)| paths.iter().map(move |p| (p, kind)))
-                .filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
+                .filter(|(p, _)| p.starts_with(&s.root) && (source(p) || s.watches_file(p)))
+                .chain(excluded_dirs.iter().filter(|p| s.watches_file(p)).map(|p| (p, 1)))
                 .map(|(p, kind)| json!({ "uri": uri::path_to_uri(p), "type": kind }))
                 .collect();
             if changes.is_empty() {

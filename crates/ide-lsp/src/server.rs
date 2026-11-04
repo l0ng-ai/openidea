@@ -77,6 +77,8 @@ pub struct Server {
     pub root: PathBuf,
     /// Configuration from the language definition.
     pub config: LanguageServerConfig,
+    /// `config.watched_files`, relative to `root`.
+    watched_files: Option<globset::GlobSet>,
     /// `config` with the settings hook applied, as the current instance was launched.
     effective: Mutex<Option<LanguageServerConfig>>,
     pub resolved_binary: RwLock<Option<PathBuf>>,
@@ -107,11 +109,28 @@ pub struct Server {
     pub external_refresh_queued: std::sync::atomic::AtomicBool,
 }
 
+fn watched_files_matcher(globs: &[String]) -> Option<globset::GlobSet> {
+    if globs.is_empty() {
+        return None;
+    }
+    let mut set = globset::GlobSetBuilder::new();
+    for g in globs {
+        match globset::GlobBuilder::new(g).literal_separator(true).build() {
+            Ok(glob) => {
+                set.add(glob);
+            }
+            Err(e) => tracing::warn!("watched-files {g:?}: {e}"),
+        }
+    }
+    set.build().ok()
+}
+
 impl Server {
     pub fn new(config: LanguageServerConfig, root: PathBuf, language: LanguageId) -> Self {
         Self {
             id: ServerId::next(),
             name: config.name.clone(),
+            watched_files: watched_files_matcher(&config.watched_files),
             root,
             config,
             effective: Mutex::new(None),
@@ -162,6 +181,12 @@ impl Server {
 
     pub fn languages(&self) -> Vec<LanguageId> {
         self.languages.lock().clone()
+    }
+
+    /// Whether `path` matches one of the configured `watched-files` globs.
+    pub fn watches_file(&self, path: &Path) -> bool {
+        let Some(set) = &self.watched_files else { return false };
+        path.strip_prefix(&self.root).is_ok_and(|rel| set.is_match(rel))
     }
 
     // ---- instance state machine ----

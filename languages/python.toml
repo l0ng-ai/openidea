@@ -14,6 +14,9 @@ command = "basedpyright-langserver"
 args = ["--stdio"]
 root-markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]
 install-hint = "pip install basedpyright (or: uv tool install basedpyright)"
+# Packages installed or removed in the environment (`uv add`, `pip install`) make the
+# server resolve imports again; `.venv` is excluded, so its changes are opted into here.
+watched-files = ["pyproject.toml", "pyrightconfig.json", "**/site-packages", "**/site-packages/**"]
 
 # basedpyright defaults to "recommended", which flags unannotated attributes and
 # every unknown type. "standard" reports real problems; a project's own
@@ -31,6 +34,7 @@ command = "pyright-langserver"
 args = ["--stdio"]
 root-markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]
 install-hint = "npm i -g pyright (or: pip install pyright)"
+watched-files = ["pyproject.toml", "pyrightconfig.json", "**/site-packages", "**/site-packages/**"]
 
 [[language-servers]]
 name = "ty"
@@ -39,6 +43,7 @@ command = "ty"
 args = ["server"]
 root-markers = ["ty.toml", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
 install-hint = "uv tool install ty (or: pip install ty)"
+watched-files = ["pyproject.toml", "ty.toml", "**/site-packages", "**/site-packages/**"]
 
 [[language-servers]]
 name = "pyrefly"
@@ -47,6 +52,7 @@ command = "pyrefly"
 args = ["lsp"]
 root-markers = ["pyrefly.toml", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
 install-hint = "uv tool install pyrefly (or: pip install pyrefly)"
+watched-files = ["pyproject.toml", "pyrefly.toml", "**/site-packages", "**/site-packages/**"]
 
 # Lint, format, organize imports and fix all next to the type checker, in
 # projects configured for Ruff (formatting is Ruff's alone: basedpyright has none).

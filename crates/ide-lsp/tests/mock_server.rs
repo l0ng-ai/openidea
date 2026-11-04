@@ -230,6 +230,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        watched_files: Vec::new(),
         pinned: None,
     }
 }
@@ -419,6 +420,7 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
         &[created.clone(), other],
         &[modified.clone(), outside],
         std::slice::from_ref(&removed),
+        &[h.root.join(".venv/lib/site-packages")],
     );
     eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
     assert_eq!(
@@ -430,9 +432,65 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
         ])
     );
     // Nothing of its languages: no notification.
-    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[]);
+    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// `watched-files`: configuration and, inside excluded folders, installed packages
+/// (`uv add` into `.venv`) reach the server, so it resolves new imports without a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn watched_files_config_reaches_the_server_even_inside_excluded_folders() {
+    let h = harness_configured("mock", "mk", &[("mock", incremental_caps())], |cfg| {
+        cfg.watched_files = vec!["pyproject.toml".into(), "**/site-packages".into(), "**/site-packages/**".into()];
+    });
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let sp = h.root.join(".venv/lib/python3.14/site-packages");
+    // created, modified, removed, excluded folders → the changes the server hears of.
+    type Case<'a> = (&'a [PathBuf], &'a [PathBuf], &'a [PathBuf], &'a [PathBuf], Value);
+    let cases: &[Case] = &[
+        // `uv add`: pyproject.toml rewritten, the package unpacked into the excluded `.venv`.
+        (
+            &[],
+            &[h.root.join("pyproject.toml")],
+            &[],
+            &[sp.clone(), sp.join("scalar_fastapi"), h.root.join(".venv/bin")],
+            json!([
+                { "uri": uri_of(&h.root.join("pyproject.toml")), "type": 2 },
+                { "uri": uri_of(&sp), "type": 1 },
+                { "uri": uri_of(&sp.join("scalar_fastapi")), "type": 1 },
+            ]),
+        ),
+        // `uv remove`: the package's folder goes.
+        (
+            &[],
+            &[],
+            &[sp.join("scalar_fastapi")],
+            std::slice::from_ref(&sp),
+            json!([
+                { "uri": uri_of(&sp.join("scalar_fastapi")), "type": 3 },
+                { "uri": uri_of(&sp), "type": 1 },
+            ]),
+        ),
+    ];
+    for (i, (created, modified, removed, excluded, expected)) in cases.iter().enumerate() {
+        h.mgr.watched_files_changed(created, modified, removed, excluded);
+        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() > i).await;
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles")[i]["changes"], *expected, "case {i}");
+    }
+    // Neither its sources nor its watched files: nothing.
+    let other = tempfile::tempdir().unwrap();
+    h.mgr.watched_files_changed(
+        &[h.root.join("sub/pyproject.toml")],
+        &[],
+        &[],
+        &[h.root.join("node_modules/x"), other.path().join("site-packages")],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), cases.len());
     h.mgr.shutdown_all().await;
 }
 
