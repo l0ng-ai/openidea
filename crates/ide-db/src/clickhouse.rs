@@ -291,8 +291,7 @@ impl ClickhousePool {
 
     fn server_error(&self, status: StatusCode, code: Option<&str>, body: &[u8]) -> IdeError {
         let message = String::from_utf8_lossy(body);
-        let message = message.trim();
-        let message: String = message.chars().take(16_384).collect();
+        let message: String = exception_text(&message).chars().take(16_384).collect();
         let auth = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
             || matches!(code, Some("193" | "194" | "195" | "516" | "497"));
         let detail = if message.is_empty() { status.canonical_reason().unwrap_or("request failed") } else { &message };
@@ -405,10 +404,7 @@ impl RowReader {
         let rest = std::mem::take(&mut self.pending);
         self.line(&rest)?;
         if let Some(exception) = self.exception {
-            let detail = exception
-                .find("Code:")
-                .map_or(exception.trim(), |at| exception[at..].lines().next().unwrap_or_default().trim());
-            return Err(IdeError::invalid(format!("ClickHouse: {detail}")));
+            return Err(IdeError::invalid(format!("ClickHouse: {}", exception_text(&exception))));
         }
         let Some(names) = self.names else { return Ok((Vec::new(), Vec::new(), false)) };
         let types = self.types.unwrap_or_default();
@@ -417,6 +413,18 @@ impl RowReader {
         }
         let columns = names.into_iter().zip(types).map(|(name, type_name)| ResultColumn { name, type_name }).collect();
         Ok((columns, self.rows, self.more))
+    }
+}
+
+/// The server's message in a failed response: rows already streamed and the
+/// `__exception__` block markers ClickHouse wraps a mid-stream error in are dropped.
+fn exception_text(body: &str) -> &str {
+    let Some(at) = body.find("Code:") else { return body.trim() };
+    let text = &body[at..];
+    match text.find("\n__exception__") {
+        // The line before the closing marker is `<length> <tag>`.
+        Some(end) => text[..end].trim_end().rsplit_once('\n').map_or(text[..end].trim(), |(message, _)| message.trim()),
+        None => text.trim(),
     }
 }
 
@@ -591,6 +599,8 @@ mod tests {
         body.push_str("62 abcdefgh\n__exception__\n");
         let error = decode(body.as_bytes(), 2, 4096).unwrap_err();
         assert_eq!(error.message, "ClickHouse: Code: 395. DB::Exception: Value passed to 'throwIf' is non-zero");
+        let multiline = "Code: 62. DB::Exception: Syntax error\nat line 2";
+        assert_eq!(exception_text(multiline), multiline);
     }
 
     #[tokio::test]
@@ -693,6 +703,18 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.message.contains("memory limit"));
+        requests.await.unwrap();
+        let (port, requests) = server(vec![(
+            "500 Internal Server Error",
+            "X-ClickHouse-Exception-Code: 395\r\n",
+            "[\"1\"]\n[\"UInt8\"]\n[1]\n\n__exception__\ntag\nCode: 395. DB::Exception: thrown\n32 tag\n__exception__\n",
+        )])
+        .await;
+        let error = match Pool::connect(&source(port), None, None).await {
+            Ok(_) => panic!("expected mid-stream failure"),
+            Err(error) => error,
+        };
+        assert_eq!(error.message, "ClickHouse HTTP 500: Code: 395. DB::Exception: thrown");
         requests.await.unwrap();
     }
 
