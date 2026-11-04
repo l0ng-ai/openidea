@@ -14,6 +14,10 @@
   &nbsp;·&nbsp;
   <a href="#benchmark">Benchmark</a>
   &nbsp;·&nbsp;
+  <a href="#plugins">Plugins</a>
+  &nbsp;·&nbsp;
+  <a href="#where-its-going">Where it's going</a>
+  &nbsp;·&nbsp;
   <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
 </p>
 
@@ -54,6 +58,20 @@ themes, icon themes and languages need no code at all.
 Install them from Settings › Plugins, or start your own with
 `openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
 the [official plugins](plugins/official). The plugin API is still a preview.
+
+## Where it's going
+
+Concrete work is tracked in
+[`planned` issues](https://github.com/l0ng-ai/openidea/issues?q=is%3Aopen+label%3Aplanned).
+
+- **Fast, and staying fast.** Instant typing, smooth scrolling and little memory, even on the largest projects.
+- **One IDE for every language.** Java, Python, JavaScript, Go, C/C++, C#, Rust, PHP — each as capable as the IDE built just for it.
+- **Everything included.** Frameworks, databases, profiling — built in. No editions, nothing extra to install.
+- **Work anywhere.** Local, a remote host, a container or WSL, with the same windows and keys.
+- **Easy to move over.** Bring your keymap, settings and habits with you.
+- **Open to extend.** A stable plugin API for what we don't cover.
+- **An agent workbench.** Run many agents side by side, each in its own worktree; follow, review and merge their work in one place.
+- **Beyond the desktop.** Follow projects and tasks from a phone or tablet.
 
 ## License
 
