@@ -192,6 +192,100 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     out
 }
 
+fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
+    let mut prefixes = vec![0];
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        if arg == "-s" && args.get(i + 1).is_some() {
+            i += 2;
+        } else if arg.starts_with("-Dmaven.repo.local=") {
+            i += 1;
+        } else {
+            break;
+        }
+        prefixes.push(i);
+    }
+    prefixes
+}
+
+fn generated_maven_goal(config: &RunConfig) -> bool {
+    config.id.starts_with("maven:goal:") && config.extras.params.is_empty()
+}
+
+/// Applies the current Maven settings at launch, including temporary configurations
+/// made before build-tool defaults stopped being stored in their command and arguments.
+pub fn prepare_maven_run(config: &mut RunConfig, root: &Path, s: &Settings) {
+    let mut detected = config.detected;
+    if generated_maven_goal(config) {
+        // The id records the user's original goals; only the settings prefix before them is derived.
+        if let Some((_, goals)) = config.id.split_once(".xml:")
+            && let Some(prefix) = maven_settings_prefixes(&config.args)
+                .into_iter()
+                .find(|&start| (start + 1..=config.args.len()).any(|end| config.args[start..end].join(" ") == goals))
+        {
+            config.args.drain(..prefix);
+        }
+        let name = config.command.rsplit(['/', '\\']).next().unwrap_or_default().to_ascii_lowercase();
+        if !matches!(name.as_str(), "mvnw" | "mvnw.cmd" | "mvnw.bat") {
+            config.command = "mvn".into();
+            if maven_command(root, s).is_none() {
+                let cwd = config.cwd.as_ref().map_or_else(|| root.to_path_buf(), |dir| root.join(dir.as_ref()));
+                for dir in cwd.ancestors().take_while(|dir| dir.starts_with(root)) {
+                    let wrapper = dir.join(if cfg!(windows) { "mvnw.cmd" } else { "mvnw" });
+                    if wrapper.is_file() {
+                        config.command = wrapper.to_string_lossy().into_owned();
+                        break;
+                    }
+                }
+            }
+        }
+    } else if config.detected || config.id.starts_with("context:") {
+        let saved = ide_run::load_user_configs(root).unwrap_or_default();
+        let source = ide_run::detect(root).into_iter().find(|base| {
+            base.kind == "maven"
+                && (config.id == base.id
+                    || config.id.starts_with(&format!("context:{}:", base.id))
+                    || config.id.starts_with(&format!("context:target:context:{}:", base.id)))
+                && !saved.iter().any(|user| user.id == base.id)
+        });
+        if let Some(base) = source.filter(|_| config.extras.params.is_empty()) {
+            if let Some(prefix) = maven_settings_prefixes(&config.args)
+                .into_iter()
+                .find(|&start| config.args[start..].starts_with(&base.args))
+            {
+                config.args.drain(..prefix);
+            }
+            config.command = base.command;
+        } else {
+            detected = false;
+        }
+    }
+    let original = config.detected;
+    config.detected = detected;
+    apply_to_run_configs(std::slice::from_mut(config), root, s);
+    config.detected = original;
+}
+
+fn maven_launch_options(defaults: &[String], args: &[String]) -> Vec<String> {
+    let own_settings = args.iter().any(|a| matches!(a.as_str(), "-s" | "--settings") || a.starts_with("--settings="));
+    let own_repository = args.iter().any(|a| a.starts_with("-Dmaven.repo.local="))
+        || args.windows(2).any(|a| a[0] == "-D" && a[1].starts_with("maven.repo.local="));
+    let mut out = Vec::new();
+    let mut defaults = defaults.iter();
+    while let Some(arg) = defaults.next() {
+        if arg == "-s" {
+            if let Some(value) = defaults.next()
+                && !own_settings
+            {
+                out.extend([arg.clone(), value.clone()]);
+            }
+        } else if !own_repository {
+            out.push(arg.clone());
+        }
+    }
+    out
+}
+
 /// The Maven local repository from settings: the configured one, else
 /// `<localRepository>` of the configured user `settings.xml`; `None` = Maven's default.
 pub fn maven_local_repository(root: &Path, s: &Settings) -> Option<PathBuf> {
@@ -783,24 +877,16 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-                if c.kind == "maven" && c.detected {
+                if c.kind == "maven"
+                    && (c.detected
+                        || generated_maven_goal(c)
+                        || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
+                {
                     if let Some(mvn) = &mvn {
                         c.command = mvn.to_string_lossy().into_owned();
                     }
-                    if !c.args.starts_with(&mvn_options) {
-                        c.args.splice(0..0, mvn_options.iter().cloned());
-                    }
-                } else if c.kind == "maven"
-                    && matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat")
-                    && let Some(mvn) = &mvn
-                {
-                    // A goal configuration saved from the tool window keeps the
-                    // literal `mvn` / `mvn.cmd` the launcher resolved to; without a
-                    // wrapper it cannot start when Maven lives on a version
-                    // manager's shims or a configured home (#328). Detected configs
-                    // take the Maven options too, but the saved ones already baked
-                    // them into `args`.
-                    c.command = mvn.to_string_lossy().into_owned();
+                    let options = maven_launch_options(&mvn_options, &c.args);
+                    c.args.splice(0..0, options);
                 }
             }
             _ => {}

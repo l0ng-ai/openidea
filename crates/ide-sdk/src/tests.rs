@@ -285,6 +285,98 @@ fn saved_maven_goal_configs_take_the_configured_launcher() {
 }
 
 #[test]
+fn maven_launch_refreshes_legacy_defaults_but_keeps_user_overrides() {
+    use crate::apply::prepare_maven_run;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("pom.xml"), "<project/>").unwrap();
+    let home = tmp.path().join("new-maven");
+    std::fs::create_dir_all(home.join("bin")).unwrap();
+    let launcher = home.join("bin").join(if cfg!(windows) { "mvn.cmd" } else { "mvn" });
+    std::fs::write(&launcher, "").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.home = home.to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "new-settings.xml".into();
+    s.languages.java.maven.local_repository = "new-repo".into();
+    let options = maven_options(tmp.path(), &s);
+
+    for id in [
+        "maven:goal:pom.xml:test",
+        "maven:test",
+        "context:maven:test:src/test/java/ExampleTest.java",
+        "context:target:context:maven:test:src/test/java/ExampleTest.java:ExampleTest#example",
+    ] {
+        let mut config = run(
+            "maven",
+            "//?/UNC/server/old-maven/bin/mvn.cmd",
+            &["-s", "old-settings.xml", "-Dmaven.repo.local=old-repo", "test", "-Dtest=ExampleTest#example"],
+        );
+        config.id = id.into();
+        config.detected = !id.starts_with("maven:goal:");
+        let original = config.clone();
+        prepare_maven_run(&mut config, tmp.path(), &s);
+        assert_eq!(config.command, launcher.to_string_lossy(), "{id}");
+        assert_eq!(
+            config.args,
+            [options.clone(), vec!["test".into(), "-Dtest=ExampleTest#example".into()]].concat(),
+            "{id}"
+        );
+        // Rerunning the stored configuration reads settings again, without changing the stored input.
+        s.languages.java.maven.local_repository = "other-repo".into();
+        let mut rerun = original;
+        prepare_maven_run(&mut rerun, tmp.path(), &s);
+        assert!(rerun.args.contains(&format!("-Dmaven.repo.local={}", tmp.path().join("other-repo").display())));
+        s.languages.java.maven.local_repository = "new-repo".into();
+    }
+
+    for args in [
+        vec!["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"],
+        vec!["--settings=own-settings.xml", "-D", "maven.repo.local=own-repo", "test"],
+    ] {
+        let mut config = run("maven", "mvn", &args);
+        config.detected = false;
+        prepare_maven_run(&mut config, tmp.path(), &s);
+        assert_eq!(config.command, launcher.to_string_lossy());
+        assert_eq!(config.args, args);
+    }
+
+    let mut explicit = run("maven", "/custom/mvn", &["-s", "own-settings.xml", "test"]);
+    explicit.detected = false;
+    prepare_maven_run(&mut explicit, tmp.path(), &s);
+    assert_eq!(explicit.command, "/custom/mvn");
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "test"]);
+
+    // A gutter configuration derived from a user-edited default must keep that user's choices.
+    let mut saved = explicit.clone();
+    saved.id = "maven:test".into();
+    ide_run::save_user_configs(tmp.path(), &[saved]).unwrap();
+    explicit.id = "context:maven:test:src/test/java/ExampleTest.java".into();
+    explicit.detected = true;
+    prepare_maven_run(&mut explicit, tmp.path(), &s);
+    assert_eq!(explicit.command, "/custom/mvn");
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "test"]);
+}
+
+#[test]
+fn maven_goal_keeps_explicit_settings_and_nested_wrapper() {
+    use crate::apply::prepare_maven_run;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("child")).unwrap();
+    let wrapper = tmp.path().join("child").join(if cfg!(windows) { "mvnw.cmd" } else { "mvnw" });
+    std::fs::write(&wrapper, "").unwrap();
+    let mut config = run("maven", "old-maven", &["-s", "old-settings.xml", "-s", "own-settings.xml", "test"]);
+    config.id = "maven:goal:child/pom.xml:-s own-settings.xml test".into();
+    config.cwd = Some("child".into());
+    config.detected = false;
+    let mut s = Settings::default();
+    s.languages.java.maven.user_settings = "new-settings.xml".into();
+    prepare_maven_run(&mut config, tmp.path(), &s);
+    assert_eq!(config.command, wrapper.to_string_lossy());
+    assert_eq!(config.args, ["-s", "own-settings.xml", "test"]);
+}
+
+#[test]
 fn language_server_settings_disable_add_and_override() {
     use crate::apply::{language_servers, server_launch_overrides, server_protocol_overrides, with_custom_servers};
     use ide_core::settings::LanguageServerSettings;

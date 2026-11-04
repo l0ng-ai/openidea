@@ -41,7 +41,7 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
 }
 
 /// A project's detected configurations (minus removed ones and unlinked Maven projects), then
-/// its saved ones; toolchains from Languages & Frameworks applied. Gradle choices stay as saved:
+/// its saved ones; toolchains from Languages & Frameworks applied. Build-tool choices stay as saved:
 /// derived defaults must not be written back as explicit environment.
 fn detected_and_saved(
     root: &std::path::Path,
@@ -56,7 +56,7 @@ fn detected_and_saved(
             .filter(|d| !suppressed.contains(&d.id) && !saved.iter().any(|u| u.id == d.id))
             .collect();
     all.extend(saved.iter().cloned());
-    for config in all.iter_mut().filter(|c| c.kind != "gradle") {
+    for config in all.iter_mut().filter(|c| !matches!(c.kind.as_str(), "gradle" | "maven")) {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(config), root, settings);
     }
     all
@@ -111,7 +111,9 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     };
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     let mut config = config;
-    if matches!(config.kind.as_str(), "gradle" | "tomcat") {
+    if config.kind == "maven" {
+        ide_sdk::apply::prepare_maven_run(&mut config, root, &settings);
+    } else if matches!(config.kind.as_str(), "gradle" | "tomcat") {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, root, &settings);
