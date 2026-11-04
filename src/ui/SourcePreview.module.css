@@ -45,6 +45,9 @@
   text-align: right;
   color: var(--fg-gutter);
   background-color: var(--bg-app);
+  /* Copying the code leaves the line numbers out. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 .currentLine .gutter {
   color: var(--fg-muted);
