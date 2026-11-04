@@ -98,6 +98,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_subscribe,
         agent::agent_providers,
         agent::agent_set_command,
+        agent::agent_set_env,
         agent::agent_registry_list,
         agent::agent_registry_install,
         agent::agent_registry_remove,
