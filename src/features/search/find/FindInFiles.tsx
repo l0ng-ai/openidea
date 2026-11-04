@@ -19,6 +19,9 @@ import {
   SearchField,
   Select,
   Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   Tabs,
   listNavigate,
   type MenuItem,
@@ -61,6 +64,10 @@ import {
   resolveDirectory,
   resolveFindScope,
   setFindPopupCommandHandler,
+  loadFindPopupSize,
+  loadFindPopupSplit,
+  saveFindPopupSize,
+  saveFindPopupSplit,
   setFindPopupNewTab,
   setFindPopupPinned,
   useFindPopup,
@@ -133,6 +140,12 @@ function FindInFilesDialog() {
   const [historyMenu, setHistoryMenu] = useState<"find" | "replace" | null>(null);
   const [contextMenu, setContextMenu] = useState(false);
   const [previewVersion, setPreviewVersion] = useState(0);
+  const [initialSize] = useState(loadFindPopupSize);
+  const [split, setSplit] = useState(loadFindPopupSplit);
+  const keepSplit = (layout: Record<string, number>) => {
+    setSplit(layout);
+    saveFindPopupSplit(layout);
+  };
   const [marks, setMarks] = useState<ReplaceMarks>(NO_MARKS);
   const [running, setRunning] = useState<ReplaceRun | null>(null);
   const [progress, setProgress] = useState<ReplaceProgress | null>(null);
@@ -473,11 +486,69 @@ function FindInFilesDialog() {
   const navigationHint =
     s.pattern.includes("\n") && nextKey && previousKey ? tx`Use ${nextKey} and ${previousKey} to select usages` : "";
 
+  const resultsBox = (
+    <div
+      className={clsx(styles.results, stale && styles.outdated)}
+      data-stale={stale || undefined}
+      aria-busy={stale || state.status === "searching"}
+    >
+      <List<MatchRow>
+        items={rows}
+        getKey={(r, i) => `${r.key}:${i}`}
+        activeIndex={active}
+        isSelected={(r) => isRowSelected(sel, r.key)}
+        onActivate={(r, i, e) => {
+          if (e.type === "click" && (e as MouseEvent).detail < 2) return onRowClick(i, e as MouseEvent);
+          openRow(r, e.shiftKey);
+        }}
+        focusable={false}
+        rowHeight={ROW}
+        aria-label="Matches"
+        empty={
+          <EmptyResults state={state} options={options} onClear={clearOptions} onRegex={() => set({ isRegex: true })} />
+        }
+        renderItem={(r, st) => {
+          const state = s.replace ? groupState(r, marks) : "pending";
+          return (
+            <>
+              <span
+                className={clsx(
+                  styles.rowText,
+                  state === "done" && styles.rowDone,
+                  state === "excluded" && styles.rowExcluded,
+                )}
+              >
+                <MatchText
+                  text={r.text}
+                  ranges={stale ? [] : r.ranges}
+                  source={{ path: r.path, line: r.line, col: r.textCol }}
+                />
+              </span>
+              <span className={clsx(styles.rowFile, st.active && styles.rowFileActive)}>
+                {state === "done" && (
+                  <span className={styles.rowLine}>
+                    <T>replaced ·</T>{" "}
+                  </span>
+                )}
+                {workspace ? r.relPath : basename(r.relPath)} <span className={styles.rowLine}>{r.line + 1}</span>
+              </span>
+            </>
+          );
+        }}
+      />
+    </div>
+  );
+
   return (
     <Dialog
       open
       onClose={close}
       width={820}
+      resizable="both"
+      minWidth={560}
+      minHeight={400}
+      initialSize={initialSize}
+      onResized={saveFindPopupSize}
       position="top"
       transparentBackdrop
       // IDEA's Find in Files is a modeless dialog: it survives switching to another app.
@@ -679,78 +750,37 @@ function FindInFilesDialog() {
             )}
           </div>
         </div>
-        <div
-          className={clsx(styles.results, stale && styles.outdated)}
-          data-stale={stale || undefined}
-          aria-busy={stale || state.status === "searching"}
-        >
-          <List<MatchRow>
-            items={rows}
-            getKey={(r, i) => `${r.key}:${i}`}
-            activeIndex={active}
-            isSelected={(r) => isRowSelected(sel, r.key)}
-            onActivate={(r, i, e) => {
-              if (e.type === "click" && (e as MouseEvent).detail < 2) return onRowClick(i, e as MouseEvent);
-              openRow(r, e.shiftKey);
-            }}
-            focusable={false}
-            rowHeight={ROW}
-            aria-label="Matches"
-            empty={
-              <EmptyResults
-                state={state}
-                options={options}
-                onClear={clearOptions}
-                onRegex={() => set({ isRegex: true })}
-              />
-            }
-            renderItem={(r, st) => {
-              const state = s.replace ? groupState(r, marks) : "pending";
-              return (
-                <>
-                  <span
-                    className={clsx(
-                      styles.rowText,
-                      state === "done" && styles.rowDone,
-                      state === "excluded" && styles.rowExcluded,
-                    )}
-                  >
-                    <MatchText
-                      text={r.text}
-                      ranges={stale ? [] : r.ranges}
-                      source={{ path: r.path, line: r.line, col: r.textCol }}
-                    />
-                  </span>
-                  <span className={clsx(styles.rowFile, st.active && styles.rowFileActive)}>
-                    {state === "done" && (
-                      <span className={styles.rowLine}>
-                        <T>replaced ·</T>{" "}
-                      </span>
-                    )}
-                    {workspace ? r.relPath : basename(r.relPath)} <span className={styles.rowLine}>{r.line + 1}</span>
-                  </span>
-                </>
-              );
-            }}
-          />
-        </div>
-        <div className={styles.previewHeader}>
-          {selected ? (
-            <span className={styles.previewPath}>
-              <span className={styles.previewName}>{basename(selected.relPath)}</span>
-              {selected.relPath.includes("/") && dirname(selected.relPath)}
-            </span>
+        <div className={styles.split}>
+          {rows.length ? (
+            <SplitGroup orientation="vertical" id="find-popup-split" defaultLayout={split} onLayoutChanged={keepSplit}>
+              <SplitPanel id="results" minSize={ROW * 3} defaultSize="48%">
+                {resultsBox}
+              </SplitPanel>
+              <SplitHandle hairline={false} />
+              <SplitPanel id="preview" minSize={96}>
+                <div className={styles.previewHeader}>
+                  {selected ? (
+                    <span className={styles.previewPath}>
+                      <span className={styles.previewName}>{basename(selected.relPath)}</span>
+                      {selected.relPath.includes("/") && dirname(selected.relPath)}
+                    </span>
+                  ) : (
+                    <span />
+                  )}
+                </div>
+                <div className={styles.previewBox}>
+                  <CodePreview
+                    path={selected?.path ?? null}
+                    line={selected?.line ?? 0}
+                    highlights={fileHighlights}
+                    version={previewVersion}
+                  />
+                </div>
+              </SplitPanel>
+            </SplitGroup>
           ) : (
-            <span />
+            resultsBox
           )}
-        </div>
-        <div className={styles.previewBox}>
-          <CodePreview
-            path={selected?.path ?? null}
-            line={selected?.line ?? 0}
-            highlights={fileHighlights}
-            version={previewVersion}
-          />
         </div>
         <footer className={styles.footer}>
           <Checkbox checked={s.newTab} onChange={setFindPopupNewTab} label="Open results in new tab" />

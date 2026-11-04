@@ -1,6 +1,6 @@
 /* IDEA's Find in Files is a popup: Popup.background, not the dialog surface. */
 .dialog {
-  max-height: min(86vh, calc(90vh - 24px));
+  max-height: calc(90vh - 12px);
   background: var(--bg-popup, var(--bg-elev));
   font-family: var(--font-ui);
 }
@@ -114,10 +114,21 @@
 .dirInput:focus {
   border-color: var(--accent);
 }
-.results {
-  flex: 0 1 242px;
+/* Results alone (empty state) or results over the preview; grows with the popup. */
+.split {
+  flex: 1 1 auto;
+  height: 500px;
   min-height: 0;
-  height: 242px;
+  display: flex;
+  flex-direction: column;
+}
+.split > * {
+  flex: 1;
+  min-height: 0;
+}
+.results {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 2px 0;
@@ -175,9 +186,8 @@
   margin-right: 8px;
 }
 .previewBox {
-  flex: 0 1 220px;
+  flex: 1;
   min-height: 0;
-  height: 220px;
   display: flex;
   flex-direction: column;
 }

@@ -90,6 +90,30 @@ export function setFindPopupNewTab(newTab: boolean) {
   saveJson(NEW_TAB_KEY, newTab);
 }
 
+const SIZE_KEY = "openidea.search.findPopupSize.v1";
+const SPLIT_KEY = "openidea.search.findPopupSplit.v1";
+
+/** The popup's size and its results / preview split, remembered like IDEA's. */
+export function loadFindPopupSize(): { w: number; h: number } | null {
+  const v = loadJson<{ w?: unknown; h?: unknown } | null>(SIZE_KEY, null);
+  return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
+}
+
+export function saveFindPopupSize(size: { w: number; h: number }) {
+  saveJson(SIZE_KEY, size);
+}
+
+export function loadFindPopupSplit(): Record<string, number> | undefined {
+  const v = loadJson<unknown>(SPLIT_KEY, null);
+  return v && typeof v === "object" && Object.values(v).every((n) => typeof n === "number")
+    ? (v as Record<string, number>)
+    : undefined;
+}
+
+export function saveFindPopupSplit(layout: Record<string, number>) {
+  saveJson(SPLIT_KEY, layout);
+}
+
 /**
  * Keys the popup handles that are also global shortcuts (⌘G / ⇧⌘G, F4 / ⌘↓, ⌥↓):
  * hidden actions bound later in the keymap win while the popup is open and

@@ -209,7 +209,8 @@ describe("Find in Files popup", () => {
 });
 
 describe("outdated popup results", () => {
-  const results = () => screen.getByRole("listbox", { name: "Matches" }).parentElement!;
+  // The results box, whether it holds the list or the empty text.
+  const results = () => document.querySelector<HTMLElement>("[aria-busy]")!;
   const rowText = () =>
     within(screen.getByRole("listbox", { name: "Matches" }))
       .getAllByRole("option")
@@ -322,13 +323,12 @@ describe("outdated popup results", () => {
     await settle();
     expect(results()).toHaveAttribute("data-stale", "true");
     expect(rowText()).toHaveLength(3);
-    const box = results();
     await act(async () => finish(null));
-    expect(box).not.toHaveAttribute("data-stale");
+    expect(results()).not.toHaveAttribute("data-stale");
     // IDEA's header shows a count only while something matches.
     expect(screen.queryByText(/\bmatch(es)? in\b/)).not.toBeInTheDocument();
     expect(screen.getByText("Nothing found")).toBeInTheDocument();
-    expect(within(box).queryAllByRole("option")).toHaveLength(0);
+    expect(within(results()).queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
   });
 
@@ -379,6 +379,26 @@ describe("footer, as IDEA", () => {
     expect(screen.queryByText(/to select usages$/)).not.toBeInTheDocument();
     fireEvent.change(field(), { target: { value: "order\nitem" } });
     expect(screen.getByText(/^Use .+ and .+ to select usages$/)).toBeInTheDocument();
+  });
+});
+
+describe("layout, as IDEA", () => {
+  it("shows the preview only once something matches", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false));
+    expect(screen.queryByRole("region", { name: "Preview" })).not.toBeInTheDocument();
+    fireEvent.change(field(), { target: { value: "order" } });
+    await settle();
+    expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
+  });
+
+  it("is resizable and opens at the size it was left at", () => {
+    localStorage.setItem("openidea.search.findPopupSize.v1", JSON.stringify({ w: 700, h: 520 }));
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false));
+    const dialog = screen.getByRole("dialog");
+    expect([dialog.style.width, dialog.style.height]).toEqual(["700px", "520px"]);
+    expect(within(dialog).getByRole("separator", { name: "Resize" })).toBeInTheDocument();
   });
 });
 
