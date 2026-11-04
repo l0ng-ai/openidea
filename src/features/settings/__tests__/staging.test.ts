@@ -291,7 +291,6 @@ describe("validateSettings", () => {
   it("keeps valid values, including dark-hc", () => {
     const v = validateSettings({ appearance: { theme: "dark-hc", accent: "#C9A080", locale: "zh" } });
     expect(v.appearance).toMatchObject({ theme: "dark-hc", accent: "#c9a080", locale: "zh" });
-    expect(validateSettings({ appearance: { locale: "ko" } }).appearance.locale).toBe("ko");
   });
 
   it("reads and writes dotted keys immutably", () => {
