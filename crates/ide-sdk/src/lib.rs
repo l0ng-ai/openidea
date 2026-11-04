@@ -18,7 +18,7 @@ pub mod locate;
 pub mod lombok;
 pub mod maven_profiles;
 mod npm;
-mod php;
+pub mod php;
 pub mod pinned;
 pub mod python;
 pub mod ruby;

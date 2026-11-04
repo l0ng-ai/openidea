@@ -301,7 +301,7 @@ pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
 
 const PYTHON_SERVERS: [&str; 7] = ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff"];
 
-fn merge(base: &mut Value, layer: Value) {
+pub(crate) fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
         (Value::Object(base), Value::Object(layer)) => {
             for (k, v) in layer {

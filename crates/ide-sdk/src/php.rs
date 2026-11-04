@@ -1,8 +1,11 @@
 //! The PHP language level: the one chosen in Settings › PHP, else the one the root
-//! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows).
+//! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
+//! and the Intelephense storage that goes with it.
 
+use crate::apply::{merge, merge_init_options};
 use ide_core::settings::Settings;
-use serde_json::Value;
+use ide_language::LanguageServerConfig;
+use serde_json::{Value, json};
 use std::path::Path;
 
 /// The project's PHP version as `X.Y.Z`; `None` when neither the settings nor
@@ -16,6 +19,33 @@ pub fn language_level(root: &Path, s: &Settings) -> Option<String> {
     let composer: Value = serde_json::from_str(&text).ok()?;
     let platform = composer.pointer("/config/platform/php").and_then(Value::as_str).and_then(version);
     platform.or_else(|| lowest_allowed(composer.pointer("/require/php")?.as_str()?)).map(dotted)
+}
+
+/// Gives each PHP version its own Intelephense workspace storage (below `data_dir`).
+/// Intelephense keeps the built-in functions of the version a workspace was first indexed
+/// with in that storage, and reuses them after the version changes. Without a version, or
+/// with a `storagePath` of the user's, the server keeps its own storage.
+pub fn configure_intelephense_storage(cfg: &mut LanguageServerConfig, data_dir: &Path) {
+    if cfg.name != "intelephense" {
+        return;
+    }
+    let mut options =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+    if options.get("storagePath").is_some() {
+        return;
+    }
+    // The version Intelephense reads: `workspace/configuration` is answered from the
+    // settings merged over the initialization options (`ide_lsp::handler::all_settings`).
+    if let Some(settings) = &cfg.settings {
+        merge(&mut options, settings.clone());
+    }
+    let section = options.pointer("/settings/intelephense").unwrap_or(&options);
+    let version = section.pointer("/environment/phpVersion").and_then(Value::as_str);
+    let Some(version) = version.filter(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.')) else {
+        return;
+    };
+    let storage = data_dir.join("lsp").join("intelephense").join(version);
+    merge_init_options(cfg, json!({ "storagePath": storage.to_string_lossy() }));
 }
 
 type Version = (u32, u32, u32);
@@ -120,6 +150,55 @@ mod tests {
         assert_eq!(level(None, ""), None);
         assert_eq!(level(Some(r#"{"require": {"ext-json": "*"}}"#), ""), None);
         assert_eq!(level(Some("not json"), ""), None);
+    }
+
+    #[test]
+    fn each_php_version_gets_its_own_intelephense_storage() {
+        let data = Path::new("/data");
+        let server = |name: &str, options: Value| {
+            let mut cfg: LanguageServerConfig =
+                toml::from_str(&format!("name = \"{name}\"\ncommand = \"{name}\"")).unwrap();
+            if !options.is_null() {
+                merge_init_options(&mut cfg, options);
+            }
+            cfg
+        };
+        let options = |cfg: &LanguageServerConfig| serde_json::to_value(&cfg.initialization_options).unwrap();
+
+        let mut cfg = server("intelephense", json!({"environment": {"phpVersion": "7.4.0"}, "clearCache": false}));
+        configure_intelephense_storage(&mut cfg, data);
+        let storage = data.join("lsp").join("intelephense").join("7.4.0");
+        assert_eq!(
+            options(&cfg),
+            json!({"environment": {"phpVersion": "7.4.0"}, "clearCache": false, "storagePath": storage.to_string_lossy()})
+        );
+
+        // The version Intelephense reads wins: Settings > Language Servers `settings` over the options.
+        let storage_of = |init: Value, settings: Value| {
+            let mut cfg = server("intelephense", init);
+            cfg.settings = Some(settings);
+            configure_intelephense_storage(&mut cfg, data);
+            options(&cfg)["storagePath"].clone()
+        };
+        let path = |v: &str| json!(data.join("lsp").join("intelephense").join(v).to_string_lossy());
+        let init = json!({"environment": {"phpVersion": "7.4.0"}});
+        assert_eq!(storage_of(init.clone(), json!({"environment": {"phpVersion": "8.3.0"}})), path("8.3.0"));
+        assert_eq!(storage_of(init, json!({"other": 1})), path("7.4.0"));
+        let nested = json!({"settings": {"intelephense": {"environment": {"phpVersion": "8.0.0"}}}});
+        assert_eq!(storage_of(Value::Null, nested), path("8.0.0"));
+
+        // No version, the user's own storage, not a version, another server: unchanged.
+        for unchanged in [
+            server("intelephense", Value::Null),
+            server("intelephense", json!({"environment": {"includePaths": []}})),
+            server("intelephense", json!({"environment": {"phpVersion": "8.1.0"}, "storagePath": "/mine"})),
+            server("intelephense", json!({"environment": {"phpVersion": "../8.1"}})),
+            server("phpactor", json!({"environment": {"phpVersion": "8.1.0"}})),
+        ] {
+            let mut cfg = unchanged.clone();
+            configure_intelephense_storage(&mut cfg, data);
+            assert_eq!(cfg, unchanged);
+        }
     }
 
     #[test]
