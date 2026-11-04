@@ -5494,7 +5494,7 @@
   "oxfmt formatting failed": "Échec du formatage avec oxfmt",
   "oxfmt formatting timed out": "Le formatage avec oxfmt a expiré",
   "This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.": "Ce fichier est en dehors des dossiers sources de son module Java : seules les erreurs de syntaxe sont signalées, et la navigation et la complétion ne fonctionnent pas.",
-  "This file does not belong to an imported Java project: only syntax errors are reported, and navigation and completion don't work.": "Ce fichier n'appartient à aucun projet Java importé : seules les erreurs de syntaxe sont signalées, et la navigation et la complétion ne fonctionnent pas.",
+  "This file does not belong to an imported Java project: only syntax errors are reported, and only JDK classes resolve.": "Ce fichier n'appartient à aucun projet Java importé : seules les erreurs de syntaxe sont signalées, et seules les classes du JDK sont résolues.",
   "This Go file belongs to no package of the workspace: code insight is limited.": "Ce fichier Go n'appartient à aucun paquet de l'espace de travail : l'analyse du code est limitée.",
   "This Rust file is not included in any crate: rust-analyzer can't offer code insight for it.": "Ce fichier Rust n'est inclus dans aucune crate : rust-analyzer ne peut pas proposer d'analyse du code pour celui-ci.",
   "Reload Maven Projects": "Recharger les projets Maven",

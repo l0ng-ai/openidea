@@ -6,10 +6,15 @@
  */
 import { useSyncExternalStore } from "react";
 import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
+import { isSameOrInside } from "@/platform/paths";
+import { useProject } from "@/platform/project";
 import type { EditorBannerContribution } from "@/workbench/contributions";
 import { diagnosticsFor, subscribeDiagnostics } from "./diagnostics";
 
-/** `reload`: a build reload may bring the file into a project (a module the import missed). */
+/**
+ * `reload`: a build reload may bring the file into a project (a module the import missed); offered
+ * only for files inside the open project.
+ */
 const NOTICES: readonly { test: RegExp; text: string; reload?: boolean }[] = [
   // jdtls: "Foo.java is not on the classpath of project app, only syntax errors are reported"
   {
@@ -17,10 +22,11 @@ const NOTICES: readonly { test: RegExp; text: string; reload?: boolean }[] = [
     text: "This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.",
     reload: true,
   },
-  // jdtls: "Foo.java is a non-project file, only syntax errors are reported"
+  // jdtls: "Foo.java is a non-project file, only syntax errors are reported". jdtls still completes
+  // and navigates JDK classes in such a file (a scratch, a file opened from outside the project).
   {
     test: /is a non-project file, only syntax errors are reported/,
-    text: "This file does not belong to an imported Java project: only syntax errors are reported, and navigation and completion don't work.",
+    text: "This file does not belong to an imported Java project: only syntax errors are reported, and only JDK classes resolve.",
     reload: true,
   },
   // gopls, before its generic "No packages found" below.
@@ -73,13 +79,17 @@ export const outsideProjectBanner: EditorBannerContribution = {
       (l) => subscribeDiagnostics(path, l),
       () => noticeFor(path),
     );
+    const inProject = useProject(({ project }) =>
+      [project?.root, ...(project?.workspace?.projects ?? [])].some((root) => !!root && isSameOrInside(path, root)),
+    );
     if (!notice) return null;
-    const actions = notice.reload
-      ? RELOADS.filter(({ id }) => {
-          const action = getAction(id);
-          return action && isActionEnabled(action);
-        }).map(({ id, label }) => ({ label, run: () => void executeAction(id) }))
-      : [];
+    const actions =
+      notice.reload && inProject
+        ? RELOADS.filter(({ id }) => {
+            const action = getAction(id);
+            return action && isActionEnabled(action);
+          }).map(({ id, label }) => ({ label, run: () => void executeAction(id) }))
+        : [];
     return { text: notice.text, level: "warning", actions };
   },
 };
