@@ -6067,5 +6067,21 @@
   "Clear all options": "清除所有选项",
   "Open results in new tab": "在新标签打开",
   "Use {next} and {previous} to select usages": "使用 {next} 和 {previous} 选择用法",
-  "Replace preview": "替换预览"
+  "Replace preview": "替换预览",
+  "Incompatible": "不兼容",
+  "Needs plugin API {engine}. Update OpenIDEA to install it.": "需要插件 API {engine}。请更新 OpenIDEA 后再安装。",
+  "Icon Themes": "图标主题",
+  "Linters & Formatters": "检查与格式化",
+  "AI": "人工智能",
+  "Frameworks": "框架",
+  "All Categories": "全部分类",
+  "Category": "分类",
+  "Update All Plugins": "更新全部插件",
+  "Update All Plugins ({updates})": "更新全部插件（{updates}）",
+  "Update All": "全部更新",
+  "Show Plugins": "查看插件",
+  "Plugin update available": "有插件可更新",
+  "{length} plugin updates available": "{length} 个插件可更新",
+  "Updated {updated} plugins": "已更新 {updated} 个插件",
+  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "此版本的签名密钥与已安装的版本不同，且发布者之前的密钥没有为它背书。只有在确认发布者更换了密钥时才继续。"
 }

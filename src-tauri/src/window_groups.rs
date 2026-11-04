@@ -202,6 +202,7 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
         // The tab that stays keeps the fullscreen; the detached window opens beside it.
+        #[cfg(target_os = "macos")]
         let simple = simple_fullscreen(caller);
         if let Some(window) = app.get_webview_window(&next) {
             #[cfg(target_os = "macos")]

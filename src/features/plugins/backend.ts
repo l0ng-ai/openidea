@@ -429,6 +429,8 @@ export function createMemoryPluginsBackend(
       replaces: plugins.find((p) => p.id === entry.id)?.version ?? null,
       unsigned: true,
       publisher: null,
+      signerChanged: false,
+      needsConsent: true,
     };
   };
   return {

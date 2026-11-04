@@ -5,6 +5,7 @@ description = "Keeps a copyright and SPDX license header at the top of source fi
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: missing headers reported on open and save, Add License Header quick fix and command, project scan in the background."
+categories = ["tools"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 activation = ["on-event:file-opened", "on-event:file-saved", "on-command:*"]
