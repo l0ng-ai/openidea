@@ -139,6 +139,23 @@ fn file_ranking_is_idea_like() {
 }
 
 #[test]
+fn find_dirs_ranks_folder_names() {
+    let f = sample();
+    let idx = f.open();
+    let dirs = |q: &str| idx.find_dirs(q, 20).into_iter().map(|m| m.rel_path).collect::<Vec<_>>();
+    assert_eq!(dirs("order"), ["src/order/"]);
+    assert_eq!(dirs("src")[0], "src/");
+    assert!(dirs("src").contains(&"src/ui/".to_owned()), "{:?}", dirs("src"));
+    assert_eq!(dirs("src/ui/"), ["src/ui/"]);
+    assert!(dirs("").is_empty());
+    assert!(dirs("main").is_empty());
+
+    let m = &idx.find_dirs("ui", 1)[0];
+    assert_eq!(m.path.0, f.root.join("src/ui"));
+    assert_eq!(m.indices, vec![4, 5]);
+}
+
+#[test]
 fn shorter_paths_win_ties_and_recent_files_boost() {
     let fx = Fixture::new(&[("a/b/c/util.rs", ""), ("x/util.rs", ""), ("y/util.rs", "")]);
     let idx = fx.open();

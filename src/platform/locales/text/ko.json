@@ -3492,7 +3492,7 @@
   "Not installed": "설치되지 않음",
   "{command} was not found on PATH": "PATH에서 {command}을(를) 찾을 수 없습니다",
   "Agent tasks": "에이전트 작업",
-  "Describe a task for the agent. @ references a file, / runs a command": "에이전트에게 맡길 작업을 설명하세요. @는 파일 참조, /는 명령 실행",
+  "Describe a task for the agent. @ references a file or folder, / runs a command": "에이전트에게 맡길 작업을 설명하세요. @는 파일·폴더 참조, /는 명령 실행",
   "away from your changes": "변경 사항과 분리됨",
   "edits your files directly": "파일을 직접 편집함",
   "from": "기준",

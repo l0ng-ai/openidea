@@ -3498,7 +3498,7 @@
   "Not installed": "未安装",
   "{command} was not found on PATH": "在 PATH 中找不到 {command}",
   "Agent tasks": "Agent 任务",
-  "Describe a task for the agent. @ references a file, / runs a command": "描述要交给 agent 的任务。@ 引用文件，/ 运行命令",
+  "Describe a task for the agent. @ references a file or folder, / runs a command": "描述要交给 agent 的任务。@ 引用文件或文件夹，/ 运行命令",
   "away from your changes": "不影响你的改动",
   "edits your files directly": "直接修改你的文件",
   "from": "基于",
