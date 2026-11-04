@@ -248,6 +248,9 @@ export const openideaTheme = EditorView.theme({
 
   // Overlays
   ".cm-tooltip": {
+    // Natural width, so a measurement taken while squeezed is not fed back (#1188).
+    width: "max-content",
+    maxWidth: "100%",
     backgroundColor: "var(--bg-popup)",
     color: "var(--fg)",
     border: "1px solid var(--border-popup)",
