@@ -13,7 +13,10 @@ import { Channel } from "@tauri-apps/api/core";
 import { commands, type InstallEvent } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, nextRequestId, onIdeEvent } from "@/platform/ipc";
+import { useBuildModel } from "@/platform/buildModel";
 import { openProject, useProject } from "@/platform/project";
+import { activate as activateBuildTools } from "@/features/build-tools";
+import { useBuild } from "@/features/build-tools/store";
 import { activate as activateDebugger } from "@/features/debugger";
 import { addBreakpoint } from "@/features/debugger/breakpoints/store";
 import { activeSession, evaluate, useDebug } from "@/features/debugger/state";
@@ -97,7 +100,7 @@ let base = "";
 const events: string[] = [];
 beforeAll(() => {
   onIdeEvent("*", (e) => events.push(e.type === "debug" ? `debug ${e.session} ${e.event.kind}` : e.type));
-  const disposers = [activateWorkbench(), activateRun(), activateDebugger()];
+  const disposers = [activateWorkbench(), activateBuildTools(), activateRun(), activateDebugger()];
   deactivate = () => disposers.reverse().forEach((d) => d());
 });
 afterAll(() => deactivate?.());
@@ -120,6 +123,16 @@ async function open(c: Case): Promise<string> {
   const trusted = await commands.projectTrustSet(root, true, false);
   if (trusted.status !== "ok") throw new Error(trusted.error.message);
   useProject.setState({ project: { ...useProject.getState().project!, trusted: true } });
+  // Run and Debug follow the build (a Gradle project's Application runs through Gradle).
+  await until(
+    "the build model",
+    () => {
+      const error = useBuild.getState().error;
+      if (error) throw new Error(`the build model did not load: ${error}`);
+      return useBuildModel.getState().root === root && useBuildModel.getState().model;
+    },
+    5 * 60_000,
+  );
   return root;
 }
 
@@ -213,10 +226,16 @@ async function smoke(language: string) {
   const value = await evaluate(c.evaluate[0], "repl", s);
   expect(value.value, c.evaluate[0]).toMatch(c.evaluate[1]);
 
-  const stops = useDebug.getState().stopSeq;
-  await executeAction("debug.stepOver");
-  await until("Step Over", () => useDebug.getState().stopSeq > stops && paused());
-  expect(paused()!.frames[0]!.line).toBeGreaterThan(line);
+  // Python 3.12 reports a conditional expression's line twice: Step Over may stop on it
+  // (and its breakpoint) again.
+  for (let step = 0; step < 3 && paused()!.frames[0]!.line === line; step++) {
+    const stops = useDebug.getState().stopSeq;
+    await executeAction("debug.stepOver");
+    await until("Step Over", () => useDebug.getState().stopSeq > stops && paused());
+  }
+  const after = paused()!;
+  expect(after.stopReason, shown()).toBe("step");
+  expect(after.frames[0]!.line, shown()).toBeGreaterThan(line);
 
   await executeAction("debug.resume");
   if (c.request) {
