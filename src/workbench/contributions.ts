@@ -1451,3 +1451,46 @@ export const useDebugRunSessions = create<{
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+
+// ---------------------------------------------------------------------------
+// "Get from Version Control" sources besides a plain URL (IDEA: GitHub, GitLab…),
+// listed in the Clone Repository dialog's sidebar.
+
+export interface CloneSourceProps {
+  /** The repository URL the dialog clones. */
+  url: string;
+  /** Picks a repository: the dialog clones `url` (and derives its directory from it). */
+  onUrl(url: string): void;
+  /** Picks a repository and clones it right away (double-click, Enter). */
+  onClone(url: string): void;
+  disabled: boolean;
+}
+
+export interface CloneSourceContribution {
+  id: string;
+  label: string;
+  icon: string;
+  /** Lower first; "Repository URL" always comes first. */
+  order?: number;
+  component: ComponentType<CloneSourceProps>;
+}
+
+export const useCloneSources = create<{ sources: ReadonlyMap<string, CloneSourceContribution> }>(() => ({
+  sources: new Map(),
+}));
+
+export function registerCloneSource(source: CloneSourceContribution): () => void {
+  useCloneSources.setState((s) => ({ sources: new Map(s.sources).set(source.id, source) }));
+  return () =>
+    useCloneSources.setState((s) => {
+      if (s.sources.get(source.id) !== source) return s;
+      const sources = new Map(s.sources);
+      sources.delete(source.id);
+      return { sources };
+    });
+}
+
+/** Registered clone sources in order. */
+export function cloneSourceList(sources = useCloneSources.getState().sources): CloneSourceContribution[] {
+  return [...sources.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id));
+}

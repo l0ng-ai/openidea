@@ -435,6 +435,7 @@ const ICONS = {
   // Code review / GitHub pull requests (collaboration-tools, GitHub plugin, DVCS)
   "branch-label": "vcs/branchLabel",
   "current-branch-label": "vcs/currentBranchLabel",
+  github: "vcs/vendors/github",
   "github-pr-open": "github/pullRequestOpen",
   "github-pr-closed": "github/pullRequestClosed",
   "github-pr-draft": "github/pullRequestDraft",

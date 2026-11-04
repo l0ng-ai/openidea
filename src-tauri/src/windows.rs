@@ -47,6 +47,18 @@ pub struct Launch {
     pub settings_page: Option<String>,
     /// Settings windows: edit the global layer only ("Settings for New Projects").
     pub new_projects: bool,
+    /// Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`).
+    #[serde(default)]
+    pub positions: Vec<FilePosition>,
+}
+
+/// A caret position for a file opened from the command line: 0-based line and column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePosition {
+    pub path: ide_core::IpcPath,
+    pub line: u32,
+    pub column: u32,
 }
 
 /// A project folder on the host of an SSH configuration.
@@ -63,6 +75,8 @@ pub struct WindowsState {
     pub groups_restored: AtomicBool,
     pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
+    /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
+    positions: Mutex<HashMap<PathBuf, (u32, u32)>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
@@ -79,7 +93,21 @@ impl WindowsState {
     }
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
-        self.launches.lock().remove(label)
+        let mut launch = self.launches.lock().remove(label)?;
+        let mut positions = self.positions.lock();
+        for file in &launch.files {
+            let path = dunce::canonicalize(&file.0).unwrap_or_else(|_| file.0.clone());
+            if let Some((line, column)) = positions.remove(&path) {
+                launch.positions.push(FilePosition { path: file.clone(), line, column });
+            }
+        }
+        Some(launch)
+    }
+
+    /// The caret goes to `position` (0-based line, column) when a window opens `file`.
+    pub fn set_position(&self, file: &Path, position: (u32, u32)) {
+        let path = dunce::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+        self.positions.lock().insert(path, position);
     }
 
     /// Adds `files` to `label`'s pending launch, so files sent before its frontend took the last batch aren't lost.
@@ -190,13 +218,50 @@ pub fn cycle_target(sorted: &[String], current: &str, forward: bool) -> Option<S
     Some(sorted[j].clone())
 }
 
+/// Flags followed by a value (`--line 12`).
+const VALUE_FLAGS: [&str; 2] = ["--line", "--column"];
+
 /// The project path from command-line arguments (`openidea /path/to/project`):
-/// the first argument after the binary that is not a flag, resolved against `cwd`.
+/// the first argument after the binary that is not a flag or a flag's value, resolved against `cwd`.
 pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
-    args.iter().skip(1).find(|a| !a.starts_with('-') && !a.is_empty() && !a.starts_with("psn_")).map(|a| {
+    let mut rest = args.iter().skip(1);
+    while let Some(a) = rest.next() {
+        if VALUE_FLAGS.contains(&a.as_str()) {
+            rest.next();
+            continue;
+        }
+        if a.starts_with('-') || a.is_empty() || a.starts_with("psn_") {
+            continue;
+        }
         let p = PathBuf::from(a);
-        if p.is_absolute() { p } else { cwd.join(p) }
-    })
+        return Some(if p.is_absolute() { p } else { cwd.join(p) });
+    }
+    None
+}
+
+/// `--line <n>` and `--column <n>` (1-based, also as `--line=<n>`) as a 0-based position;
+/// without `--line` there is none, without `--column` it is the line's start.
+pub fn cli_position(args: &[String]) -> Option<(u32, u32)> {
+    let value = |flag: &str| {
+        let prefix = format!("{flag}=");
+        args.iter().enumerate().skip(1).find_map(|(i, a)| match a.strip_prefix(&prefix) {
+            Some(v) => Some(v.to_owned()),
+            None if a == flag => args.get(i + 1).cloned(),
+            None => None,
+        })
+    };
+    let number = |flag: &str| value(flag).and_then(|v| v.trim().parse::<u32>().ok());
+    let line = number("--line")?;
+    Some((line.saturating_sub(1), number("--column").unwrap_or(1).saturating_sub(1)))
+}
+
+/// Remembers the command line's `--line` / `--column` for `path` (a file) before it is opened.
+pub fn remember_cli_position(windows: &WindowsState, args: &[String], path: &Path) {
+    if let Some(position) = cli_position(args)
+        && !path.is_dir()
+    {
+        windows.set_position(path, position);
+    }
 }
 
 pub fn focus(window: &WebviewWindow) {
@@ -752,7 +817,10 @@ pub fn path_launch(path: PathBuf) -> Launch {
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     match cli_path(&args, Path::new(&cwd)) {
-        Some(path) => open_path(app, &path),
+        Some(path) => {
+            remember_cli_position(&app.state::<WindowsState>(), &args, &path);
+            open_path(app, &path)
+        }
         None => {
             if let Some(w) = target_window(app) {
                 focus(&w);
@@ -1070,6 +1138,38 @@ mod tests {
         assert_eq!(cli_path(&s(&["openidea", "/abs/p"]), cwd), Some(PathBuf::from("/abs/p")));
         assert_eq!(cli_path(&s(&["openidea"]), cwd), None);
         assert_eq!(cli_path(&s(&["openidea", "-psn_0_123"]), cwd), None);
+        // A flag's value is not the path.
+        let args = s(&["openidea", "--line", "120", "--column", "8", "src/Main.java"]);
+        assert_eq!(cli_path(&args, cwd), Some(PathBuf::from("/work/src/Main.java")));
+        assert_eq!(
+            cli_path(&s(&["openidea", "--line=3", "a b/文件.rs"]), cwd),
+            Some(PathBuf::from("/work/a b/文件.rs"))
+        );
+    }
+
+    #[test]
+    fn cli_position_is_one_based_on_the_command_line() {
+        assert_eq!(cli_position(&s(&["openidea", "--line", "120", "--column", "8", "f"])), Some((119, 7)));
+        assert_eq!(cli_position(&s(&["openidea", "--line=5", "f"])), Some((4, 0)));
+        assert_eq!(cli_position(&s(&["openidea", "--line", "0", "f"])), Some((0, 0)));
+        assert_eq!(cli_position(&s(&["openidea", "--column", "8", "f"])), None);
+        assert_eq!(cli_position(&s(&["openidea", "--line", "x", "f"])), None);
+        assert_eq!(cli_position(&s(&["openidea", "f"])), None);
+    }
+
+    #[test]
+    fn a_launch_carries_the_positions_of_its_files() {
+        let st = WindowsState::default();
+        let file = std::env::current_exe().unwrap();
+        let other = std::env::temp_dir().join("openidea-not-opened.txt");
+        st.set_position(&file, (11, 4));
+        st.set_position(&other, (1, 0));
+        st.add_files("main", vec![file.clone()]);
+        let launch = st.take_launch("main").unwrap();
+        assert_eq!(launch.positions, vec![FilePosition { path: file.into(), line: 11, column: 4 }]);
+        // Taken once: the next launch of that file opens it where it was.
+        st.add_files("main", vec![std::env::current_exe().unwrap()]);
+        assert!(st.take_launch("main").unwrap().positions.is_empty());
     }
 
     #[test]

@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_github::{
-    CreatePullRequest, GhApiRequest, GhAvailability, PrDiffRevisions, PrListQuery, PrReviewComment, PullRequestDetails,
-    PullRequestSummary, ReviewEvent,
+    CreatePullRequest, GhAccountRepos, GhApiRequest, GhAvailability, PrDiffRevisions, PrListQuery, PrReviewComment,
+    PullRequestDetails, PullRequestSummary, ReviewEvent,
 };
 use std::path::PathBuf;
 use tauri::ipc::Channel;
@@ -33,6 +33,13 @@ fn vcs_changed(state: &AppState, window: &Window, root: &std::path::Path) {
     if let Ok(p) = state.project(window.label()) {
         p.sink.emit(ide_core::IdeEvent::VcsChanged { root: ide_core::IpcPath(root.to_path_buf()) });
     }
+}
+
+/// The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project.
+#[tauri::command]
+#[specta::specta]
+pub async fn gh_account_repos() -> IdeResult<GhAccountRepos> {
+    blocking(|| Ok(ide_github::account_repositories())).await
 }
 
 #[tauri::command]
