@@ -122,6 +122,11 @@ export function allActions(): Action[] {
 }
 
 export function isActionEnabled(action: Action, ctx: ContextKeys = getContext()): boolean {
+  if (
+    ctx.projectOpening &&
+    !["app.quit", "window.next", "window.previous", "window.toggleFullScreen"].includes(action.id)
+  )
+    return false;
   return evaluateWhen(action.when, ctx);
 }
 
