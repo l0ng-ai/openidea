@@ -22,6 +22,8 @@ const MAX_INDEX: usize = 16 << 20;
 const MAX_PACKAGE: usize = 256 << 20;
 const MAX_STAGED_FILES: usize = 256;
 const MAX_STAGED_BYTES: usize = 16 << 20;
+/// `moved` links followed before giving up (a loop, or a misconfiguration).
+const MAX_MOVES: usize = 3;
 
 /// A marketplace entry with what is installed.
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -58,6 +60,33 @@ pub fn read_url(url: &str, max: usize) -> Result<Vec<u8>, String> {
         return Err(format!("{path}: larger than {} MiB", max >> 20));
     }
     Ok(bytes)
+}
+
+/// The index at `url`, following `moved`, with downloads made absolute against
+/// where it was read from.
+fn read_index(url: &str) -> IdeResult<Index> {
+    let mut url = url.to_owned();
+    for _ in 0..=MAX_MOVES {
+        let bytes = read_url(&url, MAX_INDEX).map_err(IdeError::unavailable)?;
+        let text = String::from_utf8(bytes).map_err(|_| IdeError::invalid("the index is not UTF-8"))?;
+        let mut index = Index::parse(&text).map_err(IdeError::invalid)?;
+        match index.moved.take().filter(|m| !m.trim().is_empty()) {
+            Some(next) => {
+                let next = resolve(&url, &next);
+                if url.starts_with("https://") && !next.starts_with("https://") {
+                    return Err(IdeError::invalid(format!("the marketplace moved to {next}, which isn't https")));
+                }
+                url = next;
+            }
+            None => {
+                for e in &mut index.plugins {
+                    e.download = resolve(&url, &e.download);
+                }
+                return Ok(index);
+            }
+        }
+    }
+    Err(IdeError::unavailable(format!("the marketplace index moved more than {MAX_MOVES} times")))
 }
 
 /// `href` relative to the index at `base`: a URL, or a local path (with the
@@ -102,10 +131,10 @@ impl PluginHost {
     /// Reads the index again, keeps it, and applies its revocations.
     pub fn refresh_market(&self) -> IdeResult<Vec<MarketPlugin>> {
         let url = self.market_url().ok_or_else(|| IdeError::unavailable("no plugin marketplace is configured"))?;
-        let bytes = read_url(&url, MAX_INDEX).map_err(IdeError::unavailable)?;
-        let text = String::from_utf8(bytes).map_err(|_| IdeError::invalid("the index is not UTF-8"))?;
-        let index = Index::parse(&text).map_err(IdeError::invalid)?;
-        let _ = std::fs::write(self.plugins_dir.join(INDEX_FILE), &text);
+        let index = read_index(&url)?;
+        if let Ok(json) = serde_json::to_string(&index) {
+            let _ = std::fs::write(self.plugins_dir.join(INDEX_FILE), json);
+        }
         *self.market.write() = Some(index);
         // Trust may have changed: who signed what, what is revoked.
         let installed: Vec<_> =

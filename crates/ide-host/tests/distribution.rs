@@ -172,6 +172,7 @@ fn write_index(
         }],
         plugins,
         revoked,
+        moved: None,
     };
     let path = dir.join("index.json");
     std::fs::write(&path, serde_json::to_string(&index).unwrap()).unwrap();
@@ -286,4 +287,29 @@ fn the_marketplace_offers_the_newest_version_this_ide_can_load() {
     assert_eq!((listed[0].entry.version.as_str(), listed[0].compatible), ("2.0.0", false));
     let err = f.host.download_market_plugin("acme.hello").unwrap_err();
     assert!(err.message.contains("update OpenIDEA"), "{}", err.message);
+}
+
+#[test]
+fn a_moved_marketplace_is_read_where_it_moved_to() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    write_index(&market, &key, vec![entry], vec![], false);
+    // The old address points at the new one; downloads resolve against where the index is.
+    let old = f.work.join("old");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("index.json"), r#"{"format": 1, "moved": "../market/index.json"}"#).unwrap();
+    f.host.set_market_url(Some(old.join("index.json").to_string_lossy().into_owned()));
+
+    let listed = f.host.refresh_market().unwrap();
+    assert_eq!(listed[0].entry.id, "acme.hello");
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0");
+
+    // A loop gives up.
+    std::fs::write(old.join("index.json"), r#"{"format": 1, "moved": "index.json"}"#).unwrap();
+    let err = f.host.refresh_market().unwrap_err();
+    assert!(err.message.contains("moved more than"), "{}", err.message);
 }

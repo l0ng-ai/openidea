@@ -244,6 +244,10 @@ pub struct Index {
     pub plugins: Vec<IndexEntry>,
     #[serde(default)]
     pub revoked: Vec<Revocation>,
+    /// The marketplace moved: its index is at this URL (relative to this
+    /// one, or absolute), and the IDE reads that one instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -476,6 +480,7 @@ mod tests {
                 versions: vec!["1.0.0".into()],
                 reason: "malware".into(),
             }],
+            moved: None,
         }
     }
 
@@ -588,12 +593,14 @@ mod tests {
             publishers: vec![publisher("openidea"), publisher("gone")],
             plugins: vec![entry("openidea.a", "openidea"), entry("gone.x", "gone")],
             revoked: vec![revocation("openidea.old"), revocation("gone.x")],
+            moved: None,
         };
         let community = Index {
             format: INDEX_FORMAT,
             publishers: vec![publisher("alice")],
             plugins: vec![entry("alice.arthas", "alice")],
             revoked: vec![revocation("alice.bad")],
+            moved: None,
         };
         official.include(community.clone(), &["openidea"]).unwrap();
         let ids = |v: &[IndexEntry]| v.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
@@ -615,6 +622,7 @@ mod tests {
             publishers,
             plugins,
             revoked,
+            moved: None,
         };
         let cases = [
             (with(vec![publisher("openidea")], vec![], vec![]), "may not list"),

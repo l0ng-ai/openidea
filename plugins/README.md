@@ -784,6 +784,9 @@ and the publisher's key, then shows the install page.
   with the reason and the user is notified — also after a restart, before
   their code could run. A publisher rotates keys by adding the new one; older
   keys stay valid until revoked.
+- **Moving:** an index with `"moved": "<url>"` sends the IDE to the index at
+  that URL (relative or absolute; https stays https), so a marketplace can
+  change hosts while released IDEs keep the address they were built with.
 
 **Versions.** Each index entry records the plugin API it needs (`engine`: the
 manifest's `engines.openidea`, narrowed to the API its component was built
