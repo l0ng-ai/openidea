@@ -186,6 +186,24 @@ describe("PHP language level status", () => {
     expect(mocks.set).not.toHaveBeenCalled();
   });
 
+  it("drops the previous file's level and menu when another PHP file is focused", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.level.mockResolvedValueOnce({ ...fromComposer, member: "/project/api" });
+    mount();
+    await focus("php", "/project/api/src/Order.php");
+    await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" });
+    await act(() => executeAction("php.languageLevelPopup"));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    mocks.level.mockRejectedValueOnce(new Error("project closed"));
+    await focus("php", "/project/src/Invoice.php");
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("menu")).toBeNull();
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(mocks.level).toHaveBeenLastCalledWith("/project/src/Invoice.php");
+    expect(screen.queryByRole("button")).toBeNull();
+    warn.mockRestore();
+  });
+
   it("ignores levels it does not list and reports write failures", async () => {
     await executeAction("php.selectLanguageLevel", "9.9");
     expect(mocks.set).not.toHaveBeenCalled();

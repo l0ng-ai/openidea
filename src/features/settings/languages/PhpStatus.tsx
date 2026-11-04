@@ -10,9 +10,10 @@ import { notifications, registerStatusItem } from "@/workbench/contributions";
 import { BarButton, Menu, type MenuItem } from "@/ui";
 import { phpLanguageLevel } from "./api";
 
-/** What the widget last resolved for a project, so the popup action can read it without a render. */
+/** What the widget last resolved for a file, so the popup action can read it without a render. */
 interface Status extends PhpLanguageLevels {
   root: string;
+  path: string;
 }
 
 const usePopup = create<{ open: boolean; status: Status | null }>(() => ({ open: false, status: null }));
@@ -23,7 +24,8 @@ const reset = () => usePopup.setState({ open: false, status: null });
 function popupShown(): boolean {
   const root = useProject.getState().project?.root;
   const status = usePopup.getState().status;
-  return !!root && status?.root === root && getContext().editorLangId === "php";
+  const context = getContext();
+  return !!root && status?.root === root && status.path === context.editorPath && context.editorLangId === "php";
 }
 
 /** `8.1.0` as `8.1`, the way the levels are listed. */
@@ -53,9 +55,8 @@ function PhpStatus() {
   const open = usePopup((s) => s.open);
   const anchor = useRef<HTMLButtonElement>(null);
   useEffect(() => reset, [root]);
-  useEffect(() => {
-    if (!path) close();
-  }, [path]);
+  // The menu belongs to the focused file.
+  useEffect(() => close, [path]);
   useEffect(() => {
     if (!root || !path) return;
     let live = true;
@@ -67,7 +68,7 @@ function PhpStatus() {
       const request = ++sequence;
       try {
         const level = await phpLanguageLevel(path);
-        if (live && sequence === request) usePopup.setState({ status: level && { root, ...level } });
+        if (live && sequence === request) usePopup.setState({ status: level && { root, path, ...level } });
       } catch (e) {
         console.warn("Cannot read the PHP language level", e);
       }
