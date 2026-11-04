@@ -1,6 +1,7 @@
 /** Actions of the project view (Find Action, keymap, other features via `executeAction`). */
 import { activeEditor } from "@/editor/api";
 import { getAction, registerActions, type Action } from "@/platform/actions";
+import { getContext } from "@/platform/context";
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
@@ -72,6 +73,16 @@ function nodesFrom(arg: unknown): ProjectNode[] {
       symlink: false,
     };
   });
+}
+
+/**
+ * The target of an action invoked without one: the Project view's selection while it has focus,
+ * otherwise the active editor's file (a shortcut pressed in the editor acts on the edited file).
+ */
+function contextTarget(arg: unknown): unknown {
+  if (arg !== undefined && arg !== null) return arg;
+  if (getContext().projectViewFocus) return arg;
+  return maybeEditorService()?.activePath() ?? arg;
 }
 
 function folderFrom(arg: unknown): string | null {
@@ -379,7 +390,7 @@ export function registerProjectActions(): () => void {
       icon: "external-link",
       when: OPEN,
       keywords: ["show in explorer", "open in finder"],
-      run: ({ arg }) => revealInFinder(nodesFrom(arg)),
+      run: ({ arg }) => revealInFinder(nodesFrom(contextTarget(arg))),
     },
     {
       id: "project.openInTerminal",
@@ -388,7 +399,7 @@ export function registerProjectActions(): () => void {
       icon: "terminal",
       when: OPEN,
       run: ({ arg }) => {
-        const dir = folderFrom(arg);
+        const dir = folderFrom(contextTarget(arg));
         if (dir) delegate("terminal.openAt", dir);
       },
     },
