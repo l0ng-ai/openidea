@@ -21,6 +21,7 @@ import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { SourcePreview, T, type SourceHighlight } from "@/ui";
+import { todoHighlightExtension } from "./highlight";
 import styles from "./TodoView.module.css";
 
 /** Dirty attachments kept alive after their view unmounted (see header note). */
@@ -95,6 +96,7 @@ export function PreviewEditor({
               keymap.of([...historyKeymap, ...searchKeymap, ...defaultKeymap]),
               att.extension,
               embeddedEditorExtensions(path),
+              todoHighlightExtension(),
               language.of([]),
             ],
           }),
