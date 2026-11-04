@@ -221,7 +221,7 @@ pub fn login_cache_root(layout: &Layout, locations: &Locations, identifier: &str
 /// base itself otherwise.
 pub fn tools_home(layout: &Layout, identifier: &str) -> Option<PathBuf> {
     match layout {
-        Layout::Default => dirs::data_dir().map(|d| d.join(identifier)),
+        Layout::Default => dirs::data_local_dir().map(|d| d.join(identifier)),
         Layout::Custom(base) => Some(base.clone()),
     }
 }
@@ -769,6 +769,35 @@ mod tests {
         let (layout, locations) = resolve(Some("/b"), None, &defaults, Path::new("/h"));
         assert_eq!(layout, Layout::Custom(PathBuf::from("/b")));
         assert_eq!(locations, Locations { config: PathBuf::from("/b/config"), data: PathBuf::from("/b/system") });
+    }
+
+    #[test]
+    fn custom_base_routes_every_consumer_off_the_platform_dirs() {
+        // The switch guarantee: after the user chooses a base, nothing reads
+        // the platform dirs — every consumer root hangs off the base.
+        let defaults = defaults_of(Path::new("/platform-config"), Path::new("/platform-data"));
+        let (layout, locations) = resolve(Some("/base"), None, &defaults, Path::new("/h"));
+        assert_eq!(locations.config, PathBuf::from("/base/config"));
+        assert_eq!(locations.data, PathBuf::from("/base/system"));
+        assert_eq!(plugins_dir(&layout, &locations), PathBuf::from("/base/config"));
+        assert_eq!(log_dir(&layout, "id"), Some(PathBuf::from("/base/log")));
+        assert_eq!(login_cache_root(&layout, &locations, "id"), PathBuf::from("/base/system"));
+        assert_eq!(tools_home(&layout, "id"), Some(PathBuf::from("/base")));
+    }
+
+    #[test]
+    fn default_layout_keeps_the_platform_dirs() {
+        // Without a switch, every consumer keeps the platform locations.
+        // `tools_home`, the log dir and the login cache read `dirs::` on the
+        // real machine, so only their identifier suffix is pinned here.
+        let defaults = defaults_of(Path::new("/platform-config"), Path::new("/platform-data"));
+        let (layout, locations) = resolve(None, None, &defaults, Path::new("/h"));
+        assert_eq!(locations.config, PathBuf::from("/platform-config"));
+        assert_eq!(locations.data, PathBuf::from("/platform-data"));
+        assert_eq!(plugins_dir(&layout, &locations), PathBuf::from("/platform-data"));
+        assert!(tools_home(&layout, "id").is_some_and(|d| d.ends_with("id")));
+        assert!(login_cache_root(&layout, &locations, "id").ends_with("id"));
+        assert!(log_dir(&layout, "id").is_some_and(|d| d.ends_with("id")));
     }
 
     #[test]
