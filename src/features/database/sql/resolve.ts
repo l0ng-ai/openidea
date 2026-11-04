@@ -7,7 +7,7 @@
  */
 import type { DbCompletion, DbCompletionColumn, DbCompletionTable, DbDriver } from "@/platform/ipc";
 import { analyze, type TableRef } from "./analyze";
-import { CLAUSE_WORDS, DATA_TYPES, functions, isReserved } from "./dialect";
+import { CLAUSE_WORDS, DATA_TYPES, functions, isReserved, nameMatcher } from "./dialect";
 import { identName, lex, type Lexed, type Token } from "./lexer";
 
 export type SqlSymbol =
@@ -49,14 +49,13 @@ const NOT_COLUMNS = new Set(
   ).split(" "),
 );
 
-const eq = (a: string | null | undefined, b: string | null | undefined) =>
-  !!a && !!b && a.toLowerCase() === b.toLowerCase();
-
 export function findTable(
   model: DbCompletion | null,
   schema: string | null,
   name: string,
+  driver: DbDriver = "sqlite",
 ): DbCompletionTable | undefined {
+  const eq = nameMatcher(driver);
   const tables = model?.tables ?? [];
   if (schema) return tables.find((t) => eq(t.schema, schema) && eq(t.name, name));
   return (
@@ -126,6 +125,7 @@ export class SqlResolver {
 
   /** Resolves token `i`; `null` when it is no name (keywords, function names…). */
   resolve(i: number): Resolved | null {
+    const eq = nameMatcher(this.driver);
     const toks = this.lexed.tokens;
     const t = toks[i]!;
     if (!isName(t) || (t.kind === "word" && CLAUSE_WORDS.has(t.upper))) return null;
@@ -166,7 +166,7 @@ export class SqlResolver {
         const schema = qualifier?.at(-1) ?? null;
         const cte = schema ? undefined : a.ctes.find((c) => eq(c.name, name));
         if (cte) return { ...span, symbol: { kind: "cte", name: cte.name, def: { from: cte.from, to: cte.to } } };
-        const table = findTable(this.model, schema, name);
+        const table = findTable(this.model, schema, name, this.driver);
         if (table) return { ...span, symbol: { kind: "table", table } };
         if (!loaded || (a.verb !== "DROP" && a.verb !== "ALTER" && !checked)) return { ...span, symbol: null };
         if (schema && !this.model!.tables.some((x) => eq(x.schema, schema))) return { ...span, symbol: null };
@@ -228,7 +228,7 @@ export class SqlResolver {
       clause !== "other" &&
       clause !== "values" &&
       clause !== "limit" &&
-      !this.outputAliases(i).has(name.toLowerCase());
+      !this.outputAliases(i).has(this.driver === "clickhouse" ? name : name.toLowerCase());
     return judged
       ? { ...span, symbol: null, problem: `Unable to resolve column '${name}'` }
       : { ...span, symbol: null };
@@ -247,15 +247,17 @@ export class SqlResolver {
   }
 
   private schema(name: string, span: Span): Resolved {
+    const eq = nameMatcher(this.driver);
     return { ...span, symbol: this.model?.tables.some((x) => eq(x.schema, name)) ? { kind: "schema", name } : null };
   }
 
   private findRef(refs: readonly TableRef[], schema: string | null, name: string): TableRef | undefined {
+    const eq = nameMatcher(this.driver);
     return refs.find((r) => (r.alias ? eq(r.alias, name) : eq(r.name, name) && (!schema || eq(r.schema, schema))));
   }
 
   private refSymbol(ref: TableRef): SqlSymbol {
-    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name) : undefined;
+    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name, this.driver) : undefined;
     if (ref.alias && ref.aliasAt) return { kind: "alias", name: ref.alias, def: ref.aliasAt, table };
     if (table) return { kind: "table", table };
     return { kind: "cte", name: ref.name, def: { from: ref.from, to: ref.to } };
@@ -264,12 +266,12 @@ export class SqlResolver {
   /** Columns of a FROM item; `null` when unknown (not in the model, `select *` subqueries). */
   private columnsOf(ref: TableRef): Array<{ name: string; column?: DbCompletionColumn }> | null {
     if (ref.columns) return ref.columns.length ? ref.columns.map((name) => ({ name })) : null;
-    const table = findTable(this.model, ref.schema, ref.name);
+    const table = findTable(this.model, ref.schema, ref.name, this.driver);
     return table ? table.columns.map((c) => ({ name: c.name, column: c })) : null;
   }
 
   private columnSymbol(ref: TableRef, col: { name: string; column?: DbCompletionColumn }): SqlSymbol {
-    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name) : undefined;
+    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name, this.driver) : undefined;
     return { kind: "column", name: col.name, column: col.column, table, owner: ref.alias ?? ref.name };
   }
 
@@ -287,7 +289,7 @@ export class SqlResolver {
         prev.kind === "number" ||
         prev.kind === "string"
       )
-        out.add(identName(t).toLowerCase());
+        out.add(this.driver === "clickhouse" ? identName(t) : identName(t).toLowerCase());
     }
     return out;
   }

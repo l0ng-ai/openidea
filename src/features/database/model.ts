@@ -390,6 +390,10 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
     }
   }
   source.user = user;
+  if (vendor.driver === "clickhouse") {
+    if (m[1]!.toLowerCase() === "https") source.ssl = "verifyFull";
+    else if (m[1]!.toLowerCase() === "http") source.ssl = "disable";
+  }
   if (properties.length) source.properties = properties;
   return { source, password };
 }

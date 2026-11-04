@@ -197,7 +197,7 @@ async fn count(db: &DbManager) -> String {
 async fn manual_commit_keeps_a_transaction_until_commit_or_rollback() -> IdeResult<()> {
     let (_tmp, db) = setup().await;
     let c = CancellationToken::new();
-    db.set_manual_commit("s1", true).await;
+    db.set_manual_commit("s1", true).await.unwrap();
     db.execute("s1", "INSERT INTO users (name) VALUES ('dee')", 1, &c).await?;
     // The session sees its own change.
     assert_eq!(count(&db).await, "4");
@@ -208,10 +208,10 @@ async fn manual_commit_keeps_a_transaction_until_commit_or_rollback() -> IdeResu
     db.finish_transaction("s1", true).await?;
     // Leaving manual mode rolls back what is still open.
     db.execute("s1", "DELETE FROM users", 1, &c).await?;
-    db.set_manual_commit("s1", false).await;
+    db.set_manual_commit("s1", false).await.unwrap();
     assert_eq!(count(&db).await, "4");
     // Disconnecting with an open transaction does not hang.
-    db.set_manual_commit("s1", true).await;
+    db.set_manual_commit("s1", true).await.unwrap();
     db.execute("s1", "DELETE FROM users", 1, &c).await?;
     db.disconnect("s1").await;
     assert_eq!(count(&db).await, "4");
