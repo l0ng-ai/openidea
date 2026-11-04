@@ -73,8 +73,6 @@ struct Checks {
 #[derive(Clone, Copy, Debug)]
 struct QuickFix {
     typed: Typed,
-    /// Saves before waiting: the diagnostic comes from the check on save (`cargo check`).
-    save: bool,
     diagnostic: &'static str,
     title: &'static str,
     result: &'static str,
@@ -356,9 +354,6 @@ impl Smoke {
     async fn quick_fix(&self, fix: QuickFix) {
         let (doc, _, before) = self.type_line(fix.typed).await;
         assert!(!before.contains(fix.result), "{fix:?}: the file already contains the result");
-        if fix.save {
-            ops::doc::save(&self.host, WINDOW, doc).await.unwrap_or_else(|e| self.fail("quick fix", e));
-        }
         let range = self.diagnostic(fix.typed.file, fix.diagnostic).await;
         let action = self.action("quick fix", doc, range, fix.title).await;
         ops::lsp::lsp_execute_code_action(&self.host, WINDOW, RequestId(4), doc, action, vec![])
@@ -469,7 +464,6 @@ const TYPESCRIPT: Checks = Checks {
     completion: (typed("src/index.ts", "const total = cart.total();", "  cart."), "applyDiscount"),
     quick_fix: QuickFix {
         typed: typed("src/index.ts", "const total = cart.total();", "  console.log(addMoney(total, total));"),
-        save: false,
         diagnostic: "Cannot find name 'addMoney'",
         title: "import from \"./money.ts\"",
         result: "import { addMoney, cents, formatMoney } from \"./money.ts\";",
@@ -481,7 +475,8 @@ const TYPESCRIPT: Checks = Checks {
     ),
     indent: Indent::Spaces(2),
     rename: (
-        at("src/money.ts", "export function formatMoney", "formatMoney"),
+        // From a usage in another file: the declaration is renamed too, not aliased in the import.
+        at("src/index.ts", "Total: ${formatMoney(total)}", "formatMoney"),
         "formatPrice",
         &["src/index.ts", "src/money.ts"],
     ),
@@ -510,7 +505,6 @@ const PYTHON: Checks = Checks {
     completion: (typed("src/tasks/cli.py", "tasks = build_demo()", "    tasks."), "pending"),
     quick_fix: QuickFix {
         typed: typed("src/tasks/cli.py", "tasks = build_demo()", "    print(Task)"),
-        save: false,
         diagnostic: "\"Task\" is not defined",
         title: "from .models import Task",
         result: "from .models import Priority, Task, TaskList",
@@ -547,13 +541,15 @@ const RUST: Checks = Checks {
     hover: (at("src/main.rs", "inventory.take(&Sku", "take"), "pub fn take("),
     completion: (typed("src/main.rs", "let mut inventory = Inventory::new();", "    inventory."), "low_stock"),
     quick_fix: QuickFix {
-        // rust-analyzer's own diagnostics follow edits only for clients that pull them; the
-        // editor shows `cargo check`'s, run on save, with rustc's suggestions as quick fixes.
-        typed: typed("src/main.rs", "let mut inventory = Inventory::new();", "    let leftover = 1;"),
-        save: true,
-        diagnostic: "unused variable: `leftover`",
-        title: "prefix it with an underscore",
-        result: "    let _leftover = 1;",
+        // rust-analyzer's own analysis, pulled as the file changes (no save, no `cargo check`).
+        typed: typed(
+            "src/main.rs",
+            "let mut inventory = Inventory::new();",
+            "    let _blank = parser::ParseError { line: 1 };",
+        ),
+        diagnostic: "missing structure fields",
+        title: "Fill struct fields",
+        result: "ParseError { line: 1, message",
     },
     intention: (at("src/main.rs", "match parser::parse(SAMPLE)", "parser::parse(SAMPLE)"), "Extract into variable"),
     format: (
@@ -589,7 +585,6 @@ const GO: Checks = Checks {
     completion: (typed("cmd/server/main.go", "s := store.New()", "\ts."), "Create"),
     quick_fix: QuickFix {
         typed: typed("cmd/server/main.go", "s := store.New()", "\tfmt.Println(s)"),
-        save: false,
         diagnostic: "undefined: fmt",
         title: "\"fmt\"",
         result: "\t\"fmt\"",
@@ -636,7 +631,6 @@ const JAVA: Checks = Checks {
             "long revenue = book.revenueCents();",
             "        List<Order> all = book.byCustomer(\"alice\");",
         ),
-        save: false,
         diagnostic: "List cannot be resolved to a type",
         title: "Import 'List' (java.util)",
         result: "import java.util.List;",
@@ -693,7 +687,6 @@ const KOTLIN: Checks = Checks {
             "val library = Library()",
             "    val stamp = LocalDateTime.now()",
         ),
-        save: false,
         diagnostic: "Unresolved reference",
         title: "Import",
         result: "import java.time.LocalDateTime",
