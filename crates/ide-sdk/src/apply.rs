@@ -192,6 +192,88 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     out
 }
 
+fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
+    let mut prefixes = vec![0];
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        if arg == "-s" && args.get(i + 1).is_some() {
+            i += 2;
+        } else if arg.starts_with("-Dmaven.repo.local=") {
+            i += 1;
+        } else {
+            break;
+        }
+        prefixes.push(i);
+    }
+    prefixes
+}
+
+fn generated_maven_goal(config: &RunConfig) -> bool {
+    config.id.starts_with("maven:goal:") && config.extras.params.is_empty()
+}
+
+fn maven_goal_prefix(config: &RunConfig) -> Option<usize> {
+    let (_, goals) = config.id.split_once(".xml:")?;
+    maven_settings_prefixes(&config.args)
+        .into_iter()
+        .find(|&start| (start + 1..=config.args.len()).any(|end| config.args[start..end].join(" ") == goals))
+}
+
+/// Applies the current Maven settings at launch, including temporary configurations
+/// made before build-tool defaults stopped being stored in their command and arguments.
+pub fn prepare_maven_run(config: &mut RunConfig, root: &Path, s: &Settings) {
+    let mut detected = config.detected;
+    if generated_maven_goal(config) {
+        // The id records the user's original goals; only the settings prefix before them is derived.
+        if let Some(prefix) = maven_goal_prefix(config) {
+            config.args.drain(..prefix);
+        }
+        let name = config.command.rsplit(['/', '\\']).next().unwrap_or_default().to_ascii_lowercase();
+        if !matches!(name.as_str(), "mvnw" | "mvnw.cmd" | "mvnw.bat") {
+            config.command = "mvn".into();
+            if maven_command(root, s).is_none() {
+                let cwd = config.cwd.as_ref().map_or_else(|| root.to_path_buf(), |dir| root.join(dir.as_ref()));
+                for dir in cwd.ancestors().take_while(|dir| dir.starts_with(root)) {
+                    let wrapper = dir.join(if cfg!(windows) { "mvnw.cmd" } else { "mvnw" });
+                    if wrapper.is_file() {
+                        config.command = wrapper.to_string_lossy().into_owned();
+                        break;
+                    }
+                }
+            }
+        }
+    } else if config.detected || config.id.starts_with("context:") {
+        let saved = ide_run::load_user_configs(root).unwrap_or_default();
+        let id = config
+            .id
+            .strip_prefix("context:target:context:")
+            .or_else(|| config.id.strip_prefix("context:"))
+            .unwrap_or(&config.id);
+        let id = id.strip_prefix("workspace:").and_then(|id| id.split_once(':')).map_or(id, |(_, id)| id);
+        let source = ide_run::detect(root)
+            .into_iter()
+            .chain(saved.iter().cloned())
+            .filter(|base| base.kind == "maven" && (id == base.id || id.starts_with(&format!("{}:", base.id))))
+            .max_by_key(|base| base.id.len())
+            .filter(|base| !saved.iter().any(|user| user.id == base.id));
+        if let Some(base) = source.filter(|_| config.extras.params.is_empty()) {
+            if let Some(prefix) = maven_settings_prefixes(&config.args)
+                .into_iter()
+                .find(|&start| config.args[start..].starts_with(&base.args))
+            {
+                config.args.drain(..prefix);
+            }
+            config.command = base.command;
+        } else {
+            detected = false;
+        }
+    }
+    let original = config.detected;
+    config.detected = detected;
+    apply_to_run_configs(std::slice::from_mut(config), root, s);
+    config.detected = original;
+}
+
 /// The Maven local repository from settings: the configured one, else
 /// `<localRepository>` of the configured user `settings.xml`; `None` = Maven's default.
 pub fn maven_local_repository(root: &Path, s: &Settings) -> Option<PathBuf> {
@@ -666,6 +748,9 @@ fn sets_maven_option(args: &[String], group: &[String]) -> bool {
         Some(flag) => {
             let key = flag.split_once('=').map_or(flag, |(k, _)| k);
             args.iter().any(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k) == key)
+                || args
+                    .windows(2)
+                    .any(|a| a[0] == "-D" && format!("-D{}", a[1].split('=').next().unwrap_or_default()) == key)
         }
         None => true,
     }
@@ -815,11 +900,10 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
                 if c.kind == "maven" {
-                    // A configuration made or saved in the UI names the literal `mvn` /
-                    // `mvn.cmd`; without a wrapper it cannot start when Maven lives on a
-                    // version manager's shims or a configured home (#328).
                     if let Some(mvn) = &mvn
-                        && (c.detected || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
+                        && (c.detected
+                            || generated_maven_goal(c)
+                            || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
                     {
                         c.command = mvn.to_string_lossy().into_owned();
                     }
@@ -870,9 +954,15 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
     if out.kind == "maven" {
         let options = maven_options(root, s);
         let mut probe = out.clone();
+        let mut prefix = generated_maven_goal(&out).then(|| maven_goal_prefix(&out)).flatten();
         for group in maven_option_groups(&options) {
-            if let Some(at) = probe.args.windows(group.len()).position(|w| w == group) {
+            if let Some(at) = probe.args.windows(group.len()).position(|w| w == group)
+                && prefix.is_none_or(|limit| at + group.len() <= limit)
+            {
                 probe.args.drain(at..at + group.len());
+                if let Some(limit) = &mut prefix {
+                    *limit -= group.len();
+                }
             }
         }
         if applied(&probe).args == out.args {
