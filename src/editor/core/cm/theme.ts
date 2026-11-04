@@ -110,6 +110,7 @@ export const openideaTheme = EditorView.theme({
   // Inheritance markers share one gutter: each group hides its own icons.
   "&.cm-openidea-hideGutter-inheritors :is(.cm-openidea-lineMarker-implemented, .cm-openidea-lineMarker-overridden), &.cm-openidea-hideGutter-supers :is(.cm-openidea-lineMarker-implementing, .cm-openidea-lineMarker-overriding)":
     { display: "none" },
+  "&.cm-openidea-hideGutter-mybatis .cm-openidea-gutter-mybatis": { display: "none" },
   // Distraction Free Mode: no gutter; the text column (n chars + line padding) is centred.
   "&.cm-openidea-distractionFree": { "--openidea-df-width": "calc(var(--openidea-df-columns, 80) * 1ch + 22px)" },
   "&.cm-openidea-distractionFree .cm-gutters": { display: "none" },
