@@ -4,7 +4,7 @@ import ts from "typescript";
 import { expect, it } from "vitest";
 import zh from "./text/zh.json";
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
+const root = fileURLToPath(new URL("../../../", import.meta.url)).replaceAll("\\", "/");
 const config = ts.readConfigFile(`${root}tsconfig.json`, ts.sys.readFile);
 const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
 const program = ts.createProgram(parsed.fileNames, parsed.options);

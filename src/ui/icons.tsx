@@ -307,6 +307,7 @@ const ICONS = {
   "db-disconnect": "openidea/database/disconnect",
   "db-sqlite": "openidea/database/sqlite",
   "db-postgres": "openidea/database/postgres",
+  "db-clickhouse": "openidea/database/clickhouse",
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
   "db-mariadb": "openidea/database/mariadb",

@@ -769,6 +769,16 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Opens a window listing the files that differ between two revisions of this window's project.
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
+	/**
+	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
+	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
+	 */
+	windowOpenDeployment: (server: string, paths: string[], background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_deployment", { server, paths, background })),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
@@ -791,6 +801,10 @@ export const commands = {
 	newProjects: boolean,
 	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
 	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment?: DeploymentLaunch | null,
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -2126,6 +2140,26 @@ export type CompareScope = {
 	singleFile: boolean,
 };
 
+/**  Files that differ between `from` and `to` (the working tree when `None`). */
+export type ComparisonLaunch = {
+	from: ComparisonRevision,
+	to: ComparisonRevision | null,
+	scope: ComparisonScope | null,
+	repo: IpcPath | null,
+};
+
+/**  A Git revision and how the comparison window names it. */
+export type ComparisonRevision = {
+	rev: string,
+	label: string,
+};
+
+/**  Limits a comparison to some paths (Compare with Branch on a selection). */
+export type ComparisonScope = {
+	paths: IpcPath[],
+	repositories: IpcPath[] | null,
+};
+
 export type CompletionItem = {
 	label: string,
 	/**  e.g. `(req: CreateOrderRequest)` shown right after the label. */
@@ -2405,7 +2439,7 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  MySQL and MariaDB. */
 "mysql" | 
 /**  Microsoft SQL Server. */
-"sqlServer";
+"sqlServer" | "clickhouse";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -2699,6 +2733,13 @@ export type DeploymentCoverage = {
 	server: string,
 	paths: string[],
 	skipped: TransferError[],
+};
+
+/**  Local files to compare with a deployment server (Sync with Deployed). */
+export type DeploymentLaunch = {
+	/**  Deployment server id. */
+	server: string,
+	paths: IpcPath[],
 };
 
 export type DeploymentMapping = {
@@ -4462,6 +4503,10 @@ export type Launch = {
 	newProjects: boolean,
 	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
 	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment?: DeploymentLaunch | null,
 };
 
 export type LaunchConfig = {
