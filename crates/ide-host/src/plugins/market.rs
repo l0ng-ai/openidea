@@ -4,10 +4,10 @@
 //! (`market-index.json`), checks signatures against it, and disables what it
 //! revokes — at start-up and on every refresh (the desktop refreshes daily).
 
-use super::{PluginHost, PluginSource, PluginStatus};
+use super::{PackageFile, PluginHost, PluginSource, PluginStatus};
 use ide_core::{IdeError, IdeResult};
-use ide_extension::Manifest;
 use ide_extension::package::{self, Index, IndexEntry, PackageSignature, SIGNATURE_FILE};
+use ide_extension::{MANIFEST_FILE, Manifest};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,8 @@ pub const INDEX_FILE: &str = "market-index.json";
 const DOWNLOADS: &str = ".downloads";
 const MAX_INDEX: usize = 16 << 20;
 const MAX_PACKAGE: usize = 256 << 20;
+const MAX_STAGED_FILES: usize = 256;
+const MAX_STAGED_BYTES: usize = 16 << 20;
 
 /// A marketplace entry with what is installed.
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -178,6 +180,45 @@ impl PluginHost {
         if let Some(sig) = unpacked.signature {
             let json = serde_json::to_string_pretty(&sig).map_err(|e| IdeError::internal(e.to_string()))?;
             std::fs::write(dir.join(SIGNATURE_FILE), json)?;
+        }
+        Ok(dir)
+    }
+
+    /// Writes a package the UI generated (an imported IntelliJ theme) into a
+    /// folder next to the downloads, named after `name` (its plugin id); returns the folder.
+    /// The install page validates it like any other package.
+    pub fn stage_package(&self, name: &str, files: &[PackageFile]) -> IdeResult<PathBuf> {
+        ide_extension::validate_item_id(name, "package name").map_err(IdeError::invalid)?;
+        if !files.iter().any(|f| f.path == MANIFEST_FILE) {
+            return Err(IdeError::invalid(format!("a package needs a {MANIFEST_FILE}")));
+        }
+        let total: usize = files.iter().map(|f| f.text.len()).sum();
+        if files.len() > MAX_STAGED_FILES || total > MAX_STAGED_BYTES {
+            return Err(IdeError::invalid("the package is too large"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for f in files {
+            let valid = !f.path.is_empty()
+                && f.path.len() <= 255
+                && f.path.split('/').all(|part| {
+                    !matches!(part, "" | "." | "..") && !part.contains(['\\', ':', '\0']) && !part.starts_with('.')
+                });
+            if !valid {
+                return Err(IdeError::invalid(format!("invalid package path {:?}", f.path)));
+            }
+            if !seen.insert(f.path.to_ascii_lowercase()) {
+                return Err(IdeError::invalid(format!("{} is in the package twice", f.path)));
+            }
+        }
+        // One folder per package, replaced by the next import of it: they don't pile up.
+        let dir = self.plugins_dir.join(DOWNLOADS).join(format!("{name}-generated"));
+        let _ = std::fs::remove_dir_all(&dir);
+        for f in files {
+            let path = dir.join(&f.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, &f.text)?;
         }
         Ok(dir)
     }

@@ -987,6 +987,12 @@ export const commands = {
 	pluginMarketDownload: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_market_download", { id })),
 	/**  Unpacks a package file (`.oiplugin` or `.zip`); returns the folder for the install page. */
 	pluginUnpackPackage: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_unpack_package", { path })),
+	/**  Reads an IntelliJ theme plugin (`.jar`, Marketplace `.zip`, plugin folder) or `.theme.json` to import. */
+	pluginReadIntellijTheme: (path: string) => typedError<IntellijThemeSource, IdeError>(__TAURI_INVOKE("plugin_read_intellij_theme", { path })),
+	/**  Theme plugins installed in the JetBrains IDEs of this user, the ones in use first. */
+	pluginInstalledIntellijThemes: () => typedError<InstalledIntellijTheme[], IdeError>(__TAURI_INVOKE("plugin_installed_intellij_themes")),
+	/**  Writes a package the UI generated (an imported theme); returns the folder for the install page. */
+	pluginStagePackage: (name: string, files: PackageFile[]) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_stage_package", { name, files })),
 	/**  Goes back to the version the last update of `id` replaced. */
 	pluginRollBack: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_roll_back", { id })),
 	pluginSecrets: (pluginId: string) => typedError<PluginSecretState[], IdeError>(__TAURI_INVOKE("plugin_secrets", { pluginId })),
@@ -4292,6 +4298,40 @@ export type InstallPreview = {
 	publisher: string | null,
 };
 
+/**  A theme of a plugin installed in a JetBrains IDE. */
+export type InstalledIntellijTheme = {
+	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
+	ide: string,
+	/**  The plugin's name. */
+	plugin: string,
+	/**  What to import: the plugin's folder or jar. */
+	path: IpcPath,
+	themeId: string,
+	themeName: string,
+	dark: boolean,
+	/**  The IDE is set to this theme. */
+	active: boolean,
+};
+
+export type IntellijThemeFile = {
+	/**  The `themeProvider` id (what `laf.xml` names), or the file name without `.theme.json`. */
+	id: string,
+	/**  The `.theme.json`, comments removed. */
+	theme: string,
+	/**  The editor scheme (`.icls` XML) its `editorScheme` names, when the plugin has it. */
+	editorScheme: string | null,
+};
+
+/**  A theme plugin's themes, as read from its files. */
+export type IntellijThemeSource = {
+	/**  The plugin's `<name>`, or the theme's for a loose file. */
+	name: string,
+	pluginId: string | null,
+	version: string | null,
+	vendor: string | null,
+	themes: IntellijThemeFile[],
+};
+
 /**  Optional parts of the invalidation; the symbol index is always rebuilt. */
 export type InvalidateCachesOptions = {
 	/**  Local History of every project. */
@@ -5150,6 +5190,12 @@ export type OutlineItem = {
 export type OutputChunk = { kind: "stdout"; text: string } | { kind: "stderr"; text: string } | 
 /**  System message from the IDE (command line echo, exit code). */
 { kind: "system"; text: string };
+
+/**  A text file of a package the UI generated, at its `/`-separated path in the package. */
+export type PackageFile = {
+	path: string,
+	text: string,
+};
 
 /**  A file of a partial commit: which of its changes against HEAD to commit. */
 export type PartialCommitFile = {

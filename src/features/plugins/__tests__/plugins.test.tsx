@@ -3,19 +3,21 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { PluginInfo } from "@/bindings";
+import type { PluginInfo, ProjectInfo } from "@/bindings";
 import { _setActiveEditor } from "@/editor/api";
 import { executeAction, executeActionFrom, getAction, registerAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { useContributedIconThemes } from "@/platform/themes";
+import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
+import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
-import { applyThemeAttributes, useThemeOverride } from "@/workbench/theme";
+import { applyThemeAttributes, previewTheme, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
 import {
   applyPluginTheme,
   followThemeSetting,
   PLUGIN_THEME_STYLE_ID,
   handlePluginEvent,
+  providePluginThemePreviews,
   pluginActionId,
   startPluginBridge,
   syncProjection,
@@ -389,6 +391,36 @@ describe("bridge events", () => {
     useThemeOverride.setState({ theme: null });
   });
 
+  it("previews a live plugin's theme in this window without selecting it", () => {
+    const root = document.documentElement;
+    const sheet = () => document.getElementById(PLUGIN_THEME_STYLE_ID)?.textContent ?? null;
+    const setTheme = vi.spyOn(backend, "setTheme");
+    const night = { id: "night", name: "Night", kind: "dark", tokens: { "--bg-app": "#101820" } };
+    const dawn = { id: "dawn", name: "Dawn", kind: "light" as const, tokens: { "--bg-app": "#fff8e7" } };
+    usePlugins.setState({
+      ui: [{ pluginId: "acme", point: "themes", key: "night", decl: night }],
+      activeTheme: { pluginId: "acme", theme: dawn },
+    });
+    applyPluginTheme(usePlugins.getState().activeTheme);
+    const stop = providePluginThemePreviews();
+
+    previewTheme(pluginThemeRef("acme", "night"));
+    expect(sheet()).toContain("--bg-app: #101820;");
+    expect([root.dataset.pluginTheme, root.dataset.theme]).toEqual(["acme/night", "dark"]);
+    // A built-in theme shows without the plugin's tokens.
+    previewTheme("solarized-light");
+    expect(sheet()).toBeNull();
+    expect([root.dataset.theme, root.dataset.colorTheme]).toEqual(["light", "solarized-light"]);
+    // Back to the selected one; nothing was selected on the way.
+    previewTheme(null);
+    expect(sheet()).toContain("--bg-app: #fff8e7;");
+    expect(root.dataset.pluginTheme).toBe("acme/dawn");
+    expect(setTheme).not.toHaveBeenCalled();
+
+    stop();
+    applyPluginTheme(null);
+  });
+
   it("runs commands with the focused editor's path, language and UTF-16 selections", async () => {
     const calls: unknown[] = [];
     setPluginsBackend({
@@ -462,6 +494,32 @@ describe("PluginsPage", () => {
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Toy Language");
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
+  });
+
+  it("offers the IntelliJ theme imports only in a trusted project's window", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <PluginsPage />
+        <ContextMenuHost />
+      </>,
+    );
+    const imports = async () => {
+      await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
+      const found = ["Import Theme from IntelliJ IDE…", "Import IntelliJ Theme from File…"].filter((name) =>
+        screen.queryByRole("menuitem", { name }),
+      );
+      act(() => hideContextMenu());
+      return found;
+    };
+    // The welcome screen: the host refuses installs without a trusted project.
+    expect(await imports()).toEqual([]);
+    const project = { trusted: false, root: "/p", name: "p", isGit: false } as unknown as ProjectInfo;
+    act(() => useProject.setState({ project }));
+    expect(await imports()).toEqual([]);
+    act(() => useProject.setState({ project: { ...project, trusted: true } }));
+    expect(await imports()).toHaveLength(2);
+    act(() => useProject.setState({ project: null }));
   });
 
   it("restarts a failed plugin instead of disabling it", async () => {

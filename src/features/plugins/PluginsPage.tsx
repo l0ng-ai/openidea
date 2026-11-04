@@ -43,6 +43,8 @@ import {
   uninstallPlugin,
   usePlugins,
 } from "./store";
+import { useProject } from "@/platform/project";
+import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import styles from "./PluginsPage.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -526,11 +528,26 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
   );
 }
 
-function gearMenu(plugins: readonly PluginInfo[], install: (packageFile: boolean) => void): MenuItem[] {
+interface GearActions {
+  /** Installing needs a trusted project's window (the host refuses it elsewhere). */
+  canImport: boolean;
+  install: (packageFile: boolean) => void;
+  importIntellijFile: () => void;
+  importInstalledIntellij: () => void;
+}
+
+function gearMenu(plugins: readonly PluginInfo[], actions: GearActions): MenuItem[] {
   const installed = plugins.filter((p) => p.source === "installed");
   return [
-    { label: "Install Plugin from Disk…", icon: "package", run: () => install(false) },
-    { label: "Install Plugin from Package File…", run: () => install(true) },
+    { label: "Install Plugin from Disk…", icon: "package", run: () => actions.install(false) },
+    { label: "Install Plugin from Package File…", run: () => actions.install(true) },
+    ...(actions.canImport
+      ? [
+          { kind: "separator" as const },
+          { label: "Import Theme from IntelliJ IDE…", run: actions.importInstalledIntellij },
+          { label: "Import IntelliJ Theme from File…", run: actions.importIntellijFile },
+        ]
+      : []),
     { kind: "separator" },
     {
       label: "Disable All Downloaded Plugins",
@@ -700,19 +717,22 @@ export function PluginsPage() {
   const catalogShown = useMemo(() => filterCatalog(catalog ?? [], query), [catalog, query]);
   const selectedEntry = catalogShown.find((c) => c.id === selectedCatalogId) ?? catalogShown[0] ?? null;
 
-  const install = async (packageFile = false) => {
-    const id = await installFromDisk(undefined, packageFile);
-    if (id) {
-      setTab("installed");
-      setSelectedId(id);
-    }
+  const showInstalled = (id: string | null) => {
+    if (!id) return;
+    setTab("installed");
+    setSelectedId(id);
   };
 
   const openGear = (e: MouseEvent<HTMLButtonElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     showContextMenu(
       { x: r.left, y: r.bottom + 2 },
-      gearMenu(plugins, (packageFile) => void install(packageFile)),
+      gearMenu(plugins, {
+        canImport: useProject.getState().project?.trusted === true,
+        install: (packageFile) => void installFromDisk(undefined, packageFile).then(showInstalled),
+        importIntellijFile: () => void importIntellijTheme().then(showInstalled),
+        importInstalledIntellij: () => showInstalledIntellijThemes(showInstalled),
+      }),
     );
   };
 

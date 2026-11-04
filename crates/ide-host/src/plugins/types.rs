@@ -212,6 +212,14 @@ impl PluginEditor {
     }
 }
 
+/// A text file of a package the UI generated, at its `/`-separated path in the package.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageFile {
+    pub path: String,
+    pub text: String,
+}
+
 /// A plugin's status bar item.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

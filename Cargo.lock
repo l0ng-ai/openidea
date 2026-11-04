@@ -4272,6 +4272,7 @@ dependencies = [
  "ide-workspace",
  "ignore",
  "parking_lot",
+ "quick-xml",
  "regex-syntax",
  "reqwest",
  "rustix",
