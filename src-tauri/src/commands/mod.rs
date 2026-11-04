@@ -332,6 +332,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_tomcat_build,
         run::run_application_build,
         run::run_application_publish,
+        run::run_tomcat_sync,
         run::run_tomcat_update,
         run::run_test_reports,
         build::build_model,

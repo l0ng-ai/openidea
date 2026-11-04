@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { newConfigOfType, missingParams } from "./types";
-import { tomcatType, tomcatBrowserUrl } from "./tomcat";
+import { tomcatType, tomcatBrowserUrl, syncTomcatOutputs } from "./tomcat";
 import { jdwpLaunch } from "./javaDebug";
 import { TomcatSettings } from "./TomcatSettings";
 import { typeRows } from "./AddConfigPopup";
@@ -13,8 +13,16 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
     runTomcatHome: vi.fn(async () => ({ status: "ok", data: { version: "Apache Tomcat/10.1.61" } })),
     runTomcatArtifacts: vi.fn(async () => ({
       status: "ok",
-      data: [{ id: "maven:pom.xml", name: "hello", module: "", tool: "maven" }],
+      data: [
+        { id: "maven:pom.xml", name: "hello", module: "", tool: "maven" },
+        { id: "maven:web/pom.xml", name: "web", module: "web", tool: "maven" },
+      ],
     })),
+    javaResolveLaunch: vi.fn(async () => ({
+      status: "ok",
+      data: { build: "succeeded", classPaths: ["/p/web/target/classes", "/m2/lib.jar"], pathListSeparator: ":" },
+    })),
+    runTomcatSync: vi.fn(async () => ({ status: "ok", data: true })),
   },
 }));
 afterEach(cleanup);
@@ -81,5 +89,32 @@ describe("Tomcat Local", () => {
     config.params = { ...config.params, tomcatHome: "/missing" };
     render(<TomcatSettings config={config} onChange={() => {}} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Invalid Tomcat installation");
+  });
+});
+
+describe("updating a running Tomcat deployment", () => {
+  const config = (params: Record<string, string>) => ({ ...newConfigOfType(tomcatType, []), id: "t", params });
+
+  it("compiles the selected WAR module and copies its outputs instead of rebuilding the WAR", async () => {
+    const c = config({ deployment: "artifact", artifact: "maven:web/pom.xml" });
+    expect(await syncTomcatOutputs(c, false)).toBe(true);
+    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, true, expect.anything());
+    expect(commands.runTomcatSync).toHaveBeenCalledWith(c, "web", ["/p/web/target/classes", "/m2/lib.jar"], false);
+  });
+
+  it("leaves WAR files, exploded directories and failed compilations to the WAR path", async () => {
+    vi.mocked(commands.runTomcatSync).mockClear();
+    expect(await syncTomcatOutputs(config({ deployment: "war" }), true)).toBe(false);
+    vi.mocked(commands.javaResolveLaunch).mockResolvedValueOnce({
+      status: "error",
+      error: { kind: "unavailable" },
+    } as never);
+    expect(await syncTomcatOutputs(config({ deployment: "artifact" }), true)).toBe(false);
+    expect(commands.runTomcatSync).not.toHaveBeenCalled();
+    vi.mocked(commands.javaResolveLaunch).mockResolvedValueOnce({
+      status: "ok",
+      data: { build: "withErrors", classPaths: [] },
+    } as never);
+    await expect(syncTomcatOutputs(config({ deployment: "artifact" }), false)).rejects.toThrow();
   });
 });
