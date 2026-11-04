@@ -16,6 +16,7 @@ import {
   IconButton,
   List,
   Menu,
+  Mnemonic,
   SearchField,
   Select,
   Spinner,
@@ -107,11 +108,12 @@ export function FindInFilesOverlay() {
   return open ? <FindInFilesDialog /> : null;
 }
 
-const SCOPE_TABS: Array<{ id: ScopeTab; label: string }> = [
-  { id: "project", label: "In Project" },
-  { id: "module", label: "Module" },
-  { id: "directory", label: "Directory" },
-  { id: "scope", label: "Scope" },
+/** IDEA's scope tabs and their Alt mnemonics. */
+const SCOPE_TABS: Array<{ id: ScopeTab; label: string; mnemonic: string }> = [
+  { id: "project", label: "In Project", mnemonic: "P" },
+  { id: "module", label: "Module", mnemonic: "M" },
+  { id: "directory", label: "Directory", mnemonic: "D" },
+  { id: "scope", label: "Scope", mnemonic: "S" },
 ];
 
 const NAMED_SCOPES: Array<{ value: BuiltinScope; label: string }> = [
@@ -427,10 +429,22 @@ function FindInFilesDialog() {
       if (!s.maskEnabled) setTimeout(() => maskInputRef.current?.select(), 0);
     } else if (code === "KeyE" && s.replace) set({ preserveCase: !s.preserveCase });
     else if (code === "KeyB") setFindPopupNewTab(!s.newTab);
+    else if (SCOPE_TABS.some((t) => code === `Key${t.mnemonic}`))
+      selectScope(SCOPE_TABS.find((t) => code === `Key${t.mnemonic}`)!.id);
     else if (code === "KeyA" && s.replace) {
       if (rows.length && !busy) void confirmReplaceAll();
     } else return false;
     return true;
+  };
+
+  const selectScope = (id: ScopeTab) => {
+    // IDEA starts the Directory scope at the current file's folder.
+    if (id === "directory" && !s.directory.trim()) {
+      const active = maybeEditorService()?.activePath();
+      const folders = project?.workspace?.projects ?? (root ? [root] : []);
+      const dir = active && folders.some((r) => active.startsWith(r + "/")) ? dirname(active) : root;
+      set({ scopeTab: "directory", directory: dir ?? "" });
+    } else set({ scopeTab: id });
   };
 
   /** IDEA's "Clear all options" (⇧⌥⌫): back to a plain search everywhere. */
@@ -604,7 +618,11 @@ function FindInFilesDialog() {
             {summary}
           </span>
           <span className={styles.spacer} />
-          <Checkbox checked={s.maskEnabled} onChange={enableMask} label="File mask:" />
+          <Checkbox
+            checked={s.maskEnabled}
+            onChange={enableMask}
+            label={<Mnemonic text={tx("File mask:")} char="K" />}
+          />
           <div ref={maskRef} className={clsx(styles.mask, !s.maskEnabled && styles.maskOff)}>
             <input
               ref={maskInputRef}
@@ -640,7 +658,7 @@ function FindInFilesDialog() {
               data-autofocus
               value={s.pattern}
               onChange={(v) => set({ pattern: v })}
-              placeholder={s.isRegex ? "Regular expression" : "Text to find"}
+              placeholder="Search"
               aria-label="Text to find"
               invalid={state.status === "invalid"}
               className={styles.field}
@@ -681,7 +699,7 @@ function FindInFilesDialog() {
                 value={s.replacement}
                 onChange={(v) => set({ replacement: v })}
                 leadingIcon="replace"
-                placeholder="Replace with"
+                placeholder="Replace"
                 aria-label="Replace with"
                 className={styles.field}
                 multiline
@@ -704,17 +722,13 @@ function FindInFilesDialog() {
           <Tabs
             variant="compact"
             aria-label="Search scope"
-            items={SCOPE_TABS.map((t) => ({ id: t.id, label: t.label }))}
+            items={SCOPE_TABS.map((t) => ({
+              id: t.id,
+              label: <Mnemonic text={tx(t.label)} char={t.mnemonic} />,
+              text: t.label,
+            }))}
             activeId={s.scopeTab}
-            onSelect={(id) => {
-              // IDEA starts the Directory scope at the current file's folder.
-              if (id === "directory" && !s.directory.trim()) {
-                const active = maybeEditorService()?.activePath();
-                const folders = project?.workspace?.projects ?? (root ? [root] : []);
-                const dir = active && folders.some((r) => active.startsWith(r + "/")) ? dirname(active) : root;
-                set({ scopeTab: "directory", directory: dir ?? "" });
-              } else set({ scopeTab: id as ScopeTab });
-            }}
+            onSelect={(id) => selectScope(id as ScopeTab)}
           />
           <div className={styles.scopeDetail}>
             {s.scopeTab === "directory" && (
@@ -829,7 +843,11 @@ function FindInFilesDialog() {
           )}
         </div>
         <footer className={styles.footer}>
-          <Checkbox checked={s.newTab} onChange={setFindPopupNewTab} label="Open results in new tab" />
+          <Checkbox
+            checked={s.newTab}
+            onChange={setFindPopupNewTab}
+            label={<Mnemonic text={tx("Open results in new tab")} char="B" />}
+          />
           {s.replace && <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />}
           {navigationHint && <span className={styles.hint}>{navigationHint}</span>}
           <span className={styles.spacer} />
@@ -854,7 +872,7 @@ function FindInFilesDialog() {
                 disabled={stale || !rows.length || busy || state.status === "searching"}
                 onClick={() => void confirmReplaceAll()}
               >
-                <T>Replace All</T>
+                <Mnemonic text={tx("Replace All")} char="A" />
               </Button>
               <Button variant="primary" disabled={stale || !selected || busy} onClick={() => void replaceSelected()}>
                 {pendingSelected > 1 ? txt(`Replace ${pendingSelected} Occurrences`) : <T>Replace</T>}

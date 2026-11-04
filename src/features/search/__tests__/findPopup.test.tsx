@@ -74,6 +74,7 @@ const {
 } = await import("../find/store");
 
 const { formatBinding } = await import("@/platform/keymap");
+const { usePlatform } = await import("@/platform/platformInfo");
 
 const settle = () => act(() => new Promise((r) => setTimeout(r, 250)));
 const selectedRows = () =>
@@ -397,6 +398,29 @@ describe("footer, as IDEA", () => {
     expect(screen.queryByText(/to select usages$/)).not.toBeInTheDocument();
     fireEvent.change(field(), { target: { value: "order\nitem" } });
     expect(screen.getByText(/^Use .+ and .+ to select usages$/)).toBeInTheDocument();
+  });
+});
+
+describe("mnemonics, as IDEA", () => {
+  it("⌥P / ⌥M / ⌥D / ⌥S pick the scope tab, whose letter is underlined off macOS", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "linux" });
+    try {
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(false, { query: "order" }));
+      expect(screen.getByRole("tab", { name: "In Project" }).querySelector("u")?.textContent).toBe("P");
+      for (const [code, tab] of [
+        ["KeyD", "directory"],
+        ["KeyS", "scope"],
+        ["KeyM", "module"],
+        ["KeyP", "project"],
+      ] as const) {
+        fireEvent.keyDown(field(), { key: code.slice(3).toLowerCase(), code, altKey: true });
+        expect(useFindPopup.getState().scopeTab).toBe(tab);
+      }
+    } finally {
+      usePlatform.setState({ os });
+    }
   });
 });
 
