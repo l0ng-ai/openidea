@@ -6,7 +6,8 @@ import { Mnemonic } from "./Mnemonic";
 const os = usePlatform.getState().os;
 afterEach(() => usePlatform.setState({ os }));
 
-const html = (text: string, char: string) => render(<Mnemonic text={text} char={char} />).container.innerHTML;
+const html = (text: string, char: string) =>
+  render(<Mnemonic text={text} char={char} />).container.querySelector("span")!.innerHTML;
 
 describe("Mnemonic", () => {
   it.each([
