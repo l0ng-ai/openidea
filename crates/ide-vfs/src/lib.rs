@@ -256,6 +256,11 @@ pub fn set_writable(path: &Path, writable: bool) -> IdeResult<()> {
 pub fn rename(from: &Path, to: &Path) -> IdeResult<()> {
     ops::rename(from, to)
 }
+/// Checks source existence and destination conflicts without mutation, using
+/// the same filesystem identity rules as [`rename`].
+pub fn validate_rename(from: &Path, to: &Path) -> IdeResult<()> {
+    ops::validate_rename(from, to)
+}
 /// Moves to the OS trash (recoverable), like IDEA's safe delete for files.
 /// Deletes permanently when the trash is unavailable.
 pub fn delete(path: &Path) -> IdeResult<()> {
