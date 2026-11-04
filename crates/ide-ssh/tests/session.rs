@@ -269,3 +269,26 @@ async fn runs_commands_and_streams_processes() {
     assert_eq!(process.wait().await, Some(3));
     assert_eq!(*seen.lock(), ("ran: python3 main.py".to_owned(), "oops".to_owned()));
 }
+
+#[tokio::test]
+async fn upload_reports_a_command_that_stops_reading() {
+    let env = env().await;
+    let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();
+    // Incompressible and larger than the channel window: the command exits (status 3, `oops`)
+    // without reading it, as when the host has no gzip or the folder is not writable.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let data: Vec<u8> = (0..8 << 20)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect();
+    let put = session.put("/home/dev/.openidea/server/openidea-server", &data);
+    let err = tokio::time::timeout(std::time::Duration::from_secs(20), put)
+        .await
+        .expect("the upload must end when the command exits")
+        .unwrap_err();
+    assert!(err.message.contains("oops"), "{}", err.message);
+}
