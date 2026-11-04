@@ -8,17 +8,46 @@ use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
 use std::path::Path;
 
-/// The project's PHP version as `X.Y.Z`; `None` when neither the settings nor
-/// `composer.json` name one.
-pub fn language_level(root: &Path, s: &Settings) -> Option<String> {
+/// A PHP version and where it comes from.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PhpLanguageLevel {
+    /// `X.Y.Z`.
+    pub version: String,
+    pub source: PhpLevelSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PhpLevelSource {
+    /// `languages.php.languageLevel`.
+    Settings,
+    /// `config.platform.php` of `composer.json`.
+    Platform,
+    /// The lowest version `require.php` of `composer.json` allows.
+    Require,
+}
+
+/// The project's PHP version: the one chosen in the settings, else [`composer_level`];
+/// `None` when neither names one.
+pub fn language_level(root: &Path, s: &Settings) -> Option<PhpLanguageLevel> {
     let explicit = s.languages.php.language_level.trim();
     if !explicit.is_empty() {
-        return version(explicit).map(dotted);
+        return version(explicit).map(|v| PhpLanguageLevel::new(v, PhpLevelSource::Settings));
     }
+    composer_level(root)
+}
+
+/// The PHP version the root `composer.json` declares (the setting's Auto):
+/// `config.platform.php`, else the lowest version `require.php` allows.
+pub fn composer_level(root: &Path) -> Option<PhpLanguageLevel> {
     let text = std::fs::read_to_string(root.join("composer.json")).ok()?;
     let composer: Value = serde_json::from_str(&text).ok()?;
-    let platform = composer.pointer("/config/platform/php").and_then(Value::as_str).and_then(version);
-    platform.or_else(|| lowest_allowed(composer.pointer("/require/php")?.as_str()?)).map(dotted)
+    if let Some(platform) = composer.pointer("/config/platform/php").and_then(Value::as_str).and_then(version) {
+        return Some(PhpLanguageLevel::new(platform, PhpLevelSource::Platform));
+    }
+    lowest_allowed(composer.pointer("/require/php")?.as_str()?)
+        .map(|v| PhpLanguageLevel::new(v, PhpLevelSource::Require))
 }
 
 /// Gives each PHP version its own Intelephense workspace storage (below `data_dir`).
@@ -50,8 +79,10 @@ pub fn configure_intelephense_storage(cfg: &mut LanguageServerConfig, data_dir: 
 
 type Version = (u32, u32, u32);
 
-fn dotted((major, minor, patch): Version) -> String {
-    format!("{major}.{minor}.{patch}")
+impl PhpLanguageLevel {
+    fn new((major, minor, patch): Version, source: PhpLevelSource) -> Self {
+        Self { version: format!("{major}.{minor}.{patch}"), source }
+    }
 }
 
 /// `7`, `7.4`, `v7.4.3`, `8.1.*`, `7.4.0-dev`: missing parts are 0.
@@ -105,13 +136,18 @@ mod tests {
     use super::*;
 
     fn level(composer: Option<&str>, explicit: &str) -> Option<String> {
+        levels(composer, explicit).0.map(|l| l.version)
+    }
+
+    /// The effective level and the composer one.
+    fn levels(composer: Option<&str>, explicit: &str) -> (Option<PhpLanguageLevel>, Option<PhpLanguageLevel>) {
         let tmp = tempfile::tempdir().unwrap();
         if let Some(composer) = composer {
             std::fs::write(tmp.path().join("composer.json"), composer).unwrap();
         }
         let mut s = Settings::default();
         s.languages.php.language_level = explicit.into();
-        language_level(tmp.path(), &s)
+        (language_level(tmp.path(), &s), composer_level(tmp.path()))
     }
 
     fn required(constraint: &str) -> Option<String> {
@@ -199,6 +235,23 @@ mod tests {
             configure_intelephense_storage(&mut cfg, data);
             assert_eq!(cfg, unchanged);
         }
+    }
+
+    #[test]
+    fn each_level_names_its_source() {
+        let found = |version: &str, source| Some(PhpLanguageLevel { version: version.into(), source });
+        let require = r#"{"require": {"php": "^7.4"}}"#;
+        let platform = r#"{"require": {"php": "^7.4"}, "config": {"platform": {"php": "8.2.1"}}}"#;
+
+        let require_level = found("7.4.0", PhpLevelSource::Require);
+        assert_eq!(levels(Some(require), ""), (require_level.clone(), require_level.clone()));
+        let platform_level = found("8.2.1", PhpLevelSource::Platform);
+        assert_eq!(levels(Some(platform), ""), (platform_level.clone(), platform_level));
+        // An explicit level: the composer one is still what Auto would pick.
+        assert_eq!(levels(Some(require), "8.1"), (found("8.1.0", PhpLevelSource::Settings), require_level));
+        assert_eq!(levels(None, "8.1"), (found("8.1.0", PhpLevelSource::Settings), None));
+        assert_eq!(levels(None, ""), (None, None));
+        assert_eq!(levels(Some(r#"{"require": {"php": "*"}}"#), ""), (None, None));
     }
 
     #[test]
