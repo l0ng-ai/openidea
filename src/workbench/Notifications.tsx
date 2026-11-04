@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { useTxTemplate } from "@/platform/i18n";
 import { EmptyState, IconButton, Toast, T } from "@/ui";
+import { NORMAL } from "@/ui/motion";
 import {
   balloonTimeout,
   canSuppress,
@@ -68,7 +70,6 @@ function Balloon({ n }: { n: IdeNotification }) {
   }, [n.id, ms, hover, active]);
   return (
     <Toast
-      className={styles.balloon}
       level={n.level}
       title={txt(n.title)}
       body={n.body}
@@ -86,6 +87,8 @@ function Balloon({ n }: { n: IdeNotification }) {
   );
 }
 
+const BALLOON_HIDDEN = { opacity: 0, x: 12 };
+
 /** Bottom-right balloon stack (newest at the bottom); hidden while the Notifications tool window is open. */
 export function Balloons() {
   const items = useNotifications((s) => s.items);
@@ -94,12 +97,25 @@ export function Balloons() {
     .filter((n) => n.balloon)
     .slice(0, MAX_BALLOONS)
     .reverse();
-  if (listOpen || !balloons.length) return null;
+  if (listOpen) return null;
   return (
     <div className={styles.stack} aria-live="polite">
-      {balloons.map((n) => (
-        <Balloon key={n.id} n={n} />
-      ))}
+      {/* popLayout: the balloons left behind slide into place while one fades out. */}
+      <AnimatePresence mode="popLayout" initial={false}>
+        {balloons.map((n) => (
+          <motion.div
+            key={n.id}
+            layout="position"
+            className={styles.balloon}
+            initial={BALLOON_HIDDEN}
+            animate={{ opacity: 1, x: 0 }}
+            exit={BALLOON_HIDDEN}
+            transition={NORMAL}
+          >
+            <Balloon n={n} />
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
