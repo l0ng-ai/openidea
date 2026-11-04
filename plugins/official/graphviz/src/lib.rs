@@ -52,12 +52,9 @@ pub fn diagnostics(text: &str, reports: &[Report]) -> Vec<Diagnostic> {
         .map(|r| {
             let line = r.line.map_or(0, |l| l.saturating_sub(1)).min(lines.len().saturating_sub(1) as u32);
             let len = lines.get(line as usize).map_or(0, |l| l.encode_utf16().count() as u32);
-            Diagnostic {
-                range: Range::new(Position::new(line, 0), Position::new(line, len)),
-                severity: if r.error { Severity::Error } else { Severity::Warning },
-                message: r.message.clone(),
-                code: Some("graphviz".into()),
-            }
+            let range = Range::new(Position::new(line, 0), Position::new(line, len));
+            let severity = if r.error { Severity::Error } else { Severity::Warning };
+            Diagnostic::new(range, severity, r.message.clone()).code("graphviz")
         })
         .collect()
 }

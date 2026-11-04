@@ -94,6 +94,29 @@ export function resolveTyped(root: string, rel: string): string {
   return isDrive(out[0]) ? out.join("/") : `/${out.join("/")}`;
 }
 
+interface IndexMatch {
+  path: string;
+  relPath: string;
+  score: number;
+}
+
+/**
+ * Index file and folder matches as one list, best first (files first on a tie); folders'
+ * `rel` loses the trailing `/` the index gives them.
+ */
+export function mergeMatches(
+  files: readonly IndexMatch[],
+  dirs: readonly IndexMatch[],
+  limit: number,
+): { path: string; rel: string; dir: boolean; score: number }[] {
+  return [
+    ...files.map((f) => ({ path: f.path, rel: f.relPath, dir: false, score: f.score })),
+    ...dirs.map((d) => ({ path: d.path, rel: d.relPath.replace(/\/$/, ""), dir: true, score: d.score })),
+  ]
+    .sort((a, b) => b.score - a.score || Number(a.dir) - Number(b.dir))
+    .slice(0, limit);
+}
+
 /** `@rel` with a line range suffix when given ("@src/a.rs:10-20"). */
 export function mentionOf(rel: string, lines?: { from: number; to: number }): string {
   if (!lines) return `@${rel}`;

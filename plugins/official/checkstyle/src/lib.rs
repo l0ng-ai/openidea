@@ -97,12 +97,8 @@ fn diagnostic(p: &Problem, text: &str) -> Diagnostic {
     let line_len = text.split('\n').nth(p.line as usize).map_or(0, |l| l.encode_utf16().count() as u32);
     let start = p.column.unwrap_or(0).min(line_len);
     let end = if p.column.is_some() && start < line_len { start + 1 } else { line_len };
-    Diagnostic {
-        range: Range::new(Position::new(p.line, start), Position::new(p.line, end.max(start))),
-        severity: p.severity,
-        message: p.message.clone(),
-        code: Some(p.check.clone()),
-    }
+    let range = Range::new(Position::new(p.line, start), Position::new(p.line, end.max(start)));
+    Diagnostic::new(range, p.severity, p.message.clone()).code(p.check.clone())
 }
 
 /// The project containing `path`.
@@ -188,6 +184,7 @@ impl Providers for Checkstyle {
                     kind: Some("quickfix".into()),
                     preferred: true,
                     edits: vec![(doc.path.clone(), vec![edit])],
+                    data: None,
                 });
             }
         }

@@ -8,6 +8,7 @@ import {
   parsePluginThemeRef,
   pluginThemeRef,
   themeChoices,
+  themeGroups,
   themeKind,
   useContributedThemes,
 } from "./themes";
@@ -19,6 +20,7 @@ import {
   resolveThemeId,
   themeSelectOptions,
 } from "@/workbench/theme";
+import { themeItems } from "@/workbench/quickSwitch";
 import { validateSettings } from "@/features/settings/model/schema";
 import { applyPluginTheme } from "@/features/plugins/bridge";
 
@@ -108,7 +110,10 @@ describe("plugin themes", () => {
     const remove = addContributedTheme({ id: ref, label: "Night", kind: "dark", origin: "Acme" });
     expect(isThemeAvailable(ref)).toBe(true);
     expect(themeChoices().at(-1)).toMatchObject({ id: ref, label: "Night" });
-    expect(themeSelectOptions(themeChoices(), ref).at(-1)).toEqual({ value: ref, label: "Night", detail: "Acme" });
+    expect(themeSelectOptions(themeChoices(), ref).slice(-2)).toEqual([
+      { value: "plugin:acme.night", label: "Acme", section: true },
+      { value: ref, label: "Night" },
+    ]);
     // Its tokens apply over the default of its kind.
     expect(resolveThemeId(a, false)).toBe("dark");
 
@@ -116,7 +121,55 @@ describe("plugin themes", () => {
     expect(isThemeAvailable(ref)).toBe(false);
     // Its plugin off: the base of the kind it had shows, and the pickers keep it listed.
     expect(resolveThemeId(a, false)).toBe("dark");
-    expect(themeSelectOptions(themeChoices(), ref).at(-1)).toMatchObject({ value: ref, label: "night" });
+    expect(themeSelectOptions(themeChoices(), ref).slice(-2)).toMatchObject([
+      { value: "plugin:acme.night", label: "acme.night", section: true },
+      { value: ref, label: "night", detail: "Plugin not enabled" },
+    ]);
+    // Its plugin live but the theme gone (an update dropped it): listed under that plugin's heading.
+    const stay = addContributedTheme({
+      id: pluginThemeRef("acme.night", "dawn"),
+      label: "Dawn",
+      kind: "dark",
+      origin: "Acme",
+    });
+    addContributedTheme({ id: pluginThemeRef("zeta.blue", "blue"), label: "Blue", kind: "dark", origin: "Zeta" });
+    expect(
+      themeSelectOptions(themeChoices(), ref)
+        .slice(BUILTIN_THEMES.length)
+        .map((o) => (o.section ? `[${o.label}]` : o.label)),
+    ).toEqual(["[Acme]", "Dawn", "night", "[Zeta]", "Blue"]);
+    stay();
+  });
+
+  it("are grouped by plugin: the built-in ones first, then each plugin's by name", () => {
+    const theme = (plugin: string, id: string, label: string, origin: string) =>
+      addContributedTheme({ id: pluginThemeRef(plugin, id), label, kind: "dark", origin });
+    theme("intellij.dracula", "dracula", "Dracula", "Dracula Theme");
+    theme("acme.night", "night", "Night", "Acme");
+    theme("intellij.dracula", "alucard", "Dracula Alucard", "Dracula Theme");
+    theme("acme.night", "dawn", "Dawn", "Acme");
+
+    const groups = themeGroups();
+    expect(groups.map((g) => [g.origin, g.themes.map((t) => t.label)])).toEqual([
+      [undefined, BUILTIN_THEMES.map((t) => t.label)],
+      ["Acme", ["Dawn", "Night"]],
+      ["Dracula Theme", ["Dracula", "Dracula Alucard"]],
+    ]);
+    expect(themeChoices().map((t) => t.label)).toEqual(groups.flatMap((g) => g.themes.map((t) => t.label)));
+
+    // Menus draw a line between the groups, as IDEA's Theme list.
+    const items = themeItems("light");
+    const lines = items.flatMap((item, i) => (item.kind === "separator" ? [i] : []));
+    expect(lines).toEqual([BUILTIN_THEMES.length, BUILTIN_THEMES.length + 3]);
+    expect(items.find((i) => i.kind !== "separator" && "checked" in i && i.checked)).toMatchObject({
+      label: "Islands Light",
+    });
+    // Selects head each plugin's themes with its name.
+    expect(
+      themeSelectOptions(themeChoices())
+        .slice(BUILTIN_THEMES.length)
+        .map((o) => (o.section ? `[${o.label}]` : o.label)),
+    ).toEqual(["[Acme]", "Dawn", "Night", "[Dracula Theme]", "Dracula", "Dracula Alucard"]);
   });
 
   it("parse only well-formed references", () => {

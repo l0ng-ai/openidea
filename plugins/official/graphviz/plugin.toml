@@ -5,6 +5,7 @@ description = "Graphviz DOT files (.dot, .gv) with a live preview beside the tex
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: live preview (Graphviz compiled to WebAssembly), layout engines, zoom, errors as problems, SVG and PNG export."
+categories = ["languages", "tools"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 activation = ["on-view:preview"]

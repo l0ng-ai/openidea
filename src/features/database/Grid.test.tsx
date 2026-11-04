@@ -130,3 +130,48 @@ describe("large database cells", () => {
     expect(screen.getByRole("gridcell").textContent).toBe("<null>");
   });
 });
+
+describe("multi-line database cells", () => {
+  const columns = [{ name: "note", type: "text" }];
+  const multi = "first line\nsecond line\r\nthird";
+
+  it("shows line breaks as markers on one line", () => {
+    render(<Grid columns={columns} rowCount={1} value={() => multi} />);
+    expect(screen.getByRole("gridcell").textContent).toBe("first line↵second line↵third");
+  });
+
+  it.each([
+    ["LF", "a\nb", "a\nb\nc"],
+    ["CRLF, kept although the textarea uses LF", "a\r\nb", "a\r\nb\r\nc"],
+  ])("edits a multi-line value (%s) in the multi-line editor and keeps its line breaks", (_, value, saved) => {
+    const onEdit = vi.fn();
+    render(<Grid columns={columns} rowCount={1} value={() => value} editable onEdit={onEdit} />);
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(editor.tagName).toBe("TEXTAREA");
+    fireEvent.change(editor, { target: { value: "a\nb\nc" } });
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+    expect(onEdit).toHaveBeenCalledWith(0, 0, saved);
+  });
+
+  it("opens the multi-line editor with Shift+Enter, from the grid and from the inline editor", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={columns} rowCount={1} value={() => "one"} editable onEdit={onEdit} />);
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Enter", shiftKey: true });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).tagName).toBe("TEXTAREA");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const inline = screen.getByRole("textbox");
+    expect(inline.tagName).toBe("INPUT");
+    fireEvent.change(inline, { target: { value: "one two" } });
+    fireEvent.keyDown(inline, { key: "Enter", shiftKey: true });
+    fireEvent.blur(inline);
+    const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor.value).toBe("one two");
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+});

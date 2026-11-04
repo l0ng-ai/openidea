@@ -107,6 +107,9 @@
   color: var(--fg-muted);
   font-style: italic;
 }
+.lineBreak {
+  color: var(--fg-muted);
+}
 .cellEditor {
   min-width: 0;
   height: 24px;
@@ -534,11 +537,12 @@
   background: var(--bg-editor);
   -webkit-user-select: text;
   user-select: text;
-  cursor: text;
+  cursor: default;
 }
 .outputLine {
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
 }
 .outputTime {
   color: var(--link);
@@ -958,9 +962,22 @@
   font-family: var(--openidea-editor-font, var(--font-mono));
   font-size: var(--fs-code);
 }
-.valueText:focus {
+.valueText:focus,
+.recordText:focus {
   outline: none;
   border-color: var(--focus-ring);
+}
+.recordText {
+  resize: vertical;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-input);
+  color: var(--fg-strong);
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  -webkit-user-select: text;
+  user-select: text;
 }
 .aggregates {
   width: 100%;

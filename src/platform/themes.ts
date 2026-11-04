@@ -77,11 +77,58 @@ export function addContributedTheme(theme: ThemeChoice): () => void {
   return () => useContributedThemes.setState((s) => ({ themes: s.themes.filter((t) => t !== theme) }));
 }
 
-/** Every theme that can be selected: the built-in ones, then the contributed ones by name. */
+/** Themes of one origin: the built-in ones, or one plugin's. */
+export interface ThemeGroup {
+  /** The contributing plugin; none for the built-in themes. */
+  pluginId?: string;
+  /** The plugin's name. */
+  origin?: string;
+  themes: ThemeChoice[];
+}
+
+/** The selectable themes by origin: the built-in ones, then each plugin's by its name, themes by name. */
+export function themeGroups(
+  contributed: readonly ThemeChoice[] = useContributedThemes.getState().themes,
+): ThemeGroup[] {
+  const plugins = new Map<string, ThemeGroup>();
+  for (const theme of contributed) {
+    const pluginId = parsePluginThemeRef(theme.id)?.pluginId ?? "";
+    const group = plugins.get(pluginId) ?? { pluginId, origin: theme.origin, themes: [] };
+    plugins.set(pluginId, group);
+    group.themes.push(theme);
+  }
+  const name = (g: ThemeGroup) => g.origin ?? g.pluginId ?? "";
+  const groups = [...plugins.values()].sort(
+    (a, b) => name(a).localeCompare(name(b)) || (a.pluginId ?? "").localeCompare(b.pluginId ?? ""),
+  );
+  for (const group of groups) group.themes.sort((a, b) => a.label.localeCompare(b.label));
+  return [{ themes: [...BUILTIN_THEMES] }, ...groups];
+}
+
+/** Every theme that can be selected, in the order of `themeGroups`. */
 export function themeChoices(
   contributed: readonly ThemeChoice[] = useContributedThemes.getState().themes,
 ): ThemeChoice[] {
-  return [...BUILTIN_THEMES, ...[...contributed].sort((a, b) => a.label.localeCompare(b.label))];
+  return themeGroups(contributed).flatMap((g) => g.themes);
+}
+
+/**
+ * Shows a plugin theme in this window without selecting it, `null` none, or
+ * `"selected"` the one selected again. The plugins feature provides it.
+ */
+export type PluginThemePreview = (theme: PluginThemeRef | null | "selected") => void;
+
+let pluginThemePreview: PluginThemePreview | null = null;
+
+export function providePluginThemePreview(preview: PluginThemePreview): () => void {
+  pluginThemePreview = preview;
+  return () => {
+    if (pluginThemePreview === preview) pluginThemePreview = null;
+  };
+}
+
+export function previewPluginTheme(theme: PluginThemeRef | null | "selected"): void {
+  pluginThemePreview?.(theme);
 }
 
 /** Whether `id` can be applied now (a contributed theme's plugin may be off). */
@@ -102,11 +149,63 @@ export function baseTheme(id: ThemeChoiceId, fallback: BuiltinThemeId = "light")
 
 // --- file icon themes (plugins) -------------------------------------------------
 
+export interface IconThemePack {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface IconThemeVariant {
+  id: string;
+  name: string;
+  default: string;
+  options: readonly { id: string; name: string }[];
+}
+
+export type IconThemeSettingOption =
+  | "hideFiles"
+  | "hideFolders"
+  | "hideUiIcons"
+  | "hidePsiIcons"
+  | "hollowFolders"
+  | "groups"
+  | "choice"
+  | "accent"
+  | "monochrome"
+  | "saturation"
+  | "opacity"
+  | "iconSize"
+  | "rowHeight";
+
+export interface IconThemeSettingItem {
+  option: IconThemeSettingOption;
+  label?: string | null;
+  hint?: string | null;
+  invert?: boolean;
+  choice?: string | null;
+  columns?: number | null;
+  default?: number | string | null;
+}
+
+export interface IconThemeSettingsSection {
+  title: string;
+  items: readonly IconThemeSettingItem[];
+}
+
+export interface IconThemeDetails {
+  groups: readonly IconThemePack[];
+  choices: readonly IconThemeVariant[];
+  accent: boolean;
+  settings: readonly IconThemeSettingsSection[];
+}
+
 export interface IconThemeChoice {
   /** `<pluginId>/<themeId>`: the `appearance.fileIconTheme` value. */
   id: string;
   label: string;
   origin?: string;
+  settingsPage?: string;
+  details?: () => Promise<IconThemeDetails | null>;
 }
 
 /** File icon themes of live plugins, for Settings › Appearance. */

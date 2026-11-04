@@ -32,6 +32,7 @@ import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
+import { SELECTION_HISTORY_KIND, type SelectionHistoryData } from "./selectionHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
@@ -252,6 +253,15 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./LocalHistory").then((m) => m.LocalHistoryEditor)),
       title: (input) => `Local History: ${baseName((input.data as { path: string }).path)}`,
       icon: () => "clock",
+    }),
+    registerEditorKind({
+      kind: SELECTION_HISTORY_KIND,
+      component: lazyComponent(() => import("./SelectionHistory").then((m) => m.SelectionHistoryEditor)),
+      title: (input) => {
+        const { path, lines } = input.data as SelectionHistoryData;
+        return `History: ${baseName(path)}:${lines[0] + 1}-${lines[1] + 1}`;
+      },
+      icon: () => "history",
     }),
     registerEditorContribution({
       id: "vcs.changeMarkers",

@@ -156,10 +156,12 @@ export async function newBranch(from?: string) {
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: "New branch name:",
-    initial: suggestion && !validateBranchName(suggestion) ? suggestion : "",
+    // Kept even when that branch exists (the current one always does): the user edits it.
+    initial: suggestion,
     mono: true,
     okLabel: "Create",
     validate: validateBranchName,
+    validateInitial: true,
     checkbox: { label: "Checkout branch", initial: true },
   });
   if (!r) return;
@@ -371,6 +373,7 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
     mono: true,
     okLabel: "Create",
     validate: validateBranchName,
+    validateInitial: true,
     checkbox: { label: "Checkout branch", initial: true },
   });
   if (!r) return;
