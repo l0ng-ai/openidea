@@ -47,8 +47,8 @@ for the JDT command and Java 8 target for the Maven participant. Use Java 25 to
 run the build compiler. Archive order and timestamps are deterministic.
 
 ```sh
-python3 plugins/kotlin-bridge/build.py /path/to/jdtls /path/to/maven
-shasum -a 256 plugins/kotlin-bridge/openidea-kotlin-bridge.jar
+python3 java/kotlin-bridge/build.py /path/to/jdtls /path/to/maven
+shasum -a 256 java/kotlin-bridge/openidea-kotlin-bridge.jar
 ```
 
 Committed jar SHA-256:
@@ -61,7 +61,7 @@ data directory, and includes it in JDT LS initialization bundles.
 
 ```sh
 # `java` on PATH must satisfy JDT LS; JAVA_HOME selects Maven's project JDK.
-JAVA_HOME=/path/to/project/jdk python3 plugins/kotlin-bridge/tests/verify.py /path/to/jdtls
+JAVA_HOME=/path/to/project/jdk python3 java/kotlin-bridge/tests/verify.py /path/to/jdtls
 ```
 
 Requires Maven on PATH and access to Kotlin 2.0.10 and the fixture's Maven

@@ -641,11 +641,11 @@ pub static TOOLS: &[ToolSpec] = &[
         // ECJ 3.46.200 keeps the constructor call in a constructor's statements, which
         // @SneakyThrows / @NonNull must not wrap or precede (lombok#4089).
         // Return to Maven Central once an official release includes both.
-        // Source commit, build instructions and checksum: plugins/lombok/README.md.
+        // Source commit, build instructions and checksum: java/lombok/README.md.
         method: Method::Bundled {
             filename: "lombok-1.18.48-openidea.2.jar",
             version: "1.18.48-openidea.2",
-            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.48-openidea.2.jar"),
+            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.2.jar"),
         },
         fallback: None,
         version: V,

@@ -71,7 +71,7 @@ fn bundled_lombok_is_available_offline_and_repairs_missing_or_corrupt_files() {
     let env = Env::new();
     let data = env.root.parent().unwrap();
     let agent = managed_bundle(data, "lombok").unwrap();
-    let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+    let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
     assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
     for contents in [None, Some(b"incomplete jar".as_slice())] {
         if let Some(contents) = contents {
@@ -93,7 +93,7 @@ fn concurrent_windows_get_the_same_complete_bundled_lombok() {
         let windows: Vec<_> = (0..8).map(|_| scope.spawn(|| managed_bundle(data, "lombok").unwrap())).collect();
         let paths: Vec<_> = windows.into_iter().map(|window| window.join().unwrap()).collect();
         assert!(paths.iter().all(|path| path == &paths[0]));
-        let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+        let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
         assert_eq!(sources::sha256_file(&paths[0]).unwrap(), checksum);
     });
 }

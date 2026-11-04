@@ -18,9 +18,12 @@ Visual style: dark, low-contrast greys, one cool accent
 - `src/ui/` — design-system primitives. `src/features/<name>/` — one feature each,
   exporting `activate()` registered in `src/features/index.ts`.
 - `languages/<id>.toml` — language definitions (detection, comments, LSP, DAP).
-- `crates/ide-host` — the `openidea-server` binary for remote development.
-- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins;
-  `templates/` — plugin starter templates.
+- `crates/ide-host` — the `openidea-server` binary for remote development and the
+  `openidea-plugin` CLI (plugin starter templates live in its `templates.rs`).
+- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins.
+  Plugin docs: `plugins/README.md`, `docs/plugins/themes.md`.
+- `java/` — JDT LS extension bundles (`java-usages`, `kotlin-bridge`) and the patched
+  Lombok agent, embedded into the app by `ide-sdk` / `ide-tools`.
 - `e2e/` — Playwright UI tests (`pnpm e2e`). `fixtures/` — sample projects per language
   for manual and automated testing.
 
