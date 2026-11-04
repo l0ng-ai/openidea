@@ -222,6 +222,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "project_current"
             | "project_roots"
             | "index_status"
+            | "index_file_extensions"
             | "jvm_file_presentations"
             | "deploy_coverage"
             | "deploy_test_connection"

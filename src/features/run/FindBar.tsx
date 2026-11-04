@@ -2,7 +2,7 @@
 import { type KeyboardEvent, type RefObject } from "react";
 import clsx from "clsx";
 import { IconButton, SearchField } from "@/ui";
-import { hasPrimaryModifier } from "@/platform/keymap";
+import { formatBinding, hasPrimaryModifier } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import type { FindOptions } from "./find";
 import styles from "./Run.module.css";
@@ -97,7 +97,7 @@ export function ConsoleFindBar({
             id: "case",
             icon: "case",
             title: "Match Case",
-            shortcut: "⌥C",
+            shortcut: formatBinding("Alt+C"),
             pressed: options.caseSensitive,
             onToggle: () => toggle("caseSensitive"),
           },
@@ -105,7 +105,7 @@ export function ConsoleFindBar({
             id: "word",
             icon: "word",
             title: "Words",
-            shortcut: "⌥W",
+            shortcut: formatBinding("Alt+W"),
             pressed: options.wholeWord,
             onToggle: () => toggle("wholeWord"),
           },
@@ -113,7 +113,7 @@ export function ConsoleFindBar({
             id: "regex",
             icon: "regex",
             title: "Regex",
-            shortcut: "⌥X",
+            shortcut: formatBinding("Alt+X"),
             pressed: options.regex,
             onToggle: () => toggle("regex"),
           },
@@ -125,7 +125,7 @@ export function ConsoleFindBar({
       <IconButton
         icon="arrow-up"
         title="Previous Occurrence"
-        shortcut="⇧↵"
+        shortcut={formatBinding("Shift+Enter")}
         size="small"
         disabled={count === 0}
         onClick={onPrevious}

@@ -186,6 +186,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         caches::caches_schedule_invalidation,
         caches::app_restart,
         nav::index_status,
+        nav::index_file_extensions,
         nav::spring_route_sources,
         nav::find_files,
         nav::find_dirs,
