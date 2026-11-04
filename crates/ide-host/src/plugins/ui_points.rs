@@ -62,7 +62,6 @@ pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
-pub const LOG_COLUMNS: &str = "log-columns";
 
 const MENU_IDS: [&str; 4] = ["editor.context", "projectView.context", "editorTab.context", "tools"];
 const MAX_TITLE: usize = 256;
@@ -84,27 +83,6 @@ fn declared_command(pkg: &Package, point: &str, command: &str) -> Result<(), Str
     } else {
         Err(format!("contributes.{point}: command {command:?} is not declared under [[contributes.commands]]"))
     }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LogColumnDecl {
-    id: String,
-    title: String,
-    command: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    width: Option<u32>,
-}
-
-pub(super) fn log_column(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
-    let d: LogColumnDecl = decode(LOG_COLUMNS, decl)?;
-    validate_item_id(&d.id, "Git log column id")?;
-    title(LOG_COLUMNS, &d.title)?;
-    declared_command(pkg, LOG_COLUMNS, &d.command)?;
-    if !pkg.manifest.capabilities.required.contains(&ide_extension::Capability::ProjectRead) {
-        return Err("Git log columns require project.read capability".into());
-    }
-    Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
 }
 
 fn title(point: &str, t: &str) -> Result<(), String> {
@@ -535,26 +513,6 @@ pub(super) fn file_template(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-
-    #[test]
-    fn log_columns_require_declared_commands_and_project_read() {
-        let manifest = ide_extension::Manifest::parse(
-            "id = \"log-status\"\nname = \"Status\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n\
-             [capabilities]\nrequired = [\"project.read\"]\n\
-             [[contributes.commands]]\nid = \"load-status\"\ntitle = \"Load Status\"",
-        )
-        .unwrap();
-        let mut pkg = Package::new(manifest, PathBuf::new());
-        let decl: toml::Value =
-            toml::from_str("id = \"status\"\ntitle = \"Status\"\ncommand = \"load-status\"\nwidth = 120").unwrap();
-        assert_eq!(log_column(&pkg, decl.clone()).unwrap().key, "status");
-        Arc::make_mut(&mut pkg.manifest).capabilities.required.clear();
-        assert!(log_column(&pkg, decl.clone()).unwrap_err().contains("project.read"));
-        Arc::make_mut(&mut pkg.manifest).capabilities.required.push(ide_extension::Capability::ProjectRead);
-        Arc::make_mut(&mut pkg.manifest).contributes.clear();
-        assert!(log_column(&pkg, decl).unwrap_err().contains("not declared"));
-    }
 
     #[test]
     fn bindings_need_a_modifier() {

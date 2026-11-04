@@ -2,8 +2,6 @@
 import type { Branch, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import type { GraphCommit } from "./graph";
-import { logCommitKey as commitKey } from "@/workbench/logContributions";
-export { commitKey };
 
 export type RepoCommit = Commit & {
   repo?: string | null;
@@ -13,6 +11,7 @@ export type RepoCommit = Commit & {
   readOnly?: boolean;
 };
 export const commitRepo = (c: Commit | undefined): string | null | undefined => (c as RepoCommit | undefined)?.repo;
+export const commitKey = (c: Pick<RepoCommit, "id" | "repo">): string => (c.repo ? `${c.repo}\0${c.id}` : c.id);
 export const graphCommit = (c: Commit): Commit & GraphCommit => ({
   ...c,
   id: commitKey(c),

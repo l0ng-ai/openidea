@@ -59,7 +59,6 @@ pub fn register_builtin_points(
     registry.register(Arc::new(super::providers::ProvidersPoint::new(providers.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::providers::SECRETS_POINT, ui.clone(), super::providers::secret)))?;
     use super::ui_points as p;
-    registry.register(Arc::new(UiPoint::new(p::LOG_COLUMNS, ui.clone(), p::log_column)))?;
     registry.register(Arc::new(UiPoint::new(p::MENUS, ui.clone(), p::menu)))?;
     registry.register(Arc::new(UiPoint::new(p::KEYMAPS, ui.clone(), p::keymap)))?;
     registry.register(Arc::new(UiPoint::new(p::STATUS_BAR, ui.clone(), p::status_item)))?;

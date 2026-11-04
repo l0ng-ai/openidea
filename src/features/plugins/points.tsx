@@ -3,8 +3,7 @@
  * declaration is projected onto the workbench, and how its items appear on
  * the plugin details page. One `defineUiPoint` per contribution type.
  */
-import type { Commit, PluginInfo, ThemeDef } from "@/bindings";
-import { logCommitKey, registerLogContribution, useLogContributions } from "@/workbench/logContributions";
+import type { PluginInfo, ThemeDef } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { addContributedTheme, pluginThemeRef } from "@/platform/themes";
@@ -17,7 +16,6 @@ import { SecretsDetails, type SecretDecl } from "./secrets";
 import { defineViewUiPoints, pluginSettingsPageId } from "./uiPoints";
 import { isLive, runPluginCommand } from "./store";
 import styles from "./PluginsPage.module.css";
-import { pluginsBackend } from "./backend";
 
 export const pluginActionId = (pluginId: string, commandId: string) => `plugin.${pluginId}.${commandId}`;
 
@@ -26,13 +24,6 @@ interface CommandDecl {
   title: string;
   category?: string | null;
   when?: string | null;
-}
-
-interface LogColumnDecl {
-  id: string;
-  title: string;
-  command: string;
-  width?: number;
 }
 
 function CommandsDetails({ plugin, items }: { plugin: PluginInfo; items: UiItem<CommandDecl>[] }) {
@@ -145,37 +136,6 @@ function IconThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiIte
 /** Registers the client side of every first-party UI point. */
 export function defineBuiltinUiPoints(): () => void {
   const disposers = [
-    defineUiPoint<LogColumnDecl>("log-columns", {
-      title: "Columns",
-      project: ({ pluginId, decl }, { plugin }) => {
-        if (
-          !plugin.capabilities.some((c) => c.id === "project.read" && c.granted) ||
-          (plugin.status !== "active" && plugin.status !== "inactive")
-        )
-          return;
-        const id = `plugin.${pluginId}.${decl.id}`;
-        const text = (commit: Commit) =>
-          useLogContributions.getState().values.get(`${id}\0${logCommitKey(commit)}`) ?? "";
-        return registerLogContribution({
-          id,
-          columns: [{ id, title: decl.title, width: decl.width ?? 120, render: text, text }],
-          load: async (commits, signal) => {
-            const result = await pluginsBackend().runCommand(pluginId, decl.command, JSON.stringify({ commits }), null);
-            if (signal.aborted || !result) return new Map();
-            const raw: unknown = JSON.parse(result);
-            if (!raw || typeof raw !== "object" || Array.isArray(raw))
-              throw new Error("Invalid Git log column response");
-            return new Map(
-              commits.flatMap((commit) => {
-                const value =
-                  (raw as Record<string, unknown>)[logCommitKey(commit)] ?? (raw as Record<string, unknown>)[commit.id];
-                return typeof value === "string" ? [[logCommitKey(commit), value]] : [];
-              }),
-            );
-          },
-        });
-      },
-    }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",
       project: ({ pluginId, decl }, { plugin }) =>

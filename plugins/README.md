@@ -931,29 +931,3 @@ A new host function touches:
 Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
 plus fmt, clippy (host and wasm) and the tests of the SDK, the official
 plugins and the fixtures.
-
-## Git log columns
-
-Log columns use the `log-columns` UI extension point. Declare a command and
-require project access because the command receives commit metadata:
-
-```toml
-[capabilities]
-required = ["project.read"]
-
-[[contributes.commands]]
-id = "load-build-status"
-title = "Load Build Status"
-
-[[contributes.log-columns]]
-id = "build-status"
-title = "Build status"
-command = "load-build-status"
-width = 120
-```
-
-The command receives a JSON object containing `commits`, including `id`, `repo`
-and summary metadata. Return a JSON object mapping hashes (or a repository path, a NUL character and a hash
-for multiple roots) to plain display strings. Visible rows load in batches;
-cancelled responses are discarded, and disabling the plugin removes its columns
-and cached values. Users enable columns in Git Log → View Options → Columns.

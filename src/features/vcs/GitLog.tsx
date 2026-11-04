@@ -16,6 +16,7 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -115,12 +116,6 @@ import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./C
 import { WorktreesPanel } from "./gitMenuDialogs";
 import { chooseLogPaths } from "./PathFilterDialog";
 import { goToRef } from "./logStore";
-import {
-  useVisibleLogContributions,
-  useLogContributions,
-  type LogColumn,
-  type LogContribution,
-} from "@/workbench/logContributions";
 import { LogIdContext } from "./logContext";
 import { LogScope } from "./LogScope";
 import { browseRepositoryAt, openExternalLog } from "./RevisionBrowser";
@@ -128,6 +123,12 @@ import { invalidateLogDetails, loadLogDetails, useCommitDetails } from "./logDet
 
 const ROW = 26;
 const LANE = 14;
+interface LogColumn {
+  id: string;
+  title: string;
+  width: number;
+  render(commit: Commit): ReactNode;
+}
 const LogMergePreview = lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff));
 const LogDiffPreview = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
 
@@ -1090,19 +1091,6 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
         toggle("Date", o, "showDate"),
         toggle("Hash", o, "showHash"),
         toggle("Signature", o, "showSignature"),
-        ...[...useLogContributions.getState().providers.values()]
-          .flatMap((p) => p.columns ?? [])
-          .map((column) => ({
-            label: column.title,
-            checked: !o.hiddenColumns.includes(column.id),
-            disabled: column.enabled === false,
-            run: () =>
-              updateLogOptions({
-                hiddenColumns: o.hiddenColumns.includes(column.id)
-                  ? o.hiddenColumns.filter((id) => id !== column.id)
-                  : [...o.hiddenColumns, column.id],
-              }),
-          })),
       ],
     },
     { kind: "separator" },
@@ -1229,8 +1217,6 @@ function CommitList() {
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
   const { expanded: expandedFragments, collapsed: collapsedFragments, merges: expandedMerges } = fragments;
-  const providers = useLogContributions((s) => s.providers);
-  useLogContributions((s) => s.values);
   const [hoverColor, setHoverColor] = useState<string | null>(null);
   const [boundaryTitles, setBoundaryTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
   const boundaryRequests = useRef(new Set<string>());
@@ -1255,22 +1241,10 @@ function CommitList() {
       ...(opts.showSignature
         ? [{ id: "signature", title: "Signature", width: 100, render: (c: Commit) => <CommitSignature commit={c} /> }]
         : []),
-      ...[...providers.values()]
-        .flatMap((p) => p.columns ?? [])
-        .filter((c) => c.enabled !== false && !opts.hiddenColumns.includes(c.id)),
     ];
     const order = [...new Set([...opts.columnOrder, ...builtins.map((c) => c.id)])];
     return builtins.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-  }, [
-    opts.showAuthor,
-    opts.showDate,
-    opts.showHash,
-    opts.showSignature,
-    opts.commitTimestamp,
-    opts.columnOrder,
-    providers,
-    opts.hiddenColumns,
-  ]);
+  }, [opts.showAuthor, opts.showDate, opts.showHash, opts.showSignature, opts.commitTimestamp, opts.columnOrder]);
   const user = useGitLog((s) => s.user);
   const headCommit = useVcs((s) => s.branch?.headCommit ?? null);
   const branches = useVcs((s) => s.branches);
@@ -1387,10 +1361,6 @@ function CommitList() {
   });
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
-  useVisibleLogContributions(
-    items.flatMap((item) => (commits[item.index] ? [commits[item.index]!] : [])),
-    columns.map((c) => c.id),
-  );
 
   useEffect(() => {
     if (!finished && !loading && last && last.index >= commits.length - 40) void loadMore(scope ?? undefined);
@@ -1623,9 +1593,7 @@ function CommitList() {
                   c.summary,
                   c.refs.join(" "),
                   ...(opts.showRepository ? [commitRepo(c) ?? ""] : []),
-                  ...columns.map(
-                    (column) => column.text?.(c) ?? (typeof column.render(c) === "string" ? column.render(c) : ""),
-                  ),
+                  ...columns.map((column) => (typeof column.render(c) === "string" ? column.render(c) : "")),
                 ].join("\t"),
               )
               .join("\n"),
@@ -1719,7 +1687,6 @@ function CommitList() {
                         `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
                 }}
                 columns={columns}
-                providers={[...providers.values()]}
                 bookmarked={!!bookmarks[commitKey(c)]}
               />
             );
@@ -1850,7 +1817,6 @@ const CommitRow = memo(function CommitRow({
   onNavigate,
   targetTitle,
   columns,
-  providers,
   bookmarked,
 }: {
   id: string;
@@ -1872,7 +1838,6 @@ const CommitRow = memo(function CommitRow({
   onNavigate: (index: number, key?: string) => void;
   targetTitle: (index: number, key?: string) => string;
   columns: LogColumn[];
-  providers: LogContribution[];
   bookmarked: boolean;
 }) {
   const merge = opts.highlightMerges && c.parents.length > 1;
@@ -1909,7 +1874,7 @@ const CommitRow = memo(function CommitRow({
       role="option"
       aria-selected={selected}
       className={clsx(styles.row, onBranch && styles.currentBranch, selected && styles.selected)}
-      style={{ ...Object.assign({}, ...providers.map((p) => p.highlight?.(c))), top }}
+      style={{ top }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks
         onPick(commitKey(c), e);
@@ -1968,9 +1933,6 @@ const CommitRow = memo(function CommitRow({
           </div>
         </Popup>
       </span>
-      {providers.map((p) => (
-        <span key={p.id}>{p.status?.(c)}</span>
-      ))}
       {columns.map((column) => (
         <span
           key={column.id}
@@ -1983,7 +1945,7 @@ const CommitRow = memo(function CommitRow({
           style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
           title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
         >
-          {column.available?.(c) === false ? null : column.render(c)}
+          {column.render(c)}
         </span>
       ))}
     </div>

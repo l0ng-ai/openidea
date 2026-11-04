@@ -5,7 +5,6 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Consent, InstallPreview, MarketPlugin, PluginInfo, ProjectInfo } from "@/bindings";
 import { _setActiveEditor } from "@/editor/api";
-import { useLogContributions } from "@/workbench/logContributions";
 import { executeAction, executeActionFrom, getAction, registerAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
@@ -128,51 +127,6 @@ afterEach(() => {
 });
 
 describe("plugin actions", () => {
-  it("projects Git log columns with granted project access and disposes them with their plugin", async () => {
-    const item = {
-      pluginId: "log-status",
-      point: "log-columns",
-      key: "status",
-      decl: { id: "status", title: "Status", command: "load-status", width: 120 },
-    };
-    const id = "plugin.log-status.status";
-    syncUiContributions([item], [plugin({ id: "log-status" })]);
-    expect(useLogContributions.getState().providers.has(id)).toBe(false);
-    clearUiContributions();
-    const info = plugin({
-      id: "log-status",
-      status: "inactive",
-      capabilities: [
-        { id: "project.read", granted: true, optional: false, description: "Read the project", risk: "low" },
-      ],
-    });
-    const runCommand = vi.fn(async () => JSON.stringify({ "/a\0tip": "Passed", "/b\0tip": "Failed" }));
-    setPluginsBackend({ ...backend, runCommand });
-    syncUiContributions([item], [info]);
-    const commits = ["/a", "/b"].map((repo) => ({
-      repo,
-      id: "tip",
-      shortId: "tip",
-      parents: [],
-      author: "A",
-      email: "a@example.com",
-      timeMs: 0,
-      summary: "Tip",
-      message: "Tip",
-      refs: [],
-    }));
-    const provider = useLogContributions.getState().providers.get(id)!;
-    expect(await provider.load!(commits, new AbortController().signal)).toEqual(
-      new Map([
-        ["/a\0tip", "Passed"],
-        ["/b\0tip", "Failed"],
-      ]),
-    );
-    expect(runCommand).toHaveBeenCalledWith("log-status", "load-status", JSON.stringify({ commits }), null);
-    syncUiContributions([], [{ ...info, status: "needsConsent" }]);
-    expect(useLogContributions.getState().providers.has(id)).toBe(false);
-  });
-
   it("projects command contributions to plugin.<plugin>.<command> actions", () => {
     const cmd = (pluginId: string, id: string, extra: Record<string, unknown> = {}) => ({
       pluginId,

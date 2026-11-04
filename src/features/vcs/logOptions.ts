@@ -39,7 +39,6 @@ export interface LogOptions {
   columnOrder: string[];
   columnWidths: Record<string, number>;
   linearizeMerges: boolean;
-  hiddenColumns: string[];
 }
 
 /** IDEA's defaults. */
@@ -71,7 +70,6 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   columnOrder: ["author", "date", "hash"],
   columnWidths: {},
   linearizeMerges: false,
-  hiddenColumns: [],
 };
 
 /** Options that change which commits the backend returns (a reload is needed). */
@@ -87,10 +85,10 @@ export function parseLogOptions(raw: unknown): LogOptions {
       out.sort = o.sort === "standard" || o.sort === "topo" || o.sort === "date" ? o.sort : DEFAULT_LOG_OPTIONS.sort;
     else if (k === "diffLocation")
       out.diffLocation = o.diffLocation === "right" || o.diffLocation === "bottom" ? o.diffLocation : "editor";
-    else if (k === "columnOrder" || k === "hiddenColumns")
-      out[k] = Array.isArray(o.columnOrder)
+    else if (k === "columnOrder")
+      out.columnOrder = Array.isArray(o.columnOrder)
         ? [...new Set(o.columnOrder.filter((v): v is string => typeof v === "string"))]
-        : [...DEFAULT_LOG_OPTIONS[k]];
+        : [...DEFAULT_LOG_OPTIONS.columnOrder];
     else if (k === "columnWidths" && o.columnWidths && typeof o.columnWidths === "object")
       out.columnWidths = Object.fromEntries(
         Object.entries(o.columnWidths).filter(
