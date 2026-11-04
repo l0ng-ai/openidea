@@ -243,6 +243,9 @@ struct Inner {
     pid: Option<u32>,
     /// Fired when the reader task has stopped (EOF, error or kill).
     reader_done: CancellationToken,
+    /// Fired once the child process has exited and been reaped (after [`Peer::kill`],
+    /// also what it started); at once when there is no child.
+    exited: CancellationToken,
 }
 
 impl Inner {
@@ -432,6 +435,7 @@ impl Peer {
                     (child.wait().await.ok(), true)
                 }
             };
+            inner.exited.cancel();
             if !killed {
                 // Bounded: a grandchild may keep the pipes open.
                 let drained = async {
@@ -510,7 +514,11 @@ impl Peer {
             kill: CancellationToken::new(),
             pid,
             reader_done: CancellationToken::new(),
+            exited: CancellationToken::new(),
         });
+        if pid.is_none() {
+            inner.exited.cancel();
+        }
 
         // Writer: a single task drains the queue so messages never interleave.
         {
@@ -703,6 +711,13 @@ impl Peer {
     pub fn kill(&self) {
         self.inner.close_transport();
         self.inner.kill.cancel();
+    }
+
+    /// Resolves once the child process is gone: exited on its own, or killed with what it
+    /// started and reaped. [`closed`](Self::closed) can come earlier, at EOF. Until then the
+    /// child may still hold files open, which on Windows can't be deleted.
+    pub async fn exited(&self) {
+        self.inner.exited.cancelled().await;
     }
 }
 
