@@ -143,7 +143,10 @@ impl Mappings {
         }
         let (l, rest, _) = best?;
         // A `..` from the server must not leave the local folder.
-        if rest.split('/').any(|s| s == ".." || s == ".") {
+        if rest.split('/').filter(|s| !s.is_empty()).any(|s| {
+            let mut components = Path::new(s).components();
+            !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some()
+        }) {
             return None;
         }
         Some(rest.split('/').filter(|s| !s.is_empty()).fold(l.clone(), |p, s| p.join(s)))
@@ -305,6 +308,43 @@ mod tests {
         let missing = tmp.path().join("missing");
         assert_eq!(local_folder(missing.to_str().unwrap(), &root), Some(root.join(without_root(&missing))));
         assert_eq!(local_folder("/src/", &root), Some(root.join("src")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_anchors_never_replace_the_project_relative_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let inside = root.join("src");
+        let outside = tmp.path().join("outside");
+        let missing = tmp.path().join("missing");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        for slash in ["\\", "/"] {
+            let spelling = |path: &Path| path.to_string_lossy().replace('\\', slash);
+            assert_eq!(local_folder(&spelling(&inside), &root), Some(inside.clone()));
+            assert_eq!(local_folder(&spelling(&outside), &root), None);
+            assert_eq!(local_folder(&spelling(&missing), &root), Some(root.join(posix(&missing))));
+            assert_eq!(local_folder(&format!("{slash}src{slash}"), &root), Some(inside.clone()));
+        }
+    }
+
+    #[test]
+    fn remote_paths_cannot_replace_or_leave_a_local_mapping() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let m = Mappings::new(&server(vec![]), root, "/srv");
+        for remote in ["/srv/../outside", "/srv/./file"] {
+            assert_eq!(m.local(remote), None, "{remote}");
+        }
+        #[cfg(windows)]
+        for remote in
+            ["/srv/..\\outside", "/srv/C:\\outside", "/srv/\\outside", "/srv/dir\\..\\outside", "/srv/C:/outside"]
+        {
+            assert_eq!(m.local(remote), None, "{remote}");
+        }
+        assert_eq!(m.local("/srv/dir/file"), Some(root.join("dir/file")));
+        assert_eq!(m.local("/srv"), Some(root.to_path_buf()));
     }
 
     #[cfg(unix)]

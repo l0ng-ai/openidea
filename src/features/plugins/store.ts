@@ -54,7 +54,13 @@ export const usePlugins = create<PluginsState>(() => ({
   marketError: null,
 }));
 
-export const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** A rejection's message: an `Error`, or an `IdeError` object from a command without a result type. */
+export const errorText = (e: unknown): string =>
+  e instanceof Error
+    ? e.message
+    : typeof e === "object" && e !== null && "message" in e && typeof e.message === "string"
+      ? e.message
+      : String(e);
 
 /** Statuses whose contributions are in effect. */
 export const isLive = (status: PluginStatus) => status === "active" || status === "inactive" || status === "static";

@@ -95,10 +95,10 @@ runtime or resolve profile/precedence rules.
 Use the JDT LS distribution / Java version documented in [README](README.md).
 
 ```sh
-python3 plugins/java-usages/build.py /path/to/jdtls
-python3 plugins/java-usages/tests/configuration.py /path/to/jdtls
-OPENIDEA_CONFIGURATION_STRESS=1 python3 plugins/java-usages/tests/configuration.py /path/to/jdtls
-OPENIDEA_SPRING_BOOT_JAR=/path/to/spring-boot-autoconfigure.jar python3 plugins/java-usages/tests/configuration.py /path/to/jdtls
+python3 java/java-usages/build.py /path/to/jdtls
+python3 java/java-usages/tests/configuration.py /path/to/jdtls
+OPENIDEA_CONFIGURATION_STRESS=1 python3 java/java-usages/tests/configuration.py /path/to/jdtls
+OPENIDEA_SPRING_BOOT_JAR=/path/to/spring-boot-autoconfigure.jar python3 java/java-usages/tests/configuration.py /path/to/jdtls
 cargo test -p ide-language -p ide-lsp
 ```
 

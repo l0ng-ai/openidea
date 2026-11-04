@@ -28,6 +28,13 @@ pub fn find_files(window: Window, state: State<'_, AppState>, query: String, lim
     ide_host::ops::nav::find_files(&state.host, window.label(), query, limit)
 }
 
+/// Folders holding indexed files, for `@` references.
+#[tauri::command]
+#[specta::specta]
+pub fn find_dirs(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
+    ide_host::ops::nav::find_dirs(&state.host, window.label(), query, limit)
+}
+
 /// Spring Web mapping sources for the request-path index of Search Everywhere.
 #[tauri::command]
 #[specta::specta]

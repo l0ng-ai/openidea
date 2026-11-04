@@ -42,6 +42,7 @@ export const commands = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 } | null>("project_current"),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
 	languages: () => __TAURI_INVOKE<LanguageInfo_Serialize[]>("languages"),
@@ -328,6 +329,8 @@ export const commands = {
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
+	/**  Folders holding indexed files, for `@` references. */
+	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
 	markRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("mark_recent", { path })),
 	/**  Recently opened files, most recent first (⌘E). */
@@ -468,7 +471,20 @@ export const commands = {
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
-	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
+	/**
+	 *  History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
+	 *  editor text. Cancellable with `cancel_request(request)`.
+	 */
+	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
+	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
+	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
+	vcsLogUsers: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_log_users", { repo })),
+	vcsOpenExternalLog: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("vcs_open_external_log", { path })),
+	vcsLogDetails: (repo: string | null, revision: string) => typedError<LogDetails, IdeError>(__TAURI_INVOKE("vcs_log_details", { repo, revision })),
+	vcsLogDetailsBatch: (repo: string | null, revisions: string[], request: RequestId) => typedError<LogDetails[], IdeError>(__TAURI_INVOKE("vcs_log_details_batch", { repo, revisions, request })),
+	vcsLogIndex: (repo: string | null, request: number | null) => typedError<LogIndexProgress, IdeError>(__TAURI_INVOKE("vcs_log_index", { repo, request })),
+	vcsRevisionChildren: (repo: string | null, revision: string, directory: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_children", { repo, revision, directory })),
+	vcsRevisionFiles: (repo: string | null, revision: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_files", { repo, revision })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
 	/**  Combined changes of several commits, `commits` oldest first. */
 	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
@@ -1709,6 +1725,31 @@ export type BlameLine = {
 	summary: string,
 };
 
+/**  History for Selection: the commits that changed a block of lines, newest first. */
+export type BlockHistory = {
+	/**  The selected lines in HEAD (0-based, inclusive); None when none of them is committed. */
+	headLines: [number, number] | null,
+	revisions: BlockRevision[],
+};
+
+/**  A commit that changed the block, with the block in its first parent and in it. */
+export type BlockRevision = {
+	id: string,
+	shortId: string,
+	author: string,
+	email: string,
+	timeMs: number | null,
+	summary: string,
+	/**  Repository-relative path of the file in this commit (before a later rename). */
+	path: string,
+	/**  The block before the commit; empty when the commit added it. */
+	before: string,
+	after: string,
+	/**  0-based first line of the block before and after the commit. */
+	beforeLine: number,
+	afterLine: number,
+};
+
 export type Branch = {
 	name: string,
 	remote: boolean,
@@ -2084,24 +2125,7 @@ export type CommandForm = {
 	formAnswers: FormAnswer[],
 };
 
-export type Commit = {
-	id: string,
-	shortId: string,
-	parents: string[],
-	author: string,
-	email: string,
-	timeMs: number | null,
-	summary: string,
-	message: string,
-	refs: string[],
-	/**  Committer time (Log › View Options › Commit Timestamp). */
-	commitTimeMs?: number | null,
-	/**
-	 *  Per parent, under a user or text filter: the link passes commits the filter hides
-	 *  (`parents` then name the nearest shown ancestors). Empty when no parent is rewritten.
-	 */
-	dashed?: boolean[],
-};
+export type Commit = Commit_Serialize | Commit_Deserialize;
 
 /**  Commit Options (IDEA's commit options popup). */
 export type CommitOptions = {
@@ -2140,6 +2164,64 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+};
+
+export type Commit_Deserialize = {
+	id: string,
+	shortId: string,
+	parents: string[],
+	/**  Connections in the filtered graph; never use these as revision/diff parents. */
+	graphParents?: string[] | null,
+	graphDashed?: boolean[],
+	/**  Repository-relative filename at this revision in rename-following history. */
+	historyPath?: string | null,
+	logPosition?: number | null,
+	logTotal?: number | null,
+	graphBoundaryParents?: string[],
+	/**  Reachability from HEAD, computed independently of the visible filters. */
+	onCurrentBranch?: boolean | null,
+	author: string,
+	email: string,
+	committer?: string,
+	committerEmail?: string,
+	timeMs: number | null,
+	summary: string,
+	message: string,
+	messageTruncated?: boolean,
+	refs: string[],
+	/**  Committer time (Log › View Options › Commit Timestamp). */
+	commitTimeMs?: number | null,
+	/**  Legacy alias of `graph_dashed`, indexed by displayed parents. */
+	dashed?: boolean[],
+};
+
+export type Commit_Serialize = {
+	id: string,
+	shortId: string,
+	parents: string[],
+	/**  Connections in the filtered graph; never use these as revision/diff parents. */
+	graphParents?: string[] | null,
+	graphDashed?: boolean[],
+	/**  Repository-relative filename at this revision in rename-following history. */
+	historyPath?: string | null,
+	logPosition?: number | null,
+	logTotal?: number | null,
+	graphBoundaryParents?: string[],
+	/**  Reachability from HEAD, computed independently of the visible filters. */
+	onCurrentBranch?: boolean | null,
+	author: string,
+	email: string,
+	committer: string,
+	committerEmail: string,
+	timeMs: number | null,
+	summary: string,
+	message: string,
+	messageTruncated: boolean,
+	refs: string[],
+	/**  Committer time (Log › View Options › Commit Timestamp). */
+	commitTimeMs: number | null,
+	/**  Legacy alias of `graph_dashed`, indexed by displayed parents. */
+	dashed?: boolean[],
 };
 
 export type CompareResult = {
@@ -4539,6 +4621,8 @@ export type LanguageInfo_Deserialize = {
 	filenames?: string[],
 	/**  First-line regex of the definition (shebangs, `<?php`). */
 	firstLine?: string | null,
+	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
+	scratchTemplate?: string | null,
 };
 
 /**  The UI-facing view of a language. */
@@ -4558,6 +4642,8 @@ export type LanguageInfo_Serialize = {
 	filenames?: string[],
 	/**  First-line regex of the definition (shebangs, `<?php`). */
 	firstLine?: string | null,
+	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
+	scratchTemplate?: string | null,
 };
 
 export type LanguageServerSettings = LanguageServerSettings_Serialize | LanguageServerSettings_Deserialize;
@@ -4827,6 +4913,22 @@ export type Location = {
 	uri?: string | null,
 };
 
+export type LogDetails = {
+	message: string,
+	containingBranches: string[],
+	/**  Git's verification code: G/U good, B bad, E error, N unsigned, X/Y expired, R revoked. */
+	signature: string,
+	signer: string,
+	key: string,
+	fingerprint: string,
+};
+
+export type LogIndexProgress = {
+	indexed: number,
+	total: number,
+	running: boolean,
+};
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type LogLocation = {
@@ -4840,11 +4942,19 @@ export type LogOrder =
 /**  `--topo-order`: lines of history are not intermixed. */
 "topo" | 
 /**  `--date-order`: commit time, but never a parent before its children. */
-"date";
+"date" | "standard";
 
 export type LogQuery = {
+	speedSearch?: string | null,
+	searchFields?: string[],
+	/**  Jump directly to an indexed window containing this commit (50 rows of context). */
+	seek?: string | null,
+	retainUntil?: string | null,
 	branch: string | null,
 	path: IpcPath | null,
+	paths?: IpcPath[],
+	/**  File history follows renames; structure filters retain fixed paths. */
+	follow?: boolean,
 	author: string | null,
 	text: string | null,
 	skip: number,
@@ -4854,6 +4964,8 @@ export type LogQuery = {
 	 *  not the left). Takes precedence over `branch`.
 	 */
 	range?: string | null,
+	/**  Additional ranges unioned with each other and with selected branches. */
+	ranges?: string[],
 	/**  `text` is a regular expression (Log filter `.*`). */
 	textRegex?: boolean,
 	/**  `text` matches case-sensitively (Log filter `Cc`). */
@@ -4862,6 +4974,7 @@ export type LogQuery = {
 	branches?: string[],
 	/**  More author needles next to `author`; a commit matches any of them (Log User filter). */
 	authors?: string[],
+	authorsExact?: boolean,
 	order?: LogOrder,
 	/**  Follow only the first parent of merges (`--first-parent`). */
 	firstParent?: boolean,
@@ -4874,6 +4987,10 @@ export type LogQuery = {
 	 */
 	sinceMs?: number | null,
 	untilMs?: number | null,
+	request?: RequestId | null,
+	summaryOnly?: boolean,
+	/**  Inclusive refresh boundary. Clients join only verified linear prefixes. */
+	stopAt?: string | null,
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
@@ -5000,6 +5117,16 @@ export type MavenSettings = {
 	userSettings?: string,
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
+	/**
+	 *  Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
+	 *  its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
+	 */
+	daemon?: boolean,
+	/**
+	 *  Maven Daemon home (or its `mvnd` executable); empty = `$MVND_HOME`, else
+	 *  `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
+	 */
+	mvndHome?: string,
 };
 
 export type MemoryCategory = 
@@ -5266,6 +5393,11 @@ export type PathCompletion = {
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
+	/**
+	 *  PHP version the language server checks the code against (`7.4`); empty = from
+	 *  `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
+	 */
+	languageLevel?: string,
 };
 
 /**  The focused editor when a plugin command is invoked. */
@@ -5602,6 +5734,7 @@ export type ProjectInfo_Deserialize = {
 	isGit: boolean,
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectInfo_Serialize = {
@@ -5611,6 +5744,7 @@ export type ProjectInfo_Serialize = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectRoots = {
@@ -7117,6 +7251,13 @@ export type UndoOutcome = {
 	moves: FileMove[],
 	/**  Edited files changed since the refactoring, so their edits were kept. */
 	conflicts: IpcPath[],
+};
+
+export type UnityProjectInfo = {
+	editorVersion: string | null,
+	/**  File names relative to the Unity root, in stable order. */
+	solutions: string[],
+	projects: string[],
 };
 
 export type UpdateCheck = {

@@ -2,7 +2,7 @@ package openidea:plugin@1.0.0;
 
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {
-    use types.{error, range};
+    use types.{error, range, location};
 
     enum severity {
         error,
@@ -11,12 +11,23 @@ interface diagnostics {
         hint,
     }
 
+    /// Another place that explains a diagnostic (the earlier declaration, say).
+    record related-information {
+        location: location,
+        message: string,
+    }
+
     record diagnostic {
         range: range,
         severity: severity,
         message: string,
         /// Rule or check id (`LineLength`).
         code: option<string>,
+        /// The tool that found it, when not the plugin itself (`checkstyle`).
+        source: option<string>,
+        /// `unnecessary` (shown faded) and `deprecated` (struck through); unknown ones are ignored.
+        tags: list<string>,
+        related: list<related-information>,
     }
 
     /// Replaces the plugin's diagnostics for the file at `path` (absolute, in

@@ -78,7 +78,7 @@ Version 1.3.0 adds the class-hierarchy refactoring commands; its reproducible SH
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
-python3 plugins/java-usages/build.py /path/to/jdtls
+python3 java/java-usages/build.py /path/to/jdtls
 ```
 
 ## Manual upgrades
@@ -100,10 +100,10 @@ not rebuild this jar. A maintainer must:
 ## Real server verification
 
 ```sh
-python3 plugins/java-usages/tests/verify.py /path/to/jdtls /path/to/lombok.jar
-python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
-OPENIDEA_USAGES_INDEX_STRESS=1 python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
-python3 plugins/java-usages/tests/hierarchy.py /path/to/jdtls
+python3 java/java-usages/tests/verify.py /path/to/jdtls /path/to/lombok.jar
+python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
+OPENIDEA_USAGES_INDEX_STRESS=1 python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
+python3 java/java-usages/tests/hierarchy.py /path/to/jdtls
 ```
 
 The harnesses select the JDT LS configuration for the current platform. The first

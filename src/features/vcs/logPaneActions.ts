@@ -21,6 +21,7 @@ import { logOptions } from "./logOptions";
 import { goToRef, updateLogOptions } from "./logStore";
 
 const VCS = "vcsAvailable";
+const LOG = "vcsAvailable || projectOpen || vcsLogFocus";
 
 /** A ref selected in the Branches pane. */
 export interface BranchTarget {
@@ -62,7 +63,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.showBranches",
       title: "Show Branches",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       toggled: () => logOptions().showBranches,
       run: () => {
         updateLogOptions({ showBranches: !logOptions().showBranches });
@@ -74,7 +75,7 @@ export function registerLogPaneActions(): () => void {
       title: "Collapse Linear Branches",
       category: "Git Log",
       icon: "collapse-all",
-      when: VCS,
+      when: LOG,
       run: () => updateLogOptions({ collapseLinear: true }),
     },
     {
@@ -82,7 +83,7 @@ export function registerLogPaneActions(): () => void {
       title: "Expand Linear Branches",
       category: "Git Log",
       icon: "expand-all",
-      when: VCS,
+      when: LOG,
       run: () => updateLogOptions({ collapseLinear: false }),
     },
 
@@ -135,12 +136,11 @@ export function registerLogPaneActions(): () => void {
       title: "Navigate Log to Selected Branch",
       category: "Git Log",
       icon: "locate",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: async ({ arg }) => {
         const t = branchArg(arg);
-        if (t?.repo) await focusRepo(t.repo);
-        if (t && !(await goToRef(t.ref)))
+        if (t && !(await goToRef(t.ref, t.repo)))
           notifications().notify({ group: "vcs", level: "warning", title: `'${t.ref}' was not found in the log` });
       },
     },
@@ -151,7 +151,7 @@ export function registerLogPaneActions(): () => void {
       title: "Show Diff",
       category: "Git Log",
       icon: "diff",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => void showChangesDiff(changesArg(arg)),
     },
@@ -159,7 +159,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.compareWithLocal",
       title: "Compare with Local",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => {
         const c = changesArg(arg)[0];
@@ -170,7 +170,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.compareBeforeWithLocal",
       title: "Compare Before with Local",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => {
         const c = changesArg(arg)[0];
@@ -182,7 +182,7 @@ export function registerLogPaneActions(): () => void {
       title: "Jump to Source",
       category: "Git Log",
       icon: "edit",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => {
         for (const c of changesArg(arg)) if (c.after) void openChangeSource(c);
@@ -209,7 +209,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.groupByDirectory",
       title: "Group by Directory",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       toggled: () => logOptions().groupByDirectory,
       run: () => updateLogOptions({ groupByDirectory: !logOptions().groupByDirectory }),
     },
@@ -218,7 +218,7 @@ export function registerLogPaneActions(): () => void {
       title: "Show Diff Preview",
       category: "Git Log",
       description: "Selecting a changed file shows its diff in the editor's preview tab",
-      when: VCS,
+      when: LOG,
       toggled: () => logOptions().diffPreview,
       run: () => updateLogOptions({ diffPreview: !logOptions().diffPreview }),
     },

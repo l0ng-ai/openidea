@@ -12,7 +12,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str, Utf32String};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const TIER_NAME: u32 = 1 << 20;
 const EXACT: u32 = 4000;
@@ -249,6 +249,76 @@ pub(crate) fn find_files(data: &IndexData, recents: &Recents, query: &str, limit
             indices,
         })
         .collect()
+}
+
+/// Fuzzy folder search over the folders holding indexed files: folder-name matches beat
+/// path matches; `/` in the query matches the whole path. `rel_path` ends in `/`.
+pub(crate) fn find_dirs(data: &IndexData, query: &str, limit: usize) -> Vec<FileMatch> {
+    let q = normalize_file_query(query);
+    if limit == 0 || q.is_empty() {
+        return Vec::new();
+    }
+    let by_path = q.contains('/');
+    let needle = Needle::new(q.trim_end_matches('/'));
+    // (score, rel without the trailing `/`, char offset of the name when it matched by name)
+    let score = |m: &mut Matcher, buf: &mut Vec<char>, rel: &str| -> Option<(u32, Option<u32>)> {
+        let trimmed = &rel[..rel.len() - 1];
+        let start = trimmed.rfind('/').map_or(0, |i| i + 1);
+        let name = &trimmed[start..];
+        if !by_path
+            && needle.mask & char_mask(name) == needle.mask
+            && let Some(s) = needle.score(m, name, buf)
+        {
+            return Some((TIER_NAME + s * 4 + needle.name_boost(name), Some(trimmed[..start].chars().count() as u32)));
+        }
+        if needle.mask & char_mask(trimmed) != needle.mask {
+            return None;
+        }
+        needle.score(m, trimmed, buf).map(|s| (s, None))
+    };
+    let mut best: Vec<(u32, &str, &Path, Option<u32>)> = data
+        .dirs
+        .par_iter()
+        .filter_map(|(rel, (path, _))| {
+            let mut buf = Vec::new();
+            with_matcher(|m| score(m, &mut buf, rel)).map(|(s, at)| (s, &**rel, path.as_path(), at))
+        })
+        .collect();
+    let order = |a: &(u32, &str, &Path, Option<u32>), b: &(u32, &str, &Path, Option<u32>)| {
+        b.0.cmp(&a.0).then_with(|| a.1.len().cmp(&b.1.len())).then_with(|| a.1.cmp(b.1))
+    };
+    if best.len() > limit {
+        best.select_nth_unstable_by(limit, order);
+        best.truncate(limit);
+    }
+    // Match indices and the CamelHump bonus `find_files` gives, so equal matches rank alike.
+    let mut out: Vec<FileMatch> = with_matcher(|m| {
+        let (mut buf, mut idx) = (Vec::new(), Vec::new());
+        best.into_iter()
+            .map(|(score, rel, path, name_at)| {
+                let trimmed = &rel[..rel.len() - 1];
+                let (bonus, indices) = match name_at {
+                    Some(at) => {
+                        let name = &trimmed[trimmed.rfind('/').map_or(0, |i| i + 1)..];
+                        needle.indices(m, name, &mut buf, &mut idx);
+                        (hump_bonus(name, &idx), idx.iter().map(|i| i + at).collect())
+                    }
+                    None => {
+                        needle.indices(m, trimmed, &mut buf, &mut idx);
+                        (hump_bonus(trimmed, &idx), idx.clone())
+                    }
+                };
+                FileMatch { path: path.to_path_buf().into(), rel_path: rel.to_owned(), score: score + bonus, indices }
+            })
+            .collect()
+    });
+    out.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.rel_path.len().cmp(&b.rel_path.len()))
+            .then_with(|| a.rel_path.cmp(&b.rel_path))
+    });
+    out
 }
 
 fn file(data: &IndexData, slot: u32) -> &FileEntry {

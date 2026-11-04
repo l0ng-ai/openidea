@@ -6,6 +6,7 @@
  * the forked JVM (`-Dopenidea.run.debug`), not to the Gradle daemon.
  */
 import RUN_SCRIPT from "./gradleRun.gradle?raw";
+import TESTS_SCRIPT from "./gradleTests.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { call, commands, isTauri, type GradleModel, type RunConfig } from "@/platform/ipc";
 import { findJavaModule, isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
@@ -84,20 +85,47 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   };
 }
 
-/** Writes the init script where Gradle can read it; it never changes, so once per session. */
-let scriptPath: Promise<string> | null = null;
-function writeScript(): Promise<string> {
-  scriptPath ??= (async () => {
-    const { tempDir, join } = await import("@tauri-apps/api/path");
-    const path = await join(await tempDir(), "openidea-gradle-run.gradle");
-    await call(commands.fsDelete(path)).catch(() => {});
-    await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(RUN_SCRIPT))));
-    return path;
-  })().catch((e) => {
-    scriptPath = null;
-    throw e;
-  });
-  return scriptPath;
+/** Writes an init script where Gradle can read it; it never changes, so once per session. */
+const scriptPaths = new Map<string, Promise<string>>();
+function writeScript(name: string, text: string): Promise<string> {
+  let written = scriptPaths.get(name);
+  if (!written) {
+    written = (async () => {
+      const { tempDir, join } = await import("@tauri-apps/api/path");
+      const path = await join(await tempDir(), name);
+      await call(commands.fsDelete(path)).catch(() => {});
+      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(text))));
+      return path;
+    })().catch((e) => {
+      scriptPaths.delete(name);
+      throw e;
+    });
+    scriptPaths.set(name, written);
+  }
+  return written;
+}
+
+const isGradleCommand = (config: Pick<RunConfig, "kind" | "command">) =>
+  config.kind === "gradle" || /(^|[/\\])gradlew?(\.bat)?$/.test(config.command);
+
+/** `config` with the init script (`script`) that reports each test as it runs, for a Gradle test run. */
+export function withTestEvents<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T, script: string): T {
+  if (!isGradleCommand(config) || config.args.includes(script)) return config;
+  return { ...config, args: ["--init-script", script, ...config.args] };
+}
+
+/**
+ * A Gradle test run reporting each test as it runs (`gradleTests.gradle`): Gradle prints only
+ * failures, and its XML reports are complete only once a test task ends.
+ */
+export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<T> {
+  if (!isTauri() || !config.isTest || !isGradleCommand(config)) return config;
+  try {
+    return withTestEvents(config, await writeScript("openidea-gradle-tests.gradle", TESTS_SCRIPT));
+  } catch (e) {
+    console.warn("Gradle test init script not written", e);
+    return config;
+  }
 }
 
 /**
@@ -121,7 +149,10 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
     configurationCache: false,
   };
   if (!delegatedGradleConfig(config, module, ctx)) return null;
-  const [script, configurationCache] = await Promise.all([writeScript(), supportsConfigurationCache(ctx)]);
+  const [script, configurationCache] = await Promise.all([
+    writeScript("openidea-gradle-run.gradle", RUN_SCRIPT),
+    supportsConfigurationCache(ctx),
+  ]);
   return delegatedGradleConfig(config, module, { ...ctx, script, configurationCache });
 }
 

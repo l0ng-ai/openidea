@@ -722,11 +722,8 @@ mod tests {
         let out = mock.invocation().project().unwrap().run_process("java", &["-version".into()], None).unwrap();
         assert_eq!(out.stdout, "-version");
         assert_eq!(mock.process_runs()[0].cwd.as_deref(), Some("/project"));
-        host::publish_diagnostics(
-            "/project/a.java",
-            &[Diagnostic { range: Range::default(), severity: Severity::Warning, message: "m".into(), code: None }],
-        )
-        .unwrap();
+        host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
+            .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
     }
 }

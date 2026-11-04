@@ -44,7 +44,8 @@ The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.0.0`, world
 The `openidea-plugin` tool scaffolds, builds, checks and links plugins:
 
 ```sh
-cargo install --path crates/ide-host --bin openidea-plugin   # or: cargo run -p ide-host --bin openidea-plugin -- …
+cargo install --locked --git https://github.com/l0ng-ai/openidea ide-host --bin openidea-plugin
+# in a checkout of this repository: cargo install --path crates/ide-host --bin openidea-plugin
 
 openidea-plugin new my-plugin                          # Rust command plugin (SDK)
 openidea-plugin new my-theme --template theme          # also: icon-theme, language
@@ -53,6 +54,17 @@ cargo test                                             # logic, against the SDK'
 openidea-plugin build                                  # → dist/plugin.wasm, then `check`
 openidea-plugin link                                   # load this folder in the IDE
 ```
+
+Each release also attaches the tool for Linux x64
+(`openidea-plugin-linux-x86_64.gz`). A plugin is a project of its own: keep it
+in its own repository, and list it in the community marketplace when it is
+ready (§8.1).
+
+A Rust plugin made by `new` depends on the SDK of the tool's release, from
+this repository's tag (`openidea-plugin = { git = "…", tag = "vX.Y.Z" }`);
+change the tag to build against a later API. Inside a checkout of this
+repository, or with `--sdk <path to sdk/rust/openidea-plugin>`, it depends on
+that SDK by path instead.
 
 `build` runs `cargo build --release --target wasm32-wasip2` (installing the
 target through rustup if needed), copies the component to the manifest's
@@ -212,7 +224,7 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-openidea-plugin = { path = "…/sdk/rust/openidea-plugin" }
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", tag = "vX.Y.Z" }   # or { path = "…/sdk/rust/openidea-plugin" }
 
 [profile.release]
 opt-level = "s"
@@ -321,6 +333,11 @@ Events are batched: a running plugin gets them within a fraction of a second,
 an idle one collects them for 2 s before it is woken, so frequent events
 (Key Promoter's actions) don't keep it alive.
 
+Kinds are names (`subscribe` takes a string), so later IDEs add kinds without
+a new API: an IDE refuses a kind it doesn't know with `invalid`, and a kind
+newer than the plugin's SDK arrives as `Event::Other { kind, data }` (JSON).
+The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
+
 ### Providers
 
 Declare what the plugin provides in the editor; only plugins whose
@@ -338,7 +355,14 @@ Then `register_plugin!(MyPlugin, providers)` and implement
 the document (path, language, version, text). Results join the language
 servers' (completion lists, ⌥⏎ quick fixes, ⌘B, gutter icons; a code action
 carries edits for any files, applied as one change). A completion item's
-`kind` (`CompletionKind` in the SDK, a string in the WIT) picks its icon.
+`kind` (`CompletionKind` in the SDK, a string in the WIT) picks its icon; it
+can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
+of its label, and bring `additional_edits` elsewhere in the document (an
+import). A code action can leave `edits` empty and set `data`: its edits are
+then computed by `resolve_code_action` when the user picks it, under the
+command budget instead of the 50 ms. Problems (`publish_diagnostics`) can name
+the tool that found them (`source`) and be `unnecessary` (faded) or
+`deprecated` (struck through).
 Editor providers run under the edit-path budget: 50 ms, after which the
 result is dropped, and an interruption at 500 ms. Every plugin providing a
 kind is asked at the same time, so each has the whole budget.
@@ -393,6 +417,9 @@ collapse of items, form fields, table cells, inserted and deleted rows, and
 `html` messages. A tree is a flat list whose items name their `parent`; an
 `expandable` item gets its children when it is expanded. A table gets only
 the rows it shows (`viewport`): report `total_rows` and return those.
+Bodies, field types and view events added by later APIs travel as `Other {
+kind, data }`: an IDE that doesn't know a body says it needs updating, and
+leaves out a field type it doesn't know.
 
 Showing a view activates the plugin (`on-view:<id>`). `views` become tool
 windows; a `customEditors` file (`priority = "default"`) opens in the
@@ -758,8 +785,19 @@ granted, and starts the approved program.
 - **Project plugins:** put (or symlink) the package in
   `<project>/.openidea/plugins/<name>/`. They load only in trusted projects and
   only after you approve their capabilities.
+- **Where:** installing, removing, enabling, granting and reloading plugins
+  work on the welcome screen and in trusted projects. A project opened in
+  restricted mode can browse the marketplace and show a package's install
+  page, but not change which plugin code runs.
 - Commands appear in Search Everywhere › Actions under their category, and can
   be bound in Settings › Keymap like any other action.
+- **Troubleshooting:** `openidea-plugin check` says why a package would be
+  refused. Settings › Plugins shows each plugin's state, why it failed if it
+  did, and its call stats (§3, _Sandbox and limits_). `host::log` lines go to
+  the IDE log (Help › _Show Log in Finder_ / _Explorer_ / _Files_) tagged with
+  the plugin id; debug and trace lines are written when the IDE is started
+  with `RUST_LOG=info,ide_plugin=trace`. `eprintln!` output is logged as
+  well, and a panic's message is shown with the crash.
 
 ## 8. Distribution
 
@@ -890,7 +928,10 @@ only grows:
    Extend with new types and new functions (or interfaces). `types.error` is
    used everywhere and is no exception; new situations use `failed(string)`
    or `invalid(string)`. Sets that keep growing (completion, token, symbol and
-   fold kinds, icons) are strings for this reason.
+   fold kinds, icons, event kinds, action sources, diagnostic tags) are
+   strings for this reason, and variants that grow (`event`, view `body`,
+   `view-event`, `field-value`) have an `other(extension)` case, a kind and
+   JSON data, that carries later cases to older plugins and IDEs.
 2. **Host interfaces (imports) may gain functions and interfaces**: older
    components don't import them.
 3. **Plugin interfaces (exports) never gain functions** once released: the
@@ -902,6 +943,11 @@ only grows:
    minor with a message that says to update the IDE or rebuild with the SDK.
 5. **One version number**: the `wit/` package version, `ENGINE_VERSION` and
    `API_VERSION` agree, and the SDK's `wit/` copy is identical to `wit/`.
+6. **1.x calls are synchronous and pass documents whole.** Host calls block
+   the plugin's instance, and providers get the document's text with each
+   call. WASI 0.3 async components come with 2.0, behind an adapter in the
+   host that keeps 1.x plugins running; incremental document sync, if
+   needed, is a new interface.
 
 Checked automatically:
 

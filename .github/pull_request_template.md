@@ -1,4 +1,4 @@
-Closes #
+<!-- If this resolves an issue: Closes #<n> -->
 
 ## What and why
 

@@ -340,6 +340,7 @@
   "menu.vcs.addToVcs": "Add to VCS",
   "menu.vcs.compareWithBranch": "Compare with Branch or Revision…",
   "menu.vcs.showHistory": "Show History",
+  "menu.vcs.showHistoryForSelection": "Show History for Selection",
   "menu.build": "Build",
   "menu.build.buildProject": "Build Project",
   "menu.build.buildModule": "Build Module",

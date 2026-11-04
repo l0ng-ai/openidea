@@ -197,6 +197,11 @@ impl ProjectIndex {
         matching::find_files(&d, &matching::Recents { paths: &recent }, query, limit)
     }
 
+    /// Fuzzy search for folders that hold indexed files; `rel_path` ends in `/`.
+    pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
+        matching::find_dirs(&self.shared.data.read(), query, limit)
+    }
+
     /// Fuzzy symbol search; CamelHump aware (`OCo` → `OrderController`).
     pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
         let recent = self.shared.recent.lock().clone();
@@ -394,6 +399,10 @@ pub mod bench_support {
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
             matching::find_files(&self.data, &matching::Recents { paths: &self.recent }, query, limit)
+        }
+
+        pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
+            matching::find_dirs(&self.data, query, limit)
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {

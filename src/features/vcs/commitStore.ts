@@ -180,6 +180,7 @@ export function keepMessageAfterCommit(committed: string, clear: boolean) {
   const message = messageAfterCommit(committed, clear);
   keptMessage = message || null;
   useCommit.setState({ message });
+  if (!message) void loadTemplate();
 }
 
 /** The field holds nothing the user typed: empty, or what the last commit left there. */
@@ -200,9 +201,35 @@ export function preparedMessageText(raw: string): string {
     .trim();
 }
 
+/** `commit.template` resolved as git does: `~/` in the home directory, a relative path in the repository. */
+export function templatePath(value: string, root: string, home: string): string {
+  if (value === "~" || value.startsWith("~/")) return home.replace(/[/\\]$/, "") + value.slice(1);
+  if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) return value;
+  return `${root}/${value}`;
+}
+
+/** Fills an empty message field with the repository's commit template (`commit.template`), without its `#` lines. */
+async function loadTemplate() {
+  const root = useVcs.getState().root;
+  if (!root || useCommit.getState().message.trim()) return;
+  try {
+    const value = await call(commands.vcsConfigGet(root, "commit.template"));
+    if (!value) return;
+    const home = value.startsWith("~") ? await (await import("@tauri-apps/api/path")).homeDir() : "";
+    const text = preparedMessageText(await call(commands.fsReadText(templatePath(value, root, home))));
+    if (!text || useVcs.getState().root !== root || useCommit.getState().message.trim()) return;
+    // Not typed: a prepared merge message may replace it.
+    keptMessage = text;
+    useCommit.setState({ message: text });
+  } catch {
+    // No readable template: the field stays empty.
+  }
+}
+
 /**
  * Like IDEA, pre-fills the commit message (unless something was typed) with the
- * message git prepared for a merge / cherry-pick / revert that stopped (e.g. on conflicts).
+ * message git prepared for a merge / cherry-pick / revert that stopped (e.g. on conflicts),
+ * otherwise with the commit template.
  */
 export function installPreparedMessage(): () => void {
   const load = async () => {
@@ -217,6 +244,7 @@ export function installPreparedMessage(): () => void {
   };
   const op = (s = useVcs.getState()) => s.branch?.operation ?? null;
   if (PREPARED_MESSAGE_OPS.has(op() ?? "")) void load();
+  else void loadTemplate();
   return useVcs.subscribe((s, prev) => {
     if (s.root !== prev.root) {
       // Another repository: nothing typed or ticked for the previous one carries over (Amend least of all).
@@ -233,6 +261,7 @@ export function installPreparedMessage(): () => void {
         selectedShelf: null,
       });
       if (PREPARED_MESSAGE_OPS.has(op(s) ?? "")) void load();
+      else void loadTemplate();
       return;
     }
     const now = op(s);
