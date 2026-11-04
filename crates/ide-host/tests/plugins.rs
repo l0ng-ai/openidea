@@ -2046,6 +2046,38 @@ fn pinned_programs_fill_views_and_open_terminals() {
 }
 
 #[test]
+fn views_open_project_files_at_a_line() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    std::fs::write(f.project.join("jobs.log"), "build\ndeploy\nfailed\n").unwrap();
+    let press = |button: &str| {
+        f.take_events();
+        let result = f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Button { id: button.into() }, f.inv());
+        let opened = f.take_events().into_iter().find_map(|(client, e)| match e {
+            PluginEvent::OpenLocation { path, line, column, .. } => Some((client, path.0, line, column)),
+            _ => None,
+        });
+        (result, opened)
+    };
+
+    let (result, opened) = press("log");
+    assert!(result.is_ok(), "{result:?}");
+    let (client, path, line, column) = opened.expect("a location");
+    assert_eq!((client.as_deref(), line, column), (Some("main"), 2, 4));
+    assert_eq!(path.canonicalize().unwrap(), f.project.join("jobs.log").canonicalize().unwrap());
+
+    let (result, opened) = press("outside");
+    assert!(result.is_err(), "a path outside the project is refused");
+    assert!(opened.is_none());
+
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, opened) = press("log");
+    assert!(result.unwrap_err().message.contains("project.read"), "needs project.read");
+    assert!(opened.is_none());
+}
+
+#[test]
 fn views_can_use_an_svg_icon_from_the_package() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();

@@ -114,6 +114,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::ViewChanged { .. }
             | PluginEvent::ViewMessage { .. }
             | PluginEvent::OpenTerminal { .. }
+            | PluginEvent::OpenLocation { .. }
     )
 }
 

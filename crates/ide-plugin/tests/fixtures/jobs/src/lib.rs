@@ -64,6 +64,8 @@ impl Views for Jobs {
                 return self.follow();
             }
             ViewEvent::Button(b) if b == "follow" => return self.follow(),
+            ViewEvent::Button(b) if b == "log" => return host::open_location("jobs.log", 2, 4),
+            ViewEvent::Button(b) if b == "outside" => return host::open_location("../outside.log", 0, 0),
             _ => return Ok(()),
         }
         host::refresh_view(VIEW);
