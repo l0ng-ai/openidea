@@ -22,13 +22,12 @@ import {
   kindLabel,
   removeConfig,
   upsertConfig,
-  userConfigs,
   validateConfig,
   type ConfigErrors,
 } from "./configs";
 import { importConfigs, importLabel } from "./importConfigs";
 import { targetName } from "./remote";
-import { saveUserConfigs, selectConfig, useRun } from "./store";
+import { saveEditedConfigs, selectConfig, useRun } from "./store";
 import { blankTemplate, COMPOUND, missingParams, newConfigOfType, templateId, typeFor } from "./types";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
@@ -305,7 +304,7 @@ function EditConfigsDialog() {
     }
     setSaving(true);
     try {
-      if (dirty) await saveUserConfigs(userConfigs(draft), removedDetectedIds);
+      if (dirty) await saveEditedConfigs(draft, removedDetectedIds);
       if (templatesDirty && templates) await call(commands.runSaveTemplates(templates));
       setRemovedDetectedIds([]);
       setDirty(false);
