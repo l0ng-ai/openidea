@@ -189,6 +189,21 @@ fn json_string(raw: &str) -> String {
     serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_owned())
 }
 
+/// A command line the run configuration forms parse back into `args` (`formatArgs` in the UI):
+/// single quotes only where needed.
+fn format_args(args: &[String]) -> String {
+    let quote = |a: &String| {
+        if a.is_empty() {
+            "''".to_owned()
+        } else if a.chars().any(|c| c.is_whitespace() || "'\"\\$`".contains(c)) {
+            format!("'{}'", a.replace('\'', "'\\''"))
+        } else {
+            a.clone()
+        }
+    };
+    args.iter().map(quote).collect::<Vec<_>>().join(" ")
+}
+
 /// Regex-escaped for Jest / Vitest `-t`.
 fn regex_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -550,11 +565,20 @@ impl Cx<'_> {
 
     // ------------------------------------------------------------- JavaScript
 
-    fn node_interpreter(&self, c: &El, ignored: &mut Vec<String>) {
-        let interpreter = c.value("node-interpreter").or_else(|| c.attr("node-interpreter"));
-        if interpreter.is_some_and(|i| !i.is_empty() && i != "project") {
+    /// The configuration's own Node interpreter; `None` for the project's (`project`).
+    fn node_interpreter(&self, c: &El) -> Res<Option<String>> {
+        match c.value("node-interpreter").or_else(|| c.attr("node-interpreter")).map(str::trim) {
+            None | Some("" | "project") => Ok(None),
+            interpreter => self.text(interpreter),
+        }
+    }
+
+    /// Kinds without an interpreter field keep the project's and list the setting as ignored.
+    fn node_interpreter_ignored(&self, c: &El, ignored: &mut Vec<String>) -> Res<()> {
+        if self.node_interpreter(c)?.is_some() {
             ignored.push("node-interpreter".into());
         }
+        Ok(())
     }
 
     fn npm(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
@@ -590,10 +614,29 @@ impl Cx<'_> {
                 ignored.push("scripts".into());
             }
         }
-        args.extend(self.words(c.value("arguments"))?);
-        self.node_interpreter(c, ignored);
-        let mut rc = config(name, "npm", manager, args, Some("js-debug"));
-        rc.cwd = working_dir(self.root, &dir.to_string_lossy()).1.map(Into::into);
+        let arguments = self.words(c.value("arguments"))?;
+        args.extend(arguments.iter().cloned());
+        let interpreter = self.node_interpreter(c)?;
+        let package_dir = working_dir(self.root, &dir.to_string_lossy()).1;
+        let mut rc = config(name, "npm", manager.clone(), args, Some("js-debug"));
+        if let Some(interpreter) = interpreter {
+            // The npm form's fields, so the interpreter shows there (and the rest still match).
+            let script = if command == "run" { scripts.first().map(|s| (*s).to_owned()) } else { None };
+            let mut params = BTreeMap::from([
+                ("packageManager".to_owned(), manager),
+                ("command".to_owned(), command),
+                ("script".to_owned(), script.unwrap_or_default()),
+                ("arguments".to_owned(), format_args(&arguments)),
+                (
+                    "packageDir".to_owned(),
+                    package_dir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
+                ),
+                ("nodeInterpreter".to_owned(), interpreter),
+            ]);
+            params.retain(|_, v| !v.is_empty());
+            rc.extras.params = params;
+        }
+        rc.cwd = package_dir.map(Into::into);
         rc.is_test = test;
         self.envs(c, &mut rc);
         Ok(rc)
@@ -628,7 +671,7 @@ impl Cx<'_> {
             }
             _ => {}
         }
-        self.node_interpreter(c, ignored);
+        self.node_interpreter_ignored(c, ignored)?;
         let mut rc = config(name, "node", "npx".into(), args, Some("js-debug"));
         rc.cwd = cwd.map(Into::into);
         rc.is_test = true;
@@ -644,7 +687,7 @@ impl Cx<'_> {
         let mut args = self.words(c.attr("node-parameters"))?;
         args.push(path_from(self.root, file, &dir));
         args.extend(self.args(c.attr("application-parameters"), &dir)?);
-        self.node_interpreter(c, ignored);
+        self.node_interpreter_ignored(c, ignored)?;
         let mut rc = config(name, "node", "node".into(), args, Some("js-debug"));
         rc.cwd = cwd.map(Into::into);
         self.envs(c, &mut rc);

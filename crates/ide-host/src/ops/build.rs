@@ -222,6 +222,22 @@ fn declaring_pom(
     )))
 }
 
+/// The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
+/// build has downloaded it (`ide_sdk::libraries::published_version_catalog`).
+pub async fn gradle_published_catalog(
+    host: &Host,
+    window: &str,
+    coordinates: String,
+) -> IdeResult<Option<ide_core::IpcPath>> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        ide_sdk::libraries::published_version_catalog(&project.root, &project.settings.effective(), &coordinates)
+            .map(Into::into)
+    })
+    .await
+    .map_err(join_err)
+}
+
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.
 pub async fn maven_dependency_declaration(
     host: &Host,
@@ -347,6 +363,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.sender("onProgress")?,
         )
         .await
+    });
+    d.add("gradle_published_catalog", |c| async move {
+        gradle_published_catalog(&c.host, &c.window, c.arg("coordinates")?).await
     });
     d.add("maven_dependency_declaration", |c| async move {
         maven_dependency_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?).await

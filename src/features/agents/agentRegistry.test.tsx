@@ -145,6 +145,7 @@ describe("agent picker", () => {
     commandEditable: true,
     commandReadOnlyReason: null,
     installed: true,
+    env: {},
     config: [],
     commands: [],
     ...p,
@@ -312,6 +313,11 @@ class FakeCommands implements CommandsBackend {
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
   chooseExecutable = vi.fn(async () => "/chosen/agent");
+  savedEnv: [string, Record<string, string>][] = [];
+  async setEnv(id: string, env: Record<string, string>) {
+    this.savedEnv.push([id, env]);
+    this.list = this.list.map((p) => (p.id === id ? { ...p, env } : p));
+  }
   async set(id: string, command: string | null) {
     this.saved.push([id, command]);
     // What the agent list shows after the override takes effect.
@@ -341,6 +347,7 @@ const claudeProvider = (command: string): AgentProvider => ({
   commandEditable: true,
   commandReadOnlyReason: null,
   installed: true,
+  env: {},
   config: [],
   commands: [],
   source: { kind: "builtin" },
@@ -434,6 +441,23 @@ describe("Built-in executable overrides", () => {
       expect(screen.getByRole("option", { name: /Claude Code Custom/ })).toBeInTheDocument();
       expect(apply()).toBeDisabled();
     } else expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("writes the agent's environment variables on Apply and shows them again", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    await openCommands(commands);
+    const env = () => screen.getByRole("textbox", { name: "Environment variables" });
+    fireEvent.change(env(), { target: { value: "CLAUDE_CODE_ENTRYPOINT=openidea; HTTPS_PROXY=http://proxy:8080" } });
+    expect(commands.savedEnv).toEqual([]);
+    await act(async () => fireEvent.click(apply()));
+    expect(commands.savedEnv).toEqual([
+      ["claude", { CLAUDE_CODE_ENTRYPOINT: "openidea", HTTPS_PROXY: "http://proxy:8080" }],
+    ]);
+    expect(env()).toHaveValue("CLAUDE_CODE_ENTRYPOINT=openidea; HTTPS_PROXY=http://proxy:8080");
+    fireEvent.change(env(), { target: { value: "" } });
+    await act(async () => fireEvent.click(apply()));
+    expect(commands.savedEnv.at(-1)).toEqual(["claude", {}]);
   });
 
   it("Cancel discards command edits without writing", async () => {

@@ -266,7 +266,7 @@ export async function commitEditing(name: string): Promise<boolean> {
           // An existing intermediate package keeps its own `__init__.py`.
           await fs.createFile(joinPath(dir, "__init__.py")).catch(() => {});
     } catch (e) {
-      fail(editing.nodeKind === "file" ? "Cannot create file" : "Cannot create folder", e);
+      fail(editing.nodeKind === "file" ? tx("Cannot create file") : tx("Cannot create folder"), e);
       return true;
     }
     await refreshAfterCreate(editing.parent, path);
@@ -598,7 +598,7 @@ export async function paste(target = targetFolder()) {
     external = files;
   } catch (e) {
     if (!get().clipboard?.paths.length) {
-      fail("Cannot access the clipboard", e);
+      fail(tx("Cannot access the clipboard"), e);
       return;
     }
   }
@@ -797,7 +797,7 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
   try {
     await navigator.clipboard.writeText(text);
   } catch (e) {
-    fail("Cannot access the clipboard", e);
+    fail(tx("Cannot access the clipboard"), e);
   }
 }
 
