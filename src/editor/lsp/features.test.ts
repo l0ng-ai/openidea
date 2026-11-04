@@ -44,6 +44,18 @@ describe("semanticRanges", () => {
     expect(semanticRanges(doc, input)).toEqual([{ from: 0, to: 3, className: "cm-sem-function" }]);
   });
 
+  it("marks globals (lua-language-server's `global` modifier)", () => {
+    const input = {
+      tokenTypes: ["variable", "function"],
+      tokenModifiers: ["global"],
+      data: [0, 0, 3, 0, 1, 0, 4, 3, 1, 1],
+    };
+    expect(semanticRanges(doc, input)).toEqual([
+      { from: 0, to: 3, className: "cm-sem-global" },
+      { from: 4, to: 7, className: "cm-sem-function cm-sem-global" },
+    ]);
+  });
+
   it("colours a constructor (jdtls: class + `constructor`) as a function", () => {
     const input = { tokenTypes: ["class"], tokenModifiers: ["constructor", "declaration"], data: [0, 0, 3, 0, 0b11] };
     expect(semanticRanges(doc, input)[0]?.className).toBe("cm-sem-function cm-sem-declaration");
