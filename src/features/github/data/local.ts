@@ -23,9 +23,12 @@ export const useGhBusy = create<{ busy: { title: string; line: string; request: 
   busy: null,
 }));
 
-/** Runs a cancellable, streaming gh / git operation; null when it failed, was cancelled or another one runs. */
+/**
+ * Runs a cancellable, streaming gh / git operation; null when it failed, was cancelled or another one runs.
+ * `title` shows in the banner while it runs, `failure` titles the error notification.
+ */
 export async function withBusy<T>(
-  title: string,
+  { title, failure }: { title: string; failure: string },
   run: (request: RequestId, out: Channel<string>) => Promise<T>,
 ): Promise<T | null> {
   if (useGhBusy.getState().busy) {
@@ -48,7 +51,7 @@ export async function withBusy<T>(
       notifications().notify({
         group: "vcs",
         level: "error",
-        title: `${title.replace(/…$/, "")} failed`,
+        title: failure,
         body: errorMessage(e),
         key: "github-op",
       });
@@ -66,7 +69,8 @@ export function cancelBusy() {
 /** "Checkout Branch": fetches and checks out the pull request's branch (gh's local name). */
 export async function checkoutPullRequest(number: number): Promise<boolean> {
   // The command resolves with nothing (`null`), which `withBusy` reports as a failure.
-  const done = await withBusy(`Checking out #${number}…`, async (r, out) => {
+  const op = { title: tx`Checking out #${number}…`, failure: tx`Couldn't check out #${number}` };
+  const done = await withBusy(op, async (r, out) => {
     await call(commands.ghPrCheckout(connectedRoot(), r, number, out));
     return true;
   });
@@ -89,7 +93,8 @@ export async function prepareDiff(pr: GHPullRequest): Promise<PrDiffRevisions | 
   if (hit) return hit;
   const { coordinates, root } = requireConnection();
   const repo = nameWithOwner(coordinates);
-  const revs = await withBusy(`Fetching #${pr.number}…`, (r, out) =>
+  const op = { title: tx`Fetching #${pr.number}…`, failure: tx`Couldn't fetch #${pr.number}` };
+  const revs = await withBusy(op, (r, out) =>
     call(commands.ghPrPrepareDiff(root, r, pr.number, pr.headRefOid, pr.baseRefOid, pr.baseRefName, repo, out)),
   );
   if (revs) diffCache.set(key, revs);
@@ -185,7 +190,11 @@ export async function openInWorktree(number: number): Promise<void> {
   const revs = await prepareDiff(pr);
   if (!revs) return;
   const path = `${String(revs.root).replace(/[\\/]+$/, "")}_PR_${number}`;
-  const added = await withBusy(`Creating worktree for #${number}…`, async () => {
+  const op = {
+    title: tx`Creating worktree for #${number}…`,
+    failure: tx`Couldn't create the worktree for #${number}`,
+  };
+  const added = await withBusy(op, async () => {
     await call(commands.vcsAddWorktree(revs.root, path, pr.headRefOid, null));
     return true;
   });

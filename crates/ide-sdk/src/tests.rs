@@ -342,11 +342,11 @@ fn maven_launch_refreshes_legacy_defaults_but_keeps_user_overrides() {
         assert_eq!(config.args, args);
     }
 
-    let mut explicit = run("maven", "/custom/mvn", &["-s", "own-settings.xml", "test"]);
+    let mut explicit = run("maven", "/custom/mvn", &["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
     explicit.detected = false;
     prepare_maven_run(&mut explicit, tmp.path(), &s);
     assert_eq!(explicit.command, "/custom/mvn");
-    assert_eq!(explicit.args, ["-s", "own-settings.xml", "test"]);
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
 
     // A gutter configuration derived from a user-edited default must keep that user's choices.
     let mut saved = explicit.clone();
@@ -356,7 +356,7 @@ fn maven_launch_refreshes_legacy_defaults_but_keeps_user_overrides() {
     explicit.detected = true;
     prepare_maven_run(&mut explicit, tmp.path(), &s);
     assert_eq!(explicit.command, "/custom/mvn");
-    assert_eq!(explicit.args, ["-s", "own-settings.xml", "test"]);
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
 }
 
 #[test]
@@ -376,6 +376,24 @@ fn maven_goal_keeps_explicit_settings_and_nested_wrapper() {
     prepare_maven_run(&mut config, tmp.path(), &s);
     assert_eq!(config.command, wrapper.to_string_lossy());
     assert_eq!(config.args, ["-s", "own-settings.xml", "test"]);
+}
+
+#[test]
+fn persisting_a_maven_goal_keeps_explicit_options_equal_to_the_defaults() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.user_settings = tmp.path().join("settings.xml").to_string_lossy().into_owned();
+    s.languages.java.maven.local_repository = tmp.path().join("repo").to_string_lossy().into_owned();
+    let options = maven_options(tmp.path(), &s);
+    for goals in [vec![options[2].clone(), "test".into()], [options.clone(), vec!["test".into()]].concat()] {
+        let mut config = run("maven", "mvn", &[]);
+        config.id = format!("maven:goal:pom.xml:{}", goals.join(" "));
+        config.detected = false;
+        config.args = goals.clone();
+        apply_to_run_configs(std::slice::from_mut(&mut config), tmp.path(), &s);
+        let kept = without_derived(&config, tmp.path(), &s);
+        assert_eq!(kept.args, goals);
+    }
 }
 
 #[test]
@@ -1357,6 +1375,8 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     s.languages.java.jdk = root.join("jdk17").to_string_lossy().into_owned();
     touch("maven/bin/mvn");
     s.languages.java.maven.home = root.join("maven").to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "/m2/settings.xml".into();
+    s.languages.java.maven.local_repository = "/m2/repo".into();
     s.languages.ruby.interpreter = touch("ruby/bin/ruby");
     touch("ruby/bin/bundle");
     s.tools.insert("godot".into(), ide_core::settings::ToolSettings { path: touch("Godot/godot") });
@@ -1410,4 +1430,28 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     let ruby2 = root.join("ruby2/bin");
     assert_eq!(next.command, ruby2.join("ruby").to_string_lossy());
     assert!(next.env["PATH"].starts_with(&*ruby2.to_string_lossy()), "{}", next.env["PATH"]);
+
+    // A Maven configuration (a detected one narrowed to a test, a tool window goal) follows a
+    // later Maven home, settings file, local repository and JDK; options it sets itself stay.
+    for detected in [true, false] {
+        let mut goal = saved("maven", "mvn", &["test", "-Dtest=AppTest"], &[]);
+        goal.detected = detected;
+        let mut own = saved("maven", "mvn", &["-s", "/mine.xml", "test"], &[]);
+        own.detected = detected;
+        let mut loaded = [goal, own];
+        apply_to_run_configs(&mut loaded, root, &s);
+        let mut next = loaded.map(|c| without_derived(&c, root, &s));
+        touch("maven2/bin/mvn");
+        fake_jdk(&root.join("jdk21"));
+        let mut s2 = s.clone();
+        s2.languages.java.maven.home = root.join("maven2").to_string_lossy().into_owned();
+        s2.languages.java.maven.user_settings = "/m3/settings.xml".into();
+        s2.languages.java.maven.local_repository = "/m3/repo".into();
+        s2.languages.java.jdk = root.join("jdk21").to_string_lossy().into_owned();
+        apply_to_run_configs(&mut next, root, &s2);
+        assert_eq!(next[0].command, root.join("maven2/bin/mvn").to_string_lossy());
+        assert_eq!(next[0].args, ["-s", "/m3/settings.xml", "-Dmaven.repo.local=/m3/repo", "test", "-Dtest=AppTest"]);
+        assert!(next[0].env["JAVA_HOME"].ends_with("jdk21"), "{}", next[0].env["JAVA_HOME"]);
+        assert_eq!(next[1].args, ["-Dmaven.repo.local=/m3/repo", "-s", "/mine.xml", "test"]);
+    }
 }
