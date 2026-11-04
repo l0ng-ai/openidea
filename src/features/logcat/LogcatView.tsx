@@ -9,12 +9,12 @@ import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import type { LogcatLevel, LogcatLine } from "@/platform/ipc";
 import { Input, IconButton, Select, T, EmptyState, Toggle } from "@/ui";
-import { LEVELS, LEVEL_LETTER, filterLines, shortTime } from "./model";
+import { FILTER_LEVELS, LEVEL_CLASS, filterLines, shortTime } from "./model";
 import { appendLines, clearLines, setDevices, setDevicesError, setPaused, setStatus, useLogcat } from "./store";
 import styles from "./Logcat.module.css";
 
 /** Rows are measured: a wrapped message makes its row taller. */
-const ROW_HEIGHT = 18;
+const ROW_HEIGHT = 22;
 const LEVEL_LABELS: Record<LogcatLevel, string> = {
   verbose: "Verbose",
   debug: "Debug",
@@ -22,8 +22,12 @@ const LEVEL_LABELS: Record<LogcatLevel, string> = {
   warn: "Warnings",
   error: "Errors",
   fatal: "Fatal",
-  unknown: "Everything",
+  unknown: "Unknown",
 };
+
+/** The device whose log the buffer holds: reopening the window keeps it, switching
+ * devices starts clean. */
+let bufferedFor: string | null = null;
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -53,13 +57,21 @@ export function LogcatView() {
     refreshDevices();
   }, [refreshDevices]);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /** The view is at the bottom, so new lines keep it there. */
+  const stick = useRef(true);
+
   // One stream per device: switching devices (or closing the window) cancels it.
   useEffect(() => {
     if (!serial) {
       setStatus("idle");
       return;
     }
-    clearLines();
+    if (bufferedFor !== serial) {
+      clearLines();
+      bufferedFor = serial;
+      stick.current = true;
+    }
     const request = nextRequestId();
     const channel = new Channel<LogcatLine[]>();
     channel.onmessage = (batch) => appendLines(batch);
@@ -76,12 +88,12 @@ export function LogcatView() {
   }, [serial]);
 
   const rows = useMemo(() => filterLines(lines, level, query), [lines, level, query]);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT,
+    // Rows are identified by their line, not by position: the buffer drops old lines.
+    getItemKey: (index) => rows[index]!.id,
     overscan: 16,
   });
 
@@ -105,17 +117,16 @@ export function LogcatView() {
         <Select
           className={styles.device}
           aria-label={"Device"}
-          placeholder={devices.length ? "Select a device" : "No devices"}
+          placeholder="No devices"
           value={serial}
           options={deviceOptions}
           onChange={(value) => useLogcat.setState({ serial: value })}
-          renderValue={(option) => option?.label ?? (devices.length ? "Select a device" : "No devices")}
         />
         <Select
           className={styles.level}
           aria-label={"Minimum level"}
           value={level}
-          options={LEVELS.map((value) => ({ value, label: LEVEL_LABELS[value] }))}
+          options={FILTER_LEVELS.map((value) => ({ value, label: LEVEL_LABELS[value] }))}
           onChange={(value) => useLogcat.setState({ level: value })}
         />
         <Input
@@ -173,7 +184,7 @@ export function LogcatView() {
                   key={item.key}
                   ref={virtualizer.measureElement}
                   data-index={item.index}
-                  className={clsx(styles.row, styles[`level${LEVEL_LETTER[line.level]}`])}
+                  className={clsx(styles.row, styles[LEVEL_CLASS[line.level]])}
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
                   <span className={styles.time}>{shortTime(line.time)}</span>

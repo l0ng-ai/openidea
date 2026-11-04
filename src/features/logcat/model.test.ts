@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LogcatLine } from "@/platform/ipc";
-import { LEVELS, LEVEL_LETTER, filterLines, shortTime } from "./model";
+import { LEVEL_CLASS, LEVELS, filterLines, shortTime } from "./model";
 
 const line = (level: LogcatLine["level"], tag: string, message: string, pid = 100): LogcatLine => ({
   time: "11-04 12:52:39.123",
@@ -45,7 +45,7 @@ it("orders levels least severe first, with unknown last so it is never hidden", 
   expect(LEVELS[0]).toBe("verbose");
   expect(LEVELS.at(-1)).toBe("unknown");
   expect(LEVELS.indexOf("error")).toBeGreaterThan(LEVELS.indexOf("warn"));
-  expect(LEVEL_LETTER.error).toBe("E");
+  expect(LEVEL_CLASS.error).toBe("levelE");
 });
 
 it("shortens a logcat timestamp to the time of day", () => {

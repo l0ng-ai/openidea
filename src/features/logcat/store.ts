@@ -10,6 +10,12 @@ export const MAX_LINES = 20_000;
 
 export type LogcatStatus = "idle" | "running" | "error";
 
+/** A line plus the identity the list needs: the buffer drops old lines from the
+ * front, so the index is not stable. */
+export interface LogcatRow extends LogcatLine {
+  id: number;
+}
+
 interface LogcatState {
   devices: AndroidDevice[];
   devicesError: string | null;
@@ -25,7 +31,7 @@ interface LogcatState {
   follow: boolean;
   status: LogcatStatus;
   error: string | null;
-  lines: LogcatLine[];
+  lines: LogcatRow[];
 }
 
 export const useLogcat = create<LogcatState>(() => ({
@@ -43,9 +49,12 @@ export const useLogcat = create<LogcatState>(() => ({
 }));
 
 /** Lines received while paused, applied on resume. */
-let pending: LogcatLine[] = [];
+let pending: LogcatRow[] = [];
 
-function push(lines: LogcatLine[], batch: LogcatLine[]): LogcatLine[] {
+/** Row ids keep growing: a reopened window's stale keys can never collide. */
+let nextId = 0;
+
+function push(lines: LogcatRow[], batch: LogcatRow[]): LogcatRow[] {
   const next = lines.concat(batch);
   return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
 }
@@ -55,13 +64,14 @@ function push(lines: LogcatLine[], batch: LogcatLine[]): LogcatLine[] {
  * resuming shows what happened meanwhile rather than a hole.
  */
 export function appendLines(batch: LogcatLine[]) {
+  const rows = batch.map((line) => ({ ...line, id: ++nextId }));
   const { paused } = useLogcat.getState();
   if (paused) {
-    pending = pending.concat(batch);
+    pending = pending.concat(rows);
     if (pending.length > MAX_LINES) pending = pending.slice(pending.length - MAX_LINES);
     return;
   }
-  useLogcat.setState((s) => ({ lines: push(s.lines, batch) }));
+  useLogcat.setState((s) => ({ lines: push(s.lines, rows) }));
 }
 
 export function setPaused(paused: boolean) {

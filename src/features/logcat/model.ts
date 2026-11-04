@@ -5,14 +5,18 @@ import type { LogcatLevel, LogcatLine } from "@/platform/ipc";
  * lines logcat prints outside its message format are never filtered away. */
 export const LEVELS: readonly LogcatLevel[] = ["verbose", "debug", "info", "warn", "error", "fatal", "unknown"];
 
-export const LEVEL_LETTER: Record<LogcatLevel, string> = {
-  verbose: "V",
-  debug: "D",
-  info: "I",
-  warn: "W",
-  error: "E",
-  fatal: "F",
-  unknown: "?",
+/** The levels the filter offers as a minimum; `unknown` always shows, so it is not one. */
+export const FILTER_LEVELS = LEVELS.filter((level) => level !== "unknown");
+
+/** Row style per level, matching the classes in `Logcat.module.css`. */
+export const LEVEL_CLASS: Record<LogcatLevel, string> = {
+  verbose: "levelV",
+  debug: "levelD",
+  info: "levelI",
+  warn: "levelW",
+  error: "levelE",
+  fatal: "levelF",
+  unknown: "levelU",
 };
 
 /** "11-04 12:52:39.123" → "12:52:39.123": the date is the same for the whole session. */
@@ -29,7 +33,7 @@ function matches(line: LogcatLine, needle: string): boolean {
 }
 
 /** Lines at or above `min`, then only those mentioning `query` (tag, message or `#pid`). */
-export function filterLines(lines: readonly LogcatLine[], min: LogcatLevel, query: string): readonly LogcatLine[] {
+export function filterLines<T extends LogcatLine>(lines: readonly T[], min: LogcatLevel, query: string): readonly T[] {
   const floor = LEVELS.indexOf(min);
   const needle = query.trim().toLowerCase();
   if (floor === 0 && !needle) return lines;
