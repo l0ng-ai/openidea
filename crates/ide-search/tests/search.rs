@@ -208,6 +208,34 @@ fn honours_ignore_files_hidden_and_git() {
 }
 
 #[test]
+fn nested_repository_ignores_outer_repository_rules() {
+    // #1254: the opened project is a Git repository inside a folder its parent repository ignores.
+    let p = project(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("projects/.gitignore", b"*\n!.gitignore\n"),
+        ("projects/nested/.git/HEAD", b"ref: refs/heads/main\n"),
+        ("projects/nested/.gitignore", b"*.log\n"),
+        ("projects/nested/search-test.txt", b"somesss\n"),
+        ("projects/nested/debug.log", b"somesss\n"),
+    ]);
+    let nested = p.path().join("projects/nested");
+    let (views, _) = run(&nested, &query("somesss"));
+    assert_eq!(paths(&views), ["search-test.txt"]);
+
+    let files = ide_search::scope_files(
+        &nested,
+        &SearchScope::Project,
+        &ide_search::FileMask::new(&[], &[]).unwrap(),
+        None,
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let mut rels: Vec<_> = files.iter().map(|f| f.rel_path.as_str()).collect();
+    rels.sort();
+    assert_eq!(rels, ["search-test.txt"]);
+}
+
+#[test]
 fn skips_binary_files() {
     let mut late_nul = b"needle\n".to_vec();
     late_nul.extend(std::iter::repeat_n(b'a', 200_000));
