@@ -540,7 +540,13 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     let provider = host.syntax_provider();
     let mis = LanguageId::new("mis");
 
-    let tokens = provider.highlights(&mis, "fast").unwrap();
+    // The first call starts the instance, which may take longer than the soft deadline.
+    let mut tokens = None;
+    assert!(eventually(|| {
+        tokens = provider.highlights(&mis, "fast");
+        tokens.is_some()
+    }));
+    let tokens = tokens.unwrap();
     assert_eq!((tokens[0].start, tokens[0].end, tokens[0].kind.as_str()), (0, 4, "keyword"));
 
     // Slower than the soft deadline: dropped (however late this thread gets
