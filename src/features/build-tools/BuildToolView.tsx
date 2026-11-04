@@ -154,7 +154,12 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
         action={`${tool}.toggleOffline`}
         pressed={maven ? settings.maven.offline : settings.gradle.offline}
       />
-      {maven && <IconButton icon="build-dependencies" size="small" iconSize={16} action="maven.analyzeDependencies" />}
+      <IconButton
+        icon="build-dependencies"
+        size="small"
+        iconSize={16}
+        action={maven ? "maven.analyzeDependencies" : "gradle.analyzeDependencies"}
+      />
       {maven && (
         <IconButton
           icon="skip-tests"
@@ -306,8 +311,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
       else items.push({ label: "Create Run Configuration…", icon: "edit", run: () => void createRunConfig(config) });
     }
     if (node.kind === "mavenProject") {
-      if (!node.project.aggregated)
-        items.push({ kind: "action", action: "maven.unlinkProjects", arg: { pom: node.project.pom } });
+      items.push({ kind: "action", action: "maven.unlinkProjects", arg: { pom: node.project.pom } });
       items.push(
         {
           label: "Open pom.xml",
@@ -332,6 +336,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
       items.push(
         { kind: "action", action: "gradle.reload", label: "Reload All Gradle Projects" },
         { kind: "action", action: "gradle.executeTask" },
+        { kind: "action", action: "gradle.analyzeDependencies", arg: { gradlePath: node.project.path } },
       );
     }
     if (node.kind === "dependency") {

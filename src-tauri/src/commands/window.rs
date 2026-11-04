@@ -87,6 +87,33 @@ pub async fn window_open_settings(
     windows::open_settings_window(&app, &window, page, new_projects, background)
 }
 
+/// Opens a window listing the files that differ between two revisions of this window's project.
+/// `background` (`#rrggbb`) paints it until its page has loaded.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_comparison(
+    app: AppHandle,
+    window: WebviewWindow,
+    comparison: windows::ComparisonLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_comparison_window(&app, &window, comparison, background)
+}
+
+/// Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
+/// to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_deployment(
+    app: AppHandle,
+    window: WebviewWindow,
+    server: String,
+    paths: Vec<PathBuf>,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_deployment_window(&app, &window, server, paths, background)
+}
+
 /// Focuses the next / previous window (⌘` / ⇧⌘`).
 #[tauri::command]
 #[specta::specta]

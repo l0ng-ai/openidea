@@ -7,7 +7,7 @@ import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
-import { editorsFor } from "@/editor/api";
+import { attachDocument, editorsFor } from "@/editor/api";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
 import { progressFraction } from "./model";
@@ -89,7 +89,7 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
       notifications().notify({
         group: "vcs",
         level: "error",
-        title: `${title} failed`,
+        title: tx`${title} failed`,
         body: message,
         actions: opts.errorActions?.(message),
       });
@@ -188,6 +188,7 @@ export async function runRemote(
     // repositories that have nothing to pull from (detached HEAD, e.g. submodules; no upstream).
     const failures: string[] = [];
     const updated: UpdatedRange[] = [];
+    const pushed: Array<{ to: string; commits: number }> = [];
     for (const repo of repos) {
       const name = repos.length > 1 && repo ? repoName(repo) : null;
       if (name) logConsole("info", name);
@@ -200,6 +201,12 @@ export async function runRemote(
       }
       try {
         const before = op.op === "pull" || op.op === "pullFrom" ? await headCommit(repo) : null;
+        // The push summary counts what the push carries: the commits the branch is
+        // ahead of its upstream before the push (pushing does not move the local head).
+        if (op.op === "push" || (op.op === "pushBranch" && !op.target)) {
+          const info = await call(commands.vcsBranchInfo(repo)).catch(() => null);
+          if (info?.upstream && info.ahead > 0) pushed.push({ to: info.upstream, commits: info.ahead });
+        }
         await call(commands.vcsRemote(repo, request, op, channel));
         const after = before ? await headCommit(repo) : null;
         if (before && after && before !== after) updated.push({ repo, from: before, to: after });
@@ -212,14 +219,17 @@ export async function runRemote(
     if (failures.length) throw new Error(failures.join("\n"));
     lastRemoteError = null;
     if (op.op === "pull" || op.op === "pullFrom") await notifyUpdated(updated);
-    else
+    else {
+      // One repository's push names what went out; a partial multi-repo push stays generic.
+      const one = pushed.length === 1 ? pushed[0] : null;
       notifications().notify({
         group: "vcs",
         level: "info",
         key: "vcs.remote",
-        title: `${doneTitle} successful`,
+        title: one ? pushedTitle(one.commits, one.to) : `${doneTitle} successful`,
         body: lastLine && !/%/.test(lastLine) ? lastLine : undefined,
       });
+    }
     return true;
   } catch (e) {
     const cancelled = isCancelled(e);
@@ -256,7 +266,13 @@ const headCommit = (repo: string | null) =>
     () => null,
   );
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** Counts for a translated sentence: each variant is its own source text, as "{count} files". */
+const filesText = (n: number) => (n === 1 ? tx`${n} file` : tx`${n} files`);
+const commitsText = (n: number) => (n === 1 ? tx`${n} commit` : tx`${n} commits`);
+
+/** "Pushed 3 commits to origin/main", translated per count. */
+const pushedTitle = (n: number, to: string) =>
+  n === 1 ? tx`Pushed ${n} commit to ${to}` : tx`Pushed ${n} commits to ${to}`;
 
 /** IDEA's Update Project result: "N files updated in M commits" with View Commits. */
 async function notifyUpdated(updated: readonly UpdatedRange[]) {
@@ -290,7 +306,7 @@ async function notifyUpdated(updated: readonly UpdatedRange[]) {
     group: "vcs",
     level: "info",
     key: "vcs.remote",
-    title: `${plural(files, "file")} updated in ${plural(commits, "commit")}`,
+    title: `${filesText(files)} updated in ${commitsText(commits)}`,
     actions: [
       {
         label: "View Commits",
@@ -432,14 +448,17 @@ const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * file: through the open editor (one undoable transaction) or, when the file
  * isn't open, through a transient backend document that is saved.
  */
-export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean } = {}) {
+export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean; exact?: boolean } = {}) {
   const editor = editorsFor(path)[0];
   if (editor) {
     editor.view.dispatch({ changes: edits, userEvent: "input.vcs", scrollIntoView: true });
     if (opts.save) {
-      // Let editor/core sync the change to the backend before saving.
-      await tick(60);
-      await maybeEditorService()?.saveAll();
+      if (opts.exact) await saveExactText(path);
+      else {
+        // Let editor/core sync the change to the backend before saving.
+        await tick(60);
+        await maybeEditorService()?.saveAll();
+      }
     }
     return;
   }
@@ -453,11 +472,24 @@ export async function applyFileEdits(path: string, edits: TextEdit[], opts: { sa
 }
 
 /** Replaces the whole content of a working file. */
-export async function writeFileText(path: string, text: string, opts: { save?: boolean } = {}) {
+export async function writeFileText(path: string, text: string, opts: { save?: boolean; exact?: boolean } = {}) {
   const current = (await readWorkingText(path)) ?? "";
   if (current === text) {
-    if (opts.save) await saveAll();
+    if (opts.save) {
+      if (opts.exact) await saveExactText(path);
+      else await saveAll();
+    }
     return;
   }
   await applyFileEdits(path, [{ from: 0, to: current.length, insert: text }], opts);
+}
+
+/** Merge results keep their text even when the file is also shown in an editor tab. */
+async function saveExactText(path: string) {
+  const document = await attachDocument(path);
+  try {
+    await document.save({ exact: true });
+  } finally {
+    document.release();
+  }
 }

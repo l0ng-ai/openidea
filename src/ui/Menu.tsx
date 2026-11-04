@@ -13,7 +13,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import { getAction, isActionEnabled, executeAction } from "@/platform/actions";
+import { getAction, isActionEnabled, executeActionFrom, actionToggled } from "@/platform/actions";
 import { useContextKeys } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, type IconName } from "./icons";
@@ -83,7 +83,8 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
         icon: item.icon ?? a.icon,
         shortcut: shortcutLabel(item.action),
         disabled: !!item.disabled || !isActionEnabled(a),
-        run: () => void executeAction(item.action, item.arg),
+        checked: actionToggled(a),
+        run: () => void executeActionFrom("menu", item.action, item.arg),
       });
       return;
     }

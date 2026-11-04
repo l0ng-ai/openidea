@@ -80,21 +80,136 @@
 }
 
 /* Sync dialog */
+.nativeWindow {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-dialog, var(--bg-elev));
+  color: var(--fg);
+}
+.nativeBody {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.nativeFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  flex: none;
+}
+.syncWindow {
+  height: calc(100vh - 48px);
+}
+.syncWindow [data-dialog-body] {
+  overflow: hidden;
+}
 .sync {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 360px;
+  height: 100%;
+  min-height: 0;
+  padding: 8px 10px 0;
+}
+.comparisonToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+}
+.separator {
+  height: 20px;
+  border-left: 1px solid var(--border);
+  margin: 0 5px;
+}
+.filterButton {
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control, 4px);
+  color: var(--fg-muted);
+  background: transparent;
+  font-size: 19px;
+  cursor: pointer;
+}
+.filterButton[aria-pressed="true"] {
+  background: var(--bg-tree-hover);
+  border-color: var(--border);
+  color: var(--accent);
+}
+.filterButton:focus-visible {
+  outline: 2px solid var(--focus-ring);
+}
+.compareBy,
+.fileFilter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.compareBy select {
+  height: 26px;
+  color: var(--fg);
+  background: var(--bg-input, var(--bg-island));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+  font: inherit;
+}
+.fileFilter {
+  margin-left: auto;
+  width: clamp(180px, 30%, 480px);
+}
+.fileFilter > input {
+  width: 100%;
+  min-width: 0;
+}
+.comparisonRoots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  flex: none;
+}
+.comparisonRoots > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+  padding: 5px 8px;
+}
+.comparisonRoots > span > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comparisonSplit {
+  flex: 1;
+  min-height: 0;
+}
+.fileList {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 .syncTableHost {
   flex: 1;
-  max-height: 460px;
+  min-height: 0;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-control, 4px);
 }
 .syncTable {
   width: 100%;
+  min-width: 900px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -123,17 +238,28 @@
 .syncTable tbody tr:hover {
   background: var(--bg-tree-hover);
 }
-.choiceCol {
-  width: 128px;
+.syncTable tbody tr[aria-selected="true"] {
+  background: var(--bg-tree-selected, var(--accent-soft));
+}
+.fileName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.operationCol {
+  width: 108px;
+}
+.operationCell {
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
 }
 .sizeCol {
   width: 80px;
 }
 .timeCol {
-  width: 128px;
-}
-.statusCol {
-  width: 112px;
+  width: 148px;
 }
 .num {
   text-align: right;
@@ -168,6 +294,28 @@
 }
 .status-same {
   color: var(--fg-subtle);
+}
+.listHint {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  padding: 3px 6px;
+  text-align: right;
+}
+.preview {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.previewMessage {
+  padding: 18px;
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
 }
 
 /* SSH password prompt */

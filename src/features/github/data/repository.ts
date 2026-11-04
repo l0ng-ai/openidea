@@ -7,11 +7,13 @@
  * mentionable users.
  *
  * Auto-connect: a project with one GitHub remote connects at once; with several, the
- * repository chosen last (saved per project) is used, else the selector is shown.
+ * repository chosen last (saved per project) is used, else the selector is shown. The
+ * remotes come from every git repository of the project (a folder holding several
+ * repositories offers each one's), and gh runs in the repository of the connected remote.
  */
 import { useEffect } from "react";
 import { create } from "zustand";
-import type { GhAvailability } from "@/platform/ipc";
+import type { GhAvailability, Remote } from "@/platform/ipc";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { errorMessage, setCurrentRepository } from "../api/client";
@@ -34,12 +36,18 @@ export interface GHRemote extends GHRepositoryCoordinates {
   /** Git remote name (`origin`). */
   remote: string;
   url: string;
+  /** Root of the project's git repository the remote belongs to (null or absent: the primary one). */
+  root?: string | null;
 }
 
 export interface GHConnection {
   coordinates: GHRepositoryCoordinates;
   repository: GHRepository;
   currentUser: GHUser;
+  /** The local repository checkouts, diffs and new pull requests use (null: the primary one). */
+  root: string | null;
+  /** That repository's GitHub remotes. */
+  remotes: GHRemote[];
 }
 
 interface RepositoryState {
@@ -96,15 +104,30 @@ export const sameRepository = (a: GHRepositoryCoordinates | null | undefined, b:
 
 export const nameWithOwner = (r: GHRepositoryCoordinates) => `${r.owner}/${r.name}`;
 
-/** The GitHub remotes among `remotes`, one per repository. */
-export function githubRemotes(remotes: ReadonlyArray<{ name: string; url: string }>): GHRemote[] {
+/** The GitHub remotes among `remotes` of the repository at `root`, one per GitHub repository. */
+export function githubRemotes(
+  remotes: ReadonlyArray<{ name: string; url: string }>,
+  root: string | null = null,
+): GHRemote[] {
   const out: GHRemote[] = [];
   for (const r of remotes) {
     const c = parseGitHubRemote(r.url);
-    if (c && !out.some((o) => sameRepository(o, c))) out.push({ ...c, remote: r.name, url: r.url });
+    if (c && !out.some((o) => sameRepository(o, c))) out.push({ ...c, remote: r.name, url: r.url, root });
   }
   return out;
 }
+
+/** The GitHub repositories of several local repositories' remotes, each once (the first local repository's). */
+function uniqueRepositories(remotes: readonly GHRemote[]): GHRemote[] {
+  return remotes.filter((r, i) => remotes.findIndex((o) => sameRepository(o, r)) === i);
+}
+
+/** The connected local repository's GitHub remotes (none while disconnected). */
+export const NO_REMOTES: readonly GHRemote[] = [];
+export const connectedRemotes = (): readonly GHRemote[] => useGhRepository.getState().connection?.remotes ?? NO_REMOTES;
+
+/** The local repository of the connection, for gh and git commands (null: the primary one). */
+export const connectedRoot = (): string | null => useGhRepository.getState().connection?.root ?? null;
 
 function parseNameWithOwner(s: string | null | undefined): GHRepositoryCoordinates | null {
   const m = s ? /^([^/\s]+)\/([^/\s]+)$/.exec(s) : null;
@@ -112,6 +135,20 @@ function parseNameWithOwner(s: string | null | undefined): GHRepositoryCoordinat
 }
 
 let checkSeq = 0;
+/** GitHub remotes of every local repository (a GitHub repository can be a remote of several). */
+let localRemotes: GHRemote[] = [];
+
+async function projectGitHubRemotes(): Promise<{ remotes: GHRemote[]; all: Map<string | null, Remote[]> }> {
+  const roots = await call(commands.vcsRoots()).catch(() => []);
+  const dirs: Array<string | null> = roots.length ? roots.map((r) => String(r.root)) : [null];
+  const lists = await Promise.all(
+    dirs.map(async (root) => ({ root, remotes: await call(commands.vcsRemotes(root)).catch(() => [] as Remote[]) })),
+  );
+  return {
+    remotes: lists.flatMap((l) => githubRemotes(l.remotes, l.root)),
+    all: new Map(lists.map((l) => [l.root, l.remotes])),
+  };
+}
 
 /**
  * Checks gh and the remotes, then connects as IntelliJ does on start: the only GitHub
@@ -122,36 +159,42 @@ export async function refreshConnection(): Promise<void> {
   const seq = ++checkSeq;
   useGhRepository.setState({ checking: true });
   let availability: GhAvailability;
-  let remotes: GHRemote[] = [];
-  let allRemotes: Array<{ name: string; url: string }> = [];
+  const found = await projectGitHubRemotes();
+  if (seq !== checkSeq) return;
+  const current = useGhRepository.getState().connection?.coordinates ?? null;
+  const saved = parseNameWithOwner(loadSelection(projectRoot()));
+  // gh resolves its repository in a local one; ask in the one likely to be connected.
+  const probe =
+    (
+      found.remotes.find((r) => sameRepository(r, current)) ??
+      found.remotes.find((r) => sameRepository(r, saved)) ??
+      found.remotes[0]
+    )?.root ?? null;
   try {
-    const [a, r] = await Promise.all([
-      call(commands.ghAvailability()),
-      call(commands.vcsRemotes(null)).catch(() => []),
-    ]);
-    availability = a;
-    allRemotes = r;
-    remotes = githubRemotes(r);
+    availability = await call(commands.ghAvailability(probe));
   } catch (e) {
     availability = { kind: "error", message: errorMessage(e) };
   }
   if (seq !== checkSeq) return;
+  localRemotes = found.remotes;
+  const remotes = uniqueRepositories(localRemotes);
   const defaultRemote = availability.kind === "ready" ? parseNameWithOwner(availability.repo.nameWithOwner) : null;
   if (defaultRemote && !remotes.some((r) => sameRepository(r, defaultRemote))) {
-    const own = remoteOfRepository(allRemotes, defaultRemote);
-    remotes.unshift({
+    const own = remoteOfRepository(found.all.get(probe) ?? [], defaultRemote);
+    const remote = {
       ...defaultRemote,
       remote: own?.name ?? "",
       url: own?.url ?? (availability.kind === "ready" ? availability.repo.url : ""),
-    });
+      root: probe,
+    };
+    remotes.unshift(remote);
+    localRemotes = [remote, ...localRemotes];
   }
   useGhRepository.setState({ availability, remotes, defaultRemote, checking: false });
   if (availability.kind !== "ready") {
     disconnect({ forget: false });
     return;
   }
-  const current = useGhRepository.getState().connection?.coordinates ?? null;
-  const saved = parseNameWithOwner(loadSelection(projectRoot()));
   const target =
     remotes.length === 1
       ? remotes[0]!
@@ -163,20 +206,28 @@ export async function refreshConnection(): Promise<void> {
 
 let connectSeq = 0;
 
-/** Connects to `repo` (the selector's "View Pull Requests"), remembering the choice. */
-export async function connect(repo: GHRepositoryCoordinates, opts: { remember?: boolean } = {}): Promise<boolean> {
+/**
+ * Connects to `repo` (the selector's "View Pull Requests"), remembering the choice; gh and git
+ * then run in `repo.root`, else in the first local repository with it as a remote.
+ */
+export async function connect(
+  repo: GHRepositoryCoordinates & { root?: string | null },
+  opts: { remember?: boolean } = {},
+): Promise<boolean> {
   const seq = ++connectSeq;
   const coordinates = { owner: repo.owner, name: repo.name };
+  const root = repo.root !== undefined ? repo.root : (localRemotes.find((r) => sameRepository(r, repo))?.root ?? null);
+  const remotes = localRemotes.filter((r) => (r.root ?? null) === root);
   useGhRepository.setState({ connecting: true, connectionError: null });
   try {
     const [repository, currentUser] = await Promise.all([api.findRepository(coordinates), api.currentUser()]);
     if (seq !== connectSeq) return false;
     if (!repository) throw new Error(`Repository ${nameWithOwner(coordinates)} not found`);
-    const same = sameRepository(useGhRepository.getState().connection?.coordinates, coordinates);
-    if (!same) resetRepositoryData();
-    setCurrentRepository({ ...coordinates, id: repository.id });
+    const previous = useGhRepository.getState().connection;
+    if (!sameRepository(previous?.coordinates, coordinates) || previous?.root !== root) resetRepositoryData();
+    setCurrentRepository({ ...coordinates, id: repository.id, root });
     useGhRepository.setState((s) => ({
-      connection: { coordinates, repository, currentUser },
+      connection: { coordinates, repository, currentUser, root, remotes },
       connecting: false,
       revision: s.revision + 1,
     }));
@@ -237,7 +288,7 @@ export function isCurrentUser(user: { id?: string; login?: string } | null | und
 export async function reloadRepositoryData(): Promise<void> {
   const c = useGhRepository.getState().connection;
   resetRepositoryData();
-  if (c) await connect(c.coordinates);
+  if (c) await connect({ ...c.coordinates, root: c.root });
 }
 
 // ---------------------------------------------------------------------------

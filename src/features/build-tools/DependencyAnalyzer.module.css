@@ -20,7 +20,7 @@
   max-width: 260px;
 }
 .search {
-  flex: 1 1 200px;
+  flex: 1 1 140px;
   min-width: 140px;
   max-width: 360px;
 }
@@ -202,4 +202,11 @@
 }
 .stepTarget {
   color: var(--fg-strong);
+}
+
+.errorText {
+  max-width: 560px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
 }

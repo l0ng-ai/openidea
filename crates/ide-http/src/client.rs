@@ -35,8 +35,16 @@ pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
         .with_platform_verifier()
         .map_err(|e| fail(e.to_string()))?
         .with_no_client_auth();
+    // `localhost` is tried on IPv4 first: local servers (Ollama, dev servers)
+    // usually listen there, and on Windows a refused `::1` costs ~2 s before
+    // the system resolver's order falls back. Ports come from the URL.
+    let loopback = [
+        std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+        std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
+    ];
     let builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
+        .resolve_to_addrs("localhost", &loopback)
         .connect_timeout(Duration::from_secs(30))
         .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")));
     with_proxy(builder, proxy).build().map_err(|e| fail(e.to_string()))
@@ -57,6 +65,16 @@ pub fn shared() -> IdeResult<reqwest::Client> {
     Ok(client)
 }
 
+/// `url`, with `http://` in front unless it starts with a scheme: a `://` later
+/// on (`localhost:8080/login?next=http://…`) does not count.
+pub(crate) fn with_scheme(url: &str) -> String {
+    let has_scheme = url.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    });
+    if has_scheme { url.to_owned() } else { format!("http://{url}") }
+}
+
 /// HTTP Proxy › Check connection: GETs `url` through `proxy` (the settings as
 /// edited, not yet applied). Any response but `407` counts as connected.
 pub async fn check_connection(proxy: &ProxySettings, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
@@ -64,7 +82,7 @@ pub async fn check_connection(proxy: &ProxySettings, url: &str, cancel: &Cancell
         return Err(IdeError::invalid(problem));
     }
     let url = url.trim();
-    let url = if url.contains("://") { url.to_owned() } else { format!("http://{url}") };
+    let url = with_scheme(url);
     let client = build(proxy)?;
     let request = client.get(&url).timeout(Duration::from_secs(30));
     let response = tokio::select! {
@@ -103,7 +121,11 @@ mod tests {
 
     /// A one-shot HTTP server on loopback: answers `200` and hands back the request head.
     fn server() -> (u16, std::thread::JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        server_on("127.0.0.1:0")
+    }
+
+    fn server_on(addr: &str) -> (u16, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind(addr).unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -129,6 +151,21 @@ mod tests {
 
     async fn get(proxy: &ProxySettings, url: &str) -> IdeResult<String> {
         check_connection(proxy, url, &CancellationToken::new()).await
+    }
+
+    /// `localhost` reaches a server on either loopback address.
+    #[tokio::test]
+    async fn localhost_reaches_ipv4_and_ipv6_servers() {
+        let direct = ProxySettings::default();
+        let (port, v4) = server();
+        assert_eq!(get(&direct, &format!("http://localhost:{port}/")).await.unwrap(), "200 OK");
+        v4.join().unwrap();
+        // Hosts without IPv6 loopback skip this half.
+        if TcpListener::bind("[::1]:0").is_ok() {
+            let (port, v6) = server_on("[::1]:0");
+            assert_eq!(get(&direct, &format!("http://localhost:{port}/")).await.unwrap(), "200 OK");
+            v6.join().unwrap();
+        }
     }
 
     #[tokio::test]

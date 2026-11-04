@@ -1,7 +1,7 @@
 /** Visible-file JVM presentation: one bounded IPC batch, shared cache and watcher. */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
-import { fileIconName, type IconName } from "@/ui/icons";
+import { fileIconName, useFileIconRevision, type IconName } from "@/ui/icons";
 import { call, commands, isTauri, onIdeEvent, type JvmPresentation } from "./ipc";
 import { basename, relativePath, useProject } from "./project";
 import { rootFor, type RootFolder } from "./languageSettings";
@@ -126,7 +126,7 @@ export function presentationIcon(
     (spring || role === "resources" || role === "testResources")
   )
     return "spring-config";
-  if (!info?.kind) return fileIconName(name);
+  if (!info?.kind) return fileIconName(name, path);
   if (info.springBoot) return "spring-boot";
   if (/(Tests?|[a-z\d]IT)\.(java|kt)$/.test(name) || role === "test") return "jvm-test";
   const kind: Record<NonNullable<JvmPresentation["kind"]>, IconName> = {
@@ -157,6 +157,7 @@ export function useJvmPresentation(path: string, mtime?: number | null) {
 }
 
 export function useFilePresentation(path: string, mtime?: number | null) {
+  useFileIconRevision();
   const info = useJvmPresentation(path, mtime);
   const roots = useEffectiveRoots();
   const root = useProject((s) => s.project?.root ?? null);
@@ -173,6 +174,7 @@ export function useFilePresentationIcons(paths: readonly string[]) {
     return () => disposers.forEach((dispose) => dispose());
   }, [key]);
   const entries = cache((s) => s.entries);
+  const iconRevision = useFileIconRevision();
   const roots = useEffectiveRoots();
   const root = useProject((s) => s.project?.root ?? null);
   const build = useProjectPresentation();
@@ -184,6 +186,7 @@ export function useFilePresentationIcons(paths: readonly string[]) {
           presentationIcon(path, entries.get(path), roots, root, build.spring),
         ]),
       ),
-    [key, entries, roots, root, build.spring],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- iconRevision: the file icon theme changed
+    [key, entries, roots, root, build.spring, iconRevision],
   );
 }

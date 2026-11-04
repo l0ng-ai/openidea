@@ -11,7 +11,7 @@ import {
   type DebugServiceSession,
 } from "@/workbench/contributions";
 import { showContextMenu } from "@/ui";
-import { buildTomcatArtifact } from "./tomcat";
+import { buildTomcatArtifact, syncTomcatOutputs } from "./tomcat";
 import { runUpdateBuild } from "./buildUpdate";
 import { startRun, stopSession, useRun, waitForExit, type RunSession } from "./store";
 import { isUpdatable, updateAllowed, type UpdateMode } from "./updatePolicies";
@@ -86,8 +86,10 @@ export async function updateApplication(session: UpdateSession, mode: string): P
     if (session.config.kind === "spring-boot") {
       await updateSpringBoot(session.config, mode, debugging);
     } else {
-      await buildTomcatArtifact(session.config);
-      await call(commands.runTomcatUpdate(session.config, mode));
+      if (mode === "redeploy" || !(await syncTomcatOutputs(session.config, mode === "resources"))) {
+        await buildTomcatArtifact(session.config);
+        await call(commands.runTomcatUpdate(session.config, mode));
+      }
       if (mode === "classes" && debugging) {
         const swapped =
           getAction("debug.reloadChangedClasses") &&

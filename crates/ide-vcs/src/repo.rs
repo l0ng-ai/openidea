@@ -13,16 +13,27 @@ pub(crate) fn gx(e: impl std::fmt::Display) -> IdeError {
 
 pub(crate) struct Cache {
     repo: gix::ThreadSafeRepository,
-    config_files: [PathBuf; 3],
-    config_stamp: Vec<Option<SystemTime>>,
+    files: [PathBuf; 4],
+    stamp: Vec<Option<(SystemTime, u64)>>,
 }
 
-fn config_files(git_dir: &Path, common_dir: &Path) -> [PathBuf; 3] {
-    [common_dir.join("config"), git_dir.join("config.worktree"), common_dir.join("config.worktree")]
+fn cache_files(git_dir: &Path, common_dir: &Path) -> [PathBuf; 4] {
+    [
+        common_dir.join("config"),
+        git_dir.join("config.worktree"),
+        common_dir.join("config.worktree"),
+        common_dir.join("packed-refs"),
+    ]
 }
 
-fn stamp(files: &[PathBuf]) -> Vec<Option<SystemTime>> {
-    files.iter().map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok()).collect()
+fn stamp(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
+    files
+        .iter()
+        .map(|f| {
+            let metadata = std::fs::metadata(f).ok()?;
+            Some((metadata.modified().ok()?, metadata.len()))
+        })
+        .collect()
 }
 
 pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
@@ -45,8 +56,8 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let root = absolute(workdir)?;
     let git_dir = absolute(repo.git_dir())?;
     let common_dir = absolute(repo.common_dir())?;
-    let files = config_files(&git_dir, &common_dir);
-    let cache = Cache { config_stamp: stamp(&files), config_files: files, repo: ts };
+    let files = cache_files(&git_dir, &common_dir);
+    let cache = Cache { stamp: stamp(&files), files, repo: ts };
     Ok(Some(Repo {
         execution_allowed: std::sync::atomic::AtomicBool::new(true),
         root,
@@ -73,8 +84,8 @@ pub(crate) fn absolute(p: &Path) -> IdeResult<PathBuf> {
 }
 
 impl Repo {
-    /// A thread-local gitoxide handle; reopened when the git configuration changed
-    /// on disk (e.g. after `push --set-upstream` or `git config` in a terminal).
+    /// A thread-local gitoxide handle; reopened when configuration or packed refs change.
+    /// gitoxide's packed-ref snapshot only reloads for a newer mtime, which a replacement may preserve.
     pub(crate) fn gix(&self) -> IdeResult<gix::Repository> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
@@ -82,12 +93,12 @@ impl Repo {
                 .map_err(gx);
         }
         let mut cache = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let now = stamp(&cache.config_files);
-        if now != cache.config_stamp {
+        let now = stamp(&cache.files);
+        if now != cache.stamp {
             match gix::ThreadSafeRepository::open(&self.git_dir) {
                 Ok(fresh) => {
                     cache.repo = fresh;
-                    cache.config_stamp = now;
+                    cache.stamp = now;
                 }
                 Err(e) => tracing::warn!("reopening repository failed: {e}"),
             }

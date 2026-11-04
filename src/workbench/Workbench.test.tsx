@@ -325,6 +325,41 @@ describe("tool window split areas", () => {
 });
 
 describe("workbench shell", () => {
+  it("covers the old project with the opening target and keeps its views mounted and inert", async () => {
+    const { useProject } = await import("@/platform/project");
+    const { Workbench } = await import("./Workbench");
+    const dispose = registerToolWindow({
+      id: "project",
+      title: "Project",
+      icon: "folder",
+      anchor: "left",
+      component: () => <input aria-label="old project input" />,
+    });
+    useProject.setState({
+      project: { root: "/old", name: "old", trusted: true, isGit: false, settings: {} },
+      opening: false,
+      openingPath: null,
+    });
+    loadToolWindowLayout("/old");
+    const { unmount } = render(<Workbench />);
+    const input = screen.getByRole("textbox", { name: "old project input" });
+    try {
+      act(() => useProject.setState({ opening: true, openingPath: "/work/new-project" }));
+      expect(screen.getByRole("status", { name: "Opening new-project…" })).toBeVisible();
+      expect(screen.getByText("/work/new-project")).toBeVisible();
+      expect(input.closest("[inert]")).not.toBeNull();
+      expect(input).toBeInTheDocument();
+      act(() => useProject.setState({ opening: false, openingPath: null }));
+      expect(screen.queryByText("Opening new-project…")).toBeNull();
+      expect(input.closest("[inert]")).toBeNull();
+      expect(screen.getByRole("textbox", { name: "old project input" })).toBe(input);
+    } finally {
+      unmount();
+      dispose();
+      useProject.setState({ project: null, opening: false, openingPath: null });
+    }
+  });
+
   it("renders the welcome view without a project and the frame with one", async () => {
     const { useProject } = await import("@/platform/project");
     const { Workbench } = await import("./Workbench");

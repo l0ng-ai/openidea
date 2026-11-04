@@ -3,6 +3,8 @@ import java.util.List;
 import lombok.Builder;
 import lombok.NonNull;
 import lombok.Singular;
+import lombok.SneakyThrows;
+import lombok.RequiredArgsConstructor;
 
 public class BuilderCompactConstructor {
     @Builder(toBuilder = true)
@@ -49,7 +51,34 @@ public class BuilderCompactConstructor {
         final String name;
 
         @Builder
+        @SneakyThrows
         Ordinary(String name) { this.name = name; }
+    }
+
+    static class Parent {
+        Parent(String name) {}
+    }
+
+    static class ConstructorCalls extends Parent {
+        final String name;
+
+        @SneakyThrows
+        ConstructorCalls() {
+            this("default");
+            assert name.equals("default");
+        }
+
+        @SneakyThrows
+        ConstructorCalls(@NonNull String name) {
+            super(name);
+            this.name = name;
+        }
+    }
+
+    @RequiredArgsConstructor
+    static class GeneratedConstructor {
+        final int initialized = 7;
+        @NonNull final String name;
     }
 
     @Builder(builderMethodName = "methodBuilder", builderClassName = "MethodBuilder")
@@ -89,5 +118,13 @@ public class BuilderCompactConstructor {
         assert Explicit.builder().name("test").build().equals(new Explicit("test", 7));
         assert Ordinary.builder().name("test").build().name.equals("test");
         assert methodBuilder().name("test").build().equals("test");
+        assert new ConstructorCalls().name.equals("default");
+        assert new ConstructorCalls("explicit").name.equals("explicit");
+        assert new GeneratedConstructor("generated").initialized == 7;
+        assert new GeneratedConstructor("generated").name.equals("generated");
+        try {
+            new ConstructorCalls(null);
+            throw new AssertionError("constructor non-null check was bypassed");
+        } catch (NullPointerException expected) {}
     }
 }

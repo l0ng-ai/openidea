@@ -218,6 +218,13 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "vcs_init", json!({ "dir": project })).await.unwrap();
     until("git repository", || project.join(".git").is_dir()).await;
 
+    // A Docker run configuration's environment comes from the host its command runs on.
+    let env =
+        invoke(&peer, "docker_run_env", json!({ "endpoint": { "kind": "socket", "path": "/run/user/1/docker.sock" } }))
+            .await
+            .unwrap();
+    assert_eq!(env["DOCKER_HOST"], "unix:///run/user/1/docker.sock");
+
     // Real project-host ignore writes travel through the remote command dispatcher.
     assert!(Dispatcher::standard().commands().contains(&"vcs_add_to_ignore"));
     let ignore_root = dunce::canonicalize(&project).unwrap();
@@ -321,6 +328,33 @@ async fn local_deployment_runs_on_the_project_host() {
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
+        "db_sources",
+        "db_save_sources",
+        "db_set_password",
+        "db_test",
+        "db_set_ssh_secret",
+        "db_trust_ssh_host",
+        "db_connected",
+        "db_connect",
+        "db_set_manual_commit",
+        "db_finish_transaction",
+        "db_disconnect",
+        "db_databases",
+        "db_schemas",
+        "db_tables",
+        "db_table_details",
+        "db_ddl",
+        "db_schema_objects",
+        "db_object_ddl",
+        "db_explain",
+        "db_history",
+        "db_remove_history",
+        "db_completion",
+        "db_statements",
+        "db_execute",
+        "db_table_page",
+        "db_apply_edits",
+        "db_console_path",
     ] {
         assert!(dispatcher.commands().contains(&cmd), "missing host command {cmd}");
     }

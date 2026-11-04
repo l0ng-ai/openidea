@@ -96,8 +96,12 @@ impl Launcher for ProcessLauncher {
         cancel: &CancellationToken,
     ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
         let search = server_search_path(config);
-        let binary = ide_core::tool_path::find_command(&config.command, &search, root)
-            .and_then(|b| resolve_rustup_proxy(&config.command, b));
+        let binary = match &config.pinned {
+            // A plugin's server: the approved program, unchanged since.
+            Some(pin) => Some(pin.verify().map_err(LaunchError::Failed)?.to_path_buf()),
+            None => ide_core::tool_path::find_command(&config.command, &search, root)
+                .and_then(|b| resolve_rustup_proxy(&config.command, b)),
+        };
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
         env.extend(config.env.iter().filter(|(k, _)| *k != "PATH").map(|(k, v)| (k.clone(), v.clone())));
         if let Some(addr) = &config.connect {
@@ -120,6 +124,9 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
+        if let Some(pin) = &config.pinned {
+            return pin.path.is_file();
+        }
         ide_core::tool_path::find_command(&config.command, &server_search_path(config), root).is_some()
     }
 }

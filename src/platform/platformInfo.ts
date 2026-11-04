@@ -9,6 +9,8 @@ interface PlatformInfo {
   overlayTitleBar: boolean;
   /** Frameless window: the title bar draws the main menu and caption buttons (Tauri, Windows and Linux). */
   framelessTitleBar: boolean;
+  /** Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
+  wayland: boolean;
 }
 
 /** OS from the user agent (before the backend answers, or in a browser). "darwin" must not read as Windows. */
@@ -28,6 +30,7 @@ export const usePlatform = create<PlatformInfo>(() => {
     version: null,
     overlayTitleBar: isTauri() && os === "macos",
     framelessTitleBar: isTauri() && (os === "windows" || os === "linux"),
+    wayland: false,
   };
 });
 
@@ -40,6 +43,7 @@ export async function loadPlatformInfo() {
       version: info.version,
       overlayTitleBar: info.platform === "macos",
       framelessTitleBar: info.platform === "windows" || info.platform === "linux",
+      wayland: info.wayland,
     });
   } catch {
     /* keep the user-agent guess */

@@ -23,6 +23,7 @@ import {
   type SyncProgress,
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
+import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
@@ -74,6 +75,14 @@ export const useBuild = create<BuildState>(() => ({
   current: {},
 }));
 
+// Shared with the features that follow the build (run, Project view).
+useBuild.subscribe((s) => {
+  const shared = useBuildModel.getState();
+  const gradleOffline = s.settings.gradle.offline;
+  if (shared.root !== s.root || shared.model !== s.model || shared.gradleOffline !== gradleOffline)
+    useBuildModel.setState({ root: s.root, model: s.model, gradleOffline });
+});
+
 // ---------------------------------------------------------------------------
 // Settings (per project)
 
@@ -114,8 +123,19 @@ export const toggleSkipTests = () =>
 export const toggleGradleOffline = () =>
   updateSettings((s) => ({ ...s, gradle: { ...s.gradle, offline: !s.gradle.offline } }));
 
+/** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
+export const PROFILE_RELOAD_DELAY_MS = 800;
+let profileReload: ReturnType<typeof setTimeout> | undefined;
+
 export function setProfile(id: string, checked: boolean) {
   updateSettings((s) => ({ ...s, maven: { ...s.maven, profiles: { ...s.maven.profiles, [id]: checked } } }));
+  // The Java language server and Build Project resolve the project with the profiles of the
+  // last sync, so a new choice reloads it (IDEA re-imports on a profile change too).
+  clearTimeout(profileReload);
+  profileReload = setTimeout(() => {
+    profileReload = undefined;
+    requestSync("maven");
+  }, PROFILE_RELOAD_DELAY_MS);
 }
 
 export function readHistory(tool: BuildTool): string[] {
@@ -178,6 +198,9 @@ export function changedOutsideIde(paths: readonly string[], now = Date.now()): b
   return external;
 }
 
+/** Root whose never-synced Gradle build was imported on open (once per open). */
+let autoImported: string | null = null;
+
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
   const root = useProject.getState().project?.root ?? null;
@@ -207,6 +230,11 @@ export async function loadModel(): Promise<void> {
       const maven = model.maven;
       if (maven?.stale && maven.syncedAt !== null && !useBuild.getState().syncing.maven) void syncTool("maven");
     }
+    // Like IDEA, a Gradle build is imported when first opened; later changes wait for Reload.
+    if (model.gradle && model.gradle.syncedAt === null && autoImported !== root) {
+      autoImported = root;
+      void syncTool("gradle");
+    }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });
   }
@@ -227,11 +255,14 @@ async function setLinked(root: string, pom: string, linked: boolean) {
 
 export async function unlinkProjects(pom: string | null) {
   const { root, model } = useBuild.getState();
-  if (!root || !pom || !model?.maven?.projects.some((p) => p.pom === pom && !p.aggregated)) return;
+  const project = model?.maven?.projects.find((p) => p.pom === pom);
+  if (!root || !pom || !project) return;
   if (
     !(await confirm({
       title: "Unlink Maven projects?",
-      message: "Remove this project and its modules from Maven? Files will remain in the Project view.",
+      message: project.aggregated
+        ? "Remove this module and its submodules from Maven? The Java language server stops importing them, so they no longer use memory. Files will remain in the Project view; add the pom.xml again to restore them."
+        : "Remove this project and its modules from Maven? Files will remain in the Project view.",
       ok: "Unlink",
     }))
   )
@@ -268,6 +299,15 @@ export function initialExpanded(tool: BuildTool, model: BuildModel): Set<string>
 }
 
 const TITLES: Record<BuildTool, string> = { maven: "Syncing Maven projects", gradle: "Syncing Gradle projects" };
+
+/** Tools to sync again once their running sync ends: its options changed meanwhile. */
+const queuedSyncs = new Set<BuildTool>();
+
+/** Syncs `tool` now, or right after the sync in progress (which used the previous options). */
+export function requestSync(tool: BuildTool) {
+  if (useBuild.getState().syncing[tool]) queuedSyncs.add(tool);
+  else void syncTool(tool);
+}
 
 /** Reloads all projects of `tool` from the build tool itself (effective POM, dependency tree, task list). */
 export async function syncTool(tool: BuildTool): Promise<void> {
@@ -317,6 +357,7 @@ export async function syncTool(tool: BuildTool): Promise<void> {
   } finally {
     if (useBuild.getState().syncing[tool]?.request === request) setSync(undefined);
     upsertTask({ id: taskId, title: TITLES[tool], message: null, fraction: 1, done: true });
+    if (queuedSyncs.delete(tool) && gen === generation) void syncTool(tool);
   }
 }
 
@@ -330,7 +371,10 @@ export function cancelSync(tool: BuildTool) {
 
 export function resetBuild() {
   generation++;
-  useAnalyzer.setState({ pom: null });
+  clearTimeout(profileReload);
+  profileReload = undefined;
+  queuedSyncs.clear();
+  useAnalyzer.setState({ module: null });
   for (const tool of ["maven", "gradle"] as const) {
     cancelSync(tool);
     removeTask(`build-sync:${tool}`);
@@ -374,11 +418,14 @@ export function setCurrentProject(tool: BuildTool, id: string | undefined) {
 
 export const ANALYZER_KIND = "maven.dependencyAnalyzer";
 
-/** Module the Dependency Analyzer shows (`pom`, project-relative); `null` = the first one. */
-export const useAnalyzer = create<{ pom: string | null }>(() => ({ pom: null }));
+/**
+ * Module the Dependency Analyzer shows: a Maven `pom` (project-relative) or `gradle:<path>`
+ * (`gradle::app`) for a Gradle project; `null` = the first one.
+ */
+export const useAnalyzer = create<{ module: string | null }>(() => ({ module: null }));
 
-/** Opens (or focuses) the Dependency Analyzer tab, showing the module `pom` when given. */
-export async function openAnalyzer(pom: string | null) {
-  if (pom) useAnalyzer.setState({ pom });
+/** Opens (or focuses) the Dependency Analyzer tab, showing `module` when given. */
+export async function openAnalyzer(module: string | null) {
+  if (module) useAnalyzer.setState({ module });
   await editorService().openInput({ kind: ANALYZER_KIND, key: ANALYZER_KIND, data: {} }, { focus: true });
 }

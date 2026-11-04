@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import clsx from "clsx";
 import { T } from "./T";
 import styles from "./SourcePreview.module.css";
+import { useSelectionBoundary } from "./useSelectionBoundary";
 import { tx } from "@/platform/i18n";
 
 export interface SourceHighlight {
@@ -33,7 +34,6 @@ export interface SourcePreviewProps {
 export function SourcePreview({ path, line, highlights = [], load, version = 0, className }: SourcePreviewProps) {
   const [text, setText] = useState<{ path: string; lines: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const current = text && text.path === path ? text : null;
 
   useEffect(() => {
@@ -56,12 +56,6 @@ export function SourcePreview({ path, line, highlights = [], load, version = 0, 
     };
   }, [path, version, load]);
 
-  useLayoutEffect(() => {
-    const box = scrollRef.current;
-    const el = box?.querySelector<HTMLElement>(`[data-line="${line}"]`);
-    if (box && el) box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
-  }, [current, line]);
-
   if (!path)
     return (
       <div className={clsx(styles.preview, styles.empty, className)}>
@@ -71,12 +65,43 @@ export function SourcePreview({ path, line, highlights = [], load, version = 0, 
   if (error && !current) return <div className={clsx(styles.preview, styles.empty, className)}>{error}</div>;
   if (!current) return <div className={clsx(styles.preview, className)} />;
 
+  return <PreviewBody path={path} line={line} lines={current.lines} highlights={highlights} className={className} />;
+}
+
+/**
+ * The rendered lines. A separate component so the selection boundary mounts
+ * with the scroll element: the pane's own `path` may go null → set, after
+ * this component's effects already ran, and the ref would stay empty.
+ */
+function PreviewBody({
+  path,
+  line,
+  lines,
+  highlights,
+  className,
+}: {
+  path: string;
+  line: number;
+  lines: string[];
+  highlights: readonly SourceHighlight[];
+  className?: string;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(scrollRef);
+  // Re-run on the loaded lines (not the parent's `current` object): the body
+  // remounts per text, so recentring must fire when the new lines arrive.
+  useLayoutEffect(() => {
+    const box = scrollRef.current;
+    const el = box?.querySelector<HTMLElement>(`[data-line="${line}"]`);
+    if (box && el) box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
+  }, [line, path, lines]);
+
   const byLine = new Map(highlights.map((h) => [h.line, h.ranges]));
   const start = Math.max(0, line - WINDOW);
-  const end = Math.min(current.lines.length, line + WINDOW);
+  const end = Math.min(lines.length, line + WINDOW);
   const rows: ReactNode[] = [];
   for (let n = start; n < end; n++) {
-    const content = current.lines[n] ?? "";
+    const content = lines[n] ?? "";
     const ranges = byLine.get(n);
     rows.push(
       <div key={n} data-line={n} className={clsx(styles.codeLine, n === line && styles.currentLine)}>

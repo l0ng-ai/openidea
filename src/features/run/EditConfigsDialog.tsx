@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
-import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
+import { call, commands, isTauri, type RunConfig, type RunImportSource } from "@/platform/ipc";
 import { letterOf } from "@/platform/keymap";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
@@ -22,12 +22,12 @@ import {
   kindLabel,
   removeConfig,
   upsertConfig,
-  userConfigs,
   validateConfig,
   type ConfigErrors,
 } from "./configs";
+import { importConfigs, importLabel } from "./importConfigs";
 import { targetName } from "./remote";
-import { saveUserConfigs, selectConfig, useRun } from "./store";
+import { saveEditedConfigs, selectConfig, useRun } from "./store";
 import { blankTemplate, COMPOUND, missingParams, newConfigOfType, templateId, typeFor } from "./types";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
@@ -149,6 +149,44 @@ function EditConfigsDialog() {
     };
   }, []);
 
+  // "Import from .vscode/launch.json": offered only when the project has the file.
+  const [importSources, setImportSources] = useState<RunImportSource[]>([]);
+  const [importing, setImporting] = useState(false);
+  const runImport = async (source: RunImportSource, from: readonly RunConfig[]) => {
+    setImporting(true);
+    try {
+      const added = await importConfigs(source, from);
+      if (!added?.length) return;
+      setDraft((d) => [...d, ...added]);
+      setMode("configs");
+      setSelection({ type: "config", id: added[0]!.id });
+      setDirty(true);
+    } finally {
+      setImporting(false);
+    }
+  };
+  // "Import Run Configurations from…" (Find Action): on opening, or while the dialog is open.
+  const requested = useRun((s) => s.editImport);
+  useEffect(() => {
+    // Consumed from the store, not the render's value: StrictMode runs this twice on mount.
+    const pending = useRun.getState().editImport;
+    if (!pending) return;
+    useRun.setState({ editImport: null });
+    void runImport(pending, draft);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs per request, with the draft of that moment
+  }, [requested]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    call(commands.runImportSources())
+      .then((s) => live && setImportSources(s))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the dialog opens
+  }, []);
+
   const close = () => useRun.setState({ editorOpen: false, editTarget: null });
   const current = selection?.type === "config" ? (draft.find((c) => c.id === selection.id) ?? null) : null;
   const templateFor = (kind: string): RunConfig | null => {
@@ -266,7 +304,7 @@ function EditConfigsDialog() {
     }
     setSaving(true);
     try {
-      if (dirty) await saveUserConfigs(userConfigs(draft), removedDetectedIds);
+      if (dirty) await saveEditedConfigs(draft, removedDetectedIds);
       if (templatesDirty && templates) await call(commands.runSaveTemplates(templates));
       setRemovedDetectedIds([]);
       setDirty(false);
@@ -338,6 +376,7 @@ function EditConfigsDialog() {
       onClose={close}
       title="Run/Debug Configurations"
       width={860}
+      resizable="both"
       className={styles.editDialog}
       footerStart={
         <span className={styles.footerRun}>
@@ -534,6 +573,17 @@ function EditConfigsDialog() {
               >
                 <T>Edit configuration templates…</T>
               </button>
+              {importSources.map((source) => (
+                <button
+                  key={source}
+                  type="button"
+                  className={clsx(styles.noticeLink, styles.editFooterLink, styles.editImportLink)}
+                  disabled={importing}
+                  onClick={() => void runImport(source, draft)}
+                >
+                  {importLabel(source)}
+                </button>
+              ))}
             </>
           ) : (
             <>

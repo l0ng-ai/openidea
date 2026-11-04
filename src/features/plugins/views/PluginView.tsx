@@ -1,0 +1,506 @@
+/**
+ * Renders a plugin's declarative view: the
+ * plugin returns data (`View`), this draws it with the workbench's own
+ * components and sends the user's actions back (`ViewEvent`). Used by plugin
+ * tool windows and custom editors. A refresh comes from the plugin
+ * (`viewChanged`), from `revision` (a custom editor's document changed), or
+ * from the table scrolling to rows it hasn't got.
+ */
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
+import { tx } from "@/platform/i18n";
+import {
+  Checkbox,
+  EmptyState,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  Spinner,
+  Tree,
+  showContextMenu,
+  type MenuItem,
+} from "@/ui";
+import { pluginsBackend } from "../backend";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
+import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
+import { onViewMessage, useViewRevision } from "./viewStore";
+import styles from "./PluginView.module.css";
+
+export interface PluginViewProps {
+  pluginId: string;
+  view: string;
+  /** The document of a custom editor. */
+  doc?: number | null;
+  /** Bumped by the owner when the view must render again (document edits). */
+  revision?: number;
+  /** Called after an event was handled (custom editors re-render on the document instead). */
+  label?: string;
+}
+
+/** Table rows asked for beyond the visible ones (each side). */
+const OVERSCAN = 50;
+const ROW_HEIGHT = 24;
+
+export function PluginView({ pluginId, view, doc = null, revision = 0, label }: PluginViewProps) {
+  const [content, setContent] = useState<View | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [viewport, setViewport] = useState<Viewport | null>(null);
+  const pluginRevision = useViewRevision(pluginId, view);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    const mine = ++seq.current;
+    pluginsBackend()
+      .renderView(pluginId, view, viewport, doc)
+      .then(
+        (v) => {
+          if (mine !== seq.current) return;
+          setContent(v);
+          setError(null);
+        },
+        (e: unknown) => {
+          if (mine !== seq.current) return;
+          setError(e instanceof Error ? e.message : String(e));
+        },
+      );
+  }, [pluginId, view, doc, viewport, revision, pluginRevision]);
+
+  const send = useCallback(
+    (event: ViewEvent) => {
+      pluginsBackend()
+        .viewEvent(pluginId, view, event, doc)
+        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+    },
+    [pluginId, view, doc],
+  );
+
+  if (!content)
+    return error ? (
+      <EmptyState className={styles.empty} title={tx("The plugin could not show this view")}>
+        {error}
+      </EmptyState>
+    ) : (
+      <div className={styles.empty}>
+        <Spinner label={tx("Loading")} />
+      </div>
+    );
+
+  return (
+    <div className={styles.view} aria-label={label}>
+      {content.toolbar.length > 0 && (
+        <div className={styles.toolbar} role="toolbar">
+          {content.toolbar.map((b) =>
+            b.icon ? (
+              <IconButton
+                key={b.id}
+                icon={b.icon}
+                title={b.label}
+                disabled={!b.enabled}
+                onClick={() => send({ kind: "button", id: b.id })}
+              />
+            ) : (
+              <button
+                key={b.id}
+                type="button"
+                className={styles.textButton}
+                disabled={!b.enabled}
+                onClick={() => send({ kind: "button", id: b.id })}
+              >
+                {b.label}
+              </button>
+            ),
+          )}
+        </div>
+      )}
+      {error && (
+        <div className={styles.error} role="alert">
+          {error}
+        </div>
+      )}
+      <div className={styles.body}>
+        <Body content={content} send={send} pluginId={pluginId} view={view} onViewport={setViewport} />
+      </div>
+      {content.status && <div className={styles.status}>{content.status}</div>}
+    </div>
+  );
+}
+
+interface BodyProps {
+  content: View;
+  send: (e: ViewEvent) => void;
+  pluginId: string;
+  view: string;
+  onViewport: (v: Viewport) => void;
+}
+
+function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
+  const body = content.body;
+  switch (body.kind) {
+    case "message":
+      return <EmptyState className={styles.empty} title={body.value} />;
+    case "tree":
+      return <TreeBody items={body.value} send={send} />;
+    case "list":
+      return (
+        <ul className={styles.list} role="listbox">
+          {body.value.map((i) => (
+            <li
+              key={i.key}
+              role="option"
+              aria-selected={false}
+              tabIndex={0}
+              className={styles.listItem}
+              onClick={() => send({ kind: "select", key: i.key })}
+              onDoubleClick={() => send({ kind: "activate", key: i.key })}
+              onKeyDown={(e) => e.key === "Enter" && send({ kind: "activate", key: i.key })}
+            >
+              {i.icon && <Icon name={i.icon} size={14} />}
+              <span>{i.label}</span>
+              {i.detail && <span className={styles.detail}>{i.detail}</span>}
+            </li>
+          ))}
+        </ul>
+      );
+    case "form":
+      return (
+        <div className={styles.form}>
+          {body.value.map((f) => (
+            <FormField key={f.key} field={f} send={send} />
+          ))}
+        </div>
+      );
+    case "table":
+      return <TableBody table={body.value} send={send} onViewport={onViewport} />;
+    case "html":
+      return <HtmlBody html={body.value} send={send} pluginId={pluginId} view={view} />;
+  }
+}
+
+// --- tree -------------------------------------------------------------------------
+
+interface Node {
+  item: ViewTreeItem;
+  children: Node[];
+}
+
+/** The flat item list as nodes (items naming an unknown parent are roots). */
+export function treeNodes(items: readonly ViewTreeItem[]): Node[] {
+  const byKey = new Map<string, Node>();
+  const roots: Node[] = [];
+  for (const item of items) {
+    const node: Node = { item, children: [] };
+    if (!byKey.has(item.key)) byKey.set(item.key, node);
+    const parent = item.parent != null ? byKey.get(item.parent) : undefined;
+    (parent ? parent.children : roots).push(node);
+  }
+  return roots;
+}
+
+function TreeBody({ items, send }: { items: ViewTreeItem[]; send: (e: ViewEvent) => void }) {
+  const roots = useMemo(() => treeNodes(items), [items]);
+  const expanded = useMemo(() => new Set(items.filter((i) => i.expanded).map((i) => i.key)), [items]);
+  return (
+    <Tree<Node>
+      roots={roots}
+      getKey={(n) => n.item.key}
+      getLabel={(n) => n.item.label}
+      getChildren={(n) => (n.children.length ? n.children : n.item.expandable ? undefined : [])}
+      isExpandable={(n) => n.item.expandable || n.children.length > 0}
+      getIcon={(n) => n.item.icon ?? undefined}
+      getDetail={(n) => n.item.detail ?? undefined}
+      expanded={expanded}
+      onExpandedChange={(_, node, isExpanded) =>
+        send(isExpanded ? { kind: "expand", key: node.item.key } : { kind: "collapse", key: node.item.key })
+      }
+      onSelectionChange={(_, lead) => lead && send({ kind: "select", key: lead.item.key })}
+      onActivate={(n) => send({ kind: "activate", key: n.item.key })}
+      multiSelect={false}
+    />
+  );
+}
+
+// --- form -------------------------------------------------------------------------
+
+function FormField({ field, send }: { field: ViewField; send: (e: ViewEvent) => void }) {
+  const commit = (value: string) => send({ kind: "field", key: field.key, value });
+  const v = field.value;
+  const id = `plugin-field-${field.key}`;
+  return (
+    <div className={styles.field}>
+      {v.kind !== "checkbox" && (
+        <label className={styles.fieldLabel} htmlFor={id}>
+          {field.label}
+        </label>
+      )}
+      {v.kind === "text" && <TextField id={id} initial={v.value} onCommit={commit} />}
+      {v.kind === "multiline" && <TextField id={id} initial={v.value} onCommit={commit} multiline />}
+      {v.kind === "checkbox" && (
+        <Checkbox checked={v.value} label={field.label} onChange={(on) => commit(on ? "true" : "false")} />
+      )}
+      {v.kind === "choice" && (
+        <Select
+          aria-label={field.label}
+          value={v.value.selected}
+          options={v.value.options.map((o) => ({ value: o, label: o }))}
+          onChange={commit}
+        />
+      )}
+    </div>
+  );
+}
+
+function TextField({
+  id,
+  initial,
+  onCommit,
+  multiline,
+}: {
+  id: string;
+  initial: string;
+  onCommit: (v: string) => void;
+  multiline?: boolean;
+}) {
+  const [value, setValue] = useState(initial);
+  useEffect(() => setValue(initial), [initial]);
+  const commit = () => value !== initial && onCommit(value);
+  return multiline ? (
+    <textarea
+      id={id}
+      className={styles.textarea}
+      value={value}
+      spellCheck={false}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={commit}
+    />
+  ) : (
+    <Input
+      id={id}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => e.key === "Enter" && commit()}
+    />
+  );
+}
+
+// --- table ------------------------------------------------------------------------
+
+/** The rows to ask for when `first..first + visible` is shown. */
+export function wantedViewport(first: number, visible: number, total: number): Viewport {
+  const start = Math.max(0, first - OVERSCAN);
+  const end = Math.min(total, first + visible + OVERSCAN);
+  return { firstRow: start, rows: Math.max(0, end - start) };
+}
+
+function TableBody({
+  table,
+  send,
+  onViewport,
+}: {
+  table: ViewTable;
+  send: (e: ViewEvent) => void;
+  onViewport: (v: Viewport) => void;
+}) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [height, setHeight] = useState(400);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [editing, setEditing] = useState<{ row: number; column: number } | null>(null);
+
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setHeight(el.clientHeight || 400));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const first = Math.floor(scrollTop / ROW_HEIGHT);
+  const visible = Math.ceil(height / ROW_HEIGHT) + 1;
+  const loadedEnd = table.firstRow + table.rows.length;
+  const shownEnd = Math.min(table.totalRows, first + visible);
+  // Ask for rows the scroll position shows but the last render didn't include.
+  useEffect(() => {
+    if (first < table.firstRow || shownEnd > loadedEnd) onViewport(wantedViewport(first, visible, table.totalRows));
+  }, [first, visible, shownEnd, loadedEnd, table.firstRow, table.totalRows, onViewport]);
+
+  const rowMenu = (row: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    const rows = selected.has(row) ? [...selected].sort((a, b) => a - b) : [row];
+    if (!selected.has(row)) setSelected(new Set([row]));
+    const items: MenuItem[] = [
+      { label: tx("Insert Row Above"), icon: "plus", run: () => send({ kind: "insertRow", before: row }) },
+      { label: tx("Insert Row Below"), run: () => send({ kind: "insertRow", before: row + 1 }) },
+      { kind: "separator" },
+      {
+        label: rows.length > 1 ? tx`Delete ${rows.length} Rows` : tx("Delete Row"),
+        icon: "trash",
+        danger: true,
+        run: () => send({ kind: "deleteRows", rows }),
+      },
+    ];
+    if (table.editable) showContextMenu(e, items);
+  };
+
+  const rows: React.ReactNode[] = [];
+  for (let r = Math.max(first, table.firstRow); r < Math.min(shownEnd, loadedEnd); r++) {
+    const cells = table.rows[r - table.firstRow] ?? [];
+    rows.push(
+      <div
+        key={r}
+        role="row"
+        aria-rowindex={r + 2}
+        aria-selected={selected.has(r)}
+        className={styles.tableRow}
+        style={{ top: (r + 1) * ROW_HEIGHT }}
+        onClick={(e) =>
+          setSelected((s) => {
+            if (!(e.metaKey || e.ctrlKey)) return new Set([r]);
+            const next = new Set(s);
+            if (next.has(r)) next.delete(r);
+            else next.add(r);
+            return next;
+          })
+        }
+        onContextMenu={(e) => rowMenu(r, e)}
+      >
+        <div className={styles.rowNumber} role="rowheader">
+          {r + 1}
+        </div>
+        {table.columns.map((_, c) => (
+          <div
+            key={c}
+            role="gridcell"
+            className={styles.cell}
+            title={cells[c]}
+            onDoubleClick={() => table.editable && setEditing({ row: r, column: c })}
+          >
+            {editing?.row === r && editing.column === c ? (
+              <CellEditor
+                initial={cells[c] ?? ""}
+                onDone={(value) => {
+                  setEditing(null);
+                  if (value !== null && value !== (cells[c] ?? "")) send({ kind: "cell", row: r, column: c, value });
+                }}
+              />
+            ) : (
+              cells[c]
+            )}
+          </div>
+        ))}
+      </div>,
+    );
+  }
+
+  return (
+    <div
+      ref={scroller}
+      className={styles.tableScroller}
+      role="grid"
+      aria-rowcount={table.totalRows + 1}
+      aria-colcount={table.columns.length}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      <div className={styles.tableCanvas} style={{ height: (table.totalRows + 1) * ROW_HEIGHT }}>
+        <div className={`${styles.tableRow} ${styles.tableHeader}`} role="row" aria-rowindex={1}>
+          <div className={styles.rowNumber} />
+          {table.columns.map((c, i) => (
+            <div key={i} role="columnheader" className={styles.cell} title={c}>
+              {c}
+            </div>
+          ))}
+        </div>
+        {rows}
+      </div>
+      {table.totalRows === 0 && <div className={styles.tableEmpty}>{tx("No rows")}</div>}
+    </div>
+  );
+}
+
+function CellEditor({ initial, onDone }: { initial: string; onDone: (value: string | null) => void }) {
+  const [value, setValue] = useState(initial);
+  const done = useRef(false);
+  const finish = (v: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(v);
+  };
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key === "Enter") finish(value);
+    else if (e.key === "Escape") finish(null);
+  };
+  return (
+    <Input
+      autoFocus
+      variant="bare"
+      aria-label={tx("Cell value")}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={onKeyDown}
+      onBlur={() => finish(value)}
+    />
+  );
+}
+
+// --- html -------------------------------------------------------------------------
+
+function HtmlBody({
+  html,
+  send,
+  pluginId,
+  view,
+}: {
+  html: string;
+  send: (e: ViewEvent) => void;
+  pluginId: string;
+  view: string;
+}) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  // The theme at load time is in the document; later changes are posted, so a
+  // theme switch doesn't reload the frame and lose its state.
+  const srcDoc = useMemo(() => frameDocument(html, frameTheme()), [html]);
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
+  const postTheme = useCallback(
+    () => frame.current?.contentWindow?.postMessage(frameThemeMessage(frameTheme()), "*"),
+    [],
+  );
+  useEffect(postTheme, [theme, postTheme]);
+
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== frame.current?.contentWindow) return;
+      const data = e.data as { tag?: unknown; text?: unknown } | null;
+      if (data?.tag === FRAME_TAG && typeof data.text === "string") send({ kind: "message", text: data.text });
+    };
+    window.addEventListener("message", onMessage);
+    const off = onViewMessage(pluginId, view, (text) =>
+      frame.current?.contentWindow?.postMessage({ tag: FRAME_TAG, text }, "*"),
+    );
+    return () => {
+      window.removeEventListener("message", onMessage);
+      off();
+    };
+  }, [pluginId, view, send]);
+
+  // No `allow-same-origin`: an opaque origin without access to the IDE.
+  // `onLoad` re-sends the theme in case it changed between building `srcDoc` and the frame loading.
+  return (
+    <iframe
+      ref={frame}
+      className={styles.frame}
+      title={view}
+      sandbox="allow-scripts"
+      srcDoc={srcDoc}
+      onLoad={postTheme}
+    />
+  );
+}

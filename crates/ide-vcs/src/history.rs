@@ -116,6 +116,11 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
     // Walks in (roughly) commit time order can stop once they are well past `since`.
     let time_ordered = range.is_none() && (q.order == LogOrder::Date || path_walk);
     let mut older_run = 0usize;
+    // A user or text filter hides commits within the history: the shown ones are linked to their
+    // nearest shown ancestors instead (dashed past hidden ones), as IDEA's filtered graph does.
+    // A path walk already links commits that way.
+    let mut links = (!path_walk && (!authors.is_empty() || text.is_some())).then(FilteredLinks::default);
+    let mut extra = 0usize;
 
     let mut out = Vec::new();
     for item in walk {
@@ -123,8 +128,17 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
         if q.first_parent {
             parents.truncate(1);
         }
+        if out.len() >= limit {
+            // Full: walk on only to link the last commits to their shown ancestors.
+            let Some(l) = links.as_ref() else { break };
+            extra += 1;
+            if l.is_empty() || extra > LINK_LIMIT {
+                break;
+            }
+        }
         let commit = repo.find_commit(id).map_err(gx)?;
         let commit_time = commit.time().map(|t| t.seconds).unwrap_or(0);
+        let mut shown = true;
         if shape.is_active() {
             let merge = commit.parent_ids().nth(1).is_some();
             if shape.since.is_some_and(|s| commit_time < s) {
@@ -132,31 +146,39 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
                 if time_ordered && older_run >= OLDER_RUN_LIMIT {
                     break;
                 }
-                continue;
+                shown = false;
+            } else {
+                older_run = 0;
+                if !shape.shows(merge, commit_time) {
+                    shown = false;
+                } else if links.is_none() {
+                    parents = shape.rewrite_parents(&repo, &parents)?;
+                }
             }
-            older_run = 0;
-            if !shape.shows(merge, commit_time) {
-                continue;
-            }
-            parents = shape.rewrite_parents(&repo, &parents)?;
         }
         let sig = commit.author().map_err(gx)?;
         let name = to_string(sig.name.trim().as_bstr());
         let email = to_string(sig.email.trim().as_bstr());
-        if !authors.is_empty() {
+        if shown && !authors.is_empty() {
             let (name, email) = (name.to_lowercase(), email.to_lowercase());
-            if !authors.iter().any(|a| name.contains(a.as_str()) || email.contains(a.as_str())) {
-                continue;
-            }
+            shown = authors.iter().any(|a| name.contains(a.as_str()) || email.contains(a.as_str()));
         }
         let message = to_string(commit.message_raw_sloppy());
-        if let Some(filter) = text.as_ref()
-            && !filter.matches(&message, &id)
-        {
+        if shown && let Some(filter) = text.as_ref() {
+            shown = filter.matches(&message, &id);
+        }
+        let listed = shown && to_skip == 0 && out.len() < limit;
+        if let Some(l) = links.as_mut() {
+            l.visit(id, &parents, shown, listed.then_some(out.len()));
+        }
+        if !shown {
             continue;
         }
         if to_skip > 0 {
             to_skip -= 1;
+            continue;
+        }
+        if !listed {
             continue;
         }
         let time_ms = sig.time().map(|t| t.seconds as f64 * 1000.0).unwrap_or(0.0);
@@ -173,12 +195,78 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
             message: message.trim_end().to_string(),
             refs: decorations.get(&id).cloned().unwrap_or_default(),
             commit_time_ms: commit_time as f64 * 1000.0,
+            dashed: Vec::new(),
         });
-        if out.len() >= limit {
+        if out.len() >= limit && links.is_none() {
             break;
         }
     }
+    if let Some(l) = links {
+        l.apply(&mut out);
+    }
     Ok(out)
+}
+
+/// Commits walked past a full page to link its last commits to their shown ancestors.
+const LINK_LIMIT: usize = 20_000;
+
+/// The links of a filtered log: each listed commit's nearest shown ancestors. The walk visits
+/// children before parents, so a listed commit waits on its parents; a hidden commit passes
+/// the waits on to its own parents, and a shown one takes them.
+#[derive(Default)]
+struct FilteredLinks {
+    /// Commit → listed commits (by index) waiting on it, and whether the way passed a hidden one.
+    waiting: HashMap<ObjectId, Vec<(usize, bool)>>,
+    /// Per listed commit: its shown ancestors in the order found, and whether each link is dashed.
+    found: HashMap<usize, Vec<(ObjectId, bool)>>,
+}
+
+impl FilteredLinks {
+    fn is_empty(&self) -> bool {
+        self.waiting.is_empty()
+    }
+
+    fn visit(&mut self, id: ObjectId, parents: &[ObjectId], shown: bool, listed: Option<usize>) {
+        let waits = self.waiting.remove(&id).unwrap_or_default();
+        if shown {
+            for (child, dashed) in waits {
+                let links = self.found.entry(child).or_default();
+                match links.iter_mut().find(|(p, _)| *p == id) {
+                    Some(link) => link.1 &= dashed,
+                    None => links.push((id, dashed)),
+                }
+            }
+            if let Some(index) = listed {
+                for p in parents {
+                    Self::wait(&mut self.waiting, *p, index, false);
+                }
+            }
+        } else {
+            for p in parents {
+                for (child, _) in &waits {
+                    Self::wait(&mut self.waiting, *p, *child, true);
+                }
+            }
+        }
+    }
+
+    fn wait(waiting: &mut HashMap<ObjectId, Vec<(usize, bool)>>, on: ObjectId, child: usize, dashed: bool) {
+        let list = waiting.entry(on).or_default();
+        match list.iter_mut().find(|(c, _)| *c == child) {
+            Some(w) => w.1 &= dashed,
+            None => list.push((child, dashed)),
+        }
+    }
+
+    /// Replaces the listed commits' parents by their shown ancestors (none found: none).
+    fn apply(mut self, out: &mut [Commit]) {
+        for (index, commit) in out.iter_mut().enumerate() {
+            let links = self.found.remove(&index).unwrap_or_default();
+            commit.parents = links.iter().map(|(id, _)| id.to_string()).collect();
+            commit.dashed =
+                if links.iter().any(|(_, d)| *d) { links.iter().map(|(_, d)| *d).collect() } else { Vec::new() };
+        }
+    }
 }
 
 /// Consecutive commits older than `since` after which a time-ordered walk stops.

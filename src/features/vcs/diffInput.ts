@@ -55,6 +55,10 @@ export interface DiffData {
    * pull request's file: `{ kind: "github.pullRequest", number: 12, path: "src/a.ts" }`. Plain JSON.
    */
   context?: { kind: string; [key: string]: unknown };
+  /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
+  embedded?: boolean;
+  /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
+  mode?: "split" | "unified";
 }
 
 export const DIFF_KIND = "diff";
@@ -130,7 +134,13 @@ export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?
 }
 
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
-export function workingDiffData(path: string, line?: number): DiffData {
+export function workingDiffData(path: string, line?: number, side?: "staged" | "unstaged" | null): DiffData {
+  if (side === "staged") {
+    return { path, left: { type: "rev", rev: "HEAD" }, right: { type: "rev", rev: ":0", label: "Index" }, line };
+  }
+  if (side === "unstaged") {
+    return { path, left: { type: "rev", rev: ":0", label: "Index" }, right: { type: "worktree" }, line };
+  }
   const st = statusOf(path);
   const kind = st ? effectiveKind(st) : null;
   const left: DiffSide =

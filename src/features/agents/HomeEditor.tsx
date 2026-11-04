@@ -165,7 +165,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   detail: tx("edits your files directly"),
                 },
               ]}
-              onChange={(isolation) => updateDraft({ isolation })}
+              onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
             />
           )}
           {isolation === "local" && current && (

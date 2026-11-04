@@ -34,14 +34,46 @@ import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
+import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
 import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
+import { activate as activateConflictBanner } from "./conflictBanner";
+import { activate as activateConflictMarkers } from "./conflictMarkers";
+import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
+
+/** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
+function trackMergeRebaseItem(): () => void {
+  let dispose: (() => void) | null = null;
+  const sync = () => {
+    const s = useVcs.getState();
+    const needed =
+      s.available && (!!inProgress(s.branch?.operation) || s.status.some((f) => f.unstaged === "conflicted"));
+    if (needed && !dispose) {
+      dispose = registerTitleItem({
+        id: "vcs.mergeRebase",
+        title: "Merge/Rebase Widget",
+        align: "left",
+        priority: 11,
+        component: MergeRebaseWidget,
+      });
+    } else if (!needed && dispose) {
+      dispose();
+      dispose = null;
+    }
+  };
+  sync();
+  const unsub = useVcs.subscribe(sync);
+  return () => {
+    unsub();
+    dispose?.();
+  };
+}
 
 function trackTitleItem(): () => void {
   let dispose: (() => void) | null = null;
@@ -115,6 +147,18 @@ function conflictsBody(names: string[]): string {
 }
 
 /** Settings › Version Control › Log (also used by the Settings window). */
+export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
+
+/** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
+export function activateDiffViewer(): () => void {
+  return registerEditorKind({
+    kind: DIFF_KIND,
+    component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
+    title: (input) => diffTitle(input.data as DiffData),
+    icon: () => "diff",
+  });
+}
+
 export function activateSettingsPages(): () => void {
   return registerSettingsPage({
     id: "vcs.log",
@@ -179,9 +223,13 @@ export function activate(): () => void {
     installChangelists(),
     trackOperationContext(),
     registerCompareActions(),
+    registerMergeActions(),
     trackTitleItem(),
+    trackMergeRebaseItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
+    activateConflictBanner(),
+    activateConflictMarkers(),
     trackCommitWindow(),
     registerToolWindow({
       id: "git",
@@ -192,12 +240,7 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow)),
       headerContent: lazyComponent(() => import("./GitLog").then((m) => m.GitTabs)),
     }),
-    registerEditorKind({
-      kind: DIFF_KIND,
-      component: lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor)),
-      title: (input) => diffTitle(input.data as DiffData),
-      icon: () => "diff",
-    }),
+    activateDiffViewer(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),
