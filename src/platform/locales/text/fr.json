@@ -4519,7 +4519,6 @@
   "Rebase commits of {head} not on:": "Rebaser les commits de {head} absents de :",
   "{head} has no upstream: commits up to {revision} will be pushed as a new branch:": "{head} n'a pas de branche amont : les commits jusqu'à {revision} seront poussés comme nouvelle branche :",
   "{head} has no upstream: it will be pushed as a new branch and tracked:": "{head} n'a pas de branche amont : elle sera poussée comme nouvelle branche et suivie :",
-  "{count} matches in {files} files": "{count} correspondances dans {files} fichiers",
   "{count} excluded": "{count} exclus",
   "{count} file with conflicts": "{count} fichier en conflit",
   "{count} files with conflicts": "{count} fichiers en conflit",

@@ -4630,7 +4630,6 @@
   "Rebase commits of {head} not on:": "다음에 없는 {head}의 커밋 리베이스:",
   "{head} has no upstream: commits up to {revision} will be pushed as a new branch:": "{head}에 업스트림이 없습니다. {revision}까지의 커밋이 새 브랜치로 푸시됩니다:",
   "{head} has no upstream: it will be pushed as a new branch and tracked:": "{head}에 업스트림이 없습니다. 새 브랜치로 푸시되고 추적됩니다:",
-  "{count} matches in {files} files": "파일 {files}개에서 일치 항목 {count}개",
   "{count} excluded": "{count}개 제외됨",
   "{count} file with conflicts": "충돌이 있는 파일 {count}개",
   "{count} files with conflicts": "충돌이 있는 파일 {count}개",

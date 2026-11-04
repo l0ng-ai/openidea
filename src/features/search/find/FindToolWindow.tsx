@@ -53,7 +53,7 @@ import {
   type FindTab,
 } from "./windowStore";
 import styles from "./FindToolWindow.module.css";
-import { tx } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 
 type Node =
   | { kind: "dir"; key: string; label: string; count: number; children: Node[] }
@@ -376,8 +376,10 @@ function FindTabView({ tab }: { tab: FindTab }) {
             ? (st.error ?? tx("Search failed"))
             : progress
               ? tx`Replacing… ${progress.done}/${progress.total} files`
-              : tx`${`${st.matchCount}${st.summary?.limitHit ? "+" : ""}`} matches in ${st.files.length} files` +
-                (marks.excluded.size ? ` · ${tx`${marks.excluded.size} excluded`}` : "")}
+              : t(st.summary?.limitHit ? "search.find.matchesIncomplete" : "search.find.matches", {
+                  matches: st.matchCount,
+                  files: st.files.length,
+                }) + (marks.excluded.size ? ` · ${tx`${marks.excluded.size} excluded`}` : "")}
         </span>
         <span className={styles.spacer} />
         <Button size="small" variant="ghost" disabled={!selection.size} onClick={exclude} title="Exclude / include (⌫)">

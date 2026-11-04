@@ -4649,7 +4649,6 @@
   "Rebase commits of {head} not on:": "变基 {head} 中不在以下分支上的提交：",
   "{head} has no upstream: commits up to {revision} will be pushed as a new branch:": "{head} 没有上游分支：截至 {revision} 的提交将作为新分支推送：",
   "{head} has no upstream: it will be pushed as a new branch and tracked:": "{head} 没有上游分支：它将作为新分支推送并被跟踪：",
-  "{count} matches in {files} files": "{files} 个文件中有 {count} 个匹配项",
   "{count} excluded": "已排除 {count} 项",
   "{count} file with conflicts": "{count} 个文件存在冲突",
   "{count} files with conflicts": "{count} 个文件存在冲突",
@@ -6061,5 +6060,14 @@
   "Make abstract": "设为抽象",
   "Keep abstract": "保留抽象声明",
   "Methods pulled up to an interface are declared abstract there.": "上拉到接口的方法将在接口中声明为抽象方法。",
-  "The file changed; open the dialog again": "文件已更改，请重新打开对话框"
+  "The file changed; open the dialog again": "文件已更改，请重新打开对话框",
+  "Type search query to find in files": "输入搜索内容以在文件中查找",
+  "Invalid pattern": "模式无效",
+  "Searching…": "正在搜索…",
+  "No search text entered": "没有输入搜索内容",
+  "Search with Regex": "使用正则表达式搜索",
+  "Search option used: {label}": "搜索已用选项：{label}",
+  "Search options used:": "搜索已用选项：",
+  "Clear option": "清除选项",
+  "Clear all options": "清除所有选项"
 }

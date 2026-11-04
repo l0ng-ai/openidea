@@ -212,3 +212,29 @@
   opacity: 0.55;
   text-decoration: line-through;
 }
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 0 20px;
+  text-align: center;
+  line-height: 1.6;
+}
+.emptyOptions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 1.2em;
+}
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--link-hover);
+}

@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
-import { useTxTemplate, tx } from "@/platform/i18n";
+import { t, useTxTemplate, tx } from "@/platform/i18n";
 import { formatBinding, hostBinding } from "@/platform/keymap";
 import { call, commands, isTauri, type SearchScope } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -423,10 +423,19 @@ function FindInFilesDialog() {
     return true;
   };
 
+  /** IDEA's "Clear all options" (⇧⌥⌫): back to a plain search everywhere. */
+  const clearOptions = () =>
+    set({ caseSensitive: false, wholeWord: false, isRegex: false, maskEnabled: false, context: "any" });
+
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     const inField =
       (target.tagName === "INPUT" || target.tagName === "TEXTAREA") && target.closest("[data-find-field]");
+    if (e.key === "Backspace" && e.altKey && e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      clearOptions();
+      return;
+    }
     if (e.key === "Enter" && e.altKey && e.shiftKey && !e.metaKey && !e.ctrlKey) {
       // ⇧⌥↵: Replace All.
       e.preventDefault();
@@ -724,7 +733,14 @@ function FindInFilesDialog() {
             focusable={false}
             rowHeight={ROW}
             aria-label="Matches"
-            empty={<span>{emptyText(state, s.pattern)}</span>}
+            empty={
+              <EmptyResults
+                state={state}
+                options={options}
+                onClear={clearOptions}
+                onRegex={() => set({ isRegex: true })}
+              />
+            }
             renderItem={(r, st) => {
               const state = s.replace ? groupState(r, marks) : "pending";
               return (
@@ -855,20 +871,89 @@ function FindInFilesDialog() {
   );
 }
 
+/** IDEA's header count: shown once something matched. */
 function statusText(s: FindState): string {
-  if (s.status === "invalid") return "Invalid pattern";
-  if (s.status === "error") return s.error ?? "Search failed";
-  if (s.status === "idle") return "";
-  const files = s.files.length;
-  const more = s.summary?.limitHit ? "+" : "";
-  if (!s.matchCount) return s.status === "done" ? "No matches" : "Searching…";
-  return `${s.matchCount}${more} match${s.matchCount === 1 ? "" : "es"} in ${files}${more} file${files === 1 ? "" : "s"}`;
+  if (!s.matchCount) return "";
+  const key = s.summary?.limitHit ? "search.find.matchesIncomplete" : "search.find.matches";
+  return t(key, { matches: s.matchCount, files: s.files.length });
 }
 
-function emptyText(s: FindState, pattern: string): string {
-  if (!pattern) return "Type text to search the project";
-  if (s.status === "invalid") return s.error ?? "Invalid pattern";
-  if (s.status === "searching" || s.status === "validating") return "Searching…";
-  if (s.status === "error") return s.error ?? "Search failed";
-  return "Nothing found";
+const REGEX_CHARS = /[.$|()[\]{}^?*+\\]/;
+
+/** Whether text with regex syntax in it is also a valid pattern: IDEA then offers "Search with Regex". */
+function couldBeRegex(text: string): boolean {
+  if (!REGEX_CHARS.test(text)) return false;
+  try {
+    new RegExp(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** IDEA's empty results text: why nothing is listed, the search options in use and how to clear them. */
+function EmptyResults({
+  state,
+  options: o,
+  onClear,
+  onRegex,
+}: {
+  state: FindState;
+  options: FindOptions;
+  onClear: () => void;
+  onRegex: () => void;
+}) {
+  const masked = o.maskEnabled && !!o.mask.trim();
+  if (!o.pattern && !masked) return <div className={styles.empty}>{tx("Type search query to find in files")}</div>;
+  if (state.status === "invalid") return <div className={styles.empty}>{state.error ?? tx("Invalid pattern")}</div>;
+  if (state.status === "error") return <div className={styles.empty}>{state.error ?? tx("Search failed")}</div>;
+  if (o.pattern && state.status !== "done") return <div className={styles.empty}>{tx("Searching…")}</div>;
+  const used = [
+    o.caseSensitive && { label: "Match Case", key: "Alt+C" },
+    o.wholeWord && { label: "Words", key: "Alt+W" },
+    o.isRegex && { label: "Regex", key: "Alt+X" },
+    masked && { label: "File mask", key: "Alt+K" },
+    o.context !== "any" && { label: "Filter", key: "" },
+  ].filter((u) => !!u);
+  const regex = !!o.pattern && !o.isRegex && couldBeRegex(o.pattern);
+  const clearKey = formatBinding("Shift+Alt+Backspace");
+  return (
+    <div className={styles.empty}>
+      <div>
+        {o.pattern ? tx("Nothing found") : tx("No search text entered")}
+        {used.length || regex ? "." : ""}
+      </div>
+      {regex ? (
+        <div className={styles.emptyOptions}>
+          <div>
+            <button type="button" className={styles.link} onClick={onRegex}>
+              <T>Search with Regex</T>
+            </button>{" "}
+            {formatBinding("Alt+X")}
+          </div>
+        </div>
+      ) : used.length ? (
+        <div className={styles.emptyOptions}>
+          {used.length === 1 ? (
+            <div>{tx`Search option used: ${tx(used[0]!.label)}`}</div>
+          ) : (
+            <>
+              <div>
+                <T>Search options used:</T>
+              </div>
+              <div>
+                {used.map((u) => [tx(u.label), u.key && formatBinding(u.key)].filter(Boolean).join(" ")).join("  ")}
+              </div>
+            </>
+          )}
+          <div>
+            <button type="button" className={styles.link} onClick={onClear}>
+              {used.length === 1 ? <T>Clear option</T> : <T>Clear all options</T>}
+            </button>{" "}
+            {clearKey}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }

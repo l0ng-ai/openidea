@@ -66,6 +66,8 @@ const { FindInFilesOverlay } = await import("../find/FindInFiles");
 const { findHistory, hideFindPopup, rememberFindString, runFindPopupCommand, showFindPopup, useFindPopup } =
   await import("../find/store");
 
+const { formatBinding } = await import("@/platform/keymap");
+
 const settle = () => act(() => new Promise((r) => setTimeout(r, 250)));
 const selectedRows = () =>
   within(screen.getByRole("listbox", { name: "Matches" }))
@@ -322,7 +324,8 @@ describe("outdated popup results", () => {
     const box = results();
     await act(async () => finish(null));
     expect(box).not.toHaveAttribute("data-stale");
-    expect(screen.getByText("No matches")).toBeInTheDocument();
+    // IDEA's header shows a count only while something matches.
+    expect(screen.queryByText(/\bmatch(es)? in\b/)).not.toBeInTheDocument();
     expect(screen.getByText("Nothing found")).toBeInTheDocument();
     expect(within(box).queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
@@ -353,5 +356,60 @@ describe("outdated popup results", () => {
     await settle();
     await act(async () => confirm(true));
     expect(replaced).toHaveLength(0);
+  });
+});
+
+describe("empty results, as IDEA", () => {
+  const findNothing = () => {
+    search = async () => null;
+  };
+
+  it("asks for a query while there is none", () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false));
+    expect(screen.getByText("Type search query to find in files")).toBeInTheDocument();
+  });
+
+  it("names the one option in use and clears it", () => {
+    useFindPopup.setState({ maskEnabled: true, mask: "*.rs" });
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false));
+    expect(screen.getByText("No search text entered.")).toBeInTheDocument();
+    expect(screen.getByText("Search option used: File mask")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear option" }));
+    expect(useFindPopup.getState().maskEnabled).toBe(false);
+    expect(screen.getByText("Type search query to find in files")).toBeInTheDocument();
+  });
+
+  it("lists every option in use with its key, and ⇧⌥⌫ clears them all", async () => {
+    findNothing();
+    useFindPopup.setState({ caseSensitive: true, wholeWord: true, context: "inComments" });
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "absent" }));
+    await settle();
+    expect(screen.getByText("Nothing found.")).toBeInTheDocument();
+    expect(screen.getByText("Search options used:")).toBeInTheDocument();
+    expect(
+      screen.getByText(`Match Case ${formatBinding("Alt+C")} Words ${formatBinding("Alt+W")} Filter`),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear all options" })).toBeInTheDocument();
+    fireEvent.keyDown(field(), { key: "Backspace", altKey: true, shiftKey: true });
+    const s = useFindPopup.getState();
+    expect([s.caseSensitive, s.wholeWord, s.isRegex, s.maskEnabled, s.context]).toEqual([
+      false,
+      false,
+      false,
+      false,
+      "any",
+    ]);
+  });
+
+  it("offers Search with Regex for a query that reads as one", async () => {
+    findNothing();
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "fo+.*bar" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Search with Regex" }));
+    expect(useFindPopup.getState().isRegex).toBe(true);
   });
 });
