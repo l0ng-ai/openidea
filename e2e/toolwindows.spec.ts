@@ -1,4 +1,4 @@
-import { expect, test, visibleToolWindows } from "./fixtures";
+import { expect, ipcCalls, stubDesktop, test, visibleToolWindows } from "./fixtures";
 
 test("⌘1 focuses, hides and re-shows the Project tool window", async ({ workbench: page }) => {
   const project = page.getByRole("region", { name: "Project" });
@@ -79,4 +79,48 @@ test("⌘⇧F12 hides all tool windows and restores them", async ({ workbench: p
   await page.keyboard.press("Meta+Shift+F12");
   await expect(page.getByRole("region", { name: "Project" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Problems" })).toBeVisible();
+});
+
+test("the Terminal sends typed commands to the shell and shows its output", async ({ workbench: page }) => {
+  // The shell is stubbed at the IPC layer: it echoes input and answers `echo`.
+  await stubDesktop(page);
+  await page.evaluate(() => {
+    let output: unknown = null;
+    let line = "";
+    const out = (text: string) => window.__ipc.send(output, text);
+    const h = window.__ipc.handlers;
+    h.term_default_shell = () => "/bin/zsh";
+    h.term_available_shells = () => ["/bin/zsh"];
+    h.term_spawn = (args) => {
+      output = args.onOutput;
+      setTimeout(() => out("acme-api % "), 20);
+      return { id: 5, title: "zsh", pid: 99 };
+    };
+    h.term_resize = () => null;
+    h.term_is_busy = () => false;
+    h.term_write = (args) => {
+      for (const ch of String(args.data)) {
+        if (ch === "\r") {
+          const said = /^echo (.*)$/.exec(line);
+          out(`\r\n${said ? `${said[1]}\r\n` : ""}acme-api % `);
+          line = "";
+        } else {
+          line += ch;
+          out(ch);
+        }
+      }
+      return null;
+    };
+  });
+  await page.keyboard.press("Alt+F12");
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  const rows = terminal.locator(".xterm-rows");
+  await expect(rows).toContainText("acme-api %");
+  await terminal.locator(".xterm-screen").click();
+  await expect(terminal.getByRole("textbox", { name: "Terminal input" })).toBeFocused();
+  await page.keyboard.type("echo hello from e2e");
+  await page.keyboard.press("Enter");
+  await expect(rows.locator("div", { hasText: /^hello from e2e\s*$/ })).toHaveCount(1);
+  const written = (await ipcCalls(page, "term_write")).map((a) => a.data).join("");
+  expect(written).toBe("echo hello from e2e\r");
 });
