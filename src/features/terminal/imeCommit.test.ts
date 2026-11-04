@@ -31,6 +31,12 @@ function gateWithRebase() {
   return { gate, run, pending, rebases: () => rebased };
 }
 
+/** Collects the emissions that reach the PTY, like `Session.fromTerminal`. */
+function emitter(gate: ImeCommitGate) {
+  const sent: string[] = [];
+  return { sent, emit: (data: string) => gate.accept() && sent.push(data) };
+}
+
 describe("ImeCommitGate", () => {
   it("takes the first emission of a commit and drops the repeated one", () => {
     const { gate } = gateWithRebase();
@@ -42,10 +48,7 @@ describe("ImeCommitGate", () => {
   it("keeps the real text of the pi case and drops the stale suffix", () => {
     // xterm sends the committed diff first, then a stale `value.substring(start)`.
     const { gate, run } = gateWithRebase();
-    const sent: string[] = [];
-    const emit = (data: string) => {
-      if (gate.accept()) sent.push(data);
-    };
+    const { sent, emit } = emitter(gate);
     gate.begin();
     emit("在吗");
     gate.finish();
@@ -54,37 +57,84 @@ describe("ImeCommitGate", () => {
     expect(sent).toEqual(["在吗"]);
   });
 
-  it("accepts every emission once the commit is over", () => {
-    const { gate, run } = gateWithRebase();
+  it("starts a new commit on the next IME keystroke even inside the timeout", () => {
+    // Two commits can arrive back to back; the second must not be swallowed by the first
+    // commit's still-running timeout.
+    const { gate } = gateWithRebase();
+    gate.begin();
+    expect(gate.accept()).toBe(true);
     gate.begin();
     expect(gate.accept()).toBe(true);
     expect(gate.accept()).toBe(false);
+  });
+
+  it("drops the stale suffix of a WebKitGTK punctuation commit without compositionstart", () => {
+    // fcitx5 commits `，` as insertFromComposition + compositionend without compositionstart:
+    // xterm sends the keydown diff `，`, then compositionend emits `好，` from the previous
+    // composition's position. That suffix is what showed up as a duplicate in the terminal.
+    const { gate, run, rebases } = gateWithRebase();
+    const { sent, emit } = emitter(gate);
+    gate.begin();
+    emit("，");
+    gate.finish();
+    emit("好，");
+    run();
+    expect(sent).toEqual(["，"]);
+    expect(rebases()).toBe(1);
+  });
+
+  it("stands down for a real composition, then gates the next commit again", () => {
+    // compositionstart must not disable the gate for the whole session: the very next
+    // punctuation commit still needs deduplication.
+    const { gate, run, rebases } = gateWithRebase();
+    gate.begin();
+    gate.compositionStart();
+    expect(gate.accept()).toBe(true);
+    expect(gate.accept()).toBe(true);
     gate.finish();
     run();
+    expect(rebases()).toBe(1);
+
+    gate.begin();
+    expect(gate.accept()).toBe(true);
+    expect(gate.accept()).toBe(false);
+  });
+
+  it("accepts every emission while composing", () => {
+    const { gate } = gateWithRebase();
+    gate.compositionStart();
+    expect(gate.accept()).toBe(true);
     expect(gate.accept()).toBe(true);
     expect(gate.accept()).toBe(true);
   });
 
-  it("rebases the textarea when the commit closes, not before", () => {
+  it("rebases after a composition that xterm sent by itself", () => {
     const { gate, run, rebases } = gateWithRebase();
-    gate.begin();
+    gate.compositionStart();
     gate.finish();
     expect(rebases()).toBe(0);
     run();
     expect(rebases()).toBe(1);
   });
 
-  it("stands down once a real compositionstart arrives", () => {
-    const { gate, rebases } = gateWithRebase();
+  it("rebases after a commit whose compositionend arrives, not before", () => {
+    const { gate, run, rebases } = gateWithRebase();
     gate.begin();
-    gate.compositionStart();
     expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(true);
+    gate.finish();
     expect(rebases()).toBe(0);
-    // And a later commit is not gated either.
-    gate.begin();
+    run();
+    expect(rebases()).toBe(1);
+  });
+
+  it("opens a commit from a composition input when no keydown preceded it", () => {
+    const { gate } = gateWithRebase();
+    gate.input();
     expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(true);
+    expect(gate.accept()).toBe(false);
+    // A second input event belongs to the same commit and must not reopen it.
+    gate.input();
+    expect(gate.accept()).toBe(false);
   });
 
   it("closes a commit whose compositionend never arrives", () => {
@@ -95,5 +145,14 @@ describe("ImeCommitGate", () => {
     expect(IME_COMMIT_TIMEOUT_MS).toBeGreaterThan(0);
     expect(rebases()).toBe(1);
     expect(gate.accept()).toBe(true);
+  });
+
+  it("does not rebase into a composition that started before the close ran", () => {
+    const { gate, run, rebases } = gateWithRebase();
+    gate.begin();
+    gate.finish();
+    gate.compositionStart();
+    run();
+    expect(rebases()).toBe(0);
   });
 });
