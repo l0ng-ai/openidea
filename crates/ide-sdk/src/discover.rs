@@ -545,7 +545,7 @@ fn jdk() -> Vec<Sdk> {
 
 /// A JDK as the SDK pickers list it (`Eclipse Adoptium 25.0.1`).
 pub fn jdk_sdk(j: &crate::java::Jdk) -> Sdk {
-    let java_home = std::env::var_os("JAVA_HOME").and_then(|h| dunce::canonicalize(h).ok());
+    let java_home = std::env::var_os("JAVA_HOME").and_then(|h| crate::launch_path(Path::new(&h)).ok());
     let release = std::fs::read_to_string(j.home.join("release")).unwrap_or_default();
     let version = release_value(&release, "JAVA_VERSION").unwrap_or_else(|| j.major.to_string());
     let name = match release_value(&release, "IMPLEMENTOR") {
@@ -595,7 +595,7 @@ fn maven() -> Vec<Sdk> {
     } else {
         which("mvn")
     };
-    if let Some(mvn) = on_path.and_then(|p| dunce::canonicalize(p).ok())
+    if let Some(mvn) = on_path.and_then(|p| crate::launch_path(&p).ok())
         && let Some(home) = mvn.parent().and_then(Path::parent)
     {
         found.push((home.to_path_buf(), "path"));
@@ -629,7 +629,7 @@ fn maven() -> Vec<Sdk> {
     let mut out = Vec::new();
     for (dir, source) in found {
         let Some(home) = maven_home(&dir) else { continue };
-        let home = dunce::canonicalize(&home).unwrap_or(home);
+        let home = crate::launch_path(&home).unwrap_or(home);
         if !seen.insert(home.clone()) {
             continue;
         }
@@ -644,4 +644,85 @@ fn maven() -> Vec<Sdk> {
         });
     }
     out
+}
+
+#[cfg(all(test, windows))]
+mod maven_path_tests {
+    use super::*;
+    use crate::launch_path;
+    use std::process::Command;
+
+    struct Subst {
+        name: String,
+        root: PathBuf,
+    }
+
+    impl Subst {
+        fn new(target: &Path) -> Self {
+            for letter in (b'D'..=b'Z').rev() {
+                let name = format!("{}:", char::from(letter));
+                let root = PathBuf::from(format!("{name}\\"));
+                if root.exists() {
+                    continue;
+                }
+                let output = Command::new("subst").arg(&name).arg(target).output().unwrap();
+                if output.status.success() {
+                    return Self { name, root };
+                }
+            }
+            panic!("no free drive for Maven path verification");
+        }
+    }
+
+    impl Drop for Subst {
+        fn drop(&mut self) {
+            let _ = Command::new("subst").args([&self.name, "/D"]).output();
+        }
+    }
+
+    fn install(home: &Path) {
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::create_dir_all(home.join("lib")).unwrap();
+        std::fs::write(home.join("bin/mvn.cmd"), "@echo off\n").unwrap();
+        std::fs::write(home.join("lib/maven-core-3.9.16.jar"), "").unwrap();
+    }
+
+    #[test]
+    fn mapped_maven_home_and_launcher_keep_their_drive() {
+        let mapped = tempfile::tempdir().unwrap();
+        install(&mapped.path().join("apache-maven"));
+        let drive = Subst::new(mapped.path());
+        let home = drive.root.join("apache-maven");
+        let launcher = home.join("bin/mvn.cmd");
+        assert_ne!(dunce::canonicalize(&home).unwrap(), home);
+        assert_eq!(launch_path(&home).unwrap(), home);
+        assert_eq!(launch_path(&launcher).unwrap(), launcher);
+        assert_eq!(maven_home(&home), Some(home.clone()));
+        assert_eq!(maven_version(&home).as_deref(), Some("3.9.16"));
+        let jdk = drive.root.join("jdk");
+        std::fs::create_dir_all(jdk.join("bin")).unwrap();
+        std::fs::write(jdk.join("bin/java.exe"), "").unwrap();
+        std::fs::write(jdk.join("release"), "JAVA_VERSION=\"17.0.9\"\n").unwrap();
+        assert_eq!(crate::java::jdk_at(&jdk).unwrap().home, jdk);
+    }
+
+    #[test]
+    fn a_launcher_link_outside_the_mapped_root_still_finds_its_install() {
+        let mapped = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        install(real.path());
+        let drive = Subst::new(mapped.path());
+        let link = mapped.path().join("shims");
+        let output = Command::new(std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into()))
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(real.path().join("bin"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let launcher = launch_path(&drive.root.join("shims/mvn.cmd")).unwrap();
+        assert_eq!(launcher, dunce::canonicalize(real.path().join("bin/mvn.cmd")).unwrap());
+        let home = launcher.parent().and_then(Path::parent).and_then(maven_home).unwrap();
+        assert_eq!(home, dunce::canonicalize(real.path()).unwrap());
+    }
 }

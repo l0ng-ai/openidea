@@ -38,10 +38,7 @@ pub fn jdk_at(home: &Path) -> Option<Jdk> {
     if !home.join("bin").join(crate::exe("java")).is_file() {
         return None;
     }
-    Some(Jdk {
-        major: parse_release(&release)?,
-        home: dunce::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()),
-    })
+    Some(Jdk { major: parse_release(&release)?, home: crate::launch_path(home).unwrap_or_else(|_| home.to_path_buf()) })
 }
 
 fn children(dir: &Path) -> Vec<PathBuf> {
@@ -90,7 +87,7 @@ fn scan() -> Vec<Jdk> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     if let Some(java) = std::env::split_paths(&path).map(|d| d.join(crate::exe("java"))).find(|j| j.is_file()) {
         // Through symlinks (`/usr/bin/java`, Homebrew, SDKMAN `current`) to `<home>/bin/java`.
-        if let Some(home) = dunce::canonicalize(java).ok().and_then(|j| j.parent()?.parent().map(Path::to_path_buf)) {
+        if let Some(home) = crate::launch_path(&java).ok().and_then(|j| j.parent()?.parent().map(Path::to_path_buf)) {
             homes.push(home);
         }
     }
