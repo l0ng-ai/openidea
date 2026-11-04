@@ -139,6 +139,7 @@ const UNTRANSLATED = new Set<string>([
   "Go",
   "Godot",
   "Gradle",
+  "GraphQL",
   "Greenplum",
   "Java",
   "java-debug (Java)",

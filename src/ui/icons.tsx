@@ -183,6 +183,7 @@ const ICONS = {
   "toolwindow-changes": "toolwindows/changes",
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
+  "toolwindow-graphql": "openidea/toolwindows/graphql",
   // Coding agents (logos via Paseo)
   "agent-claude": "openidea/agents/claude",
   "agent-codex": "openidea/agents/codex",
@@ -223,6 +224,9 @@ const ICONS = {
   filter: "general/filter",
   refresh: "general/refresh",
   settings: "general/settings",
+  help: "openidea/general/help",
+  sliders: "openidea/general/sliders",
+  "graphql-variables": "openidea/general/graphqlVariables",
   layout: "general/layout",
   split: "general/splitVertically",
   "split-horizontal": "general/splitHorizontally",

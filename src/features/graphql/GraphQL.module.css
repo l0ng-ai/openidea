@@ -1,0 +1,323 @@
+.view {
+  height: 100%;
+  display: flex;
+  min-height: 0;
+}
+.tabs {
+  min-width: 0;
+  border: 0;
+  background: none;
+}
+.toolbar {
+  flex: none;
+  width: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  border-right: 1px solid var(--border);
+}
+.toolbarSep {
+  width: 16px;
+  height: 1px;
+  margin: 3px 0;
+  background: var(--border);
+}
+.body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tree {
+  flex: 1;
+  min-height: 0;
+}
+.status {
+  height: 26px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: var(--fs-ui);
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+.row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 10px;
+  white-space: nowrap;
+}
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
+.ok {
+  color: var(--success);
+}
+.code {
+  font-weight: 600;
+}
+.result {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.resultHeader {
+  height: 28px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+/* Result header: ✓ on success, a red dot with errors (IDEA). */
+.dotFailed {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 4px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+/* The response with line numbers, scrolling together (IDEA's result editor). */
+.outputBox {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  overflow: auto;
+  background: var(--bg-editor);
+}
+.outputGutter,
+.output {
+  margin: 0;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  line-height: 1.6;
+}
+.outputGutter {
+  position: sticky;
+  left: 0;
+  flex: none;
+  min-width: 36px;
+  min-height: 100%;
+  padding-left: 8px;
+  background: var(--bg-editor);
+  color: var(--fg-line-number);
+  text-align: right;
+  user-select: none;
+}
+.output {
+  flex: 1;
+  white-space: pre;
+  user-select: text;
+}
+
+/* Editor header. */
+.editorToolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--h-header);
+  padding: 0 8px;
+  background: var(--bg-editor);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg-secondary);
+}
+.editorToolbarSep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+.endpoint {
+  min-width: 160px;
+  max-width: 420px;
+}
+.variablesBox {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-editor);
+}
+.variablesLayer,
+.variables {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 6px 10px;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+.variablesLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--fg);
+  pointer-events: none;
+}
+.variables {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 96px;
+  min-height: 48px;
+  resize: vertical;
+  overflow: auto;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--fg);
+}
+.variables::placeholder {
+  color: var(--fg-subtle);
+}
+.variables::selection {
+  background: var(--bg-editor-selection);
+  color: transparent;
+}
+
+/*
+ * graphql-config gutter: ▶ on each endpoint. As wide as the run gutter plus the Spring
+ * icon gutter beside it in Spring files (14px each), so ▶ keeps the same gap to the VCS bar.
+ */
+.runGutter {
+  width: 28px;
+}
+.runGutter :global(.cm-gutterElement) {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+.runMarker {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+.runMarker:hover {
+  background: var(--bg-hover);
+}
+
+/* Query result and variables: JSON in the editor's syntax colours. */
+.output :global(.tok-propertyName),
+.variablesLayer :global(.tok-propertyName) {
+  color: var(--syn-property);
+}
+.output :global(.tok-string),
+.variablesLayer :global(.tok-string),
+.output :global(.tok-string2),
+.variablesLayer :global(.tok-string2) {
+  color: var(--syn-string);
+}
+.output :global(.tok-number),
+.variablesLayer :global(.tok-number) {
+  color: var(--syn-number);
+}
+.output :global(.tok-bool),
+.variablesLayer :global(.tok-bool),
+.output :global(.tok-null),
+.variablesLayer :global(.tok-null),
+.output :global(.tok-atom),
+.variablesLayer :global(.tok-atom),
+.output :global(.tok-keyword),
+.variablesLayer :global(.tok-keyword) {
+  color: var(--syn-keyword);
+}
+.output :global(.tok-punctuation),
+.variablesLayer :global(.tok-punctuation),
+.output :global(.tok-separator),
+.variablesLayer :global(.tok-separator),
+.output :global(.tok-squareBracket),
+.variablesLayer :global(.tok-squareBracket),
+.output :global(.tok-brace),
+.variablesLayer :global(.tok-brace) {
+  color: var(--syn-punct);
+}
+
+/* Text the last Execute GraphQL did not send (IDEA greys it out). */
+.unusedContext {
+  opacity: 0.45;
+}
+
+/* GraphQL Environment Variables dialog: a Name / Value table (IDEA). */
+.envBox {
+  display: flex;
+  flex-direction: column;
+  height: 300px;
+  border: 1px solid var(--border);
+}
+.envToolbar {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.envTable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--fs-ui);
+}
+.envTable th {
+  height: 24px;
+  padding: 0 8px;
+  text-align: left;
+  font-weight: normal;
+  color: var(--fg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.envTable th + th {
+  border-left: 1px solid var(--border);
+}
+.envTable td {
+  height: 24px;
+  padding: 0;
+}
+.envName {
+  padding: 0 8px !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.envValue {
+  box-sizing: border-box;
+  width: 100%;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-family: var(--font-mono);
+}
+.envValue:focus {
+  background: var(--bg-selected);
+}
