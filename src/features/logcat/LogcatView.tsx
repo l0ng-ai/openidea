@@ -188,16 +188,11 @@ export function LogcatView() {
           tabIndex={0}
           onScroll={(e) => {
             const el = e.currentTarget;
-            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
             // Our own writes always end at the bottom, so a move upwards is the user's:
-            // scrolling up stops following, dragging back down to the end resumes it.
+            // scrolling up stops following, and only the toolbar arrow resumes it.
             const up = el.scrollTop < written.current - 4;
             written.current = el.scrollTop;
-            if (up) {
-              if (follow) useLogcat.setState({ follow: false });
-            } else if (atEnd && !follow) {
-              useLogcat.setState({ follow: true });
-            }
+            if (up && follow) useLogcat.setState({ follow: false });
           }}
         >
           <div className={styles.canvas} style={{ height: virtualizer.getTotalSize() }}>
