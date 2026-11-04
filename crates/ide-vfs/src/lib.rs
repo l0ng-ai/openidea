@@ -274,13 +274,14 @@ pub fn copy(from: &Path, to: &Path) -> IdeResult<()> {
 /// honouring .gitignore, .ignore and `excludes`. Shared by index and search.
 ///
 /// Hidden files are included; `.git` is always skipped. `.gitignore` applies
-/// even outside a git repository. Symlinks to files are visited, symlinked
+/// even outside a git repository; inside one, a nested repository's root is a
+/// boundary for the outer repository's rules. Symlinks to files are visited, symlinked
 /// directories are not followed.
 pub fn walk_files(root: &Path, excludes: &[String], visit: impl Fn(&Path) + Send + Sync) {
     let excludes = Arc::new(ExcludeMatcher::new(excludes));
     let base = root.to_path_buf();
     let mut builder = ignore::WalkBuilder::new(root);
-    builder.hidden(false).require_git(false).follow_links(false);
+    builder.hidden(false).require_git(ide_core::ignored::inside_git_repo(root)).follow_links(false);
     builder.filter_entry(move |entry| {
         if entry.depth() > 0 && entry.file_name() == ".git" {
             return false;
