@@ -4,6 +4,7 @@ import { create } from "zustand";
 import clsx from "clsx";
 import type { Diagnostic, Severity } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
+import { previewColors } from "@/editor/lineTokens";
 import { executeAction } from "@/platform/actions";
 import { formatBinding, hasPrimaryModifier, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -409,6 +410,7 @@ export function ProblemsView() {
                 line={selected?.d.range.start.line ?? 0}
                 highlights={selected ? [diagHighlight(selected.d)] : []}
                 load={previewText}
+                colorize={previewColors}
               />
             </SplitPanel>
           </SplitGroup>
