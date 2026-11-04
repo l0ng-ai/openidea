@@ -8,6 +8,7 @@
 pub mod application_update;
 pub mod compile;
 pub mod gradle;
+mod gradle_deps;
 pub mod kotlin_bridge;
 pub mod maven;
 pub mod pom_edit;
@@ -17,6 +18,7 @@ pub mod web;
 mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};
+pub use gradle_deps::{GradleDependency, gradle_dependencies};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
 pub use sync::{SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_maven};
 
