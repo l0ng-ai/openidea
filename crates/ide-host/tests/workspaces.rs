@@ -149,18 +149,18 @@ async fn php_language_level_follows_the_member_of_the_file() {
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     let found = |version: &str, source| Some(PhpLanguageLevel { version: version.into(), source });
-    let level = |path: std::path::PathBuf| ops::sdk::sdk_php_language_level(&host, "main", path).unwrap();
+    let level = async |path: std::path::PathBuf| ops::sdk::sdk_php_language_level(&host, "main", path).await.unwrap();
 
-    let level_of_api = level(api.join("src/Invoice.php"));
+    let level_of_api = level(api.join("src/Invoice.php")).await;
     assert_eq!(level_of_api.effective, found("7.4.0", PhpLevelSource::Require));
     assert_eq!(level_of_api.auto, level_of_api.effective);
     assert_eq!(level_of_api.member.as_deref(), Some(api.as_path()));
     // The member's own settings, not the workspace's.
-    let level_of_legacy = level(legacy.join("index.php"));
+    let level_of_legacy = level(legacy.join("index.php")).await;
     assert_eq!(level_of_legacy.effective, found("8.3.0", PhpLevelSource::Settings));
     assert_eq!(level_of_legacy.auto, found("8.0.5", PhpLevelSource::Platform));
     // Outside every member: the workspace's own.
-    let level_elsewhere = level(base.join("elsewhere.php"));
+    let level_elsewhere = level(base.join("elsewhere.php")).await;
     assert_eq!(level_elsewhere.effective, found("8.2.0", PhpLevelSource::Require));
     assert_eq!(level_elsewhere.member, None);
     host.close_project("main");

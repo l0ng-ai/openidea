@@ -48,21 +48,26 @@ pub struct PhpLanguageLevels {
     pub member: Option<ide_core::IpcPath>,
 }
 
-pub fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) -> IdeResult<PhpLanguageLevels> {
+pub async fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) -> IdeResult<PhpLanguageLevels> {
     let project = host.project(window)?;
-    let member = ide_workspace::workspace::Workspace::load(&project.root)
-        .ok()
-        .flatten()
-        .and_then(|w| w.projects.into_iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.components().count()));
-    let (root, settings) = match &member {
-        Some(member) => (member, ide_workspace::SettingsStore::load(&host.config_dir, Some(member)).effective()),
-        None => (&project.root, project.settings.effective()),
-    };
-    Ok(PhpLanguageLevels {
-        effective: ide_sdk::php::language_level(root, &settings),
-        auto: ide_sdk::php::composer_level(root),
-        member: member.map(ide_core::IpcPath),
+    let (project_root, project_settings) = (project.root.clone(), project.settings.effective());
+    let config_dir = host.config_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let member = ide_workspace::workspace::Workspace::load(&project_root).ok().flatten().and_then(|w| {
+            w.projects.into_iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.components().count())
+        });
+        let (root, settings) = match &member {
+            Some(member) => (member, ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective()),
+            None => (&project_root, project_settings),
+        };
+        PhpLanguageLevels {
+            effective: ide_sdk::php::language_level(root, &settings),
+            auto: ide_sdk::php::composer_level(root),
+            member: member.map(ide_core::IpcPath),
+        }
     })
+    .await
+    .map_err(join_err)
 }
 
 /// SDK / library source folders shown under "External Libraries" in the Project view,
@@ -175,7 +180,10 @@ pub async fn sdk_python_pip(
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window) });
-    d.add("sdk_php_language_level", |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?) });
+    d.add(
+        "sdk_php_language_level",
+        |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?).await },
+    );
     d.add("sdk_project_libraries", |c| async move { sdk_project_libraries(&c.host, &c.window).await });
     d.add("sdk_locate_tools", |c| async move {
         sdk_locate_tools(&c.host, &c.window, c.arg("names")?, c.arg("near")?).await
