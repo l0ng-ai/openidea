@@ -133,6 +133,10 @@ interface views {
     /// `program` (pinned by a `process:<program>` grant) with `args` in the
     /// project root: long-running output (logs) and interactive sessions.
     open-terminal: func(title: string, program: string, args: list<string>) -> result<_, error>;
+    /// Opens `path` (project-relative or absolute, inside the project) in an
+    /// editor of the window the call came from, the caret at `line` and
+    /// `column` (0-based; UTF-16 column): a view's links to code.
+    open-location: func(path: string, line: u32, column: u32) -> result<_, error>;
 }
 
 /// The plugin's own settings (`[contributes.settings]`), as the user set them

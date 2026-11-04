@@ -12,7 +12,7 @@ import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import { registerStatusItem } from "@/workbench/contributions";
+import { maybeEditorService, registerStatusItem } from "@/workbench/contributions";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
@@ -258,6 +258,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
+      return true;
+    case "openLocation":
+      void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
     default:
       return false;

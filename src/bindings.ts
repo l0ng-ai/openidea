@@ -5337,7 +5337,7 @@ export type PluginEvent =
 /**  For the script of a view's `html` body. */
 { type: "viewMessage"; pluginId: string; view: string; message: string } | 
 /**  Open a terminal running `program` (already approved and verified). */
-{ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | 
+{ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | { type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number } | 
 /**
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
