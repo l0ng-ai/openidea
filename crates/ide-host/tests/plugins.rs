@@ -493,12 +493,15 @@ fn running_calls_can_be_cancelled() {
         let f = f.clone();
         std::thread::spawn(move || f.run("misbehave", "spin", None))
     };
-    std::thread::sleep(Duration::from_millis(100));
-    let started = Instant::now();
-    f.host.cancel("misbehave");
+    // A cancel before the call runs (the instance may still be starting) does nothing: repeat it.
+    let until = Instant::now() + Duration::from_secs(5);
+    while !spinning.is_finished() {
+        assert!(Instant::now() < until, "the running call wasn't interrupted");
+        f.host.cancel("misbehave");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let err = spinning.join().unwrap().unwrap_err();
     assert!(err.contains("was cancelled"), "{err}");
-    assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(f.run("misbehave", "echo", Some("x")).unwrap().as_deref(), Some("x"), "no backoff");
     let stats = f.host.info_of("misbehave").unwrap().stats;
     assert_eq!((stats.crashes, stats.activations), (0, 2));
@@ -540,7 +543,13 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     let provider = host.syntax_provider();
     let mis = LanguageId::new("mis");
 
-    let tokens = provider.highlights(&mis, "fast").unwrap();
+    // The first call starts the instance, which may take longer than the soft deadline.
+    let mut tokens = None;
+    assert!(eventually(|| {
+        tokens = provider.highlights(&mis, "fast");
+        tokens.is_some()
+    }));
+    let tokens = tokens.unwrap();
     assert_eq!((tokens[0].start, tokens[0].end, tokens[0].kind.as_str()), (0, 4, "keyword"));
 
     // Slower than the soft deadline: dropped (however late this thread gets
@@ -600,8 +609,9 @@ fn providers_of_several_plugins_run_concurrently() {
         text: text.into(),
     };
     let at = ide_core::Pos::new(0, 0);
-    // Activation is not what is measured.
-    assert_eq!(host.provide_completion(&doc("fast"), at, None).len(), 2);
+    // Activation is not what is measured: a first call that starts an instance
+    // can run past the edit-path budget, and its answer is dropped.
+    assert!(eventually(|| host.provide_completion(&doc("fast"), at, None).len() == 2));
 
     let started = Instant::now();
     let items = host.provide_completion(&doc("sleep:500"), at, None);
@@ -629,7 +639,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 8, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 10, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -1667,22 +1677,21 @@ fn official_ai_completion_cancels_superseded_requests() {
     };
     let at = ide_core::Pos::new(1, 4);
     let host = Arc::new(f);
-    // A slow request, superseded 200 ms later by the next keystroke's.
+    // A slow request, superseded by the next keystroke's once the server has it
+    // (starting the instance comes first, and takes longer on a slow runner).
     let first = ide_core::CancellationToken::new();
     let slow = {
         let (host, doc, first) = (host.clone(), doc.clone(), first.clone());
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let r = host.host.provide_inline_completion(&doc, at, &first);
-            (r, started.elapsed())
-        })
+        std::thread::spawn(move || (host.host.provide_inline_completion(&doc, at, &first), Instant::now()))
     };
-    std::thread::sleep(Duration::from_millis(200));
+    assert!(eventually(|| seen.lock().len() == 1), "the first request reaches the server");
+    let cancelled = Instant::now();
     first.cancel();
     let started = Instant::now();
     let second = host.host.provide_inline_completion(&doc, at, &ide_core::CancellationToken::new());
     let took = started.elapsed();
-    let (old, old_took) = slow.join().unwrap();
+    let (old, old_done) = slow.join().unwrap();
+    let old_took = old_done.saturating_duration_since(cancelled);
     assert!(old.is_none(), "the superseded request yields nothing");
     assert!(old_took < Duration::from_secs(1), "cancelled, not waited out: {old_took:?}");
     assert_eq!(second.map(|(_, s)| s.insert_text).as_deref(), Some("a + b"));
@@ -1860,7 +1869,12 @@ fn official_mybatis_navigates_between_interface_and_xml() {
     assert_eq!((target.path, target.range.start), (xml_path.clone(), ide_core::Pos::new(1, 14)));
 
     let xdoc = doc(&xml_path, "xml", xml);
-    let to_java = f.host.provide_definition(&xdoc, ide_core::Pos::new(1, 16));
+    // Reads the interface from disk: on a slow machine that too can run past the budget.
+    let mut to_java = Vec::new();
+    assert!(eventually(|| {
+        to_java = f.host.provide_definition(&xdoc, ide_core::Pos::new(1, 16));
+        !to_java.is_empty()
+    }));
     assert_eq!(
         to_java.iter().map(|l| (l.path.clone(), l.range.start)).collect::<Vec<_>>(),
         [(java_path.clone(), ide_core::Pos::new(3, 9))]
@@ -2403,4 +2417,62 @@ fn uninstalling_deletes_the_plugins_secrets() {
     assert!(keychain.get("openidea.ai-completion", "api-key").is_some());
     f.host.uninstall("openidea.ai-completion").unwrap();
     assert!(keychain.0.lock().is_empty(), "{:?}", keychain.0.lock().keys().collect::<Vec<_>>());
+}
+
+/// Plugin API 1.0 leaves room to grow: event kinds are names, and the editor
+/// providers carry snippets, imports, lazily computed quick fixes and tagged
+/// problems.
+#[test]
+fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("misbehave-providers");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"completion\", \"code-actions\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = |text: &str| ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: text.into(),
+    };
+    let at = ide_core::Pos::new(0, 0);
+
+    // The first call starts the instance, which may take longer than the edit-path budget.
+    let mut items = Vec::new();
+    assert!(eventually(|| {
+        items = f.host.provide_completion(&doc("rich"), at, None);
+        !items.is_empty()
+    }));
+    let item = &items[0].1;
+    assert_eq!(
+        (item.insert_text.as_str(), item.snippet, item.filter_text.as_deref()),
+        ("f(${1:x})$0", true, Some("fun"))
+    );
+    assert_eq!(item.additional_edits[0].new_text, "use f;\n");
+
+    // Offered without edits; computed when picked.
+    let actions = f.host.provide_code_actions(&doc("lazy"), ide_core::Range::default());
+    let (plugin, action) = actions.into_iter().next().expect("offered");
+    assert!(action.edits.is_empty() && action.data.as_deref() == Some("fix"));
+    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone()).unwrap();
+    assert_eq!(resolved.edits[0].1[0].new_text, "fixed ");
+    let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
+    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
+
+    // A kind this IDE doesn't know is refused, not a trap.
+    let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
+    assert!(err.message.contains("no event kind"), "{}", err.message);
+    let err = f.host.run_command("misbehave", "subscribe", Some("file-saved"), f.inv()).unwrap_err();
+    assert!(err.message.contains("events"), "known, but not granted: {}", err.message);
+
+    // Tags the IDE knows, the tool that found it.
+    let path = f.project.join("a.txt");
+    f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
+    let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
+    assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
 }

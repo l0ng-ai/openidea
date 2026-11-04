@@ -37,7 +37,7 @@ pub fn client_capabilities() -> Value {
             "fileOperations": { "dynamicRegistration": true, "willRename": true, "didRename": true },
             "configuration": true,
             "didChangeConfiguration": { "dynamicRegistration": false },
-            "didChangeWatchedFiles": { "dynamicRegistration": false, "relativePatternSupport": false },
+            "didChangeWatchedFiles": { "dynamicRegistration": true, "relativePatternSupport": true },
             "symbol": {
                 "dynamicRegistration": false,
                 "symbolKind": { "valueSet": symbol_kinds },

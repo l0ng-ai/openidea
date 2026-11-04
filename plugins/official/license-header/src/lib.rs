@@ -129,12 +129,8 @@ pub fn header_edit(path: &str, text: &str, year: i64, owner: &str, license: &str
 fn missing(text: &str) -> Diagnostic {
     let line = insert_line(text);
     let len = text.lines().nth(line as usize).map_or(0, |l| l.encode_utf16().count() as u32);
-    Diagnostic {
-        range: Range::new(Position::new(line, 0), Position::new(line, len)),
-        severity: Severity::Info,
-        message: "No license header".into(),
-        code: Some(CODE.into()),
-    }
+    Diagnostic::new(Range::new(Position::new(line, 0), Position::new(line, len)), Severity::Info, "No license header")
+        .code(CODE)
 }
 
 /// Reports `path` when it takes a header and has none, clears it otherwise.
@@ -274,6 +270,7 @@ impl Providers for LicenseHeader {
             kind: Some("quickfix".into()),
             preferred: true,
             edits: vec![(doc.path.clone(), vec![edit])],
+            data: None,
         }]
     }
 }

@@ -206,18 +206,32 @@ impl ClientHandler {
         Ok(reply)
     }
 
-    fn registration(&self, params: &Value, register: bool) {
-        let Some(run) = self.server.running_gen(self.generation) else { return };
+    fn registration(&self, mgr: &LspManager, params: &Value, register: bool) {
+        let Some(run) = self.server.initialized_gen(self.generation) else { return };
         let key = if register { "registrations" } else { "unregisterations" };
         let list = params.get(key).or_else(|| params.get("unregistrations")).and_then(Value::as_array);
         let mut caps = run.caps.write();
+        let mut watchers_changed = false;
         for reg in list.into_iter().flatten() {
             let Some(method) = reg.get("method").and_then(Value::as_str) else { continue };
-            if register {
+            if method == "workspace/didChangeWatchedFiles" {
+                let id = reg.get("id").and_then(Value::as_str).unwrap_or_default();
+                let mut watchers = run.watchers.write();
+                if register {
+                    watchers.register(id, reg.get("registerOptions"));
+                } else {
+                    watchers.unregister(id);
+                }
+                watchers_changed = true;
+            } else if register {
                 caps.register(method, reg.get("registerOptions"));
             } else {
                 caps.unregister(method);
             }
+        }
+        drop(caps);
+        if watchers_changed {
+            mgr.file_watch_roots_changed();
         }
     }
 }
@@ -278,11 +292,11 @@ impl Handler for ClientHandler {
             "workspace/configuration" => Ok(self.configuration(&params)),
             "workspace/workspaceFolders" => Ok(mgr.workspace_folders(&self.server)),
             "client/registerCapability" => {
-                self.registration(&params, true);
+                self.registration(&mgr, &params, true);
                 Ok(Value::Null)
             }
             "client/unregisterCapability" => {
-                self.registration(&params, false);
+                self.registration(&mgr, &params, false);
                 Ok(Value::Null)
             }
             "workspace/applyEdit" => self.apply_edit(&mgr, params),

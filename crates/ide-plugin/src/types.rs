@@ -126,6 +126,20 @@ pub enum ActionSource {
     Other,
 }
 
+impl ActionSource {
+    /// As plugins see it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Keyboard => "keyboard",
+            Self::Menu => "menu",
+            Self::Toolbar => "toolbar",
+            Self::ContextMenu => "context-menu",
+            Self::Search => "search",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionPerformed {
@@ -348,9 +362,14 @@ pub struct CompletionItem {
     /// WIT `completion-kind` name (`method`, `keyword`, …).
     pub kind: Option<String>,
     pub insert_text: String,
+    /// `insert_text` has tab stops and placeholders.
+    pub snippet: bool,
     pub replace: Option<ide_core::Range>,
     pub sort_text: Option<String>,
+    pub filter_text: Option<String>,
     pub documentation: Option<String>,
+    /// Applied with the item elsewhere in the document (an import).
+    pub additional_edits: Vec<ide_core::TextEdit>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -365,6 +384,8 @@ pub struct CodeAction {
     pub kind: Option<String>,
     pub preferred: bool,
     pub edits: Vec<(PathBuf, Vec<ide_core::TextEdit>)>,
+    /// The plugin's reference: the edits come from `resolve_code_action`.
+    pub data: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

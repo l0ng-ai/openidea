@@ -772,6 +772,10 @@ mod tests {
                     assert!(addr.parse::<std::net::SocketAddr>().is_ok(), "{name}: bad connect address {addr}");
                 }
             }
+            if let Some(t) = &cfg.scratch_template {
+                assert_eq!(t.matches("$END$").count(), 1, "{name}: scratch-template needs one $END$");
+                assert!(!cfg.extensions.is_empty(), "{name}: scratch-template without an extension");
+            }
             for ext in &cfg.extensions {
                 assert_eq!(ext, &ext.to_ascii_lowercase(), "{name}: extensions must be lower case");
                 assert!(!ext.starts_with('.'), "{name}: extension {ext} must not start with a dot");

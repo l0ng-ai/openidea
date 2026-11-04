@@ -99,7 +99,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           id={HOME}
           autoFocus
           placeholder={
-            docked ? "Describe a task…" : "Describe a task for the agent. @ references a file, / runs a command"
+            docked
+              ? "Describe a task…"
+              : "Describe a task for the agent. @ references a file or folder, / runs a command"
           }
           root={root}
           projectRoot={root}

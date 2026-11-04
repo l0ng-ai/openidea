@@ -16,6 +16,7 @@ import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging } from "./platform/errorLog";
 import { installKeyboardDispatcher } from "./platform/keymap";
+import { installPointerFocus } from "./platform/pointerFocus";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
@@ -28,6 +29,7 @@ if (import.meta.env.DEV && isTauri()) {
 }
 
 installRepeatedDoubleClick();
+installPointerFocus();
 installErrorLogging();
 
 // Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`, Sync with

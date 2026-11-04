@@ -16,7 +16,6 @@ import {
   EmptyState,
   Icon,
   IconButton,
-  Input,
   SearchField,
   Select,
   Spinner,
@@ -48,6 +47,7 @@ import {
 } from "./store";
 import { useProject } from "@/platform/project";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
+import { promptInput } from "@/workbench/inputDialogs";
 import styles from "./PluginsPage.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -537,6 +537,21 @@ interface GearActions {
   install: (packageFile: boolean) => void;
   importIntellijFile: () => void;
   importInstalledIntellij: () => void;
+  editRepository: () => void;
+}
+
+/** Asks for the marketplace index URL; an empty one restores the default. */
+async function editMarketUrl() {
+  const url = await promptInput({
+    title: "Plugin Repository",
+    label: "Marketplace index URL:",
+    initial: usePlugins.getState().marketUrl ?? "",
+    placeholder: "https://…/index.json or a folder path",
+    okLabel: "Save",
+    validate: () => null,
+    hint: <T>Leave empty to use the default repository.</T>,
+  });
+  if (url !== null) await setMarketUrl(url);
 }
 
 function gearMenu(plugins: readonly PluginInfo[], updates: number, actions: GearActions): MenuItem[] {
@@ -550,6 +565,7 @@ function gearMenu(plugins: readonly PluginInfo[], updates: number, actions: Gear
     { kind: "separator" },
     { label: "Install Plugin from Disk…", icon: "package", run: () => actions.install(false) },
     { label: "Install Plugin from Package File…", run: () => actions.install(true) },
+    { label: "Plugin Repository…", run: actions.editRepository },
     ...(actions.canImport
       ? [
           { kind: "separator" as const },
@@ -651,30 +667,6 @@ function CategoryFilter({
       options={options}
       onChange={onChange}
     />
-  );
-}
-
-/** The marketplace index URL, editable in place. */
-function MarketUrlBar() {
-  const current = usePlugins((s) => s.marketUrl);
-  const [value, setValue] = useState(current ?? "");
-  useEffect(() => setValue(current ?? ""), [current]);
-  return (
-    <form
-      className={styles.marketBar}
-      onSubmit={(e) => {
-        e.preventDefault();
-        void setMarketUrl(value);
-      }}
-    >
-      <Input
-        value={value}
-        placeholder="Marketplace index URL (https://…/index.json or a folder path)"
-        aria-label="Marketplace index URL"
-        onChange={(e) => setValue(e.target.value)}
-      />
-      <IconButton icon="refresh" title="Refresh Marketplace" type="submit" />
-    </form>
   );
 }
 
@@ -832,6 +824,7 @@ export function PluginsPage() {
         install: (packageFile) => void installFromDisk(undefined, packageFile).then(showInstalled),
         importIntellijFile: () => void importIntellijTheme().then(showInstalled),
         importInstalledIntellij: () => showInstalledIntellijThemes(showInstalled),
+        editRepository: () => void editMarketUrl(),
       }),
     );
   };
@@ -876,7 +869,7 @@ export function PluginsPage() {
             className={styles.search}
             value={query}
             onChange={setQuery}
-            placeholder={tab === "installed" ? "Search installed plugins" : "Search local plugins"}
+            placeholder={tab === "installed" ? "Search installed plugins" : "Search plugins"}
             aria-label="Filter plugins"
           />
           {tab === "installed" ? (
@@ -916,18 +909,9 @@ export function PluginsPage() {
             </ul>
           ) : (
             <ul className={styles.list} aria-label={tx("Available plugins")}>
-              <li className={styles.marketItem}>
-                <MarketUrlBar />
-              </li>
               {(market?.length ?? 0) > 0 && (
                 <li className={styles.marketItem}>
                   <CategoryFilter market={market ?? []} value={category} onChange={setCategory} />
-                </li>
-              )}
-              {!marketUrl && (
-                <li className={styles.notice} role="note">
-                  <Icon name="info" size={14} />
-                  <span>{tx`${NO_REPOSITORY}. Showing plugin packages available on this machine.`}</span>
                 </li>
               )}
               {marketError && <li className={clsx(styles.listEmpty, styles.errorText)}>{marketError}</li>}
@@ -983,6 +967,8 @@ export function PluginsPage() {
           />
         ) : selectedEntry ? (
           <CatalogDetails key={selectedEntry.id} entry={selectedEntry} />
+        ) : marketUrl ? (
+          <EmptyState className={styles.detailsEmpty} title="No plugin selected" />
         ) : (
           <EmptyState className={styles.detailsEmpty} title={NO_REPOSITORY}>
             <T>Install a plugin folder with</T> <code>plugin.toml</code>{" "}

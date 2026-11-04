@@ -33,7 +33,9 @@ usage: openidea-plugin <command> [options]
 
 commands:
   new <dir> [--template T] [--id ID] [--name NAME] [--sdk PATH]
-        create a plugin; T = command (default), theme, icon-theme, language
+        create a plugin; T = command (default), theme, icon-theme, language. A Rust
+        plugin depends on the SDK of this tool's release (git); --sdk PATH uses a
+        local sdk/rust/openidea-plugin instead
   build [dir] [--debug]   compile a Rust plugin to dist/plugin.wasm and check it
   check [dir|package]     validate the package (folder or .oiplugin) as the IDE would install it
   link [dir]              load the folder in the IDE without installing it
@@ -177,7 +179,7 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let dir = canonical(&dir)?;
     let sdk = match template {
-        templates::Template::Command => Some(sdk_path(a.value("sdk"), &dir)?),
+        templates::Template::Command => Some(sdk_dependency(a.value("sdk"), &dir)?),
         _ => None,
     };
     let vars = templates::Vars { id: &id, name: &name, sdk: sdk.as_deref() };
@@ -232,12 +234,16 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
-/// The SDK dependency path written into a new plugin's Cargo.toml: `--sdk`,
-/// or the SDK of the source tree this tool was built from.
-fn sdk_path(explicit: Option<&str>, plugin_dir: &Path) -> Result<String, String> {
+/// The SDK dependency written into a new plugin's Cargo.toml: by path with `--sdk`, or
+/// when the plugin is inside the source tree this tool was built from; otherwise the
+/// repository at this tool's release tag.
+fn sdk_dependency(explicit: Option<&str>, plugin_dir: &Path) -> Result<String, String> {
     let sdk = match explicit {
         Some(p) => PathBuf::from(p),
-        None => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/rust/openidea-plugin")),
+        None => match dunce::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")) {
+            Ok(tree) if plugin_dir.starts_with(&tree) => tree.join("sdk/rust/openidea-plugin"),
+            _ => return Ok(format!("{{ git = \"{REPOSITORY}\", tag = \"v{}\" }}", env!("CARGO_PKG_VERSION"))),
+        },
     };
     let sdk = dunce::canonicalize(&sdk).map_err(|_| {
         format!("the plugin SDK was not found at {}; pass --sdk <path to sdk/rust/openidea-plugin>", sdk.display())
@@ -246,8 +252,10 @@ fn sdk_path(explicit: Option<&str>, plugin_dir: &Path) -> Result<String, String>
         return Err(format!("{} is not the openidea-plugin SDK (no Cargo.toml)", sdk.display()));
     }
     let path = relative(plugin_dir, &sdk).unwrap_or(sdk);
-    Ok(path.to_string_lossy().replace('\\', "/"))
+    Ok(format!("{{ path = \"{}\" }}", path.to_string_lossy().replace('\\', "/")))
 }
+
+const REPOSITORY: &str = "https://github.com/l0ng-ai/openidea";
 
 /// `to` relative to `from` when they share a root (keeps packages in a repo movable).
 fn relative(from: &Path, to: &Path) -> Option<PathBuf> {
@@ -781,6 +789,27 @@ mod tests {
         assert_eq!(relative(Path::new("/x/y"), Path::new("/z")), None);
     }
 
+    #[test]
+    fn new_plugins_depend_on_the_sdk_by_path_only_in_its_source_tree() {
+        let tree = dunce::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap();
+        assert_eq!(
+            sdk_dependency(None, &tree.join("plugins/official/new")).unwrap(),
+            "{ path = \"../../../sdk/rust/openidea-plugin\" }"
+        );
+        let outside = dunce::canonicalize(std::env::temp_dir()).unwrap().join("my-plugin");
+        assert_eq!(
+            sdk_dependency(None, &outside).unwrap(),
+            format!("{{ git = \"https://github.com/l0ng-ai/openidea\", tag = \"v{}\" }}", env!("CARGO_PKG_VERSION"))
+        );
+        let sdk = tree.join("sdk/rust/openidea-plugin");
+        assert!(sdk_dependency(Some(sdk.to_str().unwrap()), &outside).unwrap().starts_with("{ path = "));
+        assert!(
+            sdk_dependency(Some(tree.join("wit").to_str().unwrap()), &outside)
+                .unwrap_err()
+                .contains("not the openidea-plugin SDK")
+        );
+    }
+
     /// A theme package `id` signed by `publisher` with `key`, packed into `out`.
     fn signed_theme(tmp: &Path, id: &str, publisher: &str, key: &str, out: &Path) {
         signed_theme_version(tmp, id, "0.1.0", "^1.0", publisher, key, out);
@@ -901,13 +930,48 @@ mod tests {
         assert!(err.contains("unknown publisher"), "{err}");
     }
 
+    /// `cargo test` of a new Rust plugin (its own tests against the mock host) with this SDK.
+    #[test]
+    fn the_command_template_builds_against_the_sdk() {
+        let dir = std::env::temp_dir().join(format!("openidea-plugin-template-build-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dunce::canonicalize(&dir).unwrap();
+        let plugin = dir.join("plugin");
+        let sdk = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/rust/openidea-plugin");
+        let sdk = sdk_dependency(Some(sdk), &plugin).unwrap();
+        let vars = templates::Vars { id: "acme.sample", name: "Sample", sdk: Some(&sdk) };
+        for (rel, content) in templates::render(templates::Template::Command, &vars) {
+            let path = plugin.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        // The SDK's lockfile keeps the versions its own CI builds with (the resolver also
+        // looks up the wasm-only dependencies, which may not be downloaded yet).
+        let sdk_lock = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/rust/openidea-plugin/Cargo.lock");
+        std::fs::copy(sdk_lock, plugin.join("Cargo.lock")).unwrap();
+        let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+            .args(["test", "--manifest-path"])
+            .arg(plugin.join("Cargo.toml"))
+            .env("CARGO_TARGET_DIR", dir.join("target"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn every_template_is_a_valid_package() {
         for t in templates::Template::ALL {
             let dir =
                 std::env::temp_dir().join(format!("openidea-plugin-template-{}-{}", t.label(), std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            let vars = templates::Vars { id: "acme.sample", name: "Sample", sdk: Some("../sdk") };
+            let vars = templates::Vars { id: "acme.sample", name: "Sample", sdk: Some("{ path = \"../sdk\" }") };
             for (rel, content) in templates::render(t, &vars) {
                 let path = dir.join(rel);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();

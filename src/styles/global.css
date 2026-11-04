@@ -152,6 +152,12 @@ a:hover {
   outline-offset: -2px;
 }
 
+/* A control the user only clicked keeps no ring once a keystroke turns on keyboard modality
+   (`platform/pointerFocus.ts`); `!important` covers the components' own focus rings. */
+[data-pointer-focus]:focus-visible {
+  outline: none !important;
+}
+
 ::selection {
   background: var(--bg-editor-selection);
 }

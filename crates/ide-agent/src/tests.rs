@@ -1122,3 +1122,114 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     assert!(live(&mgr, &task.id));
     mgr.shutdown();
 }
+
+/// Deleting a task whose agent still runs in the worktree removes both and leaves no
+/// process behind, whether it is waiting for permission or idle without session/load.
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_task_waits_for_its_agent_to_exit_before_removing_the_worktree() {
+    for no_load in [false, true] {
+        delete_running_agent(no_load).await;
+    }
+}
+
+async fn delete_running_agent(no_load: bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("file.txt"), "original\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "initial"]);
+
+    let agent = Arc::new(FakeAgent { no_load, ..FakeAgent::default() });
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::default();
+    let (fake, started) = (agent.clone(), pids.clone());
+    // The fake agent, served on behalf of a real process that exits only when killed.
+    let connector: Connector = Arc::new(move |_spec, cwd, client, _stderr| {
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut cmd = tokio::process::Command::new("sleep");
+            cmd.arg("30");
+            cmd
+        };
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.args(["/D", "/C", "echo ready>agent-ready & ping -n 30 127.0.0.1 >nul"]);
+            cmd
+        };
+        ide_core::process::prepare(cmd.as_std_mut());
+        ide_core::process::own_group(cmd.as_std_mut());
+        cmd.current_dir(cwd).kill_on_drop(true);
+        let child = cmd.spawn()?;
+        started.lock().push(child.id().unwrap());
+        let (a, b) = duplex(1 << 20);
+        let (ar, aw) = tokio::io::split(a);
+        let (br, bw) = tokio::io::split(b);
+        // `connect_with_child` frames with Content-Length.
+        fake.servers.lock().push(Peer::connect(br, bw, fake.clone()));
+        Ok(Peer::connect_with_child(ar, aw, client, child))
+    });
+    let mgr = AgentManager::with_connector(
+        AgentPaths {
+            project_root: root.clone(),
+            store_dir: root.join("store"),
+            worktrees_dir: root.join("worktrees"),
+            models_file: root.join("models.json"),
+            custom_agents_dir: None,
+            home_dir: None,
+        },
+        tokio::runtime::Handle::current(),
+        connector,
+    );
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text(if no_load { "again" } else { "Fix the lexer" }),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Worktree,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, if no_load { AgentStatus::Ready } else { AgentStatus::NeedsInput }).await;
+    let pid = *pids.lock().last().expect("the agent was started");
+
+    #[cfg(windows)]
+    {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !task.cwd.0.join("agent-ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::rename(&task.cwd.0, task.cwd.0.with_extension("moved")).unwrap_err().raw_os_error(),
+            Some(32),
+            "the running agent really locks its worktree"
+        );
+    }
+
+    mgr.delete(&task.id, true).await.unwrap();
+    assert!(!task.cwd.0.exists());
+    // Killed and reaped: not even a zombie is left.
+    #[cfg(unix)]
+    let alive = std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().unwrap().success();
+    #[cfg(windows)]
+    let alive = {
+        let mut cmd = std::process::Command::new("tasklist");
+        ide_core::process::prepare(&mut cmd).args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+        String::from_utf8_lossy(&cmd.output().unwrap().stdout).contains(&format!("\"{pid}\""))
+    };
+    assert!(!alive, "the agent (pid {pid}) is still running");
+}

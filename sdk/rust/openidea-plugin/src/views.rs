@@ -110,12 +110,19 @@ impl ListItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FieldValue {
     Text(String),
     Multiline(String),
     Checkbox(bool),
     /// Options and the chosen one.
     Choice(Vec<String>, String),
+    /// A field type of a newer plugin API: its kind and JSON data (IDEs that
+    /// don't know it leave the field out).
+    Other {
+        kind: String,
+        data: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +149,7 @@ pub struct Table {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Body {
     Message(String),
     Tree(Vec<TreeItem>),
@@ -151,6 +159,12 @@ pub enum Body {
     /// Shown in a sandboxed frame; its script talks to the plugin with
     /// `openidea.postMessage(text)` and `openidea.onMessage(fn)`.
     Html(String),
+    /// A body of a newer plugin API: its kind and JSON data (IDEs that don't
+    /// know it say they need updating).
+    Other {
+        kind: String,
+        data: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,6 +211,7 @@ impl Viewport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ViewEvent {
     Button(String),
     Activate(String),
@@ -213,6 +228,11 @@ pub enum ViewEvent {
     InsertRow(u32),
     DeleteRows(Vec<u32>),
     Message(String),
+    /// An event this SDK doesn't know: its kind and JSON data.
+    Other {
+        kind: String,
+        data: String,
+    },
 }
 
 /// Content of the plugin's declared views and custom editors.

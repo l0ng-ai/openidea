@@ -36,6 +36,10 @@ pub fn find_files(host: &Host, window: &str, query: String, limit: u32) -> IdeRe
     Ok(host.project(window)?.index.find_files(&query, limit as usize))
 }
 
+pub fn find_dirs(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
+    Ok(host.project(window)?.index.find_dirs(&query, limit as usize))
+}
+
 pub fn find_symbols(
     host: &Host,
     window: &str,
@@ -157,6 +161,7 @@ pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) ->
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("index_status", |c| async move { index_status(&c.host, &c.window) });
     d.add("find_files", |c| async move { find_files(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
+    d.add("find_dirs", |c| async move { find_dirs(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
     d.add("find_symbols", |c| async move {
         find_symbols(&c.host, &c.window, c.arg("query")?, c.arg("filter")?, c.arg("limit")?)
     });
