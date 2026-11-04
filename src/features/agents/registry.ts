@@ -22,6 +22,7 @@ export interface RegistryBackend {
 export interface CommandsBackend {
   providers(): Promise<AgentProvider[]>;
   set(id: string, command: string | null): Promise<void>;
+  setEnv(id: string, env: Record<string, string>): Promise<void>;
   chooseExecutable(title: string, current?: string): Promise<string | null>;
 }
 
@@ -46,6 +47,9 @@ export const tauriCommands: CommandsBackend = {
   },
   set: async (id, command) => {
     await call(commands.agentSetCommand(id, command));
+  },
+  setEnv: async (id, env) => {
+    await call(commands.agentSetEnv(id, env));
   },
 };
 

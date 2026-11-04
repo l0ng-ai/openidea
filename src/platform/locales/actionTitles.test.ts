@@ -74,7 +74,7 @@ function actionTitles(): Map<string, string> {
 
 const titles = actionTitles();
 /** Product names shown as they are in every language. */
-const PROPER_NAMES = new Set(["Vim"]);
+const PROPER_NAMES = new Set(["GraphQL", "Vim"]);
 
 it("has a Chinese entry for every literal action title, including action factory arguments", () => {
   // Ensure the helper-argument regression cannot disappear through a scanner change.

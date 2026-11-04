@@ -124,6 +124,7 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
         command_editable: reason.is_none(),
         command_read_only_reason: reason,
         installed: installed(&spec.command),
+        env: spec.env.iter().cloned().collect(),
         config: vec![],
         commands: vec![],
         source: spec.source.clone(),
@@ -133,6 +134,16 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
 /// Overrides built-in `id`'s command through its agent file, preserving other
 /// customizations. `None` restores the built-in command and removes a redundant file.
 pub(crate) fn set_builtin_command(custom_dir: &Path, id: &str, command: Option<&str>) -> IdeResult<()> {
+    update_builtin(custom_dir, id, |agent, builtin| agent.command = command.unwrap_or(&builtin.command).to_owned())
+}
+
+/// The environment built-in `id` starts with, through its agent file (empty clears it).
+pub(crate) fn set_builtin_env(custom_dir: &Path, id: &str, env: BTreeMap<String, String>) -> IdeResult<()> {
+    update_builtin(custom_dir, id, |agent, _| agent.env = env)
+}
+
+/// Changes built-in `id`'s agent file; a file left with only the built-in's values is removed.
+fn update_builtin(custom_dir: &Path, id: &str, change: impl FnOnce(&mut CustomAgent, &ProviderSpec)) -> IdeResult<()> {
     let Some(builtin) = builtin_spec(id) else {
         return Err(IdeError::invalid(format!("{id} is not a built-in agent")));
     };
@@ -152,7 +163,8 @@ pub(crate) fn set_builtin_command(custom_dir: &Path, id: &str, command: Option<&
     if agent.registry.is_some() {
         return Err(IdeError::invalid(format!("{id} is installed from the ACP Registry")));
     }
-    if command.is_none()
+    change(&mut agent, &builtin);
+    if agent.command == builtin.command
         && agent.name.as_deref() == Some(builtin.name.as_str())
         && agent.driver == builtin.driver
         && agent.args == builtin.args
@@ -164,7 +176,6 @@ pub(crate) fn set_builtin_command(custom_dir: &Path, id: &str, command: Option<&
         }
         return Ok(());
     }
-    agent.command = command.unwrap_or(&builtin.command).to_owned();
     agent.write(&file)?;
     Ok(())
 }
@@ -366,6 +377,23 @@ mod tests {
         assert_eq!(specs.iter().filter(|s| s.id == "claude").count(), 1);
         assert!(!installed("/definitely/not/here"));
         assert!(installed("sh"));
+    }
+
+    #[test]
+    fn set_builtin_env_writes_and_clears_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = BTreeMap::from([("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
+        set_builtin_env(dir.path(), "claude", env.clone()).unwrap();
+        let claude = load(Some(dir.path())).into_iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!(claude.env, vec![("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
+        assert_eq!(describe(&claude).env, env);
+        // The command override and the environment are kept independently.
+        set_builtin_command(dir.path(), "claude", Some("/opt/claude")).unwrap();
+        set_builtin_command(dir.path(), "claude", None).unwrap();
+        assert!(dir.path().join("claude.toml").is_file());
+        set_builtin_env(dir.path(), "claude", BTreeMap::new()).unwrap();
+        assert!(!dir.path().join("claude.toml").exists());
+        set_builtin_env(dir.path(), "not-a-builtin", env).unwrap_err();
     }
 
     #[test]

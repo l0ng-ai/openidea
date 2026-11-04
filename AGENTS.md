@@ -39,6 +39,7 @@ Visual style: dark, low-contrast greys, one cool accent
   icons from `src/ui/icons.tsx`, never emoji. Real `<button>`/`<input>`; `aria-label` on icon buttons.
 - User-visible text goes through the text catalog: add every new string to both
   `src/platform/locales/text/en.json` and `zh.json` (`textCatalog.test.ts` enforces it).
+  Other locales may lack entries; their UI shows the English text until a translator adds it.
 - Keep comments sparse and purposeful; match surrounding style.
 - For GUI verification, prefer Tauri MCP; use Computer Use only when Tauri MCP is
   unavailable or cannot cover the required checks.

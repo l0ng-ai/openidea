@@ -51,6 +51,18 @@ describe("PreviewEditor", () => {
     expect(document.querySelector(".cm-content")?.textContent).toContain("TODO: fix");
   });
 
+  it("colours TODO comments like the editor tabs", async () => {
+    const docs = new Map([["/p/c.js", { text: "// TODO: fix\nconst x = 1;\n" }]]);
+    stubAttacher(docs);
+    render(<PreviewEditor path="/p/c.js" line={0} col={3} fallbackLoad={previewText} />);
+    const todo = await waitFor(() => {
+      const el = document.querySelector(".cm-openidea-todo");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(todo.textContent).toBe("TODO: fix");
+  });
+
   it("moves the caret to another item of the same file without a new view", async () => {
     const docs = new Map([["/p/two.ts", { text: "// TODO: one\nconst x = 1;\n// TODO: two\n" }]]);
     stubAttacher(docs);

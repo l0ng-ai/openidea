@@ -259,14 +259,14 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   /** Saves `text` as the resolved file and stages it; like IDEA, that closes the merge editor. */
   const writeResolved = async (text: string | null) => {
     const ok = await runOp(
-      `Resolve ${baseName(path)}`,
+      tx`Resolve ${baseName(path)}`,
       async () => {
         if (text === null) await call(commands.fsDelete(path));
         else await writeFileText(path, text, { save: true, exact: true });
         await call(commands.vcsStage([path]));
         return true;
       },
-      { success: `${baseName(path)}: conflicts resolved` },
+      { success: tx`${baseName(path)}: conflicts resolved` },
     );
     if (ok) {
       setResolved(true);
