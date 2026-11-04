@@ -71,10 +71,20 @@ export function buildTodoQuery(s: TodoSettings, scope: SearchScope = { kind: "pr
   };
 }
 
-const COMMENT_MARKER = /(\/\/|\/\*|^\s*\*|#|--|<!--|;|%|\{-|\(\*|"""|''')/;
+// 注释开符，行内任意位置（行首或空白后）都算：// /* <!-- # -- {- (* 。
+// 杀掉 URL 里的 //、字符串里的 #、f(*)、a * b 这类代码误报。残留误报
+// （语言感知才能根除）："x # y" 字符串、--y 前置自减。
+// `*` `;` `%` `"""` `'''` 是代码字符，只在行首算注释（LINE_START_MARKER）。
+// IDEA 的默认模式匹配注释内任意位置的 TODO，所以关键字不要求"引领"注释。
+const INLINE_MARKER = /(?:^|\s)(?:\/\/|\/\*|<!--|#|--|\{-|\(\*)/;
+const LINE_START_MARKER = /^\s*(?:\*|;|%|"""|''')/;
+// 长行被后端截断（ide-search line.rs：textOffset > 0）时 prefix 不始于真实行首，
+// 锚定无从判定——退回只查开符存在，宁误报不漏报。
+const LENIENT_MARKER = /(\/\/|\/\*|<!--|#|--|\{-|\(\*|\*|;|%|"""|''')/;
 
-export function looksLikeComment(prefix: string): boolean {
-  return COMMENT_MARKER.test(prefix);
+export function looksLikeComment(prefix: string, truncated = false): boolean {
+  if (truncated) return LENIENT_MARKER.test(prefix);
+  return INLINE_MARKER.test(prefix) || LINE_START_MARKER.test(prefix);
 }
 
 function cleanText(text: string): string {
@@ -96,7 +106,7 @@ export function itemsFromMatches(fm: FileMatches, s: TodoSettings): TodoItem[] {
       const matched = lm.text.slice(start, end);
       const p = patternFor(s, matched);
       if (!p) continue;
-      if (s.commentsOnly && !looksLikeComment(lm.text.slice(0, start))) continue;
+      if (s.commentsOnly && !looksLikeComment(lm.text.slice(0, start), lm.textOffset > 0)) continue;
       out.push({
         path: fm.path,
         line: lm.line,
@@ -125,7 +135,7 @@ export function scanText(path: string, text: string, s: TodoSettings): TodoItem[
     }
     const p = patternFor(s, m[0]);
     if (!p) continue;
-    if (s.commentsOnly && !looksLikeComment(text.slice(lineStart, idx))) continue;
+    if (s.commentsOnly && !looksLikeComment(text.slice(lineStart, idx), false)) continue;
     out.push({ path, line, col: idx - lineStart, keyword: p.keyword.trim(), text: cleanText(m[0]) });
   }
   return out;
