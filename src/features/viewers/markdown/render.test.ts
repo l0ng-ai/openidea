@@ -1,5 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { joinPath, previewLineAtOffset, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
+import {
+  frontMatter,
+  joinPath,
+  previewLineAtOffset,
+  previewOffsetForLine,
+  renderMarkdown,
+  resolveLink,
+  slugify,
+} from "./render";
+
+describe("front matter", () => {
+  const skill =
+    "---\nname: review\ndescription: Reviews a diff: bugs first\ntools:\n  - Read\n  - Grep\nmeta:\n  owner: team\n---\n\n# Review\n\nBody\n";
+
+  it("shows every top-level field above the body, nested values as written", () => {
+    expect(frontMatter(skill)).toEqual({
+      fields: [
+        ["name", "review"],
+        ["description", "Reviews a diff: bugs first"],
+        ["tools", "  - Read\n  - Grep"],
+        ["meta", "  owner: team"],
+      ],
+      lines: 9,
+    });
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(skill);
+    const blocks = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")];
+    expect(blocks.map((b) => [b.dataset.line, b.firstElementChild?.tagName])).toEqual([
+      ["0", "TABLE"],
+      ["10", "H1"],
+      ["12", "P"],
+    ]);
+    const rows = [...root.querySelectorAll("table[data-front-matter] tr")].map((r) => [
+      r.querySelector("th")?.textContent,
+      r.querySelector("td")?.textContent,
+    ]);
+    expect(rows[1]).toEqual(["description", "Reviews a diff: bugs first"]);
+    expect(root.querySelector("td pre")?.textContent).toBe("- Read\n- Grep");
+  });
+
+  it("leaves a document without front matter, or a thematic break, alone", () => {
+    expect(frontMatter("# Title\n---\nx: y\n---\n")).toBeNull();
+    expect(frontMatter("---\nJust a paragraph between rules.\n---\n")).toBeNull();
+    expect(frontMatter("---\n---\n")).toBeNull();
+  });
+});
 
 describe("markdown preview rendering", () => {
   it("tags blocks with their source line", () => {
