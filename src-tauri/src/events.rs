@@ -1,15 +1,18 @@
 use ide_core::{EventSink, IdeEvent};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 /// Name of the single backend → UI event. Payload: [`IdeEvent`].
 pub const IDE_EVENT: &str = "ide://event";
 
+/// The other windows showing the documents of `source`'s project: its project window and the
+/// auxiliary windows with documents. An edit made in one is not echoed by the backend, so they
+/// get it as a patch ([`emit_document_edit`]).
 pub fn document_edit_peers(app: &AppHandle, source: &str) -> Vec<String> {
     let owner = crate::state::AppState::owner_window(source);
-    app.webview_windows()
-        .into_keys()
-        .filter(|label| label != source && (label == owner || crate::windows::comparison_parent(label) == Some(owner)))
-        .collect()
+    let mut peers = crate::windows::document_windows(app, owner);
+    peers.push(owner.to_owned());
+    peers.retain(|label| label != source);
+    peers
 }
 
 pub fn emit_document_edit(
@@ -28,7 +31,8 @@ pub fn emit_document_edit(
     }
 }
 
-/// Forwards events to one window (`Some(label)`) or to all windows.
+/// Forwards events to one window (`Some(label)`, plus its auxiliary windows that show its
+/// project's documents) or to all windows.
 pub struct TauriSink {
     pub app: AppHandle,
     pub window: Option<String>,
@@ -38,10 +42,8 @@ impl EventSink for TauriSink {
     fn emit(&self, event: IdeEvent) {
         let result = match &self.window {
             Some(label) => {
-                for target in self.app.webview_windows().keys() {
-                    if crate::windows::comparison_parent(target) == Some(label.as_str()) {
-                        let _ = self.app.emit_to(target.as_str(), IDE_EVENT, &event);
-                    }
+                for target in crate::windows::document_windows(&self.app, label) {
+                    let _ = self.app.emit_to(target.as_str(), IDE_EVENT, &event);
                 }
                 self.app.emit_to(label.as_str(), IDE_EVENT, &event)
             }

@@ -85,8 +85,8 @@ pub fn run() {
     let app = app.plugin(
         tauri_plugin_window_state::Builder::default()
             .with_state_flags(window_state_flags())
-            // One remembered geometry shared by every project's settings window.
-            .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
+            // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
+            .map_label(windows::state_key)
             .build(),
     );
     let app = app
@@ -237,20 +237,20 @@ fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
-            if windows::comparison_parent(w.label()).is_some() && route.action == "editor.closeTab" {
-                let _ = w.close();
-                return;
-            }
-            // Settings is modal for its project window: only app-level items get through, to the parent.
-            let label = match windows::auxiliary_parent(w.label()) {
-                Some(parent)
+            // App-level items of an auxiliary window go to its project window. Settings is modal for it:
+            // nothing else gets through. Others handle their own items; Close Tab closes the window.
+            let label = match windows::auxiliary(w.label()) {
+                Some((_, parent))
                     if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
                 {
                     parent
                 }
-                Some(_) if windows::is_settings_window(w.label()) => return,
-                Some(_) => w.label(),
-                None => w.label(),
+                Some((kind, _)) if kind.modal() => return,
+                Some(_) if route.action == "editor.closeTab" => {
+                    let _ = w.close();
+                    return;
+                }
+                _ => w.label(),
             };
             if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &route) {
                 tracing::warn!("failed to deliver menu event {id}: {e}");

@@ -769,6 +769,11 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Opens a window listing the files that differ between two revisions of this window's project.
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
@@ -791,6 +796,8 @@ export const commands = {
 	newProjects: boolean,
 	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
 	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -2124,6 +2131,26 @@ export type CompareScope = {
 	/**  Selected content outside registered repositories; workspace parents expand to their skipped children. */
 	skippedPaths: IpcPath[],
 	singleFile: boolean,
+};
+
+/**  Files that differ between `from` and `to` (the working tree when `None`). */
+export type ComparisonLaunch = {
+	from: ComparisonRevision,
+	to: ComparisonRevision | null,
+	scope: ComparisonScope | null,
+	repo: IpcPath | null,
+};
+
+/**  A Git revision and how the comparison window names it. */
+export type ComparisonRevision = {
+	rev: string,
+	label: string,
+};
+
+/**  Limits a comparison to some paths (Compare with Branch on a selection). */
+export type ComparisonScope = {
+	paths: IpcPath[],
+	repositories: IpcPath[] | null,
 };
 
 export type CompletionItem = {
@@ -4462,6 +4489,8 @@ export type Launch = {
 	newProjects: boolean,
 	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
 	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
 };
 
 export type LaunchConfig = {

@@ -9,8 +9,8 @@ import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange }
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { notifications } from "@/workbench/contributions";
+import { windowBackgroundHex } from "@/workbench/theme";
 import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, fileCount } from "./model";
@@ -483,7 +483,8 @@ function showComparison(from: Revision, to: Revision | null, scope?: ScopedCompa
     openDialog((close) => <ChangesBetweenDialog from={from} to={to} scope={scope} onClose={close} />);
     return;
   }
-  void call(commands.windowOpenComparison({ from, to, scope: scope ?? null, repo: currentRepo() })).catch((error) =>
+  const comparison = { from, to, scope: scope ?? null, repo: currentRepo() };
+  void call(commands.windowOpenComparison(comparison, windowBackgroundHex())).catch((error) =>
     notifications().notify({ level: "error", title: "Could not open comparison", body: String(error) }),
   );
 }
@@ -518,13 +519,16 @@ export function ChangesBetweenDialog({
   scope,
   onClose,
   native = false,
+  onCaption,
   onShowDiff,
 }: {
   from: Revision;
   to: Revision | null;
   scope?: ScopedComparison;
   onClose: () => void;
+  /** Content of the comparison window rather than a dialog: its caption goes to `onCaption`. */
   native?: boolean;
+  onCaption?: (caption: string) => void;
   onShowDiff?: (data: DiffData) => void;
 }) {
   const [root] = useState(currentRepoRoot);
@@ -614,11 +618,8 @@ export function ChangesBetweenDialog({
   const skippedLabel = skipped.length > 5 ? tx`${skippedNames} and ${skipped.length - 5} more` : skippedNames;
   const caption = files ? `${title} — ${count}` : title;
   useEffect(() => {
-    if (native)
-      void getCurrentWindow()
-        .setTitle(caption)
-        .catch(() => {});
-  }, [native, caption]);
+    if (native) onCaption?.(caption);
+  }, [native, onCaption, caption]);
   const showDiff = () => {
     if (!current) return;
     if (onShowDiff) onShowDiff(diffFor(current));

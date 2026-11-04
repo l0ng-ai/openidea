@@ -3,15 +3,20 @@ import ReactDOM from "react-dom/client";
 import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
-import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
+import {
+  activateComparisonWindowFeatures,
+  activateFeatures,
+  activateSettingsWindowFeatures,
+  ComparisonWindow,
+  SettingsWindow,
+} from "./features";
+import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging } from "./platform/errorLog";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
-import { comparisonWindowParent } from "./platform/comparisonWindow";
-import { activateComparisonWindow, ComparisonWindow } from "./features/vcs/ComparisonWindow";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -23,16 +28,15 @@ if (import.meta.env.DEV && isTauri()) {
 installRepeatedDoubleClick();
 installErrorLogging();
 
-// The native Settings window (`settings-<parent>`) loads this page too.
-const settingsParent = settingsWindowParent();
-const comparisonParent = comparisonWindowParent();
+// Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`) load this page too.
+const aux = auxiliaryWindow();
 
-if (settingsParent !== null) {
+if (aux?.kind === "settings") {
   activateSecondaryWindow();
-  activateSettingsWindowFeatures(settingsParent);
-} else if (comparisonParent !== null) {
+  activateSettingsWindowFeatures(aux.parent);
+} else if (aux?.kind === "comparison") {
   activateSecondaryWindow();
-  activateComparisonWindow(comparisonParent);
+  activateComparisonWindowFeatures(aux.parent);
   installKeyboardDispatcher();
 } else {
   activateWorkbench();
@@ -54,9 +58,9 @@ if (settingsParent !== null) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {settingsParent !== null ? <SettingsWindow /> : comparisonParent !== null ? <ComparisonWindow /> : <Workbench />}
+    {aux?.kind === "settings" ? <SettingsWindow /> : aux?.kind === "comparison" ? <ComparisonWindow /> : <Workbench />}
   </React.StrictMode>,
 );
 hideSplash();
 // Views split out of the start-up bundle load in the background once the UI is up.
-if (settingsParent === null && comparisonParent === null) prefetchLazyComponents();
+if (!aux) prefetchLazyComponents();

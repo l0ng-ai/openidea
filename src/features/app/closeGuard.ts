@@ -12,12 +12,7 @@ import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
 import { maybeEditorService, notifications, type EditorCloseSession } from "@/workbench/contributions";
 import { ask, type Ask } from "@/workbench/messages";
-import {
-  closeComparisonWindows,
-  comparisonWindowParent,
-  COMPARISON_CLOSED,
-  type ComparisonCloseResult,
-} from "@/platform/comparisonWindow";
+import { AUX_CLOSED, auxiliaryWindow, closeDocumentWindows, type AuxCloseResult } from "@/platform/auxWindow";
 
 /** Document ids the backend reports dirty in this window. */
 const dirtyDocs = new Set<number>();
@@ -114,8 +109,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   closing = true;
   try {
     const ctx = await commands.windowCloseContext();
-    if (!(await closeComparisonWindows())) {
-      if (ctx.quitting) await commands.appCancelQuit();
+    if (!(await closeDocumentWindows())) {
+      await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
       return false;
     }
     const s = useProject.getState();
@@ -147,14 +142,16 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   }
 }
 
-/** Unsaved changes before this window opens another project in place or closes it. */
-export async function confirmLeave(deps: CloseDeps = defaultDeps): Promise<boolean> {
-  if (!(await closeComparisonWindows())) return false;
-  const s = useProject.getState();
-  return decideClose(
-    { quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project: s.project?.name ?? null },
-    deps,
-  );
+/**
+ * Unsaved changes before this window opens another project in place or closes it. `project` names
+ * the project in the prompt when this window doesn't hold it (a comparison window).
+ */
+export async function confirmLeave(
+  deps: CloseDeps = defaultDeps,
+  project = useProject.getState().project?.name ?? null,
+): Promise<boolean> {
+  if (!(await closeDocumentWindows())) return false;
+  return decideClose({ quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project }, deps);
 }
 
 /** Quit: confirm once (if enabled), then let the backend close every window. */
@@ -185,10 +182,11 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
   let disposed = false;
   if (isTauri()) {
     void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
-      const offComparison = await getCurrentWindow().listen<ComparisonCloseResult>(COMPARISON_CLOSED, ({ payload }) => {
+      // Documents an auxiliary window released are no longer dirty unless this window edits them too.
+      const offAux = await getCurrentWindow().listen<AuxCloseResult>(AUX_CLOSED, ({ payload }) => {
         if (
           !payload.closed ||
-          comparisonWindowParent(payload.label) !== getCurrentWindow().label ||
+          auxiliaryWindow(payload.label)?.parent !== getCurrentWindow().label ||
           !Array.isArray(payload.documents)
         )
           return;
@@ -200,7 +198,7 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
       });
       const stop = () => {
         off();
-        offComparison();
+        offAux();
       };
       if (disposed) stop();
       else unlisten = stop;

@@ -40,7 +40,8 @@ import { activatePythonStatus } from "./languages/PythonStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
 
-export { settingsWindowParent } from "./window/bridge";
+/** Settings-driven runtime state (zoom, fonts, theme) of a secondary window. */
+export const activateRuntimeSettings = trackRuntimeSettings;
 export const SettingsWindow = lazyComponent(() => import("./window/SettingsWindow").then((m) => m.SettingsWindow));
 
 /** Same event as `windows::LAUNCH_EVENT`: a pending launch (page) is waiting. */
