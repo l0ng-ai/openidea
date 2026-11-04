@@ -635,7 +635,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 8, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 10, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -2409,4 +2409,57 @@ fn uninstalling_deletes_the_plugins_secrets() {
     assert!(keychain.get("openidea.ai-completion", "api-key").is_some());
     f.host.uninstall("openidea.ai-completion").unwrap();
     assert!(keychain.0.lock().is_empty(), "{:?}", keychain.0.lock().keys().collect::<Vec<_>>());
+}
+
+/// Plugin API 1.0 leaves room to grow: event kinds are names, and the editor
+/// providers carry snippets, imports, lazily computed quick fixes and tagged
+/// problems.
+#[test]
+fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("misbehave-providers");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"completion\", \"code-actions\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = |text: &str| ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: text.into(),
+    };
+    let at = ide_core::Pos::new(0, 0);
+
+    let items = f.host.provide_completion(&doc("rich"), at, None);
+    let item = &items[0].1;
+    assert_eq!(
+        (item.insert_text.as_str(), item.snippet, item.filter_text.as_deref()),
+        ("f(${1:x})$0", true, Some("fun"))
+    );
+    assert_eq!(item.additional_edits[0].new_text, "use f;\n");
+
+    // Offered without edits; computed when picked.
+    let actions = f.host.provide_code_actions(&doc("lazy"), ide_core::Range::default());
+    let (plugin, action) = actions.into_iter().next().expect("offered");
+    assert!(action.edits.is_empty() && action.data.as_deref() == Some("fix"));
+    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone()).unwrap();
+    assert_eq!(resolved.edits[0].1[0].new_text, "fixed ");
+    let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
+    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
+
+    // A kind this IDE doesn't know is refused, not a trap.
+    let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
+    assert!(err.message.contains("no event kind"), "{}", err.message);
+    let err = f.host.run_command("misbehave", "subscribe", Some("file-saved"), f.inv()).unwrap_err();
+    assert!(err.message.contains("events"), "known, but not granted: {}", err.message);
+
+    // Tags the IDE knows, the tool that found it.
+    let path = f.project.join("a.txt");
+    f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
+    let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
+    assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
 }
