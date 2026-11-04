@@ -1342,8 +1342,8 @@ export class EditorController implements SlotHost {
     this.apply((s) => (s.panes[paneId] ? promoteTab(s, paneId, tabId) : s));
   }
   /** Drag & drop; the tab keeps its id (and slot) when moved within a pane. */
-  moveTab(fromPane: string, tabId: string, toPane: string, index: number) {
-    this.apply((s) => moveTab(s, fromPane, tabId, toPane, index));
+  moveTab(fromPane: string, tabId: string, toPane: string, index: number, pin?: boolean) {
+    this.apply((s) => moveTab(s, fromPane, tabId, toPane, index, pin));
   }
   /** Drag & drop onto an editor edge: the tab moves into a new split on that side. */
   moveTabToSplit(fromPane: string, tabId: string, targetPane: string, edge: SplitEdge) {
