@@ -1,7 +1,7 @@
 //! Filesystem operations for assets under a Unity project's Assets directory.
 //! Metadata moves with the asset; duplication gets new GUIDs before publication.
 
-use crate::file_moves::FileMove;
+use crate::{file_moves::FileMove, file_ops::execute_moves};
 use ide_core::{IdeError, IdeResult, error::ErrorKind};
 use std::{
     collections::HashMap,
@@ -91,13 +91,12 @@ fn key(path: &Path) -> String {
     if cfg!(windows) { s.to_lowercase() } else { s }
 }
 
-fn same_file(from: &Path, to: &Path) -> bool {
-    key(from) == key(to) && fs::canonicalize(from).ok().zip(fs::canonicalize(to).ok()).is_some_and(|(a, b)| a == b)
-}
-
 fn vacant(from: &Path, to: &Path) -> IdeResult<()> {
-    if exists(to) && !same_file(from, to) {
-        return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{} already exists", to.display())));
+    if exists(to) {
+        if !exists(from) {
+            return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{} already exists", to.display())));
+        }
+        ide_vfs::validate_rename(from, to)?;
     }
     Ok(())
 }
@@ -130,29 +129,10 @@ pub fn expand_moves(moves: &[FileMove]) -> IdeResult<Vec<FileMove>> {
         }
         out.push(m.clone());
     }
-    validate_moves(&out)?;
     Ok(out)
 }
 
-pub fn validate_moves(moves: &[FileMove]) -> IdeResult<()> {
-    let mut sources = std::collections::HashSet::new();
-    let mut targets = std::collections::HashSet::new();
-    for m in moves {
-        if !exists(&m.from) {
-            return Err(IdeError::not_found(format!("{} does not exist", m.from.display())));
-        }
-        if key(&m.to).starts_with(&(key(&m.from) + "/")) {
-            return Err(IdeError::invalid("Cannot move a directory into itself"));
-        }
-        if !sources.insert(key(&m.from)) || !targets.insert(key(&m.to)) {
-            return Err(IdeError::invalid("Duplicate source or destination in file operation"));
-        }
-        vacant(&m.from, &m.to)?;
-    }
-    Ok(())
-}
-
-fn move_one(from: &Path, to: &Path) -> IdeResult<()> {
+pub(crate) fn move_one(from: &Path, to: &Path) -> IdeResult<()> {
     if project_root(from).is_some() || project_root(to).is_some() {
         no_links(from)?;
         no_links(to)?;
@@ -168,37 +148,8 @@ fn move_one(from: &Path, to: &Path) -> IdeResult<()> {
     }
 }
 
-/// Moves an already expanded list. Failed operations roll back completed moves;
-/// any rollback failure includes the recoverable paths in the error.
-pub fn move_files(moves: &[FileMove]) -> IdeResult<()> {
-    validate_moves(moves)?;
-    for (i, m) in moves.iter().enumerate() {
-        if let Err(mut e) = move_one(&m.from, &m.to) {
-            for d in moves[..i].iter().rev() {
-                if let Err(rollback) = vacant(&d.to, &d.from).and_then(|()| move_one(&d.to, &d.from)) {
-                    e.message.push_str(&format!(
-                        "; rollback {} -> {} failed: {rollback}",
-                        d.to.display(),
-                        d.from.display()
-                    ));
-                }
-            }
-            return Err(e);
-        }
-    }
-    Ok(())
-}
-
-pub fn rename(from: &Path, to: &Path) -> IdeResult<()> {
-    let moves = expand_moves(&[FileMove { from: from.into(), to: to.into() }])?;
-    move_files(&moves)
-}
-
 /// The paths Local History must snapshot before an asset deletion.
 pub fn deletion_paths(path: &Path) -> IdeResult<Vec<PathBuf>> {
-    if project_root(path).is_none() {
-        return Ok(vec![path.to_path_buf()]);
-    }
     validate_asset(path)?;
     let meta = meta_path(path);
     no_links(&meta)?;
@@ -224,9 +175,7 @@ pub fn delete(path: &Path) -> IdeResult<()> {
 
 fn delete_with(path: &Path, remove: &dyn Fn(&Path) -> IdeResult<()>) -> IdeResult<()> {
     let paths = deletion_paths(path)?;
-    let Some(root) = project_root(path) else {
-        return remove(path);
-    };
+    let root = project_root(path).ok_or_else(|| IdeError::invalid("Expected a Unity asset path"))?;
     let stage = staging(&root)?;
     let payload = stage.join("files");
     fs::create_dir(&payload)?;
@@ -240,7 +189,7 @@ fn delete_with(path: &Path, remove: &dyn Fn(&Path) -> IdeResult<()>) -> IdeResul
     fs::write(&manifest, serde_json::to_vec_pretty(&paths).map_err(|e| IdeError::internal(e.to_string()))?)?;
     // Never automatically delete this staging directory on failure: it may
     // contain originals when rollback fails.
-    if let Err(e) = move_files(&moves) {
+    if let Err(e) = execute_moves(&moves, &move_one) {
         if fs::remove_dir(&payload).is_ok() {
             let _ = fs::remove_file(&manifest);
             let _ = fs::remove_dir(&stage);
@@ -249,7 +198,7 @@ fn delete_with(path: &Path, remove: &dyn Fn(&Path) -> IdeResult<()>) -> IdeResul
     }
     if let Err(mut e) = remove(&stage) {
         let back: Vec<_> = moves.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
-        if let Err(rollback) = move_files(&back) {
+        if let Err(rollback) = execute_moves(&back, &move_one) {
             e.message.push_str(&format!("; recovery files at {}: {rollback}", stage.display()));
         }
         if fs::remove_dir(&payload).is_ok() {
@@ -262,16 +211,17 @@ fn delete_with(path: &Path, remove: &dyn Fn(&Path) -> IdeResult<()>) -> IdeResul
 }
 
 pub fn copy(from: &Path, to: &Path) -> IdeResult<()> {
-    let root = project_root(to).or_else(|| project_root(from));
-    let Some(root) = root else {
-        return ide_vfs::copy(from, to);
-    };
+    let root = project_root(to)
+        .or_else(|| project_root(from))
+        .ok_or_else(|| IdeError::invalid("Expected a Unity asset path"))?;
     validate_asset(from)?;
     validate_asset(to)?;
     if key(from) == key(to) || key(to).starts_with(&(key(from) + "/")) {
         return Err(IdeError::invalid("Cannot copy an asset onto or into itself"));
     }
-    vacant(from, to)?;
+    if exists(to) {
+        return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{} already exists", to.display())));
+    }
     let src_meta = meta_path(from);
     let dst_meta = meta_path(to);
     no_links(&src_meta)?;
@@ -296,7 +246,7 @@ pub fn copy(from: &Path, to: &Path) -> IdeResult<()> {
             moves.push(FileMove { from: meta.into(), to: dst_meta.into() });
         }
         moves.push(FileMove { from: asset.into(), to: to.into() });
-        move_files(&moves)
+        execute_moves(&moves, &move_one)
     })();
     // Only disposable copies live here, never the source assets.
     let _ = fs::remove_dir_all(&stage);

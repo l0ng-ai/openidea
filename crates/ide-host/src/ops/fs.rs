@@ -137,23 +137,23 @@ pub fn set_writable(host: &Host, window: &str, path: PathBuf, writable: bool) ->
 pub async fn delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     let history = host.project(window).ok().map(|p| p.history.clone());
     host.blocking(move || {
-        let paths = ide_workspace::unity::assets::deletion_paths(&path)?;
+        let paths = ide_workspace::file_ops::deletion_paths(&path)?;
         if let Some(h) = history {
             for p in paths {
                 h.record_deletion(&p, DELETE_SNAPSHOT_LIMIT);
             }
         }
-        ide_workspace::unity::assets::delete(&path)
+        ide_workspace::file_ops::delete(&path)
     })
     .await
 }
 
 pub async fn copy(host: &Host, from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    host.blocking(move || ide_workspace::unity::assets::copy(&from, &to)).await
+    host.blocking(move || ide_workspace::file_ops::copy(&from, &to)).await
 }
 
 pub async fn rename(host: &Host, from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    host.blocking(move || ide_workspace::unity::assets::rename(&from, &to)).await
+    host.blocking(move || ide_workspace::file_ops::rename(&from, &to)).await
 }
 
 /// Reads a text file without opening it as a document; prefers the unsaved buffer.

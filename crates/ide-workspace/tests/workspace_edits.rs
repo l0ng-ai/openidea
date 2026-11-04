@@ -9,6 +9,12 @@ fn documents() -> Documents {
     Documents::new(Arc::new(NullSink), Box::new(|_, _| LanguageId::plain_text()))
 }
 
+fn meta(path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".meta");
+    name.into()
+}
+
 fn unity_project() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("Assets")).unwrap();
@@ -22,7 +28,6 @@ fn unity_rename_chain_and_delete_share_metadata_undo() {
     let tmp = unity_project();
     let original = tmp.path().join("Assets/Player.cs");
     let renamed = tmp.path().join("Assets/Hero.cs");
-    let meta = ide_workspace::unity::assets::meta_path;
     std::fs::write(&original, "old").unwrap();
     std::fs::write(meta(&original), "guid: unchanged").unwrap();
     let (docs, events) = recorded_documents();
@@ -48,7 +53,6 @@ fn unity_metadata_conflict_keeps_earlier_edits_unchanged() {
     let tmp = unity_project();
     let original = tmp.path().join("Assets/Player.cs");
     let renamed = tmp.path().join("Assets/Hero.cs");
-    let meta = ide_workspace::unity::assets::meta_path;
     std::fs::write(&original, "old").unwrap();
     std::fs::write(meta(&original), "guid: original").unwrap();
     std::fs::write(meta(&renamed), "guid: orphan").unwrap();
@@ -73,7 +77,6 @@ fn unity_folder_rename_then_child_rename_preserves_metadata() {
     let tmp = unity_project();
     let folder = tmp.path().join("Assets/Before");
     let moved = tmp.path().join("Assets/After");
-    let meta = ide_workspace::unity::assets::meta_path;
     std::fs::create_dir(&folder).unwrap();
     std::fs::write(meta(&folder), "folder guid").unwrap();
     std::fs::write(folder.join("Player.cs"), "old").unwrap();

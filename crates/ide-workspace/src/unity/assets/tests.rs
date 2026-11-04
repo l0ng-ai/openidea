@@ -1,4 +1,5 @@
 use super::*;
+use crate::file_ops::{move_files, rename};
 use crate::{documents::Documents, file_moves::FileMoves};
 use ide_core::{LanguageId, WorkspaceEdit};
 use std::sync::Arc;
@@ -165,7 +166,7 @@ fn non_unity_operations_do_not_touch_adjacent_metadata() {
     let dst = tmp.path().join("copy.txt");
     fs::write(&src, "text").unwrap();
     fs::write(meta_path(&src), "unrelated").unwrap();
-    copy(&src, &dst).unwrap();
+    crate::file_ops::copy(&src, &dst).unwrap();
     assert!(!meta_path(&dst).exists());
     rename(&src, &tmp.path().join("moved.txt")).unwrap();
     assert!(meta_path(&src).exists());

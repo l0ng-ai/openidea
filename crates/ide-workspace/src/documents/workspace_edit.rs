@@ -394,10 +394,10 @@ impl Documents {
         if edit.files.is_empty() {
             return Ok(());
         }
-        // Resolving parents must not erase unsupported links inside Unity projects.
-        crate::unity::assets::validate_workspace_edit_paths(edit)?;
+        // Validate project rules before path resolution can erase linked components.
+        crate::file_ops::validate_workspace_edit_paths(edit)?;
         let mut edit = normalize_edit(edit)?;
-        crate::unity::assets::expand_workspace_edit(&mut edit)?;
+        crate::file_ops::expand_workspace_edit(&mut edit)?;
         self.prepare_workspace_edit(&mut edit)?;
         self.validate_preconditions(&edit.preconditions)?;
         for file in &edit.files {

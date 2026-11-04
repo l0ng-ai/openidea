@@ -74,7 +74,11 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     let original = root.join("Assets/Scripts/Player.cs");
     let renamed = root.join("Assets/Scripts/Hero.cs");
     let copied = root.join("Assets/Scripts/HeroCopy.cs");
-    let meta = ide_workspace::unity::assets::meta_path;
+    let meta = |path: &std::path::Path| -> std::path::PathBuf {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".meta");
+        name.into()
+    };
     let original_metadata = "fileFormatVersion: 2\nguid: 11111111111111111111111111111111\n";
     std::fs::write(meta(&original), original_metadata).unwrap();
     ops::fs::rename(&host, original.clone(), renamed.clone()).await.unwrap();

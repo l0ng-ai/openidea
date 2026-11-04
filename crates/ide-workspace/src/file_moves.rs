@@ -120,7 +120,7 @@ impl FileMoves {
         if moves.is_empty() {
             return Err(IdeError::invalid("nothing to move"));
         }
-        let expanded = crate::unity::assets::expand_moves(moves)?;
+        let expanded = crate::file_ops::expand_moves(moves)?;
         let moves = expanded.as_slice();
         for m in moves {
             if !m.from.exists() {
@@ -147,7 +147,7 @@ impl FileMoves {
             restore(documents, &paths, &before);
             return Err(e);
         }
-        if let Err(e) = crate::unity::assets::move_files(moves) {
+        if let Err(e) = crate::file_ops::move_files(moves) {
             restore(documents, &paths, &before);
             return Err(e);
         }
@@ -193,7 +193,7 @@ impl FileMoves {
         };
         let back: Vec<_> =
             record.moves.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
-        if let Err(e) = crate::unity::assets::move_files(&back) {
+        if let Err(e) = crate::file_ops::move_files(&back) {
             self.records.lock().push(record);
             return Err(e);
         }
