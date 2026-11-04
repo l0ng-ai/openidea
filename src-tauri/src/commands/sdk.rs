@@ -24,6 +24,17 @@ pub fn sdk_python_effective(window: Window, state: State<'_, AppState>) -> IdeRe
     ide_host::ops::sdk::sdk_python_effective(&state.host, window.label())
 }
 
+/// The PHP language level of the project `path` belongs to: the effective one and Auto's.
+#[tauri::command]
+#[specta::specta]
+pub fn sdk_php_language_level(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<ide_host::ops::sdk::PhpLanguageLevels> {
+    ide_host::ops::sdk::sdk_php_language_level(&state.host, window.label(), path)
+}
+
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
 #[tauri::command]
