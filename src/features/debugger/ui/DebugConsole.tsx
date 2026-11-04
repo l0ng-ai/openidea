@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui";
 import { tx } from "@/platform/i18n";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { spanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
 import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
@@ -23,7 +24,14 @@ export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
 export function DebugConsole({ session, interactive = true }: { session: DebugSession; interactive?: boolean }) {
   const lines = useDebug((s) => s.console[session.id]);
   const scroller = useRef<HTMLDivElement>(null);
+  // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
+  const [follow, setFollow] = useState(true);
   const stick = useRef(true);
+  stick.current = follow;
+  // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
+  const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
+  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
+  const softWrap = wrapOverride ?? defaultWrap;
   const programmatic = useRef(false);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
@@ -39,14 +47,21 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     getItemKey: (i) => lines?.[i]?.id ?? i,
   });
 
+  // Wrapping changes every row's height; the end is pinned again below.
+  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, virtualizer]);
+
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el || !stick.current || !lines?.length) return;
     programmatic.current = true;
     virtualizer.scrollToIndex(lines.length - 1, { align: "end" });
     el.scrollTop = el.scrollHeight;
-    requestAnimationFrame(() => (programmatic.current = false));
-  }, [lines, virtualizer]);
+    // Rows measured after this frame grow the content: pin the end once more.
+    requestAnimationFrame(() => {
+      if (stick.current) el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => (programmatic.current = false));
+    });
+  }, [lines, virtualizer, follow, softWrap]);
 
   const submit = async () => {
     const e = input.trim();
@@ -101,11 +116,12 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     <div className={styles.console}>
       <div
         ref={scroller}
-        className={clsx(styles.consoleOutput, ansi.palette)}
+        className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
         onScroll={(e) => {
           if (programmatic.current) return;
           const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          if (atEnd !== stick.current) setFollow(atEnd);
         }}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -170,6 +186,22 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
             {completion.popup}
           </>
         )}
+        <IconButton
+          icon="arrow-down"
+          title="Scroll to End"
+          size="small"
+          iconSize={12}
+          pressed={follow}
+          onClick={() => setFollow((v) => !v)}
+        />
+        <IconButton
+          icon="soft-wrap"
+          title="Soft-Wrap"
+          size="small"
+          iconSize={12}
+          pressed={softWrap}
+          onClick={() => setWrapOverride(!softWrap)}
+        />
         <IconButton
           icon="trash"
           title="Clear Console"
