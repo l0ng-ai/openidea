@@ -39,7 +39,14 @@ import { setContext } from "@/platform/context";
 import { showFindResults, type FindResultsSource } from "@/workbench/contributions";
 import { relativePath, useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
-import { bindingsFor, hasPrimaryModifier, normalizeBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
+import {
+  bindingsFor,
+  formatBinding,
+  hasPrimaryModifier,
+  normalizeBinding,
+  registerKeyClaim,
+  shortcutLabel,
+} from "@/platform/keymap";
 
 /** The query is shared by all panes and survives closing the bar, like IDEA. */
 export const useFindOptions = create<Required<FindOptions>>(() => ({
@@ -484,7 +491,12 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
       : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
   };
   const filterItems: MenuItem[] = [
-    { label: "Search In Selection", shortcut: "⌥E", checked: scoped || undefined, run: () => toggleScope(target) },
+    {
+      label: "Search In Selection",
+      shortcut: formatBinding("Alt+E"),
+      checked: scoped || undefined,
+      run: () => toggleScope(target),
+    },
     { kind: "separator" },
     { kind: "header", label: "Search Scope" },
     ...SEARCH_CONTEXTS.map((c) => ({
@@ -563,7 +575,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
               id: "case",
               icon: "case",
               title: "Match Case",
-              shortcut: "⌥C",
+              shortcut: formatBinding("Alt+C"),
               pressed: opts.caseSensitive,
               onToggle: () => toggle("caseSensitive"),
             },
@@ -571,7 +583,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
               id: "word",
               icon: "word",
               title: "Words",
-              shortcut: "⌥W",
+              shortcut: formatBinding("Alt+W"),
               pressed: opts.wholeWord,
               onToggle: () => toggle("wholeWord"),
             },
@@ -579,7 +591,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
               id: "regex",
               icon: "regex",
               title: "Regex",
-              shortcut: "⌥X",
+              shortcut: formatBinding("Alt+X"),
               pressed: opts.regexp,
               onToggle: () => toggle("regexp"),
             },
@@ -593,11 +605,17 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
         <IconButton
           icon="arrow-up"
           title="Previous Occurrence"
-          shortcut="⇧↵"
+          shortcut={formatBinding("Shift+Enter")}
           size="small"
           onClick={() => run(findPrevious)}
         />
-        <IconButton icon="arrow-down" title="Next Occurrence" shortcut="↵" size="small" onClick={() => run(findNext)} />
+        <IconButton
+          icon="arrow-down"
+          title="Next Occurrence"
+          shortcut={formatBinding("Enter")}
+          size="small"
+          onClick={() => run(findNext)}
+        />
         <IconButton
           ref={filterRef}
           icon="filter"
@@ -633,15 +651,27 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             />
           </div>
           <div className={styles.replaceButtons}>
-            <Button size="small" title="Replace (⌥P)" onClick={doReplace} disabled={!canReplace}>
+            <Button
+              size="small"
+              title={tx`Replace (${formatBinding("Alt+P")})`}
+              onClick={doReplace}
+              disabled={!canReplace}
+            >
               <T>Replace</T>
             </Button>
-            <Button size="small" title="Replace All (⌥A)" onClick={doReplaceAll} disabled={!canReplace}>
+            <Button
+              size="small"
+              title={tx`Replace All (${formatBinding("Alt+A")})`}
+              onClick={doReplaceAll}
+              disabled={!canReplace}
+            >
               <T>Replace All</T>
             </Button>
             <Button
               size="small"
-              title={count?.excluded ? "Include (⌥L)" : "Exclude (⌥L)"}
+              title={
+                count?.excluded ? tx`Include (${formatBinding("Alt+L")})` : tx`Exclude (${formatBinding("Alt+L")})`
+              }
               onClick={() => run(excludeCurrent)}
               disabled={!canReplace || (!count?.total && !count?.excluded)}
             >

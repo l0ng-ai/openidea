@@ -65,6 +65,7 @@ const { showSearchEverywhere, hideSearchEverywhere, useSearchEverywhere, pushSea
   await import("../everywhere/store");
 const { FindInFilesOverlay } = await import("../find/FindInFiles");
 const { showFindPopup, hideFindPopup } = await import("../find/store");
+const { defaultPreset, useKeymap } = await import("@/platform/keymap");
 
 const tick = () => act(() => new Promise((r) => setTimeout(r, 100)));
 
@@ -486,5 +487,38 @@ describe("Find in Files dialog", () => {
     expect(matches.querySelector("mark")).not.toBeNull();
     expect(matches.querySelector("del, ins")).toBeNull();
     expect(screen.getByRole("button", { name: "Replace All" })).toBeEnabled();
+  });
+
+  it.each([
+    ["macos", ["⌥C", "⌥↓", "⇧⌘↵"], ["↵ Replace Selected", "⌥⇧↵ Replace All", "⌘↵ Open in Find Window"]],
+    [
+      "linux",
+      ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"],
+      ["Enter Replace Selected", "Alt+Shift+Enter Replace All", "Ctrl+Enter Open in Find Window"],
+    ],
+    [
+      "windows",
+      ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"],
+      ["Enter Replace Selected", "Alt+Shift+Enter Replace All", "Ctrl+Enter Open in Find Window"],
+    ],
+  ] as const)("spells its shortcuts the %s way", (os, [matchCase, history, newLine], hints) => {
+    const previous = { os: usePlatform.getState().os, preset: useKeymap.getState().preset };
+    usePlatform.setState({ os });
+    useKeymap.setState({ preset: defaultPreset() });
+    try {
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(true, { query: "order" }));
+      const shortcut = (name: string) =>
+        screen.getAllByRole("button", { name }).map((b) => b.getAttribute("data-tooltip-shortcut"));
+      expect(shortcut("Match Case")).toEqual([matchCase]);
+      expect(shortcut("Recent Searches")).toEqual([history, history]);
+      expect(shortcut("New Line")).toEqual([newLine, newLine]);
+      const footer = document.querySelector("footer")!.textContent!;
+      for (const hint of hints) expect(footer).toContain(hint);
+      if (os !== "macos") expect(document.querySelector("[role=dialog]")!.innerHTML).not.toMatch(/[⌘⌥⇧↵]/);
+    } finally {
+      usePlatform.setState({ os: previous.os });
+      useKeymap.setState({ preset: previous.preset });
+    }
   });
 });

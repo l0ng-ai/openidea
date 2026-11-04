@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import type { FileMatches } from "@/platform/ipc";
-import { shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import {
   Button,
   EmptyState,
@@ -205,7 +205,7 @@ export function FindToolWindow() {
   if (!tab) {
     return (
       <EmptyState title="No search results" icon="search">
-        {tx`Use Find in Files (${shortcutLabel("find.inPath") ?? "⇧⌘F"}) and choose “Open in Find Window”.`}
+        {tx`Use Find in Files (${shortcutLabel("find.inPath") ?? formatBinding(hostBinding("Meta+Shift+F"))}) and choose “Open in Find Window”.`}
       </EmptyState>
     );
   }

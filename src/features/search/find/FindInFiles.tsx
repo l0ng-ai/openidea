@@ -4,6 +4,7 @@ import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useTxTemplate, tx } from "@/platform/i18n";
+import { formatBinding, hostBinding } from "@/platform/keymap";
 import { call, commands, isTauri, type SearchScope } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
@@ -568,7 +569,7 @@ function FindInFilesDialog() {
                   id: "case",
                   icon: "case",
                   title: "Match Case",
-                  shortcut: "⌥C",
+                  shortcut: formatBinding("Alt+C"),
                   pressed: s.caseSensitive,
                   onToggle: (v) => set({ caseSensitive: v }),
                 },
@@ -576,7 +577,7 @@ function FindInFilesDialog() {
                   id: "word",
                   icon: "word",
                   title: "Words",
-                  shortcut: "⌥W",
+                  shortcut: formatBinding("Alt+W"),
                   pressed: s.wholeWord,
                   onToggle: (v) => set({ wholeWord: v }),
                 },
@@ -584,7 +585,7 @@ function FindInFilesDialog() {
                   id: "regex",
                   icon: "regex",
                   title: "Regex",
-                  shortcut: "⌥X",
+                  shortcut: formatBinding("Alt+X"),
                   pressed: s.isRegex,
                   onToggle: (v) => set({ isRegex: v }),
                 },
@@ -608,7 +609,7 @@ function FindInFilesDialog() {
                     id: "preserveCase",
                     icon: "preserve-case",
                     title: "Preserve Case",
-                    shortcut: "⌥E",
+                    shortcut: formatBinding("Alt+E"),
                     pressed: s.preserveCase,
                     onToggle: (v) => set({ preserveCase: v }),
                   },
@@ -781,11 +782,9 @@ function FindInFilesDialog() {
         </div>
         <footer className={styles.footer}>
           <span className={styles.hint}>
-            {s.replace ? (
-              <T>↵ Replace Selected · ⇧⌥↵ Replace All · ⌘↵ Open in Find Window</T>
-            ) : (
-              <T>↵ Open · ⇧↵ Open to the side · ⌘↵ Open in Find Window</T>
-            )}
+            {s.replace
+              ? tx`${formatBinding("Enter")} Replace Selected · ${formatBinding("Shift+Alt+Enter")} Replace All · ${formatBinding(hostBinding("Meta+Enter"))} Open in Find Window`
+              : tx`${formatBinding("Enter")} Open · ${formatBinding("Shift+Enter")} Open to the side · ${formatBinding(hostBinding("Meta+Enter"))} Open in Find Window`}
           </span>
           {s.replace && progress && (
             <span className={styles.hint} aria-live="polite">
@@ -816,7 +815,7 @@ function FindInFilesDialog() {
               </Button>
               <Button
                 size="small"
-                title="Replace All (⇧⌥↵, ⌥A)"
+                title={tx`Replace All (${formatBinding("Shift+Alt+Enter")}, ${formatBinding("Alt+A")})`}
                 disabled={stale || !rows.length || busy || state.status === "searching"}
                 onClick={() => void confirmReplaceAll()}
               >
