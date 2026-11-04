@@ -82,3 +82,50 @@ it("pins and unpins from the row's button", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Unpin" }));
   expect(useRun.getState().pinned).toEqual([]);
 });
+
+it("lists the configurations started last after the pinned ones, newest first", () => {
+  expect(names(buildRows(configs, "", null, [], ["serve"], ["App", "serve", "build"]))).toEqual([
+    "current",
+    "[Pinned]",
+    "serve",
+    "[Recent]",
+    "App",
+    "build",
+    "edit",
+  ]);
+});
+
+it("marks a configuration recent when a run or debug session starts", async () => {
+  const { markRecent, trackRecentConfigurations, MAX_RECENT } = await import("./store");
+  const { useDebugRunSessions } = await import("@/workbench/contributions");
+  await loadConfigs();
+  const off = trackRecentConfigurations();
+  const session = (id: string, startedAt: number) =>
+    ({ id: `s-${id}`, config: config(id), runId: null, status: "running", startedAt }) as never;
+  useRun.setState({ sessions: [session("build", 1)] });
+  useDebugRunSessions.setState({
+    sessions: [
+      {
+        id: 1,
+        configId: "App",
+        name: "App",
+        startedAt: 2,
+        paused: false,
+        rerun: null,
+        stop: () => {},
+        resume: () => {},
+      },
+    ],
+  });
+  expect(useRun.getState().recent).toEqual(["App", "build"]);
+  // A rerun reuses the session with a new start time.
+  useRun.setState({ sessions: [session("build", 3)] });
+  expect(useRun.getState().recent).toEqual(["build", "App"]);
+  off();
+  useDebugRunSessions.setState({ sessions: [] });
+  for (let i = 0; i < MAX_RECENT + 2; i++) markRecent(`c${i}`);
+  expect(useRun.getState().recent).toHaveLength(MAX_RECENT);
+  resetRuns();
+  await loadConfigs();
+  expect(useRun.getState().recent[0]).toBe(`c${MAX_RECENT + 1}`);
+});

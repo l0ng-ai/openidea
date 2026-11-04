@@ -38,6 +38,7 @@ export function buildRows(
   selected?: RunConfig | null,
   temporary: readonly string[] = [],
   pinned: readonly string[] = [],
+  recent: readonly string[] = [],
 ): Row[] {
   const rows: Row[] = [];
   // IDEA: "Save '<name>' Configuration" first while a temporary configuration is selected.
@@ -54,7 +55,14 @@ export function buildRows(
     rows.push({ type: "section", key: "s:pinned", label: tx("Pinned") });
     for (const { c, indices } of pinnedRows) rows.push({ type: "config", key: `c:${c.id}`, config: c, indices });
   }
-  const rest = configs.filter((c) => !pinnedConfigs.includes(c));
+  // Then the ones started last, newest first.
+  const recentConfigs = recent.flatMap((id) => configs.find((c) => c.id === id && !pinned.includes(id)) ?? []);
+  const recentRows = matching(recentConfigs);
+  if (recentRows.length) {
+    rows.push({ type: "section", key: "s:recent", label: tx("Recent") });
+    for (const { c, indices } of recentRows) rows.push({ type: "config", key: `c:${c.id}`, config: c, indices });
+  }
+  const rest = configs.filter((c) => !pinnedConfigs.includes(c) && !recentConfigs.includes(c));
   for (const group of groupConfigs(rest)) {
     const matched = matching(group.configs);
     if (matched.length === 0) continue;
@@ -99,6 +107,7 @@ function ConfigChooser() {
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
   const pinned = useRun((s) => s.pinned);
+  const recent = useRun((s) => s.recent);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const sessions = useRun((s) => s.sessions);
   const debugSessions = useDebugRunSessions((s) => s.sessions);
@@ -111,8 +120,9 @@ function ConfigChooser() {
         configs.find((c) => c.id === selectedId),
         temporary,
         pinned,
+        recent,
       ),
-    [configs, query, selectedId, temporary, pinned],
+    [configs, query, selectedId, temporary, pinned, recent],
   );
   const isSection = (r: Row) => r.type === "section";
   const initial = Math.max(

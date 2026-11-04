@@ -71,6 +71,7 @@ import {
   selectedConfig,
   startRun,
   stopSession,
+  trackRecentConfigurations,
   useRun,
 } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
@@ -296,6 +297,7 @@ export function activate(): () => void {
     registerExternalTools(),
     activateStackTrace(),
     listenForApplicationDeactivation(),
+    trackRecentConfigurations(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
