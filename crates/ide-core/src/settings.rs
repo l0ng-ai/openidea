@@ -713,6 +713,9 @@ impl Default for PythonSettings {
 pub struct PhpSettings {
     /// `php` CLI executable; empty = the one on `PATH`.
     pub interpreter: String,
+    /// PHP version the language server checks the code against (`7.4`); empty = from
+    /// `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
+    pub language_level: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
