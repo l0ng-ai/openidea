@@ -238,9 +238,9 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
     await saveAll();
     const target = head ?? "HEAD";
     await runOp(
-      `Merge ${branch} into ${target}`,
+      tx`Merge ${branch} into ${target}`,
       () => call(commands.vcsMergeWith(repo, [branch], mergeOptionsOf(flags, withMessage ? message : null))),
-      { success: `Merged ${branch} into ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
+      { success: tx`Merged ${branch} into ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
     );
     await refreshNow();
   };
@@ -313,7 +313,7 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
     const target = useOnto && onto ? onto : upstream;
     const current = head ?? "HEAD";
     await runOp(
-      `Rebase ${current} onto ${target}`,
+      tx`Rebase ${current} onto ${target}`,
       () =>
         call(
           commands.vcsRebaseWith(repo, upstream, {
@@ -322,7 +322,7 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
             keepEmpty,
           }),
         ),
-      { success: `Rebased ${current} onto ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
+      { success: tx`Rebased ${current} onto ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
     );
     await refreshNow();
   };
