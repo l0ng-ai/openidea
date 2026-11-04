@@ -3928,7 +3928,7 @@
   "Change Severity": "更改严重性",
   "Edit Inspection Profile Setting…": "编辑检查配置文件设置…",
   "Compiler errors and warnings of the last Build Project, shown at their source positions.": "上次“构建项目”产生的编译器错误和警告，显示在对应的源代码位置。",
-  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root.": "保存 PHP 文件时，项目的 vendor/bin/phpstan 在其中报告的错误，显示在对应的行。PHPStan 从项目根目录读取 phpstan.neon、phpstan.neon.dist 或 phpstan.dist.neon。",
+  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.": "保存 PHP 文件时，项目的 vendor/bin/phpstan 在其中报告的错误，显示在对应的行。PHPStan 从项目根目录读取 phpstan.neon、phpstan.neon.dist 或 phpstan.dist.neon。PHPStan 报告过的每条规则都按标识符列在下方，可以单独关闭或调整级别。",
   "Process code": "处理代码",
   "Process literals": "处理字面量",
   "Process comments": "处理注释",

@@ -3867,7 +3867,7 @@
   "Change Severity": "Zmień poziom ważności",
   "Edit Inspection Profile Setting…": "Edytuj ustawienia profilu inspekcji…",
   "Compiler errors and warnings of the last Build Project, shown at their source positions.": "Błędy i ostrzeżenia kompilatora z ostatniego budowania projektu, wyświetlane w miejscach w kodzie.",
-  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root.": "Błędy, które vendor/bin/phpstan projektu zgłasza w pliku PHP po jego zapisaniu, wyświetlane w odpowiednich wierszach. PHPStan odczytuje phpstan.neon, phpstan.neon.dist lub phpstan.dist.neon z katalogu głównego projektu.",
+  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.": "Błędy, które vendor/bin/phpstan projektu zgłasza w pliku PHP po jego zapisaniu, wyświetlane w odpowiednich wierszach. PHPStan odczytuje phpstan.neon, phpstan.neon.dist lub phpstan.dist.neon z katalogu głównego projektu. Każda reguła zgłoszona przez PHPStan jest wymieniona poniżej według identyfikatora i można ją osobno wyłączyć lub zmienić jej poziom ważności.",
   "Process code": "Przetwarzaj kod",
   "Process literals": "Przetwarzaj literały",
   "Process comments": "Przetwarzaj komentarze",

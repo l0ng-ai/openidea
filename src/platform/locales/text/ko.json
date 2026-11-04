@@ -3880,7 +3880,7 @@
   "Change Severity": "심각도 변경",
   "Edit Inspection Profile Setting…": "검사 프로필 설정 편집…",
   "Compiler errors and warnings of the last Build Project, shown at their source positions.": "마지막 프로젝트 빌드의 컴파일러 오류 및 경고를 해당 소스 위치에 표시합니다.",
-  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root.": "PHP 파일을 저장할 때 프로젝트의 vendor/bin/phpstan이 보고하는 오류를 해당 줄에 표시합니다. PHPStan은 프로젝트 루트의 phpstan.neon, phpstan.neon.dist 또는 phpstan.dist.neon을 읽습니다.",
+  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.": "PHP 파일을 저장할 때 프로젝트의 vendor/bin/phpstan이 보고하는 오류를 해당 줄에 표시합니다. PHPStan은 프로젝트 루트의 phpstan.neon, phpstan.neon.dist 또는 phpstan.dist.neon을 읽습니다. PHPStan이 보고한 각 규칙은 아래에 식별자로 나열되며 개별적으로 끄거나 심각도를 변경할 수 있습니다.",
   "Process code": "코드 처리",
   "Process literals": "리터럴 처리",
   "Process comments": "주석 처리",

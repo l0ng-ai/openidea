@@ -3873,7 +3873,7 @@
   "Change Severity": "Alterar gravidade",
   "Edit Inspection Profile Setting…": "Editar configuração do perfil de inspeção…",
   "Compiler errors and warnings of the last Build Project, shown at their source positions.": "Erros e avisos do compilador do último build do projeto, exibidos em suas posições no código-fonte.",
-  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root.": "Erros que o vendor/bin/phpstan do projeto relata em um arquivo PHP quando ele é salvo, exibidos em suas linhas. O PHPStan lê phpstan.neon, phpstan.neon.dist ou phpstan.dist.neon da raiz do projeto.",
+  "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.": "Erros que o vendor/bin/phpstan do projeto relata em um arquivo PHP quando ele é salvo, exibidos em suas linhas. O PHPStan lê phpstan.neon, phpstan.neon.dist ou phpstan.dist.neon da raiz do projeto. Cada regra que o PHPStan relatou é listada abaixo pelo seu identificador e pode ser desativada ou ter sua gravidade alterada individualmente.",
   "Process code": "Processar código",
   "Process literals": "Processar literais",
   "Process comments": "Processar comentários",

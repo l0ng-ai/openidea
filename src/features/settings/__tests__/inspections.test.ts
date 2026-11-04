@@ -62,6 +62,42 @@ describe("plugin inspections", () => {
   });
 });
 
+describe("PHPStan inspections", () => {
+  it("list each identifier below PHPStan, from seen codes and stored overrides", () => {
+    const tree = buildInspectionTree(
+      [{ name: "PHP", servers: ["intelephense"] }],
+      [
+        {
+          producer: "phpstan",
+          code: "return.type",
+          source: "PHPStan",
+          sample: "Should return int but returns string.",
+        },
+        { producer: "build", code: "E0308", source: "rustc", sample: "" },
+      ],
+      [{ "builtin:phpstan:constant.notFound": { enabled: false }, "builtin:build:E1": { enabled: false } }],
+    );
+    const php = find(tree, "group:PHP")!;
+    expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "builtin:phpstan"]);
+    const phpstan = find(tree, "PHP/builtin:phpstan")!;
+    expect(phpstan.children.map((n) => [n.id, n.name])).toEqual([
+      ["builtin:phpstan:constant.notFound", "constant.notFound"],
+      ["builtin:phpstan:return.type", "return.type"],
+    ]);
+    expect(phpstan.children[1]!.description).toBe(
+      "PHPStan problems with code return.type.\n\nExample: Should return int but returns string.",
+    );
+    expect(pathToInspection(tree, "builtin:phpstan:return.type")).toEqual([
+      "group:PHP",
+      "PHP/builtin:phpstan",
+      "PHP/builtin:phpstan:return.type",
+    ]);
+    // Other built-in checks stay single inspections.
+    expect(find(tree, "General/builtin:build")!.children).toEqual([]);
+    expect(checkState({ "builtin:phpstan:constant.notFound": { enabled: false } }, phpstan)).toBe("mixed");
+  });
+});
+
 describe("inspections tree", () => {
   const tree = buildInspectionTree(languages, seen, [{ "lsp:ruff:E501": { severity: "typo" } }]);
 
