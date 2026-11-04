@@ -13,8 +13,6 @@ import {
   useI18n,
 } from "./i18n";
 import en from "./locales/en.json";
-import ko from "./locales/ko.json";
-import koText from "./locales/text/ko.json";
 import zh from "./locales/zh.json";
 import zhText from "./locales/text/zh.json";
 
@@ -72,7 +70,6 @@ describe("t / locales", () => {
   it("resolves locale tags", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
-    expect(resolveLocale("ko-KR")).toBe("ko");
     expect(resolveLocale("EN-us")).toBe("en");
     expect(resolveLocale("fr")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
@@ -94,13 +91,6 @@ describe("t / locales", () => {
     );
     await setLocale("zh-CN");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 个快捷键");
-  });
-
-  it("switches to Korean", async () => {
-    await setLocale("ko-KR");
-    expect(useI18n.getState().locale).toBe("ko");
-    expect(t("common.cancel")).toBe("취소");
-    expect(tx("Cancel")).toBe("취소");
   });
 
   it("falls back to English for unsupported locales", async () => {
@@ -172,24 +162,23 @@ describe("t / locales", () => {
 });
 
 describe("catalogs", () => {
-  const catalogs: Record<string, Record<string, string>> = { en, zh, ko };
-  const textCatalogs: Record<string, Record<string, string>> = { zh: zhText, ko: koText };
-  const translations = Object.entries(catalogs).filter(([locale]) => locale !== "en");
+  const catalogs: Record<string, Record<string, string>> = { en, zh };
 
-  it.each(Object.entries(textCatalogs))("translate source text into non-empty, different text (%s)", (_, texts) => {
-    for (const [source, text] of Object.entries(texts)) {
+  it("translate source text into non-empty, different text", () => {
+    for (const [source, text] of Object.entries(zhText as Record<string, string>)) {
       expect(text.trim(), source).not.toBe("");
       expect(text, source).not.toBe(source);
     }
   });
 
-  it.each(Object.entries(textCatalogs))("keep the placeholders of source-text templates (%s)", (_, texts) => {
+  it("keep the placeholders of source-text templates", () => {
     const names = (m: string) => [...m.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
-    for (const [source, text] of Object.entries(texts)) expect(names(text), source).toEqual(names(source));
+    for (const [source, text] of Object.entries(zhText as Record<string, string>))
+      expect(names(text), source).toEqual(names(source));
   });
 
-  it.each(translations)("have the same keys (%s)", (_, catalog) => {
-    expect(Object.keys(catalog).sort()).toEqual(Object.keys(en).sort());
+  it("have the same keys", () => {
+    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
   });
 
   it("contain only well-formed messages", () => {
@@ -198,9 +187,11 @@ describe("catalogs", () => {
         expect(isValidMessage(message), `${locale}:${key}`).toBe(true);
   });
 
-  it.each(translations)("use the same parameters across locales (%s)", (_, catalog) => {
+  it("use the same parameters across locales", () => {
     const params = (m: string) => [...m.matchAll(/\{\s*([a-z]\w*)\s*[,}]/g)].map((x) => x[1]).sort();
     for (const key of Object.keys(en))
-      expect(params(catalog[key] ?? ""), key).toEqual(params((en as Record<string, string>)[key]!));
+      expect(params((zh as Record<string, string>)[key] ?? ""), key).toEqual(
+        params((en as Record<string, string>)[key]!),
+      );
   });
 });

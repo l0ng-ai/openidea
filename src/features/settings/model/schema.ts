@@ -35,7 +35,7 @@ import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
 
 /** A built-in theme, a plugin's (`plugin:<id>/<theme>`) or the legacy `"system"`. */
 export type ThemeId = ThemeChoiceId | "system";
-export type LocaleId = "en" | "zh" | "ko";
+export type LocaleId = "en" | "zh";
 
 /** A user keymap (Keymap › Duplicate…): its own overrides on top of a bundled preset. */
 export interface CustomKeymapSettings {
@@ -175,7 +175,7 @@ export const LIMITS = {
 } as const;
 
 const theme = (v: unknown, d: ThemeId): ThemeId => (v === "system" || isThemeChoiceId(v) ? v : d);
-const LOCALES: readonly LocaleId[] = ["en", "zh", "ko"];
+const LOCALES: readonly LocaleId[] = ["en", "zh"];
 export const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
 type Obj = Record<string, unknown>;

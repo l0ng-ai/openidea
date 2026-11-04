@@ -33,7 +33,7 @@ export type MessageParams = Record<string, string | number | boolean | null | un
 export type Translate = (key: string, params?: MessageParams) => string;
 
 export const DEFAULT_LOCALE = "en";
-export const SUPPORTED_LOCALES = ["en", "zh", "ko"] as const;
+export const SUPPORTED_LOCALES = ["en", "zh"] as const;
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
 
 const loaders = import.meta.glob<Catalog>(["./locales/*.json", "!./locales/en.json"], { import: "default" });
@@ -54,7 +54,7 @@ interface I18nState {
 
 export const useI18n = create<I18nState>(() => ({ locale: DEFAULT_LOCALE, messages: en as Catalog, texts: {} }));
 
-/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `ko-KR` → `ko`, `system` → browser). */
+/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `system` → browser). */
 export function resolveLocale(input: string | null | undefined): Locale {
   let tag = (input ?? "").trim();
   if (!tag || tag === "system" || tag === "auto")
