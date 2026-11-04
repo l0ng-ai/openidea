@@ -1,5 +1,6 @@
 /** Gradle test logging (`Class > method() PASSED`) and Maven Surefire reports. */
 import { jvmFrameTarget } from "../links";
+import type { TestResults } from "./results";
 import { parseDuration, type TestEvent, type TestOutputParser } from "./types";
 
 const GRADLE_RE = /^(\S[^>]*?(?:\s>\s[^>]+?)+)\s+(PASSED|FAILED|SKIPPED)(?:\s+\(([\d.]+\s*m?s)\))?$/;
@@ -29,7 +30,8 @@ export function jvmParser(): TestOutputParser {
       const events: TestEvent[] = [];
       let m: RegExpExecArray | null;
       if ((m = GRADLE_RE.exec(line.trim())) && !line.startsWith(" ")) {
-        const path = m[1]!.split(/\s+>\s+/);
+        // `method()` is a JUnit 5 display name; the reports name the method.
+        const path = m[1]!.split(/\s+>\s+/).map((p, i, all) => (i === all.length - 1 ? p.replace(/\(\)$/, "") : p));
         const status = m[2] === "PASSED" ? "passed" : m[2] === "FAILED" ? "failed" : "skipped";
         events.push({ type: "result", path, status, durationMs: parseDuration(m[3]) });
         if (status === "failed") startFailure(path);
@@ -98,4 +100,20 @@ export function jvmParser(): TestOutputParser {
       return events;
     },
   };
+}
+
+/**
+ * Gradle's console names a test class by its simple name and its XML reports by the
+ * qualified one: moves the console's results to the reported class.
+ */
+export function moveToReportedClasses(tests: TestResults, classNames: readonly string[]) {
+  const bySimpleName = new Map<string, string | null>();
+  for (const c of new Set(classNames)) {
+    const simple = c.slice(c.lastIndexOf(".") + 1);
+    if (simple !== c) bySimpleName.set(simple, bySimpleName.has(simple) ? null : c);
+  }
+  for (const root of [...tests.roots]) {
+    const qualified = bySimpleName.get(root.name);
+    if (qualified) tests.move([root.name], [qualified]);
+  }
 }

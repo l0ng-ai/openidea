@@ -367,6 +367,24 @@ describe("JUnit XML reports", () => {
       location: { path: "a/B.java", line: 42, resolve: "name", className: "a.B$Inner" },
     });
   });
+
+  it("locate Kotlin tests with spaces in their names, behind a class loader prefix", () => {
+    const events = testReportEvents([
+      {
+        className: "a.LibraryTest",
+        name: "cannot lend twice",
+        status: "failed",
+        durationMs: null,
+        message: null,
+        output: "AssertionFailedError\n\tat app//a.LibraryTest.cannot lend twice(LibraryTest.kt:43)",
+      },
+    ]);
+    expect(events).toContainEqual({
+      type: "location",
+      path: ["a.LibraryTest", "cannot lend twice"],
+      location: { path: "a/LibraryTest.kt", line: 43, resolve: "name", className: "a.LibraryTest" },
+    });
+  });
 });
 
 describe("temporary configurations", () => {
