@@ -829,7 +829,8 @@ impl Project {
 
     /// Project files of `q.languages` under `q.root` containing `q.word` as a whole
     /// word (unsaved buffers included; excluded roots, ignored names and
-    /// `.gitignore`d files skipped): the files a references search opens on its server.
+    /// `.gitignore`d folders skipped, while `.gitignore`d files elsewhere count, as
+    /// in IDEA's project scope): the files a references search opens on its server.
     pub fn reference_candidates(
         &self,
         q: &ide_lsp::CandidateQuery,
