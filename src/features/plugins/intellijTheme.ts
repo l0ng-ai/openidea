@@ -1,11 +1,13 @@
 /**
  * Converts an IntelliJ theme (`.theme.json`, optionally with its editor scheme
- * `.icls`) into an OpenIDEA theme + editor scheme. The mapping covers the
- * main keys only; anything unmapped keeps the built-in value of the base
- * (`kind`). Pure functions, no dependencies: see import-intellij-theme.ts
- * for the command line.
+ * `.icls`) into an OpenIDEA theme + editor scheme, and an IntelliJ theme
+ * plugin into an OpenIDEA theme plugin package. The mapping covers the main
+ * keys only; anything unmapped keeps the built-in value of the base (`kind`).
+ *
+ * Pure functions without imports: Settings › Plugins › Import IntelliJ Theme
+ * uses them on what the host read from the plugin (`plugin_read_intellij_theme`),
+ * and so does the command line (`scripts/theme/import-intellij-theme.ts`).
  */
-import { stripJsonComments } from "./tokens.ts";
 
 /** OpenIDEA token ← IntelliJ `ui` keys, first present wins. `*.prop` wildcards apply too. */
 export const UI_KEYS: Record<string, string[]> = {
@@ -272,9 +274,11 @@ export function slug(name: string): string {
   );
 }
 
-/** Converts an IntelliJ `.theme.json` (and optionally its `.icls`) into OpenIDEA theme files. */
+/** Converts an IntelliJ `.theme.json` (comments removed) and optionally its `.icls` into OpenIDEA theme files. */
 export function convertIntellijTheme(themeJson: string, icls?: string, id?: string): ConvertedTheme {
-  const src = JSON.parse(stripJsonComments(themeJson)) as { [k: string]: Json };
+  const parsed = JSON.parse(themeJson) as Json;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Not an IntelliJ theme");
+  const src = parsed;
   const name = typeof src.name === "string" ? src.name : "Imported Theme";
   const named = new Map<string, string>();
   if (src.colors && typeof src.colors === "object" && !Array.isArray(src.colors)) {
@@ -307,21 +311,104 @@ export function convertIntellijTheme(themeJson: string, icls?: string, id?: stri
   };
 }
 
-/** `plugin.toml` for a converted theme. */
-export function pluginManifest(c: ConvertedTheme, author: string, sourceName: string): string {
-  const q = (s: string) => JSON.stringify(s);
+/** A TOML basic string: quotes, backslashes and control characters escaped, lone surrogates replaced. */
+function tomlString(s: string): string {
+  let body = "";
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    if (ch === '"' || ch === "\\") body += `\\${ch}`;
+    else if (code < 0x20 || code === 0x7f) body += `\\u${code.toString(16).padStart(4, "0")}`;
+    // `for…of` pairs surrogates, so one in this range is alone.
+    else if (code >= 0xd800 && code <= 0xdfff) body += "�";
+    else body += ch;
+  }
+  return `"${body}"`;
+}
+
+export interface ThemePackageInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  authors: string[];
+}
+
+/** `plugin.toml` for converted themes, each at `themes/<id>.theme.json` (+ `.scheme.json`). */
+export function pluginManifest(info: ThemePackageInfo, themes: readonly ConvertedTheme[], comment?: string): string {
   return [
-    `# Converted from ${sourceName} by scripts/theme/import-intellij-theme.ts.`,
-    `id = ${q(`theme-${c.theme.id}`)}`,
-    `name = ${q(`${c.theme.name} Theme`)}`,
-    `version = "1.0.0"`,
-    `description = ${q(`${c.theme.name}, converted from an IntelliJ theme.`)}`,
-    `authors = [${q(author)}]`,
-    `openidea-api = "0.1"`,
-    "",
-    "[[contributes.themes]]",
-    `path = ${q(`themes/${c.theme.id}.theme.json`)}`,
-    ...(c.scheme ? [`editor-scheme = ${q(`themes/${c.theme.id}.scheme.json`)}`] : []),
+    ...(comment ? [`# ${comment.replace(/[\r\n]+/g, " ")}`] : []),
+    `id = ${tomlString(info.id)}`,
+    `name = ${tomlString(info.name)}`,
+    `version = ${tomlString(info.version)}`,
+    `description = ${tomlString(info.description)}`,
+    `authors = [${info.authors.map(tomlString).join(", ")}]`,
+    `engines.openidea = "^1.0"`,
+    ...themes.flatMap((c) => [
+      "",
+      "[[contributes.themes]]",
+      `path = ${tomlString(`themes/${c.theme.id}.theme.json`)}`,
+      ...(c.scheme ? [`editor-scheme = ${tomlString(`themes/${c.theme.id}.scheme.json`)}`] : []),
+    ]),
     "",
   ].join("\n");
+}
+
+/** An IntelliJ theme plugin as the host read it (`IntellijThemeSource`). */
+export interface IntellijThemeSource {
+  name: string;
+  pluginId: string | null;
+  version: string | null;
+  vendor: string | null;
+  themes: { id: string; theme: string; editorScheme: string | null }[];
+}
+
+export interface ThemePackage {
+  id: string;
+  name: string;
+  files: { path: string; text: string }[];
+  /** The package's themes: their id here and in the IntelliJ plugin (`sourceId`). */
+  themes: { id: string; sourceId: string; name: string }[];
+}
+
+/** `2.3` → `2.3.0`; IntelliJ plugin versions are not always semver. */
+function semver(version: string | null): string {
+  const m = /^\s*v?(\d{1,9})(?:\.(\d{1,9}))?(?:\.(\d{1,9}))?/.exec(version ?? "");
+  return m ? `${Number(m[1])}.${Number(m[2] ?? 0)}.${Number(m[3] ?? 0)}` : "1.0.0";
+}
+
+/** An OpenIDEA theme plugin (`intellij.<plugin>`) with every theme of an IntelliJ theme plugin. */
+export function intellijThemePackage(source: IntellijThemeSource): ThemePackage {
+  const ids = new Set<string>();
+  const converted = source.themes.map((t) => {
+    const c = convertIntellijTheme(t.theme, t.editorScheme ?? undefined);
+    let id = c.theme.id;
+    for (let n = 2; ids.has(id); n++) id = `${c.theme.id.slice(0, 44)}-${n}`;
+    ids.add(id);
+    c.theme.id = id;
+    return { sourceId: t.id, converted: c };
+  });
+  if (converted.length === 0) throw new Error("The plugin has no themes");
+  const themes = converted.map((c) => c.converted);
+  // Package metadata, not UI text: the plugin list shows it as written.
+  const description = `${source.name}, imported from an IntelliJ theme plugin.`;
+  const info: ThemePackageInfo = {
+    id: `intellij.${slug(source.pluginId ?? source.name)}`,
+    name: source.name,
+    version: semver(source.version),
+    description,
+    authors: source.vendor ? [source.vendor] : [],
+  };
+  const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+  return {
+    id: info.id,
+    name: info.name,
+    files: [
+      { path: "plugin.toml", text: pluginManifest(info, themes) },
+      ...themes.flatMap((c) => [
+        { path: `themes/${c.theme.id}.theme.json`, text: json(c.theme) },
+        ...(c.scheme ? [{ path: `themes/${c.theme.id}.scheme.json`, text: json(c.scheme) }] : []),
+      ]),
+    ],
+    themes: converted.map(({ sourceId, converted: c }) => ({ id: c.theme.id, sourceId, name: c.theme.name })),
+  };
 }

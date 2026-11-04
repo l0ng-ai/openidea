@@ -2309,6 +2309,57 @@ fn a_zipped_plugin_folder_installs_like_the_folder() {
     assert!(err.contains("is not an OpenIDEA plugin"), "{err}");
 }
 
+/// What the UI writes for an imported IntelliJ theme goes through the install page.
+#[test]
+fn a_generated_package_is_staged_for_the_install_page() {
+    let f = fixture(Limits::default());
+    let file = |path: &str, text: &str| PackageFile { path: path.into(), text: text.into() };
+    let manifest = r#"id = "intellij.deep-sea"
+name = "Deep Sea"
+version = "2.3.0"
+engines.openidea = "^1.0"
+
+[[contributes.themes]]
+path = "themes/deep-sea.theme.json"
+editor-scheme = "themes/deep-sea.scheme.json"
+"#;
+    let files = [
+        file("plugin.toml", manifest),
+        file(
+            "themes/deep-sea.theme.json",
+            r##"{"id":"deep-sea","name":"Deep Sea","kind":"dark","tokens":{"--bg-app":"#101820"}}"##,
+        ),
+        file("themes/deep-sea.scheme.json", r##"{"name":"Deep Sea","tokens":{"--syn-keyword":"#cc7832"}}"##),
+    ];
+    let dir = f.host.stage_package("intellij.deep-sea", &files).unwrap();
+    let preview = f.host.preview_install(&dir).unwrap();
+    assert_eq!((preview.id.as_str(), preview.has_code, preview.unsigned), ("intellij.deep-sea", false, true));
+    assert!(preview.capabilities.is_empty());
+    f.install(&dir);
+    let active = f.host.set_theme(Some(("intellij.deep-sea", "deep-sea"))).unwrap().unwrap();
+    assert_eq!(active.theme.tokens["--bg-app"], "#101820");
+    assert_eq!(active.theme.tokens["--syn-keyword"], "#cc7832");
+
+    // Staging the same package again starts from an empty folder; importing it again replaces it.
+    assert_eq!(f.host.stage_package("intellij.deep-sea", &files[..1]).unwrap(), dir);
+    assert!(!dir.join("themes").exists());
+    let mut changed = files.clone();
+    changed[2] = file("themes/deep-sea.scheme.json", r##"{"tokens":{"--syn-keyword":"#ff8800"}}"##);
+    f.install(&f.host.stage_package("intellij.deep-sea", &changed).unwrap());
+    let active = f.host.set_theme(Some(("intellij.deep-sea", "deep-sea"))).unwrap().unwrap();
+    assert_eq!(active.theme.tokens["--syn-keyword"], "#ff8800");
+
+    for bad in ["../x", "/abs", "a//b", r"a\b", "C:x", ".hidden", "a/./b", ""] {
+        let err = f.host.stage_package("p", &[file("plugin.toml", manifest), file(bad, "x")]).unwrap_err().message;
+        assert!(err.contains("invalid package path"), "{bad:?}: {err}");
+    }
+    let err = f.host.stage_package("p", &[file("x.json", "{}")]).unwrap_err().message;
+    assert!(err.contains("needs a plugin.toml"), "{err}");
+    let err = f.host.stage_package("p", &[file("plugin.toml", ""), file("PLUGIN.toml", "")]).unwrap_err().message;
+    assert!(err.contains("twice"), "{err}");
+    assert!(f.host.stage_package("../p", &files).is_err());
+}
+
 /// Secrets live outside the plugin's directory (the OS keychain on the
 /// desktop): uninstalling the plugin deletes the ones it declares.
 #[test]

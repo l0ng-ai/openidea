@@ -728,7 +728,9 @@ granted, and starts the approved program.
 - **Install:** Settings › Plugins › _Install Plugin from Disk…_ (a package
   folder) or _Install Plugin from Package File…_ (a `.oiplugin`, a `.zip` with
   the package at its root or in its only folder, or a folder's `plugin.toml`;
-  a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused). The install
+  a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused; IntelliJ
+  theme plugins are imported instead: _Import IntelliJ Theme from File…_ and _Import Theme
+  from IntelliJ IDE…_, see [`docs/plugins/themes.md`](../docs/plugins/themes.md)). The install
   page lists every capability and whether the package is signed by a publisher
   the marketplace trusts; nothing is copied until you accept.
 - **Versions:** installed plugins live in `<app-data>/plugins/<id>/<version>/`

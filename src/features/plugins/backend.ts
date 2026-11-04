@@ -10,7 +10,9 @@ import type {
   CatalogPlugin,
   Consent,
   EventKind,
+  InstalledIntellijTheme,
   InstallPreview,
+  IntellijThemeSource,
   MarketPlugin,
   PluginEditor,
   PluginEvent,
@@ -71,6 +73,14 @@ export interface PluginsBackend {
   rollBack(id: string): Promise<PluginInfo>;
   /** File picker for a package: an `.oiplugin`, a `.zip` or a folder's `plugin.toml`; `null` when cancelled. */
   pickPackage(): Promise<string | null>;
+  /** File picker for an IntelliJ theme plugin (`.jar`, `.zip`) or `.theme.json`; `null` when cancelled. */
+  pickIntellijTheme(): Promise<string | null>;
+  /** Reads the themes of an IntelliJ theme plugin or `.theme.json`. */
+  readIntellijTheme(path: string): Promise<IntellijThemeSource>;
+  /** Theme plugins installed in the JetBrains IDEs on this machine, the ones in use first. */
+  installedIntellijThemes(): Promise<InstalledIntellijTheme[]>;
+  /** Writes a generated package (`name`: its id); the folder to install from. */
+  stagePackage(name: string, files: { path: string; text: string }[]): Promise<string>;
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
@@ -166,6 +176,18 @@ export const tauriPluginsBackend: PluginsBackend = {
     });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
+  pickIntellijTheme: async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      multiple: false,
+      title: tx("Import IntelliJ Theme"),
+      filters: [{ name: tx("IntelliJ theme plugin or theme file"), extensions: ["jar", "zip", "json"] }],
+    });
+    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+  },
+  readIntellijTheme: (path) => call(commands.pluginReadIntellijTheme(path)),
+  installedIntellijThemes: () => call(commands.pluginInstalledIntellijThemes()),
+  stagePackage: (name, files) => call(commands.pluginStagePackage(name, files)),
   // A tool window's calls (no `doc`) carry the window's active editor.
   renderView: (pluginId, view, viewport, doc) =>
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
@@ -488,6 +510,14 @@ export function createMemoryPluginsBackend(
       throw new IpcError({ kind: "notFound", message: `${id} has no earlier version to roll back to` });
     },
     pickPackage: async () => null,
+    pickIntellijTheme: async () => null,
+    readIntellijTheme: async (path) => {
+      throw new IpcError({ kind: "unavailable", message: `reading ${path} requires the desktop app` });
+    },
+    installedIntellijThemes: async () => [],
+    stagePackage: async () => {
+      throw new IpcError({ kind: "unavailable", message: "installing a generated plugin requires the desktop app" });
+    },
     renderView: async (pluginId, view) => ({
       toolbar: [],
       body: { kind: "message", value: `${pluginId} · ${view} (plugin views need the desktop app)` },

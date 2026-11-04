@@ -21,6 +21,7 @@ mod icon_patterns;
 mod icon_settings;
 mod icons;
 mod install;
+pub mod intellij;
 mod market;
 mod points;
 mod providers;
