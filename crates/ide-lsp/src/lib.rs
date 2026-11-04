@@ -18,6 +18,7 @@ mod inspect;
 pub mod jdtls;
 mod launch;
 mod library_source;
+mod pull;
 mod scope;
 mod server;
 mod tcp;
@@ -432,6 +433,7 @@ impl LspManager {
         let wanted: Vec<(DocId, Vec<Arc<Server>>)> =
             open.into_iter().map(|(id, language, path)| (id, self.servers_for(&language, &path))).collect();
         let mut start = Vec::new();
+        let mut opened = Vec::new();
         {
             let mut docs = self.docs.lock();
             for (id, servers) in wanted {
@@ -446,6 +448,7 @@ impl LspManager {
                             user_did_open(server, &run, &d.path, &d.uri, d.did_open_params());
                         }
                         attached.opened_gen = Some(run.generation);
+                        opened.push((id, server.clone()));
                     }
                     d.servers.push(attached);
                     if !start.iter().any(|s: &Arc<Server>| s.id == server.id) {
@@ -455,6 +458,9 @@ impl LspManager {
                 // In definition order: the first server answers hover, rename and symbols.
                 d.servers.sort_by_key(|a| servers.iter().position(|s| s.id == a.server.id).unwrap_or(usize::MAX));
             }
+        }
+        for (doc, server) in opened {
+            self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
         for server in &start {
             self.ensure_started(server);
@@ -611,6 +617,7 @@ impl LspManager {
         self.refresh_external_project(&server, &run).await;
 
         // Publish readiness and (re)open attached documents atomically w.r.t. did_change.
+        let mut reopened = Vec::new();
         {
             let mut docs = self.docs.lock();
             if !server.mark_ready(generation, run.clone()) {
@@ -620,15 +627,19 @@ impl LspManager {
                 return;
             }
             let open_close = run.caps.read().open_close;
-            for d in docs.values_mut() {
+            for (id, d) in docs.iter_mut() {
                 let params = d.did_open_params();
                 for a in d.servers.iter_mut().filter(|a| a.server.id == server.id && a.opened_gen != Some(generation)) {
                     if open_close && let Err(e) = peer.notify("textDocument/didOpen", params.clone()) {
                         tracing::debug!("{}: didOpen: {e}", server.name);
                     }
                     a.opened_gen = Some(generation);
+                    reopened.push(*id);
                 }
             }
+        }
+        for doc in reopened {
+            self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
         self.check_clang_tidy(&server).await;
         server.refresh_busy_status(&self.sink);
@@ -853,6 +864,7 @@ impl LspManager {
             }
             docs.insert(doc, state);
         }
+        self.schedule_pull(doc, None, Duration::ZERO);
         for s in &servers {
             self.ensure_started(s);
             if s.running().is_some()
@@ -930,6 +942,30 @@ impl LspManager {
                 tracing::debug!("{}: didChange: {e}", server.name);
             }
         }
+        drop(docs);
+        self.schedule_pull(doc, None, pull::AFTER_EDIT);
+    }
+
+    /// Sends the documents open on instance `generation` of `server` again, as a `didChange`
+    /// with their unchanged text, so the server parses them with the settings it just read.
+    pub(crate) fn resync_documents(&self, server: &Server, generation: u64) {
+        let Some(run) = server.running_gen(generation) else { return };
+        if run.caps.read().sync == SyncKind::None {
+            return;
+        }
+        let docs = self.docs.lock();
+        for d in docs.values() {
+            if !d.servers.iter().any(|a| a.server.id == server.id && a.opened_gen == Some(generation)) {
+                continue;
+            }
+            let params = json!({
+                "textDocument": { "uri": d.uri, "version": d.version },
+                "contentChanges": [{ "text": d.text.as_str() }],
+            });
+            if let Err(e) = run.peer.notify("textDocument/didChange", params) {
+                tracing::debug!("{}: didChange: {e}", server.name);
+            }
+        }
     }
 
     pub fn did_save(&self, doc: DocId, text: &str) {
@@ -952,11 +988,15 @@ impl LspManager {
                 tracing::debug!("{}: didSave: {e}", a.server.name);
             }
         }
+        drop(docs);
+        self.schedule_pull(doc, None, Duration::ZERO);
+        self.pull_dependents(doc);
     }
 
     pub fn did_close(&self, doc: DocId) {
         let Some(d) = self.docs.lock().remove(&doc) else { return };
         for a in &d.servers {
+            self.forget_pulled(&a.server, &d.path, a.server.running().as_ref());
             let Some(run) = a.server.running() else { continue };
             if a.opened_gen == Some(run.generation)
                 && run.caps.read().open_close
@@ -2508,6 +2548,12 @@ impl LspManager {
                 self.ensure_started(server);
             }
         }
+    }
+
+    /// [`Self::reconfigure`] on the manager's runtime, for callers outside one (file watchers).
+    pub fn reconfigure_soon(self: &Arc<Self>) {
+        let me = self.clone();
+        self.runtime.spawn(async move { me.reconfigure().await });
     }
 
     pub async fn reconfigure(&self) {

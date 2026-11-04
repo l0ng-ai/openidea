@@ -305,6 +305,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_line_hunks"
             | "vcs_file_at"
             | "vcs_blame"
+            | "vcs_block_history"
             | "vcs_log"
             | "vcs_commit_files"
             | "vcs_commits_changes"

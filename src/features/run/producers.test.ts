@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import type { RunConfig } from "@/platform/ipc";
+import { afterEach, describe, expect, it } from "vitest";
+import type { HierarchyItem, RunConfig } from "@/platform/ipc";
 import {
   innermostTarget,
   nodeTypeStripping,
@@ -15,8 +15,18 @@ import {
   type LocatedTool,
   type ToolEnv,
 } from "./producers";
+import { clearInheritedMain, resolveCandidates, unresolvedCandidates } from "./inheritedMain";
+
+afterEach(() => clearInheritedMain());
 
 const ROOT = "/work/app";
+const superItem: Omit<HierarchyItem, "name" | "path"> = {
+  kind: "class",
+  detail: null,
+  range: { start: { line: 0, col: 0 }, end: { line: 1, col: 0 } },
+  selectionRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+  fromRanges: [],
+};
 const SCRATCH = "/Users/me/Library/Application Support/ai.l0ng.openidea/scratches";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
@@ -329,6 +339,23 @@ describe("single-file producers (scratches)", () => {
     const p = produceContext(input(["/work/billing", svc]), ALL)!;
     expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
     expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
+  });
+
+  it("Java: a class whose superclass declares main runs as a Spring Boot application", async () => {
+    const path = `${ROOT}/src/main/java/demo/AiChatApplication.java`;
+    const content = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const input = { path, root: ROOT, configs: gradle, content, line: 3 };
+    expect(fileTargets(input, content)).toEqual([]);
+    await resolveCandidates(path, unresolvedCandidates(path, content), {
+      supertypes: async () => [{ ...superItem, name: "AtomStarter", path: "jdt://lib/AtomStarter.class" }],
+      text: async () => "package x; public class AtomStarter { public static void main(String[] a) {} }",
+    });
+    expect(fileTargets(input, content)).toMatchObject([
+      { kind: "main", className: "demo.AiChatApplication", spring: true },
+    ]);
+    expect(produceContext(input, ALL)!.config).toMatchObject({ kind: "spring-boot" });
+    expect(produceContext(input, ALL)!.config!.args.at(-1)).toBe("demo.AiChatApplication");
   });
 
   describe("Java / Kotlin mains in a build nested in a folder of repositories", () => {

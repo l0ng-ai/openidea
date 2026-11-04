@@ -5,6 +5,7 @@
  */
 import { useId, useMemo } from "react";
 import { IconButton, Input, type SelectOption } from "@/ui";
+import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
@@ -112,12 +113,25 @@ export function NodePage() {
 // ---------------------------------------------------------------------------
 // PHP
 
+const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
+  level ? { value: level, label: level } : { value: "", label: "Auto", detail: "from composer.json" },
+);
+
 export function PhpPage() {
   const [interpreter] = useSetting<string>("languages.php.interpreter");
+  const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
   const { list } = useDetected("php");
   const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
   return (
     <div className={styles.page}>
+      <Section>
+        <Row
+          label="PHP language level"
+          hint="The PHP version Intelephense checks the code against: newer syntax and functions are reported. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."
+        >
+          <Select value={level} options={PHP_LEVEL_OPTIONS} onChange={setLevel} aria-label="PHP language level" />
+        </Row>
+      </Section>
       <Section title="CLI Interpreter">
         <SdkRow
           k="languages.php.interpreter"

@@ -48,7 +48,7 @@ pub fn client_capabilities() -> Value {
             "semanticTokens": { "refreshSupport": true },
             "codeLens": { "refreshSupport": true },
             "inlayHint": { "refreshSupport": true },
-            "diagnostics": { "refreshSupport": false },
+            "diagnostics": { "refreshSupport": true },
             "textDocumentContent": { "dynamicRegistration": true }
         },
         "textDocument": {
@@ -130,6 +130,7 @@ pub fn client_capabilities() -> Value {
                 "prepareSupportDefaultBehavior": 1,
                 "honorsChangeAnnotations": false
             },
+            "diagnostic": { "dynamicRegistration": false, "relatedDocumentSupport": false },
             "publishDiagnostics": {
                 "relatedInformation": true,
                 "tagSupport": { "valueSet": [1, 2] },

@@ -170,7 +170,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
               onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
             />
           )}
-          {isolation === "local" && current && (
+          {/* A folder that isn't a repository has no branch: the one Git found below it isn't where the agent runs. */}
+          {isolation === "local" && isGit && current && (
             <>
               {!docked && (
                 <span className={styles.note}>

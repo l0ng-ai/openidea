@@ -148,6 +148,8 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     keywords: [
       "php interpreter",
       "cli interpreter",
+      "language level",
+      "php version",
       "php",
       "composer",
       "phpunit",

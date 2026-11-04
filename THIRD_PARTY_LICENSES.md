@@ -2,12 +2,12 @@
 
 ## Project Lombok
 
-`plugins/lombok/lombok-1.18.48-openidea.2.jar` contains Project Lombok v1.18.48 with the Equinox
+`java/lombok/lombok-1.18.48-openidea.2.jar` contains Project Lombok v1.18.48 with the Equinox
 classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059)
 and the ECJ constructor-call fix from [projectlombok/lombok#4089](https://github.com/projectlombok/lombok/pull/4089).
 Copyright (C) 2009-2021 The Project Lombok Authors. MIT license and bundled component
-notices are retained in [plugins/lombok/LICENSE](plugins/lombok/LICENSE) and inside the jar.
-Source tag, patch commits and build instructions: [plugins/lombok/README.md](plugins/lombok/README.md).
+notices are retained in [java/lombok/LICENSE](java/lombok/LICENSE) and inside the jar.
+Source tag, patch commits and build instructions: [java/lombok/README.md](java/lombok/README.md).
 
 ## JetBrains IntelliJ Platform icons
 

@@ -42,6 +42,7 @@ import {
   type TestOutputParser,
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
+import { moveToReportedClasses } from "./testing/jvm";
 import { TeamcityOutput } from "./testing/phpunit";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
@@ -918,7 +919,14 @@ function finishSession(sessionId: string, code: number | null) {
       if (rt.tests && rt.parser) {
         rt.tests.apply(rt.parser.end?.() ?? []);
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
-        if (frameworkFor(session.config) === "jvm") rt.tests.apply(await jvmReportEvents(session));
+        if (frameworkFor(session.config) === "jvm") {
+          const reports = await jvmReports(session);
+          rt.tests.apply(testReportEvents(reports));
+          moveToReportedClasses(
+            rt.tests,
+            reports.map((r) => r.className),
+          );
+        }
         if (runtimes.get(sessionId) !== rt) return;
         rt.tests.finish(code);
         recordTestStates(rt.tests);
@@ -935,12 +943,11 @@ function finishSession(sessionId: string, code: number | null) {
   }, 30);
 }
 
-async function jvmReportEvents(session: RunSession): Promise<TestEvent[]> {
+async function jvmReports(session: RunSession): Promise<TestCaseReport[]> {
   if (!isTauri()) return [];
   try {
     // Report files are written during the run; allow for coarse file-system timestamps.
-    const reports = await call(commands.runTestReports(session.config.cwd ?? null, session.startedAt - 2000));
-    return testReportEvents(reports);
+    return await call(commands.runTestReports(session.config.cwd ?? null, session.startedAt - 2000));
   } catch {
     return [];
   }
@@ -958,7 +965,7 @@ export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[
     for (const line of text.split("\n").slice(0, 200)) events.push({ type: "output", path, line });
     const outer = r.className.split("$")[0]!;
     const frame = new RegExp(
-      `at (${outer.replace(/[.$]/g, "\\$&")}(?:\\$[\\w$]+)?)\\.[\\w$<>]+\\(([\\w$-]+\\.(?:java|kt|groovy|scala)):(\\d+)\\)`,
+      `at (?:\\S*/)?(${outer.replace(/[.$]/g, "\\$&")}(?:\\$[\\w$]+)?)\\.[^()\\n]+\\(([\\w$-]+\\.(?:java|kt|groovy|scala)):(\\d+)\\)`,
     ).exec(r.output ?? "");
     if (frame) events.push({ type: "location", path, location: jvmFrameTarget(frame[1], frame[2]!, Number(frame[3])) });
   }
@@ -1054,6 +1061,16 @@ export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): 
 export function rerunSession(sessionId: string) {
   const session = getSession(sessionId);
   if (session) void startRun(session.config, sessionId, session.baseConfig);
+}
+
+/**
+ * "Debug": relaunches the session's configuration in debug mode — the same
+ * `run.debugConfig` entry the Services view and the editor context menu use
+ * (`baseConfig` keeps the original configuration for derived launches).
+ */
+export function debugSession(sessionId: string) {
+  const session = getSession(sessionId);
+  if (session) void executeAction("run.debugConfig", session.baseConfig ?? session.config);
 }
 
 /** Paths of the failed tests of a session's last run. */
