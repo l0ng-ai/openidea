@@ -9,6 +9,7 @@ license.workspace = true
 dunce.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
+ide-vfs.workspace = true
 serde.workspace = true
 specta.workspace = true
 redb.workspace = true

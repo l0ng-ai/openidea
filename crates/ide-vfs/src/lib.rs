@@ -270,17 +270,27 @@ pub fn copy(from: &Path, to: &Path) -> IdeResult<()> {
     ops::copy(from, to)
 }
 
+/// Scopes a walker's `.gitignore` handling the way Git does: inside a repository
+/// only that repository's own ignore files apply, so an outer repository that
+/// ignores a nested one does not hide the nested repository's files. Outside any
+/// repository `.gitignore` files still apply.
+pub fn bound_gitignore_to_repo<'a>(walk: &'a mut ignore::WalkBuilder, root: &Path) -> &'a mut ignore::WalkBuilder {
+    // `require_git(false)` makes the ignore crate skip repository detection, so
+    // every ancestor's `.gitignore` would apply across repository boundaries.
+    walk.require_git(rules::find_repo_root(root).is_some())
+}
+
 /// Walks every non-ignored file of a project in parallel (ignore crate),
 /// honouring .gitignore, .ignore and `excludes`. Shared by index and search.
 ///
 /// Hidden files are included; `.git` is always skipped. `.gitignore` applies
-/// even outside a git repository. Symlinks to files are visited, symlinked
-/// directories are not followed.
+/// even outside a git repository, but never across a repository boundary.
+/// Symlinks to files are visited, symlinked directories are not followed.
 pub fn walk_files(root: &Path, excludes: &[String], visit: impl Fn(&Path) + Send + Sync) {
     let excludes = Arc::new(ExcludeMatcher::new(excludes));
     let base = root.to_path_buf();
     let mut builder = ignore::WalkBuilder::new(root);
-    builder.hidden(false).require_git(false).follow_links(false);
+    bound_gitignore_to_repo(&mut builder, root).hidden(false).follow_links(false);
     builder.filter_entry(move |entry| {
         if entry.depth() > 0 && entry.file_name() == ".git" {
             return false;

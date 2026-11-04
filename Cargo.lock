@@ -4319,6 +4319,7 @@ dependencies = [
  "globset",
  "ide-core",
  "ide-language",
+ "ide-vfs",
  "ignore",
  "nucleo-matcher",
  "parking_lot",

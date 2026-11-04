@@ -149,13 +149,13 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         for path in rest {
             walk.add(path);
         }
-        walk.hidden(true)
+        ide_vfs::bound_gitignore_to_repo(&mut walk, req.root)
+            .hidden(true)
             .ignore(true)
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
             .parents(true)
-            .require_git(false)
             .follow_links(false)
             .threads(std::thread::available_parallelism().map_or(4, |n| n.get()).min(12))
             .filter_entry(|e| e.file_name() != ".git");

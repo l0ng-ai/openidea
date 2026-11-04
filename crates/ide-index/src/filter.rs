@@ -208,14 +208,14 @@ impl PathFilter {
         let Some((root, _, _)) = self.base_of(dir) else { return Vec::new() };
         let root = root.to_path_buf();
         let excludes = self.excludes.clone();
-        let walker = WalkBuilder::new(dir)
+        let mut walker = WalkBuilder::new(dir);
+        let walker = ide_vfs::bound_gitignore_to_repo(&mut walker, dir)
             .hidden(false)
             .parents(true)
             .ignore(true)
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
-            .require_git(false)
             .follow_links(false)
             .filter_entry(move |e| {
                 let name = e.file_name().to_string_lossy();
@@ -309,6 +309,21 @@ mod tests {
         assert!(filter.is_excluded(&root.join(".git/HEAD"), false));
         assert!(filter.is_excluded(Path::new("/elsewhere/x.rs"), false));
         assert!(!filter.is_excluded(&root.join("src/new.rs"), false));
+    }
+
+    #[test]
+    fn walk_ignores_outer_repository_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dunce::canonicalize(dir.path()).unwrap();
+        for f in [".git/HEAD", "projects/nested/.git/HEAD", "projects/nested/src/a.rs"] {
+            touch(&outer, f);
+        }
+        std::fs::write(outer.join("projects/.gitignore"), "*\n!.gitignore\n").unwrap();
+        let root = outer.join("projects/nested");
+        let filter = PathFilter::new(&root, &vec![].into(), &[]);
+        let found: Vec<String> =
+            filter.walk(&root, &AtomicBool::new(false)).iter().filter_map(|f| filter.rel(&f.path)).collect();
+        assert_eq!(found, vec!["src/a.rs"]);
     }
 
     #[test]
