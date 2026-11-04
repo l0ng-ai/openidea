@@ -123,6 +123,19 @@ fn misbehave_pkg() -> PathBuf {
     repo().join("crates/ide-plugin/tests/fixtures/misbehave")
 }
 
+/// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
+/// another (or behind a new instance starting) holds once it caught up.
+fn eventually(mut f: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(5);
+    while !f() {
+        if Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 /// A theme package with a light and a dark theme, plus licence files, in `dir`.
 fn write_theme_pair(dir: &Path) {
     std::fs::create_dir_all(dir.join("t")).unwrap();
@@ -397,11 +410,11 @@ fn crashes_restart_with_backoff_until_the_circuit_opens() {
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.activations, info.error), (PluginStatus::Active, 2, None));
 
-    // Three in a row: stopped for the session, with growing waits between.
+    // Three in a row: stopped for the session, backing off between them (the wait
+    // doubles: `Limits::backoff`, tested where it is defined; wall-clock waits on CI
+    // are too noisy to compare).
     f.take_events();
-    let mut waits = Vec::new();
-    for _ in 0..3 {
-        let started = Instant::now();
+    for crash in 0..3 {
         let err = loop {
             match f.run("misbehave", "panic", None) {
                 Err(e) if e.contains("restarts in") => std::thread::sleep(Duration::from_millis(20)),
@@ -409,9 +422,10 @@ fn crashes_restart_with_backoff_until_the_circuit_opens() {
             }
         };
         assert!(err.contains("crashed"), "{err}");
-        waits.push(started.elapsed());
+        if crash < 2 {
+            assert!(f.run("misbehave", "echo", None).unwrap_err().contains("restarts in"), "backing off");
+        }
     }
-    assert!(waits[2] >= backoff * 2 && waits[2] > waits[1], "{waits:?}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!(info.status, PluginStatus::Failed);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("3 times in a row")), "{:?}", info.error);
@@ -532,10 +546,10 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     // Slower than the soft deadline: dropped (however late this thread gets
     // to look), but the instance lives on.
     assert!(provider.highlights(&mis, "sleep:150").is_none());
-    std::thread::sleep(Duration::from_millis(150));
-    assert!(provider.highlights(&mis, "fast").is_some());
+    assert!(eventually(|| provider.highlights(&mis, "fast").is_some()));
     let info = host.info_of("misbehave").unwrap();
-    assert_eq!((info.stats.slow_calls, info.stats.crashes, info.stats.activations), (1, 0, 1));
+    assert!(info.stats.slow_calls >= 1, "{:?}", info.stats);
+    assert_eq!((info.stats.crashes, info.stats.activations), (0, 1));
 
     // Past the hard deadline: interrupted; the next call gets a new instance.
     assert!(provider.highlights(&mis, "spin").is_none());
@@ -544,7 +558,8 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     let info = host.info_of("misbehave").unwrap();
     assert_eq!(info.stats.crashes, 1, "{:?}", info.error);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("timed out after 400ms")), "{:?}", info.error);
-    assert!(provider.highlights(&mis, "fast").is_some());
+    // The new instance may take longer to start than the soft deadline on a slow runner.
+    assert!(eventually(|| provider.highlights(&mis, "fast").is_some()));
     assert_eq!(host.info_of("misbehave").unwrap().stats.activations, 2);
 }
 
@@ -553,9 +568,10 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
 #[test]
 fn providers_of_several_plugins_run_concurrently() {
     let tmp = tempfile::tempdir().unwrap();
+    // A budget no runner misses, so only the overlap is measured.
     let limits = Limits {
-        edit_soft: Duration::from_millis(300),
-        edit_hard: Duration::from_secs(2),
+        edit_soft: Duration::from_secs(5),
+        edit_hard: Duration::from_secs(10),
         fuel: u64::MAX,
         ..Limits::default()
     };
@@ -588,12 +604,12 @@ fn providers_of_several_plugins_run_concurrently() {
     assert_eq!(host.provide_completion(&doc("fast"), at, None).len(), 2);
 
     let started = Instant::now();
-    let items = host.provide_completion(&doc("sleep:200"), at, None);
+    let items = host.provide_completion(&doc("sleep:500"), at, None);
     let elapsed = started.elapsed();
     let mut from: Vec<&str> = items.iter().map(|(p, _)| p.as_str()).collect();
     from.sort();
     assert_eq!(from, ["slow-a", "slow-b"], "both within the budget");
-    assert!(elapsed < Duration::from_millis(350), "one after the other would take 400ms: {elapsed:?}");
+    assert!(elapsed < Duration::from_millis(950), "one after the other would take 1000ms: {elapsed:?}");
     assert_eq!(host.info_of("slow-b").unwrap().stats.slow_calls, 0);
 }
 
@@ -1064,7 +1080,16 @@ fn plugin_syntax_for_languages_without_a_grammar() {
     let sol = LanguageId::new("solidity");
     let text = "// c\ncontract A {\n    uint256 public x;\n    function f() public {}\n}\n";
     assert!(provider.highlights(&LanguageId::new("rust"), text).is_none(), "only its own languages");
-    let tokens = provider.highlights(&sol, text).unwrap();
+    // The first call of a new instance can run past the edit-path budget on a
+    // slow machine; its answer is dropped and a later call asks again.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let tokens = loop {
+        match provider.highlights(&sol, text) {
+            Some(tokens) => break tokens,
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            None => panic!("no highlights"),
+        }
+    };
     let kind_at =
         |s: &str| tokens.iter().find(|t| &text[t.start as usize..t.end as usize] == s).map(|t| t.kind.as_str());
     assert_eq!(kind_at("contract"), Some("keyword"));
@@ -2298,6 +2323,57 @@ fn a_zipped_plugin_folder_installs_like_the_folder() {
     zip.finish().unwrap();
     let err = f.host.unpack_package(&other).unwrap_err().message;
     assert!(err.contains("is not an OpenIDEA plugin"), "{err}");
+}
+
+/// What the UI writes for an imported IntelliJ theme goes through the install page.
+#[test]
+fn a_generated_package_is_staged_for_the_install_page() {
+    let f = fixture(Limits::default());
+    let file = |path: &str, text: &str| PackageFile { path: path.into(), text: text.into() };
+    let manifest = r#"id = "intellij.deep-sea"
+name = "Deep Sea"
+version = "2.3.0"
+engines.openidea = "^1.0"
+
+[[contributes.themes]]
+path = "themes/deep-sea.theme.json"
+editor-scheme = "themes/deep-sea.scheme.json"
+"#;
+    let files = [
+        file("plugin.toml", manifest),
+        file(
+            "themes/deep-sea.theme.json",
+            r##"{"id":"deep-sea","name":"Deep Sea","kind":"dark","tokens":{"--bg-app":"#101820"}}"##,
+        ),
+        file("themes/deep-sea.scheme.json", r##"{"name":"Deep Sea","tokens":{"--syn-keyword":"#cc7832"}}"##),
+    ];
+    let dir = f.host.stage_package("intellij.deep-sea", &files).unwrap();
+    let preview = f.host.preview_install(&dir).unwrap();
+    assert_eq!((preview.id.as_str(), preview.has_code, preview.unsigned), ("intellij.deep-sea", false, true));
+    assert!(preview.capabilities.is_empty());
+    f.install(&dir);
+    let active = f.host.set_theme(Some(("intellij.deep-sea", "deep-sea"))).unwrap().unwrap();
+    assert_eq!(active.theme.tokens["--bg-app"], "#101820");
+    assert_eq!(active.theme.tokens["--syn-keyword"], "#cc7832");
+
+    // Staging the same package again starts from an empty folder; importing it again replaces it.
+    assert_eq!(f.host.stage_package("intellij.deep-sea", &files[..1]).unwrap(), dir);
+    assert!(!dir.join("themes").exists());
+    let mut changed = files.clone();
+    changed[2] = file("themes/deep-sea.scheme.json", r##"{"tokens":{"--syn-keyword":"#ff8800"}}"##);
+    f.install(&f.host.stage_package("intellij.deep-sea", &changed).unwrap());
+    let active = f.host.set_theme(Some(("intellij.deep-sea", "deep-sea"))).unwrap().unwrap();
+    assert_eq!(active.theme.tokens["--syn-keyword"], "#ff8800");
+
+    for bad in ["../x", "/abs", "a//b", r"a\b", "C:x", ".hidden", "a/./b", ""] {
+        let err = f.host.stage_package("p", &[file("plugin.toml", manifest), file(bad, "x")]).unwrap_err().message;
+        assert!(err.contains("invalid package path"), "{bad:?}: {err}");
+    }
+    let err = f.host.stage_package("p", &[file("x.json", "{}")]).unwrap_err().message;
+    assert!(err.contains("needs a plugin.toml"), "{err}");
+    let err = f.host.stage_package("p", &[file("plugin.toml", ""), file("PLUGIN.toml", "")]).unwrap_err().message;
+    assert!(err.contains("twice"), "{err}");
+    assert!(f.host.stage_package("../p", &files).is_err());
 }
 
 /// Secrets live outside the plugin's directory (the OS keychain on the

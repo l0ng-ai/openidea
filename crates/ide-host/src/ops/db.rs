@@ -216,8 +216,7 @@ pub async fn connect(host: &Host, window: &str, id: &str) -> IdeResult<()> {
 /// manual mode rolls back what was not committed).
 pub async fn set_manual_commit(host: &Host, window: &str, id: &str, manual: bool) -> IdeResult<()> {
     let db = host.project(window)?.db.clone();
-    db.set_manual_commit(id, manual).await;
-    Ok(())
+    db.set_manual_commit(id, manual).await
 }
 
 /// Commits or rolls back the open transaction of a manual-commit data source.

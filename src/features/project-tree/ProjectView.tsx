@@ -60,7 +60,6 @@ import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
-import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
   cancelEditing,
   checkEditingName,
@@ -77,6 +76,7 @@ import {
   paste,
   refreshOsClipboard,
   targetFolder,
+  undoLastFileOperation,
 } from "./operations";
 import { isInside, nameOf, parentOf, splitExtension, tildify } from "./paths";
 import {
@@ -111,7 +111,7 @@ export function showNewPopup(): boolean {
   const lead = treeHandle.current?.leadKey();
   const row = lead ? document.querySelector<HTMLElement>(`[data-project-key="${CSS.escape(lead)}"]`) : null;
   const rect = (
-    row ?? document.querySelector<HTMLElement>('[role="tree"][aria-label="Project"]')
+    row ?? document.querySelector<HTMLElement>('[data-project-view] [role="tree"]')
   )?.getBoundingClientRect();
   if (!rect) return false;
   openNewPopup({ x: rect.left + 24, y: rect.bottom }, newMenuItems(targetFolder()));
@@ -128,6 +128,7 @@ function iconFor(
   build: BuildPresentation,
   detected: readonly RootFolder[],
   expanded: boolean,
+  holdsOpen: boolean,
 ): string {
   if (node.placeholder) return node.placeholder === "dir" ? "folder" : "file";
   if (node.icon) return node.icon;
@@ -139,9 +140,9 @@ function iconFor(
     const key = rel !== null && build.modules.has(rel) ? rel : node.path;
     const module = root ? moduleFolderIcon(key, node.root, build.modules) : null;
     if (module) return module;
-    return node.root ? "module" : (themedFolderIconName(node.label, expanded) ?? "folder");
+    return node.root ? "module" : (themedFolderIconName(node.label, expanded, holdsOpen, node.path) ?? "folder");
   }
-  return fileIconName(node.label);
+  return fileIconName(node.label, node.path);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +259,9 @@ interface RowProps {
   onPointerDown: (node: ProjectNode, e: ReactPointerEvent) => void;
 }
 
+const holdsOpenFile = (dir: string, files: readonly string[]) =>
+  files.some((f) => f.length > dir.length && f.startsWith(dir) && (f[dir.length] === "/" || f[dir.length] === "\\"));
+
 const Row = memo(function Row({
   node,
   matches,
@@ -279,9 +283,10 @@ const Row = memo(function Row({
   const build = useProjectPresentation();
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
+  const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
   const icon =
     node.dir || node.placeholder || node.icon
-      ? iconFor(node, roots, root, build, detected, expanded)
+      ? iconFor(node, roots, root, build, detected, expanded, holdsOpen)
       : presentationIcon(node.path, file, roots, root, build.spring);
   const moduleFolder =
     node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
@@ -705,8 +710,7 @@ export function ProjectView() {
         openMoveDialog();
         break;
       case "Meta+Z":
-        if (lastFileRefactoring()) void undoFileRefactoring();
-        else handled = false;
+        handled = undoLastFileOperation();
         break;
       case "Meta+C":
         copySelection(false);
@@ -767,6 +771,7 @@ export function ProjectView() {
     <div
       ref={containerRef}
       className={styles.view}
+      data-project-view=""
       {...OWNS_FILE_DROP}
       onKeyDown={onKeyDown}
       // The native Edit menu may take ⌘C/⌘X/⌘V before the keymap sees them; it then sends DOM clipboard events.

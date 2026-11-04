@@ -20,8 +20,11 @@ import { installLaunchHandling, installLightEditAutoClose, windowActions } from 
 import { WorkspaceDialogHost } from "./WorkspaceDialog";
 import { installWindowGroups } from "@/platform/windowGroups";
 
-/** The UI locale of a secondary (Settings) window. */
+/** The UI locale of a secondary (Settings, comparison) window. */
 export const activateLocale = installLocaleSync;
+/** Native menu items of a secondary window that runs actions itself (comparison). */
+export const activateMenuBridge = installMenuBridge;
+export { confirmLeave } from "./closeGuard";
 
 export function activate(): () => void {
   const disposers = [

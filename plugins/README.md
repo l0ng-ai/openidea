@@ -79,6 +79,7 @@ authors = ["You <you@example.com>"]
 homepage = "https://example.com"  # optional
 license = "MIT"                   # optional
 change-notes = "1.2.0 — …"        # shown under What's New
+categories = ["tools"]            # marketplace categories, see below
 engines.openidea = "^1.0"         # the plugin API this package needs
 wasm = "dist/plugin.wasm"         # omit for data-only plugins
 activation = ["on-language:markdown"]   # optional, see below
@@ -93,6 +94,13 @@ title = "Word Tools: Count Words"
 category = "Word Tools"           # group in Search Everywhere / Keymap
 when = "editorFocus"              # optional: same expressions as built-in actions
 ```
+
+`categories` (up to 3) file the plugin in the marketplace: `languages`,
+`themes`, `icon-themes`, `linters` (linters and formatters), `vcs`, `ai`,
+`frameworks`, `tools`, `other`. Without them, a plugin contributing themes,
+icon themes or languages is filed under those, any other under `other`.
+Categories an IDE doesn't know, and any after the first three it knows, are
+ignored (`check` warns about both).
 
 All paths are relative to the package directory and may not leave it. A
 manifest is validated as a whole: if one contribution is invalid, nothing is
@@ -585,6 +593,84 @@ attributes only, no scripts, event handlers, external references, `url()` or
 entities. Apply a theme in Settings › Plugins; see
 [`official/material-icons`](official/material-icons) for a complete one.
 
+Optional fields:
+
+```json
+{
+  "iconDefinitions": { "rust": { "light": "icons/rust.svg", "dark": "icons/rust_dark.svg" } },
+  "folderOpen": "folder-open",
+  "patterns": [
+    { "pattern": "^.*\\.spec\\.ts$", "icon": "test-ts", "ignoreCase": true },
+    { "pattern": "/fixtures/", "icon": "fixture", "path": true, "group": "tests" },
+    { "pattern": "^src$", "icon": "folder-src", "target": "folder", "openIcon": "folder-src-open" }
+  ],
+  "overrides": { "chevron-right": "arrow-right", "symbol-class": "class" },
+  "groups": [{ "id": "tests", "name": "Tests", "enabled": false }],
+  "choices": [
+    {
+      "id": "arrows", "name": "Arrows", "default": "plain",
+      "options": [
+        { "id": "plain", "name": "Default" },
+        { "id": "plus", "name": "Plus-Minus", "overrides": { "chevron-right": "plus" } }
+      ]
+    }
+  ],
+  "accent": true,
+  "settings": [
+    {
+      "title": "Icons",
+      "items": [
+        { "option": "hideFiles", "invert": true, "label": "Show file icons", "hint": "In trees, lists and tabs" },
+        { "option": "groups", "columns": 2 },
+        { "option": "choice", "choice": "arrows" },
+        { "option": "iconSize", "label": "Icon size", "default": 16 }
+      ]
+    }
+  ]
+}
+```
+
+- `iconDefinitions` values may be `{ "light", "dark" }`; the dark SVG is used
+  in dark themes. Icon ids may not end in `_dark`.
+- `patterns` are regular expressions checked in order, before `fileNames`
+  and `fileExtensions`. `target` is `file` (default) or `folder`; with `path`
+  a pattern matches the whole path (`/` separators) instead of the name;
+  `ignoreCase` ignores case. Patterns that could backtrack badly (a repeated
+  group, too many ways to match one name), lookaround, inline flags and
+  named groups are refused.
+- `openIcon` (folder patterns) and `folderOpen` (other folders) are used for
+  folders holding a file open in the editor when _Hollow folders_ is on.
+- `overrides` replace built-in IDE icons by name (`chevron-right`,
+  `folder-source`, …); symbol icons (`symbol-<kind>`, `class`, `method`, …)
+  are PSI icons.
+- `groups` are packs of patterns the user turns on or off; `enabled` is the
+  default.
+- `choices` are variants the user picks one of; the picked option's
+  `overrides` win over `overrides`.
+- `accent: true`: elements with `data-tint="true"` take the colour the user
+  picks.
+- Elements with `data-themed="true"` take the accent colour of Settings ›
+  Appearance, or the theme's custom accent colour.
+
+- `settings` describe the theme's page in Settings › Plugins › _theme label_;
+  a theme without them has no page. Sections have a `title` and `items`; an
+  item names an `option` the IDE implements, with the theme's `label`,
+  optional `hint` and, where the option needs one, `default`:
+
+  | `option`                                                                   | Control              | Item fields                                          |
+  | -------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------- |
+  | `hideFiles`, `hideFolders`, `hideUiIcons`, `hidePsiIcons`, `hollowFolders` | checkbox             | `invert`: checked means off                          |
+  | `groups`                                                                   | a checkbox per group | `columns` (1–4), `label?` (group names are shown)    |
+  | `choice`                                                                   | the choice's options | `choice` (its id), `label?` (default: its name)      |
+  | `accent`, `monochrome`                                                     | checkbox and colour  | `default` (`#rrggbb`); `accent` needs `accent: true` |
+  | `saturation` (0–20), `opacity` (10–100), `iconSize`, `rowHeight` (px)      | checkbox and number  | `default` within the range                           |
+
+  `iconSize` is 12–32 and `rowHeight` 16–48. Values are kept per theme in
+  `appearance.fileIconThemeOptions` and apply while the theme is selected.
+
+The first icon theme of a plugin is selected when the plugin is installed or
+enabled while no icon theme is.
+
 ## 6. Languages
 
 `languages/<id>.toml` files use the IDE's own language format; see any file in
@@ -650,7 +736,9 @@ granted, and starts the approved program.
 - **Install:** Settings › Plugins › _Install Plugin from Disk…_ (a package
   folder) or _Install Plugin from Package File…_ (a `.oiplugin`, a `.zip` with
   the package at its root or in its only folder, or a folder's `plugin.toml`;
-  a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused). The install
+  a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused; IntelliJ
+  theme plugins are imported instead: _Import IntelliJ Theme from File…_ and _Import Theme
+  from IntelliJ IDE…_, see [`docs/plugins/themes.md`](../docs/plugins/themes.md)). The install
   page lists every capability and whether the package is signed by a publisher
   the marketplace trusts; nothing is copied until you accept.
 - **Versions:** installed plugins live in `<app-data>/plugins/<id>/<version>/`
@@ -659,6 +747,12 @@ granted, and starts the approved program.
   the version it replaced automatically (you're told why); _Roll Back to …_
   in the plugin's details does it by hand. Data (`storage`) is per plugin, not
   per version.
+- **Updates:** when the daily marketplace check finds newer versions of
+  installed plugins, the IDE says so once, with _Update All_ (also in the gear
+  menu and as the _Update All Plugins_ action). An update that asks for
+  nothing new installs with the grants the installed version has; the install
+  page is shown only for new capabilities, an unsigned package or another
+  signer (see _Distribution_).
 - **Linked plugins:** `openidea-plugin link <dir>` (§1). Listed with a _linked_
   tag; capabilities are granted per folder.
 - **Project plugins:** put (or symlink) the package in
@@ -678,6 +772,9 @@ files).
 openidea-plugin keygen acme.key                     # once; keep the file secret
 openidea-plugin pack plugins/acme-tools --key acme.key --publisher acme
 openidea-plugin index market/ --publisher acme --name "ACME" --key acme.key
+openidea-plugin check acme.tools-1.0.0.oiplugin      # a package as installing would check it
+openidea-plugin merge market/index.json https://example.com/index.json --keep acme
+openidea-plugin endorse <new public key> --key acme.key --publisher acme   # when rotating keys
 ```
 
 A **marketplace** is static: an `index.json` and the packages next to it, on
@@ -693,8 +790,68 @@ and the publisher's key, then shows the install page.
 - **Revocation:** the index can revoke plugin versions (or all versions) and
   publisher keys. The IDE reads the index daily; revoked plugins are disabled
   with the reason and the user is notified — also after a restart, before
-  their code could run. A publisher rotates keys by adding the new one; older
-  keys stay valid until revoked.
+  their code could run.
+- **Key rotation:** a publisher rotates keys by registering the new one with
+  `index --key new.key --previous-key old.key`: the old key endorses the new
+  one, and older keys stay valid until revoked (`endorse` prints the
+  endorsement for an index someone else writes, such as the registry's). An installed plugin updates
+  silently only to a package signed with the key it was installed with, or
+  one that key endorsed (directly or through endorsed keys; endorsements by
+  revoked keys don't count). Another signer — an unendorsed key, or an
+  unsigned package replacing a signed one — is shown on the install page and
+  needs the user's confirmation.
+- **Official key:** release builds carry the official publisher's public key
+  (`OPENIDEA_OFFICIAL_PLUGIN_KEYS`, derived from the release's signing key).
+  `openidea.*` plugins must be signed with it, or with a key it endorsed,
+  whatever keys an index lists for `openidea`.
+- **Format:** fields are only ever added to the index (an IDE ignores those it
+  doesn't know), and `format` stays `1` unless older IDEs can't read the
+  change. An IDE reading a newer format still applies its revocations and
+  `moved`, lists no plugins, and asks the user to update.
+- **Moving:** an index with `"moved": "<url>"` sends the IDE to the index at
+  that URL (relative or absolute; https stays https), so a marketplace can
+  change hosts while released IDEs keep the address they were built with.
+
+**Versions.** Each index entry records the plugin API it needs (`engine`: the
+manifest's `engines.openidea`, narrowed to the API its component was built
+for; an entry without one is offered to no IDE), and a plugin may be listed in
+several versions. Settings › Plugins
+offers the newest version this IDE can load; when there is none, it shows the
+plugin as incompatible and says which API it needs. Entries also carry the
+plugin's categories, which Settings › Plugins › Available filters by. Indexing keeps, of each
+plugin, the newest version per API requirement, so users of an older IDE keep
+the last version built for them.
+
+`index` with a key registers the publisher and lists the folder's packages
+as its plugins (their earlier versions stay as above; plugins no longer in the
+folder go), keeping the other publishers'; `--download-base` makes downloads
+absolute, so a version stays where it was first published. Without a key, it
+lists every package in the folder, each checked against the publishers the
+index already has. `merge` takes the
+publishers, plugins and revocations of another index (downloads made absolute)
+in place of every publisher but `--keep`; `check` also takes a `.oiplugin`.
+
+### 8.1 Official and community plugins
+
+The IDE's default marketplace is `plugins-index.json` of the latest release.
+It lists two kinds of plugins:
+
+- **Official** (`plugins/official/`, ids `openidea.*`): maintained in this
+  repository, built and signed by its release workflow, and kept working as
+  the API changes. New official plugins are proposed in an issue first; they
+  cover general needs or show how to use part of the API.
+- **Community** (their authors' ids and keys): developed in their authors'
+  repositories and listed through the registry,
+  [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins).
+  An author registers a publisher (an id prefix, its public key and the GitHub
+  accounts that may change it) and adds each plugin version by pull request;
+  the registry checks the package (digest, signature, `openidea-plugin check`)
+  and publishes its index, which `plugins-index.yml` merges into the release's
+  within the hour. Its README has the rules.
+
+Pull requests that add a plugin to this repository are for official plugins.
+A plugin that needs a new extension point brings the extension point here, as
+its own pull request, and the plugin to the registry.
 
 ## 9. Testing the host
 

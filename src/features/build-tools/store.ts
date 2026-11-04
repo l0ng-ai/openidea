@@ -374,7 +374,7 @@ export function resetBuild() {
   clearTimeout(profileReload);
   profileReload = undefined;
   queuedSyncs.clear();
-  useAnalyzer.setState({ pom: null });
+  useAnalyzer.setState({ module: null });
   for (const tool of ["maven", "gradle"] as const) {
     cancelSync(tool);
     removeTask(`build-sync:${tool}`);
@@ -418,11 +418,14 @@ export function setCurrentProject(tool: BuildTool, id: string | undefined) {
 
 export const ANALYZER_KIND = "maven.dependencyAnalyzer";
 
-/** Module the Dependency Analyzer shows (`pom`, project-relative); `null` = the first one. */
-export const useAnalyzer = create<{ pom: string | null }>(() => ({ pom: null }));
+/**
+ * Module the Dependency Analyzer shows: a Maven `pom` (project-relative) or `gradle:<path>`
+ * (`gradle::app`) for a Gradle project; `null` = the first one.
+ */
+export const useAnalyzer = create<{ module: string | null }>(() => ({ module: null }));
 
-/** Opens (or focuses) the Dependency Analyzer tab, showing the module `pom` when given. */
-export async function openAnalyzer(pom: string | null) {
-  if (pom) useAnalyzer.setState({ pom });
+/** Opens (or focuses) the Dependency Analyzer tab, showing `module` when given. */
+export async function openAnalyzer(module: string | null) {
+  if (module) useAnalyzer.setState({ module });
   await editorService().openInput({ kind: ANALYZER_KIND, key: ANALYZER_KIND, data: {} }, { focus: true });
 }

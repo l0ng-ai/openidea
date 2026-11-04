@@ -6,8 +6,11 @@
 //! an entry using one that depends on the moment VS Code launches it (`${file}`,
 //! `${input:…}`, `${command:…}`) is skipped.
 
-use super::{Entry, Found, SkipReason, normalize, relative_to};
-use crate::{RunConfig, RunExtras};
+use super::{
+    Entry, Found, SkipReason, command_name, config, env_var, normalize, path_from, project_python, split_args,
+    working_dir,
+};
+use crate::RunConfig;
 use ide_core::{IdeError, IdeResult};
 use serde_json::{Map, Value};
 use std::cell::Cell;
@@ -87,15 +90,6 @@ fn name_of(v: &Value) -> String {
     v.get("name").and_then(Value::as_str).unwrap_or_default().trim().to_owned()
 }
 
-/// The variable `name` of `env`; Windows names ignore case (`${env:PATH}` finds `Path`).
-fn env_var(env: &BTreeMap<String, String>, name: &str, windows: bool) -> Option<String> {
-    match env.get(name) {
-        Some(v) => Some(v.clone()),
-        None if windows => env.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone()),
-        None => None,
-    }
-}
-
 /// String form of a scalar (`"args": [8000]`, `"env": { "DEBUG": true }`).
 fn scalar(v: &Value) -> Option<String> {
     match v {
@@ -103,29 +97,6 @@ fn scalar(v: &Value) -> Option<String> {
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
-    }
-}
-
-/// The program's file name without a Windows extension (`npm.cmd` → `npm`).
-fn command_name(cmd: &str) -> &str {
-    let name = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
-    name.strip_suffix(".cmd").or_else(|| name.strip_suffix(".exe")).unwrap_or(name)
-}
-
-fn config(name: &str, kind: &str, command: String, args: Vec<String>, debug: Option<&str>) -> RunConfig {
-    RunConfig {
-        id: String::new(),
-        name: name.to_owned(),
-        kind: kind.to_owned(),
-        command,
-        args,
-        cwd: None,
-        env: BTreeMap::new(),
-        detected: false,
-        is_test: false,
-        debug_adapter: debug.map(str::to_owned),
-        allow_parallel: false,
-        extras: RunExtras::default(),
     }
 }
 
@@ -140,44 +111,6 @@ fn npm_line(words: &[String]) -> Option<(String, Vec<String>)> {
         args[0] = "run".into();
     }
     NPM_COMMANDS.contains(&args.first()?.as_str()).then(|| (exe.clone(), args))
-}
-
-/// Splits a command line into words: whitespace, `'…'` and `"…"` quoting, backslash escapes
-/// (like `parseArgs` in `src/platform/commandLine.ts`).
-fn split_args(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut has = false;
-    let mut quote: Option<char> = None;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some('"') if c == '\\' && chars.peek().is_some_and(|n| "\"\\$`".contains(*n)) => {
-                cur.extend(chars.next());
-            }
-            Some(_) => cur.push(c),
-            None if c == '\'' || c == '"' => {
-                quote = Some(c);
-                has = true;
-            }
-            None if c == '\\' && chars.peek().is_some() => {
-                cur.extend(chars.next());
-                has = true;
-            }
-            None if c.is_whitespace() => {
-                if has || !cur.is_empty() {
-                    out.push(std::mem::take(&mut cur));
-                }
-                has = false;
-            }
-            None => cur.push(c),
-        }
-    }
-    if has || !cur.is_empty() {
-        out.push(cur);
-    }
-    out
 }
 
 impl Cx<'_> {
@@ -235,16 +168,7 @@ impl Cx<'_> {
     /// An absolute path inside the project, written relative to `dir` (the run's working
     /// directory, where the process resolves it); anything else as it is.
     fn path_from(&self, value: String, dir: &Path) -> String {
-        let path = Path::new(&value);
-        if !path.is_absolute() {
-            return value;
-        }
-        let path = normalize(path);
-        if path.starts_with(self.root) && dir.starts_with(self.root) {
-            relative_to(&path, dir).unwrap_or(value)
-        } else {
-            value
-        }
+        path_from(self.root, value, dir)
     }
 
     /// The working directory (absolute) and the configuration's `cwd` (relative to the root).
@@ -252,13 +176,7 @@ impl Cx<'_> {
         let Some(cwd) = self.string(obj, "cwd")? else {
             return Ok((self.root.to_path_buf(), None));
         };
-        let abs = normalize(&self.root.join(cwd));
-        let rel = match abs.strip_prefix(self.root) {
-            Ok(r) if r.as_os_str().is_empty() => None,
-            Ok(r) => Some(PathBuf::from(relative_to(&abs, self.root).unwrap_or_else(|| r.to_string_lossy().into()))),
-            Err(_) => Some(abs.clone()),
-        };
-        Ok((abs, rel))
+        Ok(working_dir(self.root, &cwd))
     }
 
     /// `env` (a variable set to itself is inherited anyway) and `envFile`.
@@ -341,14 +259,14 @@ impl Cx<'_> {
             Some((exe, opts)) => {
                 let opts = opts.iter().map(|o| self.expand(o)).collect::<Res<Vec<_>>>()?;
                 if exe.trim().is_empty() || selected(exe) {
-                    let (exe, mut lead) = self.project_python(&dir);
+                    let (exe, mut lead) = project_python(self.root, &dir);
                     lead.extend(opts);
                     (exe, lead)
                 } else {
                     (self.path_from(self.expand(exe)?, &dir), opts)
                 }
             }
-            None => self.project_python(&dir),
+            None => project_python(self.root, &dir),
         };
         args.extend(self.words(obj, "pythonArgs")?);
         let rest = self.words(obj, "args")?;
@@ -373,14 +291,6 @@ impl Cx<'_> {
         let mut c = config(name, kind, command, args, Some("debugpy"));
         c.is_test = kind != "python";
         Ok(c)
-    }
-
-    /// The project's interpreter (see [`crate::detect::project_python`]), relative to `dir`.
-    fn project_python(&self, dir: &Path) -> (String, Vec<String>) {
-        let (exe, lead) = crate::detect::project_python(self.root);
-        let exe =
-            if exe.contains('/') { self.path_from(self.root.join(&exe).to_string_lossy().into(), dir) } else { exe };
-        (exe, lead)
     }
 
     fn python_attach(&self, name: &str, obj: &Map<String, Value>) -> Res<RunConfig> {

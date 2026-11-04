@@ -380,7 +380,75 @@
   min-width: 0;
 }
 
+.categorySelect {
+  width: 100%;
+}
+
+.detailsNotice {
+  margin: 0 0 12px;
+}
+
 .marketOverview {
   padding: 12px 16px;
   overflow: auto;
+}
+
+/* Import Theme from IntelliJ IDE */
+.intellijThemes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+}
+.intellijThemes > p {
+  margin: 0;
+}
+/* As tall as its rows (the list sizes them), scrolling past seven. */
+.intellijThemesList {
+  max-height: 316px;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.intellijThemesStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--fg-muted);
+}
+.intellijTheme {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.intellijTheme > .muted {
+  flex-shrink: 0;
+  font-size: var(--fs-small);
+}
+.intellijPlugin {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  align-self: stretch;
+  min-width: 0;
+}
+/* A line above each plugin but the first, as in IDEA's Theme list. */
+.intellijPluginNext {
+  border-top: 1px solid var(--border);
+}
+.intellijPluginName {
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.intellijPluginIde {
+  flex-shrink: 0;
+  margin-left: auto;
 }

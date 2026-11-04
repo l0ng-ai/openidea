@@ -70,6 +70,32 @@ beforeEach(() => {
 afterEach(() => disposeTypes());
 
 describe("configuration types", () => {
+  it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
+    const type = typeFor("application")!;
+    const base = withParams(newConfigOfType(type, []), { ...newConfigOfType(type, []).params, mainClass: "a.Main" });
+    expect(base.command).toBe("java");
+    expect(base.module).toBeUndefined();
+
+    const chosen = withParams(base, { ...base.params, jre: "/jdks/temurin-8", module: "server" });
+    expect(chosen.command).toBe("/jdks/temurin-8/bin/java");
+    expect(chosen.module).toBe("server");
+    // The project root is a module too.
+    expect(withParams(chosen, { ...chosen.params, module: "." }).module).toBe("");
+    // Back to the defaults: the module's JDK, and the module found again for another main class.
+    const auto = withParams(chosen, { ...chosen.params, jre: "", module: "", mainClass: "b.Main" });
+    expect(auto.command).toBe("java");
+    expect(auto.module).toBeUndefined();
+
+    // A configuration saved with its module shows it in the form.
+    const saved = cfg("saved", {
+      kind: "application",
+      command: "java",
+      args: ["-cp", "${classpath}", "a.Main"],
+      module: "",
+    });
+    expect(formParams(saved)).toMatchObject({ mainClass: "a.Main", module: "." });
+  });
+
   it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
     const type = typeFor(kind)!;
     const original = newConfigOfType(type, []);

@@ -73,6 +73,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 msg,
                 json!({
                     "supportsConfigurationDoneRequest": true,
+                    "supportsCompletionsRequest": true,
                     "supportsTerminateRequest": true,
                     "supportsSetVariable": true,
                     "supportsFunctionBreakpoints": true,
@@ -172,6 +173,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ]})
             ),
             "evaluate" => ok!(msg, json!({"result": "42", "type": "int", "variablesReference": 0})),
+            "completions" => ok!(
+                msg,
+                json!({"targets": [
+                    {"label": "getName()", "text": "getName", "type": "method", "detail": "String"},
+                    {"label": "name", "type": "field"},
+                    {"label": ""},
+                ]})
+            ),
             "continue" => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(json!({"type": "event", "event": "exited", "body": {"exitCode": 3}}));
@@ -368,6 +377,14 @@ async fn full_protocol_flow() {
     let eval = h.request("evaluate");
     assert_eq!(eval["arguments"]["context"], "watch");
     assert_eq!(eval["arguments"]["frameId"], 10);
+    let items = h.manager.completions(id, Some(10), "req.na".into(), 0, 6).await.unwrap();
+    assert_eq!(
+        items.iter().map(|c| (c.label.as_str(), c.text.as_deref(), c.kind.as_deref())).collect::<Vec<_>>(),
+        [("getName()", Some("getName"), Some("method")), ("name", None, Some("field"))]
+    );
+    let asked = h.request("completions");
+    assert_eq!((asked["arguments"]["line"].clone(), asked["arguments"]["column"].clone()), (json!(1), json!(7)));
+    assert_eq!(asked["arguments"]["frameId"], 10);
 
     // Live breakpoint updates reach the session.
     let states = h.manager.set_breakpoints(path.clone(), vec![bp(0)]).await.unwrap();

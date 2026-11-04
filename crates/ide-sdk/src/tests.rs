@@ -33,6 +33,8 @@ fn server(name: &str) -> LanguageServerConfig {
         install_hint: None,
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
@@ -171,6 +173,35 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
+#[test]
+fn npm_config_runs_on_its_own_node_interpreter() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.node.interpreter = "/opt/node22/bin/node".into();
+    let mut own = run("npm", "npm", &["run", "dev"]);
+    own.extras.params.insert("nodeInterpreter".into(), "/opt/node18/bin/node".into());
+    let mut configs = vec![own, run("npm", "npm", &["run", "build"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let first = |c: &RunConfig| c.env["PATH"].split(':').next().unwrap().to_owned();
+    assert_eq!(first(&configs[0]), "/opt/node18/bin");
+    assert_eq!(first(&configs[1]), "/opt/node22/bin", "the project's Node.js without one");
+    // Saved without the derived PATH, keeping the choice itself.
+    let saved = without_derived(&configs[0], tmp.path(), &s);
+    assert!(!saved.env.contains_key("PATH"));
+    assert_eq!(saved.extras.params["nodeInterpreter"], "/opt/node18/bin/node");
+    // Chosen on a configuration loaded with the project's PATH: that PATH isn't kept either.
+    let mut edited = configs[1].clone();
+    edited.extras.params.insert("nodeInterpreter".into(), "/opt/node18/bin/node".into());
+    let saved = without_derived(&edited, tmp.path(), &s);
+    assert!(!saved.env.contains_key("PATH"));
+    let mut reloaded = vec![saved];
+    apply_to_run_configs(&mut reloaded, tmp.path(), &s);
+    assert_eq!(first(&reloaded[0]), "/opt/node18/bin");
+}
+
 fn fake_jdk(dir: &Path) {
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin").join(exe("java")), "").unwrap();
@@ -254,6 +285,129 @@ fn saved_maven_goal_configs_take_the_configured_launcher() {
 }
 
 #[test]
+fn maven_launch_refreshes_legacy_defaults_but_keeps_user_overrides() {
+    use crate::apply::prepare_maven_run;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("pom.xml"), "<project/>").unwrap();
+    let home = tmp.path().join("new-maven");
+    std::fs::create_dir_all(home.join("bin")).unwrap();
+    let launcher = home.join("bin").join(if cfg!(windows) { "mvn.cmd" } else { "mvn" });
+    std::fs::write(&launcher, "").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.home = home.to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "new-settings.xml".into();
+    s.languages.java.maven.local_repository = "new-repo".into();
+    let options = maven_options(tmp.path(), &s);
+
+    for id in [
+        "maven:goal:pom.xml:test",
+        "maven:test",
+        "context:maven:test:src/test/java/ExampleTest.java",
+        "context:target:context:maven:test:src/test/java/ExampleTest.java:ExampleTest#example",
+        "workspace:abc:maven:test",
+        "context:target:context:workspace:abc:maven:test:src/test/java/ExampleTest.java:ExampleTest#example",
+    ] {
+        let mut config = run(
+            "maven",
+            "//?/UNC/server/old-maven/bin/mvn.cmd",
+            &["-s", "old-settings.xml", "-Dmaven.repo.local=old-repo", "test", "-Dtest=ExampleTest#example"],
+        );
+        config.id = id.into();
+        config.detected = !id.starts_with("maven:goal:");
+        let original = config.clone();
+        prepare_maven_run(&mut config, tmp.path(), &s);
+        assert_eq!(config.command, launcher.to_string_lossy(), "{id}");
+        assert_eq!(
+            config.args,
+            [options.clone(), vec!["test".into(), "-Dtest=ExampleTest#example".into()]].concat(),
+            "{id}"
+        );
+        // Rerunning the stored configuration reads settings again, without changing the stored input.
+        s.languages.java.maven.local_repository = "other-repo".into();
+        let mut rerun = original;
+        prepare_maven_run(&mut rerun, tmp.path(), &s);
+        assert!(rerun.args.contains(&format!("-Dmaven.repo.local={}", tmp.path().join("other-repo").display())));
+        s.languages.java.maven.local_repository = "new-repo".into();
+    }
+
+    for args in [
+        vec!["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"],
+        vec!["--settings=own-settings.xml", "-D", "maven.repo.local=own-repo", "test"],
+    ] {
+        let mut config = run("maven", "mvn", &args);
+        config.detected = false;
+        prepare_maven_run(&mut config, tmp.path(), &s);
+        assert_eq!(config.command, launcher.to_string_lossy());
+        assert_eq!(config.args, args);
+    }
+
+    let mut explicit = run("maven", "/custom/mvn", &["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
+    explicit.detected = false;
+    prepare_maven_run(&mut explicit, tmp.path(), &s);
+    assert_eq!(explicit.command, "/custom/mvn");
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
+
+    // A gutter configuration derived from a user-edited default must keep that user's choices.
+    let mut saved = explicit.clone();
+    saved.id = "maven:test".into();
+    ide_run::save_user_configs(tmp.path(), &[saved]).unwrap();
+    explicit.id = "context:maven:test:src/test/java/ExampleTest.java".into();
+    explicit.detected = true;
+    prepare_maven_run(&mut explicit, tmp.path(), &s);
+    assert_eq!(explicit.command, "/custom/mvn");
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
+
+    std::fs::create_dir(tmp.path().join("child")).unwrap();
+    std::fs::write(tmp.path().join("child/pom.xml"), "<project/>").unwrap();
+    let mut nested = explicit.clone();
+    nested.id = "maven:test:child".into();
+    nested.detected = false;
+    ide_run::save_user_configs(tmp.path(), &[nested]).unwrap();
+    explicit.id = "context:maven:test:child:src/test/java/ExampleTest.java".into();
+    prepare_maven_run(&mut explicit, tmp.path(), &s);
+    assert_eq!(explicit.command, "/custom/mvn", "an edited child must not fall back to the parent's defaults");
+    assert_eq!(explicit.args, ["-s", "own-settings.xml", "-Dmaven.repo.local=own-repo", "test"]);
+}
+
+#[test]
+fn maven_goal_keeps_explicit_settings_and_nested_wrapper() {
+    use crate::apply::prepare_maven_run;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("child")).unwrap();
+    let wrapper = tmp.path().join("child").join(if cfg!(windows) { "mvnw.cmd" } else { "mvnw" });
+    std::fs::write(&wrapper, "").unwrap();
+    let mut config = run("maven", "old-maven", &["-s", "old-settings.xml", "-s", "own-settings.xml", "test"]);
+    config.id = "maven:goal:child/pom.xml:-s own-settings.xml test".into();
+    config.cwd = Some("child".into());
+    config.detected = false;
+    let mut s = Settings::default();
+    s.languages.java.maven.user_settings = "new-settings.xml".into();
+    prepare_maven_run(&mut config, tmp.path(), &s);
+    assert_eq!(config.command, wrapper.to_string_lossy());
+    assert_eq!(config.args, ["-s", "own-settings.xml", "test"]);
+}
+
+#[test]
+fn persisting_a_maven_goal_keeps_explicit_options_equal_to_the_defaults() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.user_settings = tmp.path().join("settings.xml").to_string_lossy().into_owned();
+    s.languages.java.maven.local_repository = tmp.path().join("repo").to_string_lossy().into_owned();
+    let options = maven_options(tmp.path(), &s);
+    for goals in [vec![options[2].clone(), "test".into()], [options.clone(), vec!["test".into()]].concat()] {
+        let mut config = run("maven", "mvn", &[]);
+        config.id = format!("maven:goal:pom.xml:{}", goals.join(" "));
+        config.detected = false;
+        config.args = goals.clone();
+        apply_to_run_configs(std::slice::from_mut(&mut config), tmp.path(), &s);
+        let kept = without_derived(&config, tmp.path(), &s);
+        assert_eq!(kept.args, goals);
+    }
+}
+
+#[test]
 fn language_server_settings_disable_add_and_override() {
     use crate::apply::{language_servers, server_launch_overrides, server_protocol_overrides, with_custom_servers};
     use ide_core::settings::LanguageServerSettings;
@@ -329,6 +483,26 @@ fn language_server_settings_disable_add_and_override() {
     let init = serde_json::to_value(ra.initialization_options.unwrap()).unwrap();
     assert_eq!(init, json!({ "checkOnSave": false, "check": { "command": "clippy" } }));
     assert_eq!(ra.settings, Some(json!({ "rust-analyzer": { "cargo": { "features": "all" } } })));
+    assert!(ra.features.is_empty() && ra.code_action_kinds.is_empty(), "no setting keeps the definition's");
+
+    // `features` / `codeActionKinds` replace the definition's; empty lifts them.
+    let mut pylsp = server("pylsp");
+    pylsp.features = vec!["code-action".into()];
+    pylsp.code_action_kinds = vec!["refactor".into()];
+    s.language_servers.insert(
+        "pylsp".into(),
+        LanguageServerSettings {
+            features: Some(vec!["code-action".into(), "hover".into()]),
+            code_action_kinds: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    server_protocol_overrides(&mut pylsp, &s);
+    assert_eq!(pylsp.features, ["code-action", "hover"]);
+    assert!(pylsp.code_action_kinds.is_empty());
+    let parsed: LanguageServerSettings =
+        serde_json::from_value(json!({ "features": ["code-action"], "codeActionKinds": ["refactor"] })).unwrap();
+    assert_eq!(parsed.code_action_kinds, Some(vec!["refactor".to_string()]));
 }
 
 #[test]
@@ -1212,6 +1386,8 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     s.languages.java.jdk = root.join("jdk17").to_string_lossy().into_owned();
     touch("maven/bin/mvn");
     s.languages.java.maven.home = root.join("maven").to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "/m2/settings.xml".into();
+    s.languages.java.maven.local_repository = "/m2/repo".into();
     s.languages.ruby.interpreter = touch("ruby/bin/ruby");
     touch("ruby/bin/bundle");
     s.tools.insert("godot".into(), ide_core::settings::ToolSettings { path: touch("Godot/godot") });
@@ -1265,4 +1441,28 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     let ruby2 = root.join("ruby2/bin");
     assert_eq!(next.command, ruby2.join("ruby").to_string_lossy());
     assert!(next.env["PATH"].starts_with(&*ruby2.to_string_lossy()), "{}", next.env["PATH"]);
+
+    // A Maven configuration (a detected one narrowed to a test, a tool window goal) follows a
+    // later Maven home, settings file, local repository and JDK; options it sets itself stay.
+    for detected in [true, false] {
+        let mut goal = saved("maven", "mvn", &["test", "-Dtest=AppTest"], &[]);
+        goal.detected = detected;
+        let mut own = saved("maven", "mvn", &["-s", "/mine.xml", "test"], &[]);
+        own.detected = detected;
+        let mut loaded = [goal, own];
+        apply_to_run_configs(&mut loaded, root, &s);
+        let mut next = loaded.map(|c| without_derived(&c, root, &s));
+        touch("maven2/bin/mvn");
+        fake_jdk(&root.join("jdk21"));
+        let mut s2 = s.clone();
+        s2.languages.java.maven.home = root.join("maven2").to_string_lossy().into_owned();
+        s2.languages.java.maven.user_settings = "/m3/settings.xml".into();
+        s2.languages.java.maven.local_repository = "/m3/repo".into();
+        s2.languages.java.jdk = root.join("jdk21").to_string_lossy().into_owned();
+        apply_to_run_configs(&mut next, root, &s2);
+        assert_eq!(next[0].command, root.join("maven2/bin/mvn").to_string_lossy());
+        assert_eq!(next[0].args, ["-s", "/m3/settings.xml", "-Dmaven.repo.local=/m3/repo", "test", "-Dtest=AppTest"]);
+        assert!(next[0].env["JAVA_HOME"].ends_with("jdk21"), "{}", next[0].env["JAVA_HOME"]);
+        assert_eq!(next[1].args, ["-Dmaven.repo.local=/m3/repo", "-s", "/mine.xml", "test"]);
+    }
 }

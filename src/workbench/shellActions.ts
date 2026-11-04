@@ -3,7 +3,7 @@ import { isTauri } from "@/platform/ipc";
 import { closeProject, confirmLeaveProject, openProject, useProject } from "@/platform/project";
 import { runSearchFieldCommand, showContextMenu } from "@/ui";
 import { showCustomizeToolbar } from "./MainToolbarDialog";
-import { quickSwitchItems } from "./quickSwitch";
+import { showQuickSwitch } from "./quickSwitch";
 import { notify } from "./notificationStore";
 import { NOTIFICATIONS_TOOL_WINDOW } from "./Notifications";
 import { activateToolWindow } from "./toolwindows/store";
@@ -96,7 +96,7 @@ export function registerShellActions(): () => void {
       title: "Quick Switch Scheme…",
       category: "View",
       keywords: ["theme", "color scheme", "keymap", "view mode"],
-      run: () => showContextMenu({ x: window.innerWidth / 2 - 120, y: 96 }, quickSwitchItems()),
+      run: () => showQuickSwitch({ x: window.innerWidth / 2 - 120, y: 96 }),
     },
     {
       id: "toolbar.customize",

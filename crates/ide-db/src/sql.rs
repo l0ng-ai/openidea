@@ -7,6 +7,7 @@ use specta::Type;
 
 pub fn quote_ident(driver: DbDriver, name: &str) -> String {
     match driver {
+        DbDriver::Clickhouse => format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`")),
         DbDriver::Mysql => format!("`{}`", name.replace('`', "``")),
         DbDriver::SqlServer => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
@@ -15,7 +16,7 @@ pub fn quote_ident(driver: DbDriver, name: &str) -> String {
 
 pub fn quote_literal(driver: DbDriver, value: &str) -> String {
     let mut s = value.replace('\'', "''");
-    if driver == DbDriver::Mysql {
+    if matches!(driver, DbDriver::Mysql | DbDriver::Clickhouse) {
         s = s.replace('\\', "\\\\");
     }
     format!("'{s}'")
@@ -48,6 +49,10 @@ pub const INTERNAL_DATABASES: &[&str] = &["rdsadmin", "azure_maintenance", "azur
 pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
     match driver {
         DbDriver::Sqlite => "SELECT name FROM pragma_database_list WHERE name <> 'temp' ORDER BY seq",
+        DbDriver::Clickhouse if system => "SELECT name FROM system.databases ORDER BY name",
+        DbDriver::Clickhouse => {
+            "SELECT name FROM system.databases WHERE lower(name) NOT IN ('system', 'information_schema') ORDER BY name"
+        }
         DbDriver::Postgres if system => {
             "SELECT schema_name FROM information_schema.schemata \
              WHERE schema_name NOT LIKE 'pg\\_toast%' AND schema_name NOT LIKE 'pg\\_temp%' ORDER BY 1"
@@ -73,6 +78,12 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
 /// Rows: `name, kind` where kind is `table`, `view` or `materialized view`.
 pub fn tables(driver: DbDriver, schema: &str) -> String {
     match driver {
+        DbDriver::Clickhouse => format!(
+            "SELECT name, CASE engine WHEN 'View' THEN 'view' WHEN 'MaterializedView' THEN 'materialized view' \
+             WHEN 'WindowView' THEN 'view' ELSE 'table' END FROM system.tables \
+             WHERE database = {} AND is_temporary = 0 ORDER BY name",
+            quote_literal(driver, schema)
+        ),
         DbDriver::Sqlite => format!(
             "SELECT name, type FROM {}.sqlite_master WHERE type IN ('table', 'view') \
              AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
@@ -101,6 +112,12 @@ pub fn tables(driver: DbDriver, schema: &str) -> String {
 pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => format!(
+            "SELECT name, type, CASE WHEN startsWith(type, 'Nullable(') \
+             OR startsWith(type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, \
+             if(default_kind = '', NULL, default_expression), is_in_primary_key \
+             FROM system.columns WHERE database = {s} AND table = {t} ORDER BY position"
+        ),
         DbDriver::Sqlite => format!(
             "SELECT name, type, CASE WHEN \"notnull\" = 0 THEN 'YES' ELSE 'NO' END, dflt_value, \
              CASE WHEN pk > 0 THEN 1 ELSE 0 END FROM pragma_table_info({t}, {s}) ORDER BY cid"
@@ -141,6 +158,12 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
 pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => format!(
+            "SELECT * FROM (SELECT 'PRIMARY KEY' AS index_name, 0 AS is_unique, primary_key AS expression \
+             FROM system.tables WHERE database = {s} AND name = {t} AND primary_key != '' \
+             UNION ALL SELECT name, 0, expr FROM system.data_skipping_indices \
+             WHERE database = {s} AND table = {t}) ORDER BY index_name"
+        ),
         DbDriver::Sqlite => format!(
             "SELECT il.name, il.\"unique\", ii.name FROM pragma_index_list({t}, {s}) il \
              JOIN pragma_index_info(il.name, {s}) ii ORDER BY il.name, ii.seqno"
@@ -172,6 +195,15 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
 /// for SQL completion, grouped by table in column order.
 pub fn completion_columns(driver: DbDriver) -> &'static str {
     match driver {
+        DbDriver::Clickhouse => {
+            "SELECT c.database, c.table, CASE t.engine WHEN 'View' THEN 'view' \
+             WHEN 'MaterializedView' THEN 'materialized view' WHEN 'WindowView' THEN 'view' ELSE 'table' END, \
+             c.name, c.type, CASE WHEN startsWith(c.type, 'Nullable(') \
+             OR startsWith(c.type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, c.is_in_primary_key, 1 \
+             FROM system.columns c JOIN system.tables t ON t.database = c.database AND t.name = c.table \
+             WHERE lower(c.database) NOT IN ('system', 'information_schema') AND t.is_temporary = 0 \
+             ORDER BY c.database, c.table, c.position LIMIT 50000"
+        }
         DbDriver::Sqlite => {
             "SELECT 'main', m.name, m.type, p.name, p.type, CASE WHEN p.\"notnull\" = 0 THEN 'YES' ELSE 'NO' END, \
              CASE WHEN p.pk > 0 THEN 1 ELSE 0 END, \
@@ -224,6 +256,7 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
 /// when the key references the primary key implicitly.
 pub fn foreign_keys(driver: DbDriver) -> &'static str {
     match driver {
+        DbDriver::Clickhouse => "SELECT '', '', '', '', '', '', '' WHERE 0",
         DbDriver::Sqlite => {
             "SELECT 'main', m.name, f.id, f.\"from\", 'main', f.\"table\", f.\"to\" \
              FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f \
@@ -261,6 +294,7 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
 pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => foreign_keys(driver).to_owned(),
         DbDriver::Sqlite => format!(
             "SELECT {s}, {t}, f.id, f.\"from\", {s}, f.\"table\", f.\"to\"              FROM pragma_foreign_key_list({t}, {s}) f ORDER BY f.id, f.seq"
         ),
@@ -279,6 +313,7 @@ pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String
 /// The schema unqualified names resolve to (`None`: always `main`).
 pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
     match driver {
+        DbDriver::Clickhouse => Some("SELECT currentDatabase()"),
         DbDriver::Sqlite => None,
         DbDriver::Postgres => Some("SELECT current_schema()"),
         DbDriver::Mysql => Some("SELECT DATABASE()"),
@@ -365,6 +400,9 @@ fn where_key(driver: DbDriver, key: &[CellValue]) -> String {
 /// The DML statement for `edit`. Values are written as quoted literals, which
 /// every supported database coerces to the column type.
 pub fn edit_statement(driver: DbDriver, schema: &str, table: &str, edit: &DbRowEdit) -> Result<String, String> {
+    if driver == DbDriver::Clickhouse {
+        return Err("ClickHouse table editing is unsupported: primary keys do not uniquely identify rows and edits require transactions".into());
+    }
     let target = qualified(driver, schema, table);
     match edit {
         DbRowEdit::Update { key, values } => {
@@ -453,6 +491,7 @@ pub fn postgres_ddl_indexes(oid: u32) -> String {
 pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => "SELECT '', '', '' WHERE 0".to_owned(),
         DbDriver::Sqlite => format!(
             "SELECT name, sql FROM {}.sqlite_master WHERE type = 'trigger' AND tbl_name = {t} ORDER BY name",
             quote_ident(driver, schema)
@@ -495,7 +534,7 @@ pub fn sqlite_trigger_event(sql: &str) -> (String, String) {
 pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
     let s = quote_literal(driver, schema);
     match driver {
-        DbDriver::Sqlite => None,
+        DbDriver::Sqlite | DbDriver::Clickhouse => None,
         // Functions of extensions are left out, as in IDEA.
         DbDriver::Postgres => Some(format!(
             "SELECT p.proname, CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END, \
@@ -626,6 +665,71 @@ mod tests {
         assert_eq!(quote_ident(DbDriver::Mysql, "a`b"), "`a``b`");
         assert_eq!(quote_literal(DbDriver::Sqlite, "it's \\"), "'it''s \\'");
         assert_eq!(quote_literal(DbDriver::Mysql, "it's \\"), "'it''s \\\\'");
+    }
+
+    #[test]
+    fn clickhouse_escapes_backslashes_and_delimiters() {
+        let driver = DbDriver::Clickhouse;
+        assert_eq!(quote_literal(driver, r"path\O'Brien"), r"'path\\O''Brien'");
+        assert_eq!(quote_literal(driver, r"\' OR 1 = 1 --"), r"'\\'' OR 1 = 1 --'");
+        assert_eq!(quote_ident(driver, r"a\`b"), r"`a\\\`b`");
+        assert_eq!(qualified(driver, "data base", "event`log"), r"`data base`.`event\`log`");
+    }
+
+    #[test]
+    fn clickhouse_metadata_preserves_types_defaults_and_nonunique_keys() {
+        let driver = DbDriver::Clickhouse;
+        assert_eq!(schemas(driver, true), "SELECT name FROM system.databases ORDER BY name");
+        assert!(schemas(driver, false).contains("lower(name) NOT IN ('system', 'information_schema')"));
+        assert_eq!(current_schema(driver), Some("SELECT currentDatabase()"));
+        let relations = tables(driver, "event's\\db");
+        assert!(relations.contains("WHEN 'MaterializedView' THEN 'materialized view'"));
+        assert!(relations.contains(r"WHERE database = 'event''s\\db' AND is_temporary = 0"));
+        let fields = columns(driver, "default", "events");
+        assert!(fields.starts_with("SELECT name, type, CASE WHEN startsWith(type, 'Nullable(')"));
+        assert!(fields.contains("startsWith(type, 'LowCardinality(Nullable(')"));
+        assert!(fields.contains("if(default_kind = '', NULL, default_expression), is_in_primary_key"));
+        assert!(fields.ends_with("WHERE database = 'default' AND table = 'events' ORDER BY position"));
+        let keys = indexes(driver, "default", "events");
+        assert!(keys.contains("'PRIMARY KEY' AS index_name, 0 AS is_unique, primary_key AS expression"));
+        assert!(keys.contains("SELECT name, 0, expr FROM system.data_skipping_indices"));
+        let completion = completion_columns(driver);
+        assert!(completion.contains("c.is_in_primary_key, 1"));
+        assert!(completion.contains("ORDER BY c.database, c.table, c.position LIMIT 50000"));
+    }
+
+    #[test]
+    fn clickhouse_has_no_foreign_key_trigger_or_schema_routine_catalogs() {
+        let driver = DbDriver::Clickhouse;
+        assert_eq!(foreign_keys(driver), "SELECT '', '', '', '', '', '', '' WHERE 0");
+        assert_eq!(table_foreign_keys(driver, "default", "events"), foreign_keys(driver));
+        assert_eq!(triggers(driver, "default", "events"), "SELECT '', '', '' WHERE 0");
+        assert!(routines(driver, "default").is_none());
+        assert!(sequences(driver, "default").is_none());
+        assert!(object_ddl(driver, "default", crate::DbObjectKind::Trigger, "t").is_none());
+    }
+
+    #[test]
+    fn clickhouse_pages_quote_keys_and_fetch_one_extra_row() {
+        let sort = [SortKey { column: "event`id".into(), descending: true }];
+        assert_eq!(
+            table_page(DbDriver::Clickhouse, "default", "events", Some("WHERE id > 3"), &sort, 50, 25),
+            r"SELECT * FROM `default`.`events` WHERE id > 3 ORDER BY `event\`id` DESC LIMIT 26 OFFSET 50"
+        );
+    }
+
+    #[test]
+    fn clickhouse_keys_never_enable_transactional_table_edits() {
+        let key = vec![cv("id", Some("1"))];
+        for edit in [
+            DbRowEdit::Update { key: key.clone(), values: vec![cv("name", Some("new"))] },
+            DbRowEdit::Delete { key },
+            DbRowEdit::Insert { values: vec![cv("name", Some("new"))] },
+            DbRowEdit::Insert { values: vec![] },
+        ] {
+            let error = edit_statement(DbDriver::Clickhouse, "default", "events", &edit).unwrap_err();
+            assert!(error.contains("primary keys do not uniquely identify rows"));
+        }
     }
 
     #[test]

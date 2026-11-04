@@ -63,15 +63,23 @@ async function openHere(path: string): Promise<boolean> {
 }
 
 /** Opens `files` as editor tabs of this window, focusing the last. */
-async function openInEditor(files: readonly string[]): Promise<void> {
-  for (const [i, path] of files.entries())
+/** Caret positions of files opened from the command line (`--line` / `--column`), 0-based. */
+type Positions = ReadonlyArray<{ path: string; line: number; column: number }>;
+
+async function openInEditor(files: readonly string[], positions: Positions = []): Promise<void> {
+  for (const [i, path] of files.entries()) {
+    const at = positions.find((p) => p.path === path);
     await editorService()
-      .openFile(path, { focus: i === files.length - 1 })
+      .openFile(path, {
+        focus: i === files.length - 1,
+        ...(at ? { selection: { line: at.line, col: at.column } } : {}),
+      })
       .catch((e) => console.warn(`could not open ${path}`, e));
+  }
 }
 
 /** Opens `files` in this window: in its project's editor or, without one, in LightEdit. */
-async function openFilesHere(files: readonly string[]): Promise<void> {
+async function openFilesHere(files: readonly string[], positions: Positions = []): Promise<void> {
   const s = useProject.getState();
   if (!s.project && !s.lightEdit) {
     try {
@@ -80,7 +88,7 @@ async function openFilesHere(files: readonly string[]): Promise<void> {
       return openFailed(files[0]!, e);
     }
   }
-  await openInEditor(files);
+  await openInEditor(files, positions);
 }
 
 /**
@@ -206,9 +214,10 @@ export async function consumeLaunch(): Promise<void> {
   if (!isTauri()) return;
   const launch = await commands.windowTakeLaunch().catch(() => null);
   const files = launch?.files ?? [];
+  const positions = launch?.positions ?? [];
   if (launch?.project) {
-    if (await openHere(launch.project)) await openInEditor(files);
-  } else if (files.length) await openFilesHere(files);
+    if (await openHere(launch.project)) await openInEditor(files, positions);
+  } else if (files.length) await openFilesHere(files, positions);
   else if (launch?.remote) {
     const { sshConfig, path } = launch.remote;
     await connectRemote(sshConfig, path).catch((e) =>

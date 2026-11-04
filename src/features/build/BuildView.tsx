@@ -135,7 +135,7 @@ function BuildTree() {
         .join(", ");
       return (
         <span className={styles.row}>
-          <Icon name={fileIconName(basename(n.path))} size={16} className={styles.fileIcon} />
+          <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
           <span className={clsx(styles.strong, errors > 0 && styles.fileError, state.selected && styles.selected)}>
             {basename(n.path)}
           </span>

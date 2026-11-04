@@ -156,6 +156,7 @@ impl LspManager {
             .iter()
             .zip(ready)
             .filter_map(|(s, run)| Some(Target { server: s.clone(), run: run? }))
+            .filter(|t| t.caps().restriction.diagnostics())
             .collect();
         if targets.is_empty() {
             return Ok(None);

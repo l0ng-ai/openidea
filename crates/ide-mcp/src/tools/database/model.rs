@@ -36,6 +36,13 @@ pub const VENDORS: &[Vendor] = &[
         scheme: "redshift",
     },
     Vendor {
+        id: "clickhouse",
+        driver_name: "ClickHouse",
+        dbms: "ClickHouse",
+        driver: DbDriver::Clickhouse,
+        scheme: "clickhouse",
+    },
+    Vendor {
         id: "cockroachdb",
         driver_name: "CockroachDB",
         dbms: "CockroachDB",
@@ -114,6 +121,7 @@ pub fn vendor_of(source: &DataSource) -> &'static Vendor {
             DbDriver::Postgres => "postgres",
             DbDriver::Mysql => "mysql",
             DbDriver::SqlServer => "sqlServer",
+            DbDriver::Clickhouse => "clickhouse",
         })
         .expect("every driver has an entry")
     })
@@ -274,7 +282,7 @@ async fn databases(db: &DbManager, source: &DataSource) -> IdeResult<Vec<(String
                 .unwrap_or_else(|| source.database.clone());
             Ok(vec![(name, source.id.clone())])
         }
-        DbDriver::Mysql | DbDriver::Sqlite => Ok(vec![(String::new(), source.id.clone())]),
+        DbDriver::Mysql | DbDriver::Sqlite | DbDriver::Clickhouse => Ok(vec![(String::new(), source.id.clone())]),
     }
 }
 
@@ -334,6 +342,7 @@ pub fn object_kinds(driver: DbDriver) -> &'static [&'static str] {
         DbDriver::Mysql => &["routine", "table", "view"],
         DbDriver::Sqlite => &["table", "view"],
         DbDriver::SqlServer => &["routine", "sequence", "table", "view"],
+        DbDriver::Clickhouse => &["materialized-view", "table", "view"],
     }
 }
 

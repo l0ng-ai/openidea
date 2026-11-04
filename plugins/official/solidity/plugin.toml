@@ -5,6 +5,7 @@ description = "Solidity support: file detection, highlighting, structure view an
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: .sol detection, highlighting, structure view, folding; language server via @nomicfoundation/solidity-language-server or solc."
+categories = ["languages"]
 engines.openidea = "^1.0"
 # Highlighting, structure and folding come from this component; it is loaded
 # when the first Solidity file is opened.

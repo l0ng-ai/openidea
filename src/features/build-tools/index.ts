@@ -3,7 +3,7 @@
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
-import { onEditorEvent } from "@/editor/api";
+import { onEditorEvent, registerEditorContribution } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
@@ -19,6 +19,7 @@ import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
 import { ExecutePopupHost } from "./ExecutePopup";
 import { buildToolsRunAnything } from "./runAnything";
+import { versionCatalogExtension } from "./versionCatalog";
 import { expandableKeys, gradleChildren, gradleRoots, mavenChildren, mavenRoots } from "./model";
 import {
   ANALYZER_KIND,
@@ -80,6 +81,18 @@ function analyzerPom(arg: unknown): string | null {
   return current.maven ?? null;
 }
 
+/** The analyzer module of a Gradle project from an action argument: `{ gradlePath }`, or `{ path }` of its build script. */
+function analyzerGradle(arg: unknown): string | null {
+  const { model, root } = useBuild.getState();
+  const a = (arg ?? {}) as { gradlePath?: unknown; path?: unknown };
+  if (typeof a.gradlePath === "string") return `gradle:${a.gradlePath}`;
+  const project =
+    typeof a.path === "string" && root
+      ? model?.gradle?.projects.find((p) => p.buildFile && `${root}/${p.buildFile}` === a.path)
+      : undefined;
+  return project ? `gradle:${project.path}` : null;
+}
+
 const synced = new Set<string>();
 
 /** Registers / unregisters the tool windows to match the model; first sync of a never-synced build. */
@@ -133,6 +146,7 @@ export function activate(): () => void {
   };
   const disposers: Array<() => void> = [
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
+    registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,
@@ -140,6 +154,19 @@ export function activate(): () => void {
       title: () => "Dependency Analyzer",
       icon: () => "build-dependencies",
       restorable: true,
+    }),
+    // A Gradle build script in the editor, its tab and the project view: that project's dependencies.
+    registerMenuGroup({
+      id: "gradle.analyzeDependencies",
+      menus: ["editor", "editorTab", "projectView"],
+      order: 30,
+      items: (_menu, { paths, dirs }) => {
+        const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
+        if (!path || !/\/build\.gradle(\.kts)?$/.test(path) || !analyzerGradle({ path })) return [];
+        return [
+          { kind: "action", action: "gradle.analyzeDependencies", arg: { path }, label: "Analyze Dependencies…" },
+        ];
+      },
     }),
     // pom.xml in the editor, its tab and the project view: Analyze Dependencies of that module.
     registerMenuGroup({
@@ -293,6 +320,17 @@ export function activate(): () => void {
         when: GRADLE_WHEN,
         keywords: ["gradle", "sync", "refresh"],
         run: () => syncTool("gradle"),
+      },
+      {
+        id: "gradle.analyzeDependencies",
+        title: "Analyze Dependencies…",
+        description:
+          "Shows a Gradle project's resolved dependencies per configuration, version conflicts and where each library comes from",
+        category: "Gradle",
+        icon: "build-dependencies",
+        when: GRADLE_WHEN,
+        keywords: ["gradle", "dependency", "dependencies", "conflict", "tree", "configuration", "analyzer"],
+        run: ({ arg }) => openAnalyzer(analyzerGradle(arg)),
       },
       {
         id: "gradle.cancelReload",

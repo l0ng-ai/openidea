@@ -19,7 +19,13 @@ import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSe
 import { startRename } from "./rename";
 import { formatDocument, reformatDialog } from "./format";
 import { showHint } from "./hint";
-import { refactorThis, runRefactoring, safeDelete, showNothingHere } from "@/editor/refactor";
+import {
+  refactorThis,
+  runRefactoring,
+  safeDelete,
+  showNothingHere,
+  startHierarchyRefactoring,
+} from "@/editor/refactor";
 import { evaluateWhen } from "@/platform/context";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
@@ -314,6 +320,12 @@ export function registerLspActions(): () => void {
       { keyWhen: GENERATE_KEY_WHEN },
     ),
     editorAction("refactor.inline", "Inline…", "Refactor", (v) => runRefactoring(v, "inline")),
+    editorAction("refactor.pullMembersUp", "Pull Members Up…", "Refactor", (v) =>
+      startHierarchyRefactoring(v, "pullUp"),
+    ),
+    editorAction("refactor.pushMembersDown", "Push Members Down…", "Refactor", (v) =>
+      startHierarchyRefactoring(v, "pushDown"),
+    ),
     // Implement / Override Methods: the server's code actions for them (jdtls "Override/Implement
     // Methods…", rust-analyzer "Implement missing members", TS "Implement interface"…).
     editorAction("code.implementMethods", "Implement Methods…", "Code", (v) =>

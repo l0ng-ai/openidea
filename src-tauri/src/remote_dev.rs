@@ -45,7 +45,9 @@ pub struct Connection {
     /// connection with its parent).
     channels: Channels,
     next_channel: std::sync::atomic::AtomicU64,
-    _session: Arc<ide_ssh::Session>,
+    session: Arc<ide_ssh::Session>,
+    /// Remote ports forwarded to this machine (Ports tool window), by remote port.
+    forwards: Mutex<Vec<(u16, ide_ssh::Tunnel)>>,
 }
 
 type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
@@ -424,7 +426,8 @@ pub async fn remote_connect(
         commands: commands.clone(),
         channels,
         next_channel: std::sync::atomic::AtomicU64::new(1),
-        _session: session,
+        session,
+        forwards: Mutex::new(Vec::new()),
     });
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
     let plugins = state.plugins.clone();
@@ -539,6 +542,66 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
     })
 }
 
+/// A port of the remote host reachable on this machine at `localhost:local_port`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardedPort {
+    pub remote_port: u16,
+    pub local_port: u16,
+}
+
+fn forwarded(c: &Connection) -> Vec<ForwardedPort> {
+    c.forwards.lock().iter().map(|(remote, t)| ForwardedPort { remote_port: *remote, local_port: t.port() }).collect()
+}
+
+fn connection(window: &Window, state: &AppState) -> IdeResult<Arc<Connection>> {
+    state
+        .remote_dev
+        .get(AppState::owner_window(window.label()))
+        .ok_or_else(|| IdeError::unavailable("This window is not connected to a remote host"))
+}
+
+/// The remote ports this window forwards to this machine.
+#[tauri::command]
+#[specta::specta]
+pub fn remote_forwarded_ports(window: Window, state: State<'_, AppState>) -> Vec<ForwardedPort> {
+    connection(&window, &state).map(|c| forwarded(&c)).unwrap_or_default()
+}
+
+/// Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
+/// else to a free one. Nothing needs to listen there yet; connections are opened per use.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_forward_port(
+    window: Window,
+    state: State<'_, AppState>,
+    remote_port: u16,
+) -> IdeResult<ForwardedPort> {
+    if remote_port == 0 {
+        return Err(IdeError::invalid("Port must be between 1 and 65535"));
+    }
+    let c = connection(&window, &state)?;
+    if let Some(p) = forwarded(&c).into_iter().find(|p| p.remote_port == remote_port) {
+        return Ok(p);
+    }
+    let tunnel = ide_ssh::Tunnel::listen_on(c.session.clone(), Some(remote_port), "localhost", remote_port).await?;
+    let port = ForwardedPort { remote_port, local_port: tunnel.port() };
+    let mut forwards = c.forwards.lock();
+    if let Some(existing) = forwards.iter().find(|(remote, _)| *remote == remote_port) {
+        return Ok(ForwardedPort { remote_port, local_port: existing.1.port() });
+    }
+    forwards.push((remote_port, tunnel));
+    Ok(port)
+}
+
+/// Stops forwarding `remote_port`.
+#[tauri::command]
+#[specta::specta]
+pub fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, remote_port: u16) -> IdeResult<()> {
+    connection(&window, &state)?.forwards.lock().retain(|(remote, _)| *remote != remote_port);
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
@@ -572,8 +635,37 @@ pub async fn remote_invoke(
             }
         }
     }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DocumentEdit {
+        doc: ide_core::DocId,
+        base_version: u32,
+        changes: ide_core::ChangeSet,
+    }
+    let mirrored = if cmd == "doc_edit" {
+        let peers = crate::events::document_edit_peers(window.app_handle(), window.label());
+        if peers.is_empty() {
+            None
+        } else {
+            serde_json::from_value::<DocumentEdit>(args.clone()).ok().map(|edit| (peers, edit))
+        }
+    } else {
+        None
+    };
     let call = Invoke { window: label, cmd, args };
     let result: Value = c.peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
+    if let (Some((peers, edit)), Some(version)) =
+        (mirrored, result.as_u64().and_then(|version| u32::try_from(version).ok()))
+    {
+        crate::events::emit_document_edit(
+            window.app_handle(),
+            peers,
+            edit.doc,
+            edit.base_version,
+            version,
+            edit.changes.changes,
+        );
+    }
     Ok(result.to_string())
 }
 
@@ -592,7 +684,7 @@ pub async fn remote_import_local(
     c.authorize_command(label, "fs_copy").await?;
     let cancel = state.host.begin_request(request);
     let result = async {
-        let fs = ide_ssh::RemoteFs::new(c._session.sftp().await?);
+        let fs = ide_ssh::RemoteFs::new(c.session.sftp().await?);
         let result = ide_remote::import::import_local(&fs, &from, &to, &cancel).await;
         fs.close().await;
         result

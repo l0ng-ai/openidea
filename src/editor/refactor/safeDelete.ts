@@ -365,7 +365,8 @@ export function textOccurrences(
   const out: { from: number; to: number }[] = [];
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const from = m.index;
-    if (/[\p{L}\p{N}_$]$/u.test(text.slice(Math.max(0, from - 2), from))) continue;
+    // Not `[\p{L}\p{N}_$]$`: V8 (Node 26) misses an astral letter with a lone class before `$`.
+    if (/(?:\p{L}|\p{N}|[_$])$/u.test(text.slice(Math.max(0, from - 2), from))) continue;
     if (ids.has(from) || (from >= exclude.from && from < exclude.to)) continue;
     out.push({ from, to: from + name.length });
   }

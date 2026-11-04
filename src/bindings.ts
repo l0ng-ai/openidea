@@ -92,6 +92,11 @@ export const commands = {
 	 */
 	agentSetCommand: (id: string, command: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_command", { id, command })),
 	/**
+	 *  Environment variables built-in agent `id` starts with (saved in its agent file);
+	 *  an empty map clears them.
+	 */
+	agentSetEnv: (id: string, env: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_env", { id, env })),
+	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 	 */
@@ -413,6 +418,10 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("lsp_prepare_rename", { doc, pos })),
 	/**  Computes the rename edit without applying it, so the UI can preview conflicts. */
 	lspRename: (request: RequestId, doc: DocId, pos: Pos, newName: string) => typedError<Renamed, IdeError>(__TAURI_INVOKE("lsp_rename", { request, doc, pos, newName })),
+	/**  The class at `pos` and the members Pull Members Up / Push Members Down can move. */
+	lspHierarchyMembers: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring) => typedError<HierarchyMembers, IdeError>(__TAURI_INVOKE("lsp_hierarchy_members", { request, doc, pos, kind })),
+	/**  Checks Pull Members Up / Push Members Down and computes the edit without applying it. */
+	lspHierarchyRefactor: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring, target: string | null, choices: HierarchyChoice[]) => typedError<HierarchyRefactored, IdeError>(__TAURI_INVOKE("lsp_hierarchy_refactor", { request, doc, pos, kind, target, choices })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -582,6 +591,10 @@ export const commands = {
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
 	runDotnetResolve: (config: RunConfig_Deserialize, debug: boolean) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_dotnet_resolve", { config, debug })),
 	runSaveConfigs: (configs: RunConfig_Deserialize[], removedDetectedIds: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_configs", { configs, removedDetectedIds })),
+	/**  Temporary configurations as they are kept between sessions: without what settings derived. */
+	runWithoutDerived: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_without_derived", { configs })),
+	/**  Kept temporary configurations with the current settings applied. */
+	runApplySettings: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_apply_settings", { configs })),
 	/**  Configuration templates: per-type defaults applied to new configurations. */
 	runTemplates: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_templates")),
 	runSaveTemplates: (templates: RunConfig_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_templates", { templates })),
@@ -623,6 +636,7 @@ export const commands = {
 }) & (RunExtras_Serialize) | null, IdeError>(__TAURI_INVOKE("run_tomcat_build", { config })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
+	runTomcatSync: (config: RunConfig_Deserialize, module: string, classPaths: string[], resourcesOnly: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("run_tomcat_sync", { config, module, classPaths, resourcesOnly })),
 	runTomcatUpdate: (config: RunConfig_Deserialize, mode: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_tomcat_update", { config, mode })),
 	/**
 	 *  Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
@@ -637,6 +651,13 @@ export const commands = {
 	 *  Returns the refreshed model; a failed build is reported in its `syncError`.
 	 */
 	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, onProgress })),
+	/**  The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer). */
+	gradleDependencies: (gradlePath: string, configuration: string, offline: boolean, request: RequestId) => typedError<GradleDependency[], IdeError>(__TAURI_INVOKE("gradle_dependencies", { gradlePath, configuration, offline, request })),
+	/**
+	 *  The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
+	 *  build has downloaded it.
+	 */
+	gradlePublishedCatalog: (coordinates: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("gradle_published_catalog", { coordinates })),
 	/**  Where the direct dependency `dependency` of the Maven module `pom` is declared. */
 	mavenDependencyDeclaration: (pom: string, dependency: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_dependency_declaration", { pom, dependency })),
 	/**
@@ -671,6 +692,8 @@ export const commands = {
 	debugScopes: (session: DebugSessionId, frameId: number) => typedError<Scope[], IdeError>(__TAURI_INVOKE("debug_scopes", { session, frameId })),
 	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
 	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
+	/**  Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16). */
+	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
@@ -752,6 +775,16 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Opens a window listing the files that differ between two revisions of this window's project.
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
+	/**
+	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
+	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
+	 */
+	windowOpenDeployment: (server: string, paths: string[], background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_deployment", { server, paths, background })),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
@@ -772,6 +805,12 @@ export const commands = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment?: DeploymentLaunch | null,
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -948,6 +987,12 @@ export const commands = {
 	pluginMarketDownload: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_market_download", { id })),
 	/**  Unpacks a package file (`.oiplugin` or `.zip`); returns the folder for the install page. */
 	pluginUnpackPackage: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_unpack_package", { path })),
+	/**  Reads an IntelliJ theme plugin (`.jar`, Marketplace `.zip`, plugin folder) or `.theme.json` to import. */
+	pluginReadIntellijTheme: (path: string) => typedError<IntellijThemeSource, IdeError>(__TAURI_INVOKE("plugin_read_intellij_theme", { path })),
+	/**  Theme plugins installed in the JetBrains IDEs of this user, the ones in use first. */
+	pluginInstalledIntellijThemes: () => typedError<InstalledIntellijTheme[], IdeError>(__TAURI_INVOKE("plugin_installed_intellij_themes")),
+	/**  Writes a package the UI generated (an imported theme); returns the folder for the install page. */
+	pluginStagePackage: (name: string, files: PackageFile[]) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_stage_package", { name, files })),
 	/**  Goes back to the version the last update of `id` replaced. */
 	pluginRollBack: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_roll_back", { id })),
 	pluginSecrets: (pluginId: string) => typedError<PluginSecretState[], IdeError>(__TAURI_INVOKE("plugin_secrets", { pluginId })),
@@ -1019,6 +1064,8 @@ export const commands = {
 	 *  daemon and puts the docker executable on `PATH`.
 	 */
 	dockerRunEnv: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_run_env", { endpoint })),
+	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
+	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
 	ghAvailability: (repo: string | null) => typedError<GhAvailability, IdeError>(__TAURI_INVOKE("gh_availability", { repo })),
 	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
 	ghApi: (repo: string | null, request: GhApiRequest) => typedError<string, IdeError>(__TAURI_INVOKE("gh_api", { repo, request })),
@@ -1144,6 +1191,15 @@ export const commands = {
 	commands: string[],
 } | null>("remote_current"),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
+	/**  The remote ports this window forwards to this machine. */
+	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
+	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
+	 */
+	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
+	/**  Stops forwarding `remote_port`. */
+	remoteStopForwarding: (remotePort: number) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort })),
 	/**
 	 *  Runs a command on the window's remote server; `args` and the result are JSON
 	 *  text. Streaming arguments are `{ "$channel": id }`; their values arrive on
@@ -1406,6 +1462,8 @@ export type AgentProvider = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  Environment variables it starts with (from its agent file). */
+	env: { [key in string]: string },
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
 	config: AgentConfigOption[],
 	/**  Slash commands it offered last time. */
@@ -1582,6 +1640,7 @@ export type AppearanceSettings = {
 	preferredDarkTheme?: string,
 	/**  A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons. */
 	fileIconTheme?: string,
+	fileIconThemeOptions?: { [key in string]: FileIconThemeOptions },
 	/**  IDE zoom in percent (50–300). */
 	zoom?: number,
 	/**  Apply `ui_font_family` / `ui_font_size` (otherwise the theme's). */
@@ -2128,6 +2187,26 @@ export type CompareScope = {
 	singleFile: boolean,
 };
 
+/**  Files that differ between `from` and `to` (the working tree when `None`). */
+export type ComparisonLaunch = {
+	from: ComparisonRevision,
+	to: ComparisonRevision | null,
+	scope: ComparisonScope | null,
+	repo: IpcPath | null,
+};
+
+/**  A Git revision and how the comparison window names it. */
+export type ComparisonRevision = {
+	rev: string,
+	label: string,
+};
+
+/**  Limits a comparison to some paths (Compare with Branch on a selection). */
+export type ComparisonScope = {
+	paths: IpcPath[],
+	repositories: IpcPath[] | null,
+};
+
 export type CompletionItem = {
 	label: string,
 	/**  e.g. `(req: CreateOrderRequest)` shown right after the label. */
@@ -2194,6 +2273,11 @@ export type Consent = {
 	 *  ones are implied by consenting at all.
 	 */
 	optional: string[],
+	/**
+	 *  The user accepted a package signed by another key than the installed
+	 *  copy ([`InstallPreview::signer_changed`]).
+	 */
+	signerChange?: boolean,
 };
 
 /**  Build, Execution, Deployment › Console. */
@@ -2407,7 +2491,7 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  MySQL and MariaDB. */
 "mysql" | 
 /**  Microsoft SQL Server. */
-"sqlServer";
+"sqlServer" | "clickhouse";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -2618,6 +2702,17 @@ export type DebugCapabilities = {
 	hotCodeReplace: boolean,
 };
 
+/**  A completion the adapter offers for an expression (DAP `completions`). */
+export type DebugCompletion = {
+	label: string,
+	/**  What to insert, when it differs from `label`. */
+	text: string | null,
+	/**  DAP item type: `method`, `field`, `variable`, `class`, `keyword`, … */
+	kind: string | null,
+	detail: string | null,
+	sortText: string | null,
+};
+
 export type DebugEvent = 
 /**
  *  First event of every session (only build output of a root session's
@@ -2690,6 +2785,13 @@ export type DeploymentCoverage = {
 	server: string,
 	paths: string[],
 	skipped: TransferError[],
+};
+
+/**  Local files to compare with a deployment server (Sync with Deployed). */
+export type DeploymentLaunch = {
+	/**  Deployment server id. */
+	server: string,
+	paths: IpcPath[],
 };
 
 export type DeploymentMapping = {
@@ -3329,6 +3431,27 @@ export type FileEntry = {
 	targetKind?: EntryKind | null,
 };
 
+/**
+ *  Main toolbar entries per side, in order: title widget ids (`project`,
+ *  `vcs.branch`…) or `action:<id>`. Widgets in neither list nor `hidden`
+ *  (registered later) keep their default place.
+ */
+export type FileIconThemeOptions = {
+	groups?: { [key in string]: boolean },
+	choices?: { [key in string]: string },
+	hideFiles?: boolean,
+	hideFolders?: boolean,
+	hollowFolders?: boolean,
+	hideUiIcons?: boolean,
+	hidePsiIcons?: boolean,
+	monochrome?: string | null,
+	saturation?: number | null,
+	opacity?: number | null,
+	iconSize?: number | null,
+	rowHeight?: number | null,
+	accent?: string | null,
+};
+
 /**  Identifier occurrences in one file (`identifiers_in_files`). */
 export type FileIdentifiers = {
 	path: IpcPath,
@@ -3355,6 +3478,13 @@ export type FileMatches = {
 export type FileMove = {
 	from: IpcPath,
 	to: IpcPath,
+};
+
+/**  A caret position for a file opened from the command line: 0-based line and column. */
+export type FilePosition = {
+	path: IpcPath,
+	line: number,
+	column: number,
 };
 
 /**  What the editor needs to know before choosing a viewer for a file. */
@@ -3474,6 +3604,12 @@ export type FormatOptions = {
 	tool?: ExternalFormatter | null,
 };
 
+/**  A port of the remote host reachable on this machine at `localhost:local_port`. */
+export type ForwardedPort = {
+	remotePort: number,
+	localPort: number,
+};
+
 /**  One occurrence of a duplicated code fragment. */
 export type Fragment = {
 	path: IpcPath,
@@ -3516,6 +3652,25 @@ export type GeneralSettings = {
 	/**  File › Rename Project… (project layer): the name shown for the project; empty = its folder name. */
 	projectName?: string,
 };
+
+/**  A repository of the signed-in account (owned, collaborator, or organization member). */
+export type GhAccountRepo = {
+	/**  `owner/name`. */
+	nameWithOwner: string,
+	description: string | null,
+	private: boolean,
+	fork: boolean,
+	archived: boolean,
+	/**  What `git clone` takes: HTTPS, or SSH when gh's `git_protocol` is `ssh`. */
+	cloneUrl: string,
+};
+
+/**  The account's repositories, or why they can't be listed. */
+export type GhAccountRepos = { kind: "ready"; login: string; repos: GhAccountRepo[] } | 
+/**  No `gh` executable was found. */
+{ kind: "notInstalled" } | 
+/**  `gh auth login` has not been run (or the token expired). */
+{ kind: "notLoggedIn"; message: string } | { kind: "error"; message: string };
 
 /**
  *  A GitHub API call through `gh api`: GraphQL (`endpoint` `graphql`, `body`
@@ -3631,6 +3786,27 @@ export type GoSettings = {
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";
 
+/**  One line of the report: an occurrence of a dependency where it is requested. */
+export type GradleDependency = {
+	/**  `group`, empty for a project dependency. */
+	group: string,
+	/**  Artifact name, or the project path (`:core`) of a project dependency. */
+	name: string,
+	/**  The version asked for here; `None` when a platform or constraint supplies it. */
+	requested: string | null,
+	/**  The version Gradle selected (`-> 1.2`), when it differs from the request. */
+	selected: string | null,
+	/**  A project of the build (`project :core`, or a module substituted by one). */
+	project: boolean,
+	/**  `(*)`: listed with its dependencies earlier in the tree. */
+	repeated: boolean,
+	/**  `(c)`: a dependency constraint rather than a dependency. */
+	constraint: boolean,
+	/**  `(n)` / `FAILED`: not resolved. */
+	unresolved: boolean,
+	children: GradleDependency[],
+};
+
 export type GradleDistribution = "wrapper" | "local";
 
 export type GradleModel = {
@@ -3695,6 +3871,19 @@ export type GradleTask = {
 	description: string | null,
 };
 
+export type HierarchyChoice = {
+	id: string,
+	makeAbstract: boolean,
+};
+
+export type HierarchyClass = {
+	/**  Server-owned identity, passed back as the pull-up destination. */
+	id: string,
+	name: string,
+	qualifiedName: string,
+	interface: boolean,
+};
+
 export type HierarchyDirection = 
 /**  Callers / supertypes. */
 "incoming" | 
@@ -3714,6 +3903,38 @@ export type HierarchyItem = {
 	/**  Call sites, for call hierarchy. */
 	fromRanges: Range[],
 };
+
+export type HierarchyMember = {
+	id: string,
+	/**  `name(Params) : Type`, as the server renders it. */
+	label: string,
+	kind: HierarchyMemberKind,
+	/**  The member at the caret. */
+	selected: boolean,
+	/**  Can be declared abstract in the destination (pull up) or kept abstract (push down). */
+	abstractable: boolean,
+};
+
+export type HierarchyMemberKind = "field" | "method" | "type";
+
+/**
+ *  The class at a position and what can move: pull-up destinations, or the subclasses
+ *  members are pushed into.
+ */
+export type HierarchyMembers = {
+	className: string,
+	targets: HierarchyClass[],
+	members: HierarchyMember[],
+};
+
+/**  A checked refactoring: what the server found, and the edit unless a problem is fatal. */
+export type HierarchyRefactored = {
+	problems: RefactoringProblem[],
+	edit: WorkspaceEdit | null,
+};
+
+/**  IDEA's class-hierarchy refactorings. */
+export type HierarchyRefactoring = "pullUp" | "pushDown";
 
 export type Highlight = {
 	range: Range,
@@ -3963,6 +4184,14 @@ export type IndexEntry = {
 	/**  [`package_digest`] of its contents. */
 	digest: string,
 	capabilities?: string[],
+	/**
+	 *  The plugin API versions it loads in (a semver requirement): its
+	 *  manifest's `engines.openidea` and the API its component was built for.
+	 *  Required: an entry without one is offered to no IDE.
+	 */
+	engine?: string,
+	/**  Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know. */
+	categories?: string[],
 };
 
 export type IndexStatus = {
@@ -4120,6 +4349,52 @@ export type InstallPreview = {
 	unsigned: boolean,
 	/**  The verified publisher. */
 	publisher: string | null,
+	/**
+	 *  Replaces an installed copy signed with another key, which didn't
+	 *  endorse this package's (or this one is unsigned): the user confirms it
+	 *  ([`Consent::signer_change`]).
+	 */
+	signerChanged: boolean,
+	/**
+	 *  Something to confirm: a first install, an unsigned package, another
+	 *  signer, or capabilities the installed version wasn't granted or
+	 *  refused. Without, an update installs with the grants it has.
+	 */
+	needsConsent: boolean,
+};
+
+/**  A theme of a plugin installed in a JetBrains IDE. */
+export type InstalledIntellijTheme = {
+	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
+	ide: string,
+	/**  The plugin's name. */
+	plugin: string,
+	/**  What to import: the plugin's folder or jar. */
+	path: IpcPath,
+	themeId: string,
+	themeName: string,
+	dark: boolean,
+	/**  The IDE is set to this theme. */
+	active: boolean,
+};
+
+export type IntellijThemeFile = {
+	/**  The `themeProvider` id (what `laf.xml` names), or the file name without `.theme.json`. */
+	id: string,
+	/**  The `.theme.json`, comments removed. */
+	theme: string,
+	/**  The editor scheme (`.icls` XML) its `editorScheme` names, when the plugin has it. */
+	editorScheme: string | null,
+};
+
+/**  A theme plugin's themes, as read from its files. */
+export type IntellijThemeSource = {
+	/**  The plugin's `<name>`, or the theme's for a loose file. */
+	name: string,
+	pluginId: string | null,
+	version: string | null,
+	vendor: string | null,
+	themes: IntellijThemeFile[],
 };
 
 /**  Optional parts of the invalidation; the symbol index is always rebuilt. */
@@ -4346,6 +4621,16 @@ export type LanguageServerSettings_Deserialize = {
 	languages?: string[],
 	/**  Files marking a workspace root for a server defined here (`pyproject.toml`). */
 	rootMarkers?: string[],
+	/**
+	 *  Replaces the definition's `features`: what the server is used for
+	 *  (`code-action`, `hover`, …); an empty list means everything.
+	 */
+	features?: string[] | null,
+	/**
+	 *  Replaces the definition's `code-action-kinds` (`refactor`); an empty
+	 *  list keeps every kind.
+	 */
+	codeActionKinds?: string[] | null,
 };
 
 export type LanguageServerSettings_Serialize = {
@@ -4374,6 +4659,16 @@ export type LanguageServerSettings_Serialize = {
 	languages: string[],
 	/**  Files marking a workspace root for a server defined here (`pyproject.toml`). */
 	rootMarkers: string[],
+	/**
+	 *  Replaces the definition's `features`: what the server is used for
+	 *  (`code-action`, `hover`, …); an empty list means everything.
+	 */
+	features?: string[] | null,
+	/**
+	 *  Replaces the definition's `code-action-kinds` (`refactor`); an empty
+	 *  list keeps every kind.
+	 */
+	codeActionKinds?: string[] | null,
 };
 
 export type LanguagesSettings = {
@@ -4405,6 +4700,12 @@ export type Launch = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment?: DeploymentLaunch | null,
 };
 
 export type LaunchConfig = {
@@ -4610,11 +4911,6 @@ export type LogQuery = {
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
 
-/**
- *  Main toolbar entries per side, in order: title widget ids (`project`,
- *  `vcs.branch`…) or `action:<id>`. Widgets in neither list nor `hidden`
- *  (registered later) keep their default place.
- */
 export type MainToolbarSettings = {
 	left?: string[],
 	right?: string[],
@@ -4640,6 +4936,8 @@ export type MarkdownSettings = {
 export type MarketPlugin = {
 	/**  Installed version, if any. */
 	installed: string | null,
+	/**  Whether this IDE can load `entry` (the newest version it can, else the newest). */
+	compatible: boolean,
 } & IndexEntry;
 
 export type Markup = {
@@ -5220,6 +5518,12 @@ export type OutputChunk = { kind: "stdout"; text: string } | { kind: "stderr"; t
 /**  System message from the IDE (command line echo, exit code). */
 { kind: "system"; text: string };
 
+/**  A text file of a package the UI generated, at its `/`-separated path in the package. */
+export type PackageFile = {
+	path: string,
+	text: string,
+};
+
 /**  A file of a partial commit: which of its changes against HEAD to commit. */
 export type PartialCommitFile = {
 	path: IpcPath,
@@ -5267,7 +5571,12 @@ export type PluginEditor = {
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
-{ type: "commandsChanged" } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
+{ type: "commandsChanged" } | 
+/**
+ *  The marketplace offers newer versions of installed plugins (announced
+ *  once per set of versions).
+ */
+{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**  A plugin began a task: show it with the background tasks. */
@@ -5374,6 +5683,13 @@ export type PluginStatusItem = {
 	pluginId: string,
 	id: string,
 	item: StatusItem,
+};
+
+/**  A newer version of an installed plugin in the marketplace. */
+export type PluginUpdate = {
+	id: string,
+	name: string,
+	version: string,
 };
 
 export type PluginsSnapshot = {
@@ -5485,6 +5801,10 @@ export type PreparedRequest = {
 	headers: ([string, string])[],
 	body: string | null,
 };
+
+export type ProblemSeverity = "info" | "warning" | "error" | 
+/**  The refactoring can't run at all; there is no edit. */
+"fatal";
 
 /**  Memory of one row of the breakdown. */
 export type ProcessMemory = {
@@ -5740,6 +6060,11 @@ export type RecentProject = {
 	openedAtMs: number | null,
 	/**  Current git branch when last opened, shown on the welcome screen. */
 	branch: string | null,
+};
+
+export type RefactoringProblem = {
+	severity: ProblemSeverity,
+	message: string,
 };
 
 export type ReferenceAccess = "read" | "write" | "readWrite" | "unknown";
@@ -6107,10 +6432,12 @@ export type RunId = number;
 /**  What an import found: configurations to add and entries left out, with the reason. */
 export type RunImport = RunImport_Serialize | RunImport_Deserialize;
 
-/**  A project file run configurations can be imported from. */
+/**  Project files run configurations can be imported from. */
 export type RunImportSource = 
 /**  VS Code's `.vscode/launch.json`. */
-"vscode";
+"vscode" | 
+/**  JetBrains IDEs' `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`. */
+"jetbrains";
 
 /**  What an import found: configurations to add and entries left out, with the reason. */
 export type RunImport_Deserialize = {
@@ -6496,7 +6823,7 @@ export type SignatureHelp = {
 export type SkipReason = 
 /**  A configuration with this name already exists. */
 { kind: "nameTaken" } | 
-/**  The debugger type (`type`) has no equivalent here, e.g. `cppdbg`. */
+/**  The configuration type has no equivalent here: a VS Code debugger (`cppdbg`), a JetBrains type (`Application`). */
 { kind: "unsupportedType"; type: string } | 
 /**  A `request` other than `launch` and `attach`. */
 { kind: "unsupportedRequest"; request: string } | 
@@ -6506,6 +6833,14 @@ export type SkipReason =
 { kind: "variable"; variable: string } | 
 /**  No program, module or command. */
 { kind: "nothingToRun" } | 
+/**  A JetBrains path variable with no value here (`$MAVEN_REPOSITORY$`, user-defined ones). */
+{ kind: "pathVariable"; variable: string } | 
+/**  `$MODULE_DIR$` in a project with several modules: which module's directory is unknown. */
+{ kind: "severalModules"; variable: string } | 
+/**  A file the configuration needs isn't in the project (Django's `manage.py`). */
+{ kind: "missingFile"; file: string } | 
+/**  A project file that can't be read, or isn't XML; `name` is the file. */
+{ kind: "invalidFile"; detail: string } | 
 /**  A compound member that is neither imported nor an existing configuration. */
 { kind: "missingMember"; member: string } | 
 /**  Not an object with a name. */

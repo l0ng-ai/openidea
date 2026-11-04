@@ -3,9 +3,11 @@ import { hideAllToolWindows, useToolWindowLayout } from "@/workbench/toolwindows
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton } from "@/ui";
 import { DiffEditor } from "./DiffEditor";
+import type { DiffData } from "./diffInput";
 
 export function DiffEditorTab({ input }: { input: EditorInput }) {
   const maximized = useToolWindowLayout((state) => !!state.stashed && !Object.values(state.visible).some(Boolean));
+  if ((input.data as DiffData).embedded) return <DiffEditor input={input} />;
   return (
     <DiffEditor
       input={input}

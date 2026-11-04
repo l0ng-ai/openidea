@@ -412,6 +412,56 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
+/// The class at `pos` and the members a class-hierarchy refactoring can move.
+pub async fn lsp_hierarchy_members(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+) -> IdeResult<HierarchyMembers> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.hierarchy_members(doc, pos, kind, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Checks a class-hierarchy refactoring and computes its edit without applying it.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_hierarchy_refactor(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+    target: Option<String>,
+    choices: Vec<HierarchyChoice>,
+) -> IdeResult<HierarchyRefactored> {
+    let project = host.project(window)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.hierarchy_refactor(doc, pos, kind, target, choices, cancel).await;
+    host.end_request(request);
+    let mut refactored = result?;
+    blocking(move || {
+        if project.documents.version(doc)? != version {
+            return Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing the refactoring; request it again",
+            ));
+        }
+        if let Some(edit) = &mut refactored.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(refactored)
+    })
+    .await
+}
+
 pub async fn lsp_rename(
     host: &Host,
     window: &str,
@@ -675,6 +725,22 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("lsp_rename", |c| async move {
         lsp_rename(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("newName")?).await
+    });
+    d.add("lsp_hierarchy_members", |c| async move {
+        lsp_hierarchy_members(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("kind")?).await
+    });
+    d.add("lsp_hierarchy_refactor", |c| async move {
+        lsp_hierarchy_refactor(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("kind")?,
+            c.arg("target")?,
+            c.arg("choices")?,
+        )
+        .await
     });
     d.add("lsp_format", |c| async move {
         lsp_format(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("options")?).await

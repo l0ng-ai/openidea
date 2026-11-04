@@ -20,6 +20,7 @@ const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
 mod formatter;
+mod hierarchy;
 pub(crate) mod reserved_names;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.

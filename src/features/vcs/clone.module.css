@@ -155,3 +155,24 @@
     padding-left: 98px;
   }
 }
+.sidebar .sourceItem {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.sidebar .sourceItem[data-selected] {
+  background: var(--bg-tree-selected);
+}
+.sidebar .sourceItem:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.sourcePane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

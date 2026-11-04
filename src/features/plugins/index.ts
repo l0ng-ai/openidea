@@ -5,6 +5,8 @@
  * projected by `projection.ts` / `points.tsx`.
  *
  * Actions: `plugins.settings`, `plugins.installFromDisk`, `plugins.reloadAll`,
+ * `plugins.importIntellijTheme` (a theme plugin file; `arg`: its path),
+ * `plugins.importInstalledIntellijTheme` (from the JetBrains IDEs on this machine),
  * plus one action per plugin command: `plugin.<pluginId>.<commandId>`
  * (searchable in Search Everywhere › Actions and bindable in the keymap editor;
  * a string arg is forwarded to the plugin).
@@ -17,13 +19,21 @@ import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { editorService, registerOverlay, registerSettingsPage } from "@/workbench/contributions";
-import { followPluginChanges, startPluginBridge, syncProjection, trackPluginTheme } from "./bridge";
+import {
+  followPluginChanges,
+  providePluginThemePreviews,
+  startPluginBridge,
+  syncProjection,
+  trackPluginTheme,
+} from "./bridge";
 import { ConsentDialogHost, provideConsentDialog } from "./consent";
 import { trackIconTheme } from "./iconThemes";
 import { pluginLineMarkerGutter } from "./lineMarkerGutter";
 import { defineBuiltinUiPoints } from "./points";
 import { startViewUi } from "./uiPoints";
-import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, usePlugins } from "./store";
+import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
+import { IntellijThemesDialogHost } from "./IntellijThemesDialog";
+import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
 
 function registerPluginsPage(): () => void {
   return registerSettingsPage({
@@ -41,6 +51,7 @@ export function activateSettingsPages(): () => void {
   const disposers = [
     registerPluginsPage(),
     registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
+    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
     provideConsentDialog(),
     defineBuiltinUiPoints(),
     followPluginChanges(),
@@ -56,7 +67,9 @@ export function activate(): () => void {
   const disposers = [
     registerPluginsPage(),
     registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
+    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
     provideConsentDialog(),
+    providePluginThemePreviews(),
     registerActions([
       {
         id: "plugins.settings",
@@ -75,6 +88,37 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await installFromDisk(typeof arg === "string" ? arg : undefined);
         },
+      },
+      {
+        id: "plugins.updateAll",
+        title: "Update All Plugins",
+        category: "Plugins",
+        icon: "plugin",
+        keywords: ["upgrade", "marketplace", "new version"],
+        run: async () => {
+          await updateAllPlugins();
+        },
+      },
+      {
+        id: "plugins.importIntellijTheme",
+        title: "Import IntelliJ Theme from File…",
+        category: "Plugins",
+        icon: "plugin",
+        keywords: ["intellij", "jetbrains", "theme", "jar", "theme.json", "color scheme"],
+        // Installing needs a project's window.
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          await importIntellijTheme(typeof arg === "string" ? arg : undefined);
+        },
+      },
+      {
+        id: "plugins.importInstalledIntellijTheme",
+        title: "Import Theme from IntelliJ IDE…",
+        category: "Plugins",
+        icon: "plugin",
+        keywords: ["intellij", "jetbrains", "theme", "color scheme", "migrate"],
+        when: "projectOpen",
+        run: () => showInstalledIntellijThemes(),
       },
       {
         id: "plugins.reloadAll",
