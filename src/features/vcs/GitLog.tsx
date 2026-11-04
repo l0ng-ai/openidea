@@ -2510,7 +2510,8 @@ function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: 
     <div className={clsx(compact && styles.commitEntry)}>
       <div className={styles.subjectLine}>
         <CommitMessageText text={subject ?? ""} repo={repo} />
-        {!compact && (
+        {/* Only a message with a body has more to show. */}
+        {body && (
           <button
             type="button"
             className={clsx(styles.linkButton, styles.expandMessage)}
