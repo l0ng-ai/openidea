@@ -27,7 +27,10 @@ const PROSE = new Set(["markdown", "plaintext", "text", "restructuredtext", "asc
 const HEX = String.raw`#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])`;
 const NUMBER = String.raw`[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?`;
 const FUNCTION = String.raw`\b(?:rgba?|hsla?)\(\s*${NUMBER}(?:deg|%)?(?:\s*[,\s]\s*${NUMBER}%?){2}(?:\s*[,/]\s*${NUMBER}%?)?\s*\)`;
-const COLOR_RE = new RegExp(`${FUNCTION}|${HEX}|(?<![\\w.#$@-])[a-zA-Z]{3,20}(?![\\w(-])`, "g");
+// No lookbehind (WebKit before 16.4 can't parse it): a name's preceding character is checked in code.
+const COLOR_RE = new RegExp(`${FUNCTION}|${HEX}|[a-zA-Z]{3,20}(?![\\w(-])`, "g");
+/** Before a name, these make it part of a selector, variable or longer word (`.red`, `$white`, `off-white`). */
+const NAME_PREFIX = /[\w.#$@-]/;
 
 /** Global keywords and words that are valid colors but say nothing about one. */
 const NOT_COLORS = new Set(["inherit", "initial", "unset", "revert", "currentcolor", "transparent"]);
@@ -53,7 +56,13 @@ export function findColors(line: string, language: string, isColorName: (word: s
         : "name";
     if (format === "name") {
       // A property value (`color: red`), not a property, selector or at-rule.
-      if (!sheet || NOT_COLORS.has(text.toLowerCase()) || !/:\s*(?:\S+\s+)*$/.test(line.slice(0, from))) continue;
+      if (
+        !sheet ||
+        (from > 0 && NAME_PREFIX.test(line[from - 1]!)) ||
+        NOT_COLORS.has(text.toLowerCase()) ||
+        !/:\s*(?:\S+\s+)*$/.test(line.slice(0, from))
+      )
+        continue;
       if (!isColorName(text)) continue;
     } else if (format === "hex" && !looseHex && !/["'`]$/.test(line.slice(0, from))) continue;
     out.push({ from, to: from + text.length, text, format });

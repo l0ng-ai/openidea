@@ -20,6 +20,7 @@ describe("findColors", () => {
   it("skips names that are no property value, keywords and non-colors", () => {
     expect(texts(".red, #main { white-space: nowrap; color: inherit }", "css")).toEqual([]);
     expect(texts("@media screen { }", "css")).toEqual([]);
+    expect(texts("  color: $white; background: var(--off-white) off-white;", "scss")).toEqual([]);
     expect(texts("  color: #12345;", "css")).toEqual([]);
   });
 
