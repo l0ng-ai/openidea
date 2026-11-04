@@ -30,6 +30,32 @@ describe("markdown preview rendering", () => {
     expect(root.querySelector("a")?.getAttribute("href")).toBeNull();
   });
 
+  it.each([
+    "<style>body{outline:7px solid red}</style>",
+    '<form action="https://example.com/x"><button>go</button></form>',
+    '<div style="position:fixed">x</div>',
+    '<link rel="stylesheet" href="https://example.com/x.css">',
+    '<meta http-equiv="refresh" content="0;url=https://example.com">',
+    '<base href="https://example.com/">',
+    '<iframe src="https://example.com"></iframe>',
+    '<button formaction="https://example.com/x">go</button>',
+  ])("keeps raw markup from reaching the page: %s", (raw) => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(`text\n\n${raw}\n`);
+    expect(root.querySelector("style, form, link, meta, base, iframe, [style], [formaction]")).toBeNull();
+    expect(root.textContent).not.toContain("outline");
+  });
+
+  it("keeps the raw HTML READMEs rely on", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(
+      '<div align="center"><img src="a.png" width="20"></div>\n\n<details><summary>More</summary>x</details>\n\n- [x] done\n',
+    );
+    expect(root.querySelector("div[align='center'] img")?.getAttribute("width")).toBe("20");
+    expect(root.querySelector("details summary")).not.toBeNull();
+    expect(root.querySelector("input[type='checkbox']")).not.toBeNull();
+  });
+
   it("dedupes heading anchors", () => {
     const root = document.createElement("div");
     root.innerHTML = renderMarkdown("## Same\n\n## Same\n");
