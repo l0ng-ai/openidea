@@ -87,8 +87,8 @@ describe("t / locales", () => {
     expect(resolveLocale("EN-us")).toBe("en");
     expect(resolveLocale("fr")).toBe("fr");
     expect(resolveLocale("fr-CA")).toBe("fr");
-	expect(resolveLocale("pl_PL")).toBe("pl");
-	expect(resolveLocale("pl-PL")).toBe("pl");
+    expect(resolveLocale("pl_PL")).toBe("pl");
+    expect(resolveLocale("pl-PL")).toBe("pl");
     expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
