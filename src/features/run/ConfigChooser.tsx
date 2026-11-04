@@ -5,9 +5,11 @@ import { shortcutLabel } from "@/platform/keymap";
 import { HighlightedText, Icon, IconButton, List, Popup, SearchField, fuzzyMatch, listNavigate, T } from "@/ui";
 import type { RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useDebugRunSessions } from "@/workbench/contributions";
 import { commandLine, configIcon, groupConfigs } from "./configs";
 import { targetName } from "./remote";
 import { canDeleteConfig, CURRENT_FILE, deleteConfig, saveTemporary, selectConfig, startRun, useRun } from "./store";
+import { selectedTarget } from "./sessionTargets";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -79,6 +81,8 @@ function ConfigChooser() {
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
+  const sessions = useRun((s) => s.sessions);
+  const debugSessions = useDebugRunSessions((s) => s.sessions);
   const [query, setQuery] = useState("");
   const rows = useMemo(
     () =>
@@ -272,13 +276,16 @@ function ConfigChooser() {
             }
             if (r.type !== "config") return null;
             const c = r.config;
+            const running = selectedTarget(c.id, sessions, debugSessions);
             return (
               <span className={styles.chooserRow} title={commandLine(c)}>
-                <Icon
-                  name={configIcon(c)}
-                  size={13}
-                  className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
-                />
+                <span className={clsx(styles.chooserIcon, running && styles.chooserRunning)}>
+                  <Icon
+                    name={configIcon(c)}
+                    size={13}
+                    className={clsx(temporary.includes(c.id) && styles.chooserTemporary)}
+                  />
+                </span>
                 {numbers.size > 0 && <span className={styles.chooserMnemonic}>{numbers.get(r.key) ?? ""}</span>}
                 <span className={clsx(styles.chooserName, c.id === selectedId && styles.chooserSelected)}>
                   {r.indices ? <HighlightedText text={c.name} indices={r.indices} /> : c.name}
@@ -299,7 +306,35 @@ function ConfigChooser() {
                     <T>temporary</T>
                   </span>
                 )}
-                {isActive && (
+                {isActive && running && (
+                  <span className={styles.chooserActions}>
+                    <IconButton
+                      icon={running.debug ? "restart-debug-filled" : "rerun-filled"}
+                      size="small"
+                      iconSize={11}
+                      title={tx`Rerun '${c.name}'`}
+                      tabIndex={-1}
+                      disabled={!running.rerun}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        close();
+                        running.rerun?.();
+                      }}
+                    />
+                    <IconButton
+                      icon="stop-filled"
+                      size="small"
+                      iconSize={11}
+                      title={tx`Stop '${c.name}'`}
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        running.stop();
+                      }}
+                    />
+                  </span>
+                )}
+                {isActive && !running && (
                   <span className={styles.chooserActions}>
                     <IconButton
                       icon="run"
