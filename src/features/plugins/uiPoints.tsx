@@ -290,6 +290,49 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
 
 export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
 
+function registerView(pluginId: string, decl: ViewDecl, icon: string): () => void {
+  return registerToolWindow({
+    id: pluginToolWindowId(pluginId, decl.id),
+    title: decl.title,
+    icon,
+    anchor: decl.location,
+    order: 900,
+    component: () =>
+      decl.web ? (
+        <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
+      ) : (
+        <PluginView pluginId={pluginId} view={decl.id} label={decl.title} />
+      ),
+  });
+}
+
+function projectView(pluginId: string, decl: ViewDecl): () => void {
+  if (!decl.icon?.endsWith(".svg")) return registerView(pluginId, decl, decl.icon ?? "plugin");
+  let disposed = false;
+  let undo = () => {};
+  void pluginsBackend()
+    .assets(pluginId, `viewIcon/${decl.id}`)
+    .then((assets) => {
+      if (disposed) return;
+      const svg = assets.find(([id]) => id === `viewIcon/${decl.id}`)?.[1];
+      const name = `ext:${pluginId}/view-${decl.id}`;
+      const unregister = svg ? registerExternalIcons([[name, svg]]) : () => {};
+      const remove = registerView(pluginId, decl, svg ? name : "plugin");
+      undo = () => {
+        remove();
+        unregister();
+      };
+    })
+    .catch((e: unknown) => {
+      console.warn(`plugin ${pluginId}: view icon ${decl.id}`, e);
+      if (!disposed) undo = registerView(pluginId, decl, "plugin");
+    });
+  return () => {
+    disposed = true;
+    undo();
+  };
+}
+
 /** Registers the client side of the P7 points; returns their disposer. */
 export function defineViewUiPoints(): () => void {
   const disposers = [
@@ -326,20 +369,7 @@ export function defineViewUiPoints(): () => void {
     }),
     defineUiPoint<ViewDecl>("views", {
       title: "Tool Windows",
-      project: ({ pluginId, decl }) =>
-        registerToolWindow({
-          id: pluginToolWindowId(pluginId, decl.id),
-          title: decl.title,
-          icon: decl.icon ?? "plugin",
-          anchor: decl.location,
-          order: 900,
-          component: () =>
-            decl.web ? (
-              <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
-            ) : (
-              <PluginView pluginId={pluginId} view={decl.id} label={decl.title} />
-            ),
-        }),
+      project: ({ pluginId, decl }) => projectView(pluginId, decl),
     }),
     defineUiPoint<CustomEditorDecl>("customEditors", {
       title: "Editors",
