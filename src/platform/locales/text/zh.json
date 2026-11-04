@@ -5910,5 +5910,7 @@
   "Shelve changes “{trim}”": "搁置更改“{trim}”",
   "Unshelve “{name}”": "取消搁置“{name}”",
   "Delete shelved changes “{name}”": "删除搁置的更改“{name}”",
-  "Rename shelved changes": "重命名搁置的更改"
+  "Rename shelved changes": "重命名搁置的更改",
+  "Passed to the agent process, replacing variables of the same name. Changes apply to new sessions.": "传给智能体进程，覆盖同名变量。对新会话生效。",
+  "Expected NAME=value: {pair}": "应为 NAME=value：{pair}"
 }

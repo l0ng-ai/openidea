@@ -30,6 +30,17 @@ pub fn set_command(host: &Host, window: &str, id: String, command: Option<String
     host.project(window)?.agents.set_builtin_command(&id, command)
 }
 
+/// Environment variables built-in agent `id` starts with; empty clears them.
+pub fn set_env(
+    host: &Host,
+    window: &str,
+    id: String,
+    env: std::collections::BTreeMap<String, String>,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.set_builtin_env(&id, env)
+}
+
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
 pub(crate) fn registry_paths(host: &Host) -> RegistryPaths {
     RegistryPaths::new(&host.config_dir, &host.local_data_dir)
@@ -195,6 +206,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
     d.add("agent_providers", |c| async move { providers(&c.host, &c.window) });
     d.add("agent_set_command", |c| async move { set_command(&c.host, &c.window, c.arg("id")?, c.arg("command")?) });
+    d.add("agent_set_env", |c| async move { set_env(&c.host, &c.window, c.arg("id")?, c.arg("env")?) });
     d.add("agent_registry_list", |c| async move { registry_list(&c.host, &c.window, c.arg("request")?).await });
     d.add("agent_registry_install", |c| async move {
         registry_install(&c.host, &c.window, c.arg("id")?, c.arg("request")?, c.sender("onEvent")?).await
