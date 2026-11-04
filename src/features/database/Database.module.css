@@ -672,6 +672,11 @@
   font-size: var(--fs-small);
   color: var(--fg-secondary);
 }
+/* SQL types (INT, VARCHAR) read as keywords, as in the SQL editor. */
+.sqlPreview :global(.tok-typeName),
+.codeText :global(.tok-typeName) {
+  color: var(--syn-keyword);
+}
 .sqlPreview {
   margin: 0;
   padding: 8px 10px;

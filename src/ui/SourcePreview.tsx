@@ -3,19 +3,16 @@
  * ranges: the preview pane beside result trees (TODO, Problems, Inspection
  * Results…). The caller supplies the text loader (open buffer or disk).
  *
- * Lines are syntax-coloured with the whole file parsed once (`codeHighlighter`),
- * so a line inside a block comment or multi-line string is coloured as such —
- * like the result lines of Find in Files / Show Usages (`lineTokens`). Files
- * beyond `MAX_PARSE` stay plain rather than colouring the window with the wrong
- * block-comment context. (This makes the preview the first `src/ui` component
- * to import from `@/editor`; verified no cycle — editor/lsp/markdown only
- * reaches back into `src/ui` through leaf files like selectableText.)
+ * With `colorize` (the editor's whole-file highlighter), lines are syntax-coloured
+ * from one parse of the file, so a line inside a block comment or multi-line
+ * string is coloured as such, like the result lines of Find in Files / Show
+ * Usages. Files beyond `MAX_PARSE` stay plain rather than colouring the window
+ * with the wrong block-comment context.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { tokenSpans } from "@/editor/lineTokens";
-import { codeHighlighter, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
 import { T } from "./T";
+import { tokenSpans, type SourceToken } from "./tokenSpans";
 import styles from "./SourcePreview.module.css";
 import { useSelectionBoundary } from "./useSelectionBoundary";
 import { tx } from "@/platform/i18n";
@@ -33,7 +30,10 @@ const WINDOW = 300;
 const MAX_PARSE = 500_000;
 
 /** Whole-file highlighter over the parsed text, or null when it stays plain. */
-type Highlighter = ((from: number, to: number) => CodeToken[]) | null;
+type Highlighter = ((from: number, to: number) => SourceToken[]) | null;
+
+/** Parses `text` (the file at `path`) for syntax colours; null leaves it plain. */
+export type SourceColorizer = (text: string, path: string) => Promise<Highlighter>;
 
 export interface SourcePreviewProps {
   path: string | null;
@@ -44,10 +44,20 @@ export interface SourcePreviewProps {
   load: (path: string) => Promise<string>;
   /** Bump to reload the same path. */
   version?: number;
+  /** Stable (module-level) syntax colouring; without it lines stay plain. */
+  colorize?: SourceColorizer;
   className?: string;
 }
 
-export function SourcePreview({ path, line, highlights = [], load, version = 0, className }: SourcePreviewProps) {
+export function SourcePreview({
+  path,
+  line,
+  highlights = [],
+  load,
+  version = 0,
+  colorize,
+  className,
+}: SourcePreviewProps) {
   const [text, setText] = useState<{ path: string; lines: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [highlighter, setHighlighter] = useState<{ path: string; fn: Highlighter } | null>(null);
@@ -82,14 +92,14 @@ export function SourcePreview({ path, line, highlights = [], load, version = 0, 
     let alive = true;
     const { path } = current;
     const full = current.lines.join("\n");
-    const build = full.length > MAX_PARSE ? Promise.resolve(null) : codeHighlighter(full, languageForPath(path));
+    const build = !colorize || full.length > MAX_PARSE ? Promise.resolve(null) : colorize(full, path);
     void build.then((fn) => {
       if (alive) setHighlighter({ path, fn });
     });
     return () => {
       alive = false;
     };
-  }, [current]);
+  }, [current, colorize]);
 
   // Offsets of every line in the newline-normalised text, so whole-file token
   // ranges can be sliced per rendered line.
@@ -113,7 +123,7 @@ export function SourcePreview({ path, line, highlights = [], load, version = 0, 
     const start = Math.max(0, line - WINDOW);
     const end = Math.min(lines.length, line + WINDOW);
     const last = lines.length - 1;
-    const map = new Map<number, CodeToken[]>();
+    const map = new Map<number, SourceToken[]>();
     let li = start;
     const from = offsets[start]!;
     const to = end < offsets.length ? offsets[end]! : offsets[last]! + (lines[last]?.length ?? 0);
@@ -171,7 +181,7 @@ function PreviewBody({
   path: string;
   line: number;
   lines: string[];
-  tokensByLine: Map<number, CodeToken[]> | null;
+  tokensByLine: Map<number, SourceToken[]> | null;
   highlights: readonly SourceHighlight[];
   className?: string;
 }) {
@@ -213,7 +223,7 @@ function PreviewBody({
 function highlight(
   text: string,
   ranges: ReadonlyArray<readonly [number, number]>,
-  tokens: readonly CodeToken[] | null,
+  tokens: readonly SourceToken[] | null,
 ): ReactNode[] {
   const parts: ReactNode[] = [];
   let pos = 0;
