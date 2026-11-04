@@ -1,11 +1,12 @@
 /** Picks an SSH configuration and a folder on that host, then opens it in this or a new window. */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
-import { call, commands, isCancelled, onIdeEvent, type RemoteEntry } from "@/platform/ipc";
+import { call, commands, IpcError, isCancelled, onIdeEvent, type RemoteEntry } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { useRemoteProgress } from "@/platform/remote";
 import { sshLabel, type SshConfigValid, validateRemote } from "@/platform/remoteSettings";
-import { Button, Dialog, Icon, Input, ProgressBar, Select, Spinner } from "@/ui";
+import { Button, copyText, Dialog, Icon, Input, ProgressBar, Select, Spinner } from "@/ui";
 import { openRemoteProject } from "@/workbench/projectWindow";
 import {
   browsableFolders,
@@ -23,6 +24,8 @@ export function ConnectHost() {
 }
 
 const SSH_SETTINGS_PAGE = "tools.sshConfigurations";
+/** Android: Termux on this device (`TERMUX_SSH` of ide-core). */
+const TERMUX_SSH = "termux";
 
 /**
  * This machine's SSH configurations: the connection is made from here. A remote project's
@@ -56,12 +59,29 @@ function ConnectDialog() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browse, setBrowse] = useState<{ dir: string; folders: RemoteEntry[] } | null>(null);
+  const [setup, setSetup] = useState<string | null>(null);
+  const termux = usePlatform((s) => s.os === "android") && ssh === TERMUX_SSH;
+
+  /** Termux trusts its host key on first use (like `accept-new`); any other failure offers its setup. */
+  const viaTermux = async <T,>(run: () => Promise<T>): Promise<T> => {
+    if (!termux) return run();
+    try {
+      return await run().catch(async (e: unknown) => {
+        if (!(e instanceof IpcError && /^Unknown SSH host key/.test(e.message))) throw e;
+        await call(commands.sshTrustHost(ssh));
+        return run();
+      });
+    } catch (e) {
+      if (!isCancelled(e)) setSetup(await call(commands.remoteTermuxSetup(ssh)));
+      throw e;
+    }
+  };
 
   const list = async (dir: string) => {
     setError(null);
     setBusy(true);
     try {
-      const entries = await call(commands.remoteBootstrapList(ssh, dir));
+      const entries = await viaTermux(() => call(commands.remoteBootstrapList(ssh, dir)));
       const shown = listedDirectory(dir, entries);
       setBrowse({ dir: shown, folders: browsableFolders(entries) });
       setPath(shown);
@@ -77,7 +97,7 @@ function ConnectDialog() {
     setBusy(true);
     try {
       const target = path.trim() || "~";
-      if (await openRemoteProject(ssh, target)) closeConnectDialog();
+      if (await viaTermux(() => openRemoteProject(ssh, target))) closeConnectDialog();
       else setBusy(false);
     } catch (e) {
       if (!isCancelled(e)) setError(e instanceof Error ? e.message : String(e));
@@ -125,6 +145,7 @@ function ConnectDialog() {
             onChange={(id) => {
               setSsh(id);
               setBrowse(null);
+              setSetup(null);
             }}
             aria-label={tx("SSH configuration")}
           />
@@ -172,8 +193,40 @@ function ConnectDialog() {
             {error}
           </div>
         )}
+        {setup && <TermuxSetup script={setup} />}
       </form>
     </Dialog>
+  );
+}
+
+/** Android: the one-time setup of Termux on this device, pasted into Termux. */
+function TermuxSetup({ script }: { script: string }) {
+  const tx = useTx();
+  const text = useRef<HTMLTextAreaElement>(null);
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    // Selected first: without clipboard access (Android WebView) copyText copies the selection.
+    text.current?.select();
+    void copyText(script).then(() => setCopied(true));
+  };
+  return (
+    <div className={styles.setup}>
+      <p className={styles.hint}>
+        {tx("Set up Termux once: copy these commands, paste them into Termux, then press Open again.")}
+      </p>
+      <textarea
+        ref={text}
+        className={styles.script}
+        readOnly
+        rows={8}
+        spellCheck={false}
+        value={script}
+        aria-label={tx("Termux setup commands")}
+      />
+      <div className={styles.row}>
+        <Button onClick={copy}>{copied ? tx("Copied") : tx("Copy")}</Button>
+      </div>
+    </div>
   );
 }
 

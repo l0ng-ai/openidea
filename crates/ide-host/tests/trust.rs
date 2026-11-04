@@ -57,6 +57,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "db_export_file",
         "vcs_write_patch",
         "remote_bootstrap_list",
+        "remote_termux_setup",
         "deploy_test_connection",
     ] {
         assert!(ide_host::trust::restricted_command_allowed(command), "{command}");

@@ -341,6 +341,7 @@ pub fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     in_config || update_endpoint_env().is_some()
 }
 
+#[cfg(desktop)]
 fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -359,7 +360,18 @@ fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> 
 #[tauri::command]
 #[specta::specta]
 pub async fn app_check_update(app: AppHandle) -> IdeResult<UpdateCheck> {
-    let Some(updater) = updater(&app)? else {
+    check_update(&app).await
+}
+
+/// The updater plugin is desktop-only: mobile builds report updates as not configured.
+#[cfg(not(desktop))]
+async fn check_update(_: &AppHandle) -> IdeResult<UpdateCheck> {
+    Ok(UpdateCheck { enabled: false, update: None })
+}
+
+#[cfg(desktop)]
+async fn check_update(app: &AppHandle) -> IdeResult<UpdateCheck> {
+    let Some(updater) = updater(app)? else {
         return Ok(UpdateCheck { enabled: false, update: None });
     };
     let update = updater.check().await.map_err(|e| IdeError::unavailable(e.to_string()))?;
@@ -458,36 +470,47 @@ pub async fn app_install_update(
     let _guard =
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
-    let result = async {
-        let updater = updater(&app)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-        let update = tokio::select! {
-            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        }
-        .ok_or_else(|| IdeError::not_found("no update available"))?;
-        let mut throttle = ProgressThrottle::default();
-        let progress = on_progress.clone();
-        let download = update.download(
-            move |len, total| {
-                if let Some(p) = throttle.chunk(len, total) {
-                    let _ = progress.send(p);
-                }
-            },
-            || {},
-        );
-        let bytes = tokio::select! {
-            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        };
-        let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?
-            .map_err(|e| IdeError::internal(e.to_string()))
-    }
-    .await;
+    let result = install_update(&app, &token, &on_progress).await;
     state.host.end_request(request);
     result
+}
+
+#[cfg(not(desktop))]
+async fn install_update(_: &AppHandle, _: &ide_core::CancellationToken, _: &Channel<UpdateProgress>) -> IdeResult<()> {
+    Err(IdeError::unavailable("updates are not supported on this platform"))
+}
+
+#[cfg(desktop)]
+async fn install_update(
+    app: &AppHandle,
+    token: &ide_core::CancellationToken,
+    on_progress: &Channel<UpdateProgress>,
+) -> IdeResult<()> {
+    let updater = updater(app)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+    let update = tokio::select! {
+        r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+        _ = token.cancelled() => return Err(IdeError::cancelled()),
+    }
+    .ok_or_else(|| IdeError::not_found("no update available"))?;
+    let mut throttle = ProgressThrottle::default();
+    let progress = on_progress.clone();
+    let download = update.download(
+        move |len, total| {
+            if let Some(p) = throttle.chunk(len, total) {
+                let _ = progress.send(p);
+            }
+        },
+        || {},
+    );
+    let bytes = tokio::select! {
+        r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+        _ = token.cancelled() => return Err(IdeError::cancelled()),
+    };
+    let _ = on_progress.send(UpdateProgress::Installing);
+    tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(|e| IdeError::internal(e.to_string()))
 }
 
 #[cfg(test)]

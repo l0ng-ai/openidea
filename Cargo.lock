@@ -4584,6 +4584,7 @@ dependencies = [
  "flate2",
  "ide-core",
  "parking_lot",
+ "rand 0.10.3",
  "russh",
  "russh-config",
  "russh-sftp",

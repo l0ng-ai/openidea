@@ -3,5 +3,6 @@
   "identifier": "e2e-bridge",
   "description": "Debug-only automation bridge",
   "windows": ["main", "project-*", "settings-*", "comparison-*", "deployment-*"],
+  "platforms": ["linux", "macOS", "windows"],
   "permissions": ["mcp-bridge:default"]
 }

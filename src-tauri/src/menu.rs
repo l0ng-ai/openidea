@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+#[cfg(desktop)]
 use tauri::menu::{IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
 
@@ -974,6 +975,7 @@ pub fn item_enabled(id: &str, disabled: &HashSet<String>) -> bool {
 }
 
 /// Updates the enabled state of the installed menu's items in place (no rebuild).
+#[cfg(desktop)]
 pub fn apply_disabled<R: Runtime>(app: &AppHandle<R>, disabled: &HashSet<String>) {
     fn walk<R: Runtime>(items: Vec<MenuItemKind<R>>, disabled: &HashSet<String>) {
         for item in items {
@@ -1020,6 +1022,7 @@ pub fn recent_items(recent: &[ide_workspace::RecentProject], home: Option<&Path>
 }
 
 /// Renders the spec into a Tauri menu.
+#[cfg(desktop)]
 pub fn build<R: Runtime>(
     app: &AppHandle<R>,
     os: Os,
@@ -1047,6 +1050,7 @@ pub fn build<R: Runtime>(
     Ok(menu)
 }
 
+#[cfg(desktop)]
 fn build_submenu<R: Runtime>(
     app: &AppHandle<R>,
     config: &MenuConfig,
@@ -1095,6 +1099,7 @@ fn build_submenu<R: Runtime>(
     Ok(submenu)
 }
 
+#[cfg(desktop)]
 fn native<R: Runtime>(app: &AppHandle<R>, config: &MenuConfig, n: Native) -> tauri::Result<Box<dyn IsMenuItem<R>>> {
     let text = config.label(n.key(), n.default_label());
     let t = Some(text.as_str());
@@ -1186,6 +1191,7 @@ pub fn native_menu_bar() -> bool {
 }
 
 /// Rebuilds and installs the app menu from the current config and recent list.
+#[cfg(desktop)]
 pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &[ide_workspace::RecentProject]) {
     if !native_menu_bar() {
         return;
@@ -1199,6 +1205,13 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
         Err(e) => tracing::warn!("failed to build the app menu: {e}"),
     }
 }
+
+/// Tauri has no native menu on mobile: the menu stubs do nothing.
+#[cfg(not(desktop))]
+pub fn apply_disabled<R: Runtime>(_: &AppHandle<R>, _: &HashSet<String>) {}
+
+#[cfg(not(desktop))]
+pub fn install<R: Runtime>(_: &AppHandle<R>, _: &MenuState, _: &[ide_workspace::RecentProject]) {}
 
 #[cfg(test)]
 mod tests {

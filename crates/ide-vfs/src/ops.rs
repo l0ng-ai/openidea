@@ -124,6 +124,10 @@ pub(crate) fn delete(path: &Path, use_trash: bool) -> IdeResult<()> {
     if !exists(path) {
         return Err(not_found(path));
     }
+    // Android has no trash support in the `trash` crate: always delete permanently.
+    #[cfg(target_os = "android")]
+    let _ = use_trash;
+    #[cfg(not(target_os = "android"))]
     if use_trash {
         #[allow(unused_mut)]
         let mut ctx = trash::TrashContext::default();

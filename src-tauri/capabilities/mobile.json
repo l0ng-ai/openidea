@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Android folder picker",
+  "windows": ["main", "project-*", "settings-*"],
+  "platforms": ["android"],
+  "permissions": ["folder-picker:default"]
+}

@@ -17,10 +17,6 @@ dunce.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-mcp-bridge = "0.13"
-tauri-plugin-window-state = "2"
-tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
 tracing-appender = "0.2"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 specta-typescript.workspace = true
@@ -72,6 +68,12 @@ ide-plugin = { path = "../crates/ide-plugin" }
 ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
 ide-github = { path = "../crates/ide-github" }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-mcp-bridge = "0.13"
+tauri-plugin-window-state = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"

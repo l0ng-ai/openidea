@@ -1175,6 +1175,13 @@ export const commands = {
 	/**  A client OS file belongs to this machine even when its destination is remote. */
 	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
+	 *  Android: the commands that let SSH configuration `ssh` (Termux on this
+	 *  device) connect, pasted once into Termux. They install openssh, authorize this
+	 *  app's key (generated on first use) and install the IDE backend, which this app
+	 *  cannot download itself (Android has no `curl`).
+	 */
+	remoteTermuxSetup: (ssh: string) => typedError<string, IdeError>(__TAURI_INVOKE("remote_termux_setup", { ssh })),
+	/**
 	 *  Reload Environment: new child processes get the login shell's current environment
 	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
 	 */

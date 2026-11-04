@@ -519,3 +519,38 @@ fn load_key(path: &Path, passphrase: Option<&str>) -> IdeResult<keys::PrivateKey
         Err(e) => Err(IdeError::invalid(format!("cannot read SSH key {}: {e}", path.display()))),
     }
 }
+
+/// The public key (`authorized_keys` line) of the unencrypted private key at
+/// `path`, generating an Ed25519 key there (owner-only) when there is none.
+pub fn ensure_key(path: &Path, comment: &str) -> IdeResult<String> {
+    let fail = |e: keys::ssh_key::Error| IdeError::internal(format!("SSH key {}: {e}", path.display()));
+    let key = if path.exists() {
+        load_key(path, None)?
+    } else {
+        let mut key = keys::PrivateKey::random(&mut rand::rng(), keys::Algorithm::Ed25519).map_err(fail)?;
+        key.set_comment(comment);
+        let pem = key.to_openssh(keys::ssh_key::LineEnding::LF).map_err(fail)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        std::io::Write::write_all(&mut options.open(path)?, pem.as_bytes())?;
+        key
+    };
+    key.public_key().to_openssh().map_err(fail)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ensure_key_generates_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ssh/id");
+        let first = super::ensure_key(&path, "openidea").unwrap();
+        assert!(first.starts_with("ssh-ed25519 ") && first.ends_with(" openidea"), "{first}");
+        assert_eq!(super::ensure_key(&path, "other").unwrap(), first);
+    }
+}

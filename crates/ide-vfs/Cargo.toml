@@ -16,7 +16,6 @@ globset.workspace = true
 notify-debouncer-full.workspace = true
 encoding_rs.workspace = true
 chardetng.workspace = true
-trash.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 zip.workspace = true
@@ -24,3 +23,6 @@ zip.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+trash.workspace = true

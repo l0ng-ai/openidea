@@ -544,6 +544,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         crate::remote_dev::remote_stop_forwarding,
         crate::remote_dev::remote_invoke,
         crate::remote_dev::remote_import_local,
+        crate::remote_dev::remote_termux_setup,
         env::env_reload,
         db::db_test,
         db::db_connected,

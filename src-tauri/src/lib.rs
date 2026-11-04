@@ -2,6 +2,8 @@
 //!
 //! This crate is glue only. Each `commands/<domain>.rs` is a thin, typed
 //! adapter from IPC to a backend crate; no domain logic lives here.
+// Desktop-only window and menu code is compiled but unused on mobile.
+#![cfg_attr(mobile, allow(dead_code))]
 
 mod application_focus;
 mod commands;
@@ -14,6 +16,8 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+#[cfg(mobile)]
+mod mobile_compat;
 mod plugin_web;
 mod remote_dev;
 
@@ -30,7 +34,9 @@ use parking_lot::Mutex;
 use state::AppState;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+#[cfg(desktop)]
+use tauri::Emitter;
+use tauri::Manager;
 use windows::WindowsState;
 
 /// Builds the tauri-specta builder holding every command and exported type.
@@ -68,20 +74,32 @@ pub fn run() {
     }
 
     let builder = specta_builder();
-    #[cfg(debug_assertions)]
+    // Writes into the source tree: meaningless (and fatal) on a phone.
+    #[cfg(all(debug_assertions, desktop))]
     export_bindings(&builder);
 
     let app = tauri::Builder::default();
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
+    #[cfg(desktop)]
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
     // Install before window-state restores maximized geometry during window creation.
     #[cfg(windows)]
     let app = app.plugin(window_work_area::init());
     let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
+    // Folder picker for `@tauri-apps/plugin-dialog` folder requests (see src/platform/dialog.ts).
+    #[cfg(target_os = "android")]
+    let app = app.plugin(
+        tauri::plugin::Builder::<tauri::Wry>::new("folder-picker")
+            .setup(|_, api| {
+                api.register_android_plugin("ai.l0ng.openidea", "FolderPickerPlugin")?;
+                Ok(())
+            })
+            .build(),
+    );
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(desktop, not(target_os = "linux")))]
     let app = app.plugin(
         tauri_plugin_window_state::Builder::default()
             .with_state_flags(window_state_flags())
@@ -89,13 +107,13 @@ pub fn run() {
             .map_label(windows::state_key)
             .build(),
     );
-    let app = app
-        // Inert until an endpoint is configured (see `commands::window::app_check_update`).
-        .plugin(tauri_plugin_updater::Builder::new().build());
+    // Inert until an endpoint is configured (see `commands::window::app_check_update`).
+    #[cfg(desktop)]
+    let app = app.plugin(tauri_plugin_updater::Builder::new().build());
     // Files of plugins' web views, for their sandboxed frames.
     let app = app.register_asynchronous_uri_scheme_protocol(plugin_web::SCHEME, plugin_web::handle);
     // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, desktop))]
     let app = app.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
 
     // Paths macOS asked to open (Finder's Open With, the Dock) before setup ran: the first window takes them.
@@ -162,6 +180,7 @@ pub fn run() {
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
+        #[cfg(desktop)]
         app.on_menu_event(on_menu_event);
         windows::create_main_window(app.handle())?;
         Ok(())
@@ -225,13 +244,14 @@ pub fn run() {
     });
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
 }
 
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
+#[cfg(desktop)]
 fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };

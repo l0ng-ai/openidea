@@ -6061,5 +6061,7 @@
   "Make abstract": "设为抽象",
   "Keep abstract": "保留抽象声明",
   "Methods pulled up to an interface are declared abstract there.": "上拉到接口的方法将在接口中声明为抽象方法。",
-  "The file changed; open the dialog again": "文件已更改，请重新打开对话框"
+  "The file changed; open the dialog again": "文件已更改，请重新打开对话框",
+  "Set up Termux once: copy these commands, paste them into Termux, then press Open again.": "只需设置一次 Termux：复制这些命令，粘贴到 Termux 中，然后再次点击“打开”。",
+  "Termux setup commands": "Termux 设置命令"
 }

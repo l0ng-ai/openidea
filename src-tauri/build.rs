@@ -14,5 +14,12 @@ fn main() {
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     }
-    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows)).expect("tauri build");
+    // Android-only folder picker (Kotlin, src-tauri/gen/android): tauri-plugin-dialog cannot pick folders there.
+    let folder_picker = tauri_build::InlinedPlugin::new()
+        .commands(&["pick_folder"])
+        .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
+    tauri_build::try_build(
+        tauri_build::Attributes::new().windows_attributes(windows).plugin("folder-picker", folder_picker),
+    )
+    .expect("tauri build");
 }

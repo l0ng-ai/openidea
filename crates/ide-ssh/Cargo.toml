@@ -18,6 +18,7 @@ russh = { version = "0.64", default-features = false, features = ["ring", "rsa",
 russh-config = "0.58.0"
 russh-sftp = "2.4"
 flate2 = "1"
+rand = { version = "0.10", default-features = false, features = ["thread_rng"] }
 
 [features]
 # `testing`: an in-process SSH / SFTP server for tests of crates built on this one.

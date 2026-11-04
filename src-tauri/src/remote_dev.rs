@@ -28,6 +28,46 @@ pub async fn remote_bootstrap_list(
     state.remote.list(&ide_ssh::FsConnection::Sftp { ssh }, &path).await
 }
 
+/// Android: the commands that let SSH configuration `ssh` (Termux on this
+/// device) connect, pasted once into Termux. They install openssh, authorize this
+/// app's key (generated on first use) and install the IDE backend, which this app
+/// cannot download itself (Android has no `curl`).
+#[tauri::command]
+#[specta::specta]
+pub fn remote_termux_setup(state: State<'_, AppState>, ssh: String) -> IdeResult<String> {
+    let config = state.ssh.config(&ssh)?;
+    let key = ide_ssh::ensure_key(&ide_ssh::expand(config.key_file.trim()), "openidea")?;
+    Ok(termux_setup(&key, env!("CARGO_PKG_VERSION")))
+}
+
+/// Safe to run again: done steps are skipped. `set -e` in a subshell: a failed
+/// step stops the setup, not the user's Termux shell.
+fn termux_setup(key: &str, version: &str) -> String {
+    const SCRIPT: &str = r#"(set -e
+V=@VERSION@
+KEY='@KEY@'
+pkg install -y openssh curl
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+grep -qF "$KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "from=\"127.0.0.1\" $KEY" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+D=~/.openidea/server/$V/termux
+if [ ! -x "$D/openidea-server" ]; then
+  mkdir -p "$D"
+  U=https://github.com/l0ng-ai/openidea/releases/download/v$V/openidea-server-linux-$(uname -m).gz
+  curl -fL -o "$D/server.gz" "$U"
+  echo "$(curl -fsSL "$U.sha256" | grep -oE '[0-9a-f]{64}' | head -n 1)  $D/server.gz" | sha256sum -c -
+  gunzip -c "$D/server.gz" > "$D/openidea-server.part"
+  chmod 755 "$D/openidea-server.part"
+  mv "$D/openidea-server.part" "$D/openidea-server"
+  rm -f "$D/server.gz"
+fi
+grep -q '# openidea-sshd' ~/.bashrc 2>/dev/null || echo 'pgrep -x sshd >/dev/null || sshd # openidea-sshd: OpenIDEA connects to it' >> ~/.bashrc
+pgrep -x sshd >/dev/null || sshd
+echo 'Termux is ready for OpenIDEA.')
+"#;
+    SCRIPT.replace("@VERSION@", version).replace("@KEY@", key)
+}
+
 /// Where the server is installed on the remote host (per version).
 fn install_dir(version: &str) -> String {
     format!("~/.openidea/server/{version}")
@@ -697,6 +737,14 @@ pub async fn remote_import_local(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn termux_setup_embeds_key_and_version() {
+        let script = termux_setup("ssh-ed25519 AAAA openidea", "1.2.3");
+        assert!(script.contains("V=1.2.3\nKEY='ssh-ed25519 AAAA openidea'\n"), "{script}");
+        assert!(script.contains(r#"echo "from=\"127.0.0.1\" $KEY""#), "{script}");
+        assert!(!script.contains('@'), "{script}");
+    }
 
     #[test]
     fn maps_uname_to_rust_platform_names() {

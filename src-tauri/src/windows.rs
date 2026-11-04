@@ -10,6 +10,8 @@
 //! [`AppState::project`]). Their labels name the kind and the parent
 //! (`settings-main`, `comparison-project-2-3`); their [`Launch`] says what to show.
 
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use crate::state::AppState;
 use crate::theme_frame::builtin_frame;
 use ide_core::settings::AppearanceSettings;
