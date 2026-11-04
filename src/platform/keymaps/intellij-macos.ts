@@ -170,6 +170,8 @@ export const intellijMacos: Record<string, string[]> = {
   "refactor.inline": ["Meta+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Meta+Delete"],
+  "refactor.pullMembersUp": [],
+  "refactor.pushMembersDown": [],
 
   // File / editor tabs
   "file.save": ["Meta+S"],

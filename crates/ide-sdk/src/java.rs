@@ -1170,7 +1170,7 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.2.1.jar");
+    let extension = data_dir.join("java-usages-1.3.0.jar");
     let bytes = include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         clean_usages_bundles(data_dir, &extension);
