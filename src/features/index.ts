@@ -12,7 +12,12 @@ import { activate as projectTree } from "./project-tree";
 import { activate as search } from "./search";
 import { activate as dependencies } from "./dependencies";
 import { activate as codeInsight } from "./code-insight";
-import { activate as vcs, activateComparisonWindow, activateSettingsPages as vcsPages } from "./vcs";
+import {
+  activate as vcs,
+  activateComparisonWindow,
+  activateDiffViewer,
+  activateSettingsPages as vcsPages,
+} from "./vcs";
 import { activate as terminal } from "./terminal";
 import { activate as run } from "./run";
 import { activate as runAnything } from "./run-anything";
@@ -39,7 +44,7 @@ import { activate as services } from "./services";
 import { activate as github } from "./github";
 import { activate as httpClient } from "./http-client";
 import { activate as database } from "./database";
-import { activate as deployment } from "./deployment";
+import { activate as deployment, activateDeploymentWindow } from "./deployment";
 import { activate as agents, activateSettingsPages as agentsPages } from "./agents";
 import { activate as vim, activateSettingsPages as vimPages } from "./vim";
 import { activate as ssh } from "./ssh";
@@ -109,6 +114,7 @@ export function activateFeatures(): () => void {
 
 export { SettingsWindow } from "./settings";
 export { ComparisonWindow } from "./vcs";
+export { DeploymentWindow } from "./deployment";
 
 /**
  * A comparison window of project window `parent`: the changed files between two revisions and
@@ -122,6 +128,19 @@ export function activateComparisonWindowFeatures(parent: string): () => void {
     ["editor", editor],
     ["vcs", vcs],
     ["comparison", () => activateComparisonWindow(parent, (project) => confirmLeave(undefined, project))],
+  ]);
+}
+
+/**
+ * The Sync with Deployed window of project window `parent`: local files next to their copies on a
+ * deployment server, with the diff viewer but no workbench.
+ */
+export function activateDeploymentWindowFeatures(parent: string): () => void {
+  return activateAll("deployment window", [
+    ["locale", appLocale],
+    ["settings", activateRuntimeSettings],
+    ["diff", activateDiffViewer],
+    ["deployment", () => activateDeploymentWindow(parent)],
   ]);
 }
 
