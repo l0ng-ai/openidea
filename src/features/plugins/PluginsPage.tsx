@@ -924,7 +924,7 @@ export function PluginsPage() {
                   <CategoryFilter market={market ?? []} value={category} onChange={setCategory} />
                 </li>
               )}
-              {!marketUrl && (
+              {!marketUrl && !marketError && (
                 <li className={styles.notice} role="note">
                   <Icon name="info" size={14} />
                   <span>{tx`${NO_REPOSITORY}. Showing plugin packages available on this machine.`}</span>
