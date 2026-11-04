@@ -123,12 +123,14 @@ fn taskkill_tree(child: &Child) {
 /// inherits them loads the image's (older) libraries and plugins next to its own, e.g.
 /// `curl: symbol lookup error ... nghttp2_...`. The IDE process keeps its environment
 /// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables and
-/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]).
-/// Variables the call site has already set are kept. A no-op outside an AppImage
-/// without an overlay.
+/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]),
+/// and the login shell's variables this process lacks ([`shell_env`]: an app started from
+/// Finder/Dock doesn't have what rc files export, such as `GOPATH`, `JAVA_HOME` or
+/// `MAVEN_OPTS`). Variables the call site has already set are kept.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
     let fixes = child_env_changes();
-    if fixes.is_empty() {
+    let shell: Vec<_> = shell_env().collect();
+    if fixes.is_empty() && shell.is_empty() {
         return cmd;
     }
     let explicit: Vec<OsString> = cmd.get_envs().map(|(k, _)| k.to_owned()).collect();
@@ -137,6 +139,9 @@ pub fn host_env(cmd: &mut Command) -> &mut Command {
             Some(v) => cmd.env(key, v),
             None => cmd.env_remove(key),
         };
+    }
+    for (key, value) in shell.into_iter().filter(|(k, _)| !explicit.contains(k)) {
+        cmd.env(key, value);
     }
     cmd
 }
@@ -154,12 +159,13 @@ pub fn host_vars() -> impl Iterator<Item = (OsString, OsString)> {
     apply_changes(std::env::vars_os().collect(), &child_env_changes()).into_iter()
 }
 
-/// [`std::env::var_os`] as a child should see it (see [`host_env`]).
+/// [`std::env::var_os`] as a child should see it (see [`host_env`]), the login shell's value
+/// included when this process lacks the variable.
 pub fn host_var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
     let key = key.as_ref();
     match child_env_changes().into_iter().find(|(k, _)| k == key) {
         Some((_, fixed)) => fixed,
-        None => std::env::var_os(key),
+        None => std::env::var_os(key).or_else(|| shell_env().find(|(k, _)| k == key).map(|(_, v)| v)),
     }
 }
 
@@ -572,6 +578,15 @@ mod tests {
         assert_eq!(get("HOME"), Some(None));
         let shell: Vec<_> = shell_env().map(|(k, _)| k).collect();
         assert_eq!(shell, [OsString::from("OPENIDEA_OVERLAY_B")]);
+        // Every child gets what the login shell exports and the IDE process lacks (a Finder
+        // launch: `GOPATH`, `JAVA_HOME`...), unless the call site sets it.
+        assert_eq!(get("OPENIDEA_OVERLAY_B"), Some(Some("b".into())));
+        let mut own = Command::new("true");
+        own.env("OPENIDEA_OVERLAY_B", "call site");
+        host_env(&mut own);
+        let value = own.get_envs().find(|(n, _)| *n == "OPENIDEA_OVERLAY_B").and_then(|(_, v)| v);
+        assert_eq!(value, Some(OsStr::new("call site")));
+        assert_eq!(host_var_os("OPENIDEA_OVERLAY_B"), Some("b".into()));
         assert_eq!(host_var_os("PATH"), Some("/reloaded".into()));
         assert!(host_vars().all(|(k, _)| k != "HOME"));
         assert!(host_vars().any(|(k, v)| k == "OPENIDEA_OVERLAY_A" && v == "project"));
