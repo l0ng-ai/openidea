@@ -1023,6 +1023,8 @@ export const commands = {
 	 *  daemon and puts the docker executable on `PATH`.
 	 */
 	dockerRunEnv: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_run_env", { endpoint })),
+	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
+	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
 	ghAvailability: (repo: string | null) => typedError<GhAvailability, IdeError>(__TAURI_INVOKE("gh_availability", { repo })),
 	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
 	ghApi: (repo: string | null, request: GhApiRequest) => typedError<string, IdeError>(__TAURI_INVOKE("gh_api", { repo, request })),
@@ -3504,6 +3506,25 @@ export type GeneralSettings = {
 	/**  File › Rename Project… (project layer): the name shown for the project; empty = its folder name. */
 	projectName?: string,
 };
+
+/**  A repository of the signed-in account (owned, collaborator, or organization member). */
+export type GhAccountRepo = {
+	/**  `owner/name`. */
+	nameWithOwner: string,
+	description: string | null,
+	private: boolean,
+	fork: boolean,
+	archived: boolean,
+	/**  What `git clone` takes: HTTPS, or SSH when gh's `git_protocol` is `ssh`. */
+	cloneUrl: string,
+};
+
+/**  The account's repositories, or why they can't be listed. */
+export type GhAccountRepos = { kind: "ready"; login: string; repos: GhAccountRepo[] } | 
+/**  No `gh` executable was found. */
+{ kind: "notInstalled" } | 
+/**  `gh auth login` has not been run (or the token expired). */
+{ kind: "notLoggedIn"; message: string } | { kind: "error"; message: string };
 
 /**
  *  A GitHub API call through `gh api`: GraphQL (`endpoint` `graphql`, `body`

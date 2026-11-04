@@ -474,6 +474,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         docker::docker_set_registry_password,
         docker::docker_registry_login,
         docker::docker_run_env,
+        github::gh_account_repos,
         github::gh_availability,
         github::gh_api,
         github::gh_pr_list,
