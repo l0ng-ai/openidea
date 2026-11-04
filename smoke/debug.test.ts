@@ -242,7 +242,8 @@ async function smoke(language: string) {
     await until("the request to be served", () => useDebug.getState().sessions[s.id]?.status === "running");
     await executeAction("debug.stop");
   }
-  await until("the end", () => useDebug.getState().sessions[s.id]?.status === "terminated");
+  // Every session ends (a JVM that listens again as its debugger detaches may be attached once more).
+  await until("the end", () => Object.values(useDebug.getState().sessions).every((d) => d.status === "terminated"));
 }
 
 for (const language of Object.keys(CASES)) {
