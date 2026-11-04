@@ -10,6 +10,7 @@ import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import type { LogcatLevel, LogcatLine } from "@/platform/ipc";
 import { Input, IconButton, Select, T, EmptyState, Toggle } from "@/ui";
 import { FILTER_LEVELS, LEVEL_CLASS, filterLines, shortTime } from "./model";
+import { compileQuery } from "./query";
 import { appendLines, clearLines, setDevices, setDevicesError, setPaused, setStatus, useLogcat } from "./store";
 import styles from "./Logcat.module.css";
 
@@ -88,6 +89,7 @@ export function LogcatView() {
   }, [serial]);
 
   const rows = useMemo(() => filterLines(lines, level, query), [lines, level, query]);
+  const filterError = useMemo(() => compileQuery(query).error, [query]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -131,8 +133,10 @@ export function LogcatView() {
         />
         <Input
           className={styles.search}
-          placeholder="Filter tag, message or #pid"
+          placeholder="Filter, e.g. tag:glide -message:bitmap level:error"
           aria-label={"Filter log lines"}
+          title={"tag: · message: · pid: · level: · -term · a|b · (a|b) -c · message~:regex"}
+          invalid={filterError !== null}
           value={query}
           onChange={(e) => useLogcat.setState({ query: e.target.value })}
         />
@@ -206,6 +210,7 @@ export function LogcatView() {
       <div className={styles.status}>
         <span>{status === "running" ? <T>Streaming</T> : status === "error" ? <T>Stopped</T> : <T>Idle</T>}</span>
         {paused && <span className={styles.warn}>Paused</span>}
+        {filterError && <span className={styles.error}>Filter ignored: {filterError}</span>}
         <span className={styles.count}>
           {rows.length === lines.length ? lines.length : `${rows.length} / ${lines.length}`}
         </span>
