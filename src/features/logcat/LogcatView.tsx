@@ -8,9 +8,10 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import type { LogcatLevel, LogcatLine } from "@/platform/ipc";
-import { Input, IconButton, Select, T, EmptyState } from "@/ui";
+import { Input, IconButton, Select, T, EmptyState, showContextMenu, type MenuItem } from "@/ui";
 import { FILTER_LEVELS, LEVEL_CLASS, filterLines, shortTime } from "./model";
 import { compileQuery } from "./query";
+import { forgetFilters, rememberFilter } from "./history";
 import { appendLines, clearLines, setDevices, setDevicesError, setPaused, setStatus, useLogcat } from "./store";
 import styles from "./Logcat.module.css";
 
@@ -41,6 +42,7 @@ export function LogcatView() {
   const serial = useLogcat((s) => s.serial);
   const level = useLogcat((s) => s.level);
   const query = useLogcat((s) => s.query);
+  const history = useLogcat((s) => s.history);
   const paused = useLogcat((s) => s.paused);
   const follow = useLogcat((s) => s.follow);
   const status = useLogcat((s) => s.status);
@@ -61,6 +63,29 @@ export function LogcatView() {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** The scrollTop we last wrote: only the user can move the view above it. */
   const written = useRef(0);
+  /** Where ↑/↓ are in the history; `null` while the box holds freshly typed text. */
+  const browse = useRef<{ index: number; draft: string } | null>(null);
+
+  /** ↑ walks back in time, ↓ returns to what was typed (−1 is that draft). */
+  const recall = (step: 1 | -1) => {
+    if (!history.length) return;
+    if (!browse.current) browse.current = { index: -1, draft: query };
+    const index = Math.max(-1, Math.min(browse.current.index + step, history.length - 1));
+    if (index === browse.current.index) return;
+    browse.current.index = index;
+    useLogcat.setState({ query: index < 0 ? browse.current.draft : history[index]! });
+  };
+
+  const applyFilter = (value: string) => {
+    browse.current = null;
+    useLogcat.setState({ query: value, history: rememberFilter(value) });
+  };
+
+  const historyItems = (): MenuItem[] => [
+    ...history.map((entry) => ({ label: entry, verbatim: true, run: () => applyFilter(entry) })),
+    { kind: "separator" as const },
+    { label: "Clear History", run: () => useLogcat.setState({ history: forgetFilters() }) },
+  ];
 
   // One stream per device: switching devices (or closing the window) cancels it.
   useEffect(() => {
@@ -140,10 +165,29 @@ export function LogcatView() {
           className={styles.search}
           placeholder="Filter, e.g. tag:glide -message:bitmap level:error"
           aria-label={"Filter log lines"}
-          title={"tag: · message: · pid: · level: · -term · a|b · (a|b) -c · message~:regex"}
+          title={"tag: · message: · pid: · level: · -term · a|b · (a|b) -c · message~:regex · ↑ for history"}
           invalid={filterError !== null}
           value={query}
-          onChange={(e) => useLogcat.setState({ query: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              useLogcat.setState({ history: rememberFilter(query) });
+              browse.current = null;
+            } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+              e.preventDefault();
+              recall(e.key === "ArrowUp" ? 1 : -1);
+            }
+          }}
+          onChange={(e) => {
+            browse.current = null;
+            useLogcat.setState({ query: e.target.value });
+          }}
+        />
+        <IconButton
+          icon="history"
+          title="Filter history"
+          size="small"
+          disabled={!history.length}
+          onClick={(e) => showContextMenu({ clientX: e.clientX, clientY: e.clientY }, historyItems())}
         />
         <IconButton
           icon={paused ? "resume" : "pause"}

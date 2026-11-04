@@ -4,6 +4,7 @@
  */
 import { create } from "zustand";
 import type { AndroidDevice, LogcatLevel, LogcatLine } from "@/platform/ipc";
+import { loadFilters } from "./history";
 
 /** Kept lines; a chatty device must not grow the buffer without bound. */
 export const MAX_LINES = 20_000;
@@ -26,6 +27,8 @@ interface LogcatState {
   level: LogcatLevel;
   /** Filter expression: `tag:`, `message:`, `-term`, … (see `query.ts`). */
   query: string;
+  /** Filters used before, newest first; ↑/↓ and the toolbar list walk it. */
+  history: string[];
   /** Freeze the view: lines keep arriving but are only applied when resumed. */
   paused: boolean;
   /** Keep the view on the last line; scrolling up turns it off, the icon turns it back on. */
@@ -42,6 +45,7 @@ export const useLogcat = create<LogcatState>(() => ({
   serial: null,
   level: "verbose",
   query: "",
+  history: loadFilters(),
   paused: false,
   follow: true,
   status: "idle",
