@@ -67,6 +67,8 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   this worktree's running MCP bridges and actual ports.
 - `pnpm build` — typecheck + bundle frontend.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
+- `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
+  on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
 - `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
