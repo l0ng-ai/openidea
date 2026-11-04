@@ -31,6 +31,34 @@ test("⌥F12 opens the Terminal tool window and toggles it closed", async ({ wor
   await expect(terminal).toBeHidden();
 });
 
+test("the first ⌥F12 focuses the terminal input once the lazily loaded view mounts", async ({ workbench: page }) => {
+  await page.keyboard.press("Alt+F12");
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.getByRole("textbox", { name: "Terminal input" })).toBeFocused();
+  // Reopened with the view already mounted, it focuses the input as well.
+  await page.keyboard.press("Alt+F12");
+  await expect(terminal).toBeHidden();
+  await page.keyboard.press("Alt+F12");
+  await expect(terminal.getByRole("textbox", { name: "Terminal input" })).toBeFocused();
+});
+
+test("a terminal view that loads late doesn't take focus moved elsewhere meanwhile", async ({ workbench: page }) => {
+  let release!: () => void;
+  const loaded = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/src\/features\/terminal\/runtime\.ts/, async (route) => {
+    await loaded;
+    await route.continue();
+  });
+  await page.keyboard.press("Alt+F12");
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal).toBeVisible();
+  const tree = page.getByRole("tree", { name: "Project" });
+  await tree.getByRole("treeitem", { name: "README.md" }).click();
+  release();
+  await expect(terminal.getByRole("textbox", { name: "Terminal input" })).toBeAttached();
+  await expect(tree).toBeFocused();
+});
+
 test("Split Right gives the Terminal a tab group with its own header; Unsplit merges it back", async ({
   workbench: page,
 }) => {
