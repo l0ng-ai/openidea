@@ -43,6 +43,7 @@ export const LOCALES = {
   zh: { name: "简体中文 (Chinese, Simplified)", tag: "zh-CN" },
   ko: { name: "한국어 (Korean)", tag: "ko" },
   fr: { name: "Français (French)", tag: "fr" },
+  pl: { name: "Polski (Polish)", tag: "pl" },
   pt: { name: "Português (Portuguese)", tag: "pt-BR" },
 } as const;
 export type Locale = keyof typeof LOCALES;
