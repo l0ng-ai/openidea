@@ -79,7 +79,11 @@ export function exportData(
     }
     case "sql": {
       const literal = (v: Cell, i: number) =>
-        v === null ? "NULL" : numeric[i] && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
+        v === null
+          ? "NULL"
+          : numeric[i] && Number.isFinite(Number(v))
+            ? v
+            : `'${(d.driver === "clickhouse" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
       const head = `INSERT INTO ${quoteIdent(d.table, d.driver)} (${names.map((n) => quoteIdent(n, d.driver)).join(", ")}) VALUES`;
       return d.rows.map((r) => `${head} (${r.map(literal).join(", ")});`).join("\n");
     }

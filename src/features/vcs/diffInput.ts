@@ -55,6 +55,10 @@ export interface DiffData {
    * pull request's file: `{ kind: "github.pullRequest", number: 12, path: "src/a.ts" }`. Plain JSON.
    */
   context?: { kind: string; [key: string]: unknown };
+  /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
+  embedded?: boolean;
+  /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
+  mode?: "split" | "unified";
 }
 
 export const DIFF_KIND = "diff";

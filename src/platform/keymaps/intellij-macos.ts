@@ -347,6 +347,7 @@ export const intellijMacos: Record<string, string[]> = {
   "markdown.previewOnly": [],
   // HTTP Client / Database console: run the request or statement at the caret.
   "http.runRequest": ["Meta+Enter"],
+  "graphql.runQuery": ["Meta+Enter"],
   "http.runAll": [],
   "db.execute": ["Meta+Enter"],
   "db.showToolWindow": [],

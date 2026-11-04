@@ -105,15 +105,17 @@ fn split_script_args(args: &[String]) -> ScriptArgs {
     out
 }
 
-/// JVM options jdtls runs with unless the user's set the same thing: a parallel collector
-/// tuned to give memory back to the OS (resident memory stays near what is live instead of
-/// growing to the maximum heap), a 2 GB heap limit (the JVM's own is a quarter of physical
+/// JVM options jdtls runs with unless the user's set the same thing: G1 with a periodic
+/// collection while idle and a narrow free-heap band, so the heap shrinks and memory goes
+/// back to the OS once an import or a build is over (a parallel collector keeps its peak
+/// committed for good), a 2 GB heap limit (the JVM's own is a quarter of physical
 /// memory), no JVM logging on stdout (the LSP channel), and no scan for installed JDKs at
 /// start (they are passed as `java.configuration.runtimes`).
 pub const DEFAULT_VM_ARGS: &[&str] = &[
-    "-XX:+UseParallelGC",
-    "-XX:GCTimeRatio=4",
-    "-XX:AdaptiveSizePolicyWeight=90",
+    "-XX:+UseG1GC",
+    "-XX:G1PeriodicGCInterval=60000",
+    "-XX:MinHeapFreeRatio=10",
+    "-XX:MaxHeapFreeRatio=30",
     "-Dsun.zip.disableMemoryMapping=true",
     "-Xmx2G",
     "-Xms100m",
@@ -130,6 +132,8 @@ fn option_key(arg: &str) -> Option<String> {
         let name = name.split_once('=').map_or(name, |(n, _)| n);
         match name {
             "MaxHeapSize" | "MaxRAM" | "MaxRAMPercentage" | "MaxRAMFraction" => "Xmx".to_owned(),
+            // The JVM rejects a minimum above the maximum, so they go together.
+            "MinHeapFreeRatio" | "MaxHeapFreeRatio" => "XX:HeapFreeRatio".to_owned(),
             "InitialHeapSize" | "InitialRAMPercentage" | "InitialRAMFraction" => "Xms".to_owned(),
             _ if is_collector(name) => "collector".to_owned(),
             _ => format!("XX:{name}"),
@@ -153,8 +157,8 @@ fn is_collector(name: &str) -> bool {
     name.starts_with("Use") && name.ends_with("GC") && name.len() > "UseGC".len()
 }
 
-/// Our tuning of the parallel collector, meaningless (or rejected) with another one.
-const COLLECTOR_TUNING: &[&str] = &["GCTimeRatio", "AdaptiveSizePolicyWeight"];
+/// Our tuning of the default collector, meant for it alone.
+const COLLECTOR_TUNING: &[&str] = &["G1PeriodicGCInterval", "HeapFreeRatio"];
 
 /// [`DEFAULT_VM_ARGS`] less what `user` (the JVM options already on the command line)
 /// sets itself. Choosing a collector drops our collector and its tuning altogether.
@@ -180,7 +184,10 @@ pub fn add_default_vm_args(args: &mut Vec<String>) {
 }
 
 /// The JVM command line `bin/jdtls` builds: its system properties and module
-/// options, the user's `--jvm-arg`s, then the Equinox launcher with `-data`.
+/// options, the user's `--jvm-arg`s, then the Equinox launcher with `-nosplash` and
+/// `-data`. Without `-nosplash` the launcher's native library loads AppKit on macOS,
+/// which registers the server as an app that never answers events and shows as
+/// "Not Responding" in Activity Monitor.
 pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]) -> Vec<String> {
     let parsed = split_script_args(script_args);
     let mut args: Vec<String> = Vec::new();
@@ -211,6 +218,9 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
     );
     args.extend(parsed.jvm);
     args.extend(["-jar".to_owned(), install.launcher.to_string_lossy().into_owned()]);
+    if !parsed.rest.iter().any(|a| a == "-nosplash") {
+        args.push("-nosplash".to_owned());
+    }
     if let Some(data) = parsed.data {
         args.extend(["-data".to_owned(), data]);
     }
@@ -342,6 +352,7 @@ mod tests {
                 &format!("-javaagent:{agent}"),
                 "-jar",
                 &format!(r"{tools}\plugins\org.eclipse.equinox.launcher_1.7.0.v20250424-1814.jar"),
+                "-nosplash",
                 "-data",
                 data,
             ])
@@ -356,7 +367,9 @@ mod tests {
         DEFAULT_VM_ARGS.iter().filter(|a| !drop.contains(a)).map(|a| a.to_string()).collect()
     }
 
-    const PARALLEL: &[&str] = &["-XX:+UseParallelGC", "-XX:GCTimeRatio=4", "-XX:AdaptiveSizePolicyWeight=90"];
+    const G1: &[&str] =
+        &["-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=60000", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"];
+    const HEAP_FREE: &[&str] = &["-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"];
 
     #[test]
     fn user_options_override_the_defaults() {
@@ -369,13 +382,15 @@ mod tests {
             (&["-XX:MaxRAMPercentage=40"], &["-Xmx2G"]),
             (&["-Xms1G"], &["-Xms100m"]),
             (&["-XX:InitialHeapSize=256m"], &["-Xms100m"]),
-            (&["-XX:+UseG1GC"], PARALLEL),
-            (&["-XX:+UseZGC", "-XX:+ZGenerational"], PARALLEL),
-            (&["-XX:+UseShenandoahGC"], PARALLEL),
-            (&["-XX:+UseSerialGC"], PARALLEL),
-            (&["-XX:-UseParallelGC"], PARALLEL),
-            (&["-XX:+UseParallelGC"], PARALLEL),
-            (&["-XX:GCTimeRatio=9"], &["-XX:GCTimeRatio=4"]),
+            (&["-XX:+UseParallelGC"], G1),
+            (&["-XX:+UseZGC", "-XX:+ZGenerational"], G1),
+            (&["-XX:+UseShenandoahGC"], G1),
+            (&["-XX:+UseSerialGC"], G1),
+            (&["-XX:-UseG1GC"], G1),
+            (&["-XX:+UseG1GC"], G1),
+            (&["-XX:G1PeriodicGCInterval=0"], &["-XX:G1PeriodicGCInterval=60000"]),
+            (&["-XX:MinHeapFreeRatio=40"], HEAP_FREE),
+            (&["-XX:MaxHeapFreeRatio=70"], HEAP_FREE),
             (&["-Xlog:gc*:file=gc.log"], &["-Xlog:disable"]),
             (&["-Dsun.zip.disableMemoryMapping=false"], &["-Dsun.zip.disableMemoryMapping=true"]),
             (&["-Daether.dependencyCollector.impl=df"], &["-Daether.dependencyCollector.impl=bf"]),
@@ -389,10 +404,10 @@ mod tests {
 
     #[test]
     fn defaults_go_ahead_of_the_users_options_once() {
-        let user = strings(&["--jvm-arg=-Xmx4G", "-data", "/ws", "--jvm-arg", "-XX:+UseG1GC"]);
+        let user = strings(&["--jvm-arg=-Xmx4G", "-data", "/ws", "--jvm-arg", "-XX:+UseZGC"]);
         let mut args = user.clone();
         add_default_vm_args(&mut args);
-        let dropped: Vec<&str> = PARALLEL.iter().copied().chain(["-Xmx2G"]).collect();
+        let dropped: Vec<&str> = G1.iter().copied().chain(["-Xmx2G"]).collect();
         let expected: Vec<String> =
             without(&dropped).into_iter().map(|a| format!("--jvm-arg={a}")).chain(user).collect();
         assert_eq!(args, expected);
@@ -413,14 +428,14 @@ mod tests {
         let args = java_args(&install, 25, &script);
         let jar = args.iter().position(|a| a == "-jar").unwrap();
         let jvm = &args[..jar];
-        for flag in ["-XX:+UseParallelGC", "-XX:GCTimeRatio=4", "-Xms100m", "-Xlog:disable", "-Xmx3G"] {
+        for flag in ["-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=60000", "-Xms100m", "-Xlog:disable", "-Xmx3G"] {
             assert!(jvm.contains(&flag.to_owned()), "{flag}: {jvm:?}");
         }
         let heap: Vec<&String> = jvm.iter().filter(|a| option_key(a).as_deref() == Some("Xmx")).collect();
         assert_eq!(heap, ["-Xmx3G"], "one heap limit, the user's");
         assert!(!jvm.iter().any(|a| a == "-Xms1G"), "{jvm:?}");
         assert_eq!(args[jar + 1], format!(r"{tools}\plugins\org.eclipse.equinox.launcher_1.7.0.jar"));
-        assert_eq!(args[jar + 2..], strings(&["-data", r"C:\Users\张 三\ws"]));
+        assert_eq!(args[jar + 2..], strings(&["-nosplash", "-data", r"C:\Users\张 三\ws"]));
     }
 
     #[test]
@@ -439,18 +454,21 @@ mod tests {
         assert_eq!(args[0], "-Declipse.application=org.eclipse.jdt.ls.core.id1", "no JDK 24+ flags on 21");
         assert!(args.contains(&"-Dosgi.sharedConfiguration.area=/Users/me/Library/Application Support/ai.l0ng.openidea/tools/jdtls/config_mac_arm".to_owned()));
         assert_eq!(
-            args[args.len() - 7..],
+            args[args.len() - 8..],
             strings(&[
                 "java.base/java.lang=ALL-UNNAMED",
                 "-Dlog.level=ALL",
                 "-jar",
                 "/Users/me/Library/Application Support/ai.l0ng.openidea/tools/jdtls/plugins/org.eclipse.equinox.launcher_1.7.0.jar",
+                "-nosplash",
                 "-data",
                 "/d",
                 "--extra",
             ])
         );
         assert!(!args.iter().any(|a| a.contains("validate-java-version")));
+        let own = java_args(&install, 21, &strings(&["-data", "/d", "-nosplash"]));
+        assert_eq!(own.iter().filter(|a| *a == "-nosplash").count(), 1, "{own:?}");
     }
 
     #[test]
@@ -526,7 +544,7 @@ mod tests {
         assert!(direct.args.iter().any(|a| a == "-Xmx1G"));
         let jar = direct.args.iter().position(|a| a == "-jar").unwrap();
         assert!(direct.args[jar + 1].ends_with("org.eclipse.equinox.launcher_1.7.0.jar"));
-        assert_eq!(direct.args[jar + 2..], strings(&["-data", "/ws"]));
+        assert_eq!(direct.args[jar + 2..], strings(&["-nosplash", "-data", "/ws"]));
 
         let jre = dir.path().join("jre-25");
         std::fs::create_dir_all(jre.join("bin")).unwrap();
@@ -640,7 +658,7 @@ mod tests {
         assert!(direct.args.iter().any(|a| a == "-Xmx1G"));
         let jar = direct.args.iter().position(|a| a == "-jar").unwrap();
         assert!(direct.args[jar + 1].ends_with("org.eclipse.equinox.launcher_1.7.0.jar"));
-        assert_eq!(direct.args[jar + 2..], strings(&["-data", r"C:\ws"]));
+        assert_eq!(direct.args[jar + 2..], strings(&["-nosplash", "-data", r"C:\ws"]));
 
         // A shim whose descriptor is gone is someone's own wrapper: keep the command.
         std::fs::remove_file(shims.join("jdtls.shim")).unwrap();

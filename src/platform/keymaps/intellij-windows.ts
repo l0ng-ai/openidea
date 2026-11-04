@@ -345,6 +345,7 @@ export const intellijWindows: Record<string, string[]> = {
   "markdown.previewOnly": [],
   // HTTP Client / Database console: run the request or statement at the caret.
   "http.runRequest": ["Ctrl+Enter"],
+  "graphql.runQuery": ["Ctrl+Enter"],
   "http.runAll": [],
   "db.execute": ["Ctrl+Enter"],
   "db.showToolWindow": [],
