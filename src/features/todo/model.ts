@@ -71,15 +71,15 @@ export function buildTodoQuery(s: TodoSettings, scope: SearchScope = { kind: "pr
   };
 }
 
-// 注释开符，行内任意位置（行首或空白后）都算：// /* <!-- # -- {- (* 。
-// 杀掉 URL 里的 //、字符串里的 #、f(*)、a * b 这类代码误报。残留误报
-// （语言感知才能根除）："x # y" 字符串、--y 前置自减。
-// `*` `;` `%` `"""` `'''` 是代码字符，只在行首算注释（LINE_START_MARKER）。
-// IDEA 的默认模式匹配注释内任意位置的 TODO，所以关键字不要求"引领"注释。
+// Comment openers that count anywhere on the line, at its start or after whitespace: // /* <!-- # -- {- (*.
+// The whitespace rule drops `//` in URLs, `#` in strings, `f(*)` and `a * b`. Left over without knowing
+// the language: `"x # y"` in a string and a prefix `--y`.
+// `*` `;` `%` `"""` `'''` are code characters too, so they count only at the line start (LINE_START_MARKER).
+// IDEA's default pattern matches a TODO anywhere inside a comment, so the keyword need not lead it.
 const INLINE_MARKER = /(?:^|\s)(?:\/\/|\/\*|<!--|#|--|\{-|\(\*)/;
 const LINE_START_MARKER = /^\s*(?:\*|;|%|"""|''')/;
-// 长行被后端截断（ide-search line.rs：textOffset > 0）时 prefix 不始于真实行首，
-// 锚定无从判定——退回只查开符存在，宁误报不漏报。
+// A long line the backend truncated (ide-search line.rs, `textOffset > 0`) doesn't start at the real line
+// start, so neither rule can apply: any marker counts, a false positive rather than a missed TODO.
 const LENIENT_MARKER = /(\/\/|\/\*|<!--|#|--|\{-|\(\*|\*|;|%|"""|''')/;
 
 export function looksLikeComment(prefix: string, truncated = false): boolean {
