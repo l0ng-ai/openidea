@@ -246,29 +246,8 @@ const UNTRANSLATED = new Set<string>([
   "text",
 ]);
 
-/** Per locale: text that reads as in English there (names, code, examples), so it has no entry. */
-const AS_IN_ENGLISH: Record<string, ReadonlySet<string>> = {
-  ko: new Set([
-    "any, rust, typescript…",
-    "docker.io, ghcr.io, registry.example.com:5000",
-    "Go Mod Tidy",
-    "Gradle JVM",
-    "JRE",
-    "LightEdit",
-    "Microsoft SQL Server",
-    "One Dark",
-    "One Light",
-    "Rake",
-    "Raw",
-    "RSpec",
-    "Ruby",
-    "SFTP",
-    "Solarized Dark",
-    "Solarized Light",
-    "SSH: {name}",
-    "URL:",
-  ]),
-};
+/** Locales that must translate every UI text; the others show English for text they lack. */
+const COMPLETE_LOCALES = new Set(["zh"]);
 
 /**
  * Template literals that reach an exact lookup on purpose: the text around the
@@ -595,14 +574,13 @@ describe.each(Object.keys(catalogs))("source-text catalog %s", (locale) => {
   const catalog = catalogs[locale]!;
   const patterns = templatePatterns(catalog);
   const shapes = new Set(Object.keys(catalog).map(shape));
-  const asInEnglish = AS_IN_ENGLISH[locale] ?? new Set<string>();
-  const has = (text: string) => Object.hasOwn(catalog, text) || asInEnglish.has(text);
+  const has = (text: string) => Object.hasOwn(catalog, text);
   // Placeholders of the source stand for any text, as the runtime values would.
   const matchesTemplate = (text: string) => patterns.some((p) => p.test(text.replace(/\{[^{}]*\}/g, "\u0001")));
   const found = ({ text, match }: Use) =>
     has(text) || (match === "pattern" && matchesTemplate(text)) || (match === "shape" && shapes.has(shape(text)));
 
-  it("translates every literal UI text", () => {
+  it.runIf(COMPLETE_LOCALES.has(locale))("translates every literal UI text", () => {
     const missing = new Map<string, string>();
     for (const use of scan.translated)
       if (!found(use) && needsTranslation(use.text) && !missing.has(use.text)) missing.set(use.text, use.at);

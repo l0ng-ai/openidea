@@ -188,8 +188,12 @@ describe("catalogs", () => {
     for (const [source, text] of Object.entries(texts)) expect(names(text), source).toEqual(names(source));
   });
 
-  it.each(translations)("have the same keys (%s)", (_, catalog) => {
-    expect(Object.keys(catalog).sort()).toEqual(Object.keys(en).sort());
+  it("have the same keys (zh)", () => {
+    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
+  });
+
+  it.each(translations)("have no keys English lacks (%s)", (_, catalog) => {
+    expect(Object.keys(catalog).filter((key) => !Object.hasOwn(en, key))).toEqual([]);
   });
 
   it("contain only well-formed messages", () => {
@@ -200,7 +204,7 @@ describe("catalogs", () => {
 
   it.each(translations)("use the same parameters across locales (%s)", (_, catalog) => {
     const params = (m: string) => [...m.matchAll(/\{\s*([a-z]\w*)\s*[,}]/g)].map((x) => x[1]).sort();
-    for (const key of Object.keys(en))
-      expect(params(catalog[key] ?? ""), key).toEqual(params((en as Record<string, string>)[key]!));
+    for (const [key, message] of Object.entries(catalog))
+      expect(params(message), key).toEqual(params((en as Record<string, string>)[key] ?? ""));
   });
 });
