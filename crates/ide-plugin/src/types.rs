@@ -303,6 +303,16 @@ pub fn net_host(url: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_restart_backoff_doubles_up_to_a_minute() {
+        let limits = Limits { restart_backoff: Duration::from_millis(150), ..Limits::default() };
+        let waits: Vec<u128> = (1..=4).map(|n| limits.backoff(n).as_millis()).collect();
+        assert_eq!(waits, [150, 300, 600, 1200]);
+        assert_eq!(limits.backoff(30), Duration::from_millis(150 * 64), "the factor stops growing");
+        let long = Limits { restart_backoff: Duration::from_secs(10), ..Limits::default() };
+        assert_eq!(long.backoff(5), Duration::from_secs(60));
+    }
+
     use super::*;
 
     #[test]
