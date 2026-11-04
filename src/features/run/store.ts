@@ -347,10 +347,11 @@ function persistTemporary() {
   const { configs, temporary } = useRun.getState();
   const list = temporary.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c);
   writeTemporary(root, list);
+  // A rewrite still pending from an earlier call must not bring back what was removed since.
+  const generation = ++persisting;
   if (!list.length || !isTauri()) return;
   // Then rewritten without what settings derived (the project's Maven, JDK, interpreter…), so a
   // later settings change reaches them as it does detected and saved configurations.
-  const generation = ++persisting;
   void call(commands.runWithoutDerived(list))
     .then((kept) => {
       if (generation === persisting && useProject.getState().project?.root === root) writeTemporary(root, kept);
@@ -429,6 +430,30 @@ export async function deleteConfig(id: string): Promise<void> {
   await saveUserConfigs(
     configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id),
     configs.find((c) => c.id === id)?.detected ? [id] : [],
+  );
+}
+
+/**
+ * Edit Configurations' OK / Apply. A temporary configuration stays temporary unless it was edited
+ * there (then it is saved, as IDEA makes it permanent), and one removed there is forgotten.
+ */
+export async function saveEditedConfigs(draft: readonly RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  const { configs, temporary } = useRun.getState();
+  const unchanged = (c: RunConfig) => {
+    const before = configs.find((o) => o.id === c.id);
+    return !!before && JSON.stringify(before) === JSON.stringify(c);
+  };
+  const kept = temporary.filter((id) => draft.some((c) => c.id === id && unchanged(c)));
+  if (kept.length !== temporary.length) {
+    useRun.setState({
+      configs: configs.filter((c) => !temporary.includes(c.id) || kept.includes(c.id)),
+      temporary: kept,
+    });
+    persistTemporary();
+  }
+  await saveUserConfigs(
+    draft.filter((c) => !c.detected && !kept.includes(c.id)),
+    removedDetectedIds,
   );
 }
 
