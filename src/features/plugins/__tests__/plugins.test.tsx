@@ -570,6 +570,21 @@ describe("PluginsPage", () => {
     expect(within(list).getAllByText("Installed").length).toBeGreaterThan(0);
     expect(notes.at(-1)).toMatchObject({ title: "Installed Toy Language 0.1.0" });
   });
+
+  it("shows why the marketplace couldn't be read instead of claiming there is none", async () => {
+    // Commands without a result type reject with the backend's error object, not an Error.
+    setPluginsBackend({
+      ...createMemoryPluginsBackend([], sampleCatalog()),
+      marketUrl: () => Promise.reject({ kind: "unavailable", message: "Index unreachable", data: null }),
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    expect(await within(list).findByText("Index unreachable")).toBeInTheDocument();
+    expect(within(list).queryByText("[object Object]")).not.toBeInTheDocument();
+    expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
+  });
 });
 
 describe("secrets", () => {
