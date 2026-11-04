@@ -9,9 +9,11 @@
 //!   proves who published the bytes; whether to trust that publisher is the
 //!   index's call.
 //! - **Index** (`index.json`): the publishers and their keys (the trust root),
-//!   the published plugins, and revocations. A publisher owns the id prefix
-//!   `<publisher>.`; a revoked key invalidates everything it signed, a
-//!   revoked plugin version is disabled where it is installed.
+//!   the published plugin versions, and revocations. A publisher owns the id
+//!   prefix `<publisher>.`; a revoked key invalidates everything it signed, a
+//!   revoked plugin version is disabled where it is installed. A plugin may be
+//!   listed in several versions, each with the plugin API it needs: the IDE
+//!   offers the newest one it can load.
 
 use crate::MANIFEST_FILE;
 use base64::Engine as _;
@@ -281,6 +283,31 @@ pub struct IndexEntry {
     pub digest: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// The plugin API versions it loads in (a semver requirement): its
+    /// manifest's `engines.openidea` and the API its component was built for.
+    /// Empty: any.
+    #[serde(default)]
+    pub engine: String,
+}
+
+impl IndexEntry {
+    /// Whether this IDE can load the version.
+    pub fn compatible(&self) -> bool {
+        self.engine.is_empty() || crate::engine_compatible(&self.engine, false)
+    }
+
+    fn semver(&self) -> Option<semver::Version> {
+        semver::Version::parse(&self.version).ok()
+    }
+}
+
+/// `engines.openidea` of a manifest narrowed to the API its component was built
+/// for (`major.minor`, if it has code): the requirement an index lists.
+pub fn engine_requirement(manifest_engine: &str, built_for: Option<&semver::Version>) -> String {
+    match built_for {
+        Some(v) => format!("{manifest_engine}, ^{}.{}", v.major, v.minor),
+        None => manifest_engine.to_owned(),
+    }
 }
 
 /// A plugin (all versions when `versions` is empty) that must not run.
@@ -300,6 +327,43 @@ impl Index {
             return Err(format!("index format {} is not supported (this IDE reads {INDEX_FORMAT})", index.format));
         }
         Ok(index)
+    }
+
+    /// The version of each plugin to offer, and whether this IDE can load it:
+    /// the newest it can load, else the newest. Revoked versions are skipped;
+    /// plugins come in the order they are first listed.
+    pub fn offered(&self) -> Vec<(&IndexEntry, bool)> {
+        let mut ids: Vec<&str> = Vec::new();
+        for e in &self.plugins {
+            if !ids.contains(&e.id.as_str()) {
+                ids.push(&e.id);
+            }
+        }
+        ids.into_iter()
+            .filter_map(|id| {
+                let versions: Vec<&IndexEntry> =
+                    self.plugins.iter().filter(|e| e.id == id && self.revocation(id, &e.version).is_none()).collect();
+                let newest = |loadable: bool| {
+                    versions.iter().copied().filter(|e| !loadable || e.compatible()).max_by_key(|e| e.semver())
+                };
+                newest(true).map(|e| (e, true)).or_else(|| newest(false).map(|e| (e, false)))
+            })
+            .collect()
+    }
+
+    /// Drops the versions no IDE would pick: revoked ones, and of each plugin
+    /// all but the newest version per API requirement.
+    pub fn prune_versions(&mut self) {
+        let plugins = std::mem::take(&mut self.plugins);
+        let mut kept: Vec<IndexEntry> = Vec::new();
+        for e in plugins.into_iter().filter(|e| self.revocation(&e.id, &e.version).is_none()) {
+            match kept.iter_mut().find(|k| k.id == e.id && k.engine == e.engine) {
+                Some(k) if e.semver() > k.semver() => *k = e,
+                Some(_) => {}
+                None => kept.push(e),
+            }
+        }
+        self.plugins = kept;
     }
 
     /// The revocation that applies to `id` at `version`.
@@ -457,7 +521,52 @@ mod tests {
             download: format!("https://example.com/{id}.oiplugin"),
             digest: "d".into(),
             capabilities: Vec::new(),
+            engine: String::new(),
         }
+    }
+
+    fn version(id: &str, version: &str, engine: &str) -> IndexEntry {
+        IndexEntry { version: version.into(), engine: engine.into(), ..entry(id, "acme") }
+    }
+
+    #[test]
+    fn the_ide_is_offered_the_newest_version_it_can_load() {
+        let host = crate::ENGINE_VERSION;
+        let newer = semver::Version::parse(host).unwrap().major + 1;
+        let mut index = Index {
+            format: INDEX_FORMAT,
+            plugins: vec![
+                version("acme.a", "1.0.0", &format!("^{host}")),
+                version("acme.a", "1.2.0", &format!("^{host}")),
+                version("acme.a", "2.0.0", &format!("^{newer}.0")),
+                version("acme.b", "0.1.0", &format!("^{newer}.0")),
+                version("acme.b", "0.2.0", &format!("^{newer}.1")),
+                version("acme.c", "1.0.0", ""),
+                version("acme.c", "1.1.0", ""),
+            ],
+            revoked: vec![Revocation { id: "acme.c".into(), versions: vec!["1.1.0".into()], reason: "r".into() }],
+            ..Index::default()
+        };
+        let offered = |index: &Index| {
+            index.offered().into_iter().map(|(e, ok)| (e.id.clone(), e.version.clone(), ok)).collect::<Vec<_>>()
+        };
+        let expected = [
+            ("acme.a".to_owned(), "1.2.0".to_owned(), true),
+            ("acme.b".to_owned(), "0.2.0".to_owned(), false),
+            ("acme.c".to_owned(), "1.0.0".to_owned(), true),
+        ];
+        assert_eq!(offered(&index), expected);
+
+        // Pruning keeps the newest version per requirement, which changes nothing offered.
+        index.prune_versions();
+        let left: Vec<_> = index.plugins.iter().map(|e| format!("{} {}", e.id, e.version)).collect();
+        assert_eq!(left, ["acme.a 1.2.0", "acme.a 2.0.0", "acme.b 0.1.0", "acme.b 0.2.0", "acme.c 1.0.0"]);
+        assert_eq!(offered(&index), expected);
+
+        let built_for = semver::Version::new(1, 3, 0);
+        assert_eq!(engine_requirement("^1.0", Some(&built_for)), "^1.0, ^1.3");
+        assert_eq!(engine_requirement("^1.0", None), "^1.0");
+        assert!(semver::VersionReq::parse(&engine_requirement("^1.0", Some(&built_for))).is_ok());
     }
 
     fn publisher(id: &str) -> Publisher {

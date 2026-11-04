@@ -31,6 +31,8 @@ pub struct MarketPlugin {
     pub entry: IndexEntry,
     /// Installed version, if any.
     pub installed: Option<String>,
+    /// Whether this IDE can load `entry` (the newest version it can, else the newest).
+    pub compatible: bool,
 }
 
 /// Reads `url`: `http(s)://…`, `file://…` or a local path.
@@ -121,16 +123,14 @@ impl PluginHost {
         let Some(index) = self.market.read().clone() else { return Vec::new() };
         let plugins = self.plugins.read();
         index
-            .plugins
-            .iter()
-            .filter(|e| index.revocation(&e.id, &e.version).is_none())
-            .cloned()
-            .map(|entry| {
+            .offered()
+            .into_iter()
+            .map(|(entry, compatible)| {
                 let installed = plugins
                     .get(&entry.id)
                     .filter(|p| p.source == PluginSource::Installed)
                     .map(|p| p.manifest().version.clone());
-                MarketPlugin { entry, installed }
+                MarketPlugin { entry: entry.clone(), installed, compatible }
             })
             .collect()
     }
@@ -141,12 +141,18 @@ impl PluginHost {
     pub fn download_market_plugin(&self, id: &str) -> IdeResult<PathBuf> {
         let url = self.market_url().ok_or_else(|| IdeError::unavailable("no plugin marketplace is configured"))?;
         let index = self.market.read().clone().ok_or_else(|| IdeError::unavailable("refresh the marketplace first"))?;
-        let entry = index
-            .plugins
-            .iter()
-            .find(|e| e.id == id)
-            .cloned()
+        let (entry, compatible) = index
+            .offered()
+            .into_iter()
+            .find(|(e, _)| e.id == id)
+            .map(|(e, ok)| (e.clone(), ok))
             .ok_or_else(|| IdeError::not_found(format!("{id} is not in the marketplace")))?;
+        if !compatible {
+            return Err(IdeError::unavailable(format!(
+                "{} {} needs plugin API {}: update OpenIDEA",
+                entry.name, entry.version, entry.engine
+            )));
+        }
         let bytes = read_url(&resolve(&url, &entry.download), MAX_PACKAGE).map_err(IdeError::unavailable)?;
         let downloads = self.plugins_dir.join(DOWNLOADS);
         std::fs::create_dir_all(&downloads)?;

@@ -778,9 +778,20 @@ and the publisher's key, then shows the install page.
   their code could run. A publisher rotates keys by adding the new one; older
   keys stay valid until revoked.
 
-`index` with a key registers the publisher and replaces its plugins, keeping
-the other publishers'; without one, it lists every package in the folder,
-each checked against the publishers the index already has. `merge` takes the
+**Versions.** Each index entry records the plugin API it needs (`engine`: the
+manifest's `engines.openidea`, narrowed to the API its component was built
+for), and a plugin may be listed in several versions. Settings › Plugins
+offers the newest version this IDE can load; when there is none, it shows the
+plugin as incompatible and says which API it needs. Indexing keeps, of each
+plugin, the newest version per API requirement, so users of an older IDE keep
+the last version built for them.
+
+`index` with a key registers the publisher and lists the folder's packages
+as its plugins (their earlier versions stay as above; plugins no longer in the
+folder go), keeping the other publishers'; `--download-base` makes downloads
+absolute, so a version stays where it was first published. Without a key, it
+lists every package in the folder, each checked against the publishers the
+index already has. `merge` takes the
 publishers, plugins and revocations of another index (downloads made absolute)
 in place of every publisher but `--keep`; `check` also takes a `.oiplugin`.
 

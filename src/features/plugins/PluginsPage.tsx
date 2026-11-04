@@ -597,7 +597,7 @@ function MarketUrlBar() {
 }
 
 function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selected: boolean; onSelect: () => void }) {
-  const update = entry.installed && compareVersions(entry.version, entry.installed) > 0;
+  const update = entry.compatible && entry.installed && compareVersions(entry.version, entry.installed) > 0;
   return (
     <li className={clsx(styles.row, selected && styles.rowSelected)}>
       <button
@@ -620,6 +620,8 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
         <Badge tone="accent">{tx("Update")}</Badge>
       ) : entry.installed ? (
         <Badge tone="neutral">{tx("Installed")}</Badge>
+      ) : !entry.compatible ? (
+        <Badge tone="warning">{tx("Incompatible")}</Badge>
       ) : null}
     </li>
   );
@@ -627,7 +629,7 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
 
 function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalled: (id: string) => void }) {
   const installing = usePlugins((s) => s.installing);
-  const update = entry.installed && compareVersions(entry.version, entry.installed) > 0;
+  const update = entry.compatible && entry.installed && compareVersions(entry.version, entry.installed) > 0;
   const install = async () => {
     const id = await installFromMarket(entry.id);
     if (id) onInstalled(id);
@@ -645,7 +647,7 @@ function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalle
           </div>
         </div>
         <div className={styles.headerActions}>
-          {(!entry.installed || update) && (
+          {entry.compatible && (!entry.installed || update) && (
             <Button size="small" variant="primary" disabled={installing} onClick={() => void install()}>
               {update ? tx`Update to ${entry.version}` : tx("Install")}
             </Button>
@@ -653,6 +655,12 @@ function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalle
         </div>
       </header>
       <div className={styles.marketOverview}>
+        {!entry.compatible && (
+          <p className={styles.notice} role="note">
+            <Icon name="info" size={14} />
+            <span>{tx`Needs plugin API ${entry.engine}. Update OpenIDEA to install it.`}</span>
+          </p>
+        )}
         {entry.description && <p className={styles.description}>{entry.description}</p>}
         <dl className={styles.facts}>
           <dt>

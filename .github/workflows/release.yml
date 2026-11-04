@@ -245,7 +245,9 @@ jobs:
           # The published index's revocations, earlier keys and community plugins carry over.
           curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/plugins-index.json" \
             -o "$out/plugins-index.json" || rm -f "$out/plugins-index.json"
-          "$tool" index "$out" --publisher openidea --name OpenIDEA --key "$key" --out "$out/plugins-index.json"
+          # Downloads point at this release: older versions kept for older IDEs stay where they were published.
+          "$tool" index "$out" --publisher openidea --name OpenIDEA --key "$key" --out "$out/plugins-index.json" \
+            --download-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
           "$tool" merge "$out/plugins-index.json" "$COMMUNITY_PLUGINS_INDEX" --keep openidea ||
             echo "::warning::the community plugins were not refreshed"
           gzip -9 -c "$tool" > "$out/openidea-plugin-linux-x86_64.gz"

@@ -621,7 +621,9 @@ describe("marketplace", () => {
           download: "hello.oiplugin",
           digest: "x",
           capabilities: ["editor.write"],
+          engine: "^1.0",
           installed: null,
+          compatible: true,
         },
       ],
       // The memory backend installs its sample packages by path.
@@ -642,6 +644,37 @@ describe("marketplace", () => {
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["hello"]));
     expect(downloads).toEqual(["hello"]);
     expect(asked[0]).toMatchObject({ pluginId: "hello", kind: "install" });
+  });
+
+  it("shows a plugin this IDE can't load without installing it", async () => {
+    setPluginsBackend({
+      ...createMemoryPluginsBackend([], sampleCatalog()),
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        {
+          id: "acme.next",
+          name: "Next",
+          version: "2.0.0",
+          description: "",
+          authors: [],
+          publisher: "acme",
+          download: "next.oiplugin",
+          digest: "x",
+          capabilities: [],
+          engine: "^9.0",
+          installed: null,
+          compatible: false,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("Incompatible")).toBeInTheDocument());
+    await user.click(within(list).getByText("Next"));
+    expect(screen.getByRole("note")).toHaveTextContent("Needs plugin API ^9.0. Update OpenIDEA to install it.");
+    expect(screen.queryByRole("button", { name: "Install" })).not.toBeInTheDocument();
   });
 
   it("offers to roll back an update", async () => {

@@ -4139,6 +4139,12 @@ export type IndexEntry = {
 	/**  [`package_digest`] of its contents. */
 	digest: string,
 	capabilities?: string[],
+	/**
+	 *  The plugin API versions it loads in (a semver requirement): its
+	 *  manifest's `engines.openidea` and the API its component was built for.
+	 *  Empty: any.
+	 */
+	engine?: string,
 };
 
 export type IndexStatus = {
@@ -4871,6 +4877,8 @@ export type MarkdownSettings = {
 export type MarketPlugin = {
 	/**  Installed version, if any. */
 	installed: string | null,
+	/**  Whether this IDE can load `entry` (the newest version it can, else the newest). */
+	compatible: boolean,
 } & IndexEntry;
 
 export type Markup = {

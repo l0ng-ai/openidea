@@ -150,6 +150,7 @@ fn signed_hello(dir: &Path, version: &str, key: &PublisherKey, host: &PluginHost
         download: out.file_name().unwrap().to_string_lossy().into_owned(),
         digest,
         capabilities: vec![],
+        engine: "^1.0".into(),
     };
     (out, entry)
 }
@@ -259,4 +260,29 @@ fn package_files_install_from_disk_unsigned() {
     assert_eq!((preview.unsigned, preview.publisher), (true, None));
     let info = f.host.install_from_dir(&dir, &Consent::all()).unwrap();
     assert_eq!((info.status, info.publisher), (PluginStatus::Inactive, None));
+}
+
+#[test]
+fn the_marketplace_offers_the_newest_version_this_ide_can_load() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, old) = signed_hello(&market, "1.0.0", &key, &f.host);
+    let (_, new) = signed_hello(&market, "2.0.0", &key, &f.host);
+    let next_major = ide_extension::ENGINE_VERSION.split('.').next().unwrap().parse::<u64>().unwrap() + 1;
+    let new = IndexEntry { engine: format!("^{next_major}.0"), ..new };
+    f.host.set_market_url(Some(write_index(&market, &key, vec![old.clone(), new.clone()], vec![], false)));
+
+    let listed = f.host.refresh_market().unwrap();
+    assert_eq!((listed.len(), listed[0].entry.version.as_str(), listed[0].compatible), (1, "1.0.0", true));
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0");
+
+    // Only a version for a newer IDE: shown as such, not downloaded.
+    write_index(&market, &key, vec![new], vec![], false);
+    let listed = f.host.refresh_market().unwrap();
+    assert_eq!((listed[0].entry.version.as_str(), listed[0].compatible), ("2.0.0", false));
+    let err = f.host.download_market_plugin("acme.hello").unwrap_err();
+    assert!(err.message.contains("update OpenIDEA"), "{}", err.message);
 }
