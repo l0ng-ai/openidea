@@ -26,8 +26,13 @@
 .item:focus-visible {
   outline: none;
 }
-.active {
-  background: var(--bg-tree-selected);
+/* Accent mixed into the popup surface. The row follows the active theme and a
+   custom accent, and stays visible when a palette's selection colour matches
+   the popup (Solarized Dark). */
+.item:hover:not(.disabled),
+.active,
+.active:hover {
+  background: color-mix(in srgb, var(--accent) 34%, var(--bg-popup));
 }
 .disabled {
   color: var(--fg-faint);
