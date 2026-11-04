@@ -717,7 +717,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     id: "general.language",
     title: "Language and Region",
     order: 0,
-    keywords: ["locale", "chinese", "中文", "translation"],
+    keywords: ["locale", "chinese", "中文", "korean", "한국어", "translation"],
     sections: [
       {
         options: [
@@ -729,6 +729,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             options: [
               { value: "en", label: "English" },
               { value: "zh", label: "简体中文 (Chinese, Simplified)" },
+              { value: "ko", label: "한국어 (Korean)" },
             ],
           },
         ],
