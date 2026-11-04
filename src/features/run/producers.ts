@@ -55,6 +55,8 @@ export interface ContextInput {
   content?: string;
   /** Go: the module path of a module directory (`go.mod`), when known. */
   goModule?: (dir: string) => string | null | undefined;
+  /** Python: whether a directory is a package (`__init__.py`), when known. */
+  pythonPackage?: (dir: string) => boolean | undefined;
   /** 0-based caret line: the element at the caret wins over the file. */
   line?: number;
   /**
@@ -409,6 +411,31 @@ function fileConfig(
   };
 }
 
+const PYTHON_RELATIVE_IMPORT = /^\s*from\s+\.+[\w.]*\s+import\b/m;
+
+/** Whether Python source imports relatively (`from .models import X`): it only runs as a module. */
+export function hasRelativeImports(content: string | undefined): boolean {
+  return !!content && PYTHON_RELATIVE_IMPORT.test(content);
+}
+
+/**
+ * A module with relative imports, run as `python -m package.module` from the directory above
+ * its top package (its own directory is a package for the import, `__init__.py` or not).
+ */
+function pythonModule(input: ContextInput): { name: string; dir: string } | null {
+  if (!hasRelativeImports(input.content)) return null;
+  let top = dirName(input.path);
+  for (let up = dirName(top); up && up !== top && input.pythonPackage?.(up); up = dirName(up)) top = up;
+  const dir = dirName(top);
+  if (!dir || dir === top) return null;
+  const parts = input.path
+    .slice(dir === "/" ? 1 : dir.length + 1)
+    .replace(/\.py$/, "")
+    .split("/");
+  if (parts.length > 1 && (parts.at(-1) === "__init__" || parts.at(-1) === "__main__")) parts.pop();
+  return { name: parts.join("."), dir };
+}
+
 /** Python: the interpreter from settings, the detected project interpreter, then `python3` on the PATH. */
 function pythonCommand(input: ContextInput, env: ToolEnv, s: FileSite): { command: string; prefix: string[] } | null {
   if (env.python) return { command: env.python, prefix: [] };
@@ -655,6 +682,22 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     case "python": {
       const py = pythonCommand(input, env, s);
       if (!py) return { name: s.file, scope: "file", missing: missing("python", s.file, ["python3", "python"]) };
+      const module = pythonModule(input);
+      if (module) {
+        // It runs in another directory: a venv-relative interpreter is relative to the project root.
+        const command =
+          input.root && py.command.includes("/") && !py.command.startsWith("/")
+            ? `${input.root}/${py.command}`
+            : py.command;
+        return {
+          name: s.file,
+          scope: "file",
+          config: {
+            ...fileConfig(s, "python", command, [...py.prefix, "-m", module.name], "debugpy"),
+            cwd: module.dir === input.root ? null : relTo(module.dir, input.root),
+          },
+        };
+      }
       return {
         name: s.file,
         scope: "file",

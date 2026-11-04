@@ -38,6 +38,7 @@ import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { openImport } from "./importConfigs";
 import { registerGoActions } from "./goActions";
 import { invalidateGoModules } from "./goModules";
+import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
 import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
@@ -574,6 +575,7 @@ export function activate(): () => void {
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
       if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
+      if (paths.some((p) => p.endsWith("/__init__.py"))) invalidatePythonPackages();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
     }),
     onIdeEvent("runExited", (e) => {
