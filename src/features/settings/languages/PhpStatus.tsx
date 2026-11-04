@@ -4,7 +4,7 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { getContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type PhpLanguageLevel, type PhpLanguageLevels } from "@/platform/ipc";
 import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
 import { notifications, registerStatusItem } from "@/workbench/contributions";
 import { BarButton, Menu, type MenuItem } from "@/ui";
@@ -83,23 +83,30 @@ function PhpStatus() {
   // The widget only renders once its project's level is in the store, so the popup action
   // sees the same state as the button without waiting for an effect to publish a flag.
   if (!path || !popupShown() || !status) return null;
-  const { effective, auto } = status;
+  const { effective, auto, member } = status;
   const label = effective ? `PHP ${shortVersion(effective)}` : "PHP";
   const chosen = effective?.source === "settings" ? shortVersion(effective) : "";
+  // The choices write the workspace's settings, which a member does not read.
+  const name = member && basename(member);
   const items: MenuItem[] = [
     { kind: "header", label: "PHP Language Level" },
+    ...(name
+      ? [{ kind: "header", label: tx`Set in the settings of the linked project ${name}` } satisfies MenuItem]
+      : []),
     ...PHP_LANGUAGE_LEVELS.map((level): MenuItem =>
       level
         ? {
             label: level,
             verbatim: true,
             checked: level === chosen,
+            disabled: !!member,
             run: () => void executeAction("php.selectLanguageLevel", level),
           }
         : {
             label: "Auto",
             shortcut: auto ? shortVersion(auto) : undefined,
             checked: !chosen,
+            disabled: !!member,
             run: () => void executeAction("php.selectLanguageLevel", ""),
           },
     ),

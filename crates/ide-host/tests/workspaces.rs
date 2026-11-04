@@ -154,11 +154,14 @@ async fn php_language_level_follows_the_member_of_the_file() {
     let level_of_api = level(api.join("src/Invoice.php"));
     assert_eq!(level_of_api.effective, found("7.4.0", PhpLevelSource::Require));
     assert_eq!(level_of_api.auto, level_of_api.effective);
+    assert_eq!(level_of_api.member.as_deref(), Some(api.as_path()));
     // The member's own settings, not the workspace's.
     let level_of_legacy = level(legacy.join("index.php"));
     assert_eq!(level_of_legacy.effective, found("8.3.0", PhpLevelSource::Settings));
     assert_eq!(level_of_legacy.auto, found("8.0.5", PhpLevelSource::Platform));
     // Outside every member: the workspace's own.
-    assert_eq!(level(base.join("elsewhere.php")).effective, found("8.2.0", PhpLevelSource::Require));
+    let level_elsewhere = level(base.join("elsewhere.php"));
+    assert_eq!(level_elsewhere.effective, found("8.2.0", PhpLevelSource::Require));
+    assert_eq!(level_elsewhere.member, None);
     host.close_project("main");
 }

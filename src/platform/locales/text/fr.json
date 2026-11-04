@@ -5769,6 +5769,7 @@
   "PHP {version}, set in the settings": "PHP {version}, défini dans les paramètres",
   "PHP {version}, from config.platform.php in composer.json": "PHP {version}, depuis config.platform.php de composer.json",
   "PHP {version}, the lowest version require.php in composer.json allows": "PHP {version}, la version la plus basse autorisée par require.php de composer.json",
+  "Set in the settings of the linked project {name}": "Défini dans les paramètres du projet lié {name}",
   "select files in a git repository to shelve": "sélectionnez les fichiers d'un dépôt git à mettre de côté",
   "select files from a single git repository to shelve": "sélectionnez les fichiers d'un seul dépôt git à mettre de côté",
   "External file changes sync may be slow": "La synchronisation des modifications externes de fichiers peut être lente",

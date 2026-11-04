@@ -5408,6 +5408,11 @@ export type PhpLanguageLevels = {
 	effective: PhpLanguageLevel | null,
 	/**  The one Auto picks, from `composer.json`. */
 	auto: PhpLanguageLevel | null,
+	/**
+	 *  The workspace member `path` belongs to: its own settings choose the level, not the
+	 *  workspace's. `None`: the opened project.
+	 */
+	member: IpcPath | null,
 };
 
 export type PhpLevelSource = 

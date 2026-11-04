@@ -29,6 +29,7 @@ import { activatePhpStatus } from "../languages/PhpStatus";
 const fromComposer: PhpLanguageLevels = {
   effective: { version: "7.4.0", source: "require" },
   auto: { version: "7.4.0", source: "require" },
+  member: null,
 };
 
 const focus = (language: string, path: string) =>
@@ -85,12 +86,16 @@ describe("PHP language level status", () => {
   });
 
   it("names config.platform.php and the language server default", async () => {
-    mocks.level.mockResolvedValueOnce({ effective: { version: "7.2.34", source: "platform" }, auto: null });
+    mocks.level.mockResolvedValueOnce({
+      effective: { version: "7.2.34", source: "platform" },
+      auto: null,
+      member: null,
+    });
     mount();
     await focus("php", "/project/a.php");
     const button = await screen.findByRole("button", { name: "PHP Language Level: PHP 7.2" });
     expect(button.dataset.tooltip).toBe("PHP 7.2.34, from config.platform.php in composer.json");
-    mocks.level.mockResolvedValueOnce({ effective: null, auto: null });
+    mocks.level.mockResolvedValueOnce({ effective: null, auto: null, member: null });
     await focus("php", "/project/b.php");
     const fallback = await screen.findByRole("button", { name: "PHP Language Level: PHP" });
     expect(fallback.dataset.tooltip).toBe(
@@ -102,7 +107,7 @@ describe("PHP language level status", () => {
     mount();
     await focus("php", "/project/src/Invoice.php");
     await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" });
-    mocks.level.mockResolvedValue({ effective: { version: "8.1.0", source: "settings" }, auto: fromComposer.auto });
+    mocks.level.mockResolvedValue({ ...fromComposer, effective: { version: "8.1.0", source: "settings" } });
     await pick("8.1");
     await waitFor(() =>
       expect(mocks.set).toHaveBeenCalledWith("project", "languages.php.languageLevel", JSON.stringify("8.1")),
@@ -113,7 +118,7 @@ describe("PHP language level status", () => {
   });
 
   it("shows what Auto resolves to and clears the level with it", async () => {
-    mocks.level.mockResolvedValue({ effective: { version: "8.1.0", source: "settings" }, auto: fromComposer.auto });
+    mocks.level.mockResolvedValue({ ...fromComposer, effective: { version: "8.1.0", source: "settings" } });
     mount();
     await focus("php", "/project/src/Invoice.php");
     await screen.findByRole("button", { name: "PHP Language Level: PHP 8.1" });
@@ -128,6 +133,20 @@ describe("PHP language level status", () => {
       expect(mocks.set).toHaveBeenCalledWith("project", "languages.php.languageLevel", JSON.stringify("")),
     );
     expect(await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" })).toBeTruthy();
+  });
+
+  it("shows a workspace member's level but leaves its choice to the member's settings", async () => {
+    mocks.level.mockResolvedValue({ ...fromComposer, member: "/project/api" });
+    mount();
+    await focus("php", "/project/api/src/Invoice.php");
+    await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" });
+    await act(() => executeAction("php.languageLevelPopup"));
+    expect(screen.getByText("Set in the settings of the linked project api")).toBeTruthy();
+    const items = screen.getAllByRole("menuitemcheckbox");
+    expect(items.map((item) => item.getAttribute("aria-disabled"))).toEqual(items.map(() => "true"));
+    expect(screen.getByRole("menuitemcheckbox", { name: /^Auto/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "8.1" }));
+    expect(mocks.set).not.toHaveBeenCalled();
   });
 
   it("ignores levels it does not list and reports write failures", async () => {

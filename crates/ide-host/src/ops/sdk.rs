@@ -43,6 +43,9 @@ pub struct PhpLanguageLevels {
     pub effective: Option<ide_sdk::php::PhpLanguageLevel>,
     /// The one Auto picks, from `composer.json`.
     pub auto: Option<ide_sdk::php::PhpLanguageLevel>,
+    /// The workspace member `path` belongs to: its own settings choose the level, not the
+    /// workspace's. `None`: the opened project.
+    pub member: Option<ide_core::IpcPath>,
 }
 
 pub fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) -> IdeResult<PhpLanguageLevels> {
@@ -51,16 +54,14 @@ pub fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) -> IdeRe
         .ok()
         .flatten()
         .and_then(|w| w.projects.into_iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.components().count()));
-    let (root, settings) = match member {
-        Some(member) => {
-            let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&member)).effective();
-            (member, settings)
-        }
-        None => (project.root.clone(), project.settings.effective()),
+    let (root, settings) = match &member {
+        Some(member) => (member, ide_workspace::SettingsStore::load(&host.config_dir, Some(member)).effective()),
+        None => (&project.root, project.settings.effective()),
     };
     Ok(PhpLanguageLevels {
-        effective: ide_sdk::php::language_level(&root, &settings),
-        auto: ide_sdk::php::composer_level(&root),
+        effective: ide_sdk::php::language_level(root, &settings),
+        auto: ide_sdk::php::composer_level(root),
+        member: member.map(ide_core::IpcPath),
     })
 }
 
