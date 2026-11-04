@@ -296,6 +296,7 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.showMessageHistory": ["Ctrl+M"],
   "vcs.update": ["Meta+T"],
   "vcs.rollback": ["Meta+Alt+Z"],
+  "vcs.addToVcs": ["Meta+Alt+A"],
   "vcs.showDiff": ["Meta+D"],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
