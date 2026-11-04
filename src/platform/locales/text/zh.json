@@ -3983,6 +3983,7 @@
   "Implemented and overridden": "已实现和已重写",
   "Implementing and overriding": "实现和重写",
   "Implemented and overridden declarations": "已被实现和重写的声明",
+  "Color preview": "颜色预览",
   "Implementing and overriding methods": "实现和重写超类型方法的方法",
   "Replace all {count} occurrences": "替换全部 {count} 处",
   "↵ Apply · Esc Keep '{name}'": "↵ 应用 · Esc 保留 '{name}'",
