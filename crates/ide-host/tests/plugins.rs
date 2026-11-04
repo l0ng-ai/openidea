@@ -399,19 +399,24 @@ fn crashes_restart_with_backoff_until_the_circuit_opens() {
 
     // Three in a row: stopped for the session, with growing waits between.
     f.take_events();
+    // How long each crash kept the next call waiting, without the restart itself, whose
+    // instantiation time varies a lot on CI.
     let mut waits = Vec::new();
     for _ in 0..3 {
         let started = Instant::now();
         let err = loop {
+            let attempt = Instant::now();
             match f.run("misbehave", "panic", None) {
                 Err(e) if e.contains("restarts in") => std::thread::sleep(Duration::from_millis(20)),
-                other => break other.unwrap_err(),
+                other => {
+                    waits.push(attempt - started);
+                    break other.unwrap_err();
+                }
             }
         };
         assert!(err.contains("crashed"), "{err}");
-        waits.push(started.elapsed());
     }
-    assert!(waits[2] >= backoff * 2 && waits[2] > waits[1], "{waits:?}");
+    assert!(waits[1] >= backoff / 2 && waits[2] > waits[1] + backoff / 2, "the wait doubles: {waits:?}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!(info.status, PluginStatus::Failed);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("3 times in a row")), "{:?}", info.error);
