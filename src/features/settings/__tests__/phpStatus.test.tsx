@@ -153,13 +153,17 @@ describe("PHP language level status", () => {
     await change("/project/vendor/acme/lib/composer.json", "/project/src/composer.json");
     await act(() => vi.advanceTimersByTimeAsync(1000));
     expect(mocks.level).toHaveBeenCalledTimes(1);
-    for (const file of ["/project/composer.json", "/project/composer.json", "/linked/api/composer.json"]) {
-      await change(file);
-    }
+    // Each change in a burst restarts the wait.
+    await change("/project/composer.json");
+    await act(() => vi.advanceTimersByTimeAsync(200));
+    await change("/project/composer.json");
     await act(() => vi.advanceTimersByTimeAsync(299));
     expect(mocks.level).toHaveBeenCalledTimes(1);
     await act(() => vi.advanceTimersByTimeAsync(1));
     expect(mocks.level).toHaveBeenCalledTimes(2);
+    await change("/linked/api/composer.json");
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    expect(mocks.level).toHaveBeenCalledTimes(3);
   });
 
   it("re-reads the level when the PHP language level setting changes, not other settings", async () => {
@@ -201,6 +205,10 @@ describe("PHP language level status", () => {
     await waitFor(() => expect(warn).toHaveBeenCalled());
     expect(mocks.level).toHaveBeenLastCalledWith("/project/src/Invoice.php");
     expect(screen.queryByRole("button")).toBeNull();
+    // The menu does not come back with the next level.
+    await focus("php", "/project/api/src/Order.php");
+    await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" });
+    expect(screen.queryByRole("menu")).toBeNull();
     warn.mockRestore();
   });
 
