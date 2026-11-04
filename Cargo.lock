@@ -4107,6 +4107,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-android"
+version = "0.1.36"
+dependencies = [
+ "ide-core",
+ "serde",
+ "specta",
+ "tempfile",
+ "which",
+]
+
+[[package]]
 name = "ide-build"
 version = "0.1.36"
 dependencies = [
@@ -6307,6 +6318,7 @@ dependencies = [
  "gtk",
  "ide-agent",
  "ide-analysis",
+ "ide-android",
  "ide-build",
  "ide-clipboard",
  "ide-core",

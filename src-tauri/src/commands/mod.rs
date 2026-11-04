@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod analysis;
+pub mod android;
 pub mod app;
 pub mod build;
 pub mod bytes;
@@ -63,6 +64,8 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        android::android_devices,
+        android::android_logcat,
         app::recent_projects,
         app::remove_recent_project,
         app::open_project,
