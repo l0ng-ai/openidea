@@ -31,6 +31,8 @@ struct MockState {
     errors: Mutex<HashMap<String, (i64, String)>>,
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
+    /// Holds the handling of notifications of this method until the gate opens.
+    held: Mutex<Option<(String, Arc<Gate>)>>,
     peer: Mutex<Option<Peer>>,
 }
 
@@ -74,6 +76,12 @@ struct MockHandler(Arc<MockState>);
 impl Handler for MockHandler {
     fn on_notification(&self, method: &str, params: Value) {
         let s = &self.0;
+        let held = s.held.lock().clone();
+        if let Some((m, gate)) = held
+            && m == method
+        {
+            gate.hold();
+        }
         // Held throughout: a test that sees the effect (a document, the peer gone) also sees the record.
         let mut log = s.notifications.lock();
         let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
@@ -230,6 +238,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
         pinned: None,
     }
 }
@@ -1216,6 +1225,54 @@ async fn preparation_refreshes_config_and_survives_unchanged_settings() {
     h.wait_status("mock", ServerStatus::Ready).await;
     assert_eq!(started.load(Ordering::SeqCst), 1);
     assert_eq!(h.launcher.state("mock").launches.load(Ordering::SeqCst), 1);
+}
+
+/// Intelephense applies the PHP version only to documents it parses after reading its
+/// configuration: once that is answered, servers that opt in get their open documents again.
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
+    let h = harness_configured("mock", "mk", &[("mock", incremental_caps()), ("extra", incremental_caps())], |cfg| {
+        cfg.resync_on_configuration = cfg.name == "mock"
+    });
+    let (doc, path) = h.open("a.mk", "enum A {}");
+    let uri = uri_of(&path);
+    let (s, extra) = (h.launcher.state("mock"), h.launcher.state("extra"));
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("extra", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().contains_key(&uri) && extra.docs.lock().contains_key(&uri)).await;
+    h.mgr.did_change(doc, 2, &[change(rng(0, 9, 0, 9), "\n")], &|| unreachable!());
+    eventually(|| s.notified("textDocument/didChange").len() == 1).await;
+
+    let items = |section: &str| json!({ "items": [{ "section": section }] });
+    let options = json!([{ "flag": true, "nested": { "deep": 1 } }]);
+    let answer: Value = extra.peer().request("workspace/configuration", items("extra"), None).await.unwrap();
+    assert_eq!(answer, options);
+    // The mock handles what arrives in order, answers included: a re-sync sent before the
+    // answer would hold it back here.
+    let gate = Arc::new(Gate::default());
+    *s.held.lock() = Some(("textDocument/didChange".into(), gate.clone()));
+    let peer = s.peer();
+    let request = peer.request::<_, Value>("workspace/configuration", items("mock"), None);
+    let answer = tokio::time::timeout(Duration::from_secs(10), request).await.expect("re-sync sent before the answer");
+    assert_eq!(answer.unwrap(), options);
+    eventually(|| gate.entered()).await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 1);
+    gate.open();
+    eventually(|| s.notified("textDocument/didChange").len() == 2).await;
+    assert_eq!(
+        s.notified("textDocument/didChange")[1],
+        json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": "enum A {}\n" }] })
+    );
+    assert_eq!(s.docs.lock()[&uri], "enum A {}\n");
+
+    // A notification sent after both answers reaches the servers after anything they triggered.
+    h.mgr.did_save(doc, "enum A {}\n");
+    eventually(|| extra.notified("textDocument/didSave").len() == 1 && s.notified("textDocument/didSave").len() == 1)
+        .await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
+    let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

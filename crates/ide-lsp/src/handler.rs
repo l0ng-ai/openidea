@@ -310,6 +310,15 @@ impl Handler for ClientHandler {
             other => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {other}"))),
         }
     }
+
+    fn after_response(&self, method: &str) {
+        if method == "workspace/configuration"
+            && self.server.config.resync_on_configuration
+            && let Some(mgr) = self.mgr.upgrade()
+        {
+            mgr.resync_documents(&self.server, self.generation);
+        }
+    }
 }
 
 /// What `workspace/configuration` sections are looked up in: the server's

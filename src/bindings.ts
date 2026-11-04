@@ -5265,6 +5265,11 @@ export type PathCompletion = {
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
+	/**
+	 *  PHP version the language server checks the code against (`7.4`); empty = from
+	 *  `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
+	 */
+	languageLevel?: string,
 };
 
 /**  The focused editor when a plugin command is invoked. */

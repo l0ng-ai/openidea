@@ -946,6 +946,28 @@ impl LspManager {
         self.schedule_pull(doc, None, pull::AFTER_EDIT);
     }
 
+    /// Sends the documents open on instance `generation` of `server` again, as a `didChange`
+    /// with their unchanged text, so the server parses them with the settings it just read.
+    pub(crate) fn resync_documents(&self, server: &Server, generation: u64) {
+        let Some(run) = server.running_gen(generation) else { return };
+        if run.caps.read().sync == SyncKind::None {
+            return;
+        }
+        let docs = self.docs.lock();
+        for d in docs.values() {
+            if !d.servers.iter().any(|a| a.server.id == server.id && a.opened_gen == Some(generation)) {
+                continue;
+            }
+            let params = json!({
+                "textDocument": { "uri": d.uri, "version": d.version },
+                "contentChanges": [{ "text": d.text.as_str() }],
+            });
+            if let Err(e) = run.peer.notify("textDocument/didChange", params) {
+                tracing::debug!("{}: didChange: {e}", server.name);
+            }
+        }
+    }
+
     pub fn did_save(&self, doc: DocId, text: &str) {
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
@@ -2526,6 +2548,12 @@ impl LspManager {
                 self.ensure_started(server);
             }
         }
+    }
+
+    /// [`Self::reconfigure`] on the manager's runtime, for callers outside one (file watchers).
+    pub fn reconfigure_soon(self: &Arc<Self>) {
+        let me = self.clone();
+        self.runtime.spawn(async move { me.reconfigure().await });
     }
 
     pub async fn reconfigure(&self) {

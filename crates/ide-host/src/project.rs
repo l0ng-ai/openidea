@@ -221,6 +221,8 @@ impl Host {
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
+                // After the overrides: the PHP version they may set decides the storage.
+                ide_sdk::php::configure_intelephense_storage(cfg, &data_dir);
                 if cfg.name == "jdtls" {
                     let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
                     ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
@@ -310,6 +312,9 @@ impl Host {
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
+                    if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+                        lsp.reconfigure_soon();
+                    }
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&[&changed[..], &ignored].concat());
                     // A framework's root marker (`angular.json`) created or deleted: its
@@ -415,7 +420,16 @@ impl Host {
         let content_watchers = extra_roots
             .iter()
             .filter_map(|r| {
-                let w = content_root_watcher(r, &excludes, &sink, &index, &documents, &history, Some(&kotlin_bridge))?;
+                let w = content_root_watcher(
+                    r,
+                    &excludes,
+                    &sink,
+                    &index,
+                    &documents,
+                    &history,
+                    &lsp,
+                    Some(&kotlin_bridge),
+                )?;
                 Some((r.clone(), w))
             })
             .collect();
@@ -908,6 +922,7 @@ impl Project {
                 &self.index,
                 &self.documents,
                 &self.history,
+                &self.lsp,
                 self.kotlin_bridge.as_ref(),
             ) {
                 watchers.push((r, w));
@@ -1034,6 +1049,7 @@ impl Project {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn content_root_watcher(
     dir: &Path,
     excludes: &[String],
@@ -1041,10 +1057,12 @@ fn content_root_watcher(
     index: &Arc<ProjectIndex>,
     documents: &Arc<Documents>,
     history: &Arc<LocalHistory>,
+    lsp: &Arc<LspManager>,
     kotlin_bridge: Option<&Arc<crate::kotlin_bridge::KotlinBridge>>,
 ) -> Option<Watcher> {
     let kotlin_bridge = kotlin_bridge.cloned();
-    let (index, documents, history) = (index.clone(), documents.clone(), history.clone());
+    let (index, documents, history, lsp) = (index.clone(), documents.clone(), history.clone(), lsp.clone());
+    let root = dir.to_path_buf();
     Watcher::start(
         dir,
         excludes.to_vec(),
@@ -1053,6 +1071,10 @@ fn content_root_watcher(
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
             let (ignored, ignored_gone) = ignored_changes(batch);
             index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
+            // A workspace member's PHP language level follows its own composer.json.
+            if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+                lsp.reconfigure_soon();
+            }
             if let Some(bridge) = &kotlin_bridge {
                 bridge.files_changed(changed.iter().chain(&batch.removed));
             }
@@ -1062,6 +1084,13 @@ fn content_root_watcher(
     )
     .map_err(|e| tracing::warn!("content root watcher {}: {e}", dir.display()))
     .ok()
+}
+
+/// Whether the `composer.json` of `root` is among `paths`: the PHP language level follows it
+/// (`ide_sdk::php`).
+fn composer_changed<'a>(root: &Path, mut paths: impl Iterator<Item = &'a PathBuf>) -> bool {
+    let composer = root.join("composer.json");
+    paths.any(|p| *p == composer)
 }
 
 /// Where agent tasks create their worktrees: next to the project, `<parent>/<name>.worktrees`,
@@ -1478,5 +1507,23 @@ mod agent_worktree_tests {
         let project = Path::new("/work").join("acme-api");
         assert_eq!(agent_worktrees_dir(&project, fallback), Path::new("/work").join("acme-api.worktrees"));
         assert_eq!(agent_worktrees_dir(Path::new("/"), fallback), fallback());
+    }
+}
+
+#[cfg(test)]
+mod composer_tests {
+    use super::composer_changed;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn only_the_roots_own_composer_json_counts() {
+        let root = Path::new("/work/app");
+        let changed = |paths: &[&str]| {
+            let paths: Vec<PathBuf> = paths.iter().map(|p| root.join(p)).collect();
+            composer_changed(root, paths.iter())
+        };
+        assert!(changed(&["src/a.php", "composer.json"]));
+        assert!(!changed(&["composer.lock", "vendor/acme/lib/composer.json", "packages/b/composer.json"]));
+        assert!(!changed(&[]));
     }
 }
