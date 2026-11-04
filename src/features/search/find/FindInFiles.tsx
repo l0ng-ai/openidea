@@ -89,7 +89,7 @@ async function chooseDirectory(current: string): Promise<string | null> {
 
 const POPUP_MAX_MATCHES = 2000;
 const SEARCH_DEBOUNCE_MS = 150;
-const ROW = 22;
+const ROW = 24;
 
 export function FindInFilesOverlay() {
   const open = useFindPopup((s) => s.open);
@@ -739,10 +739,6 @@ function FindInFilesDialog() {
                       text={r.text}
                       ranges={stale ? [] : r.ranges}
                       source={{ path: r.path, line: r.line, col: r.textCol }}
-                      active={st.active}
-                      replacement={!stale && s.replace && state !== "done" ? s.replacement : null}
-                      query={query}
-                      preserveCase={s.preserveCase}
                     />
                   </span>
                   <span className={clsx(styles.rowFile, st.active && styles.rowFileActive)}>
@@ -760,12 +756,10 @@ function FindInFilesDialog() {
         </div>
         <div className={styles.previewHeader}>
           {selected ? (
-            <>
-              <span className={styles.previewPath}>{selected.relPath}</span>
-              <span className={styles.rowLine}>
-                {selected.line + 1}:{selected.col + 1}
-              </span>
-            </>
+            <span className={styles.previewPath}>
+              <span className={styles.previewName}>{basename(selected.relPath)}</span>
+              {selected.relPath.includes("/") && dirname(selected.relPath)}
+            </span>
           ) : (
             <span />
           )}
@@ -809,7 +803,12 @@ function FindInFilesDialog() {
               <Button size="small" variant="secondary" disabled={stale || !selected || busy} onClick={skip}>
                 <T>Skip</T>
               </Button>
-              <Button size="small" disabled={stale || !selected || busy} onClick={() => void replaceSelected()}>
+              <Button
+                size="small"
+                variant="primary"
+                disabled={stale || !selected || busy}
+                onClick={() => void replaceSelected()}
+              >
                 {pendingSelected > 1 ? txt(`Replace ${pendingSelected} Occurrences`) : <T>Replace</T>}
               </Button>
               <Button size="small" disabled={stale || !selected || busy} onClick={() => void replaceInFile()}>

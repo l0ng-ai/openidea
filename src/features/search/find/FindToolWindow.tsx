@@ -543,7 +543,6 @@ function FindNodeContent({ node, state, tab }: { node: Node; state: TreeRowState
               text={node.text}
               ranges={node.ranges}
               source={{ path: node.path, line: node.line, col: node.textCol }}
-              active={state.selected}
               replacement={tab.replacement}
               query={tab.query}
               preserveCase={!!tab.preserveCase}

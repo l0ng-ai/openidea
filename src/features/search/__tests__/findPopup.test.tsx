@@ -255,7 +255,8 @@ describe("outdated popup results", () => {
       expect(results()).not.toHaveAttribute("data-stale");
       expect(rowText()).toHaveLength(1);
       expect(screen.getByText("1 match in 1 file")).toBeInTheDocument();
-      expect(results().querySelector(replace ? "ins" : "mark")).not.toBeNull();
+      expect(results().querySelector("mark")).not.toBeNull();
+      expect(results().querySelector("del, ins")).toBeNull();
       if (replace) expect(screen.getByRole("button", { name: "Replace" })).toBeEnabled();
       await act(async () => finish(null));
     },

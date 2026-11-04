@@ -1,5 +1,8 @@
+/* IDEA's Find in Files is a popup: Popup.background, not the dialog surface. */
 .dialog {
   max-height: min(86vh, calc(90vh - 24px));
+  background: var(--bg-popup, var(--bg-elev));
+  font-family: var(--font-ui);
 }
 .dialog > :global([data-dialog-body]) {
   display: flex;
@@ -17,13 +20,14 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 34px;
-  padding: 0 8px 0 12px;
+  height: 42px;
+  padding: 0 14px 0 20px;
+  border-bottom: 1px solid var(--border-popup);
   color: var(--fg-subtle);
 }
 .title {
-  color: var(--fg-emphasis);
-  font-weight: 500;
+  color: var(--fg-strong);
+  font-weight: 600;
 }
 .status {
   display: inline-flex;
@@ -39,7 +43,8 @@
 .mask {
   display: flex;
   align-items: center;
-  height: var(--h-control-small);
+  height: var(--h-control);
+  background: var(--bg-field);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   padding-left: 6px;
@@ -53,18 +58,18 @@
   border: 0;
   outline: none;
   color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
 }
 .fields {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 0 12px 8px;
+  gap: 8px;
+  padding: 8px 8px 0;
 }
-.field {
+/* The query fields sit on the popup surface, framed only by their border. */
+.fields .field {
   width: 100%;
+  background: transparent;
 }
 .field input {
   font-family: var(--font-mono);
@@ -75,13 +80,15 @@
   font-size: var(--fs-small);
   padding-left: 2px;
 }
+/* Scope tabs line up with the title; the selected one is a neutral pressed pill, as in IDEA. */
 .scopeRow {
+  --bg-tab-selected: var(--bg-toolbar-pressed);
+  --border-tab-selected: transparent;
   flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 12px 0 6px;
-  border-bottom: 1px solid var(--border-popup);
+  padding: 8px 14px 4px 20px;
 }
 .scopeDetail {
   flex: 1;
@@ -114,8 +121,6 @@
   display: flex;
   flex-direction: column;
   padding: 2px 0;
-  font-family: var(--font-mono);
-  font-weight: var(--fw-code);
 }
 .results > * {
   flex: 1;
@@ -131,6 +136,8 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-code);
 }
 .rowFile {
   flex: none;
@@ -138,7 +145,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
-  font-family: var(--font-ui);
 }
 .rowFileActive {
   color: var(--fg-muted);
@@ -153,17 +159,20 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  height: 24px;
-  padding: 0 12px;
+  height: 36px;
+  padding: 0 20px;
   border-top: 1px solid var(--border-popup);
-  border-bottom: 1px solid var(--border-popup);
-  font-size: var(--fs-small);
   color: var(--fg-subtle);
 }
 .previewPath {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.previewName {
+  color: var(--fg-strong);
+  margin-right: 8px;
 }
 .previewBox {
   flex: 0 1 220px;
@@ -179,9 +188,8 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  min-height: 38px;
-  padding: 6px 12px;
-  border-top: 1px solid var(--border-popup);
+  min-height: 46px;
+  padding: 8px 20px;
 }
 .footer > button,
 .footer > label {

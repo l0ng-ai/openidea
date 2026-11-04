@@ -476,13 +476,15 @@ describe("Recent Files multi-selection", () => {
 });
 
 describe("Find in Files dialog", () => {
-  it("streams results and previews the replacement", async () => {
+  it("streams results and highlights the matches while replacing, as IDEA", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(true, { query: "order" }));
     await act(() => new Promise((r) => setTimeout(r, 250)));
     expect(screen.getByText("1 match in 1 file")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Replace with"), { target: { value: "item" } });
-    expect(screen.getByText("item", { ignore: "script, style, textarea" })).toBeInTheDocument();
+    const matches = screen.getByRole("listbox", { name: "Matches" });
+    expect(matches.querySelector("mark")).not.toBeNull();
+    expect(matches.querySelector("del, ins")).toBeNull();
     expect(screen.getByRole("button", { name: "Replace All" })).toBeEnabled();
   });
 });
