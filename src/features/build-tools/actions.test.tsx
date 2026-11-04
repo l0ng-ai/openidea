@@ -58,7 +58,8 @@ describe("build tools feature", () => {
     act(() => useBuild.setState({ root: "/p", model: mavenModel }));
     const tw = useContributions.getState().toolWindows.get("maven");
     expect(tw).toMatchObject({ title: "Maven", icon: "toolwindow-maven", anchor: "right" });
-    expect(tw?.stripe).toBeUndefined();
+    // Maven joins the stripe on first open, not by default (the bottom-stripe limit).
+    expect(tw?.stripe).toBe("onUse");
     expect(getContext()["build.maven"]).toBe(true);
     expect(toolWindows()).not.toContain("gradle");
 
