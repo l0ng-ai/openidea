@@ -1,7 +1,8 @@
 /**
- * ⌥⌘F7 Show Usages: popup list at the caret with speed search (typing
- * filters), an optional code preview and "Open in Find Window", which moves
- * the found usages to the Find Usages tool window.
+ * ⌥⌘F7 Show Usages: popup at the caret with the usages grouped by file, speed
+ * search (typing filters), a code preview of the selected usage beside the
+ * list and "Open in Find Window", which moves the found usages to the Find
+ * Usages tool window.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
@@ -9,7 +10,7 @@ import clsx from "clsx";
 import { EditorState, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
 import { codePreviewExtensions } from "@/editor/api";
-import { basename } from "@/platform/project";
+import { basename, relativeDir, useProject } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, List, Popup, fileIconName, listNavigate } from "@/ui";
 import { openLocation, readFileLines } from "./ipc";
@@ -33,9 +34,9 @@ const PREVIEW_KEY = "openidea.usages.popupPreview.v1";
 
 function loadPreviewOption(): boolean {
   try {
-    return localStorage.getItem(PREVIEW_KEY) === "true";
+    return localStorage.getItem(PREVIEW_KEY) !== "false";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -58,6 +59,17 @@ export function filterUsages(items: readonly Usage[], filter: string): Usage[] {
   return items.filter((u) => u.text.toLowerCase().includes(q) || basename(u.path).toLowerCase().includes(q));
 }
 
+/** Groups a flat usage list by file, keeping the order of both (filters preserve it). */
+export function regroupUsages(usages: readonly Usage[]): UsageGroup[] {
+  const byPath = new Map<string, Usage[]>();
+  for (const u of usages) {
+    const list = byPath.get(u.path);
+    if (list) list.push(u);
+    else byPath.set(u.path, [u]);
+  }
+  return [...byPath.entries()].map(([path, list]) => ({ path, usages: list }));
+}
+
 /** The popup's groups as locations for the Find Usages tool window. */
 export function usageLocations(groups: readonly UsageGroup[]) {
   return groups.flatMap((g) =>
@@ -77,24 +89,49 @@ export function UsagesPopup() {
 }
 
 const ROW = 24;
+const SECTION = 26;
+
+/** A list row: a file's header, or one of the usages under it. */
+type Row = { kind: "file"; key: string; group: UsageGroup } | { kind: "usage"; key: string; usage: Usage };
+
+const usageKey = (u: Usage) =>
+  `${u.path}:${u.line}:${u.col}:${u.sourceLocation?.range.end.line ?? u.line}:${u.sourceLocation?.range.end.col ?? u.endCol}`;
+
+/** `active` when it is a usage row, else the first usage row (-1 when there is none). */
+function activeRow(active: number, rows: readonly Row[]): number {
+  const i = Math.min(active, rows.length - 1);
+  if (rows[i]?.kind === "usage") return i;
+  return rows.findIndex((r) => r.kind === "usage");
+}
 
 function UsagesPopupInner() {
-  const { anchor, symbol, groups, note } = useUsagesPopup();
+  const { anchor, symbol, heading, groups, note } = useUsagesPopup();
   const preview = useUsagesPopupPreview((s) => s.preview);
+  const root = useProject((s) => s.project?.root ?? "");
   const all = useMemo<Usage[]>(() => groups.flatMap((g) => g.usages), [groups]);
   const [filter, setFilter] = useState("");
   const accessOptions = useUsageAccessOptions();
-  const items = useMemo(
-    () => filterUsages(filterUsageAccess(all, accessOptions), filter),
+  const visible = useMemo(
+    () => regroupUsages(filterUsages(filterUsageAccess(all, accessOptions), filter)),
     [all, filter, accessOptions],
   );
+  const rows = useMemo<Row[]>(
+    () =>
+      visible.flatMap((g): Row[] => [
+        { kind: "file", key: g.path, group: g },
+        ...g.usages.map((u): Row => ({ kind: "usage", key: usageKey(u), usage: u })),
+      ]),
+    [visible],
+  );
   const [active, setActive] = useState(0);
-  const current = Math.min(active, items.length - 1);
+  const current = activeRow(active, rows);
+  const currentUsage = rows[current]?.kind === "usage" ? rows[current].usage : null;
+  const visibleCount = rows.reduce((n, r) => n + (r.kind === "usage" ? 1 : 0), 0);
   const total = usageCount(groups);
-  const pick = (u: Usage | undefined) => {
-    if (!u) return;
+  const pick = (row: Row | undefined) => {
+    if (row?.kind !== "usage") return;
     close();
-    void openLocation(u.path, u.line, u.col);
+    void openLocation(row.usage.path, row.usage.line, row.usage.col);
   };
   const openInFindWindow = () => {
     close();
@@ -114,7 +151,13 @@ function UsagesPopupInner() {
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "Escape" && e.target instanceof Element && e.target.closest("button")) return;
-    const next = listNavigate(e.key, { items, active: current, wrap: true, pageSize: 10 });
+    const next = listNavigate(e.key, {
+      items: rows,
+      active: current,
+      isSection: (r) => r.kind === "file",
+      wrap: true,
+      pageSize: 10,
+    });
     if (next !== null) {
       e.preventDefault();
       setActive(next);
@@ -123,7 +166,7 @@ function UsagesPopupInner() {
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
     if (e.key === "Enter") {
       e.preventDefault();
-      pick(items[current]);
+      pick(rows[current]);
     } else if (e.key === "Escape" && filter) {
       // The first Esc clears the speed search, the next one closes.
       e.preventDefault();
@@ -142,18 +185,22 @@ function UsagesPopupInner() {
   };
 
   const keys = shortcutLabel("find.usages");
+  const contentHeight = visible.reduce((h, g) => h + SECTION + g.usages.length * ROW, 0);
+  const height = preview
+    ? Math.max(10 * ROW, Math.min(16 * ROW, contentHeight))
+    : Math.max(ROW, Math.min(14 * ROW, contentHeight));
   return (
     <Popup open anchor={anchor} onClose={close} aria-label="Usages" className={styles.popup}>
       <div className={styles.focus} tabIndex={0} data-autofocus onKeyDown={onKeyDown}>
         <div className={styles.header}>
           <span className={styles.title}>
-            {symbol ? tx`Usages of ${symbol}` : tx("Usages")}{" "}
+            {heading ?? (symbol ? tx`Usages of ${symbol}` : tx("Usages"))}{" "}
             <span className={styles.count}>
-              {filter || items.length !== total ? tx`${items.length} of ${total} found` : tx`${total} found`}
+              {filter || visibleCount !== total ? tx`${visibleCount} of ${total} found` : tx`${total} found`}
             </span>
           </span>
           {filter && (
-            <span className={clsx(styles.filter, !items.length && styles.noMatch)} role="status">
+            <span className={clsx(styles.filter, !visibleCount && styles.noMatch)} role="status">
               {filter}
             </span>
           )}
@@ -172,17 +219,24 @@ function UsagesPopupInner() {
         </div>
         <UsageAccessFilter items={all} />
         {note && <div className={styles.note}>{note}</div>}
-        <div className={styles.body} style={{ height: Math.max(1, Math.min(14, items.length)) * ROW }}>
+        <div className={styles.body} style={{ height }}>
+          {preview && (
+            <div className={styles.previewPane}>
+              <UsageCodePreview usage={currentUsage} />
+            </div>
+          )}
           <List
-            items={items}
-            getKey={(u) =>
-              `${u.path}:${u.line}:${u.col}:${u.sourceLocation?.range.end.line ?? u.line}:${u.sourceLocation?.range.end.col ?? u.endCol}`
-            }
+            className={styles.list}
+            items={rows}
+            getKey={(r) => r.key}
+            isSection={(r) => r.kind === "file"}
+            renderSection={(r) => (r.kind === "file" ? <FileRow group={r.group} root={root} /> : null)}
             activeIndex={current}
             onActiveChange={setActive}
             focusable={false}
             hoverSelects
             rowHeight={ROW}
+            sectionHeight={SECTION}
             aria-label="Usages"
             onActivate={pick}
             empty={
@@ -190,21 +244,31 @@ function UsagesPopupInner() {
                 {filter ? tx`Nothing matches '${filter}'` : tx("No usages match the access filters")}
               </div>
             }
-            renderItem={(u) => (
-              <div className={styles.row}>
-                <Icon name={fileIconName(basename(u.path), u.path)} size={14} className={styles.icon} />
-                <UsagePreview usage={u} />
-                <span className={styles.spacer} />
-                <span className={styles.where}>
-                  {basename(u.path)}:{u.line + 1}
+            renderItem={(r) =>
+              r.kind === "usage" ? (
+                <span className={styles.row}>
+                  <span className={styles.line}>{r.usage.line + 1}</span>
+                  <UsagePreview usage={r.usage} />
                 </span>
-              </div>
-            )}
+              ) : null
+            }
           />
         </div>
-        {preview && <UsageCodePreview usage={items[current] ?? null} />}
       </div>
     </Popup>
+  );
+}
+
+function FileRow({ group, root }: { group: UsageGroup; root: string }) {
+  return (
+    <span className={styles.fileRow}>
+      <Icon name={fileIconName(basename(group.path), group.path)} size={14} className={styles.icon} />
+      <span className={styles.file}>{basename(group.path)}</span>
+      <span className={styles.dir}>{relativeDir(root, group.path)}</span>
+      <span className={styles.count}>
+        {group.usages.length} {tx(group.usages.length === 1 ? "usage" : "usages")}
+      </span>
+    </span>
   );
 }
 

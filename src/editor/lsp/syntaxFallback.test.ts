@@ -341,15 +341,15 @@ describe("navigation wiring", () => {
     );
     const view = editor("obj.run();", "typescript", 5);
     await gotoTargets(view, "definition");
-    const popup = useLspPopup.getState().popup;
-    expect(popup?.kind).toBe("list");
-    if (popup?.kind !== "list") return;
-    expect(popup.title).toBe("Choose Declaration of run (2 found, based on syntax)");
-    expect(popup.pin?.label).toBe("Open in Find Tool Window");
-    expect(popup.items.map((i) => [i.label, i.symbol, i.detail?.split(" · ")[0]])).toEqual([
-      ["run", "method", "A"],
-      ["run", "method", "B"],
-    ]);
+    expect(executeAction).toHaveBeenCalledWith("find.showLocationsPopup", {
+      symbol: "run",
+      locations: [
+        expect.objectContaining({ path: "/p/a.ts", range: r(3, 4, 7) }),
+        expect.objectContaining({ path: "/p/b.ts", range: r(3, 4, 7) }),
+      ],
+      heading: "Choose Declaration of run",
+      note: "Based on syntax (language server not ready)",
+    });
     expect(openFile).not.toHaveBeenCalled();
   });
 

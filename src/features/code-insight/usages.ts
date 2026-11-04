@@ -161,6 +161,8 @@ interface UsagesPopupState {
   open: boolean;
   anchor: { x: number; y: number };
   symbol: string | null;
+  /** Replaces the "Usages of X" title (the declarations chooser's heading). */
+  heading: string | null;
   groups: UsageGroup[];
   note: string | null;
 }
@@ -169,6 +171,7 @@ export const useUsagesPopup = create<UsagesPopupState>(() => ({
   open: false,
   anchor: { x: 0, y: 0 },
   symbol: null,
+  heading: null,
   groups: [],
   note: null,
 }));
@@ -231,7 +234,7 @@ export function resetUsages() {
   if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
   popupRequest = null;
   useUsages.setState({ tabs: [], active: null });
-  useUsagesPopup.setState({ open: false, symbol: null, groups: [], note: null });
+  useUsagesPopup.setState({ open: false, symbol: null, heading: null, groups: [], note: null });
 }
 
 export async function findUsages() {
@@ -300,6 +303,35 @@ export function dismissUsagesPopup() {
   useUsagesPopup.setState({ open: false });
 }
 
+/**
+ * Shows locations found elsewhere (the multi-target declarations chooser) in
+ * the popup at the caret, under `heading`. Ignores malformed arguments.
+ */
+export async function showLocationsPopup(arg: unknown) {
+  const a = (arg ?? {}) as {
+    symbol?: unknown;
+    locations?: unknown;
+    classified?: ClassifiedReference[];
+    heading?: unknown;
+    note?: unknown;
+  };
+  if (!Array.isArray(a.locations)) return;
+  const locs = a.locations as Location[];
+  // An in-flight Show Usages search must not replace this popup when it resolves.
+  if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
+  popupRequest = null;
+  clearLineTokens();
+  const files = await readManyFileLines(locs.map((l) => l.path));
+  useUsagesPopup.setState({
+    open: true,
+    anchor: caretPoint(),
+    symbol: typeof a.symbol === "string" ? a.symbol : null,
+    heading: typeof a.heading === "string" ? a.heading : null,
+    groups: groupUsages(locs, files, a.classified),
+    note: typeof a.note === "string" ? a.note : null,
+  });
+}
+
 export async function showUsagesPopup() {
   const c = caretContext();
   if (!c) {
@@ -325,7 +357,7 @@ export async function showUsagesPopup() {
       hint("Only one usage in Project Files");
       return;
     }
-    useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word, groups, note });
+    useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word, heading: null, groups, note });
   } catch (e) {
     if (popupRequest !== request || isCancelled(e)) return;
     reportError(e);

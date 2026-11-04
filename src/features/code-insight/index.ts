@@ -11,7 +11,14 @@ import { installProblemDecorations } from "./decorations";
 import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
 import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
 import { UsagesPopup } from "./UsagesPopup";
-import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsagesPopup } from "./usages";
+import {
+  findUsages,
+  rerunActiveUsages,
+  resetUsages,
+  showLocationsPopup,
+  showUsageResults,
+  showUsagesPopup,
+} from "./usages";
 import { HierarchyTabs, HierarchyView } from "./HierarchyView";
 import { resetHierarchy, showHierarchy } from "./hierarchy";
 import { installServerEvents } from "./servers";
@@ -113,6 +120,15 @@ export function activate(): () => void {
         description:
           "Shows `{ symbol, locations }` (found elsewhere, e.g. by Safe Delete) in the Find Usages tool window.",
         run: ({ arg }) => showUsageResults(arg),
+      },
+      {
+        id: "find.showLocationsPopup",
+        title: "Show Locations",
+        category: "Find",
+        hidden: true,
+        description:
+          "Shows `{ symbol, locations, heading? }` (found elsewhere, e.g. by the declarations chooser) in the Show Usages popup.",
+        run: ({ arg }) => showLocationsPopup(arg),
       },
       {
         id: "navigate.callHierarchy",

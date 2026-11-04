@@ -124,11 +124,6 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
   });
 }
 
-/** "Choose Implementation of foo (3 found)". */
-export function chooserTitle(kind: GotoKind, name: string | null, count: number, fromSyntax = false): string {
-  return `${TITLES[kind]}${name ? ` of ${name}` : ""} (${count} found${fromSyntax ? ", based on syntax" : ""})`;
-}
-
 /** Pin button of the targets chooser: the targets as a Find tool window tab (code-insight). */
 export function pinToFind(symbol: string, locations: readonly Location[]) {
   return {
@@ -228,12 +223,12 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   }
   const word = view.state.wordAt(offset);
   const name = word ? view.state.sliceDoc(word.from, word.to) : null;
-  openPopup({
-    kind: "list",
-    anchor: caretAnchor(view, offset),
-    title: chooserTitle(kind, name, locs.length, fromSyntax),
-    items: await locationItems(locs),
-    pin: pinToFind(name ?? "", locs),
+  // The same grouped popup as Show Usages (VSCode's peek): file-grouped targets with a code preview.
+  await executeAction("find.showLocationsPopup", {
+    symbol: name ?? "",
+    locations: locs,
+    heading: `${TITLES[kind]}${name ? ` of ${name}` : ""}`,
+    note: fromSyntax ? SYNTAX_NOTE : null,
   });
 }
 

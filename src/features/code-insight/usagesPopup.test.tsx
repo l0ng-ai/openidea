@@ -18,8 +18,8 @@ vi.mock("./usages", async (orig) => ({
   showUsageResults: (a: unknown) => showUsageResults(a),
 }));
 
-const { UsagesPopup, filterUsages, usageLocations } = await import("./UsagesPopup");
-const { showUsagesPopup, useUsagesPopup, dismissUsagesPopup } = await import("./usages");
+const { UsagesPopup, filterUsages, regroupUsages, usageLocations } = await import("./UsagesPopup");
+const { showLocationsPopup, showUsagesPopup, useUsagesPopup, dismissUsagesPopup } = await import("./usages");
 
 const usage = (path: string, line: number, text: string) => ({ path, line, col: 0, endCol: 3, text });
 const groups = [
@@ -39,6 +39,7 @@ afterEach(() =>
     dismissUsagesPopup();
     useUsageAccessOptions.setState({ read: true, write: true });
     localStorage.removeItem("openidea.usages.accessFilter.v1");
+    localStorage.removeItem("openidea.usages.popupPreview.v1");
   }),
 );
 
@@ -79,12 +80,52 @@ describe("Show Usages popup", () => {
     });
   });
 
-  it("the preview pane toggles", () => {
+  it("the preview pane is on by default and toggles", () => {
     open();
+    expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show Preview" }));
     expect(screen.queryByRole("region", { name: "Preview" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show Preview" }));
     expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Show Preview" }));
+  });
+
+  it("groups usages under file headers, navigation skipping the headers", () => {
+    const body = open();
+    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.getByText("b.ts")).toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+    const lead = () => document.querySelector("[data-lead]");
+    expect(lead()?.textContent).toContain("foo(order)");
+    // Wrapping ArrowUp from the first usage lands on the last usage, never on a header.
+    fireEvent.keyDown(body, { key: "ArrowUp" });
+    expect(lead()?.textContent).toContain("foo(order, 2)");
+    fireEvent.keyDown(body, { key: "ArrowDown" });
+    expect(lead()?.textContent).toContain("foo(order)");
+  });
+
+  it("regroups a filtered flat list by file, keeping order", () => {
+    const all = groups.flatMap((g) => g.usages);
+    expect(regroupUsages(filterUsages(all, "foo"))).toEqual(groups);
+    expect(regroupUsages(filterUsages(all, "cart"))).toEqual([
+      { path: "/p/a.ts", usages: [usage("/p/a.ts", 5, "foo(cart)")] },
+    ]);
+  });
+
+  it("shows the declarations chooser's locations under its heading", async () => {
+    render(<UsagesPopup />);
+    await showLocationsPopup({
+      symbol: "parseArgs",
+      heading: "Choose Declaration of parseArgs",
+      locations: [
+        { path: "/p/a.ts", range: { start: { line: 2, col: 0 }, end: { line: 2, col: 9 } } },
+        { path: "/p/b.ts", range: { start: { line: 1, col: 4 }, end: { line: 1, col: 13 } } },
+      ],
+    });
+    expect(useUsagesPopup.getState().open).toBe(true);
+    expect(screen.getByText(/Choose Declaration of parseArgs/)).toBeInTheDocument();
+    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.getByText("b.ts")).toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(2);
   });
 
   it("a single usage is opened with a hint in its editor", async () => {

@@ -1,5 +1,5 @@
 .popup {
-  width: min(680px, 90vw);
+  width: min(880px, 92vw);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -41,12 +41,14 @@
 }
 .body {
   display: flex;
-  flex-direction: column;
-  min-height: 24px;
+  min-height: 0;
   padding: 2px 0;
   box-sizing: content-box;
 }
 .body > * {
+  min-width: 0;
+}
+.list {
   flex: 1;
 }
 .row {
@@ -56,16 +58,35 @@
   min-width: 0;
   width: 100%;
 }
+.line {
+  flex: none;
+  min-width: 3ch;
+  text-align: right;
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+}
+.fileRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  font-size: var(--fs-small);
+}
 .icon {
   flex: none;
   color: var(--fg-muted);
 }
-.spacer {
-  flex: 1;
-}
-.where {
+.file {
   flex: none;
-  font-size: var(--fs-small);
+  color: var(--fg-emphasis);
+}
+.dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg-subtle);
 }
 
@@ -100,10 +121,13 @@
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }
+.previewPane {
+  flex: 1.2;
+  border-right: 1px solid var(--border-popup);
+  overflow: hidden;
+}
 .preview {
-  flex: none;
-  height: 200px;
-  border-top: 1px solid var(--border-popup);
+  height: 100%;
   overflow: hidden;
 }
 .previewEditor {
