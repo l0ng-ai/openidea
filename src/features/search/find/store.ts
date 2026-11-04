@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import type { ContextKeys } from "@/platform/context";
-import type { ProjectFileSet, SearchContext, SearchQuery, SearchScope } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  type ProjectFileSet,
+  type SearchContext,
+  type SearchQuery,
+  type SearchScope,
+} from "@/platform/ipc";
 import { SEARCH_CONTEXTS, customScopes, findCustomScope, rememberSearch, searchHistory } from "@/platform/search";
 import { loadJson, saveJson } from "../common/open";
 
@@ -52,9 +59,12 @@ interface FindPopupState extends FindOptions {
   session: number;
   /** Title-bar pin: the popup stays open when a result is opened or the user clicks outside. */
   pinned: boolean;
+  /** IDEA's "Open results in new tab": Open in Find Window keeps the active Find tab. */
+  newTab: boolean;
 }
 
 const PINNED_KEY = "openidea.search.findPinned.v1";
+const NEW_TAB_KEY = "openidea.search.findNewTab.v1";
 
 export const useFindPopup = create<FindPopupState>(() => ({
   open: false,
@@ -74,11 +84,41 @@ export const useFindPopup = create<FindPopupState>(() => ({
   namedScope: "projectFiles",
   context: "any",
   pinned: loadJson<unknown>(PINNED_KEY, false) === true,
+  newTab: loadJson<unknown>(NEW_TAB_KEY, false) === true,
 }));
 
 export function setFindPopupPinned(pinned: boolean) {
   useFindPopup.setState({ pinned });
   saveJson(PINNED_KEY, pinned);
+}
+
+export function setFindPopupNewTab(newTab: boolean) {
+  useFindPopup.setState({ newTab });
+  saveJson(NEW_TAB_KEY, newTab);
+}
+
+const SIZE_KEY = "openidea.search.findPopupSize.v1";
+const SPLIT_KEY = "openidea.search.findPopupSplit.v1";
+
+/** The popup's size and its results / preview split, remembered like IDEA's. */
+export function loadFindPopupSize(): { w: number; h: number } | null {
+  const v = loadJson<{ w?: unknown; h?: unknown } | null>(SIZE_KEY, null);
+  return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
+}
+
+export function saveFindPopupSize(size: { w: number; h: number }) {
+  saveJson(SIZE_KEY, size);
+}
+
+export function loadFindPopupSplit(): Record<string, number> | undefined {
+  const v = loadJson<unknown>(SPLIT_KEY, null);
+  return v && typeof v === "object" && Object.values(v).every((n) => typeof n === "number")
+    ? (v as Record<string, number>)
+    : undefined;
+}
+
+export function saveFindPopupSplit(layout: Record<string, number>) {
+  saveJson(SPLIT_KEY, layout);
 }
 
 /**
@@ -138,12 +178,34 @@ export function hideFindPopup() {
 }
 
 const MASKS_KEY = "openidea.search.fileMasks.v1";
-const DEFAULT_MASKS = ["*.ts,*.tsx", "*.rs", "*.kt", "*.java", "*.py", "*.go", "*.md", "*.json", "!*.test.*"];
+const PROJECT_MASKS = 5;
 
+/**
+ * `*.ext` masks of the project's most common language file types. IDEA seeds its
+ * mask list with the IDE's languages; a multi-language IDE takes the project's.
+ */
+export const useProjectMasks = create<{ masks: string[] }>(() => ({ masks: [] }));
+
+export async function refreshProjectMasks() {
+  try {
+    const [counts, languages] = await Promise.all([call(commands.indexFileExtensions()), commands.languages()]);
+    const known = new Set(languages.flatMap((l) => l.extensions.map((e) => e.toLowerCase())));
+    const masks = counts
+      .filter((c) => known.has(c.extension))
+      .slice(0, PROJECT_MASKS)
+      .map((c) => `*.${c.extension}`);
+    useProjectMasks.setState({ masks });
+  } catch {
+    /* no project index (welcome screen, tests) */
+  }
+}
+
+/** Masks to offer: the ones used recently, then the project's file types. */
 export function recentMasks(): string[] {
   const v = loadJson<unknown>(MASKS_KEY, []);
   const recent = Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  return [...recent, ...DEFAULT_MASKS.filter((m) => !recent.includes(m))];
+  const project = useProjectMasks.getState().masks;
+  return [...recent, ...project.filter((m) => !recent.includes(m))];
 }
 
 export function rememberMask(mask: string) {

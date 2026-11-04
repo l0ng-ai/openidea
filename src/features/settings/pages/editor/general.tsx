@@ -597,6 +597,12 @@ const GUTTER = editorPage({
               keywords: ["super method", "overrides", "implements"],
               component: () => <GutterGroup id="supers" label="Implementing and overriding methods" />,
             },
+            {
+              t: "custom",
+              label: "Color preview",
+              keywords: ["color", "swatch", "colour"],
+              component: () => <GutterGroup id="colors" label="Color preview" />,
+            },
           ],
         },
       ],

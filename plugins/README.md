@@ -125,23 +125,23 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                        | Code needed   |
-| --------------- | -------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                              | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                    | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                      | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                          | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                           | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                    | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?` | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                  | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                        | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                         | no            |
-| `views`         | `id`, `title`, `icon?`, `location` (`left`, `right`, `bottom`), `web?` (see _Web views_)           | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`        | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use           | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu     | no            |
+| Point           | Declaration                                                                                                                       | Code needed   |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                               | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                             | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                   | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                     | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?`                                | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name, or an SVG of the package), `location` (`left`, `right`, `bottom`), `web?` (see _Web views_) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon

@@ -87,6 +87,8 @@ describe("t / locales", () => {
     expect(resolveLocale("EN-us")).toBe("en");
     expect(resolveLocale("fr")).toBe("fr");
     expect(resolveLocale("fr-CA")).toBe("fr");
+    expect(resolveLocale("pl_PL")).toBe("pl");
+    expect(resolveLocale("pl-PL")).toBe("pl");
     expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
@@ -196,6 +198,14 @@ describe("t / locales", () => {
     expect(tx("Sync with OS")).toBe("Synchroniser avec le système");
     expect(tx`Run '${"orders"}'`).toBe("Exécuter 'orders'");
     expect(txTemplate("ruff is not installed")).toBe("ruff n'est pas installé");
+  });
+
+  it("loads the Polish catalogs", async () => {
+    await setLocale("pl-PL");
+    expect(useI18n.getState().locale).toBe("pl");
+    expect(t("common.cancel")).toBe("Anuluj");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 skrót");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
   });
 
   it("lists keys by prefix", () => {

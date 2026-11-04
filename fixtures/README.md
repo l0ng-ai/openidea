@@ -20,7 +20,9 @@ The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 
 The language smoke test (`crates/ide-host/tests/language_smoke.rs`) runs completion,
 navigation, diagnostics, quick fixes, formatting and rename on these projects with real
-language servers: when you change a fixture, run it for that language.
+language servers, and `smoke/run.test.ts` runs each project's run and test configurations
+(the intentionally failing test included, then Rerun Failed Tests): when you change a
+fixture, run both for that language.
 
 ## Setup
 

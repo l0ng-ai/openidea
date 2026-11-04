@@ -1326,6 +1326,30 @@ fn intelephense_gets_the_php_language_level() {
 }
 
 #[test]
+fn intelephense_gets_the_required_stubs_and_include_paths() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("composer.json"), r#"{"require": {"php": "^8.1", "ext-redis": "*"}}"#).unwrap();
+    let mut s = Settings::default();
+    s.languages.php.stubs = vec!["wordpress".into()];
+    s.languages.php.include_paths = vec!["../platform".into()];
+    let mut cfg = server("intelephense");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let options = serde_json::to_value(cfg.initialization_options).unwrap();
+    let stubs: Vec<&str> = options["stubs"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(stubs.len(), 70);
+    assert_eq!((stubs[0], &stubs[68..]), ("apache", &["redis", "wordpress"][..]));
+    assert_eq!(
+        options["environment"],
+        json!({"phpVersion": "8.1.0", "includePaths": [tmp.path().join("../platform").to_string_lossy()]})
+    );
+
+    let mut other = server("phpactor");
+    configure_server(&mut other, tmp.path(), tmp.path(), &s);
+    assert_eq!(other.initialization_options, None);
+}
+
+#[test]
 fn go_constraints_change_only_protocol_settings() {
     use serde_json::json;
     let tmp = tempfile::tempdir().unwrap();

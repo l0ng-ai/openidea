@@ -123,8 +123,21 @@ fn not_a_jdk(p: &Path) -> String {
 
 /// `mvn` of the configured Maven home (`languages.java.maven.home`): the
 /// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
-/// pins for mise / asdf when it has no Maven wrapper.
+/// pins for mise / asdf when it has no Maven wrapper. With `maven.daemon` on, the
+/// Maven Daemon (`mvnd`) replaces all of that — it embeds its own Maven — unless
+/// it is not installed or the project JDK is older than the Java 17 its daemon
+/// needs, in which case the build stays on mvn (with a logged warning).
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
+    if s.languages.java.maven.daemon {
+        match mvnd_command(root, s) {
+            // No project JDK at all lets mvnd pick its own Java, which may still be new enough.
+            Some(mvnd) if project_jdk(root, s).is_none_or(|j| j.major >= 17) => return Some(mvnd),
+            Some(_) => tracing::warn!(
+                "Maven daemon: the project JDK is older than the Java 17 its daemon needs; building with mvn"
+            ),
+            None => tracing::warn!("Maven daemon is enabled but mvnd was not found; building with mvn"),
+        }
+    }
     let name = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
     let Some(p) = setting_path(root, &s.languages.java.maven.home) else {
         if root.join("mvnw").is_file() || root.join("mvnw.cmd").is_file() {
@@ -139,6 +152,41 @@ pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
         tracing::warn!("Maven home {} has no {name}", p.display());
     }
     found
+}
+
+/// The `mvnd` executable when the Maven Daemon is enabled: the configured home
+/// (`languages.java.maven.mvndHome`, the executable itself or `<home>/bin/mvnd`),
+/// else `$MVND_HOME`, else `mvnd` on `PATH`, else the common Homebrew / sdkman
+/// locations. `None` = not found; the caller falls back to `mvn`.
+pub fn mvnd_command(root: &Path, s: &Settings) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "mvnd.cmd" } else { "mvnd" };
+    if let Some(p) = setting_path(root, &s.languages.java.maven.mvnd_home) {
+        let found = [p.clone(), p.join("bin").join(name), p.join(name)].into_iter().find(|c| c.is_file());
+        if found.is_none() {
+            tracing::warn!("Maven Daemon home {} has no {name}", p.display());
+        }
+        return found;
+    }
+    if let Some(home) = std::env::var_os("MVND_HOME").map(PathBuf::from) {
+        let found = [home.join("bin").join(name), home.join(name)].into_iter().find(|c| c.is_file());
+        if found.is_none() {
+            tracing::warn!("MVND_HOME {} has no {name}", home.display());
+        }
+        return found;
+    }
+    if let Some(found) = crate::exec::which(name) {
+        return Some(found);
+    }
+    if let Some(home) = crate::home_dir() {
+        let sdkman = home.join(".sdkman/candidates/mvnd/current");
+        let candidates = [
+            sdkman.join("bin").join(name),
+            PathBuf::from("/opt/homebrew/opt/mvnd").join("bin").join(name),
+            PathBuf::from("/usr/local/opt/mvnd").join("bin").join(name),
+        ];
+        return candidates.into_iter().find(|c| c.is_file());
+    }
+    None
 }
 
 /// Project launcher policy for sync and tool-window tasks.
@@ -564,9 +612,18 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
 
     // Intelephense reads it as `intelephense.environment.phpVersion` (`workspace/configuration`).
     if name == "intelephense"
-        && let Some(version) = crate::php::language_level(root, s)
+        && let Some(level) = crate::php::language_level(root, s)
     {
-        merge_init_options(cfg, json!({ "environment": { "phpVersion": version } }));
+        merge_init_options(cfg, json!({ "environment": { "phpVersion": level.version } }));
+    }
+    if name == "intelephense" {
+        if let Some(stubs) = crate::php::intelephense_stubs(root, s) {
+            merge_init_options(cfg, json!({ "stubs": stubs }));
+        }
+        let include_paths = crate::php::include_paths(root, s);
+        if !include_paths.is_empty() {
+            merge_init_options(cfg, json!({ "environment": { "includePaths": include_paths } }));
+        }
     }
 
     // Node-based servers (`#!/usr/bin/env node`) run on the selected Node.js.

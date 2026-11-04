@@ -20,6 +20,7 @@ import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { previewColors } from "@/editor/lineTokens";
 import { SourcePreview, T, type SourceHighlight } from "@/ui";
 import { todoHighlightExtension } from "./highlight";
 import styles from "./TodoView.module.css";
@@ -148,7 +149,10 @@ export function PreviewEditor({
     view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
   }, [line, col]);
 
-  if (!path || readOnly) return <SourcePreview path={path} line={line} highlights={highlights} load={fallbackLoad} />;
+  if (!path || readOnly)
+    return (
+      <SourcePreview path={path} line={line} highlights={highlights} load={fallbackLoad} colorize={previewColors} />
+    );
   if (error)
     return (
       <div className={styles.previewError}>

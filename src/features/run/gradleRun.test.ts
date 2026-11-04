@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GradleModel, RunConfig } from "@/platform/ipc";
 import { applicationConfig } from "./application";
-import { DELEGATED_DEBUG, delegatedGradleConfig, wrapperGradleVersion } from "./gradleRun";
+import { DELEGATED_DEBUG, delegatedGradleConfig, withTestEvents, wrapperGradleVersion } from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
 import { isJvmApplication } from "@/platform/javaLaunch";
 
@@ -120,5 +120,26 @@ describe("Build and run using: Gradle", () => {
     expect(debug.args.at(-1)).toBe(DELEGATED_DEBUG);
     expect(debug.args).not.toContain("--debug-jvm");
     expect(jdwpLaunch(debug)!.args.filter((a) => a === DELEGATED_DEBUG)).toHaveLength(1);
+  });
+});
+
+describe("Gradle test runs", () => {
+  const script = "/tmp/openidea-gradle-tests.gradle";
+  it("add the init script that reports each test", () => {
+    expect(
+      withTestEvents({ kind: "gradle", command: "./gradlew", args: ["test", "--tests", "*OrderTest"] }, script).args,
+    ).toEqual(["--init-script", script, "test", "--tests", "*OrderTest"]);
+    expect(withTestEvents({ kind: "shell", command: "C:\\w\\gradlew.bat", args: ["test"] }, script).args).toEqual([
+      "--init-script",
+      script,
+      "test",
+    ]);
+  });
+
+  it("leave other runs and an added script alone", () => {
+    const maven = { kind: "maven", command: "./mvnw", args: ["test"] };
+    expect(withTestEvents(maven, script)).toBe(maven);
+    const twice = withTestEvents({ kind: "gradle", command: "gradle", args: ["test"] }, script);
+    expect(withTestEvents(twice, script)).toBe(twice);
   });
 });
