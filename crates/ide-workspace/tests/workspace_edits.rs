@@ -145,6 +145,38 @@ fn unversioned_preview_rejects_changed_disk_and_dirty_buffers() {
 }
 
 #[test]
+fn saving_between_preview_and_apply_keeps_the_edit_valid() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A new scratch (empty on disk) and an edited file, saved after the edit was computed.
+    for (name, disk, typed) in [("scratch.c", "", "int\n"), ("a.txt", "old\n", "own")] {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, disk).unwrap();
+        let docs = documents();
+        let info = docs.open(&path).unwrap();
+        let replace = if disk.is_empty() { 0 } else { 3 };
+        docs.edit(
+            info.id,
+            info.version,
+            ChangeSet { changes: vec![TextChange { from: 0, to: replace, insert: typed.into() }] },
+        )
+        .unwrap();
+        let mut change = WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() };
+        docs.prepare_workspace_edit(&mut change).unwrap();
+        docs.save(info.id).unwrap();
+        docs.apply_workspace_edit(&change).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(docs.snapshot(info.id).unwrap().text.starts_with("new"), "{name}");
+        // A real change after the preview still invalidates it.
+        let mut change = WorkspaceEdit { files: vec![edit(&path, "xyz")], ..Default::default() };
+        docs.prepare_workspace_edit(&mut change).unwrap();
+        let version = docs.snapshot(info.id).unwrap().version;
+        docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "!".into() }] })
+            .unwrap();
+        docs.save(info.id).unwrap();
+        assert!(docs.apply_workspace_edit(&change).is_err(), "{name}");
+    }
+}
+
+#[test]
 fn grouped_undo_restores_open_closed_and_unsaved_files() {
     let tmp = tempfile::tempdir().unwrap();
     let a = tmp.path().join("a.txt");
