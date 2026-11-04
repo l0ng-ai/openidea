@@ -172,6 +172,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "refactor.inline": [],
   "refactor.move": [],
   "refactor.safeDelete": [],
+  "refactor.pullMembersUp": [],
+  "refactor.pushMembersDown": [],
 
   // File / editor tabs
   "file.save": ["Meta+S"],

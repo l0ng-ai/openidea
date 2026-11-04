@@ -242,6 +242,8 @@
   "menu.refactor.extractVariable": "引入变量…",
   "menu.refactor.inline": "内联…",
   "menu.refactor.move": "移动…",
+  "menu.refactor.pullMembersUp": "上拉成员…",
+  "menu.refactor.pushMembersDown": "下推成员…",
   "menu.refactor.rename": "重命名…",
   "menu.refactor.safeDelete": "安全删除…",
   "menu.refactor.thisMenu": "重构此项…",

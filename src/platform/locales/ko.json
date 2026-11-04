@@ -242,6 +242,8 @@
   "menu.refactor.extractVariable": "변수 도입…",
   "menu.refactor.inline": "인라인…",
   "menu.refactor.move": "이동…",
+  "menu.refactor.pullMembersUp": "멤버 끌어올리기…",
+  "menu.refactor.pushMembersDown": "멤버 끌어내리기…",
   "menu.refactor.rename": "이름 변경…",
   "menu.refactor.safeDelete": "안전 삭제…",
   "menu.refactor.thisMenu": "이 항목 리팩터링…",

@@ -221,6 +221,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_apply_code_action,
         lsp::lsp_prepare_rename,
         lsp::lsp_rename,
+        lsp::lsp_hierarchy_members,
+        lsp::lsp_hierarchy_refactor,
         lsp::lsp_format,
         lsp::lsp_inlay_hints,
         lsp::lsp_semantic_tokens,

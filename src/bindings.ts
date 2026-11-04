@@ -418,6 +418,10 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("lsp_prepare_rename", { doc, pos })),
 	/**  Computes the rename edit without applying it, so the UI can preview conflicts. */
 	lspRename: (request: RequestId, doc: DocId, pos: Pos, newName: string) => typedError<Renamed, IdeError>(__TAURI_INVOKE("lsp_rename", { request, doc, pos, newName })),
+	/**  The class at `pos` and the members Pull Members Up / Push Members Down can move. */
+	lspHierarchyMembers: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring) => typedError<HierarchyMembers, IdeError>(__TAURI_INVOKE("lsp_hierarchy_members", { request, doc, pos, kind })),
+	/**  Checks Pull Members Up / Push Members Down and computes the edit without applying it. */
+	lspHierarchyRefactor: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring, target: string | null, choices: HierarchyChoice[]) => typedError<HierarchyRefactored, IdeError>(__TAURI_INVOKE("lsp_hierarchy_refactor", { request, doc, pos, kind, target, choices })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -3822,6 +3826,19 @@ export type GradleTask = {
 	description: string | null,
 };
 
+export type HierarchyChoice = {
+	id: string,
+	makeAbstract: boolean,
+};
+
+export type HierarchyClass = {
+	/**  Server-owned identity, passed back as the pull-up destination. */
+	id: string,
+	name: string,
+	qualifiedName: string,
+	interface: boolean,
+};
+
 export type HierarchyDirection = 
 /**  Callers / supertypes. */
 "incoming" | 
@@ -3841,6 +3858,38 @@ export type HierarchyItem = {
 	/**  Call sites, for call hierarchy. */
 	fromRanges: Range[],
 };
+
+export type HierarchyMember = {
+	id: string,
+	/**  `name(Params) : Type`, as the server renders it. */
+	label: string,
+	kind: HierarchyMemberKind,
+	/**  The member at the caret. */
+	selected: boolean,
+	/**  Can be declared abstract in the destination (pull up) or kept abstract (push down). */
+	abstractable: boolean,
+};
+
+export type HierarchyMemberKind = "field" | "method" | "type";
+
+/**
+ *  The class at a position and what can move: pull-up destinations, or the subclasses
+ *  members are pushed into.
+ */
+export type HierarchyMembers = {
+	className: string,
+	targets: HierarchyClass[],
+	members: HierarchyMember[],
+};
+
+/**  A checked refactoring: what the server found, and the edit unless a problem is fatal. */
+export type HierarchyRefactored = {
+	problems: RefactoringProblem[],
+	edit: WorkspaceEdit | null,
+};
+
+/**  IDEA's class-hierarchy refactorings. */
+export type HierarchyRefactoring = "pullUp" | "pushDown";
 
 export type Highlight = {
 	range: Range,
@@ -5368,6 +5417,10 @@ export type PreparedRequest = {
 	body: string | null,
 };
 
+export type ProblemSeverity = "info" | "warning" | "error" | 
+/**  The refactoring can't run at all; there is no edit. */
+"fatal";
+
 /**  Memory of one row of the breakdown. */
 export type ProcessMemory = {
 	category: MemoryCategory,
@@ -5622,6 +5675,11 @@ export type RecentProject = {
 	openedAtMs: number | null,
 	/**  Current git branch when last opened, shown on the welcome screen. */
 	branch: string | null,
+};
+
+export type RefactoringProblem = {
+	severity: ProblemSeverity,
+	message: string,
 };
 
 export type ReferenceAccess = "read" | "write" | "readWrite" | "unknown";

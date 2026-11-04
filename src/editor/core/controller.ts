@@ -716,6 +716,8 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "refactor.extractConstant" },
           { kind: "action", action: "refactor.extractMethod" },
           { kind: "action", action: "refactor.inline" },
+          { kind: "action", action: "refactor.pullMembersUp" },
+          { kind: "action", action: "refactor.pushMembersDown" },
           { kind: "separator" },
           { kind: "action", action: "refactor.safeDelete" },
         ],

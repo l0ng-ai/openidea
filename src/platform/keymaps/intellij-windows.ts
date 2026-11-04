@@ -171,6 +171,8 @@ export const intellijWindows: Record<string, string[]> = {
   "refactor.inline": ["Ctrl+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Alt+Delete"],
+  "refactor.pullMembersUp": [],
+  "refactor.pushMembersDown": [],
 
   // File / editor tabs
   "file.save": ["Ctrl+S"],

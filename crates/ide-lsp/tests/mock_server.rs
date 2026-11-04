@@ -3338,3 +3338,90 @@ async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
     }
     let _ = std::fs::remove_file(&nul);
 }
+
+/// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_hierarchy_refactorings_use_the_extension_commands() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] =
+        json!({"commands": ["openidea.java.hierarchy.members", "openidea.java.hierarchy.refactor"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    *s.responder.lock() = Some(Arc::new(|_, method, params| {
+        if method != "workspace/executeCommand" {
+            return None;
+        }
+        let args = params["arguments"].as_array().unwrap();
+        let uri = args[0].clone();
+        Some(match (params["command"].as_str().unwrap(), args[1].as_u64().unwrap()) {
+            (_, 9) => json!({"refused": "Type has no super types."}),
+            ("openidea.java.hierarchy.members", _) => json!({
+                "className": "Dog",
+                "targets": [{"id": "=p/src<{Animal.java[Animal", "name": "Animal", "qualifiedName": "Animal", "interface": false}],
+                "members": [{"id": "=p/src<{Dog.java[Dog~bark", "label": "bark() : String", "kind": "method", "selected": true, "abstractable": true}],
+            }),
+            _ => json!({
+                "problems": [{"severity": "warning", "message": "The visibility of field 'tail' will be changed to package."}],
+                "edit": {"changes": {uri.as_str().unwrap(): [
+                    {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "newText": "class"}
+                ]}},
+            }),
+        })
+    }));
+    let text =
+        format!("class Dog extends Animal {{ String bark() {{ return \"\"; }} }}{}class Lonely {{}}", "\n".repeat(9));
+    let (doc, path) = h.open("Dog.java", &text);
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let info =
+        h.mgr.hierarchy_members(doc, Pos::new(0, 35), HierarchyRefactoring::PullUp, Default::default()).await.unwrap();
+    assert_eq!(info.class_name, "Dog");
+    assert_eq!(info.targets[0].name, "Animal");
+    assert!(info.members[0].selected && info.members[0].abstractable);
+    assert_eq!(info.members[0].kind, HierarchyMemberKind::Method);
+    let sent = s.requested("workspace/executeCommand");
+    assert_eq!(sent[0]["arguments"], json!([uri_of(&path), 0, 35, "pullUp"]));
+
+    let choices = vec![HierarchyChoice { id: info.members[0].id.clone(), make_abstract: true }];
+    let done = h
+        .mgr
+        .hierarchy_refactor(
+            doc,
+            Pos::new(0, 35),
+            HierarchyRefactoring::PushDown,
+            Some(info.targets[0].id.clone()),
+            choices,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.problems[0].severity, ProblemSeverity::Warning);
+    let edit = done.edit.unwrap();
+    assert!(matches!(&edit.files[..], [FileEdit::Edit { path: p, edits, .. }] if p == &path && edits.len() == 1));
+    let sent = s.requested("workspace/executeCommand");
+    assert_eq!(
+        sent[1]["arguments"],
+        json!([uri_of(&path), 0, 35, "pushDown", "=p/src<{Animal.java[Animal",
+            [{"id": "=p/src<{Dog.java[Dog~bark", "abstract": true}]])
+    );
+
+    let refused = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = refused.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert_eq!(e.message, "Type has no super types.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_refactorings_name_the_servers_without_them() {
+    let h = harness(&[("plain", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "class A {}");
+    h.wait_status("plain", ServerStatus::Ready).await;
+    let e = h
+        .mgr
+        .hierarchy_members(doc, Pos::new(0, 6), HierarchyRefactoring::PullUp, Default::default())
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
+    assert_eq!(e.message, "plain doesn't support Pull Members Up");
+}
