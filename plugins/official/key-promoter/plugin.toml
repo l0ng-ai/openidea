@@ -5,6 +5,7 @@ description = "Shows the keyboard shortcut of an action you ran with the mouse, 
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: shortcut tips, statistics, per-action \"don't show again\"."
+categories = ["tools"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 # Actions arrive in batches (a few seconds apart while the plugin is idle),

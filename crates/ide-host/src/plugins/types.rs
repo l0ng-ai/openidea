@@ -138,12 +138,24 @@ pub struct PluginsSnapshot {
     pub ui: Vec<UiContribution>,
 }
 
+/// A newer version of an installed plugin in the marketplace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginUpdate {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+}
+
 /// Backend → UI notifications (Tauri event `ide://plugin`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PluginEvent {
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
+    /// The marketplace offers newer versions of installed plugins (announced
+    /// once per set of versions).
+    UpdatesAvailable { updates: Vec<PluginUpdate> },
     #[serde(rename_all = "camelCase")]
     Notification { plugin_id: String, level: NotificationLevel, title: String, body: String },
     /// A plugin's status bar item was set (`item`) or removed.

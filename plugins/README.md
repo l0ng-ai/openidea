@@ -79,6 +79,7 @@ authors = ["You <you@example.com>"]
 homepage = "https://example.com"  # optional
 license = "MIT"                   # optional
 change-notes = "1.2.0 — …"        # shown under What's New
+categories = ["tools"]            # marketplace categories, see below
 engines.openidea = "^1.0"         # the plugin API this package needs
 wasm = "dist/plugin.wasm"         # omit for data-only plugins
 activation = ["on-language:markdown"]   # optional, see below
@@ -93,6 +94,13 @@ title = "Word Tools: Count Words"
 category = "Word Tools"           # group in Search Everywhere / Keymap
 when = "editorFocus"              # optional: same expressions as built-in actions
 ```
+
+`categories` (up to 3) file the plugin in the marketplace: `languages`,
+`themes`, `icon-themes`, `linters` (linters and formatters), `vcs`, `ai`,
+`frameworks`, `tools`, `other`. Without them, a plugin contributing themes,
+icon themes or languages is filed under those, any other under `other`.
+Categories an IDE doesn't know, and any after the first three it knows, are
+ignored (`check` warns about both).
 
 All paths are relative to the package directory and may not leave it. A
 manifest is validated as a whole: if one contribution is invalid, nothing is
@@ -739,6 +747,12 @@ granted, and starts the approved program.
   the version it replaced automatically (you're told why); _Roll Back to …_
   in the plugin's details does it by hand. Data (`storage`) is per plugin, not
   per version.
+- **Updates:** when the daily marketplace check finds newer versions of
+  installed plugins, the IDE says so once, with _Update All_ (also in the gear
+  menu and as the _Update All Plugins_ action). An update that asks for
+  nothing new installs with the grants the installed version has; the install
+  page is shown only for new capabilities, an unsigned package or another
+  signer (see _Distribution_).
 - **Linked plugins:** `openidea-plugin link <dir>` (§1). Listed with a _linked_
   tag; capabilities are granted per folder.
 - **Project plugins:** put (or symlink) the package in
@@ -758,6 +772,9 @@ files).
 openidea-plugin keygen acme.key                     # once; keep the file secret
 openidea-plugin pack plugins/acme-tools --key acme.key --publisher acme
 openidea-plugin index market/ --publisher acme --name "ACME" --key acme.key
+openidea-plugin check acme.tools-1.0.0.oiplugin      # a package as installing would check it
+openidea-plugin merge market/index.json https://example.com/index.json --keep acme
+openidea-plugin endorse <new public key> --key acme.key --publisher acme   # when rotating keys
 ```
 
 A **marketplace** is static: an `index.json` and the packages next to it, on
@@ -773,8 +790,68 @@ and the publisher's key, then shows the install page.
 - **Revocation:** the index can revoke plugin versions (or all versions) and
   publisher keys. The IDE reads the index daily; revoked plugins are disabled
   with the reason and the user is notified — also after a restart, before
-  their code could run. A publisher rotates keys by adding the new one; older
-  keys stay valid until revoked.
+  their code could run.
+- **Key rotation:** a publisher rotates keys by registering the new one with
+  `index --key new.key --previous-key old.key`: the old key endorses the new
+  one, and older keys stay valid until revoked (`endorse` prints the
+  endorsement for an index someone else writes, such as the registry's). An installed plugin updates
+  silently only to a package signed with the key it was installed with, or
+  one that key endorsed (directly or through endorsed keys; endorsements by
+  revoked keys don't count). Another signer — an unendorsed key, or an
+  unsigned package replacing a signed one — is shown on the install page and
+  needs the user's confirmation.
+- **Official key:** release builds carry the official publisher's public key
+  (`OPENIDEA_OFFICIAL_PLUGIN_KEYS`, derived from the release's signing key).
+  `openidea.*` plugins must be signed with it, or with a key it endorsed,
+  whatever keys an index lists for `openidea`.
+- **Format:** fields are only ever added to the index (an IDE ignores those it
+  doesn't know), and `format` stays `1` unless older IDEs can't read the
+  change. An IDE reading a newer format still applies its revocations and
+  `moved`, lists no plugins, and asks the user to update.
+- **Moving:** an index with `"moved": "<url>"` sends the IDE to the index at
+  that URL (relative or absolute; https stays https), so a marketplace can
+  change hosts while released IDEs keep the address they were built with.
+
+**Versions.** Each index entry records the plugin API it needs (`engine`: the
+manifest's `engines.openidea`, narrowed to the API its component was built
+for; an entry without one is offered to no IDE), and a plugin may be listed in
+several versions. Settings › Plugins
+offers the newest version this IDE can load; when there is none, it shows the
+plugin as incompatible and says which API it needs. Entries also carry the
+plugin's categories, which Settings › Plugins › Available filters by. Indexing keeps, of each
+plugin, the newest version per API requirement, so users of an older IDE keep
+the last version built for them.
+
+`index` with a key registers the publisher and lists the folder's packages
+as its plugins (their earlier versions stay as above; plugins no longer in the
+folder go), keeping the other publishers'; `--download-base` makes downloads
+absolute, so a version stays where it was first published. Without a key, it
+lists every package in the folder, each checked against the publishers the
+index already has. `merge` takes the
+publishers, plugins and revocations of another index (downloads made absolute)
+in place of every publisher but `--keep`; `check` also takes a `.oiplugin`.
+
+### 8.1 Official and community plugins
+
+The IDE's default marketplace is `plugins-index.json` of the latest release.
+It lists two kinds of plugins:
+
+- **Official** (`plugins/official/`, ids `openidea.*`): maintained in this
+  repository, built and signed by its release workflow, and kept working as
+  the API changes. New official plugins are proposed in an issue first; they
+  cover general needs or show how to use part of the API.
+- **Community** (their authors' ids and keys): developed in their authors'
+  repositories and listed through the registry,
+  [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins).
+  An author registers a publisher (an id prefix, its public key and the GitHub
+  accounts that may change it) and adds each plugin version by pull request;
+  the registry checks the package (digest, signature, `openidea-plugin check`)
+  and publishes its index, which `plugins-index.yml` merges into the release's
+  within the hour. Its README has the rules.
+
+Pull requests that add a plugin to this repository are for official plugins.
+A plugin that needs a new extension point brings the extension point here, as
+its own pull request, and the plugin to the registry.
 
 ## 9. Testing the host
 
