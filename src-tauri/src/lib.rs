@@ -18,6 +18,7 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+pub mod paths;
 #[cfg(target_os = "macos")]
 mod page_swipe;
 mod plugin_web;
@@ -73,9 +74,19 @@ pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
+    // Resolve where config and data live before anything reads them: the
+    // identifier is final here (dev builds replaced it per worktree), so the
+    // platform defaults — and the pointer file anchored in them — are the
+    // worktree's own. OPENIDEA_HOME or a recorded pointer redirects them.
+    paths::init(&context.config().identifier);
+    let resolved = paths::current();
+    let identifier = &context.config().identifier;
+
+    // The built-in IDE server answers stdio JSON-RPC without the UI. Its
+    // discovery file is read from the resolved data dir — the one the
+    // running app writes (`state.data_dir`), a custom base included.
     if let Some(project) = ide_mcp::stdio_request(&std::env::args().collect::<Vec<_>>()) {
-        let app_data = dirs::data_dir().unwrap_or_default().join(&context.config().identifier);
-        std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&app_data), project));
+        std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&resolved.locations.data), project));
     }
     // The `openidea` command: answer and exit, no UI.
     if let Some(code) = cli::run(&context.config().identifier) {
@@ -87,12 +98,42 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     linux_webkit::configure();
 
-    let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
+    let log_dir = match &resolved.layout {
+        // The platform log dir, as before (~/Library/Logs/<id> on macOS,
+        // the OS local-data dir elsewhere — Tauri's app_log_dir).
+        paths::Layout::Default => logging::log_dir_for(identifier),
+        paths::Layout::Custom(base) => Some(base.join("log")),
+    };
+    logging::init(log_dir.as_deref());
+
+    // The login-shell PATH cache: the OS cache dir per identifier in the
+    // default layout, a custom base's system dir otherwise.
+    let cache_root = match &resolved.layout {
+        paths::Layout::Default => {
+            dirs::cache_dir().map(|d| d.join(identifier)).unwrap_or_else(|| resolved.locations.data.clone())
+        }
+        paths::Layout::Custom(base) => base.join("system"),
+    };
+    let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&cache_root);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
-    if let Some(data) = dirs::data_local_dir() {
-        ide_tools::extend_process_path(&data.join(&context.config().identifier));
-        ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data.join(&context.config().identifier)));
-        ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data.join(&context.config().identifier)));
+    match &resolved.layout {
+        paths::Layout::Default => {
+            // As before: managed tools under the app's local data dir.
+            if let Some(data) = dirs::data_local_dir() {
+                let root = data.join(&context.config().identifier);
+                ide_tools::extend_process_path(&root);
+                ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&root));
+                ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&root));
+            }
+        }
+        paths::Layout::Custom(base) => {
+            // Everything hangs off the chosen base; tools stay at its top
+            // level, so pointing a build at another's base shares its tools.
+            ide_tools::set_tools_home(base.clone());
+            ide_tools::extend_process_path(base);
+            ide_dap::adapter::set_tools_root(ide_tools::tools_dir(base));
+            ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(base));
+        }
     }
     if let Some(refresh) = refresh_shell_path {
         refresh();
