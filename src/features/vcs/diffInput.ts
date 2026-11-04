@@ -130,7 +130,13 @@ export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?
 }
 
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
-export function workingDiffData(path: string, line?: number): DiffData {
+export function workingDiffData(path: string, line?: number, side?: "staged" | "unstaged" | null): DiffData {
+  if (side === "staged") {
+    return { path, left: { type: "rev", rev: "HEAD" }, right: { type: "rev", rev: ":0", label: "Index" }, line };
+  }
+  if (side === "unstaged") {
+    return { path, left: { type: "rev", rev: ":0", label: "Index" }, right: { type: "worktree" }, line };
+  }
   const st = statusOf(path);
   const kind = st ? effectiveKind(st) : null;
   const left: DiffSide =

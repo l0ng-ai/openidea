@@ -225,9 +225,12 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         install_hint: Some(format!("install {name}")),
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     }
 }
 
@@ -789,6 +792,30 @@ async fn progress_tasks_and_busy_status() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn progress_titled_with_an_executable_path_shows_the_program_name() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let title = "/Users/thomas/Library/Application Support/mbx/bin/cargo check";
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "begin", "title": title } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "report", "message": "tauri_plugin (lib)" } }))
+        .unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "end" } })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { done: true, .. }))).await;
+    let titles: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Task { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, ["cargo check"; 3]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
     h.open("a.mk", "x");
@@ -1201,6 +1228,105 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn open_java_files_are_checked_again_after_a_project_update() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, a) = h.open("A.java", "class A {}");
+    let (_, b) = h.open("B.java", "class B {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let refreshed = || {
+        let mut uris: Vec<Value> = state
+            .requested("workspace/executeCommand")
+            .iter()
+            .filter(|p| p["command"] == "java.project.refreshDiagnostics")
+            .map(|p| {
+                assert_eq!(p["arguments"][1], "thisFile");
+                p["arguments"][0].clone()
+            })
+            .collect();
+        uris.sort_by_key(|u| u.to_string());
+        uris
+    };
+    // Other status messages leave the documents alone.
+    state
+        .peer()
+        .notify("language/status", json!({ "type": "Message", "message": "Updating project configurations..." }))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(refreshed().is_empty());
+
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    let mut expected = vec![json!(uri_of(&a)), json!(uri_of(&b))];
+    expected.sort_by_key(|u| u.to_string());
+    eventually(|| refreshed() == expected).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
+    use std::io::Write;
+    let jar = |path: &Path, entries: &[(&str, &str)]| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, text) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    };
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path().join("org/springframework/boot/spring-boot/3.5.16");
+    let source = "package org.springframework.boot\n\ninline fun <reified T : Any> runApplication(vararg args: String) =\n    SpringApplication.run(T::class.java, *args)\n";
+    jar(
+        &dir.join("spring-boot-3.5.16.jar"),
+        &[("org/springframework/boot/SpringApplicationExtensionsKt.class", "\u{0}")],
+    );
+    jar(
+        &dir.join("spring-boot-3.5.16-sources.jar"),
+        &[("org/springframework/boot/SpringApplicationExtensions.kt", source)],
+    );
+    let other = repo.path().join("acme/lib/1.0/lib-1.0.jar");
+    jar(&other, &[("acme/Thing.class", "\u{0}")]);
+    let jar_uri = |jar: &Path, entry: &str| format!("jar://{}!/{entry}", uri_of(jar).trim_start_matches("file://"));
+    let r = |l: u32, c0: u32, c1: u32| json!({"start":{"line":l,"character":c0},"end":{"line":l,"character":c1}});
+
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["decompile"] });
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", caps)], &[]);
+    let (doc, _) = h.open("Main.kt", "fun main(args: Array<String>) {\n    runApplication<App>(*args)\n}\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let s = h.launcher.state("kotlin-lsp");
+
+    // A class with a cached sources jar: navigation lands on the declaration in its source.
+    let class =
+        jar_uri(&dir.join("spring-boot-3.5.16.jar"), "org/springframework/boot/SpringApplicationExtensionsKt.class");
+    s.respond("textDocument/definition", json!({ "uri": class, "range": r(7, 43, 57) }));
+    let defs = h.mgr.goto(doc, Pos::new(1, 8), GotoKind::Definition).await.unwrap();
+    let sources =
+        jar_uri(&dir.join("spring-boot-3.5.16-sources.jar"), "org/springframework/boot/SpringApplicationExtensions.kt");
+    assert_eq!(
+        defs,
+        vec![ide_core::Location { path: sources.clone().into(), range: rng(2, 29, 2, 43), uri: Some(sources.clone()) }]
+    );
+    let vd = h.mgr.virtual_document(&sources).await.unwrap();
+    assert_eq!((vd.text.as_str(), vd.title.as_str(), vd.decompiled), (source, "SpringApplicationExtensions.kt", false));
+    assert_eq!(vd.language_id.as_str(), "kotlin");
+    // The class URI itself (from usages, say) shows the same source.
+    assert_eq!(h.mgr.virtual_document(&class).await.unwrap().text, source);
+    assert!(s.requested("workspace/executeCommand").is_empty(), "no server round trip for cached sources");
+
+    // No sources jar: the server's `decompile` command.
+    let thing = jar_uri(&other, "acme/Thing.class");
+    s.respond("textDocument/definition", json!({ "uri": thing, "range": r(0, 6, 11) }));
+    let defs = h.mgr.goto(doc, Pos::new(1, 8), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].uri.as_deref(), Some(thing.as_str()), "kept as the server returned it");
+    s.respond("workspace/executeCommand", json!({ "code": "package acme\n\nclass Thing", "language": "kotlin" }));
+    let vd = h.mgr.virtual_document(&thing).await.unwrap();
+    assert_eq!(vd.text, "package acme\n\nclass Thing");
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0], json!({ "command": "decompile", "arguments": [thing] }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
@@ -1364,13 +1490,20 @@ async fn navigation_rename_format_and_decorations() {
 
     assert!(h.mgr.can_format(doc).await.unwrap());
     s.respond("textDocument/formatting", json!([{ "range": r(0,10,0,11), "newText": "\n}" }]));
-    let edits =
-        h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
+    let edits = h
+        .mgr
+        .format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None })
+        .await
+        .unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
     assert!(
         h.mgr
-            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+            .format(
+                doc,
+                Some(rng(0, 0, 1, 0)),
+                FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None }
+            )
             .await
             .is_err()
     );
@@ -1616,6 +1749,64 @@ async fn code_action_query_without_listed_kinds() {
     let q = h.mgr.code_action_query(doc, rng(0, 0, 0, 0), vec![], ide_core::CancellationToken::new()).await.unwrap();
     assert!(q.actions.is_empty());
     assert_eq!(q.advertised_kinds, None, "`codeActionProvider` without `codeActionKinds` may return any kind");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn features_limit_what_a_server_is_used_for() {
+    // A refactoring-only server listed first, announcing everything the main one does.
+    let h = harness_configured("mock", "mk", &[("rope", incremental_caps()), ("main", incremental_caps())], |cfg| {
+        if cfg.name == "rope" {
+            cfg.features = vec!["code-action".into()];
+            cfg.code_action_kinds = vec!["refactor".into()];
+        }
+    });
+    let (doc, path) = h.open("a.mk", "let x = 1;\n");
+    for name in ["rope", "main"] {
+        h.wait_status(name, ServerStatus::Ready).await;
+    }
+    let (rope, main) = (h.launcher.state("rope"), h.launcher.state("main"));
+    for s in [&rope, &main] {
+        s.respond("textDocument/hover", json!({ "contents": "x" }));
+        s.respond("textDocument/formatting", json!([]));
+    }
+
+    h.mgr.hover(doc, Pos::new(0, 4), Default::default()).await.unwrap();
+    assert_eq!(main.requested("textDocument/hover").len(), 1);
+    h.mgr
+        .format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None })
+        .await
+        .unwrap();
+    assert_eq!(main.requested("textDocument/formatting").len(), 1);
+    assert!(rope.requested("textDocument/hover").is_empty() && rope.requested("textDocument/formatting").is_empty());
+
+    rope.respond(
+        "textDocument/codeAction",
+        json!([
+            { "title": "Organize imports", "kind": "source.organizeImports" },
+            { "title": "Extract variable", "kind": "refactor.extract.variable" },
+            { "title": "Run", "command": "mock.run" }
+        ]),
+    );
+    main.respond("textDocument/codeAction", json!([{ "title": "Fix", "kind": "quickfix" }]));
+    let q = h.mgr.code_action_query(doc, rng(0, 8, 0, 9), vec![], ide_core::CancellationToken::new()).await.unwrap();
+    let mut titles: Vec<&str> = q.actions.iter().map(|a| a.title.as_str()).collect();
+    titles.sort();
+    assert_eq!(titles, ["Extract variable", "Fix"], "rope's other kinds and bare commands are dropped");
+
+    let diag =
+        json!([{ "range": {"start":{"line":0,"character":4},"end":{"line":0,"character":5}}, "message": "unused" }]);
+    rope.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": diag }))
+        .unwrap();
+    main.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": diag }))
+        .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { source, .. } if source == "main"))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { source, .. } if source == "rope")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3071,4 +3262,48 @@ async fn java_definition_consults_configuration_only_inside_key_arguments() {
         h.mgr.goto(doc, pos, GotoKind::Definition).await.unwrap();
     }
     assert_eq!(s.requested("workspace/executeCommand").len(), 2);
+}
+
+/// JDT LS aborts its Maven import on Windows when the project holds a file with a
+/// reserved device name (`nul` left by `2>nul`); the error names those files there
+/// and stays silent elsewhere, where such names are ordinary files.
+#[tokio::test(flavor = "multi_thread")]
+async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    // A file named `nul` cannot be created through the Win32 namespace; on Windows use the verbatim path.
+    let nul = if cfg!(windows) && !h.root.to_string_lossy().starts_with(r"\\?\") {
+        PathBuf::from(format!(r"\\?\{}", h.root.join("nul").display()))
+    } else {
+        h.root.join("nul")
+    };
+    std::fs::write(&nul, "54 bytes").unwrap();
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let failure = "Initialization failed | java.lang.IllegalArgumentException: Path must include project and resource name: /demo | at UnifiedTree.createChildNodeFromFileSystem(UnifiedTree.java:320)";
+    for _ in 0..2 {
+        s.peer().notify("window/logMessage", json!({ "type": 1, "message": failure })).unwrap();
+    }
+    s.peer().notify("window/showMessage", json!({ "type": 2, "message": "after" })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == "after")))
+        .await;
+    // The scan runs off the RPC thread; give it time to report.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let failures: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Notify { title, body: Some(b), .. } if title == "Java project import failed" => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+    if cfg!(windows) {
+        assert_eq!(failures.len(), 1, "reported once: {failures:?}");
+        assert!(failures[0].contains("nul"), "{failures:?}");
+    } else {
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+    let _ = std::fs::remove_file(&nul);
 }

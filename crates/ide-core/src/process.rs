@@ -53,6 +53,31 @@ pub fn kill_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// [`kill_tree`] for a child known by its process id (a `tokio` child): `SIGKILL` to its
+/// process group (spawn it with [`own_group`]) or `taskkill /T /F`. Call it before the child
+/// is reaped, so the id still names it. The child itself is left to its owner to kill and reap.
+pub fn kill_tree_of(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall; see `signal_group`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut taskkill = Command::new("taskkill");
+        prepare(&mut taskkill)
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = taskkill.status();
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,
@@ -394,6 +419,28 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_of_reaches_what_the_child_started() {
+        use std::io::BufRead;
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 30 & echo $!; wait"]).stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let grandchild: libc::pid_t = line.trim().parse().unwrap();
+        let alive = |pid: libc::pid_t| unsafe { libc::kill(pid, 0) } == 0;
+        assert!(alive(grandchild));
+        kill_tree_of(child.id());
+        let _ = child.wait();
+        // Reparented to init once its parent is gone, which reaps it.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !alive(grandchild)
+        });
+        assert!(gone, "the grandchild {grandchild} survived");
+    }
 
     #[cfg(windows)]
     #[test]

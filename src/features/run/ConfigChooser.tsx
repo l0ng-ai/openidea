@@ -5,9 +5,20 @@ import { shortcutLabel } from "@/platform/keymap";
 import { HighlightedText, Icon, IconButton, List, Popup, SearchField, fuzzyMatch, listNavigate, T } from "@/ui";
 import type { RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useDebugRunSessions } from "@/workbench/contributions";
 import { commandLine, configIcon, groupConfigs } from "./configs";
 import { targetName } from "./remote";
-import { canDeleteConfig, CURRENT_FILE, deleteConfig, saveTemporary, selectConfig, startRun, useRun } from "./store";
+import {
+  canDeleteConfig,
+  CURRENT_FILE,
+  deleteConfig,
+  saveTemporary,
+  selectConfig,
+  startRun,
+  togglePinned,
+  useRun,
+} from "./store";
+import { selectedTarget } from "./sessionTargets";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -26,6 +37,7 @@ export function buildRows(
   query: string,
   selected?: RunConfig | null,
   temporary: readonly string[] = [],
+  pinned: readonly string[] = [],
 ): Row[] {
   const rows: Row[] = [];
   // IDEA: "Save '<name>' Configuration" first while a temporary configuration is selected.
@@ -33,10 +45,18 @@ export function buildRows(
   // IDEA: the permanent "Current File" entry runs the active file's context.
   const currentIndices = query ? fuzzyMatch(CURRENT_FILE_LABEL, query) : null;
   if (!query || currentIndices) rows.push({ type: "current", key: "current", indices: currentIndices });
-  for (const group of groupConfigs(configs)) {
-    const matched = group.configs
-      .map((c) => ({ c, indices: query ? fuzzyMatch(c.name, query) : null }))
-      .filter((x) => !query || x.indices);
+  const matching = (list: readonly RunConfig[]) =>
+    list.map((c) => ({ c, indices: query ? fuzzyMatch(c.name, query) : null })).filter((x) => !query || x.indices);
+  // IDEA: pinned configurations come first, in the order they were pinned.
+  const pinnedConfigs = pinned.flatMap((id) => configs.find((c) => c.id === id) ?? []);
+  const pinnedRows = matching(pinnedConfigs);
+  if (pinnedRows.length) {
+    rows.push({ type: "section", key: "s:pinned", label: tx("Pinned") });
+    for (const { c, indices } of pinnedRows) rows.push({ type: "config", key: `c:${c.id}`, config: c, indices });
+  }
+  const rest = configs.filter((c) => !pinnedConfigs.includes(c));
+  for (const group of groupConfigs(rest)) {
+    const matched = matching(group.configs);
     if (matched.length === 0) continue;
     rows.push({ type: "section", key: `s:${group.kind}`, label: group.label });
     for (const { c, indices } of matched) rows.push({ type: "config", key: `c:${c.id}`, config: c, indices });
@@ -78,7 +98,10 @@ function ConfigChooser() {
   const configs = useRun((s) => s.configs);
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
+  const pinned = useRun((s) => s.pinned);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
+  const sessions = useRun((s) => s.sessions);
+  const debugSessions = useDebugRunSessions((s) => s.sessions);
   const [query, setQuery] = useState("");
   const rows = useMemo(
     () =>
@@ -87,8 +110,9 @@ function ConfigChooser() {
         query,
         configs.find((c) => c.id === selectedId),
         temporary,
+        pinned,
       ),
-    [configs, query, selectedId, temporary],
+    [configs, query, selectedId, temporary, pinned],
   );
   const isSection = (r: Row) => r.type === "section";
   const initial = Math.max(
@@ -272,13 +296,16 @@ function ConfigChooser() {
             }
             if (r.type !== "config") return null;
             const c = r.config;
+            const running = selectedTarget(c.id, sessions, debugSessions);
             return (
               <span className={styles.chooserRow} title={commandLine(c)}>
-                <Icon
-                  name={configIcon(c)}
-                  size={13}
-                  className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
-                />
+                <span className={clsx(styles.chooserIcon, running && styles.chooserRunning)}>
+                  <Icon
+                    name={configIcon(c)}
+                    size={13}
+                    className={clsx(temporary.includes(c.id) && styles.chooserTemporary)}
+                  />
+                </span>
                 {numbers.size > 0 && <span className={styles.chooserMnemonic}>{numbers.get(r.key) ?? ""}</span>}
                 <span className={clsx(styles.chooserName, c.id === selectedId && styles.chooserSelected)}>
                   {r.indices ? <HighlightedText text={c.name} indices={r.indices} /> : c.name}
@@ -299,8 +326,58 @@ function ConfigChooser() {
                     <T>temporary</T>
                   </span>
                 )}
-                {isActive && (
+                {isActive && running && (
                   <span className={styles.chooserActions}>
+                    <IconButton
+                      icon="pin"
+                      size="small"
+                      iconSize={12}
+                      title={pinned.includes(c.id) ? tx("Unpin") : tx("Pin")}
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        togglePinned(c.id);
+                      }}
+                    />
+                    <IconButton
+                      icon={running.debug ? "restart-debug-filled" : "rerun-filled"}
+                      size="small"
+                      iconSize={11}
+                      title={tx`Rerun '${c.name}'`}
+                      tabIndex={-1}
+                      disabled={!running.rerun}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        close();
+                        running.rerun?.();
+                      }}
+                    />
+                    <IconButton
+                      icon="stop-filled"
+                      size="small"
+                      iconSize={11}
+                      title={tx`Stop '${c.name}'`}
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        running.stop();
+                      }}
+                    />
+                  </span>
+                )}
+                {isActive && !running && (
+                  <span className={styles.chooserActions}>
+                    <IconButton
+                      icon="pin"
+                      size="small"
+                      iconSize={12}
+                      title={pinned.includes(c.id) ? tx("Unpin") : tx("Pin")}
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        togglePinned(c.id);
+                      }}
+                    />
                     <IconButton
                       icon="run"
                       size="small"

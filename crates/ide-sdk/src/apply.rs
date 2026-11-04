@@ -53,6 +53,13 @@ pub(crate) fn node_dir(root: &Path, s: &Settings) -> Option<PathBuf> {
     }
 }
 
+/// The directory of the configured `php` executable (it also holds the matching `phpize`,
+/// `pecl`…): put on the `PATH` so `#!/usr/bin/env php` scripts such as `vendor/bin/phpunit`
+/// and Composer run on the selected interpreter.
+pub(crate) fn php_dir(root: &Path, s: &Settings) -> Option<PathBuf> {
+    setting_path(root, &s.languages.php.interpreter).and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
 /// The configured Rust toolchain's `bin` directory and rustup toolchain name.
 pub(crate) fn rust_bin(root: &Path, s: &Settings) -> Option<(PathBuf, Option<String>)> {
     let dir = setting_path(root, &s.languages.rust.toolchain)?;
@@ -277,7 +284,14 @@ fn merge(base: &mut Value, layer: Value) {
 }
 
 /// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
-pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, excluded_poms: &[PathBuf]) {
+/// `build_files` (`file:` URIs), when given, are the only build files jdtls imports: the
+/// exclusions cannot leave out a module of a reactor jdtls imports.
+pub fn configure_maven_import(
+    cfg: &mut LanguageServerConfig,
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    build_files: Option<&[String]>,
+) {
     if cfg.name != "jdtls" {
         return;
     }
@@ -309,6 +323,9 @@ pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, exclu
     }
     if !excluded_poms.is_empty() {
         merge_init_options(cfg, json!({"settings": {"java": {"import": {"exclusions": exclusions}}}}));
+        if let Some(files) = build_files {
+            merge_init_options(cfg, json!({"projectConfigurations": files}));
+        }
         if let Some(settings) = &mut cfg.settings {
             merge(
                 settings,
@@ -515,6 +532,10 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if let Some(dir) = node_dir(root, s) {
         path_dirs.push(dir);
     }
+    // PHP servers (phpactor, `php intelephense`-style wrappers) on the selected PHP.
+    if let Some(dir) = php_dir(root, s) {
+        path_dirs.push(dir);
+    }
 
     if !path_dirs.is_empty() {
         let dirs: Vec<&Path> = path_dirs.iter().map(PathBuf::as_path).collect();
@@ -568,9 +589,12 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         }),
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     }
 }
 
@@ -580,17 +604,25 @@ pub fn server_launch_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     let Some(ls) = s.language_servers.get(&cfg.name) else { return };
     if let Some(command) = non_empty(ls.command.trim()) {
         cfg.command = command.to_owned();
+        // The user's own program, not the one approved for a plugin.
+        cfg.pinned = None;
     }
     if let Some(args) = &ls.args {
         cfg.args = args.clone();
     }
 }
 
-/// Environment, `initializationOptions` and `workspace/configuration` settings
-/// from Settings › Language Servers; applied last so they win over derived values.
+/// Environment, features, `initializationOptions` and `workspace/configuration`
+/// settings from Settings › Language Servers; applied last so they win over derived values.
 pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     let Some(ls) = s.language_servers.get(&cfg.name) else { return };
     cfg.env.extend(ls.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    if let Some(features) = &ls.features {
+        cfg.features = features.clone();
+    }
+    if let Some(kinds) = &ls.code_action_kinds {
+        cfg.code_action_kinds = kinds.clone();
+    }
     if let Some(options) = &ls.initialization_options {
         merge_init_options(cfg, options.clone());
     }
@@ -672,6 +704,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let python = python_interpreter(root, s);
     let pm = non_empty(&s.languages.node.package_manager);
     let node = node_dir(root, s);
+    let php = setting_path(root, &s.languages.php.interpreter);
     let rust = rust_bin(root, s);
     let go = goroot(root, s);
     let gopath = setting_path(root, &s.languages.go.gopath);
@@ -718,8 +751,18 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 {
                     c.command = pm.to_owned();
                 }
-                if let Some(dir) = &node {
-                    path_dirs.push(dir.clone());
+                // The configuration's own Node interpreter, else the project's.
+                let own = c.extras.params.get("nodeInterpreter").and_then(|p| setting_path(root, p));
+                if let Some(dir) = own.and_then(|p| p.parent().map(Path::to_path_buf)).or_else(|| node.clone()) {
+                    path_dirs.push(dir);
+                }
+            }
+            "php" | "phpunit" | "composer" => {
+                if let Some(php) = &php {
+                    if c.kind == "php" && c.detected && c.command == "php" {
+                        c.command = php.to_string_lossy().into_owned();
+                    }
+                    path_dirs.extend(php.parent().map(Path::to_path_buf));
                 }
             }
             "cargo" => {
@@ -835,14 +878,17 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
     };
     let mut out = config.clone();
     // Until nothing changes: some entries are derived only once others are gone
-    // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`).
+    // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`). An entry derived before
+    // the configuration's own choice (an npm script's Node interpreter) is derived too.
     while let Some(key) = out
         .env
         .iter()
         .find(|(key, value)| {
             let mut probe = out.clone();
             probe.env.remove(*key);
-            applied(&probe).env.get(*key) == Some(*value)
+            let mut plain = probe.clone();
+            plain.extras.params.clear();
+            applied(&probe).env.get(*key) == Some(*value) || applied(&plain).env.get(*key) == Some(*value)
         })
         .map(|(key, _)| key.clone())
     {
@@ -987,12 +1033,27 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
         merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
-        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()]);
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()], None);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&json!("**/custom")));
         assert!(exclusions.contains(&json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));
         assert!(exclusions.contains(&json!(tmp.path().join("a/child").to_string_lossy().replace('\\', "/"))));
         assert!(cfg.args[1].starts_with("/cache/jdtls-maven-"));
+        assert!(options.get("projectConfigurations").is_none());
+    }
+
+    #[test]
+    fn import_lists_the_build_files_when_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        let files = ["file:///p/r/x/pom.xml".to_owned(), "file:///p/build.gradle".to_owned()];
+        configure_maven_import(&mut cfg, tmp.path(), &["r/y/pom.xml".into()], Some(&files));
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(files));
+        // Nothing unlinked: jdtls finds the build files itself.
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_maven_import(&mut cfg, tmp.path(), &[], Some(&files));
+        assert!(serde_json::to_value(cfg.initialization_options).unwrap().get("projectConfigurations").is_none());
     }
 }

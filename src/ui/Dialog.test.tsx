@@ -120,7 +120,7 @@ describe("Dialog chrome", () => {
     down(dialog.querySelector("div:last-child")!, 10);
     expect(dialog.style.translate).toBe("");
     down(handle, 10);
-    fireEvent.pointerMove(window, { clientX: 200, clientY: 40 });
+    fireEvent.pointerMove(window, { buttons: 1, clientX: 200, clientY: 40 });
     fireEvent.pointerUp(window);
     expect(dialog.style.translate).toBe("190px 30px");
   });
@@ -134,12 +134,12 @@ describe("Dialog chrome", () => {
     const dialog = screen.getByRole("dialog");
     const bar = document.querySelector("[data-dialog-titlebar]") as HTMLElement;
     fireEvent.pointerDown(bar, { button: 0, clientX: 10, clientY: 10 });
-    fireEvent.pointerMove(window, { clientX: 60, clientY: 40 });
+    fireEvent.pointerMove(window, { buttons: 1, clientX: 60, clientY: 40 });
     fireEvent.pointerUp(window);
     expect(dialog.style.translate).toBe("80px 30px");
     // The close button never starts a drag.
     fireEvent.pointerDown(within(bar).getByRole("button", { name: "Close" }), { button: 0, clientX: 10, clientY: 10 });
-    fireEvent.pointerMove(window, { clientX: 200, clientY: 40 });
+    fireEvent.pointerMove(window, { buttons: 1, clientX: 200, clientY: 40 });
     fireEvent.pointerUp(window);
     expect(dialog.style.translate).toBe("80px 30px");
   });

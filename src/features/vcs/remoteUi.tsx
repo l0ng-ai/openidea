@@ -1,5 +1,5 @@
 /** Update Project and Push dialogs. */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { BranchInfo, Commit, PushTags, RemoteOp } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -10,6 +10,7 @@ import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
+import { PushChanges, pushChangesKey } from "./PushChanges";
 import { currentRepo, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
 
@@ -153,6 +154,8 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // The selected row: a repository shows all its outgoing changes, a commit its own.
+  const [shown, setShown] = useState<PushNode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
   const [pushTags, setPushTags] = useState(false);
@@ -216,12 +219,15 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
     children: repo.commits.map((commit) => ({ key: `${repo.root}:${commit.id}`, repo, commit })),
   }));
 
+  const shownRepo = shown?.repo ?? (repos?.length === 1 ? repos[0]! : null);
+  const shownCommits = useMemo(() => (shown?.commit ? [shown.commit] : (shownRepo?.commits ?? [])), [shown, shownRepo]);
+
   return (
     <Dialog
       open
       title="Push Commits"
       onClose={onClose}
-      width={620}
+      width={repos?.some((r) => r.commits.length) ? 860 : 620}
       resizable="both"
       footerStart={
         <>
@@ -273,6 +279,9 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
                 return s;
               })
             }
+            selected={new Set(shown ? [shown.key] : [])}
+            multiSelect={false}
+            onSelectionChange={(_sel, lead) => setShown(lead)}
             rowHeight={22}
             aria-label="Outgoing commits"
             className={styles.boxList}
@@ -312,6 +321,9 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
           />
         )}
       </div>
+      {shownRepo && (
+        <PushChanges key={pushChangesKey(shownRepo.root, shownCommits)} repo={shownRepo.root} commits={shownCommits} />
+      )}
     </Dialog>
   );
 }
@@ -321,6 +333,12 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [branch] = useState(() => useVcs.getState().branch);
   const [branches] = useState(() => useVcs.getState().branches);
   const [commits, setCommits] = useState<Commit[] | null>(null);
+  // The commit whose changes are shown; -1: all outgoing commits.
+  const [shownCommit, setShownCommit] = useState(-1);
+  const shownCommits = useMemo(
+    () => (commits && shownCommit >= 0 && commits[shownCommit] ? [commits[shownCommit]] : (commits ?? [])),
+    [commits, shownCommit],
+  );
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
   const [remotes, setRemotes] = useState<string[]>([]);
@@ -422,7 +440,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
       open
       title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
       onClose={onClose}
-      width={620}
+      width={commits?.length ? 860 : 620}
       resizable="both"
       footerStart={
         <>
@@ -506,6 +524,8 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           <List
             items={commits}
             getKey={(c) => c.id}
+            activeIndex={shownCommit}
+            onActiveChange={setShownCommit}
             rowHeight={22}
             aria-label="Outgoing commits"
             className={styles.boxList}
@@ -521,6 +541,12 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           />
         )}
       </div>
+      <PushChanges
+        key={pushChangesKey(repo, shownCommits)}
+        repo={repo}
+        commits={shownCommits}
+        onShowAll={shownCommit >= 0 && (commits?.length ?? 0) > 1 ? () => setShownCommit(-1) : undefined}
+      />
     </Dialog>
   );
 }

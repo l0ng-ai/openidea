@@ -16,6 +16,7 @@ pub mod jdtls;
 pub mod libraries;
 pub mod locate;
 pub mod lombok;
+pub mod maven_profiles;
 mod npm;
 pub mod pinned;
 pub mod python;
@@ -34,6 +35,8 @@ pub use discover::{detect, jdk_sdk};
 pub enum SdkKind {
     Python,
     Node,
+    /// `php` CLI executables.
+    Php,
     /// npm / pnpm / yarn executables.
     PackageManager,
     Rust,

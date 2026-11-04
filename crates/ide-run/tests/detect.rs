@@ -802,6 +802,40 @@ fn cmake_profile_build_configures_only_without_a_cache() {
 }
 
 #[test]
+fn php_phpunit_project() {
+    let dir = project(&[
+        (
+            "composer.json",
+            r#"{"require-dev":{"phpunit/phpunit":"^11"},"scripts":{"test":"phpunit","post-install-cmd":"x","lint":"phpcs"}}"#,
+        ),
+        ("phpunit.xml.dist", "<phpunit/>"),
+        ("vendor/bin/phpunit", ""),
+        ("vendor/bin/phpunit.bat", ""),
+    ]);
+    let c = detect(dir.path());
+    // PHPUnit comes before the generic `composer test` so it is the default test runner.
+    assert_eq!(ids(&c), ["composer:lint", "phpunit", "composer:test"]);
+    let phpunit = find(&c, "phpunit");
+    // Windows runs the `.bat` launcher; the extensionless file is a shebang script.
+    assert_eq!(cmdline(phpunit), if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" });
+    assert_eq!(phpunit.kind, "phpunit");
+    assert!(phpunit.is_test);
+    assert_eq!(phpunit.debug_adapter.as_deref(), Some("php-debug"));
+    assert!(find(&c, "composer:test").is_test);
+    assert!(!find(&c, "composer:lint").is_test);
+}
+
+#[test]
+fn php_detection_needs_a_marker() {
+    let dir = project(&[("index.php", "<?php")]);
+    assert!(detect(dir.path()).is_empty());
+    let dir = project(&[("phpunit.xml", "<phpunit/>")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "phpunit")), "phpunit");
+    let dir = project(&[("composer.json", "{}")]);
+    assert!(detect(dir.path()).is_empty());
+}
+
+#[test]
 fn ruby_projects_list_rake_tasks_rspec_and_rails() {
     let rakefile = "\
 require 'rake/testtask'

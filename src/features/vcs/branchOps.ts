@@ -145,11 +145,18 @@ export async function checkoutBranch(name: string) {
 /** New Branch: creates a branch from HEAD (or `from`) and, by default, checks it out. */
 export async function newBranch(from?: string) {
   const repo = currentRepo();
-  const suggestion = from ? (from.includes("/") ? shortRemoteName(from) : `${from}-copy`) : "";
+  // IDEA opens the dialog with a suggestion instead of an empty field: a
+  // remote's name without the prefix, the source ref as `-copy`, or the
+  // current branch for a plain New Branch from HEAD.
+  const suggestion = from
+    ? from.includes("/")
+      ? shortRemoteName(from)
+      : `${from}-copy`
+    : (useVcs.getState().branch?.head ?? "");
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: "New branch name:",
-    initial: from && from.includes("/") && !validateBranchName(suggestion) ? suggestion : "",
+    initial: suggestion && !validateBranchName(suggestion) ? suggestion : "",
     mono: true,
     okLabel: "Create",
     validate: validateBranchName,
@@ -198,9 +205,8 @@ export async function openConflictsInstead(): Promise<boolean> {
   return true;
 }
 
-export async function mergeIntoCurrent(branch: string) {
-  const repo = currentRepo();
-  const current = useVcs.getState().branch?.head ?? "HEAD";
+export async function mergeIntoCurrent(branch: string, repo: string | null = currentRepo()) {
+  const current = (repo === currentRepo() ? useVcs.getState().branch?.head : null) ?? "HEAD";
   await saveAll();
   await runOp(`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(repo, branch)), {
     success: `Merged ${branch} into ${current}`,
@@ -361,7 +367,7 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: tx`New branch name (in ${roots.length} repositories):`,
-    initial: from?.includes("/") ? shortRemoteName(from) : "",
+    initial: from ? (from.includes("/") ? shortRemoteName(from) : "") : (useVcs.getState().branch?.head ?? ""),
     mono: true,
     okLabel: "Create",
     validate: validateBranchName,

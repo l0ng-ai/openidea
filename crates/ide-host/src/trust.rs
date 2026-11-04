@@ -279,6 +279,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_set_theme"
             | "plugin_set_theme_frame"
             | "plugin_catalog"
+            | "plugin_assets"
             | "notebook_open"
             | "notebook_get"
             | "notebook_edit"

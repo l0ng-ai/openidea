@@ -55,6 +55,13 @@ vi.mock("@/workbench/messages", async (orig) => ({
   },
 }));
 
+const dialogOpen = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: (o: unknown) => dialogOpen(o) }));
+vi.mock("@/platform/ipc", async (orig) => ({
+  ...(await orig<typeof import("@/platform/ipc")>()),
+  isTauri: () => true,
+}));
+
 const { FindInFilesOverlay } = await import("../find/FindInFiles");
 const { findHistory, hideFindPopup, rememberFindString, runFindPopupCommand, showFindPopup, useFindPopup } =
   await import("../find/store");
@@ -174,6 +181,18 @@ describe("Find in Files popup", () => {
     act(() => void runFindPopupCommand("recentSearches"));
     expect(await screen.findByText("older")).toBeInTheDocument();
     act(() => hideFindPopup());
+  });
+
+  it("the Directory scope's browse button picks the folder, starting at the current one", async () => {
+    dialogOpen.mockResolvedValue("/p/src/main");
+    useFindPopup.setState({ scopeTab: "directory", directory: "/p/src" });
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await settle();
+    expect(dialogOpen).toHaveBeenCalledWith(expect.objectContaining({ directory: true, defaultPath: "/p/src" }));
+    expect(useFindPopup.getState().directory).toBe("/p/src/main");
   });
 
   it("closing remembers the search text", async () => {

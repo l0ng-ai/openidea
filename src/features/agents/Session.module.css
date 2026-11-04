@@ -77,26 +77,40 @@
   color: var(--fg-subtle);
 }
 
-/* Pending permission: an editor notification banner. */
+/* Pending permission: an editor notification banner. A long question (AskUserQuestion) wraps,
+   scrolling past a third of the height; the answers follow it, wrapping too. */
 .banner {
   flex: none;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 8px;
   min-height: 36px;
-  padding: 0 12px;
+  padding: 9px 12px;
   background: var(--bg-feedback-warning);
   border-bottom: 1px solid var(--border-feedback-warning);
   color: var(--fg-strong);
 }
+.banner > svg {
+  flex: none;
+  margin-top: 1px;
+}
 .bannerText {
+  flex: 1 1 240px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-height: 33vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .bannerSpacer {
   flex: 1;
+}
+.bannerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-left: auto;
 }
 .bannerLink {
   flex: none;
@@ -392,16 +406,24 @@
 
 .permissionLine {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
   color: var(--fg-secondary);
 }
+/* Up to three lines; the full text is its tooltip. */
 .permissionTitle {
+  display: -webkit-box;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.permissionLine > svg,
+.permissionLine > .muted {
+  flex: none;
 }
 
 .error {

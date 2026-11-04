@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { getCM, Vim } from "@replit/codemirror-vim";
-import { embeddedEditorExtensions, useEditorRegistry } from "@/editor/api";
+import { embeddedEditorExtensions, transientChange, useEditorRegistry } from "@/editor/api";
 import { executeAction, registerAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { _handleEx, applyRcCommands, vimExtension } from "../engine";
@@ -111,6 +111,82 @@ describe("Vim engine", () => {
     Vim.handleKey(cm as never, "d", "user");
     await tick();
     expect(ran).toEqual(["navigate.declaration"]);
+    view.destroy();
+  });
+
+  it("keeps an IME composition out of the document in Normal mode", async () => {
+    const transient: boolean[] = [];
+    const view = makeView([
+      vimExtension(),
+      EditorView.updateListener.of((u) => {
+        for (const tr of u.transactions) if (tr.docChanged) transient.push(!!tr.annotation(transientChange));
+      }),
+    ]);
+    const content = view.contentDOM;
+    const composition = (type: string, data: string) =>
+      content.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
+
+    // A composition over a selection replaces it, then restores it.
+    view.dispatch({ selection: { anchor: 0, head: 3 } });
+    composition("compositionstart", "");
+    // Preedit, then the committed character (as CodeMirror reports them).
+    view.dispatch({ changes: { from: 0, to: 3, insert: "ni" }, userEvent: "input.type.compose.start" });
+    view.dispatch({ changes: { from: 0, to: 2, insert: "你" }, userEvent: "input.type.compose" });
+    expect(view.state.doc.toString()).toBe("你 two\nthree");
+    composition("compositionend", "你");
+    await tick();
+
+    expect(view.state.doc.toString()).toBe("one two\nthree");
+    expect(view.state.selection.main.from).toBe(0);
+    expect(view.state.selection.main.to).toBe(3);
+    // Preedit, commit and the cleanup itself never reach the document model.
+    expect(transient).toEqual([true, true, true]);
+    view.destroy();
+  });
+
+  it("removes a whole composition whose commit shares text with the preedit", async () => {
+    const view = makeView([vimExtension()]);
+    const composition = (type: string, data: string) =>
+      view.contentDOM.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
+
+    view.dispatch({ selection: { anchor: 4 } });
+    composition("compositionstart", "");
+    view.dispatch({ changes: { from: 4, insert: "かんじを" }, userEvent: "input.type.compose.start" });
+    // CodeMirror reports the conversion as a minimal diff: the shared `を` is not part of it.
+    view.dispatch({ changes: { from: 4, to: 7, insert: "漢字" }, userEvent: "input.type.compose" });
+    expect(view.state.doc.toString()).toBe("one 漢字をtwo\nthree");
+    composition("compositionend", "漢字を");
+    await tick();
+
+    expect(view.state.doc.toString()).toBe("one two\nthree");
+    expect(view.state.selection.main.head).toBe(4);
+    view.destroy();
+  });
+
+  it("replays a dead-key composition as a Vim command and keeps insert-mode IME input", async () => {
+    const view = makeView();
+    const content = view.contentDOM;
+    const cm = getCM(view)!;
+    const composition = (type: string, data: string) =>
+      content.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
+
+    // `^` (first non-blank) at column 5.
+    view.dispatch({ selection: { anchor: 5 } });
+    composition("compositionstart", "");
+    view.dispatch({ changes: { from: 5, insert: "^" }, userEvent: "input.type.compose.start" });
+    composition("compositionend", "^");
+    await tick();
+    expect(view.state.doc.toString()).toBe("one two\nthree");
+    expect(view.state.selection.main.head).toBe(0);
+
+    // IME input in Insert mode is ordinary text.
+    Vim.handleKey(cm as never, "i", "user");
+    await tick();
+    composition("compositionstart", "");
+    view.dispatch({ changes: { from: 0, insert: "你" }, userEvent: "input.type.compose.start" });
+    composition("compositionend", "你");
+    await tick();
+    expect(view.state.doc.toString()).toBe("你one two\nthree");
     view.destroy();
   });
 

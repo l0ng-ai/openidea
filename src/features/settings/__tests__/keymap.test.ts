@@ -8,6 +8,7 @@ import {
   isValidBinding,
   normalizeBinding,
   PRESETS,
+  registerExtensionBindings,
   strokeOf,
   suspendKeyboardDispatch,
   useKeymap,
@@ -122,6 +123,30 @@ describe("overrides", () => {
     expect(next.overrides).toEqual({ "file.save": ["Meta+S", "Ctrl+S"] });
     expect(resolveBindings(next, "navigate.gotoFile")).toEqual(["Meta+P"]);
     expect(resolveBindings(next, "navigate.declaration")).toEqual(["F12"]);
+  });
+});
+
+describe("plugin shortcuts", () => {
+  it("show as the defaults, can be removed or changed, and take part in conflicts", () => {
+    const preset = defaultPreset();
+    const id = "plugin.acme.tidy";
+    const unregister = registerExtensionBindings(id, ["Ctrl+Alt+Shift+F9"]);
+    try {
+      const draft = { preset, overrides: {} };
+      expect(resolveBindings(draft, id)).toEqual([normalizeBinding("Ctrl+Alt+Shift+F9")]);
+      expect(isModified(draft, id)).toBe(false);
+      const removed = removeBinding(draft, id, "Ctrl+Alt+Shift+F9");
+      expect(removed[id]).toEqual([]);
+      expect(resolveBindings({ preset, overrides: removed }, id)).toEqual([]);
+      expect(resetBindings({ preset, overrides: removed }, id)).toEqual({});
+      const conflicts = findConflicts(draft, "Ctrl+Alt+Shift+F9", "acme.other", [
+        { id: "acme.other", title: "Other" },
+        { id, title: "Tidy" },
+      ]);
+      expect(conflicts.map((c) => c.actionId)).toContain(id);
+    } finally {
+      unregister();
+    }
   });
 });
 

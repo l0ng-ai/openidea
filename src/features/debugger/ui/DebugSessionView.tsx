@@ -2,7 +2,7 @@
  * A debug session's views — threads & frames, variables, evaluation — shared by
  * the Debug tool window and the Services window's debug detail pane.
  */
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
@@ -23,6 +23,7 @@ import {
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -177,6 +178,8 @@ function VariablesPane({ session }: { session: DebugSession }) {
   const watches = useDebug((s) => s.watches);
   const stopSeq = useDebug((s) => s.stopSeq);
   const [expression, setExpression] = useState("");
+  const evalField = useRef<HTMLInputElement>(null);
+  const completion = useExpressionCompletion(evalField, expression, setExpression, session);
   const [lastEval, setLastEval] = useState<EvalRow | null>(null);
   const [scopeData, setScopeData] = useState<{ frame: number | null; scopes: Scope[]; locals: Variable[] }>({
     frame: null,
@@ -301,10 +304,16 @@ function VariablesPane({ session }: { session: DebugSession }) {
     <div className={styles.variables}>
       <div className={styles.evalField}>
         <input
+          ref={evalField}
           className={styles.evalInput}
           value={expression}
-          onChange={(e) => setExpression(e.target.value)}
+          onChange={(e) => {
+            setExpression(e.target.value);
+            completion.onInput();
+          }}
+          onBlur={completion.close}
           onKeyDown={(e) => {
+            if (completion.onKeyDown(e)) return;
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
               e.preventDefault();
               addWatch(expression);
@@ -320,6 +329,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
           autoComplete="off"
           disabled={frame == null}
         />
+        {completion.popup}
         <IconButton
           icon="plus"
           title="Add to Watches"

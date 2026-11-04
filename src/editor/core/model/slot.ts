@@ -23,6 +23,7 @@ import {
   _removeEditor,
   documentSynced,
   isExternalChange,
+  transientChange,
   type EditorDocContext,
   type TextEditorHandle,
 } from "@/editor/api";
@@ -207,7 +208,7 @@ export class EditorSlot {
         const line = tr.startState.doc.lineAt(head);
         navigatedFrom = { line: line.number - 1, col: head - line.from };
       }
-      if (tr.docChanged && !isExternalChange(tr)) {
+      if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange)) {
         this.model.onLocal(tr.changes, this);
         if (
           tr.isUserEvent("input") ||

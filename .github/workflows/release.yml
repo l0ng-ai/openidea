@@ -180,6 +180,69 @@ jobs:
           if command -v sha256sum >/dev/null; then sha256sum "$ASSET"; else shasum -a 256 "$ASSET"; fi > "$ASSET.sha256"
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
 
+  # The official plugins, signed, and the marketplace index released apps read
+  # (releases/latest/download/plugins-index.json). They are not in the
+  # installers: users install them from Settings › Plugins. Without the
+  # signing key (secret PLUGIN_SIGNING_KEY: the file `openidea-plugin keygen`
+  # writes) nothing is published and the release goes on.
+  plugins:
+    needs: create-release
+    name: Official plugins
+    runs-on: ubuntu-22.04
+    env:
+      SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+    steps:
+      - id: key
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::warning::PLUGIN_SIGNING_KEY is not set: the official plugins are not published"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.skip != 'true'
+        with: { ref: "${{ env.TAG }}" }
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.key.outputs.skip != 'true'
+        with: { targets: wasm32-wasip2 }
+      - uses: Swatinem/rust-cache@v2
+        if: steps.key.outputs.skip != 'true'
+        with: { key: release-plugins }
+      - uses: pnpm/action-setup@v4
+        if: steps.key.outputs.skip != 'true'
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.skip != 'true'
+        with: { node-version: 22 }
+      # Builds the web pages; fails when a checked-in component isn't built from these sources.
+      - name: Build
+        if: steps.key.outputs.skip != 'true'
+        run: |
+          plugins/build.sh --check
+          cargo build --release --locked -p ide-host --bin openidea-plugin
+      - name: Pack, index and upload
+        if: steps.key.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tool="$PWD/target/release/openidea-plugin"
+          key="$RUNNER_TEMP/openidea.key"
+          out="$RUNNER_TEMP/market"
+          (umask 077 && printf '%s' "$SIGNING_KEY" > "$key")
+          trap 'rm -f "$key"' EXIT
+          mkdir -p "$out"
+          for dir in plugins/official/*/; do
+            id="$(sed -n 's/^id *= *"\(.*\)".*/\1/p' "$dir/plugin.toml" | head -1)"
+            version="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "$dir/plugin.toml" | head -1)"
+            "$tool" pack "$dir" --key "$key" --publisher openidea --out "$out/$id-$version.oiplugin"
+          done
+          # The published index's revocations and earlier keys carry over.
+          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/plugins-index.json" \
+            -o "$out/plugins-index.json" || rm -f "$out/plugins-index.json"
+          "$tool" index "$out" --publisher openidea --name OpenIDEA --key "$key" --out "$out/plugins-index.json"
+          gh release upload "$TAG" "$out"/*.oiplugin "$out/plugins-index.json" --clobber
+
   # The updater manifest (latest.json), built once from the signed bundles every build uploaded.
   # Fails when a platform is missing, so a release never ships a manifest without it.
   updater-manifest:
@@ -243,7 +306,7 @@ jobs:
             core.info(`latest.json: ${Object.keys(platforms).sort().join(", ")}`);
 
   publish:
-    needs: [create-release, build, server, updater-manifest]
+    needs: [create-release, build, server, plugins, updater-manifest]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7

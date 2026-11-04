@@ -9,6 +9,7 @@ import ansi from "@/ui/ansi.module.css";
 import type { ConsoleControls } from "@/features/run/RunView";
 import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
+import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
 
 export function DebugConsole({
@@ -31,6 +32,7 @@ export function DebugConsole({
   const history = useRef<string[]>(readHistory("console"));
   const historyPos = useRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
+  const completion = useExpressionCompletion(inputRef, input, setInput, session);
 
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
@@ -109,6 +111,7 @@ export function DebugConsole({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (completion.onKeyDown(e)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       void submit();
@@ -177,9 +180,15 @@ export function DebugConsole({
                 ref={inputRef}
                 className={styles.evalInput}
                 onFocus={() => setConsoleHistoryBrowser(browseHistory)}
-                onBlur={() => setConsoleHistoryBrowser(null)}
+                onBlur={() => {
+                  setConsoleHistoryBrowser(null);
+                  completion.close();
+                }}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  completion.onInput();
+                }}
                 onKeyDown={onKeyDown}
                 placeholder={isLive(session) ? tx("Evaluate in the debug console") : tx("Session finished")}
                 disabled={!isLive(session)}
@@ -187,6 +196,7 @@ export function DebugConsole({
                 spellCheck={false}
                 autoComplete="off"
               />
+              {completion.popup}
             </>
           )}
         </div>

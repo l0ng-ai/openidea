@@ -384,6 +384,9 @@ impl Peer {
         let resolved = resolve_spawn_program(command, env);
         let mut cmd = tokio::process::Command::new(&resolved);
         ide_core::process::prepare(cmd.as_std_mut());
+        // Wrappers (`npx`, `codex.cmd`, launcher scripts) start the real server as a child:
+        // stopping the connection stops the whole tree.
+        ide_core::process::own_group(cmd.as_std_mut());
         cmd.args(args)
             .current_dir(cwd)
             .envs(ide_core::process::shell_env())
@@ -422,6 +425,9 @@ impl Peer {
             let (status, killed) = tokio::select! {
                 status = child.wait() => (status.ok(), false),
                 _ = inner.kill.cancelled() => {
+                    if let Some(pid) = child.id() {
+                        let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
+                    }
                     let _ = child.start_kill();
                     (child.wait().await.ok(), true)
                 }

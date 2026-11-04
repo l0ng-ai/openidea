@@ -154,6 +154,30 @@ pub struct AgentUsage {
     pub used: u32,
     /// Size of the context window.
     pub size: u32,
+    /// What the session has cost so far (ACP `usage_update.cost`), when the agent reports it.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub cost: Option<Box<AgentCost>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCost {
+    pub amount: f64,
+    /// ISO 4217 code, e.g. `USD`.
+    pub currency: String,
+}
+
+/// One usage-limit window of an agent's account.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLimit {
+    /// The window as the agent names it: `five_hour`, `seven_day`, `seven_day_opus`…
+    pub window: String,
+    /// Share of the window used, 0–100.
+    pub used_percent: f64,
+    /// When the window resets (ms since the epoch), if the agent said.
+    pub resets_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -322,6 +346,15 @@ pub struct AgentProvider {
     pub name: String,
     /// The command line that starts its ACP server.
     pub command: String,
+    /// Executable and arguments actually launched, without flattening paths containing spaces.
+    pub program: String,
+    pub args: Vec<String>,
+    pub default_program: Option<String>,
+    pub default_args: Vec<String>,
+    pub login_hint: Option<String>,
+    pub command_overridden: bool,
+    pub command_editable: bool,
+    pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
@@ -329,6 +362,15 @@ pub struct AgentProvider {
     /// Slash commands it offered last time.
     pub commands: Vec<AgentCommand>,
     pub source: AgentSource,
+}
+
+/// Why the executable cannot be changed in built-in agent settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCommandReadOnlyReason {
+    PackageRunner,
+    Registry,
+    CustomAgent,
 }
 
 /// Where an agent comes from.
@@ -412,6 +454,11 @@ pub enum AgentEvent {
         subagent: Option<String>,
         index: u32,
         entry: AgentEntry,
+    },
+    /// An agent reported the usage limits of its account (shared by every task of `provider`).
+    Limits {
+        provider: String,
+        limits: Vec<AgentLimit>,
     },
     /// The installed or configured agent providers changed.
     Providers,

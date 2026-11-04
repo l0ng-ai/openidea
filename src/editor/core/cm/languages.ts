@@ -21,8 +21,10 @@ import { _languageMode } from "@/editor/api";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
+let infosBackend: DocBackend | null = null;
 
 export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, LanguageInfo>> {
+  infosBackend = backend;
   return (infosPromise ??= backend
     .languages()
     .then((list) => (infos = new Map(list.map((l) => [l.id, l]))))
@@ -35,6 +37,15 @@ export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, Lang
 
 export function languageInfo(id: string): LanguageInfo | undefined {
   return infos?.get(id);
+}
+
+/**
+ * The language list changed (a plugin added or removed languages): fetch it
+ * again. Open documents follow through their `docLanguage` events.
+ */
+export function refreshLanguageInfos(): Promise<unknown> {
+  infosPromise = null;
+  return infosBackend ? loadLanguageInfos(infosBackend) : Promise.resolve();
 }
 
 /** Test hook. */

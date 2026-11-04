@@ -14,6 +14,7 @@ import { contextConfig, relToCwd, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
+import { phpunitArgs, phpunitFilter } from "./testing/phpunit";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -38,12 +39,13 @@ export interface RunTarget {
 /** Above this size we skip detection (generated / minified files). */
 export const MAX_SCAN = 400_000;
 
-type Lang = "rust" | "js" | "python" | "go" | "jvm" | null;
+type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | null;
 
 export function targetLanguage(relPath: string): Lang {
   if (/\.rs$/.test(relPath)) return "rust";
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return "js";
   if (/\.py$/.test(relPath)) return "python";
+  if (/\.php$/.test(relPath)) return "php";
   if (/\.go$/.test(relPath)) return "go";
   if (/\.(java|kt|kts|scala|groovy)$/.test(relPath)) return "jvm";
   return null;
@@ -140,6 +142,34 @@ function jsTargets(lines: string[]): RunTarget[] {
     const isSuite = m[2] === "describe" || m[2] === "suite" || m[2] === "context";
     out.push({ line: i, kind: isSuite ? "suite" : "test", name: path.join(" > "), path, parameterized });
     if (isSuite) stack.push({ indent, name });
+  }
+  return out;
+}
+
+/** PHPUnit: classes named `*Test` / extending `TestCase`, and `test*` methods or `#[Test]` / `@test` ones. */
+function phpTargets(lines: string[]): RunTarget[] {
+  const out: RunTarget[] = [];
+  let cls: string | null = null;
+  let marked = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const c = /^\s*(?:final\s+|abstract\s+|readonly\s+)*class\s+(\w+)(?:\s+extends\s+([\w\\]+))?/.exec(line);
+    if (c) {
+      const test = /Test$|TestCase$/.test(c[1]!) || /TestCase$/.test(c[2] ?? "");
+      cls = test && !/^\s*abstract\b/.test(line) ? c[1]! : null;
+      if (cls) out.push({ line: i, kind: "suite", name: cls, path: [cls] });
+      marked = false;
+      continue;
+    }
+    if (!cls) continue;
+    if (/#\[\s*(?:\\?PHPUnit\\Framework\\Attributes\\)?Test\s*[\],(]|@test\b/.test(line)) {
+      marked = true;
+      continue;
+    }
+    const m = /^\s*public\s+(?:static\s+)?function\s+(\w+)\s*\(/.exec(line);
+    if (m && (marked || /^test/.test(m[1]!)))
+      out.push({ line: i, kind: "test", name: `${cls}::${m[1]}`, path: [cls, m[1]!] });
+    if (m || /^\s*(?:public|private|protected)\b/.test(line)) marked = false;
   }
   return out;
 }
@@ -331,6 +361,8 @@ export function detectRunTargets(text: string, relPath: string, django = false):
           /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\//.test(relPath) ||
           (django && /(^|\/)tests\.py$/.test(relPath)),
       );
+    case "php":
+      return /Test\.php$|(^|\/)tests?\//.test(relPath) ? phpTargets(lines) : [];
     case "go":
       return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
@@ -392,6 +424,11 @@ export function targetConfig(
     case "pytest":
     case "python":
       return named(withLast(file.args, (f) => `${f}::${target.path.join("::")}`));
+    case "phpunit": {
+      const [cls, method] = [target.path[0]!, target.path[1]];
+      const filter = phpunitFilter([method ? [cls, method] : [cls]]);
+      return named(phpunitArgs(file.args, { target: relToCwd(relPath, file), filter }));
+    }
     case "django-test": {
       // unittest's loader would call a module-level `test_*` function (or a plain class) to build the suite.
       if (!target.unittest) return null;

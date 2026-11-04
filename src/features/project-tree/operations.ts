@@ -8,10 +8,10 @@ import { executeAction, getAction } from "@/platform/actions";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
-import { runFileRefactoring } from "./fileRefactor";
+import { lastFileRefactoring, nextFileOperation, runFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
-import { isCancelled } from "@/platform/ipc";
+import { call, commands, isCancelled } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   isInside,
@@ -294,8 +294,14 @@ async function refreshAfterCreate(parent: string, path: string) {
 // ---------------------------------------------------------------------------
 // Delete
 
-function describe(paths: string[]): string {
-  return paths.length === 1 ? `'${nameOf(paths[0]!)}'` : `${paths.length} items`;
+/** The Delete dialog's question, e.g. "Delete 'src' and its contents?". */
+function deleteQuestion(paths: string[], folders: boolean): string {
+  if (paths.length === 1) {
+    const name = nameOf(paths[0]!);
+    return folders ? tx`Delete '${name}' and its contents?` : tx`Delete '${name}'?`;
+  }
+  const count = paths.length;
+  return folders ? tx`Delete ${count} items (including folder contents)?` : tx`Delete ${count} items?`;
 }
 
 /** Visible rows in display order (roots, then children of expanded folders). */
@@ -441,9 +447,9 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
     message: createElement(
       Fragment,
       null,
-      `Delete ${describe(paths)}${folders ? (paths.length === 1 ? " and its contents" : " (including folder contents)") : ""}?`,
+      deleteQuestion(paths, folders > 0),
       createElement("br"),
-      "Items are moved to the Trash.",
+      tx("Items are moved to the Trash."),
     ),
   });
   if (!answer) return;
@@ -459,18 +465,78 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   const fs = projectFs(root);
   const parents = new Set<string>();
   const errors: string[] = [];
+  const deleted: string[] = [];
   for (const p of paths) {
     try {
       await fs.delete(p);
       parents.add(parentOf(p));
+      deleted.push(p);
     } catch (e) {
       errors.push(`${nameOf(p)}: ${errorMessage(e)}`);
     }
+  }
+  if (deleted.length) {
+    const dirs = new Set(nodes.filter((n) => n.dir).map((n) => n.path));
+    lastDelete = { paths: deleted, dirs: deleted.filter((p) => dirs.has(p)), seq: nextFileOperation() };
   }
   if (errors.length)
     notifications().notify({ level: "error", title: "Some items could not be deleted", body: errors.join("\n") });
   await Promise.all([...parents].map((d) => loadDir(d, true)));
   if (next) revealPath(next, refocus);
+}
+
+/** The last Delete in the Project view; Undo brings its files back from Local History. */
+let lastDelete: { paths: string[]; dirs: string[]; seq: number } | null = null;
+
+/** Undo in the Project view: reverts the latest delete or move / rename; false when there is none. */
+export function undoLastFileOperation(): boolean {
+  const move = lastFileRefactoring();
+  if (lastDelete && (!move || lastDelete.seq > move.seq)) {
+    void undoDelete();
+    return true;
+  }
+  if (!move) return false;
+  void undoFileRefactoring();
+  return true;
+}
+
+/** Restores the deleted files (and folders) from their last Local History snapshots. */
+export async function undoDelete(): Promise<boolean> {
+  const op = lastDelete;
+  const { root } = get();
+  if (!op || !root) return false;
+  lastDelete = null;
+  const fs = projectFs(root);
+  const failed: string[] = [];
+  const parents = new Set<string>();
+  for (const p of op.paths) {
+    try {
+      const history = await call(commands.historyListDir(p));
+      const gone = new Set(history.deleted);
+      const latest = new Map<string, string>();
+      for (const e of history.entries)
+        if (e.kind === "snapshot" && e.id && gone.has(e.path) && !latest.has(e.path)) latest.set(e.path, e.id);
+      const dir = op.dirs.includes(p);
+      if (!latest.size && !dir) throw new Error("no Local History snapshot");
+      if (dir) await fs.createDir(p);
+      for (const [path, id] of latest) await call(commands.historyRestore(path, id));
+      parents.add(parentOf(p));
+    } catch {
+      failed.push(nameOf(p));
+    }
+  }
+  await Promise.all([...parents].map((d) => loadDir(d, true)));
+  const restored = op.paths.find((p) => !failed.includes(nameOf(p)));
+  if (restored) revealPath(restored, true);
+  const names = failed.join(", ");
+  if (failed.length)
+    notifications().notify({
+      level: "warning",
+      title: "Some items could not be restored",
+      body: tx`Not in Local History: ${names}. They are in the Trash.`,
+      key: "project.undoDelete",
+    });
+  return !failed.length;
 }
 
 // ---------------------------------------------------------------------------
