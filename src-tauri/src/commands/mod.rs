@@ -246,6 +246,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_line_hunks,
         vcs::vcs_file_at,
         vcs::vcs_blame,
+        vcs::vcs_block_history,
         vcs::vcs_log,
         vcs::vcs_commit_files,
         vcs::vcs_commits_changes,

@@ -1833,6 +1833,7 @@ function gitMenu(path: string): MenuItem {
       { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
       { kind: "action", action: "vcs.compareWithBranch", arg: { path }, label: "Compare with Branch…" },
       { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
+      { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
       { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
       { kind: "separator" },
       { kind: "action", action: "vcs.push", label: "Push…" },
