@@ -3,7 +3,7 @@
  * per file the endpoint and variables the editor toolbar runs queries with.
  */
 import { create } from "zustand";
-import { editorsFor } from "@/editor/api";
+import { editorsFor, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { tx } from "@/platform/i18n";
 import type { Diagnostic } from "@/bindings";
@@ -430,9 +430,14 @@ export async function introspectEndpoint(path: string, name?: string): Promise<v
         ok: "Replace",
       }));
     if (!ok) return;
-    await editorService().openFile(target);
-    const view = editorsFor(target)[0]?.view;
-    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: sdl } });
+    if (!(await replaceFileText(target, sdl))) {
+      notifications().notify({
+        level: "error",
+        title: "Cannot write the GraphQL schema",
+        body: tx`${basename(target)} did not open in an editor`,
+      });
+      return;
+    }
   } else {
     try {
       await call(commands.fsCreateFileBytes(target, [...new TextEncoder().encode(sdl)]));
@@ -449,6 +454,31 @@ export async function introspectEndpoint(path: string, name?: string): Promise<v
     key: "graphql-introspect",
   });
   await discoverSchemasNow();
+}
+
+/**
+ * Opens `path` and replaces its text in the editor (one undoable edit). A file that was not open
+ * gets its editor only after `openFile` resolves, so this waits for it; false when none appears.
+ */
+export async function replaceFileText(path: string, text: string, timeoutMs = 5000): Promise<boolean> {
+  await editorService().openFile(path);
+  const editor =
+    editorsFor(path)[0] ??
+    (await new Promise<TextEditorHandle | null>((resolve) => {
+      const done = (e: TextEditorHandle | null) => {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve(e);
+      };
+      const timer = setTimeout(() => done(null), timeoutMs);
+      const unsubscribe = useEditorRegistry.subscribe(() => {
+        const e = editorsFor(path)[0];
+        if (e) done(e);
+      });
+    }));
+  if (!editor) return false;
+  editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: text } });
+  return true;
 }
 
 /** "Rerun Introspection Query": the last introspection of this schema, else its chosen endpoint. */
