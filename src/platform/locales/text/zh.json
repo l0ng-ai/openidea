@@ -5959,5 +5959,8 @@
   "Could not close comparison": "无法关闭比较窗口",
   "Could not open comparison": "无法打开比较窗口",
   "Could not show diff": "无法显示差异",
-  "Back to Changed Files": "返回更改文件列表"
+  "Back to Changed Files": "返回更改文件列表",
+  "Default (the module's JDK)": "默认（模块的 JDK）",
+  "Use classpath of module": "使用模块的类路径",
+  "Find by main class": "按主类查找"
 }
