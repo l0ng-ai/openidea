@@ -25,6 +25,49 @@ test("⌘F opens the find bar and highlights matches; Escape returns to the edit
   await expect(editor.locator(".cm-content")).toBeFocused();
 });
 
+test("each file keeps its own find bar, query and caret", async ({ workbench: page }) => {
+  const find = page.getByRole("textbox", { name: "Find" });
+  const caret = page.getByRole("button", { name: /^\d+:\d+/ });
+  const tab = (name: string) => page.getByRole("tablist", { name: "Editor tabs" }).getByRole("tab", { name });
+
+  const a = await openFromTree(page, "build.gradle.kts");
+  await a.locator(".cm-content").click();
+  await page.keyboard.press("Meta+f");
+  await find.fill("Order");
+  await expect(caret).toHaveText(/\(5 chars\)/);
+  const caretA = await caret.textContent();
+
+  // Another file has no bar until ⌘F; opening one starts from the last search without moving the caret.
+  const b = await openFromTree(page, "settings.gradle.kts");
+  await expect(find).toBeHidden();
+  await b.locator(".cm-line", { hasText: "@PostMapping" }).click();
+  const caretB = await caret.textContent();
+  await page.keyboard.press("Meta+f");
+  await expect(find).toHaveValue("Order");
+  await expect(caret).toHaveText(caretB!);
+  await find.fill("status");
+  await expect(caret).toHaveText(/\(6 chars\)/);
+  const caretB2 = await caret.textContent();
+
+  // A third file starts from the latest search.
+  await openFromTree(page, "README.md");
+  await expect(find).toBeHidden();
+  await page.keyboard.press("Meta+f");
+  await expect(find).toHaveValue("status");
+
+  // Switching back shows each file's own query, caret untouched.
+  await tab("build.gradle.kts").click();
+  await expect(find).toHaveValue("Order");
+  await expect(caret).toHaveText(caretA!);
+  await tab("settings.gradle.kts").click();
+  await expect(find).toHaveValue("status");
+  await expect(caret).toHaveText(caretB2!);
+  await find.press("Escape");
+  await expect(find).toBeHidden();
+  await tab("build.gradle.kts").click();
+  await expect(find).toHaveValue("Order");
+});
+
 test("opening several files creates tabs and ⌘W closes the active one", async ({ workbench: page }) => {
   await openFromTree(page, "build.gradle.kts");
   await openFromTree(page, "settings.gradle.kts");
