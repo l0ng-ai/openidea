@@ -49,6 +49,7 @@
   "app.lightEdit.openProject": "作为项目打开",
   "app.lightEdit.openProjectTooltip": "将 {folder} 作为项目打开",
   "app.log.failed": "无法显示日志",
+  "app.project.opening": "正在打开 {name}…",
   "app.title.default": "OpenIDEA",
   "app.unsaved.body": "{project} 中有 {count} 个文件尚未保存。关闭前是否保存？",
   "app.unsaved.discard": "不保存",

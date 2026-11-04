@@ -264,8 +264,10 @@
 }
 .stripeButton:hover,
 .stripeButton[aria-expanded="true"] {
-  background: var(--bg-stripe-hover);
   color: var(--fg-secondary);
+}
+.stripeButton[aria-expanded="true"] {
+  background: var(--bg-stripe-hover);
 }
 .stripeActive,
 .stripeActive:hover {

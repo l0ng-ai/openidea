@@ -623,6 +623,7 @@ export const commands = {
 }) & (RunExtras_Serialize) | null, IdeError>(__TAURI_INVOKE("run_tomcat_build", { config })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
+	runTomcatSync: (config: RunConfig_Deserialize, module: string, classPaths: string[], resourcesOnly: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("run_tomcat_sync", { config, module, classPaths, resourcesOnly })),
 	runTomcatUpdate: (config: RunConfig_Deserialize, mode: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_tomcat_update", { config, mode })),
 	/**
 	 *  Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
