@@ -699,6 +699,11 @@ mod maven_path_tests {
         assert_eq!(launch_path(&launcher).unwrap(), launcher);
         assert_eq!(maven_home(&home), Some(home.clone()));
         assert_eq!(maven_version(&home).as_deref(), Some("3.9.16"));
+        let jdk = drive.root.join("jdk");
+        std::fs::create_dir_all(jdk.join("bin")).unwrap();
+        std::fs::write(jdk.join("bin/java.exe"), "").unwrap();
+        std::fs::write(jdk.join("release"), "JAVA_VERSION=\"17.0.9\"\n").unwrap();
+        assert_eq!(crate::java::jdk_at(&jdk).unwrap().home, jdk);
     }
 
     #[test]

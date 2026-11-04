@@ -241,13 +241,20 @@ pub fn prepare_maven_run(config: &mut RunConfig, root: &Path, s: &Settings) {
         }
     } else if config.detected || config.id.starts_with("context:") {
         let saved = ide_run::load_user_configs(root).unwrap_or_default();
-        let source = ide_run::detect(root).into_iter().find(|base| {
-            base.kind == "maven"
-                && (config.id == base.id
-                    || config.id.starts_with(&format!("context:{}:", base.id))
-                    || config.id.starts_with(&format!("context:target:context:{}:", base.id)))
-                && !saved.iter().any(|user| user.id == base.id)
-        });
+        let id = config
+            .id
+            .strip_prefix("context:target:context:")
+            .or_else(|| config.id.strip_prefix("context:"))
+            .unwrap_or(&config.id);
+        let id = id.strip_prefix("workspace:").and_then(|id| id.split_once(':')).map_or(id, |(_, id)| id);
+        let source = ide_run::detect(root)
+            .into_iter()
+            .filter(|base| {
+                base.kind == "maven"
+                    && (id == base.id || id.starts_with(&format!("{}:", base.id)))
+                    && !saved.iter().any(|user| user.id == base.id)
+            })
+            .max_by_key(|base| base.id.len());
         if let Some(base) = source.filter(|_| config.extras.params.is_empty()) {
             if let Some(prefix) = maven_settings_prefixes(&config.args)
                 .into_iter()

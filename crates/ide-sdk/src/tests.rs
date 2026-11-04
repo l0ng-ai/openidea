@@ -305,6 +305,8 @@ fn maven_launch_refreshes_legacy_defaults_but_keeps_user_overrides() {
         "maven:test",
         "context:maven:test:src/test/java/ExampleTest.java",
         "context:target:context:maven:test:src/test/java/ExampleTest.java:ExampleTest#example",
+        "workspace:abc:maven:test",
+        "context:target:context:workspace:abc:maven:test:src/test/java/ExampleTest.java:ExampleTest#example",
     ] {
         let mut config = run(
             "maven",

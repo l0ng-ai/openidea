@@ -75,7 +75,7 @@ pub fn save_configs(
     let configs: Vec<RunConfig> = configs
         .iter()
         .map(|c| match c.kind.as_str() {
-            "gradle" => c.clone(),
+            "gradle" | "maven" => c.clone(),
             _ => ide_sdk::apply::without_derived(c, &project.root, &settings),
         })
         .collect();
