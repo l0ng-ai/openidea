@@ -58,3 +58,18 @@ A product decision needs the `needs-decision` label from AGENTS.md. Write the qu
 - IPC uses 0-based lines and **UTF-16** columns (`ide-core::text`, `ide-text`). Commands return `IdeResult<T>`.
 - Long work runs on `spawn_blocking` or rayon and respects `CancellationToken`. It never runs on a Tauri command thread.
 - The corpora (laravel/framework, symfony/symfony, WordPress) are in `D:\projects\php-corpus`, set up by `scripts/php-corpus.sh`. Tests that use them are `#[ignore]` and read `PHP_CORPUS_DIR`.
+
+## Tools
+
+Install these once per machine, then run `scripts/php-tools-check.sh`. It exits non-zero if anything is missing.
+
+- **Intelephense** (the baseline the engine is compared against): `npm i -g intelephense`. It needs Node 18 or newer. It has no `--version` flag; the check script starts `intelephense --stdio` and sends a scripted `initialize`, `initialized` and `shutdown`. Send `initialized` only after the `initialize` result arrives, because Intelephense 1.18 crashes otherwise.
+- **cargo-nextest:** use the prebuilt binary rather than compiling it.
+  - Windows (Git Bash): `curl -LsSf https://get.nexte.st/latest/windows-tar | tar zxf - -C ~/.cargo/bin`
+  - Linux: `curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin`
+  - macOS: `curl -LsSf https://get.nexte.st/latest/mac | tar zxf - -C ~/.cargo/bin`
+  - Anywhere, slower: `cargo install cargo-nextest --locked`
+
+  Run tests with `cargo nextest run -p ide-php`. `cargo test` still works.
+
+- **Corpora:** `scripts/php-corpus.sh` needs only git. It shallow-clones laravel/framework, symfony/symfony and WordPress/WordPress at the tags pinned in the script into `${PHP_CORPUS_DIR:-../php-corpus}` and skips any that are already there. `--check` only verifies them. To move to a new tag, change the script and delete that corpus directory.
