@@ -419,6 +419,7 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
         &[created.clone(), other],
         &[modified.clone(), outside],
         std::slice::from_ref(&removed),
+        &[h.root.join(".venv/lib/site-packages")],
     );
     eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
     assert_eq!(
@@ -430,9 +431,78 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
         ])
     );
     // Nothing of its languages: no notification.
-    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[]);
+    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// A server that registers file watchers hears of what they match, inside excluded folders
+/// too (`uv add` into `.venv`, `go get` rewriting `go.mod`); folders outside the project
+/// that relative patterns name are reported for watching; unregistered, it falls back to
+/// its languages' files.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_file_watchers_choose_the_changes_a_server_hears_of() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let roots = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
+    {
+        let roots = roots.clone();
+        h.mgr.set_file_watch_roots_hook(Box::new(move |r| roots.lock().push(r)));
+    }
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let outside = tempfile::tempdir().unwrap();
+    let outside = dunce::canonicalize(outside.path()).unwrap();
+    let external = outside.join("venv/lib/site-packages");
+    s.peer()
+        .request::<_, Value>(
+            "client/registerCapability",
+            json!({ "registrations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [
+                { "globPattern": "**/*.{mk,mod}" },
+                { "globPattern": "**/pyrightconfig.json", "kind": 2 },
+                { "globPattern": "**/site-packages/**" },
+                { "globPattern": { "baseUri": uri_of(&external), "pattern": "**" } },
+                { "globPattern": { "baseUri": uri_of(&h.root.join("sub")), "pattern": "**" } },
+            ] } }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![external.clone()]), "only folders outside the project");
+
+    let sp = h.root.join(".venv/lib/python3.14/site-packages");
+    let notified = || s.notified("workspace/didChangeWatchedFiles");
+    h.mgr.watched_files_changed(
+        &[h.root.join("go.mod"), h.root.join("notes.txt"), h.root.join("pyrightconfig.json")],
+        &[h.root.join("pyrightconfig.json"), external.join("idna/core.py")],
+        &[h.root.join("old.mk")],
+        &[sp.join("idna"), h.root.join("node_modules/x")],
+    );
+    eventually(|| !notified().is_empty()).await;
+    assert_eq!(
+        notified()[0]["changes"],
+        json!([
+            { "uri": uri_of(&h.root.join("go.mod")), "type": 1 },
+            { "uri": uri_of(&h.root.join("pyrightconfig.json")), "type": 2 },
+            { "uri": uri_of(&external.join("idna/core.py")), "type": 2 },
+            { "uri": uri_of(&h.root.join("old.mk")), "type": 3 },
+            { "uri": uri_of(&sp.join("idna")), "type": 1 },
+        ])
+    );
+
+    s.peer()
+        .request::<_, Value>(
+            "client/unregisterCapability",
+            json!({ "unregisterations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles" }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![]));
+    h.mgr.watched_files_changed(&[h.root.join("go.mod"), h.root.join("b.mk")], &[], &[], &[sp.join("idna")]);
+    eventually(|| notified().len() == 2).await;
+    assert_eq!(notified()[1]["changes"], json!([{ "uri": uri_of(&h.root.join("b.mk")), "type": 1 }]));
     h.mgr.shutdown_all().await;
 }
 

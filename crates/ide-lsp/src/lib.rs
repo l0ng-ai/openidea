@@ -12,6 +12,7 @@ mod clang_tidy;
 mod convert;
 mod external_project;
 mod file_ops;
+mod file_watch;
 mod handler;
 mod inspect;
 pub mod jdtls;
@@ -160,6 +161,9 @@ impl DocSnap {
     }
 }
 
+/// Receives the folders outside the project that servers want watched.
+pub type WatchRootsFn = dyn Fn(Vec<PathBuf>) + Send + Sync;
+
 pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
@@ -177,6 +181,7 @@ pub struct LspManager {
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
+    watch_roots_hook: RwLock<Option<Arc<WatchRootsFn>>>,
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
     java_usages_warned: AtomicBool,
@@ -336,6 +341,7 @@ impl LspManager {
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
             excludes_hook: RwLock::new(None),
+            watch_roots_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
             java_usages_warned: AtomicBool::new(false),
@@ -587,6 +593,9 @@ impl LspManager {
                 return;
             }
         };
+        let run =
+            Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)), watchers: Default::default() };
+        server.set_initializing(Some(run.clone()));
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
         }
@@ -598,7 +607,6 @@ impl LspManager {
         {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
-        let run = Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)) };
 
         self.refresh_external_project(&server, &run).await;
 
@@ -607,6 +615,7 @@ impl LspManager {
             let mut docs = self.docs.lock();
             if !server.mark_ready(generation, run.clone()) {
                 drop(docs);
+                server.set_initializing(None);
                 peer.kill();
                 return;
             }
@@ -644,6 +653,7 @@ impl LspManager {
             None => return, // superseded instance
         };
         self.clear_server_state(&server);
+        self.file_watch_roots_changed();
         if intentional {
             server.announce_down();
             return;
@@ -1973,27 +1983,76 @@ impl LspManager {
         }
     }
 
-    /// Files that changed on disk, outside the editor too (a checkout, another tool): each running
-    /// server hears of those of its languages under its root through `workspace/didChangeWatchedFiles`.
-    /// Without it jdtls's incremental build never sees them, so a launch runs stale classes.
-    pub fn watched_files_changed(&self, created: &[PathBuf], modified: &[PathBuf], removed: &[PathBuf]) {
+    /// Files that changed on disk, outside the editor too (a checkout, another tool), sent to
+    /// running servers through `workspace/didChangeWatchedFiles`. A server that registered file
+    /// watchers hears of what they match, including `excluded_dirs` (folders in excluded or
+    /// ignored trees whose entries came or went, reported as created): a package installed
+    /// into `.venv` or a `go.mod` rewritten by `go get` is picked up without a restart. Other
+    /// servers hear of their languages' files under their root; without it jdtls's incremental
+    /// build never sees them, so a launch runs stale classes.
+    pub fn watched_files_changed(
+        &self,
+        created: &[PathBuf],
+        modified: &[PathBuf],
+        removed: &[PathBuf],
+        excluded_dirs: &[PathBuf],
+    ) {
+        use file_watch::Change;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
             let Some(run) = s.running() else { continue };
-            let languages = s.languages();
-            let changes: Vec<Value> = [(created, 1), (modified, 2), (removed, 3)]
+            let all = [(created, Change::Created), (modified, Change::Changed), (removed, Change::Deleted)]
                 .into_iter()
-                .flat_map(|(paths, kind)| paths.iter().map(move |p| (p, kind)))
-                .filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
-                .map(|(p, kind)| json!({ "uri": uri::path_to_uri(p), "type": kind }))
-                .collect();
+                .flat_map(|(paths, change)| paths.iter().map(move |p| (p, change)));
+            let watchers = run.watchers.read();
+            let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
+                let languages = s.languages();
+                all.filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
+                    .collect()
+            } else {
+                all.chain(excluded_dirs.iter().map(|p| (p, Change::Created)))
+                    .filter(|(p, change)| watchers.wants(&s.root, p, *change))
+                    .collect()
+            };
+            drop(watchers);
             if changes.is_empty() {
                 continue;
             }
+            let changes: Vec<Value> =
+                changes.iter().map(|(p, c)| json!({ "uri": uri::path_to_uri(p), "type": *c as u8 })).collect();
             if let Err(e) = run.peer.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes })) {
                 tracing::debug!("{}: didChangeWatchedFiles: {e}", s.name);
             }
         }
+    }
+
+    /// Called with the folders outside the project that servers registered file watchers
+    /// for (a virtualenv elsewhere, a path dependency), whenever they change. Changes
+    /// below them go to [`Self::watched_files_changed`].
+    pub fn set_file_watch_roots_hook(&self, hook: Box<WatchRootsFn>) {
+        *self.watch_roots_hook.write() = Some(Arc::from(hook));
+        self.file_watch_roots_changed();
+    }
+
+    pub(crate) fn file_watch_roots_changed(&self) {
+        let Some(hook) = self.watch_roots_hook.read().clone() else { return };
+        let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for run in servers.iter().filter_map(|s| s.instance()) {
+            roots.extend(
+                run.watchers.read().bases().filter(|b| !b.starts_with(&self.project_root)).map(Path::to_path_buf),
+            );
+        }
+        roots.sort();
+        roots.dedup();
+        // Sorted, so a folder's subfolders follow it.
+        let mut outer: Vec<PathBuf> = Vec::new();
+        for r in roots {
+            if !outer.last().is_some_and(|o| r.starts_with(o)) {
+                outer.push(r);
+            }
+        }
+        hook(outer);
     }
 
     /// Checks initialized capabilities, including dynamic registrations, before choosing a formatter.
