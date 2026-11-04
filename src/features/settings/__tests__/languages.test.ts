@@ -57,7 +57,15 @@ describe("languages settings", () => {
   });
 
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
-    expect(validateSettings({}).languages.php).toEqual({ interpreter: "", languageLevel: "" });
+    expect(validateSettings({}).languages.php).toEqual({
+      interpreter: "",
+      languageLevel: "",
+      includePaths: [],
+      stubs: [],
+    });
+    const lists = validateLanguages({ php: { includePaths: [" ../platform ", "", 3, "../platform"], stubs: "redis" } });
+    expect(lists.php.includePaths).toEqual(["../platform"]);
+    expect(lists.php.stubs).toEqual([]);
     expect(validateLanguages({ php: { languageLevel: "7.4" } }).php.languageLevel).toBe("7.4");
     for (const level of ["7.4.3", "9.0", 8.1, null]) {
       expect(validateLanguages({ php: { languageLevel: level } }).php.languageLevel).toBe("");
