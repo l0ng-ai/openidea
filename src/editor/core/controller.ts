@@ -588,7 +588,21 @@ export class EditorController implements SlotHost {
 
   onBlur(slot: EditorSlot) {
     setContext("editorTextFocus", false);
-    if (this.autoSave()) void slot.model.save("auto").catch(() => {});
+    if (!this.autoSave()) return;
+    const save = () => void slot.model.save("auto").catch(() => {});
+    if (typeof document === "undefined") return save();
+    // A popup (intentions, completion, …) belongs to the editor: saving under it would change
+    // the text (save cleanup) its items were computed for. Save once focus leaves it elsewhere.
+    setTimeout(() => {
+      if (slot.view?.hasFocus) return;
+      if (!inPopup(document.activeElement)) return save();
+      const onFocusIn = (e: FocusEvent) => {
+        if (inPopup(e.target)) return;
+        document.removeEventListener("focusin", onFocusIn);
+        if (!slot.view?.hasFocus) save();
+      };
+      document.addEventListener("focusin", onFocusIn);
+    });
   }
 
   onSelection(slot: EditorSlot, navigatedFrom?: { line: number; col: number }) {
@@ -1891,4 +1905,8 @@ export function editorController(): EditorController {
 function revealLabel(): string {
   const os = usePlatform.getState().os;
   return os === "macos" ? "Finder" : os === "windows" ? "Explorer" : "Files";
+}
+
+function inPopup(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest("[data-popup]");
 }
