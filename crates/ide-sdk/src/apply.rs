@@ -616,6 +616,15 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         merge_init_options(cfg, json!({ "environment": { "phpVersion": version } }));
     }
+    if name == "intelephense" {
+        if let Some(stubs) = crate::php::intelephense_stubs(root, s) {
+            merge_init_options(cfg, json!({ "stubs": stubs }));
+        }
+        let include_paths = crate::php::include_paths(root, s);
+        if !include_paths.is_empty() {
+            merge_init_options(cfg, json!({ "environment": { "includePaths": include_paths } }));
+        }
+    }
 
     // Node-based servers (`#!/usr/bin/env node`) run on the selected Node.js.
     if let Some(dir) = node_dir(root, s) {

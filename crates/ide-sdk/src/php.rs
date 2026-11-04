@@ -1,8 +1,8 @@
 //! The PHP language level: the one chosen in Settings › PHP, else the one the root
 //! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
-//! and the Intelephense storage that goes with it.
+//! the Intelephense storage that goes with it; and the stub sets and include paths Intelephense indexes.
 
-use crate::apply::{merge, merge_init_options};
+use crate::apply::{merge, merge_init_options, setting_path};
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
@@ -46,6 +46,68 @@ pub fn configure_intelephense_storage(cfg: &mut LanguageServerConfig, data_dir: 
     };
     let storage = data_dir.join("lsp").join("intelephense").join(version);
     merge_init_options(cfg, json!({ "storagePath": storage.to_string_lossy() }));
+}
+
+/// The stub sets Intelephense loads when `stubs` is not set (Intelephense 1.18.5). Setting
+/// `stubs` replaces them, so additions are sent together with these.
+#[rustfmt::skip]
+const DEFAULT_STUBS: &[&str] = &[
+    "apache", "bcmath", "bz2", "calendar", "com_dotnet", "Core", "ctype", "curl", "date", "dba", "dom", "enchant",
+    "exif", "fileinfo", "filter", "fpm", "ftp", "gd", "hash", "iconv", "imap", "intl", "json", "ldap", "libxml",
+    "mbstring", "mcrypt", "mssql", "mysqli", "oci8", "odbc", "openssl", "pcntl", "pcre", "PDO", "pgsql", "Phar",
+    "posix", "pspell", "random", "readline", "Reflection", "regex", "session", "shmop", "SimpleXML", "snmp", "soap",
+    "sockets", "sodium", "SPL", "sqlite3", "standard", "superglobals", "sybase", "sysvmsg", "sysvsem", "sysvshm",
+    "tidy", "tokenizer", "uri", "xml", "xmlreader", "xmlrpc", "xmlwriter", "Zend OPcache", "zip", "zlib",
+];
+
+/// Stub sets outside the defaults whose names are not lower case; the rest are the lower-case
+/// extension name.
+const MIXED_CASE_STUBS: &[&str] =
+    &["Ev", "FFI", "LuaSandbox", "Parle", "SQLite", "SaxonC", "SplType", "ZendCache", "ZendDebugger", "ZendUtils"];
+
+/// `Zend OPcache`, `zend-opcache` and `zend_opcache` name the same stubs.
+fn stub_key(name: &str) -> String {
+    name.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// The `stubs` Intelephense loads: its defaults plus a stub set for each `ext-*` that the root
+/// `composer.json` requires (`require`, `require-dev`) and those in Settings › PHP. `None` when
+/// that adds nothing to the defaults, so the server keeps its own.
+pub fn intelephense_stubs(root: &Path, s: &Settings) -> Option<Vec<String>> {
+    let composer: Option<Value> =
+        std::fs::read_to_string(root.join("composer.json")).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let extensions = ["require", "require-dev"]
+        .into_iter()
+        .filter_map(|section| composer.as_ref()?.get(section)?.as_object())
+        .flat_map(|deps| deps.keys())
+        .filter_map(|dep| dep.strip_prefix("ext-"))
+        .map(|ext| {
+            let key = stub_key(ext);
+            MIXED_CASE_STUBS
+                .iter()
+                .find(|stub| stub_key(stub) == key)
+                .map_or(ext.to_ascii_lowercase(), |s| s.to_string())
+        });
+    let configured = s.languages.php.stubs.iter().map(|stub| stub.trim().to_owned());
+    let mut stubs: Vec<String> = DEFAULT_STUBS.iter().map(|s| s.to_string()).collect();
+    let mut known: std::collections::HashSet<String> = stubs.iter().map(|s| stub_key(s)).collect();
+    for stub in extensions.chain(configured) {
+        if !stub.is_empty() && known.insert(stub_key(&stub)) {
+            stubs.push(stub);
+        }
+    }
+    (stubs.len() > DEFAULT_STUBS.len()).then_some(stubs)
+}
+
+/// The folders in Settings › PHP › Include paths, resolved against the project.
+pub fn include_paths(root: &Path, s: &Settings) -> Vec<String> {
+    s.languages
+        .php
+        .include_paths
+        .iter()
+        .filter_map(|p| setting_path(root, p))
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 type Version = (u32, u32, u32);
@@ -199,6 +261,57 @@ mod tests {
             configure_intelephense_storage(&mut cfg, data);
             assert_eq!(cfg, unchanged);
         }
+    }
+
+    fn stubs(composer: Option<Value>, configured: &[&str]) -> Option<Vec<String>> {
+        let tmp = tempfile::tempdir().unwrap();
+        if let Some(composer) = composer {
+            std::fs::write(tmp.path().join("composer.json"), composer.to_string()).unwrap();
+        }
+        let mut s = Settings::default();
+        s.languages.php.stubs = configured.iter().map(|s| s.to_string()).collect();
+        intelephense_stubs(tmp.path(), &s)
+    }
+
+    fn added(stubs: Option<Vec<String>>) -> Vec<String> {
+        let stubs = stubs.expect("stubs");
+        assert_eq!(stubs[..DEFAULT_STUBS.len()], DEFAULT_STUBS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        stubs[DEFAULT_STUBS.len()..].to_vec()
+    }
+
+    #[test]
+    fn required_extensions_and_configured_stubs_follow_the_defaults() {
+        let composer = json!({
+            "require": {"php": "^8.1", "ext-redis": "*", "ext-json": "*", "monolog/monolog": "^3"},
+            "require-dev": {"ext-Imagick": "*", "ext-ffi": "*", "ext-redis": "*"}
+        });
+        assert_eq!(
+            added(stubs(Some(composer), &[" wordpress ", "Redis", ""])),
+            ["redis", "imagick", "FFI", "wordpress"]
+        );
+        assert_eq!(added(stubs(None, &["wordpress"])), ["wordpress"]);
+    }
+
+    #[test]
+    fn nothing_beyond_the_defaults_sends_nothing() {
+        assert_eq!(stubs(None, &[]), None);
+        assert_eq!(stubs(Some(json!({"require": {"php": "^8.1"}})), &[]), None);
+        // Default stub sets under their extension names: `ext-pdo`, `ext-zend-opcache`, `ext-simplexml`.
+        let defaults =
+            json!({"require": {"ext-pdo": "*", "ext-zend-opcache": "*", "ext-simplexml": "*", "ext-json": "*"}});
+        assert_eq!(stubs(Some(defaults), &["SPL", "core"]), None);
+        assert_eq!(stubs(Some(json!("not an object")), &[]), None);
+    }
+
+    #[test]
+    fn include_paths_resolve_against_the_project() {
+        let root = Path::new("/work/module");
+        let mut s = Settings::default();
+        s.languages.php.include_paths = vec!["../platform".into(), "/opt/prestashop".into(), " ".into()];
+        assert_eq!(
+            include_paths(root, &s),
+            [root.join("../platform").to_string_lossy().into_owned(), "/opt/prestashop".to_string()]
+        );
     }
 
     #[test]

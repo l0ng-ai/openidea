@@ -5398,6 +5398,16 @@ export type PhpSettings = {
 	 *  `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
 	 */
 	languageLevel?: string,
+	/**
+	 *  Folders outside the project whose code the language server indexes too (a platform a
+	 *  module extends); absolute, `~/`, or relative to the project.
+	 */
+	includePaths?: string[],
+	/**
+	 *  Intelephense stub sets loaded on top of its defaults and the `ext-*` entries of
+	 *  `composer.json` (`wordpress`).
+	 */
+	stubs?: string[],
 };
 
 /**  The focused editor when a plugin command is invoked. */
