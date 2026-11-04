@@ -5521,6 +5521,12 @@ export type PhpSettings = {
 	 *  `composer.json` (`wordpress`).
 	 */
 	stubs?: string[],
+	/**
+	 *  PHPStan configuration file for checking saved files; empty = the `phpstan.neon`,
+	 *  `phpstan.neon.dist` or `phpstan.dist.neon` PHPStan finds in the project root. Absolute,
+	 *  `~/`, or relative to the project.
+	 */
+	phpstanConfig?: string,
 };
 
 /**  The focused editor when a plugin command is invoked. */

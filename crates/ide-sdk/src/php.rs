@@ -141,11 +141,12 @@ pub fn include_paths(root: &Path, s: &Settings) -> Vec<String> {
         .collect()
 }
 
-/// `vendor/bin/phpstan analyse` of `files` with a JSON report, run from `root` with Xdebug off: in
-/// debug mode it would try to reach a debugger on every run. The selected PHP runs the script
-/// itself (and is first on `PATH`, as for PHPUnit), so a `php8.1` is not replaced by the `php` its
-/// `#!/usr/bin/env php` finds, and Windows needs no `phpstan.bat`, whose `cmd` limits the command
-/// line. `None` when the project has no PHPStan.
+/// `vendor/bin/phpstan analyse` of `files` with a JSON report and the configuration file of
+/// Settings › PHP, run from `root` with Xdebug off: in debug mode it would try to reach a
+/// debugger on every run. The selected PHP runs the script itself (and is first on `PATH`, as for
+/// PHPUnit), so a `php8.1` is not replaced by the `php` its `#!/usr/bin/env php` finds, and
+/// Windows needs no `phpstan.bat`, whose `cmd` limits the command line. `None` when the project
+/// has no PHPStan.
 pub fn phpstan_command(root: &Path, s: &Settings, files: &[PathBuf]) -> Option<Command> {
     let bin = root.join("vendor/bin/phpstan");
     if !bin.is_file() {
@@ -155,7 +156,11 @@ pub fn phpstan_command(root: &Path, s: &Settings, files: &[PathBuf]) -> Option<C
         .or_else(|| crate::exec::which("php"))
         .unwrap_or_else(|| PathBuf::from("php"));
     let mut cmd = Command::new(php);
-    cmd.current_dir(root).arg(bin).args(["analyse", "--error-format=json", "--no-progress"]).args(files);
+    cmd.current_dir(root).arg(bin).args(["analyse", "--error-format=json", "--no-progress"]);
+    if let Some(config) = setting_path(root, &s.languages.php.phpstan_config) {
+        cmd.arg("--configuration").arg(config);
+    }
+    cmd.args(files);
     cmd.env("XDEBUG_MODE", "off");
     if let Some(dir) = crate::apply::php_dir(root, s) {
         cmd.env("PATH", crate::exec::path_with(&[&dir]));
@@ -424,6 +429,26 @@ mod tests {
         let path = env.iter().find(|(k, _)| k == "PATH").and_then(|(_, v)| v.clone()).expect("PATH");
         assert_eq!(std::env::split_paths(&path).next(), Some(root.join("php85/bin")));
         assert!(env.contains(&("XDEBUG_MODE".to_string(), Some("off".to_string()))));
+    }
+
+    #[test]
+    fn phpstan_uses_the_configuration_file_of_the_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let bin = root.join("vendor/bin/phpstan");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        let args = |config: &str| {
+            let mut s = Settings::default();
+            s.languages.php.phpstan_config = config.into();
+            phpstan(root, &s).unwrap().get_args().map(text).collect::<Vec<_>>()
+        };
+        let resolved = root.join("build/phpstan.ci.neon").to_string_lossy().into_owned();
+        assert_eq!(args(" build/phpstan.ci.neon ")[4..6], ["--configuration".to_string(), resolved]);
+        let absolute = if cfg!(windows) { "C:/etc/phpstan.neon" } else { "/etc/phpstan.neon" };
+        assert_eq!(args(absolute)[4..6], ["--configuration", absolute]);
+        // Empty: PHPStan finds phpstan.neon, phpstan.neon.dist or phpstan.dist.neon itself.
+        assert!(!args(" ").iter().any(|a| a.starts_with("--configuration")));
     }
 
     #[test]

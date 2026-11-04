@@ -162,6 +162,16 @@ export function PhpPage() {
           />
         </Row>
       </Section>
+      <Section title="PHPStan">
+        <PathInput
+          k="languages.php.phpstanConfig"
+          label="Configuration file"
+          placeholder="phpstan.neon, phpstan.neon.dist or phpstan.dist.neon"
+          hint="The configuration vendor/bin/phpstan checks saved files with. Empty uses phpstan.neon, phpstan.neon.dist or phpstan.dist.neon in the project root. Absolute, or relative to the project."
+          title="Select PHPStan Configuration File"
+          file
+        />
+      </Section>
       <Section title="CLI Interpreter">
         <SdkRow
           k="languages.php.interpreter"

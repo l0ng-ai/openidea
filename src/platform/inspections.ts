@@ -306,7 +306,7 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     name: "PHPStan",
     group: "PHP",
     description:
-      "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.",
+      "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root, or the configuration file chosen in Settings › Languages & Frameworks › PHP. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.",
     defaultLevel: "warning",
     byCode: true,
   },
