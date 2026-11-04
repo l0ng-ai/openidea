@@ -1,6 +1,6 @@
 /**
  * Pull Members Up / Push Members Down. The language server is stubbed at the IPC layer: the
- * Java side is covered by plugins/java-usages/tests/hierarchy.py against a real JDT LS.
+ * Java side is covered by java/java-usages/tests/hierarchy.py against a real JDT LS.
  */
 import type { Page } from "@playwright/test";
 import { expect, openFromTree, test } from "./fixtures";

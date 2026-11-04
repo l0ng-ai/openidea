@@ -81,6 +81,26 @@ export class TestResults {
     return best;
   }
 
+  /** Moves the subtree at `from` to `into`, merging it with what is already there. */
+  move(from: string[], into: string[]) {
+    const source = this.byId.get(from.join(SEP));
+    if (!source || from.join(SEP) === into.join(SEP)) return;
+    this.version++;
+    const parent = from.length > 1 ? this.byId.get(from.slice(0, -1).join(SEP))?.children : this.roots;
+    parent?.splice(parent.indexOf(source), 1);
+    this.mergeInto(source, into);
+  }
+
+  private mergeInto(source: TestNode, into: string[]) {
+    this.byId.delete(source.id);
+    const target = this.node(into);
+    if (source.own && (!target.own || source.own === "failed")) target.own = source.own;
+    target.durationMs ??= source.durationMs;
+    target.location ??= source.location;
+    if (target.output.length === 0) target.output = source.output;
+    for (const child of source.children) this.mergeInto(child, [...into, child.name]);
+  }
+
   apply(events: readonly TestEvent[]) {
     if (events.length === 0) return;
     this.version++;

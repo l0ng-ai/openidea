@@ -8,3 +8,6 @@ export function cellPreview(value: string): string {
   if (last >= 0xd800 && last <= 0xdbff) end--;
   return value.slice(0, end) + "\u2026";
 }
+
+/** Whether the value spans several lines (a single-line field would drop its line breaks). */
+export const hasLineBreak = (value: string) => /[\r\n]/.test(value);

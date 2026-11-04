@@ -83,8 +83,7 @@ export const openideaTheme = EditorView.theme({
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
-    // The workbench body uses the arrow cursor; the text area gets the I-beam (also past the last line).
-    cursor: "text",
+    // The scroll container keeps the arrow cursor so its scrollbar does not turn into the I-beam.
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
@@ -95,6 +94,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-content": {
     padding: "4px 0 8px 0",
     caretColor: "var(--caret, var(--fg-strong))",
+    cursor: "text",
   },
   ".cm-line": { padding: "0 16px 0 6px" },
   ...caretStyles,
@@ -248,6 +248,9 @@ export const openideaTheme = EditorView.theme({
 
   // Overlays
   ".cm-tooltip": {
+    // Natural width, so a measurement taken while squeezed is not fed back (#1188).
+    width: "max-content",
+    maxWidth: "100%",
     backgroundColor: "var(--bg-popup)",
     color: "var(--fg)",
     border: "1px solid var(--border-popup)",

@@ -340,6 +340,7 @@
   "menu.vcs.addToVcs": "添加到 VCS",
   "menu.vcs.compareWithBranch": "与分支或修订比较…",
   "menu.vcs.showHistory": "显示历史记录",
+  "menu.vcs.showHistoryForSelection": "显示所选内容的历史记录",
   "menu.build": "构建",
   "menu.build.buildProject": "构建项目",
   "menu.build.buildModule": "构建模块",

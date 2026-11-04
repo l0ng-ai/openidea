@@ -14,6 +14,8 @@ command = "intelephense"
 args = ["--stdio"]
 root-markers = ["composer.json", ".phpactor.json", "index.php"]
 install-hint = "npm i -g intelephense"
+# Intelephense applies the PHP version only to documents it parses after reading it.
+resync-on-configuration = true
 
 [[language-servers]]
 name = "phpactor"

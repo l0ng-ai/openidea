@@ -340,6 +340,7 @@
   "menu.vcs.addToVcs": "VCS에 추가",
   "menu.vcs.compareWithBranch": "브랜치 또는 리비전과 비교…",
   "menu.vcs.showHistory": "기록 표시",
+  "menu.vcs.showHistoryForSelection": "선택 영역 기록 표시",
   "menu.build": "빌드",
   "menu.build.buildProject": "프로젝트 빌드",
   "menu.build.buildModule": "모듈 빌드",

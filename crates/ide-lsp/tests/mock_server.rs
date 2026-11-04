@@ -31,6 +31,8 @@ struct MockState {
     errors: Mutex<HashMap<String, (i64, String)>>,
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
+    /// Holds the handling of notifications of this method until the gate opens.
+    held: Mutex<Option<(String, Arc<Gate>)>>,
     peer: Mutex<Option<Peer>>,
 }
 
@@ -74,6 +76,12 @@ struct MockHandler(Arc<MockState>);
 impl Handler for MockHandler {
     fn on_notification(&self, method: &str, params: Value) {
         let s = &self.0;
+        let held = s.held.lock().clone();
+        if let Some((m, gate)) = held
+            && m == method
+        {
+            gate.hold();
+        }
         // Held throughout: a test that sees the effect (a document, the peer gone) also sees the record.
         let mut log = s.notifications.lock();
         let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
@@ -230,6 +238,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
         pinned: None,
     }
 }
@@ -269,6 +278,7 @@ fn harness_configured(
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: servers
             .iter()
@@ -767,6 +777,113 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
 }
 
+/// The diagnostics shown last for `path` by `source`, as their messages.
+fn shown(h: &Harness, path: &Path, source: &str) -> Option<Vec<String>> {
+    h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Diagnostics { path: p, source: s, items } if **p == *path && s == source => {
+            Some(items.iter().map(|d| d.message.clone()).collect())
+        }
+        _ => None,
+    })
+}
+
+/// Reports a "bad" diagnostic per line containing `bad`, as `textDocument/diagnostic`; answers
+/// `unchanged` when the text is what `previousResultId` was computed from.
+fn pull_responder() -> Responder {
+    Arc::new(|s: &MockState, method: &str, params: &Value| {
+        if method != "textDocument/diagnostic" {
+            return None;
+        }
+        let text = s.docs.lock().get(params["textDocument"]["uri"].as_str()?).cloned()?;
+        let id = format!("{}", text.len() * 31 + text.matches("bad").count());
+        if params["previousResultId"].as_str() == Some(id.as_str()) {
+            return Some(json!({ "kind": "unchanged", "resultId": id }));
+        }
+        let items: Vec<Value> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains("bad"))
+            .map(|(i, _)| {
+                json!({ "range": {"start":{"line":i,"character":0},"end":{"line":i,"character":3}},
+                        "severity": 1, "message": "bad" })
+            })
+            .collect();
+        Some(json!({ "kind": "full", "resultId": id, "items": items }))
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pulled_diagnostics_follow_edits_and_join_pushed_ones() {
+    let mut pull_caps = incremental_caps();
+    pull_caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness(&[("mock", pull_caps), ("push", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    *s.responder.lock() = Some(pull_responder());
+    let (doc, path) = h.open("a.mk", "ok\nbad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("push", ServerStatus::Ready).await;
+    assert!(s.requested("initialize")[0]["capabilities"]["textDocument"]["diagnostic"].is_object());
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["bad".into()])).await;
+    assert!(h.launcher.state("push").requested("textDocument/diagnostic").is_empty(), "it pulls from providers only");
+
+    // What the server still pushes (rust-analyzer: `cargo check`) shows next to what was pulled.
+    let pushed = json!({ "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":2}},
+                         "severity": 2, "message": "pushed" });
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": [pushed] }))
+        .unwrap();
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into(), "bad".into()])).await;
+
+    // Edits are pulled again once typing pauses.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), "bad\n")], &|| unreachable!());
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into(), "bad".into(), "bad".into()])).await;
+    // Pulled diagnostics are code actions' context like pushed ones.
+    let _ = h.mgr.code_actions(doc, rng(2, 1, 2, 1), vec![]).await;
+    let ctx = &s.requested("textDocument/codeAction")[0]["context"]["diagnostics"];
+    assert_eq!(ctx.as_array().unwrap().iter().map(|d| d["message"].as_str().unwrap()).collect::<Vec<_>>(), ["bad"]);
+
+    // Saving unchanged text asks with the last result id; `unchanged` keeps what is shown.
+    let pulls = s.requested("textDocument/diagnostic").len();
+    h.mgr.did_save(doc, "bad\nok\nbad\n");
+    eventually(|| s.requested("textDocument/diagnostic").len() > pulls).await;
+    let last = s.requested("textDocument/diagnostic").last().cloned().unwrap();
+    assert!(last["previousResultId"].is_string());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(shown(&h, &path, "mock"), Some(vec!["pushed".into(), "bad".into(), "bad".into()]));
+
+    // Closing drops what was pulled; the pushed diagnostics stay the server's to clear.
+    h.mgr.did_close(doc);
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into()])).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_pull_is_retried_and_a_refresh_pulls_again() {
+    let mut caps = incremental_caps();
+    caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness(&[("mock", caps)]);
+    let s = h.launcher.state("mock");
+    *s.responder.lock() = Some(pull_responder());
+    // Busy indexing: the server cancels and asks to be asked again.
+    s.errors.lock().insert("textDocument/diagnostic".into(), (-32802, "indexing".into()));
+    let (_doc, path) = h.open("a.mk", "bad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.requested("textDocument/diagnostic").len() >= 2).await;
+    assert_eq!(shown(&h, &path, "mock"), None);
+    s.errors.lock().clear();
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["bad".into()])).await;
+
+    // `workspace/diagnostic/refresh` (e.g. after a project reload) pulls open files again.
+    *s.responder.lock() = Some(Arc::new(|_: &MockState, method: &str, _: &Value| {
+        (method == "textDocument/diagnostic").then(|| {
+            json!({ "kind": "full", "items": [
+            { "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":3}}, "message": "reloaded" } ] })
+        })
+    }));
+    let refreshed: Value = s.peer().request("workspace/diagnostic/refresh", Value::Null, None).await.unwrap();
+    assert_eq!(refreshed, Value::Null);
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["reloaded".into()])).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn apply_edit_hook_and_server_requests() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -1108,6 +1225,54 @@ async fn preparation_refreshes_config_and_survives_unchanged_settings() {
     h.wait_status("mock", ServerStatus::Ready).await;
     assert_eq!(started.load(Ordering::SeqCst), 1);
     assert_eq!(h.launcher.state("mock").launches.load(Ordering::SeqCst), 1);
+}
+
+/// Intelephense applies the PHP version only to documents it parses after reading its
+/// configuration: once that is answered, servers that opt in get their open documents again.
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
+    let h = harness_configured("mock", "mk", &[("mock", incremental_caps()), ("extra", incremental_caps())], |cfg| {
+        cfg.resync_on_configuration = cfg.name == "mock"
+    });
+    let (doc, path) = h.open("a.mk", "enum A {}");
+    let uri = uri_of(&path);
+    let (s, extra) = (h.launcher.state("mock"), h.launcher.state("extra"));
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("extra", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().contains_key(&uri) && extra.docs.lock().contains_key(&uri)).await;
+    h.mgr.did_change(doc, 2, &[change(rng(0, 9, 0, 9), "\n")], &|| unreachable!());
+    eventually(|| s.notified("textDocument/didChange").len() == 1).await;
+
+    let items = |section: &str| json!({ "items": [{ "section": section }] });
+    let options = json!([{ "flag": true, "nested": { "deep": 1 } }]);
+    let answer: Value = extra.peer().request("workspace/configuration", items("extra"), None).await.unwrap();
+    assert_eq!(answer, options);
+    // The mock handles what arrives in order, answers included: a re-sync sent before the
+    // answer would hold it back here.
+    let gate = Arc::new(Gate::default());
+    *s.held.lock() = Some(("textDocument/didChange".into(), gate.clone()));
+    let peer = s.peer();
+    let request = peer.request::<_, Value>("workspace/configuration", items("mock"), None);
+    let answer = tokio::time::timeout(Duration::from_secs(10), request).await.expect("re-sync sent before the answer");
+    assert_eq!(answer.unwrap(), options);
+    eventually(|| gate.entered()).await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 1);
+    gate.open();
+    eventually(|| s.notified("textDocument/didChange").len() == 2).await;
+    assert_eq!(
+        s.notified("textDocument/didChange")[1],
+        json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": "enum A {}\n" }] })
+    );
+    assert_eq!(s.docs.lock()[&uri], "enum A {}\n");
+
+    // A notification sent after both answers reaches the servers after anything they triggered.
+    h.mgr.did_save(doc, "enum A {}\n");
+    eventually(|| extra.notified("textDocument/didSave").len() == 1 && s.notified("textDocument/didSave").len() == 1)
+        .await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
+    let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,5 +1,5 @@
 //! Pull Members Up / Push Members Down through the app-owned JDT extension
-//! (`plugins/java-usages`). The server checks the move and computes the edit; the UI
+//! (`java/java-usages`). The server checks the move and computes the edit; the UI
 //! shows its problems and applies the edit itself.
 use super::COMMAND_TIMEOUT;
 use crate::types::{HierarchyChoice, HierarchyMembers, HierarchyRefactored, HierarchyRefactoring, RefactoringProblem};

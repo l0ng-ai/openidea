@@ -670,6 +670,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     act("vcs.showDiff", "Show Diff"),
                     act("vcs.compareWithBranch", "Compare with Branch or Revision…"),
                     act("vcs.showHistory", "Show History"),
+                    act("vcs.showHistoryForSelection", "Show History for Selection"),
                     SEP,
                     act("vcs.localHistory", "Local History"),
                     act("localHistory.putLabel", "Put Label…"),

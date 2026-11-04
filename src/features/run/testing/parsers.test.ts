@@ -13,6 +13,7 @@ import {
   TestResults,
   type TestOutputParser,
 } from "./index";
+import { moveToReportedClasses } from "./jvm";
 
 function results(parser: TestOutputParser, text: string) {
   const r = new TestResults();
@@ -365,14 +366,37 @@ OrderControllerTest > Paging > firstPage() SKIPPED
 3 tests completed, 1 failed, 1 skipped
 `,
     );
-    expect(leaf(r, "OrderControllerTest", "shouldListOrders()")?.own).toBe("passed");
-    expect(leaf(r, "OrderControllerTest", "shouldCreateOrder()")?.location).toEqual({
+    expect(leaf(r, "OrderControllerTest", "shouldListOrders")?.own).toBe("passed");
+    expect(leaf(r, "OrderControllerTest", "shouldCreateOrder")?.location).toEqual({
       path: "OrderControllerTest.kt",
       line: 22,
       resolve: "name",
     });
-    expect(leaf(r, "OrderControllerTest", "Paging", "firstPage()")?.own).toBe("skipped");
+    expect(leaf(r, "OrderControllerTest", "Paging", "firstPage")?.own).toBe("skipped");
     expect(r.summary).toMatchObject({ passed: 1, failed: 1, skipped: 1 });
+  });
+
+  it("moves gradle's console results to the reported classes", () => {
+    const r = results(
+      jvmParser(),
+      `OrderTest > creates order() FAILED
+    org.opentest4j.AssertionFailedError at OrderTest.kt:22
+`,
+    );
+    r.apply([
+      { type: "result", path: ["com.acme.OrderTest", "lists"], status: "passed" },
+      { type: "result", path: ["com.acme.OrderTest", "creates order"], status: "failed" },
+      { type: "result", path: ["com.acme.UserTest", "loads"], status: "passed" },
+      { type: "result", path: ["com.other.UserTest", "loads"], status: "passed" },
+    ]);
+    moveToReportedClasses(r, ["com.acme.OrderTest", "com.acme.UserTest", "com.other.UserTest"]);
+    expect(r.roots.map((n) => n.name)).toEqual(["com.acme.OrderTest", "com.acme.UserTest", "com.other.UserTest"]);
+    const failed = leaf(r, "com.acme.OrderTest", "creates order")!;
+    expect(failed.own).toBe("failed");
+    expect(failed.location).toMatchObject({ path: "OrderTest.kt", line: 22 });
+    expect(failed.output).not.toEqual([]);
+    expect(r.counts()).toMatchObject({ passed: 3, failed: 1 });
+    expect(r.get("OrderTest")).toBeUndefined();
   });
 
   it("parses surefire reports", () => {

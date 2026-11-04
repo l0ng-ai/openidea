@@ -222,6 +222,29 @@ pub async fn vcs_blame(
     .await
 }
 
+/// History for Selection: the commits that changed `lines` (0-based, inclusive) of the
+/// editor's text of `path`. Cancellable.
+pub async fn vcs_block_history(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+) -> IdeResult<BlockHistory> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
+        project.with_repo_of(&path, |r| {
+            r.block_history(&path, text.as_deref(), lines, project.vcs_encoding(&path, None)?, &cancel)
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 pub async fn vcs_log(host: &Host, window: &str, repo: Option<PathBuf>, query: LogQuery) -> IdeResult<Vec<Commit>> {
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.log(&query))).await
@@ -986,6 +1009,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
     d.add("vcs_blame", |c| async move {
         vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
+    });
+    d.add("vcs_block_history", |c| async move {
+        let (request, path, text, lines) = (c.arg("request")?, c.arg("path")?, c.arg("text")?, c.arg("lines")?);
+        vcs_block_history(&c.host, &c.window, request, path, text, lines).await
     });
     d.add("vcs_log", |c| async move { vcs_log(&c.host, &c.window, c.arg("repo")?, c.arg("query")?).await });
     d.add("vcs_commit_files", |c| async move {

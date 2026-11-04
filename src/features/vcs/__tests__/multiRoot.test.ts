@@ -132,6 +132,14 @@ describe("multi-root Git log", () => {
     off();
   });
 
+  it("shows a submodule folder's own history, not the folder's history in the enclosing repository", () => {
+    useVcs.setState({ roots: ["/r", "/r/libs/core"] });
+    openLogTab("history", "/r/libs/core");
+    openLogTab("history", "/r/libs/core/src/Lib.kt");
+    openLogTab("history", "/r/libs");
+    expect(useGitLog.getState().logTabs.map((t) => t.repo)).toEqual(["/r/libs/core", "/r/libs/core", "/r"]);
+  });
+
   it("shows several repositories chosen one click at a time in the Repository filter", async () => {
     log.mockImplementation(async (repo: string) => ({ status: "ok", data: [commit(repo)] }));
     let repositories = toggleRepository(undefined, "/project/front");

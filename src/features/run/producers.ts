@@ -19,6 +19,7 @@ import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { isWindows } from "./jvmTypes";
+import { inheritedRunTargets } from "./inheritedMain";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
 
@@ -636,7 +637,10 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     }
     if (/\.(java|kt)$/.test(rel) && hasBuildTool(rel, configs, JVM_BUILDS)) {
       if (input.content === undefined) return null;
-      const targets = detectRunTargets(input.content, rel).filter((t) => t.className);
+      const targets = [
+        ...detectRunTargets(input.content, rel),
+        ...inheritedRunTargets(input.path, input.content),
+      ].filter((t) => t.className);
       const target = targets.find((t) => t.kind === "main") ?? targets.find((t) => t.kind === "suite");
       const config = target ? targetConfig(target, rel, configs, input.content) : null;
       return config ? { name: config.name, scope: "file", config } : null;
@@ -839,7 +843,8 @@ export function fileTargets(
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  return detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 
 function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget): Produced | null {
