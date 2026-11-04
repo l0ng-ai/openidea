@@ -1,12 +1,20 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import type { SyncEntry } from "@/platform/ipc";
 import { txTemplate } from "@/platform/i18n";
 import { Button, Spinner, T } from "@/ui";
-import { diffInput } from "@/features/vcs/diffInput";
-import type { DeploymentComparison, DeploymentPreview } from "./comparison";
+import { useContributions } from "@/workbench/contributions";
+import type { DeploymentComparison, DeploymentDiff, DeploymentPreview } from "./comparison";
 import styles from "./Deployment.module.css";
 
-const DiffEditor = lazy(() => import("@/features/vcs/DiffEditor").then((m) => ({ default: m.DiffEditor })));
+/** An input of the diff viewer (editor kind `diff`), embedded and side by side. */
+function diffInput(data: DeploymentDiff) {
+  return {
+    kind: "diff",
+    key: `deployment:${data.path}`,
+    path: data.path,
+    data: { ...data, embedded: true, mode: "split" },
+  };
+}
 
 export function SyncPreview({ entry, comparison }: { entry: SyncEntry | null; comparison: DeploymentComparison }) {
   const [loaded, setLoaded] = useState<{
@@ -21,6 +29,7 @@ export function SyncPreview({ entry, comparison }: { entry: SyncEntry | null; co
     loaded?.comparison === comparison && loaded.entry === entry && loaded.attempt === attempt ? loaded : null;
   const result = current?.result;
   const error = current?.error;
+  const diffViewer = useContributions((s) => s.editorKinds.get("diff"));
   useEffect(() => {
     const abort = new AbortController();
     if (entry)
@@ -76,7 +85,7 @@ export function SyncPreview({ entry, comparison }: { entry: SyncEntry | null; co
             </div>
           }
         >
-          <DiffEditor input={diffInput(result.data)} initialMode="split" />
+          {diffViewer && <diffViewer.component input={diffInput(result.data)} />}
         </Suspense>
       )}
     </div>

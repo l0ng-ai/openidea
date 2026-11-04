@@ -84,9 +84,10 @@ test("native deployment entry fills its own window and exposes minimize and maxi
   await expect(comparison.getByRole("button", { name: "Synchronize Selected", exact: true })).toBeVisible();
   await comparison.getByRole("button", { name: "Minimize", exact: true }).click();
   await comparison.getByRole("button", { name: "Maximize", exact: true }).click();
-  const calls = await page.evaluate(() => (window as unknown as { deploymentCalls: string[] }).deploymentCalls);
-  expect(calls).toContain("plugin:window|minimize");
-  expect(calls).toContain("plugin:window|toggle_maximize");
+  // The caption buttons reach the window API asynchronously.
+  const calls = () => page.evaluate(() => (window as unknown as { deploymentCalls: string[] }).deploymentCalls);
+  await expect.poll(calls).toContain("plugin:window|minimize");
+  await expect.poll(calls).toContain("plugin:window|toggle_maximize");
   expect(errors).toEqual([]);
   await page.screenshot({ path: info.outputPath("deployment-native-window.png") });
 });

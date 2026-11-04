@@ -6,7 +6,7 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local) belong to a project window and share its project (see
+//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Sync with Deployed) belong to a project window and share its project (see
 //! [`AppState::project`]). Their labels name the kind and the parent
 //! (`settings-main`, `comparison-project-2-3`); their [`Launch`] says what to show.
 
@@ -32,6 +32,8 @@ const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
 const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
+const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
 /// What a freshly opened window should do once its frontend is up.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -54,6 +56,17 @@ pub struct Launch {
     /// Comparison windows: the revisions to compare (boxed: most launches have none).
     #[serde(default)]
     pub comparison: Option<Box<ComparisonLaunch>>,
+    /// Deployment windows: the server and local selection to compare.
+    #[serde(default)]
+    pub deployment: Option<DeploymentLaunch>,
+}
+
+/// Local files to compare with a deployment server (Sync with Deployed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DeploymentLaunch {
+    /// Deployment server id.
+    pub server: String,
+    pub paths: Vec<ide_core::IpcPath>,
 }
 
 /// A Git revision and how the comparison window names it.
@@ -193,16 +206,18 @@ impl WindowsState {
 pub enum AuxKind {
     Settings,
     Comparison,
+    Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 2] = [AuxKind::Settings, AuxKind::Comparison];
+    const ALL: [AuxKind; 3] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
         match self {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
+            AuxKind::Deployment => "deployment",
         }
     }
 
@@ -1070,6 +1085,30 @@ pub fn open_comparison_window(
     )
 }
 
+/// Opens (or focuses and hands over to) the project window's Sync with Deployed window: local
+/// files next to their copies on a deployment server, like IDEA's.
+pub fn open_deployment_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    server: String,
+    paths: Vec<PathBuf>,
+    background: Option<String>,
+) -> IdeResult<()> {
+    let paths = paths.into_iter().map(Into::into).collect();
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Deployment,
+            title: "Sync with Deployed",
+            size: DEPLOYMENT_SIZE,
+            min_size: DEPLOYMENT_MIN_SIZE,
+            launch: Launch { deployment: Some(DeploymentLaunch { server, paths }), ..Default::default() },
+            background,
+        },
+    )
+}
+
 /// Fit outer bounds, including native decorations, using one monitor's logical coordinate space.
 #[cfg(target_os = "macos")]
 fn fit_over_parent(window: &WebviewWindow, parent: &WebviewWindow, min_size: (f64, f64)) -> tauri::Result<()> {
@@ -1504,12 +1543,13 @@ mod tests {
         assert_eq!(settings_label("project-2"), "settings-project-2");
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
+        assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "project-2", "main", "settings-main", "comparison-project-2-1"];
+        let labels = ["comparison-main-0", "project-2", "main", "settings-main", "deployment-project-2"];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 

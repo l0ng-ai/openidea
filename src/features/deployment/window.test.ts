@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   destroy: vi.fn(),
   close: vi.fn(),
   title: vi.fn(),
+  emit: vi.fn(async () => {}),
   closeRequested: null as null | ((event: { preventDefault(): void }) => Promise<void>),
 }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
@@ -35,14 +36,13 @@ vi.mock("@/platform/ipc", () => ({
   isTauri: () => true,
   commands: { windowTakeLaunch: mocks.launch, projectCurrent: mocks.project },
 }));
-vi.mock("@/features/app/locale", () => ({ installLocaleSync: () => () => {} }));
-vi.mock("@/features/settings/runtime", () => ({ trackRuntimeSettings: () => () => {} }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emit }));
 vi.mock("@/editor/core/embeddedDocuments", () => ({
   activateEmbeddedDocuments: () => ({ dirty: mocks.dirty, save: mocks.save, dispose: mocks.dispose }),
 }));
 vi.mock("@/workbench/messages", () => ({ ask: mocks.ask, showError: mocks.error }));
 vi.mock("./actions", () => ({ openSync: mocks.open, closeSync: mocks.cancel }));
-vi.mock("./windowBridge", () => ({ deploymentWindowParent: () => "project-2", openDeploymentSource: vi.fn() }));
+vi.mock("./windowBridge", () => ({ openDeploymentSource: vi.fn() }));
 vi.mock("./Dialogs", () => ({ SecretDialog: () => null }));
 vi.mock("./SyncDialog", () => ({ SyncDialog: () => null }));
 vi.mock("@/workbench/OverlayHost", () => ({ OverlayHost: () => null }));
@@ -72,7 +72,7 @@ it("loads the parent project before comparing the launched server and local sele
   mocks.project.mockResolvedValue(project);
   mocks.launch.mockResolvedValueOnce({ deployment: { server: "s2", paths: ["/second/a.php"] } });
   mocks.open.mockImplementation(async () => useDeployment.setState({ sync: { server: "s2" } as never }));
-  stop = activateDeploymentWindow();
+  stop = activateDeploymentWindow("project-2");
   await vi.waitFor(() =>
     expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ id: "s2" }), ["/second/a.php"]),
   );
@@ -81,12 +81,18 @@ it("loads the parent project before comparing the launched server and local sele
 
 it("keeps the window and unsaved local edits when closing is cancelled or saving fails", async () => {
   mocks.dirty.mockReturnValue(true);
-  stop = activateDeploymentWindow();
+  stop = activateDeploymentWindow("project-2");
   const event = { preventDefault: vi.fn() };
   await mocks.closeRequested!(event);
   expect(event.preventDefault).toHaveBeenCalled();
   expect(mocks.save).not.toHaveBeenCalled();
   expect(mocks.destroy).not.toHaveBeenCalled();
+  // The project window waiting to close stops.
+  expect(mocks.emit).toHaveBeenCalledWith(
+    "project-2",
+    "openidea://auxiliary/closed",
+    expect.objectContaining({ label: "deployment-project-2", closed: false }),
+  );
   mocks.ask.mockResolvedValue({ button: "save" });
   mocks.save.mockRejectedValueOnce(new Error("Disk full"));
   await mocks.closeRequested!(event);

@@ -17,6 +17,8 @@ import { transferMenuEntries } from "./model";
 import { REMOTE_HOST_WINDOW, useDeployment } from "./store";
 import { installDeploymentEditorHost } from "./windowBridge";
 
+export { activateDeploymentWindow, DeploymentWindow } from "./window";
+
 /** Deployed URL of the path the last menu was prepared for. */
 let webUrlFor: { path: string; url: string | null } | null = null;
 

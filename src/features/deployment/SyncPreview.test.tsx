@@ -1,21 +1,27 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SyncEntry } from "@/platform/ipc";
+import { registerEditorKind } from "@/workbench/contributions";
 import type { DeploymentComparison, DeploymentPreview } from "./comparison";
-vi.mock("@/features/vcs/DiffEditor", () => ({
-  DiffEditor: ({ input, initialMode }: { input: { data: unknown }; initialMode: string }) => (
-    <div data-testid="diff" data-mode={initialMode}>
+import { SyncPreview } from "./SyncPreview";
+
+// The diff viewer comes from the vcs feature through its editor kind.
+registerEditorKind({
+  kind: "diff",
+  title: () => "diff",
+  component: ({ input }) => (
+    <div data-testid="diff" data-mode={(input.data as { mode?: string }).mode}>
       {JSON.stringify(input.data)}
     </div>
   ),
-}));
-import { SyncPreview } from "./SyncPreview";
+});
 
 const entry = (path: string) => ({ path, remotePath: `/srv/${path}` }) as SyncEntry;
 const result = (text: string): DeploymentPreview => ({
   kind: "text",
   data: {
     path: "/work/file.php",
+    title: "file.php",
     left: { type: "text", text: "local", label: "Local" },
     right: { type: "text", text, label: "Remote" },
   },

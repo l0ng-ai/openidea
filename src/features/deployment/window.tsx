@@ -1,13 +1,16 @@
-/** Native deployment comparison window: one per project window, sharing that project's documents. */
+/**
+ * The Sync with Deployed window (`deployment-<parent>`): one per project window, sharing that
+ * project's documents.
+ */
 import { useSyncExternalStore } from "react";
+import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { activateEmbeddedDocuments } from "@/editor/core/embeddedDocuments";
-import { installLocaleSync } from "@/features/app/locale";
+import { AUX_CLOSED, type AuxCloseResult } from "@/platform/auxWindow";
 import { commands, type SyncStep } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { isImeKey } from "@/platform/ime";
-import { trackRuntimeSettings } from "@/features/settings/runtime";
 import { useApplyTheme } from "@/workbench/theme";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { TitleBar } from "@/workbench/TitleBar";
@@ -21,7 +24,7 @@ import { SecretDialog } from "./Dialogs";
 import { SyncDialog } from "./SyncDialog";
 import { patchSync, useDeployment } from "./store";
 import styles from "./Deployment.module.css";
-import { deploymentWindowParent, openDeploymentSource } from "./windowBridge";
+import { openDeploymentSource } from "./windowBridge";
 
 const LAUNCH_EVENT = "openidea://launch";
 
@@ -43,10 +46,9 @@ function fail(error: unknown) {
   startupListeners.forEach((listener) => listener());
 }
 
-export function activateDeploymentWindow(): () => void {
+export function activateDeploymentWindow(parent: string): () => void {
   const native = getCurrentWebviewWindow();
   const documents = activateEmbeddedDocuments();
-  const parent = deploymentWindowParent(native.label)!;
   provideEditorService({
     openFile: (path, options) => openDeploymentSource(parent, path, options),
     openInput: (input, options) => (input.path ? openDeploymentSource(parent, input.path, options) : Promise.resolve()),
@@ -63,7 +65,12 @@ export function activateDeploymentWindow(): () => void {
   let disposed = false;
   let closing = false;
   let queue = Promise.resolve();
-  const disposers = [installLocaleSync(), trackRuntimeSettings()];
+  const disposers: Array<() => void> = [];
+  // Tells the project window this window stays open, so it stops closing (see `closeDocumentWindows`).
+  const stayOpen = () => {
+    const result: AuxCloseResult = { label: native.label, closed: false, documents: [] };
+    void emitTo(parent, AUX_CLOSED, result).catch(() => {});
+  };
   const listen = (ready: Promise<() => void>) => void ready.then((off) => (disposed ? off() : disposers.push(off)));
   const launch = () => {
     queue = queue
@@ -108,7 +115,7 @@ export function activateDeploymentWindow(): () => void {
             body: "Save the local files edited in this comparison before closing.",
             buttons: [{ id: "save", label: "Save and Close", primary: true }],
           });
-          if (answer.button !== "save") return;
+          if (answer.button !== "save") return stayOpen();
         }
         await documents.save();
         closeSync();
@@ -116,6 +123,7 @@ export function activateDeploymentWindow(): () => void {
         await documents.dispose();
         await native.destroy();
       } catch (error) {
+        stayOpen();
         await showError("Cannot close deployment comparison", error instanceof Error ? error.message : String(error));
       } finally {
         closing = false;

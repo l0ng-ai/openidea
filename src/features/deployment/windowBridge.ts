@@ -7,10 +7,6 @@ import { windowBackgroundHex } from "@/workbench/theme";
 
 const OPEN_SOURCE = "openidea://deployment/open-source";
 
-export function deploymentWindowParent(label = isTauri() ? getCurrentWebviewWindow().label : ""): string | null {
-  return label.startsWith("deployment-") ? label.slice("deployment-".length) : null;
-}
-
 export function showDeploymentComparison(server: string, paths: string[]) {
   return call(commands.windowOpenDeployment(server, paths, windowBackgroundHex()));
 }

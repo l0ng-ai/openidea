@@ -2,13 +2,20 @@
 import { call, commands, type SyncEntry } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
-import type { DiffData } from "@/features/vcs/diffInput";
 import { withSsh } from "./ssh";
 
 const PREVIEW_LIMIT = 8 * 1024 * 1024;
 const BLOCK_SIZE = 64 * 1024;
 
-export type DeploymentPreview = { kind: "text"; data: DiffData } | { kind: "binary" } | { kind: "tooLarge" };
+/** The data of a `diff` editor input (the diff viewer's): the local file, editable, next to the server's text. */
+export interface DeploymentDiff {
+  path: string;
+  title: string;
+  left: { type: "file"; path: string; label: string } | { type: "text"; text: string; label: string };
+  right: { type: "text"; text: string; label: string };
+}
+
+export type DeploymentPreview = { kind: "text"; data: DeploymentDiff } | { kind: "binary" } | { kind: "tooLarge" };
 
 export function createDeploymentComparison(server: DeploymentServerValid, root: string) {
   // Only the downloaded path is cached, never a live remote document. The diff

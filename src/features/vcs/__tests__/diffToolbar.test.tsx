@@ -73,7 +73,7 @@ beforeEach(() => {
 describe("Diff toolbar", () => {
   it("can start an embedded comparison side by side without overwriting saved viewer preferences", async () => {
     localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "unified" }));
-    const mounted = render(<DiffEditor input={input} initialMode="split" />);
+    const mounted = render(<DiffEditor input={{ ...input, data: { ...(input.data as object), mode: "split" } }} />);
     await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
     expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("unified");
     mounted.unmount();

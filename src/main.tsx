@@ -5,9 +5,11 @@ import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
 import {
   activateComparisonWindowFeatures,
+  activateDeploymentWindowFeatures,
   activateFeatures,
   activateSettingsWindowFeatures,
   ComparisonWindow,
+  DeploymentWindow,
   SettingsWindow,
 } from "./features";
 import { auxiliaryWindow } from "./platform/auxWindow";
@@ -28,7 +30,8 @@ if (import.meta.env.DEV && isTauri()) {
 installRepeatedDoubleClick();
 installErrorLogging();
 
-// Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`) load this page too.
+// Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`, Sync with
+// Deployed `deployment-<parent>`) load this page too.
 const aux = auxiliaryWindow();
 
 if (aux?.kind === "settings") {
@@ -38,6 +41,9 @@ if (aux?.kind === "settings") {
   activateSecondaryWindow();
   activateComparisonWindowFeatures(aux.parent);
   installKeyboardDispatcher();
+} else if (aux?.kind === "deployment") {
+  activateSecondaryWindow();
+  activateDeploymentWindowFeatures(aux.parent);
 } else {
   activateWorkbench();
   // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
@@ -58,7 +64,15 @@ if (aux?.kind === "settings") {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {aux?.kind === "settings" ? <SettingsWindow /> : aux?.kind === "comparison" ? <ComparisonWindow /> : <Workbench />}
+    {aux?.kind === "settings" ? (
+      <SettingsWindow />
+    ) : aux?.kind === "comparison" ? (
+      <ComparisonWindow />
+    ) : aux?.kind === "deployment" ? (
+      <DeploymentWindow />
+    ) : (
+      <Workbench />
+    )}
   </React.StrictMode>,
 );
 hideSplash();
