@@ -351,6 +351,7 @@ pub struct AppearanceSettings {
     pub preferred_dark_theme: String,
     /// A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons.
     pub file_icon_theme: String,
+    pub file_icon_theme_options: BTreeMap<String, FileIconThemeOptions>,
     /// IDE zoom in percent (50–300).
     pub zoom: u32,
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
@@ -388,6 +389,24 @@ pub struct AppearanceSettings {
 /// (registered later) keep their default place.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
+pub struct FileIconThemeOptions {
+    pub groups: BTreeMap<String, bool>,
+    pub choices: BTreeMap<String, String>,
+    pub hide_files: bool,
+    pub hide_folders: bool,
+    pub hollow_folders: bool,
+    pub hide_ui_icons: bool,
+    pub hide_psi_icons: bool,
+    pub monochrome: Option<String>,
+    pub saturation: Option<u8>,
+    pub opacity: Option<u8>,
+    pub icon_size: Option<u8>,
+    pub row_height: Option<u8>,
+    pub accent: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
 pub struct MainToolbarSettings {
     pub left: Vec<String>,
     pub right: Vec<String>,
@@ -406,6 +425,7 @@ impl Default for AppearanceSettings {
             preferred_light_theme: "light".into(),
             preferred_dark_theme: "dark".into(),
             file_icon_theme: String::new(),
+            file_icon_theme_options: BTreeMap::new(),
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
@@ -929,6 +949,36 @@ mod tests {
         assert_eq!(value["cmake"]["profiles"][0]["cmakeArgs"], serde_json::json!(profile.cmake_args));
         assert_eq!(value["cmake"]["profiles"][0]["buildArgs"], serde_json::json!(profile.build_args));
         assert_eq!(serde_json::from_value::<Settings>(value).unwrap(), settings);
+    }
+
+    #[test]
+    fn file_icon_theme_options_default_empty_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"fileIconTheme":"p/t"}}"#).unwrap();
+        assert!(old.appearance.file_icon_theme_options.is_empty());
+        let json = serde_json::json!({"appearance":{"fileIconThemeOptions":{"p/t":{
+            "groups":{"tests":true},"choices":{"arrows":"plusminus"},"hideFiles":true,"hideFolders":false,"hollowFolders":true,"hideUiIcons":true,"hidePsiIcons":false,
+            "monochrome":"#546e7a","saturation":5,"opacity":80,"iconSize":20,"rowHeight":30,"accent":"#009688"}}}});
+        let settings: Settings = serde_json::from_value(json.clone()).unwrap();
+        let options = &settings.appearance.file_icon_theme_options["p/t"];
+        assert!(options.hide_files && options.hollow_folders && !options.hide_folders);
+        assert!(options.hide_ui_icons && !options.hide_psi_icons);
+        assert!(options.groups["tests"]);
+        assert_eq!(options.choices["arrows"], "plusminus");
+        assert_eq!(
+            (options.saturation, options.opacity, options.icon_size, options.row_height),
+            (Some(5), Some(80), Some(20), Some(30))
+        );
+        assert_eq!(options.monochrome.as_deref(), Some("#546e7a"));
+        assert_eq!(options.accent.as_deref(), Some("#009688"));
+        let value = serde_json::to_value(&settings).unwrap();
+        let restored: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(restored, settings);
+        let plain = serde_json::to_value(FileIconThemeOptions::default()).unwrap();
+        assert_eq!(plain["hideFiles"], false);
+        assert_eq!(plain["hideUiIcons"], false);
+        assert_eq!(plain["hidePsiIcons"], false);
+        assert_eq!(plain["monochrome"], serde_json::Value::Null);
+        assert_eq!(plain["groups"], serde_json::json!({}));
     }
 
     #[test]

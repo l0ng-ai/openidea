@@ -1434,7 +1434,7 @@ function ChangesPane({
             onActivate={(c) => void openChangeDiff(task, c.path)}
             renderNode={(c) => (
               <span className={styles.change} title={c.relPath}>
-                <Icon name={fileIconName(basename(c.path))} size={16} />
+                <Icon name={fileIconName(basename(c.path), c.path)} size={16} />
                 <span className={styles.changeName} style={{ color: KIND_COLOR[c.kind] }}>
                   {basename(c.path)}
                 </span>

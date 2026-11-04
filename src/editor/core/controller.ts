@@ -193,7 +193,7 @@ export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
 }
 
 export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
-  if (input.kind === "file") return fileIconName(basename(input.path ?? ""));
+  if (input.kind === "file") return fileIconName(basename(input.path ?? ""), input.path ?? null);
   if (input.kind === "virtual") return fileIconName(tabTitle(input, kinds));
   const kind = kinds.get(input.kind);
   try {

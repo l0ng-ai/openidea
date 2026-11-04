@@ -305,7 +305,7 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
                   f.applies ? tx("Applies cleanly") : tx("Does not apply cleanly: a 3-way merge will be attempted")
                 }
               >
-                <Icon name={fileIconName(baseName(f.path))} size={14} />
+                <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
                 <span
                   className={styles.fileName}
                   style={{
