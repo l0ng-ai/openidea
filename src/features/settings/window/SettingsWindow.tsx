@@ -14,12 +14,15 @@ export function SettingsWindow() {
   const os = usePlatform((s) => s.os);
   const ownTitleBar = usePlatform((s) => s.overlayTitleBar || s.framelessTitleBar);
   const open = useSettingsDialog((s) => s.open);
+  const pagesLoading = useSettingsDialog((s) => s.pagesLoading);
   const title = useSettingsTitle();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true });
-  }, [open]);
+    if (open && !pagesLoading) {
+      ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true });
+    }
+  }, [open, pagesLoading]);
 
   return (
     <div ref={ref} className={clsx(styles.window, os === "linux" && styles.windowEdge)}>
