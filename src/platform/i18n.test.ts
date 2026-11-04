@@ -201,11 +201,11 @@ describe("t / locales", () => {
   });
 
   it("loads the Polish catalogs", async () => {
-	await setLocale("pl-PL");
-	expect(useI18n.getState().locale).toBe("pl");
-	expect(t("common.cancel")).toBe("Anuluj");
-	expect(t("app.keymap.count", { count: 1 })).toBe("1 skrót");
-	expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
+    await setLocale("pl-PL");
+    expect(useI18n.getState().locale).toBe("pl");
+    expect(t("common.cancel")).toBe("Anuluj");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 skrót");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
   });
 
   it("lists keys by prefix", () => {
