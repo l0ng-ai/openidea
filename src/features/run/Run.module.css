@@ -102,7 +102,7 @@
   background: var(--bg-app);
   -webkit-user-select: text;
   user-select: text;
-  cursor: text;
+  cursor: default;
   outline: none;
   contain: strict;
 }
@@ -110,6 +110,7 @@
   position: relative;
   width: 100%;
   min-width: max-content;
+  cursor: text;
 }
 .wrap .consoleInner {
   min-width: 0;
@@ -726,9 +727,6 @@
   justify-content: center;
   border-radius: var(--radius-small);
   cursor: pointer;
-}
-.runMarker:hover {
-  background: var(--bg-hover);
 }
 
 /* Run dialogs (rerun confirmation, $Prompt$). */

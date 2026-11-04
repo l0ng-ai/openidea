@@ -99,19 +99,29 @@ export function chainAt(line: string, pos: number): { from: number; to: number; 
   return segments.length > 1 ? { from, to, segments } : null;
 }
 
-/** Catalogs declared in settings: `create("name") { from(files("path")) }`, paths relative to the build root. */
-export function declaredCatalogs(settings: string): Array<{ name: string; file: string }> {
-  const out: Array<{ name: string; file: string }> = [];
-  const re = /create\(\s*["'](\w+)["']\s*\)\s*\{[^}]*?from\(\s*files\(\s*["']([^"']+)["']/g;
-  for (let m = re.exec(settings); m; m = re.exec(settings)) out.push({ name: m[1]!, file: m[2]! });
+export type DeclaredCatalog = { name: string; file: string } | { name: string; artifact: string };
+
+/**
+ * Catalogs declared in settings: `create("name") { from(files("path")) }`, paths relative to the
+ * build root, or `create("name") { from("group:artifact:version") }`, a published catalog.
+ */
+export function declaredCatalogs(settings: string): DeclaredCatalog[] {
+  const out: DeclaredCatalog[] = [];
+  const re =
+    /create\(\s*["'](\w+)["']\s*\)\s*\{[^}]*?from\(\s*(?:files\(\s*["']([^"']+)["']|["']([^"':]+:[^"':]+:[^"']+)["'])/g;
+  for (let m = re.exec(settings); m; m = re.exec(settings))
+    out.push(m[2] !== undefined ? { name: m[1]!, file: m[2] } : { name: m[1]!, artifact: m[3]! });
   return out;
 }
 
 const readText = (path: string) => call(commands.fsReadText(path)).catch(() => null);
 const join = (dir: string, rel: string) => (rel.startsWith("/") ? rel : `${dir}/${rel.replace(/^\.\//, "")}`);
 
-/** The catalogs a build script sees: those of the nearest enclosing build (its settings file). */
-async function readCatalogs(script: string, root: string): Promise<Catalog[]> {
+/**
+ * The catalogs a build script sees: those of the nearest enclosing build (its settings file).
+ * `complete` is false while a published catalog isn't downloaded yet.
+ */
+export async function readCatalogs(script: string, root: string): Promise<{ catalogs: Catalog[]; complete: boolean }> {
   let dir = dirname(script);
   let settings: string | null = null;
   for (;;) {
@@ -123,13 +133,17 @@ async function readCatalogs(script: string, root: string): Promise<Catalog[]> {
   const declared = declaredCatalogs(settings ?? "");
   if (!declared.some((d) => d.name === "libs")) declared.push({ name: "libs", file: "gradle/libs.versions.toml" });
   const catalogs = await Promise.all(
-    declared.map(async ({ name, file }) => {
-      const path = join(buildRoot, file);
-      const text = await readText(path);
-      return text === null ? null : parseCatalog(name, path, text);
+    declared.map(async (d) => {
+      const path =
+        "file" in d
+          ? join(buildRoot, d.file)
+          : await call(commands.gradlePublishedCatalog(d.artifact)).catch(() => null);
+      const text = path ? await readText(path) : null;
+      return text === null ? null : parseCatalog(d.name, path!, text);
     }),
   );
-  return catalogs.filter((c): c is Catalog => c !== null);
+  const complete = declared.every((d, i) => "file" in d || catalogs[i] !== null);
+  return { catalogs: catalogs.filter((c): c is Catalog => c !== null), complete };
 }
 
 const loaded = new Map<string, Catalog[]>();
@@ -148,11 +162,14 @@ function load(script: string): void {
     pending.clear();
     scripts.forEach(load);
   });
-  const p = readCatalogs(script, root);
-  pending.set(script, p);
-  void p.then((c) => {
-    if (pending.get(script) === p) loaded.set(script, c);
+  const p = readCatalogs(script, root).then(({ catalogs, complete }) => {
+    if (pending.get(script) !== p) return catalogs;
+    loaded.set(script, catalogs);
+    // Read again when the script is next opened, once a build has downloaded the catalog.
+    if (!complete) pending.delete(script);
+    return catalogs;
   });
+  pending.set(script, p);
 }
 
 function open(entry: CatalogEntry, path: string) {

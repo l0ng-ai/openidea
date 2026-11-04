@@ -45,6 +45,8 @@ export type MenuItem =
       checked?: boolean;
       danger?: boolean;
       run?: () => void;
+      /** The pointer or the keyboard made it the active item (not on opening the menu). */
+      onActive?: () => void;
       submenu?: MenuItem[];
     };
 
@@ -58,6 +60,7 @@ interface Resolved {
   checked?: boolean;
   danger?: boolean;
   run?: () => void;
+  onActive?: () => void;
   submenu?: MenuItem[];
 }
 
@@ -125,6 +128,8 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   // Pointer movement highlights a row without focusing it. Focusing on every
   // enter drops the hover paint in the Windows webview, so the menu looks frozen.
   const pointerHover = useRef(false);
+  // Row the pointer last entered: pointerenter and mouseenter both report it.
+  const hovered = useRef(-1);
   const setOpenSub = (i: number | null) => {
     setSubAnchor(i === null ? null : (itemRefs.current[i] ?? null));
     setOpenSubIndex(i);
@@ -139,6 +144,11 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   }, [active, openSub]);
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
 
+  const focusItem = (i: number) => {
+    setActive(i);
+    resolved[i]?.onActive?.();
+  };
+
   const move = (delta: number, from = active) => {
     const n = resolved.length;
     if (!n) return;
@@ -146,7 +156,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
     for (let step = 0; step < n; step++) {
       i = (i + delta + n) % n;
       if (selectable(resolved[i])) {
-        setActive(i);
+        focusItem(i);
         return;
       }
     }
@@ -167,10 +177,13 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   const hover = (i: number) => {
     const item = resolved[i];
     if (!item || item.disabled || item.kind !== "item") return;
-    setActive((current) => {
-      if (current !== i) pointerHover.current = true;
-      return i;
-    });
+    if (hovered.current !== i) {
+      hovered.current = i;
+      if (i !== active) {
+        pointerHover.current = true;
+        focusItem(i);
+      }
+    }
     clearTimeout(hoverTimer.current);
     hoverTimer.current = setTimeout(() => setOpenSub(item.submenu ? i : null), item.submenu ? 120 : 200);
   };
@@ -209,7 +222,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
             const i = (active + s + n) % n;
             const r = resolved[i]!;
             if (selectable(r) && r.label.toLowerCase().startsWith(ch)) {
-              setActive(i);
+              focusItem(i);
               break;
             }
           }
@@ -253,6 +266,8 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
               )}
               onPointerEnter={() => hover(i)}
               onMouseEnter={() => hover(i)}
+              onPointerLeave={() => (hovered.current = -1)}
+              onMouseLeave={() => (hovered.current = -1)}
               onClick={() => activate(i)}
             >
               <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>

@@ -5,6 +5,7 @@ description = "Inline code suggestions (ghost text) from a local model (Ollama) 
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: local (Ollama) and OpenAI backends; the key stays in the system keychain."
+categories = ["ai"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 activation = ["on-command:*"]

@@ -50,6 +50,7 @@ const claude: AgentProvider = {
   commandOverridden: false,
   commandEditable: true,
   commandReadOnlyReason: null,
+  env: {},
   // Offered by the agent's last session in this project.
   commands: [command("compact", "Free up context")],
 };

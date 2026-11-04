@@ -213,6 +213,21 @@ describe("Menu action enablement", () => {
     expect(open).toHaveFocus();
   });
 
+  it("reports a hovered row once and lets the keyboard continue from it", () => {
+    const active: string[] = [];
+    const item = (label: string) => ({ label, onActive: () => active.push(label), run: () => undefined });
+    render(<MenuList items={[item("Open"), item("Save"), item("Close")]} onDone={() => {}} />);
+    const save = screen.getByRole("menuitem", { name: "Save" });
+    fireEvent.pointerEnter(save);
+    fireEvent.mouseEnter(save);
+    expect(active).toEqual(["Save"]);
+    fireEvent.keyDown(save, { key: "ArrowDown" });
+    expect(screen.getByRole("menuitem", { name: "Close" })).toHaveFocus();
+    fireEvent.pointerLeave(save);
+    fireEvent.pointerEnter(save);
+    expect(active).toEqual(["Save", "Close", "Save"]);
+  });
+
   it("follows context changes after the menu opened", () => {
     const dispose = registerAction({ id: "test.menuWhen", title: "Needs Flag", when: "qaMenuFlag", run: () => {} });
     setContext("qaMenuFlag", false);

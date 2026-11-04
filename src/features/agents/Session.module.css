@@ -463,6 +463,14 @@
 .permissionLine > .muted {
   flex: none;
 }
+.permissionAnswers {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin-left: 6px;
+}
 
 .error {
   display: flex;

@@ -198,7 +198,10 @@ export async function loadConfigs(): Promise<void> {
     const saved = await call(commands.runConfigs());
     if (useProject.getState().project?.root !== root) return;
     // Temporary configs survive reloads (and restarts) until saved or evicted; a saved one wins.
-    const temps = readTemporary(root).filter((t) => !saved.some((c) => c.id === t.id));
+    // They are kept without what settings derived: today's toolchains apply to them, as to the others.
+    const kept = readTemporary(root).filter((t) => !saved.some((c) => c.id === t.id));
+    const temps = kept.length ? await call(commands.runApplySettings(kept)).catch(() => kept) : kept;
+    if (useProject.getState().project?.root !== root) return;
     const configs = [...saved, ...temps];
     const stored = useRun.getState().selectedId ?? readSelected(root);
     const selectedId =
@@ -312,7 +315,8 @@ export function selectedConfig(): RunConfig | undefined {
 // ---------------------------------------------------------------------------
 // Temporary configurations (IDEA: created by gutter / context runs, at most 5)
 
-const TEMPORARY_KEY = "openidea.run.temporary:";
+// v2: kept without settings-derived values (earlier entries froze the toolchain they were made with).
+const TEMPORARY_KEY = "openidea.run.temporary.v2:";
 export const MAX_TEMPORARY = 5;
 
 function readTemporary(root: string): RunConfig[] {
@@ -335,14 +339,24 @@ function writeTemporary(root: string, configs: RunConfig[]) {
   }
 }
 
+let persisting = 0;
+
 function persistTemporary() {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const { configs, temporary } = useRun.getState();
-  writeTemporary(
-    root,
-    temporary.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c),
-  );
+  const list = temporary.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c);
+  writeTemporary(root, list);
+  // A rewrite still pending from an earlier call must not bring back what was removed since.
+  const generation = ++persisting;
+  if (!list.length || !isTauri()) return;
+  // Then rewritten without what settings derived (the project's Maven, JDK, interpreter…), so a
+  // later settings change reaches them as it does detected and saved configurations.
+  void call(commands.runWithoutDerived(list))
+    .then((kept) => {
+      if (generation === persisting && useProject.getState().project?.root === root) writeTemporary(root, kept);
+    })
+    .catch(() => {});
 }
 
 /** IDEA's `isConfigurationFromContext` for an Application: the same main class of the same module. */
@@ -416,6 +430,30 @@ export async function deleteConfig(id: string): Promise<void> {
   await saveUserConfigs(
     configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id),
     configs.find((c) => c.id === id)?.detected ? [id] : [],
+  );
+}
+
+/**
+ * Edit Configurations' OK / Apply. A temporary configuration stays temporary unless it was edited
+ * there (then it is saved, as IDEA makes it permanent), and one removed there is forgotten.
+ */
+export async function saveEditedConfigs(draft: readonly RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  const { configs, temporary } = useRun.getState();
+  const unchanged = (c: RunConfig) => {
+    const before = configs.find((o) => o.id === c.id);
+    return !!before && JSON.stringify(before) === JSON.stringify(c);
+  };
+  const kept = temporary.filter((id) => draft.some((c) => c.id === id && unchanged(c)));
+  if (kept.length !== temporary.length) {
+    useRun.setState({
+      configs: configs.filter((c) => !temporary.includes(c.id) || kept.includes(c.id)),
+      temporary: kept,
+    });
+    persistTemporary();
+  }
+  await saveUserConfigs(
+    draft.filter((c) => !c.detected && !kept.includes(c.id)),
+    removedDetectedIds,
   );
 }
 

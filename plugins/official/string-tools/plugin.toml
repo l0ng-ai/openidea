@@ -5,6 +5,7 @@ description = "Case conversion (camelCase, snake_case, kebab-case…), encoding 
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: 26 commands in four groups."
+categories = ["tools"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 # The commands are declared below, so Find Action and the keymap list them

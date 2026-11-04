@@ -24,6 +24,7 @@ import { LazySettingsDialog, loadBuiltinPages, unloadBuiltinPages } from "./dial
 import {
   closeSettings,
   openSettings,
+  rebaseSettings,
   selectPage,
   setNewProjects,
   setQuery,
@@ -39,8 +40,10 @@ import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
+import { trackIconThemePages } from "./iconThemePages";
 
-export { settingsWindowParent } from "./window/bridge";
+/** Settings-driven runtime state (zoom, fonts, theme) of a secondary window. */
+export const activateRuntimeSettings = trackRuntimeSettings;
 export const SettingsWindow = lazyComponent(() => import("./window/SettingsWindow").then((m) => m.SettingsWindow));
 
 /** Same event as `windows::LAUNCH_EVENT`: a pending launch (page) is waiting. */
@@ -104,6 +107,7 @@ async function showSettings(page?: string, newProjects = false) {
 export function activate(): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     activatePythonStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
@@ -192,6 +196,7 @@ function installWindowKeys(): () => void {
 export function activateSettingsWindow(parent: string): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     unloadBuiltinPages,
     registerActions(settingsActions((page, newProjects) => relaunch({ page, newProjects: !!newProjects }))),
     installActionProxies(parent),
@@ -207,20 +212,24 @@ export function activateSettingsWindow(parent: string): () => void {
     }),
   ];
   void (async () => {
-    let launch: SettingsLaunch | null = null;
+    useSettingsDialog.setState({ pagesLoading: true });
+    openSettings();
     try {
-      // A page that fails to register is reported; the window still opens with the others.
-      await loadBuiltinPages().catch((e) => logError("cannot register settings pages", e));
-      await restoreRemote();
-      const project = await commands.projectCurrent().catch(() => null);
-      if (project) useProject.setState({ project, settings: project.settings });
-      else await loadSettings().catch((e) => console.warn("cannot load settings", e));
-      // `listenLaunch` may have taken the launch first and applied it already.
-      launch = await takeLaunch();
+      const launch = await takeLaunch();
+      relaunch(launch);
+      await Promise.all([
+        loadBuiltinPages().catch((e) => logError("cannot register settings pages", e)),
+        (async () => {
+          await restoreRemote();
+          const project = await commands.projectCurrent().catch(() => null);
+          if (project) useProject.setState({ project, settings: project.settings });
+          else await loadSettings().catch((e) => console.warn("cannot load settings", e));
+          rebaseSettings();
+        })(),
+      ]);
     } finally {
-      // Without this the window would stay an empty title bar.
-      openSettings(launch?.page, { newProjects: launch?.newProjects ?? useSettingsDialog.getState().newProjects });
+      useSettingsDialog.setState({ pagesLoading: false });
     }
-  })();
+  })().catch((e) => logError("settings window startup failed", e));
   return () => disposers.reverse().forEach((d) => d());
 }

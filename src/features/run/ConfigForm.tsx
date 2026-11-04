@@ -4,7 +4,7 @@
  * Before launch list.
  */
 import { parseJavaArgs } from "@/platform/javaLaunch";
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
 import { isTauri, type BeforeLaunchTask, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -729,9 +729,20 @@ function TypeField({
   const tx = useTx();
   const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
+  const [loaded, setLoaded] = useState<ReadonlyArray<{ value: string; label: string; detail?: string }>>([]);
+  useEffect(() => {
+    let live = true;
+    void field
+      .loadOptions?.()
+      .then((options) => live && setLoaded(options))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [field]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
-    const options = [...(field.options ?? [])];
+    const options = [...(field.options ?? []), ...loaded];
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
     return (
       <Select

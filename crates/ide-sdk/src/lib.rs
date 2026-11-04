@@ -18,6 +18,7 @@ pub mod locate;
 pub mod lombok;
 pub mod maven_profiles;
 mod npm;
+pub mod php;
 pub mod pinned;
 pub mod python;
 pub mod ruby;
@@ -80,6 +81,36 @@ pub(crate) fn bin_dir() -> &'static str {
 
 pub(crate) fn exe(name: &str) -> String {
     if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() }
+}
+
+/// `path` with symlinks resolved (Homebrew's `bin/mvn` → its Cellar), except that a Windows
+/// mapped drive letter is kept when the target stays inside that drive: canonicalizing gives
+/// `\\?\UNC\server\share\…` or another drive, and cmd.exe can't start a script from a
+/// `\\?\` path (`mvn.cmd`, or `mvn.cmd` with such a `JAVA_HOME`), nor is it the path the user knows.
+pub(crate) fn launch_path(path: &Path) -> std::io::Result<PathBuf> {
+    let real = dunce::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let drive = |p: &Path| match p.components().next() {
+            Some(Component::Prefix(x)) => match x.kind() {
+                Prefix::Disk(d) | Prefix::VerbatimDisk(d) => Some(d.to_ascii_uppercase()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(d) = drive(path)
+            && drive(&real) != Some(d)
+        {
+            let root = PathBuf::from(format!("{}:\\", char::from(d)));
+            if let Ok(mapped) = dunce::canonicalize(&root)
+                && let Ok(relative) = real.strip_prefix(mapped)
+            {
+                return Ok(root.join(relative));
+            }
+        }
+    }
+    Ok(real)
 }
 
 pub(crate) fn home_dir() -> Option<PathBuf> {

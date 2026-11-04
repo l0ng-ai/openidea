@@ -14,6 +14,7 @@ encoding_rs.workspace = true
 ide-core.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
+regex-syntax.workspace = true
 ide-workspace.workspace = true
 ide-language.workspace = true
 ide-index.workspace = true
@@ -45,6 +46,7 @@ ide-extension.workspace = true
 ide-plugin.workspace = true
 ide-tools = { path = "../ide-tools" }
 ide-docker = { path = "../ide-docker" }
+semver = "1"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -58,12 +60,13 @@ dunce.workspace = true
 dirs.workspace = true
 uuid.workspace = true
 tempfile.workspace = true
+zip.workspace = true
+quick-xml = "0.42"
 
 [dev-dependencies]
 ide-ssh = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
 criterion = { version = "0.5", default-features = false }
-zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["fs", "process"] }

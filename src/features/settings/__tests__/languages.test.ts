@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LANGUAGES,
+  PHP_LANGUAGE_LEVELS,
   folderRole,
   markFolder,
   normalizeFolder,
@@ -41,6 +42,22 @@ describe("languages settings", () => {
     const settings = validateSettings({ languages: { ruby: { interpreter: " /opt/ruby/bin/ruby " } } });
     expect(settings.languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
     expect(validateSettings(settings).languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+  });
+
+  it("defaults the PHP language level to Auto and keeps only known levels", () => {
+    expect(validateSettings({}).languages.php).toEqual({ interpreter: "", languageLevel: "" });
+    expect(validateLanguages({ php: { languageLevel: "7.4" } }).php.languageLevel).toBe("7.4");
+    for (const level of ["7.4.3", "9.0", 8.1, null]) {
+      expect(validateLanguages({ php: { languageLevel: level } }).php.languageLevel).toBe("");
+    }
+    expect(PHP_LANGUAGE_LEVELS[0]).toBe("");
+    expect(PHP_LANGUAGE_LEVELS).toContain("5.6");
+    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("8.5");
+  });
+
+  it("finds the PHP page by its language level", () => {
+    const php = LANGUAGE_PAGES.find((p) => p.id === "languages.php")!;
+    expect(php.keywords).toContain("language level");
   });
 
   it("keeps Prettier opt-in on save and normalizes its enabled languages", () => {

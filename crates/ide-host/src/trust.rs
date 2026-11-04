@@ -226,6 +226,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "deploy_coverage"
             | "deploy_test_connection"
             | "find_files"
+            | "find_dirs"
             | "find_symbols"
             | "mark_recent"
             | "remove_recent"
@@ -274,6 +275,15 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_set_theme_frame"
             | "plugin_catalog"
             | "plugin_assets"
+            | "plugin_market"
+            | "plugin_market_url"
+            | "plugin_set_market_url"
+            | "plugin_market_download"
+            | "plugin_unpack_package"
+            | "plugin_stage_package"
+            | "plugin_preview_install"
+            | "plugin_read_intellij_theme"
+            | "plugin_installed_intellij_themes"
             | "notebook_open"
             | "notebook_get"
             | "notebook_edit"
@@ -295,6 +305,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_line_hunks"
             | "vcs_file_at"
             | "vcs_blame"
+            | "vcs_block_history"
             | "vcs_log"
             | "vcs_commit_files"
             | "vcs_commits_changes"
@@ -319,12 +330,31 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
     ) || cmd.starts_with("plugin:")
 }
 
+/// Commands that change which plugin code runs: allowed where no project is open (the
+/// welcome screen), otherwise only in a trusted project.
+pub fn projectless_command_allowed(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "plugin_install_dir"
+            | "plugin_uninstall"
+            | "plugin_set_enabled"
+            | "plugin_grant"
+            | "plugin_set_capability"
+            | "plugin_roll_back"
+            | "plugin_reload"
+    )
+}
+
 impl crate::Host {
     pub fn authorize_command(&self, window: &str, command: &str) -> IdeResult<()> {
         if restricted_command_allowed(command) {
             return Ok(());
         }
-        self.project(window)?.require_trust()
+        match self.project(window) {
+            Ok(project) => project.require_trust(),
+            Err(_) if projectless_command_allowed(command) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 

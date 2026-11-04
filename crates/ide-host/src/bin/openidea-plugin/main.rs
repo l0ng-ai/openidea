@@ -3,13 +3,15 @@
 //! ```text
 //! openidea-plugin new <dir> [--template command|theme|icon-theme|language] [--id ID] [--name NAME] [--sdk PATH]
 //! openidea-plugin build [dir] [--debug]   # cargo → dist/plugin.wasm, then `check`
-//! openidea-plugin check [dir]             # validate the package as the IDE would install it
+//! openidea-plugin check [dir|package]     # validate the package as the IDE would install it
 //! openidea-plugin link [dir]              # load the folder in the IDE without installing it
 //! openidea-plugin unlink [dir]
 //! openidea-plugin links                   # list linked folders
 //! openidea-plugin keygen <key-file>       # a publisher's Ed25519 key
+//! openidea-plugin endorse <new-public-key> --key OLD --publisher ID   # vouch for a new key
 //! openidea-plugin pack [dir] [--key F --publisher ID] [--out FILE]   # <id>-<version>.oiplugin
-//! openidea-plugin index <dir> --publisher ID --name NAME --key F     # marketplace index.json
+//! openidea-plugin index <dir> [--publisher ID --name NAME --key F [--previous-key F]]   # marketplace index.json
+//! openidea-plugin merge <index> <other-index> --keep ID               # list another index's publishers
 //! ```
 //!
 //! `link` writes `links.json` in the IDE's plugins directory
@@ -20,7 +22,7 @@
 mod templates;
 
 use ide_extension::{Manifest, validate_plugin_id};
-use ide_host::plugins::PluginHost;
+use ide_host::plugins::{PluginHost, read_market_url, resolve_market_href};
 use ide_plugin::{Limits, PluginEngine};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -31,17 +33,31 @@ usage: openidea-plugin <command> [options]
 
 commands:
   new <dir> [--template T] [--id ID] [--name NAME] [--sdk PATH]
-        create a plugin; T = command (default), theme, icon-theme, language
+        create a plugin; T = command (default), theme, icon-theme, language. A Rust
+        plugin depends on the SDK of this tool's release (git); --sdk PATH uses a
+        local sdk/rust/openidea-plugin instead
   build [dir] [--debug]   compile a Rust plugin to dist/plugin.wasm and check it
-  check [dir]             validate the package as the IDE would install it
+  check [dir|package]     validate the package (folder or .oiplugin) as the IDE would install it
   link [dir]              load the folder in the IDE without installing it
   unlink [dir]            stop loading a linked folder
   links                   list linked folders
   keygen <key-file>       create a publisher signing key (keep the file secret)
+  endorse <new-public-key> --key F --publisher ID
+                          print an earlier key's endorsement of a new one (JSON), for an
+                          index the publisher doesn't write with `index --previous-key`
   pack [dir] [--key F --publisher ID] [--out FILE]
                           write <id>-<version>.oiplugin, signed with the key
-  index <dir> --publisher ID --name NAME --key F [--out FILE]
-                          write the marketplace index.json for the packages in dir
+  index <dir> [--publisher ID --name NAME --key F [--previous-key F]] [--out FILE]
+        [--download-base URL]
+                          write the marketplace index.json for the packages in dir: with a
+                          key, register it and list that publisher's plugins (earlier
+                          versions stay for older IDEs); without, list only these packages,
+                          each checked against the index's publishers. A new key replacing
+                          an earlier one is endorsed with --previous-key, so installed
+                          plugins update to it without asking
+  merge <index> <other-index> --keep ID [--out FILE]
+                          replace every publisher but ID in index with those of other-index
+                          (a path or URL), their plugins and revocations
 
 environment:
   OPENIDEA_PLUGINS_DIR    the IDE's plugins directory (default: the app data directory)";
@@ -51,13 +67,15 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("new") => cmd_new(&args[1..]),
         Some("build") => cmd_build(&args[1..]),
-        Some("check") => dir_arg(&args[1..]).and_then(|d| check(&d)),
+        Some("check") => dir_arg(&args[1..]).and_then(|d| check_path(&d)),
         Some("link") => dir_arg(&args[1..]).and_then(|d| link(&d, true)),
         Some("unlink") => dir_arg(&args[1..]).and_then(|d| link(&d, false)),
         Some("links") => list_links(),
         Some("keygen") => cmd_keygen(&args[1..]),
+        Some("endorse") => cmd_endorse(&args[1..]),
         Some("pack") => cmd_pack(&args[1..]),
         Some("index") => cmd_index(&args[1..]),
+        Some("merge") => cmd_merge(&args[1..]),
         Some("--version" | "-V") => {
             println!("openidea-plugin {} (plugin API {})", env!("CARGO_PKG_VERSION"), ide_extension::ENGINE_VERSION);
             Ok(())
@@ -161,7 +179,7 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let dir = canonical(&dir)?;
     let sdk = match template {
-        templates::Template::Command => Some(sdk_path(a.value("sdk"), &dir)?),
+        templates::Template::Command => Some(sdk_dependency(a.value("sdk"), &dir)?),
         _ => None,
     };
     let vars = templates::Vars { id: &id, name: &name, sdk: sdk.as_deref() };
@@ -216,12 +234,16 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
-/// The SDK dependency path written into a new plugin's Cargo.toml: `--sdk`,
-/// or the SDK of the source tree this tool was built from.
-fn sdk_path(explicit: Option<&str>, plugin_dir: &Path) -> Result<String, String> {
+/// The SDK dependency written into a new plugin's Cargo.toml: by path with `--sdk`, or
+/// when the plugin is inside the source tree this tool was built from; otherwise the
+/// repository at this tool's release tag.
+fn sdk_dependency(explicit: Option<&str>, plugin_dir: &Path) -> Result<String, String> {
     let sdk = match explicit {
         Some(p) => PathBuf::from(p),
-        None => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/rust/openidea-plugin")),
+        None => match dunce::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")) {
+            Ok(tree) if plugin_dir.starts_with(&tree) => tree.join("sdk/rust/openidea-plugin"),
+            _ => return Ok(format!("{{ git = \"{REPOSITORY}\", tag = \"v{}\" }}", env!("CARGO_PKG_VERSION"))),
+        },
     };
     let sdk = dunce::canonicalize(&sdk).map_err(|_| {
         format!("the plugin SDK was not found at {}; pass --sdk <path to sdk/rust/openidea-plugin>", sdk.display())
@@ -230,8 +252,10 @@ fn sdk_path(explicit: Option<&str>, plugin_dir: &Path) -> Result<String, String>
         return Err(format!("{} is not the openidea-plugin SDK (no Cargo.toml)", sdk.display()));
     }
     let path = relative(plugin_dir, &sdk).unwrap_or(sdk);
-    Ok(path.to_string_lossy().replace('\\', "/"))
+    Ok(format!("{{ path = \"{}\" }}", path.to_string_lossy().replace('\\', "/")))
 }
+
+const REPOSITORY: &str = "https://github.com/l0ng-ai/openidea";
 
 /// `to` relative to `from` when they share a root (keeps packages in a repo movable).
 fn relative(from: &Path, to: &Path) -> Option<PathBuf> {
@@ -323,10 +347,21 @@ fn ensure_wasm_target() {
 
 /// Validates `dir` exactly as Install from Disk would, and checks the
 /// component imports only the plugin API.
+/// [`check`] of a folder, or of a package file unpacked as installing would.
+fn check_path(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return check(path);
+    }
+    let tmp = scratch_dir("unpack")?;
+    let dir = tmp.path().join("package");
+    package::unpack(path, &dir).and_then(|_| check(&dir))
+}
+
 fn check(dir: &Path) -> Result<(), String> {
     let dir = canonical(dir)?;
-    let scratch = std::env::temp_dir().join(format!("openidea-plugin-check-{}", std::process::id()));
-    let result = (|| {
+    let tmp = scratch_dir("check")?;
+    let scratch = tmp.path().join("host");
+    (|| {
         let host = PluginHost::new(scratch.clone(), Arc::new(|_: Option<&str>, _| {}), Limits::default())
             .map_err(|e| e.to_string())?;
         let preview = host.preview_install(&dir).map_err(|e| e.to_string())?;
@@ -345,6 +380,17 @@ fn check(dir: &Path) -> Result<(), String> {
         } else {
             println!("  code: none (contributions only)");
         }
+        println!("  categories: {}", manifest.categories().join(", "));
+        for c in manifest.unknown_categories() {
+            println!("  warning: unknown category {c:?} (ignored); use {}", ide_extension::CATEGORIES.join(", "));
+        }
+        if manifest.declared_categories.len() > ide_extension::MAX_CATEGORIES {
+            println!(
+                "  warning: only the first {} known categories are used; {} are declared",
+                ide_extension::MAX_CATEGORIES,
+                manifest.declared_categories.len()
+            );
+        }
         if !manifest.activation.is_empty() {
             let events: Vec<String> = manifest.activation.iter().map(ToString::to_string).collect();
             println!("  activation: {}", events.join(", "));
@@ -361,9 +407,7 @@ fn check(dir: &Path) -> Result<(), String> {
         }
         println!("ok");
         Ok(())
-    })();
-    let _ = std::fs::remove_dir_all(&scratch);
-    result
+    })()
 }
 
 fn human_size(bytes: u64) -> String {
@@ -479,14 +523,31 @@ fn cmd_keygen(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_endorse(args: &[String]) -> Result<(), String> {
+    let a = Args::parse(args, &[], &["key", "publisher"])?;
+    let usage = "usage: openidea-plugin endorse <new-public-key> --key <earlier-key-file> --publisher ID";
+    let ([new], Some(key), Some(publisher)) = (a.positional.as_slice(), a.value("key"), a.value("publisher")) else {
+        return Err(usage.into());
+    };
+    if !package::publisher_id_ok(publisher) {
+        return Err(format!("invalid publisher id {publisher:?}"));
+    }
+    let endorsement = read_key(key)?.endorse(publisher, new.trim());
+    println!("{}", serde_json::to_string_pretty(&endorsement).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+/// A fresh scratch directory, removed when dropped.
+fn scratch_dir(what: &str) -> Result<tempfile::TempDir, String> {
+    tempfile::Builder::new().prefix(&format!("openidea-plugin-{what}-")).tempdir().map_err(|e| e.to_string())
+}
+
 /// A scratch host to list a package's files as the IDE would.
 fn with_scratch_host<T>(f: impl FnOnce(&PluginHost) -> Result<T, String>) -> Result<T, String> {
-    let scratch = std::env::temp_dir().join(format!("openidea-plugin-pack-{}", std::process::id()));
-    let result = PluginHost::new(scratch.clone(), Arc::new(|_: Option<&str>, _| {}), Limits::default())
+    let tmp = scratch_dir("host")?;
+    PluginHost::new(tmp.path().join("host"), Arc::new(|_: Option<&str>, _| {}), Limits::default())
         .map_err(|e| e.to_string())
-        .and_then(|h| f(&h));
-    let _ = std::fs::remove_dir_all(&scratch);
-    result
+        .and_then(|h| f(&h))
 }
 
 fn cmd_pack(args: &[String]) -> Result<(), String> {
@@ -522,29 +583,28 @@ fn cmd_pack(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_index(args: &[String]) -> Result<(), String> {
-    let a = Args::parse(args, &[], &["publisher", "name", "key", "out"])?;
+    let a = Args::parse(args, &[], &["publisher", "name", "key", "previous-key", "out", "download-base"])?;
     let dir = canonical(&a.dir()?)?;
-    let publisher = a.value("publisher").ok_or("--publisher is required")?;
-    let name = a.value("name").unwrap_or(publisher);
-    let key = read_key(a.value("key").ok_or("--key is required")?)?;
     let out = a.value("out").map(PathBuf::from).unwrap_or_else(|| dir.join("index.json"));
+    let base = a.value("download-base").map(|b| b.trim_end_matches('/'));
     // Revocations and other publishers of an existing index are kept.
     let mut index = match std::fs::read_to_string(&out) {
-        Ok(text) => Index::parse(&text)?,
+        Ok(text) => current_format(Index::parse(&text)?, &out.to_string_lossy())?,
         Err(_) => Index { format: package::INDEX_FORMAT, ..Index::default() },
     };
-    // Earlier keys of the publisher stay listed (packages they signed remain valid until revoked).
-    let current = key.public_base64();
-    let earlier: Vec<KeyEntry> = index
-        .publishers
-        .iter()
-        .filter(|p| p.id == publisher)
-        .flat_map(|p| p.keys.iter().filter(|k| k.key != current).cloned())
-        .collect();
-    index.publishers.retain(|p| p.id != publisher);
-    let keys: Vec<KeyEntry> = std::iter::once(KeyEntry { key: current, revoked: false }).chain(earlier).collect();
-    index.publishers.push(package::Publisher { id: publisher.into(), name: name.into(), keys });
-    index.plugins.clear();
+    let publisher = match (a.value("publisher"), a.value("key")) {
+        (Some(publisher), Some(key)) => {
+            let key = read_key(key)?;
+            let name = a.value("name").unwrap_or(publisher);
+            let previous = a.value("previous-key").map(read_key).transpose()?;
+            index.publishers =
+                register_key(std::mem::take(&mut index.publishers), publisher, name, &key, previous.as_ref())?;
+            Some(publisher)
+        }
+        (None, None) if a.has("previous-key") => return Err("--previous-key goes with --publisher and --key".into()),
+        (None, None) => None,
+        _ => return Err("--publisher and --key go together".into()),
+    };
     let mut packages: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| e.to_string())?
         .flatten()
@@ -552,35 +612,144 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
         .filter(|p| p.extension().is_some_and(|e| e == package::PACKAGE_EXTENSION))
         .collect();
     packages.sort();
+    let engine = PluginEngine::new()?;
+    let mut added: Vec<IndexEntry> = Vec::new();
     for path in packages {
-        let scratch = std::env::temp_dir().join(format!("openidea-plugin-index-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        let unpacked = package::unpack(&path, &scratch)?;
+        let tmp = scratch_dir("index")?;
+        let scratch = tmp.path().join("package");
         let entry = (|| {
+            let unpacked = package::unpack(&path, &scratch)?;
             let m = Manifest::load(&scratch)?;
             let files = with_scratch_host(|h| h.package_files_of(&scratch).map_err(|e| e.to_string()))?;
             let digest = package::package_digest(&scratch, &files).map_err(|e| e.to_string())?;
-            let sig = unpacked.signature.as_ref().ok_or_else(|| format!("{}: not signed", path.display()))?;
-            sig.check(&m.id, &m.version, &digest).map_err(|e| format!("{}: {e}", path.display()))?;
+            let sig = unpacked.signature.as_ref().ok_or("not signed")?;
+            let signer = index.verify(sig, &m.id, &m.version, &digest)?;
+            if publisher.is_some_and(|p| p != signer) {
+                return Err(format!("signed by {signer}, not {}", publisher.unwrap_or_default()));
+            }
+            if added.iter().any(|e| (&e.id, &e.version) == (&m.id, &m.version)) {
+                return Err(format!("another package of {} {} is in the folder", m.id, m.version));
+            }
+            if m.legacy {
+                return Err("plugin.toml uses the 0.1 format; see plugins/README.md".into());
+            }
+            let built_for = match &m.wasm {
+                Some(wasm) => engine.check_component(&engine.compile(&scratch.join(wasm))?)?,
+                None => None,
+            };
+            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             Ok::<_, String>(IndexEntry {
                 id: m.id.clone(),
                 name: m.name.clone(),
                 version: m.version.clone(),
                 description: m.description.clone(),
                 authors: m.authors.clone(),
-                publisher: sig.publisher.clone(),
-                download: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                publisher: signer,
+                download: base.map_or_else(|| file.clone(), |b| format!("{b}/{file}")),
                 digest,
                 capabilities: m.capabilities.all().map(|c| c.to_string()).collect(),
+                engine: package::engine_requirement(&m.engine, built_for.as_ref()),
+                categories: m.categories(),
             })
         })();
-        let _ = std::fs::remove_dir_all(&scratch);
-        let entry = entry?;
-        println!("  {} {}", entry.id, entry.version);
-        index.plugins.push(entry);
+        let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("  {} {} (plugin API {})", entry.id, entry.version, entry.engine);
+        added.push(entry);
     }
-    let json = serde_json::to_string_pretty(&index).map_err(|e| e.to_string())?;
-    std::fs::write(&out, json).map_err(|e| format!("{}: {e}", out.display()))?;
+    // A publisher's earlier versions of these plugins stay for IDEs that can't load the new
+    // ones (pruned below); plugins no longer in the folder go.
+    index.plugins.retain(|e| match publisher {
+        Some(p) => {
+            e.publisher != p
+                || (added.iter().any(|n| n.id == e.id)
+                    && !added.iter().any(|n| (&n.id, &n.version) == (&e.id, &e.version)))
+        }
+        None => false,
+    });
+    index.plugins.extend(added);
+    index.prune_versions();
+    write_index(&index, &out)
+}
+
+/// `publishers` with `key` as `publisher`'s current key. Earlier keys stay listed
+/// (packages they signed remain valid until revoked); a key new to the
+/// publisher is endorsed by `previous`, one of them, so installed plugins
+/// signed with it update without asking.
+fn register_key(
+    mut publishers: Vec<package::Publisher>,
+    publisher: &str,
+    name: &str,
+    key: &PublisherKey,
+    previous: Option<&PublisherKey>,
+) -> Result<Vec<package::Publisher>, String> {
+    let current = key.public_base64();
+    let earlier: Vec<KeyEntry> = publishers.iter().filter(|p| p.id == publisher).flat_map(|p| p.keys.clone()).collect();
+    let entry = match earlier.iter().find(|k| k.key == current) {
+        Some(listed) => listed.clone(),
+        None => {
+            let endorsement = match previous {
+                Some(prev) => {
+                    let prev_key = prev.public_base64();
+                    if !earlier.iter().any(|k| k.key == prev_key && !k.revoked) {
+                        return Err(format!("--previous-key is not one of {publisher}'s valid keys in the index"));
+                    }
+                    Some(prev.endorse(publisher, &current))
+                }
+                None => {
+                    if earlier.iter().any(|k| !k.revoked) {
+                        println!(
+                            "  warning: {publisher}'s new key is not endorsed (--previous-key): users who installed \
+                             its plugins will be asked to confirm the change when they update"
+                        );
+                    }
+                    None
+                }
+            };
+            KeyEntry { endorsement, ..KeyEntry::new(current.clone()) }
+        }
+    };
+    let keys = std::iter::once(entry).chain(earlier.into_iter().filter(|k| k.key != current)).collect();
+    publishers.retain(|p| p.id != publisher);
+    publishers.push(package::Publisher { id: publisher.into(), name: name.into(), keys });
+    Ok(publishers)
+}
+
+/// `index`, unless a newer `openidea-plugin` wrote it (rewriting it would drop what this one can't read).
+fn current_format(index: Index, file: &str) -> Result<Index, String> {
+    if index.is_newer() {
+        return Err(format!(
+            "{file}: index format {} is newer than this tool writes; update openidea-plugin",
+            index.format
+        ));
+    }
+    Ok(index)
+}
+
+fn cmd_merge(args: &[String]) -> Result<(), String> {
+    let a = Args::parse(args, &[], &["keep", "out"])?;
+    let [base, other] = a.positional.as_slice() else {
+        return Err("usage: openidea-plugin merge <index> <other-index> --keep ID [--out FILE]".into());
+    };
+    let keep = a.value("keep").ok_or("--keep is required")?;
+    let out = a.value("out").unwrap_or(base);
+    let mut index =
+        current_format(Index::parse(&std::fs::read_to_string(base).map_err(|e| format!("{base}: {e}"))?)?, base)?;
+    let bytes = read_market_url(other, 16 << 20)?;
+    let theirs = Index::parse(&String::from_utf8(bytes).map_err(|_| format!("{other}: not UTF-8"))?)?;
+    let mut theirs = current_format(theirs, other)?;
+    // Their downloads are relative to their index, not to ours.
+    for e in &mut theirs.plugins {
+        e.download = resolve_market_href(other, &e.download);
+    }
+    let count = theirs.plugins.len();
+    index.include(theirs, &[keep]).map_err(|e| format!("{other}: {e}"))?;
+    println!("  {count} plugins from {other}");
+    write_index(&index, Path::new(out))
+}
+
+fn write_index(index: &Index, out: &Path) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
+    std::fs::write(out, json).map_err(|e| format!("{}: {e}", out.display()))?;
     println!("-> {} ({} plugins)", out.display(), index.plugins.len());
     Ok(())
 }
@@ -588,6 +757,25 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_key_is_endorsed_by_the_previous_one() {
+        let (k1, k2, k3) =
+            (PublisherKey::from_seed([1; 32]), PublisherKey::from_seed([2; 32]), PublisherKey::from_seed([3; 32]));
+        let first = register_key(Vec::new(), "acme", "ACME", &k1, None).unwrap();
+        let rotated = register_key(first.clone(), "acme", "ACME", &k2, Some(&k1)).unwrap();
+        let index = Index { format: package::INDEX_FORMAT, publishers: rotated.clone(), ..Index::default() };
+        assert!(index.succeeds("acme", &k1.public_base64(), &k2.public_base64()));
+        assert_eq!(rotated[0].keys.len(), 2, "the earlier key stays listed");
+        // Registering the current key again keeps its endorsement.
+        let again = register_key(rotated.clone(), "acme", "ACME", &k2, None).unwrap();
+        assert_eq!(again, rotated);
+        // Only a key the publisher has can endorse.
+        assert!(register_key(first.clone(), "acme", "ACME", &k2, Some(&k3)).unwrap_err().contains("--previous-key"));
+        // Without one the new key is listed unendorsed.
+        let unendorsed = register_key(first, "acme", "ACME", &k3, None).unwrap();
+        assert!(unendorsed[0].keys[0].endorsement.is_none());
+    }
 
     #[test]
     fn names() {
@@ -602,12 +790,188 @@ mod tests {
     }
 
     #[test]
+    fn new_plugins_depend_on_the_sdk_by_path_only_in_its_source_tree() {
+        let tree = dunce::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap();
+        assert_eq!(
+            sdk_dependency(None, &tree.join("plugins/official/new")).unwrap(),
+            "{ path = \"../../../sdk/rust/openidea-plugin\" }"
+        );
+        let outside = dunce::canonicalize(std::env::temp_dir()).unwrap().join("my-plugin");
+        assert_eq!(
+            sdk_dependency(None, &outside).unwrap(),
+            format!("{{ git = \"https://github.com/l0ng-ai/openidea\", tag = \"v{}\" }}", env!("CARGO_PKG_VERSION"))
+        );
+        let sdk = tree.join("sdk/rust/openidea-plugin");
+        assert!(sdk_dependency(Some(sdk.to_str().unwrap()), &outside).unwrap().starts_with("{ path = "));
+        assert!(
+            sdk_dependency(Some(tree.join("wit").to_str().unwrap()), &outside)
+                .unwrap_err()
+                .contains("not the openidea-plugin SDK")
+        );
+    }
+
+    /// A theme package `id` signed by `publisher` with `key`, packed into `out`.
+    fn signed_theme(tmp: &Path, id: &str, publisher: &str, key: &str, out: &Path) {
+        signed_theme_version(tmp, id, "0.1.0", "^1.0", publisher, key, out);
+    }
+
+    fn signed_theme_version(tmp: &Path, id: &str, version: &str, engine: &str, publisher: &str, key: &str, out: &Path) {
+        let src = tmp.join("src").join(format!("{id}-{version}"));
+        let vars = templates::Vars { id, name: id, sdk: None };
+        for (rel, content) in templates::render(templates::Template::Theme, &vars) {
+            let path = src.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let content = content
+                .replace("version = \"0.1.0\"", &format!("version = \"{version}\""))
+                .replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = \"{engine}\""));
+            std::fs::write(path, content).unwrap();
+        }
+        std::fs::create_dir_all(out).unwrap();
+        let args = [src.to_str().unwrap(), "--key", key, "--publisher", publisher, "--out"]
+            .into_iter()
+            .map(String::from)
+            .chain([out.join(format!("{id}-{version}.oiplugin")).to_string_lossy().into_owned()])
+            .collect::<Vec<_>>();
+        cmd_pack(&args).unwrap();
+    }
+
+    #[test]
+    fn a_release_keeps_the_versions_older_ides_need() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let key = t.join("acme.key");
+        std::fs::write(&key, PublisherKey::from_seed([5; 32]).seed_base64()).unwrap();
+        let key = key.to_string_lossy().into_owned();
+        let index_file = t.join("index.json");
+        let release = |n: usize, packages: &[(&str, &str, &str)]| {
+            let dir = t.join(format!("release-{n}"));
+            for (id, version, engine) in packages {
+                signed_theme_version(t, id, version, engine, "acme", &key, &dir);
+            }
+            let base = format!("https://example.com/download/v{n}");
+            let args = [dir.to_str().unwrap(), "--publisher", "acme", "--key", &key, "--download-base", &base];
+            cmd_index(&strings(&[&args[..], &["--out", index_file.to_str().unwrap()]].concat())).unwrap();
+            let index = Index::parse(&std::fs::read_to_string(&index_file).unwrap()).unwrap();
+            index.plugins.iter().map(|e| format!("{} {} {}", e.id, e.version, e.download)).collect::<Vec<_>>()
+        };
+        release(1, &[("acme.a", "1.0.0", "^1.0"), ("acme.b", "1.0.0", "^1.0")]);
+        // Same requirement: the newer version replaces it; acme.b is gone from the release.
+        assert_eq!(
+            release(2, &[("acme.a", "1.1.0", "^1.0")]),
+            ["acme.a 1.1.0 https://example.com/download/v2/acme.a-1.1.0.oiplugin"]
+        );
+        // Another API requirement: the last version for the earlier one stays, where it was published.
+        assert_eq!(
+            release(3, &[("acme.a", "2.0.0", ">=1.0, <2")]),
+            [
+                "acme.a 1.1.0 https://example.com/download/v2/acme.a-1.1.0.oiplugin",
+                "acme.a 2.0.0 https://example.com/download/v3/acme.a-2.0.0.oiplugin",
+            ]
+        );
+        let index = Index::parse(&std::fs::read_to_string(&index_file).unwrap()).unwrap();
+        assert_eq!(index.offered()[0].0.version, "2.0.0", "the newest this IDE can load");
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn official_and_community_indexes_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let mut keys = Vec::new();
+        for (name, seed) in [("openidea", 1), ("alice", 2), ("carol", 3)] {
+            let file = t.join(format!("{name}.key"));
+            let key = PublisherKey::from_seed([seed; 32]);
+            std::fs::write(&file, key.seed_base64()).unwrap();
+            keys.push((file.to_string_lossy().into_owned(), key.public_base64()));
+        }
+        let (official, community) = (t.join("official"), t.join("community"));
+        signed_theme(t, "openidea.night", "openidea", &keys[0].0, &official);
+        signed_theme(t, "alice.dawn", "alice", &keys[1].0, &community);
+        let official_index = official.join("index.json");
+        let community_index = community.join("index.json");
+        let release = strings(&[official.to_str().unwrap(), "--publisher", "openidea", "--key", &keys[0].0]);
+        cmd_index(&release).unwrap();
+
+        // The community index lists its publishers; `index` without a key checks packages against them.
+        let skeleton = Index {
+            format: package::INDEX_FORMAT,
+            publishers: vec![package::Publisher {
+                id: "alice".into(),
+                name: "Alice".into(),
+                keys: vec![KeyEntry::new(keys[1].1.clone())],
+            }],
+            ..Index::default()
+        };
+        write_index(&skeleton, &community_index).unwrap();
+        cmd_index(&strings(&[community.to_str().unwrap()])).unwrap();
+
+        cmd_merge(&strings(&[
+            official_index.to_str().unwrap(),
+            community_index.to_str().unwrap(),
+            "--keep",
+            "openidea",
+        ]))
+        .unwrap();
+        // A release rebuilds the official plugins and keeps the community's.
+        cmd_index(&release).unwrap();
+        let index = Index::parse(&std::fs::read_to_string(&official_index).unwrap()).unwrap();
+        let listed: Vec<_> = index.plugins.iter().map(|e| (e.id.as_str(), e.publisher.as_str())).collect();
+        assert_eq!(listed, [("alice.dawn", "alice"), ("openidea.night", "openidea")]);
+        assert_eq!(index.plugins[1].categories, ["themes"], "implied by the theme");
+        assert_eq!(index.plugins[1].download, "openidea.night-0.1.0.oiplugin");
+        assert!(Path::new(&index.plugins[0].download).is_absolute(), "{}", index.plugins[0].download);
+
+        // A package by a publisher the index doesn't know is refused.
+        signed_theme(t, "carol.noon", "carol", &keys[2].0, &community);
+        let err = cmd_index(&strings(&[community.to_str().unwrap()])).unwrap_err();
+        assert!(err.contains("unknown publisher"), "{err}");
+    }
+
+    /// `cargo test` of a new Rust plugin (its own tests against the mock host) with this SDK.
+    #[test]
+    fn the_command_template_builds_against_the_sdk() {
+        let dir = std::env::temp_dir().join(format!("openidea-plugin-template-build-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dunce::canonicalize(&dir).unwrap();
+        let plugin = dir.join("plugin");
+        let sdk = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/rust/openidea-plugin");
+        let sdk = sdk_dependency(Some(sdk), &plugin).unwrap();
+        let vars = templates::Vars { id: "acme.sample", name: "Sample", sdk: Some(&sdk) };
+        for (rel, content) in templates::render(templates::Template::Command, &vars) {
+            let path = plugin.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        // The SDK's lockfile keeps the versions its own CI builds with (the resolver also
+        // looks up the wasm-only dependencies, which may not be downloaded yet).
+        let sdk_lock = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/rust/openidea-plugin/Cargo.lock");
+        std::fs::copy(sdk_lock, plugin.join("Cargo.lock")).unwrap();
+        let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+            .args(["test", "--manifest-path"])
+            .arg(plugin.join("Cargo.toml"))
+            .env("CARGO_TARGET_DIR", dir.join("target"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn every_template_is_a_valid_package() {
         for t in templates::Template::ALL {
             let dir =
                 std::env::temp_dir().join(format!("openidea-plugin-template-{}-{}", t.label(), std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            let vars = templates::Vars { id: "acme.sample", name: "Sample", sdk: Some("../sdk") };
+            let vars = templates::Vars { id: "acme.sample", name: "Sample", sdk: Some("{ path = \"../sdk\" }") };
             for (rel, content) in templates::render(t, &vars) {
                 let path = dir.join(rel);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();

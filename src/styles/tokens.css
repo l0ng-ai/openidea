@@ -18,6 +18,13 @@ html {
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --splash-logo-size: 56px;
+  --splash-bar-width: 120px;
+  --splash-bar-height: 2px;
+  --splash-gap: 14px;
+  --splash-offset: 38px;
+  --splash-progress-duration: 4s;
+  --splash-progress-easing: cubic-bezier(0.1, 0.7, 0.3, 1);
   /* surfaces */
   --bg-app: #191a1c;
   --bg-elev: #212326;
@@ -1152,8 +1159,8 @@ html {
   --palette-fg: #657b83;
   --palette-muted: #657b83;
   --palette-border: #eee8d5;
-  --palette-hover: #eee8d5;
-  --palette-selection: #eee8d5;
+  --palette-hover: #e4ddc8;
+  --palette-selection: #c2d3d4;
   --palette-line: #eee8d5;
   --palette-accent: #268bd2;
   --palette-on-accent: #002b36;
@@ -1184,6 +1191,9 @@ html {
   --syn-markup-code: #2aa198;
   --syn-tag: #268bd2;
   --syn-escape: #dc322f;
+  /* Selection and hover differ from the panel and popup surfaces; the editor keeps Solarized's own selection. */
+  --bg-editor-selection: #eee8d5;
+  --bg-editor-selection-inactive: #eee8d5;
 }
 
 :root[data-color-theme="solarized-dark"] {
@@ -1201,8 +1211,8 @@ html {
   --palette-fg: #839496;
   --palette-muted: #839496;
   --palette-border: #073642;
-  --palette-hover: #073642;
-  --palette-selection: #073642;
+  --palette-hover: #0b4053;
+  --palette-selection: #10506d;
   --palette-line: #073642;
   --palette-accent: #268bd2;
   --palette-on-accent: #002b36;
@@ -1233,6 +1243,9 @@ html {
   --syn-markup-code: #2aa198;
   --syn-tag: #268bd2;
   --syn-escape: #dc322f;
+  /* Selection and hover differ from the panel and popup surfaces; the editor keeps Solarized's own selection. */
+  --bg-editor-selection: #073642;
+  --bg-editor-selection-inactive: #073642;
 }
 
 :root[data-color-theme="one-light"] {

@@ -143,7 +143,7 @@ export interface EditorStatus {
 export const useEditorStatus = create<{ status: EditorStatus | null }>(() => ({ status: null }));
 /** Per-tab open errors (file missing, too large…). */
 export const useTabErrors = create<Record<string, string>>(() => ({}));
-/** Per-pane find bar state (open / replace mode); the bar keeps its own query. */
+/** Per-tab find bar state (open / replace mode), like IDEA's per-editor search session. */
 export const useFindBars = create<Record<string, { replace: boolean; seq: number } | undefined>>(() => ({}));
 export const useGotoLine = create<{ open: boolean }>(() => ({ open: false }));
 
@@ -193,7 +193,7 @@ export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
 }
 
 export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
-  if (input.kind === "file") return fileIconName(basename(input.path ?? ""));
+  if (input.kind === "file") return fileIconName(basename(input.path ?? ""), input.path ?? null);
   if (input.kind === "virtual") return fileIconName(tabTitle(input, kinds));
   const kind = kinds.get(input.kind);
   try {
@@ -387,6 +387,8 @@ export class EditorController implements SlotHost {
         slot.dispose();
       }
     }
+    const bars = Object.entries(useFindBars.getState()).filter(([id, bar]) => bar && !live.has(id));
+    if (bars.length) useFindBars.setState(Object.fromEntries(bars.map(([id]) => [id, undefined])));
     for (const id of Object.keys(useTabErrors.getState()))
       if (!live.has(id))
         useTabErrors.setState((s) => {
@@ -588,7 +590,21 @@ export class EditorController implements SlotHost {
 
   onBlur(slot: EditorSlot) {
     setContext("editorTextFocus", false);
-    if (this.autoSave()) void slot.model.save("auto").catch(() => {});
+    if (!this.autoSave()) return;
+    const save = () => void slot.model.save("auto").catch(() => {});
+    if (typeof document === "undefined") return save();
+    // A popup (intentions, completion, …) belongs to the editor: saving under it would change
+    // the text (save cleanup) its items were computed for. Save once focus leaves it elsewhere.
+    setTimeout(() => {
+      if (slot.view?.hasFocus) return;
+      if (!inPopup(document.activeElement)) return save();
+      const onFocusIn = (e: FocusEvent) => {
+        if (inPopup(e.target)) return;
+        document.removeEventListener("focusin", onFocusIn);
+        if (!slot.view?.hasFocus) save();
+      };
+      document.addEventListener("focusin", onFocusIn);
+    });
   }
 
   onSelection(slot: EditorSlot, navigatedFrom?: { line: number; col: number }) {
@@ -615,9 +631,8 @@ export class EditorController implements SlotHost {
   }
 
   onEscape(slot: EditorSlot): boolean {
-    const loc = this.locateTab(slot.tabId);
-    if (loc && useFindBars.getState()[loc.paneId]) {
-      useFindBars.setState({ [loc.paneId]: undefined });
+    if (useFindBars.getState()[slot.tabId]) {
+      useFindBars.setState({ [slot.tabId]: undefined });
       return true;
     }
     return false;
@@ -716,6 +731,8 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "refactor.extractConstant" },
           { kind: "action", action: "refactor.extractMethod" },
           { kind: "action", action: "refactor.inline" },
+          { kind: "action", action: "refactor.pullMembersUp" },
+          { kind: "action", action: "refactor.pushMembersDown" },
           { kind: "separator" },
           { kind: "action", action: "refactor.safeDelete" },
         ],
@@ -883,8 +900,18 @@ export class EditorController implements SlotHost {
     return generation;
   }
 
+  /**
+   * A decision to leave that was authorized, but whose project change or window close never
+   * came (the window stayed with its project): released, so the window can open files and
+   * be left again instead of refusing both until it is restarted.
+   */
+  private releaseStaleClose() {
+    if (this.closeSession && this.closeCommitted && !useProject.getState().opening) this.closeSession.cancel();
+  }
+
   private checkOpening(generation: { project: number; admission: number }) {
     if (generation.project !== this.projectGeneration) throw new Error("The project changed while opening the editor");
+    this.releaseStaleClose();
     if (generation.admission !== this.admissionGeneration || this.closeSession || this.closeRequests)
       throw new Error("The project is closing");
   }
@@ -1316,8 +1343,8 @@ export class EditorController implements SlotHost {
     this.apply((s) => (s.panes[paneId] ? promoteTab(s, paneId, tabId) : s));
   }
   /** Drag & drop; the tab keeps its id (and slot) when moved within a pane. */
-  moveTab(fromPane: string, tabId: string, toPane: string, index: number) {
-    this.apply((s) => moveTab(s, fromPane, tabId, toPane, index));
+  moveTab(fromPane: string, tabId: string, toPane: string, index: number, pin?: boolean) {
+    this.apply((s) => moveTab(s, fromPane, tabId, toPane, index, pin));
   }
   /** Drag & drop onto an editor edge: the tab moves into a new split on that side. */
   moveTabToSplit(fromPane: string, tabId: string, targetPane: string, edge: SplitEdge) {
@@ -1612,6 +1639,7 @@ export class EditorController implements SlotHost {
     ++this.admissionGeneration;
     ++this.closeRequests;
     return this.enqueueRemoval(async () => {
+      this.releaseStaleClose();
       if (this.closeSession) throw new Error("An editor close decision is already pending");
       const generation = this.projectGeneration;
       const documents = [...customDocuments(useTabs.getState(), useContributions.getState().editorKinds).values()];
@@ -1820,6 +1848,7 @@ function gitMenu(path: string): MenuItem {
       { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
       { kind: "action", action: "vcs.compareWithBranch", arg: { path }, label: "Compare with Branch…" },
       { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
+      { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
       { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
       { kind: "separator" },
       { kind: "action", action: "vcs.push", label: "Push…" },
@@ -1878,4 +1907,8 @@ export function editorController(): EditorController {
 function revealLabel(): string {
   const os = usePlatform.getState().os;
   return os === "macos" ? "Finder" : os === "windows" ? "Explorer" : "Files";
+}
+
+function inPopup(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest("[data-popup]");
 }
