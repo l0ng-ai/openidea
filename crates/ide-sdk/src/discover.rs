@@ -659,6 +659,10 @@ mod maven_path_tests {
 
     impl Subst {
         fn new(target: &Path) -> Self {
+            // Tests run in parallel and may race for the same free letter; only a drive that
+            // shows this target's marker is ours.
+            let marker = format!("{}.subst", target.file_name().unwrap().to_string_lossy());
+            std::fs::write(target.join(&marker), "").unwrap();
             for letter in (b'D'..=b'Z').rev() {
                 let name = format!("{}:", char::from(letter));
                 let root = PathBuf::from(format!("{name}\\"));
@@ -666,7 +670,7 @@ mod maven_path_tests {
                     continue;
                 }
                 let output = Command::new("subst").arg(&name).arg(target).output().unwrap();
-                if output.status.success() {
+                if output.status.success() && root.join(&marker).exists() {
                     return Self { name, root };
                 }
             }
