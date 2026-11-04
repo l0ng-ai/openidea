@@ -1,5 +1,5 @@
 {
-  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust`.",
+  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust` (`plugins/…`: the plugin runtime budgets).",
   "regressionTolerance": 0.2,
   "regressionFloor": 1,
   "ui": {
@@ -76,6 +76,9 @@
     "index_100k/find_files/ordcon": 10000,
     "index_100k/find_files/src/user": 10000,
     "index_100k/find_files/PaymentService": 10000,
+    "index_100k/find_dirs/util": 5000,
+    "index_100k/find_dirs/src/ui": 5000,
+    "index_100k/find_dirs/a": 5000,
     "index_100k/find_symbols/OCo": 15000,
     "index_100k/find_symbols/q": 15000,
     "index_100k/find_symbols/invoiceRepo": 15000,
@@ -83,6 +86,10 @@
 
     "search_5k/literal": 100000,
     "search_5k/regex": 100000,
-    "search_5k/dense_limit": 20000
+    "search_5k/dense_limit": 20000,
+
+    "plugins/load_50": 20000,
+    "plugins/cold_activation": 30000,
+    "plugins/syntax_highlights_2k_lines": 50000
   }
 }

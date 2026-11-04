@@ -24,7 +24,8 @@ import { WindowControls } from "./WindowControls";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
 import { keymapItems, themeItems, VIEW_MODE_ITEMS } from "./quickSwitch";
-import { currentThemeId, useThemeOverride } from "./theme";
+import { useContributedThemes } from "@/platform/themes";
+import { currentThemeChoice, useThemeOverride } from "./theme";
 import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
 
@@ -202,8 +203,9 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
   useActions((s) => s.actions);
   const preset = useKeymap((s) => s.preset);
   const customs = settings?.customKeymaps;
+  useContributedThemes((s) => s.themes);
   const items = gearMenuItems(
-    currentThemeId(),
+    currentThemeChoice(),
     typeof settings?.keymap === "string" ? settings.keymap : preset,
     customs && typeof customs === "object" ? Object.keys(customs) : [],
     customize,
@@ -318,10 +320,12 @@ export function TitleBar({
       <div className={styles.drag} data-tauri-drag-region />
       {!minimal && (
         <>
-          {toolbar && shown.right.map(entry)}
-          <div className={styles.tools}>
-            <GearButton customize={menu} />
-          </div>
+          {toolbar && !menuExpanded && shown.right.map(entry)}
+          {!menuExpanded && (
+            <div className={styles.tools}>
+              <GearButton customize={menu} />
+            </div>
+          )}
         </>
       )}
       {frameless && <WindowControls dialog={dialog} />}

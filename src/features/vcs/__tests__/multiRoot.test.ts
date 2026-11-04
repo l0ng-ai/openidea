@@ -26,6 +26,7 @@ import {
   selectedCommits,
   selectGitTab,
   toggleCommitSelection,
+  toggleRepository,
   useGitLog,
 } from "../logStore";
 import { useVcs } from "../store";
@@ -129,6 +130,28 @@ describe("multi-root Git log", () => {
     expect(useGitLog.getState().filters.path).toBe("/project/back/main.ts");
     expect((useGitLog.getState().commits as RepoCommit[])[0]?.repo).toBe("/project/back");
     off();
+  });
+
+  it("shows a submodule folder's own history, not the folder's history in the enclosing repository", () => {
+    useVcs.setState({ roots: ["/r", "/r/libs/core"] });
+    openLogTab("history", "/r/libs/core");
+    openLogTab("history", "/r/libs/core/src/Lib.kt");
+    openLogTab("history", "/r/libs");
+    expect(useGitLog.getState().logTabs.map((t) => t.repo)).toEqual(["/r/libs/core", "/r/libs/core", "/r"]);
+  });
+
+  it("shows several repositories chosen one click at a time in the Repository filter", async () => {
+    log.mockImplementation(async (repo: string) => ({ status: "ok", data: [commit(repo)] }));
+    let repositories = toggleRepository(undefined, "/project/front");
+    repositories = toggleRepository(repositories, "/project/back");
+    expect(repositories).toEqual(["/project/front", "/project/back"]);
+    useGitLog.setState({ filters: { ...emptyFilters(), repositories } });
+    await reloadLog();
+    expect(new Set((useGitLog.getState().commits as RepoCommit[]).map((c) => c.repo))).toEqual(
+      new Set(["/project/front", "/project/back"]),
+    );
+    expect(toggleRepository(repositories, "/project/front")).toEqual(["/project/back"]);
+    expect(toggleRepository(["/project/back"], "/project/back")).toEqual([]);
   });
 
   it("groups identical local and remote names under distinct repository nodes", () => {

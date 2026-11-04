@@ -13,6 +13,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         ok([
           { name: "count", value: "3", typeName: "int", variablesReference: 0, evaluateName: "count" },
           { name: "label", value: "'hi'", typeName: "str", variablesReference: 0, evaluateName: "label" },
+          {
+            name: "bar",
+            value: "high    7.86\nlow     7.66\nName: 772, dtype: object",
+            typeName: "Series",
+            variablesReference: 0,
+            evaluateName: "bar",
+          },
         ]),
     },
   };
@@ -72,5 +79,7 @@ describe("debug tool window", () => {
     expect(screen.getByPlaceholderText("Evaluate expression (↩) or add a watch (⇧⌘↩)")).toBeTruthy();
     expect(await screen.findByText("{int}")).toBeTruthy();
     expect(screen.getByText("'hi'")).toBeTruthy();
+    // A multi-line rendering stays on its row.
+    expect(screen.getByText(/dtype: object/).textContent).toBe("high    7.86 low     7.66 Name: 772, dtype: object");
   });
 });

@@ -4,6 +4,7 @@
  * the deletion staged (`git rm`), with the same three choices.
  */
 import { onFileOperation, type FileOperation } from "@/platform/fileOps";
+import { tx } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { loadSettings } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -80,8 +81,12 @@ async function handle(op: FileOperation) {
   const n = files.length;
   await runOp(
     op.kind === "created"
-      ? `Add ${n} file${n === 1 ? "" : "s"} to Git`
-      : `Remove ${n} file${n === 1 ? "" : "s"} from Git`,
+      ? n === 1
+        ? tx("Add 1 file to Git")
+        : tx`Add ${n} files to Git`
+      : n === 1
+        ? tx("Remove 1 file from Git")
+        : tx`Remove ${n} files from Git`,
     () => call(commands.vcsStage(files)),
   );
 }

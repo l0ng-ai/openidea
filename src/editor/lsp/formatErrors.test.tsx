@@ -3,9 +3,11 @@ import { act, render, screen } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { IdeError } from "@/bindings";
-import { registerAction } from "@/platform/actions";
+import { getAction, registerAction } from "@/platform/actions";
+import { commands, IpcError } from "@/platform/ipc";
+import { useEditorRegistry } from "@/editor/api";
+import { registerLspActions } from "./actions";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { IpcError } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
 import { Balloons } from "@/workbench/Notifications";
@@ -121,5 +123,29 @@ describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
     request.mockRejectedValue(new IpcError({ kind: "cancelled", message: "cancelled", data: tool }));
     await formatDocument(view);
     expect(useNotifications.getState().items).toHaveLength(0);
+  });
+});
+
+describe("Reformat with Prettier / oxfmt", () => {
+  it.each([
+    ["code.reformatWithPrettier", "prettier"],
+    ["code.reformatWithOxfmt", "oxfmt"],
+  ])("%s asks the backend for %s whatever the settings select", async (id, tool) => {
+    vi.spyOn(lsp, "lspRequest").mockImplementation(async (request) => {
+      await request();
+      return [] as never;
+    });
+    const lspFormat = vi.spyOn(commands, "lspFormat").mockResolvedValue({ status: "ok", data: [] });
+    const view = viewFor("/project/app.ts");
+    const previous = useEditorRegistry.getState().active;
+    const dispose = registerLspActions();
+    try {
+      useEditorRegistry.setState({ active: { view, ctx: view.state.facet(lsp.lspDoc)! } as never });
+      await getAction(id)!.run({ ctx: {} } as never);
+      await vi.waitFor(() => expect(lspFormat).toHaveBeenCalledWith(1, null, expect.objectContaining({ tool })));
+    } finally {
+      dispose();
+      useEditorRegistry.setState({ active: previous });
+    }
   });
 });

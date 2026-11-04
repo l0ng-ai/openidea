@@ -413,6 +413,65 @@ async fn kill_terminates_process() {
     tokio::time::timeout(Duration::from_secs(5), peer.closed()).await.unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn exited_resolves_once_the_killed_process_is_reaped() {
+    let peer =
+        Peer::spawn("sleep", &["30".into()], &std::env::temp_dir(), &[], Arc::new(NoopHandler), Box::new(|_| {}))
+            .unwrap();
+    let pid = peer.pid().unwrap().to_string();
+    let exited = tokio::time::timeout(Duration::from_millis(200), peer.exited()).await;
+    assert!(exited.is_err(), "running until killed");
+    peer.kill();
+    tokio::time::timeout(Duration::from_secs(5), peer.exited()).await.unwrap();
+    let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success();
+    assert!(!alive, "reaped, not even a zombie");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exited_resolves_at_once_without_a_process() {
+    let (client, _server) = pair(Arc::new(NoopHandler), Arc::new(Recorder::default()));
+    tokio::time::timeout(Duration::from_secs(1), client.exited()).await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn exited_waits_for_a_windows_descendant_to_release_its_file() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("hold.ps1"),
+        "$f=[IO.File]::Open('locked.txt','Create','ReadWrite','None'); [IO.File]::WriteAllText('ready.txt','ready'); Start-Sleep 30",
+    )
+    .unwrap();
+    let peer = Peer::spawn(
+        "cmd",
+        &[
+            "/D".into(),
+            "/C".into(),
+            "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File hold.ps1".into(),
+        ],
+        tmp.path(),
+        &[],
+        Arc::new(NoopHandler),
+        Box::new(|_| {}),
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !tmp.path().join("ready.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let open = || std::fs::OpenOptions::new().read(true).share_mode(0).open(tmp.path().join("locked.txt"));
+    assert_eq!(open().unwrap_err().raw_os_error(), Some(32));
+    assert!(tokio::time::timeout(Duration::from_millis(200), peer.exited()).await.is_err());
+    peer.kill();
+    tokio::time::timeout(Duration::from_secs(5), peer.exited()).await.unwrap();
+    drop(open().expect("exited must wait for the descendant's file handle to close"));
+}
+
 /// A launcher that prints in the system code page and exits before speaking the
 /// protocol: `jdtls.bat` on a Chinese Windows when its Python step fails, then
 /// `pause` prints `请按任意键继续. . .` in GBK on stdout.

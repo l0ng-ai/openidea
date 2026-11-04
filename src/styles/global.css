@@ -41,6 +41,8 @@ html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *
 input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]),
 textarea,
 [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
   cursor: text;
 }
 
@@ -150,6 +152,12 @@ a:hover {
   ):focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
+}
+
+/* A control the user only clicked keeps no ring once a keystroke turns on keyboard modality
+   (`platform/pointerFocus.ts`); `!important` covers the components' own focus rings. */
+[data-pointer-focus]:focus-visible {
+  outline: none !important;
 }
 
 ::selection {

@@ -45,6 +45,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   // Agents installed in Settings (its own window) show up when this one is back in front.
   useEffect(() => {
     const refresh = () => void refreshProviders();
+    refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, []);
@@ -66,7 +67,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   }, [root, project?.workspace]);
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
-  const probe = useProbe(provider?.installed ? provider.id : null);
+  const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -98,7 +99,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           id={HOME}
           autoFocus
           placeholder={
-            docked ? "Describe a task…" : "Describe a task for the agent. @ references a file, / runs a command"
+            docked
+              ? "Describe a task…"
+              : "Describe a task for the agent. @ references a file or folder, / runs a command"
           }
           root={root}
           projectRoot={root}
@@ -164,10 +167,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   detail: tx("edits your files directly"),
                 },
               ]}
-              onChange={(isolation) => updateDraft({ isolation })}
+              onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
             />
           )}
-          {isolation === "local" && current && (
+          {/* A folder that isn't a repository has no branch: the one Git found below it isn't where the agent runs. */}
+          {isolation === "local" && isGit && current && (
             <>
               {!docked && (
                 <span className={styles.note}>
@@ -224,7 +228,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
 }
 
 /** What the agent reports about itself when it starts (no session is opened), once per agent. */
-function useProbe(provider: string | null): AgentProbe | null {
+function useProbe(provider: string | null, command?: string): AgentProbe | null {
   const [probe, setProbe] = useState<AgentProbe | null>(null);
   useEffect(() => {
     if (!provider) return;
@@ -235,6 +239,6 @@ function useProbe(provider: string | null): AgentProbe | null {
     return () => {
       live = false;
     };
-  }, [provider]);
+  }, [provider, command]);
   return probe?.provider === provider ? probe : null;
 }

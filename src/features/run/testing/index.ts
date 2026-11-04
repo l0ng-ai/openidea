@@ -4,6 +4,7 @@ import { cargoParser } from "./cargo";
 import { goParser } from "./go";
 import { jsParser } from "./js";
 import { jvmParser } from "./jvm";
+import { phpunitParser, withTeamcity } from "./phpunit";
 import { pytestParser } from "./pytest";
 import { unittestParser } from "./unittest";
 import type { TestEvent, TestOutputParser } from "./types";
@@ -11,7 +12,7 @@ import type { TestEvent, TestOutputParser } from "./types";
 export type { TestEvent, TestOutputParser, TestStatus } from "./types";
 export { parseDuration } from "./types";
 export { TestResults, nodeStatus, type TestNode } from "./results";
-export { cargoParser, goParser, jsParser, jvmParser, pytestParser, unittestParser };
+export { cargoParser, goParser, jsParser, jvmParser, phpunitParser, pytestParser, unittestParser };
 
 /** Runs several parsers side by side (unknown tool: e.g. `make test`). */
 export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
@@ -21,7 +22,7 @@ export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
   };
 }
 
-export type Framework = "cargo" | "js" | "pytest" | "unittest" | "go" | "jvm" | "auto";
+export type Framework = "cargo" | "js" | "pytest" | "unittest" | "phpunit" | "go" | "jvm" | "auto";
 
 export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args">): Framework {
   const cmd = [config.command, ...config.args].join(" ");
@@ -39,6 +40,8 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
       return /\bmanage\.py test\b/.test(cmd) ? "unittest" : "pytest";
     case "django-test":
       return "unittest";
+    case "phpunit":
+      return "phpunit";
     case "go":
       return "go";
     case "gradle":
@@ -49,6 +52,7 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
   if (/\b(jest|vitest|npm|pnpm|yarn|bun|npx|deno)\b/.test(cmd)) return "js";
   if (/\bpytest\b/.test(cmd)) return "pytest";
   if (/\bmanage\.py test\b/.test(cmd)) return "unittest";
+  if (/(^|[/\\\s])phpunit(\.phar|\.bat)?(\s|$)/.test(cmd)) return "phpunit";
   if (/\bgo\s+test\b/.test(cmd)) return "go";
   if (/\b(gradlew?|mvnw?)\b/.test(cmd)) return "jvm";
   return "auto";
@@ -70,6 +74,7 @@ export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" |
       args: ["test", "-json", ...args.slice(1), ...(boundary < 0 ? [] : config.args.slice(boundary))],
     };
   }
+  if (frameworkFor(config) === "phpunit") return { ...config, args: withTeamcity(config.args) };
   if (frameworkFor(config) === "unittest") {
     const chosen = config.args.some((a) => /^(-v|--verbosity)(=?\d)?$/.test(a));
     return chosen ? config : { ...config, args: [...config.args, "-v", "2"] };
@@ -92,12 +97,22 @@ export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "a
       return pytestParser();
     case "unittest":
       return unittestParser();
+    case "phpunit":
+      return phpunitParser();
     case "go":
       return goParser();
     case "jvm":
       return jvmParser();
     default:
-      return combinedParser([cargoParser(), jsParser(), pytestParser(), unittestParser(), goParser(), jvmParser()]);
+      return combinedParser([
+        cargoParser(),
+        jsParser(),
+        pytestParser(),
+        unittestParser(),
+        phpunitParser(),
+        goParser(),
+        jvmParser(),
+      ]);
   }
 }
 

@@ -238,7 +238,7 @@
   white-space: pre-wrap;
   word-break: break-word;
   -webkit-user-select: text;
-  cursor: text;
+  cursor: default;
   -webkit-user-select: text;
   user-select: text;
   outline: none;
@@ -248,6 +248,7 @@
 .consoleInner {
   position: relative;
   width: 100%;
+  cursor: text;
 }
 
 .out {

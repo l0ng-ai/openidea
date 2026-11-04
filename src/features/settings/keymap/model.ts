@@ -1,23 +1,30 @@
 /**
- * Keymap editing logic (pure): effective bindings for a staged preset +
- * overrides, add / remove / reset, conflict detection with `when` overlap,
- * and shortcut search.
+ * Keymap editing logic: effective bindings for a staged preset + overrides
+ * (plugins' default shortcuts count as the preset's), add / remove / reset,
+ * conflict detection with `when` overlap, and shortcut search.
  */
 import type { Action } from "@/platform/actions";
 import { evaluateWhen, type ContextKeys } from "@/platform/context";
-import { defaultPreset, normalizeBinding, PRESET_TITLES, PRESETS, type Keymap } from "@/platform/keymap";
+import { defaultPreset, normalizeBinding, PRESET_TITLES, PRESETS, useKeymap, type Keymap } from "@/platform/keymap";
 
 export interface KeymapDraft {
   preset: string;
   overrides: Keymap;
 }
 
+/**
+ * The defaults of `id`: the preset's, or for an action the preset leaves out,
+ * the shortcut its plugin declares (`keymaps`). Removing or changing one is an
+ * override like any other.
+ */
 export function presetBindings(preset: string, id: string): string[] {
-  return (PRESETS[preset]?.[id] ?? []).map(normalizeBinding);
+  const own = PRESETS[preset];
+  const keys = own && id in own ? own[id] : useKeymap.getState().extensions?.[id];
+  return (keys ?? []).map(normalizeBinding);
 }
 
 export function resolveBindings(draft: KeymapDraft, id: string): string[] {
-  return (draft.overrides[id] ?? PRESETS[draft.preset]?.[id] ?? []).map(normalizeBinding);
+  return draft.overrides[id]?.map(normalizeBinding) ?? presetBindings(draft.preset, id);
 }
 
 export function isModified(draft: KeymapDraft, id: string): boolean {

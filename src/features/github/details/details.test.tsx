@@ -76,7 +76,7 @@ function pr(patch: Partial<GHPullRequest> = {}): GHPullRequest {
 
 beforeEach(() => {
   useGhRepository.setState({
-    connection: { coordinates: { owner: "org", name: "app" }, repository, currentUser: me },
+    connection: { coordinates: { owner: "org", name: "app" }, repository, currentUser: me, root: null, remotes: [] },
   });
   setPullRequestData(7, "pendingReview", () => null);
 });

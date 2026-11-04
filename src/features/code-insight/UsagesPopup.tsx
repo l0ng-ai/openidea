@@ -192,7 +192,7 @@ function UsagesPopupInner() {
             }
             renderItem={(u) => (
               <div className={styles.row}>
-                <Icon name={fileIconName(basename(u.path))} size={14} className={styles.icon} />
+                <Icon name={fileIconName(basename(u.path), u.path)} size={14} className={styles.icon} />
                 <UsagePreview usage={u} />
                 <span className={styles.spacer} />
                 <span className={styles.where}>

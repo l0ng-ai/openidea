@@ -8,6 +8,7 @@ import { collapseLinear, computeGraph, emptyGraphState, type GraphRow, type Grap
 import { logOptions, setLogOptions, type LogOptions } from "./logOptions";
 import { clearConsole, errorMessage } from "./ops";
 import { currentRepo, currentRepoRoot, repoName, repoOf, useVcs } from "./store";
+import { stripSlash } from "./model";
 
 /** Date filter: commits made (committer time) after / before the given times (epoch ms). */
 export interface LogDateFilter {
@@ -84,6 +85,12 @@ export const emptyFilters = (): LogFilters => ({
   path: null,
   date: null,
 });
+
+/** The Repository filter after clicking `repo`: added when unchecked, removed when checked (none = all). */
+export function toggleRepository(selected: readonly string[] | undefined, repo: string): string[] {
+  const cur = selected ?? [];
+  return cur.includes(repo) ? cur.filter((r) => r !== repo) : [...cur, repo];
+}
 
 /** Any filter other than the text field's toggles is set. */
 export function hasFilters(f: LogFilters): boolean {
@@ -257,11 +264,22 @@ export function selectGitTab(id: string) {
 let tabSeq = 0;
 
 /**
+ * The repository whose history Show History lists: a repository's own root (a submodule
+ * folder included) is its own history, as in IDEA, not the folder's history in the
+ * enclosing repository; any other path belongs to the innermost repository containing it.
+ */
+function historyRepo(target: string): string | null {
+  const roots = useVcs.getState().roots;
+  const path = stripSlash(target);
+  return roots.includes(path) ? path : repoOf(target);
+}
+
+/**
  * Opens (or selects) a log tab of its own, leaving the main Log and its filters as
  * they are: Show History for a file, Show Git Log for a branch.
  */
 export function openLogTab(kind: LogTab["kind"], target: string): string {
-  const repo = kind === "history" ? repoOf(target) : currentRepoRoot();
+  const repo = kind === "history" ? historyRepo(target) : currentRepoRoot();
   const existing = useGitLog.getState().logTabs.find((t) => t.kind === kind && t.target === target && t.repo === repo);
   if (existing) {
     selectGitTab(existing.id);

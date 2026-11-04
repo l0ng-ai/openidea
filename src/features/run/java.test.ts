@@ -11,7 +11,7 @@ import { useProject } from "@/platform/project";
 import { applicationConfig, jvmModuleDir, jvmTestConfig } from "./application";
 import { buildRows } from "./ConfigChooser";
 import { jdwpLaunch } from "./javaDebug";
-import { scanJvmTargets } from "./jvmTargets";
+import { jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
 import { adoptTemporary, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
 import { detectRunTargets, targetConfig } from "./targets";
 
@@ -138,6 +138,17 @@ describe("application configurations", () => {
     expect(jvmModuleDir("src/main/java/a/App.java")).toBe("");
     expect(jvmModuleDir("services/api/src/test/kotlin/a/T.kt")).toBe("services/api");
     expect(jvmModuleDir("odd/App.java", [cfg({ id: "m", kind: "maven", cwd: "odd" })])).toBe("odd");
+  });
+
+  it("takes the innermost module the build model knows, like IDEA's file index", () => {
+    const modules = ["", "/w/billing", "/w/billing/modules/core", "legacy"];
+    // `sourceSets.main.java.srcDirs = ['src']`: no `src/main/java` to guess from.
+    expect(jvmModuleDir("legacy/src/a/App.java", [], modules)).toBe("legacy");
+    expect(jvmModuleDir("/w/billing/modules/core/src/main/java/a/App.java", [], modules)).toBe(
+      "/w/billing/modules/core",
+    );
+    // A module the model does not know yet (before the first sync): the source layout.
+    expect(jvmModuleDir("services/api/src/main/java/a/App.java", [], modules)).toBe("services/api");
   });
 
   it("adds JDWP to a script explicitly assigned the Kotlin debugger", () => {
@@ -380,7 +391,7 @@ describe("temporary configurations", () => {
     expect(s.temporary).not.toContain(apps[0]!.id);
     expect(s.selectedId).toBe(apps[apps.length - 1]!.id);
     expect(s.configs.filter((c) => c.kind === "application")).toHaveLength(MAX_TEMPORARY);
-    expect(JSON.parse(localStorage.getItem("openidea.run.temporary:/p")!)).toHaveLength(MAX_TEMPORARY);
+    expect(JSON.parse(localStorage.getItem("openidea.run.temporary.v2:/p")!)).toHaveLength(MAX_TEMPORARY);
     // Reusing an existing temporary moves it last instead of duplicating it.
     adoptTemporary(apps[3]!);
     expect(useRun.getState().temporary.at(-1)).toBe(apps[3]!.id);
@@ -423,5 +434,37 @@ describe("temporary configurations", () => {
     // Not a desktop app in tests: saving fails at the IPC layer but the config stops being temporary.
     await saveTemporary(app.id).catch(() => undefined);
     expect(useRun.getState().temporary).toEqual([]);
+  });
+});
+
+describe("jvmMainCandidates", () => {
+  const names = (src: string) => jvmMainCandidates(src, "a/B.java").map((c) => c.className);
+
+  it("finds the class from the report, at its name", () => {
+    const src = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
+    expect(jvmMainCandidates(src, "a/B.java")).toEqual([
+      { line: 3, col: 13, className: "demo.AiChatApplication", base: "AtomStarter", spring: true },
+    ]);
+  });
+
+  it.each([
+    ["static nested class", "class A { static class B extends Base {} }", ["A$B"]],
+    ["inner (non-static) class", "class A { class B extends Base {} }", []],
+    ["abstract class", "abstract class A extends Base {}", ["A"]],
+    ["own main", "class A extends Base { public static void main(String[] a) {} }", []],
+    ["implements only", "class A implements Runnable {}", []],
+    ["interface extends", "interface A extends Base {}", []],
+    ["enum and record", "enum E implements I {}\nrecord R() implements I {}", []],
+    ["multi-line generic header", "class A<T extends Number>\n  extends Base<T>\n{}", ["A"]],
+    ["type bound only", "class A<T extends Number> {}", []],
+    ["extends in comment and string", '// class A extends B\nclass C { String s = "class D extends E {"; }', []],
+  ])("%s", (_, src, expected) => expect(names(src)).toEqual(expected));
+
+  it("accepts java.lang.String[] and flags instance main", () => {
+    const [fq] = scanJvmTargets("class A { public static void main(java.lang.String[] a) {} }", "A.java", false);
+    expect(fq).toMatchObject({ kind: "main", className: "A" });
+    const [inst] = scanJvmTargets("class A { void main() {} }", "A.java", false);
+    expect(inst).toMatchObject({ kind: "main", instance: true });
+    expect(fq?.instance).toBeUndefined();
   });
 });

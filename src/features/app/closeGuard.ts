@@ -12,6 +12,7 @@ import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
 import { maybeEditorService, notifications, type EditorCloseSession } from "@/workbench/contributions";
 import { ask, type Ask } from "@/workbench/messages";
+import { AUX_CLOSED, auxiliaryWindow, closeDocumentWindows, type AuxCloseResult } from "@/platform/auxWindow";
 
 /** Document ids the backend reports dirty in this window. */
 const dirtyDocs = new Set<number>();
@@ -108,6 +109,10 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   closing = true;
   try {
     const ctx = await commands.windowCloseContext();
+    if (!(await closeDocumentWindows())) {
+      await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
+      return false;
+    }
     const s = useProject.getState();
     // Closing the last project (or LightEdit) window closes its project and shows the welcome
     // screen (to open another one); closing the welcome screen, or quitting, closes the window.
@@ -125,10 +130,11 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       },
       deps,
     );
-    if (!ok && ctx.quitting) await commands.appCancelQuit();
+    if (!ok) await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
     return ok;
   } catch (e) {
     maybeEditorService()?.cancelClose?.();
+    void commands.windowGroupCancelClose().catch(() => {});
     deps.onSaveFailed(e);
     return false;
   } finally {
@@ -136,13 +142,16 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   }
 }
 
-/** Unsaved changes before this window opens another project in place or closes it. */
-export function confirmLeave(deps: CloseDeps = defaultDeps): Promise<boolean> {
-  const s = useProject.getState();
-  return decideClose(
-    { quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project: s.project?.name ?? null },
-    deps,
-  );
+/**
+ * Unsaved changes before this window opens another project in place or closes it. `project` names
+ * the project in the prompt when this window doesn't hold it (a comparison window).
+ */
+export async function confirmLeave(
+  deps: CloseDeps = defaultDeps,
+  project = useProject.getState().project?.name ?? null,
+): Promise<boolean> {
+  if (!(await closeDocumentWindows())) return false;
+  return decideClose({ quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project }, deps);
 }
 
 /** Quit: confirm once (if enabled), then let the backend close every window. */
@@ -173,11 +182,26 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
   let disposed = false;
   if (isTauri()) {
     void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      // Documents an auxiliary window released are no longer dirty unless this window edits them too.
+      const offAux = await getCurrentWindow().listen<AuxCloseResult>(AUX_CLOSED, ({ payload }) => {
+        if (
+          !payload.closed ||
+          auxiliaryWindow(payload.label)?.parent !== getCurrentWindow().label ||
+          !Array.isArray(payload.documents)
+        )
+          return;
+        const own = new Set(maybeEditorService()?.dirtyDocumentIds?.() ?? []);
+        for (const doc of payload.documents) if (!own.has(doc)) dirtyDocs.delete(doc);
+      });
       const off = await getCurrentWindow().onCloseRequested(async (event) => {
         if (!(await onCloseRequested(deps))) event.preventDefault();
       });
-      if (disposed) off();
-      else unlisten = off;
+      const stop = () => {
+        off();
+        offAux();
+      };
+      if (disposed) stop();
+      else unlisten = stop;
     });
   }
   return () => {

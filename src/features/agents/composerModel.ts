@@ -2,8 +2,10 @@
 import type {
   AgentCommand,
   AgentConfigOption,
+  AgentCost,
   AgentEntry,
   AgentImage,
+  AgentLimit,
   AgentPrompt,
   AgentRetry,
   AgentUsage,
@@ -90,6 +92,29 @@ export function resolveTyped(root: string, rel: string): string {
     } else if (part && part !== ".") out.push(part);
   }
   return isDrive(out[0]) ? out.join("/") : `/${out.join("/")}`;
+}
+
+interface IndexMatch {
+  path: string;
+  relPath: string;
+  score: number;
+}
+
+/**
+ * Index file and folder matches as one list, best first (files first on a tie); folders'
+ * `rel` loses the trailing `/` the index gives them.
+ */
+export function mergeMatches(
+  files: readonly IndexMatch[],
+  dirs: readonly IndexMatch[],
+  limit: number,
+): { path: string; rel: string; dir: boolean; score: number }[] {
+  return [
+    ...files.map((f) => ({ path: f.path, rel: f.relPath, dir: false, score: f.score })),
+    ...dirs.map((d) => ({ path: d.path, rel: d.relPath.replace(/\/$/, ""), dir: true, score: d.score })),
+  ]
+    .sort((a, b) => b.score - a.score || Number(a.dir) - Number(b.dir))
+    .slice(0, limit);
 }
 
 /** `@rel` with a line range suffix when given ("@src/a.rs:10-20"). */
@@ -179,6 +204,44 @@ export function retryParts(r: AgentRetry, now: number): { attempt: string; wait:
 export function usageLabel(u: AgentUsage): { short: string; detail: string } {
   const pct = Math.min(100, Math.round((u.used / u.size) * 100));
   return { short: `${pct}%`, detail: tx`${tokens(u.used)} / ${tokens(u.size)} tokens` };
+}
+
+/** The usage-limit windows agents report, by the name they give them; others show that name. */
+const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
+  five_hour: { short: "5h", name: "5-hour limit" },
+  seven_day: { short: "7d", name: "Weekly limit" },
+  seven_day_opus: { short: "7d Opus", name: "Weekly Opus limit" },
+  seven_day_sonnet: { short: "7d Sonnet", name: "Weekly Sonnet limit" },
+};
+
+/** "5h 19%" for a usage-limit window, and a tooltip saying when it resets. */
+export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
+  const known = LIMIT_WINDOWS[l.window];
+  const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
+  const name = known ? tx(known.name) : l.window;
+  const used = tx`${name}: ${percent}% used`;
+  if (l.resetsMs == null) return { short: `${known?.short ?? l.window} ${percent}%`, percent, detail: used };
+  const reset = untilReset(Math.max(0, l.resetsMs - now));
+  return { short: `${known?.short ?? l.window} ${percent}%`, percent, detail: tx`${used}, resets in ${reset}` };
+}
+
+/** `45m`, `2h 51m`, `5d 3h`. */
+function untilReset(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+/** "$0.42": what the session has cost so far. */
+export function costLabel(c: AgentCost): string {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: c.currency }).format(c.amount ?? 0);
+  } catch {
+    // Not an ISO 4217 code.
+    return `${(c.amount ?? 0).toFixed(2)} ${c.currency}`;
+  }
 }
 
 /** `850`, `83.1k`, `1M`. */
