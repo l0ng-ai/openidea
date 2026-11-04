@@ -5,6 +5,7 @@ description = "Edit CSV and TSV files as a table. Edits go to the file's text, s
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: table editor for .csv and .tsv with cell editing, inserting and deleting rows; large files load the visible rows only."
+categories = ["tools"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 activation = ["on-view:table"]

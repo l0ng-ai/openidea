@@ -71,6 +71,8 @@ export interface ConsentRequest {
   capabilities: CapabilityInfo[];
   /** Unsigned package (from disk or a project folder). */
   unsigned: boolean;
+  /** Replaces an installed copy signed with another key that didn't vouch for this one. */
+  signerChanged?: boolean;
   warnings: string[];
 }
 
@@ -209,8 +211,13 @@ export async function setMarketUrl(url: string | null): Promise<void> {
   await refreshMarket(true);
 }
 
+/** A version this IDE can load, newer than the one installed. */
+export function isUpdate(entry: MarketPlugin): boolean {
+  return entry.compatible && !!entry.installed && compareVersions(entry.version, entry.installed) > 0;
+}
+
 /** Downloads (and checks) a marketplace plugin, then the install page as from disk. */
-export async function installFromMarket(id: string): Promise<string | null> {
+export async function installFromMarket(id: string, options: InstallOptions = {}): Promise<string | null> {
   usePlugins.setState({ installing: true });
   let dir: string;
   try {
@@ -225,9 +232,25 @@ export async function installFromMarket(id: string): Promise<string | null> {
     });
     return null;
   }
-  const installed = await installFromDisk(dir);
+  const installed = await installFromDisk(dir, false, options);
   void refreshMarket(false);
   return installed;
+}
+
+/**
+ * Installs every update the marketplace offers, one after another. Updates
+ * that need nothing confirmed install right away; the others show their
+ * install page. Returns how many were installed.
+ */
+export async function updateAllPlugins(): Promise<number> {
+  await refreshMarket(true);
+  const updates = (usePlugins.getState().market ?? []).filter(isUpdate);
+  let updated = 0;
+  for (const entry of updates) if (await installFromMarket(entry.id, { quiet: true })) updated++;
+  if (updated > 0) {
+    notifications().notify({ group: "plugins", level: "info", title: `Updated ${updated} plugins` });
+  }
+  return updated;
 }
 
 /** Settings › Plugins › Roll Back: the version before the last update. */
@@ -274,12 +297,22 @@ async function packageFolder(backend: PluginsBackend, picked: string): Promise<s
   return manifest ? picked.slice(0, manifest.index) : picked;
 }
 
+interface InstallOptions {
+  /** No notification when it installs (a batch reports once). */
+  quiet?: boolean;
+}
+
 /**
  * Asks for a plugin (a folder, its `plugin.toml`, or an `.oiplugin` / `.zip`
  * package file), shows what it may do, and installs it with the user's
- * consent. Returns the new plugin id.
+ * consent. An update with nothing to confirm installs with the grants it
+ * has. Returns the new plugin id.
  */
-export async function installFromDisk(path?: string, packageFile = false): Promise<string | null> {
+export async function installFromDisk(
+  path?: string,
+  packageFile = false,
+  options: InstallOptions = {},
+): Promise<string | null> {
   const backend = pluginsBackend();
   let dir: string | null = path ?? null;
   try {
@@ -300,24 +333,29 @@ export async function installFromDisk(path?: string, packageFile = false): Promi
   let installed: string | null = null;
   try {
     const preview = await backend.previewInstall(dir);
-    const consent = await askConsent({
-      pluginId: preview.id,
-      name: preview.name,
-      version: preview.version,
-      kind: "install",
-      capabilities: preview.capabilities,
-      unsigned: preview.unsigned,
-      warnings: preview.warnings,
-    });
+    const consent: Consent | null = preview.needsConsent
+      ? await askConsent({
+          pluginId: preview.id,
+          name: preview.name,
+          version: preview.version,
+          kind: "install",
+          capabilities: preview.capabilities,
+          unsigned: preview.unsigned,
+          signerChanged: preview.signerChanged,
+          warnings: preview.warnings,
+        })
+      : { optional: preview.capabilities.filter((c) => c.optional && c.granted).map((c) => c.id) };
     if (!consent) return null;
     const info = await backend.installDir(dir, consent);
     installed = info.status === "failed" ? null : info.id;
-    notifications().notify({
-      group: "plugins",
-      level: info.status === "failed" ? "warning" : "info",
-      title: `Installed ${info.name} ${info.version}`,
-      body: info.status === "failed" ? (info.error ?? "The plugin failed to start.") : undefined,
-    });
+    if (info.status === "failed" || !options.quiet) {
+      notifications().notify({
+        group: "plugins",
+        level: info.status === "failed" ? "warning" : "info",
+        title: `Installed ${info.name} ${info.version}`,
+        body: info.status === "failed" ? (info.error ?? "The plugin failed to start.") : undefined,
+      });
+    }
     return info.id;
   } catch (e) {
     notifications().notify({ group: "plugins", level: "error", title: "Could not install plugin", body: errorText(e) });

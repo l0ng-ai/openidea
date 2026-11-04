@@ -6,7 +6,7 @@
  * variables, notifications become balloons, consent requests open the
  * permission dialog, and opened files fire `on-language` / `on-file`.
  */
-import type { ActiveTheme, PluginEvent } from "@/bindings";
+import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
 import { notifications } from "@/workbench/contributions";
@@ -27,13 +27,14 @@ import {
   useThemeOverride,
   windowBackgroundHex,
 } from "@/workbench/theme";
+import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { pluginsBackend } from "./backend";
 import { trackIconTheme } from "./iconThemes";
 import { defineBuiltinUiPoints } from "./points";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, selectPluginTheme, usePlugins } from "./store";
+import { grantPlugin, refreshPlugins, selectPluginTheme, updateAllPlugins, usePlugins } from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -244,10 +245,27 @@ function trackActiveFile(): () => void {
 
 // --- events -----------------------------------------------------------------
 
+function announceUpdates(updates: readonly PluginUpdate[]) {
+  const names = updates.map((u) => `${u.name} ${u.version}`).join(", ");
+  notifications().notify({
+    group: "plugins",
+    level: "info",
+    title: updates.length === 1 ? "Plugin update available" : `${updates.length} plugin updates available`,
+    body: names,
+    actions: [
+      { label: "Update All", run: () => void updateAllPlugins() },
+      { label: "Show Plugins", run: () => void executeAction("plugins.settings") },
+    ],
+  });
+}
+
 export function handlePluginEvent(e: PluginEvent) {
   switch (e.type) {
     case "commandsChanged":
       scheduleRefresh();
+      break;
+    case "updatesAvailable":
+      announceUpdates(e.updates);
       break;
     case "notification": {
       const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;

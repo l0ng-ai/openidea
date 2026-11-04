@@ -4276,6 +4276,7 @@ dependencies = [
  "regex-syntax",
  "reqwest",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
  "specta",
