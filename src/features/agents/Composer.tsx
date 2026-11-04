@@ -1,6 +1,6 @@
 /**
- * The message box of the New Task page and of sessions: `@` file references (project file
- * search), `/` agent commands, ↑ / ↓ history, pasted or dropped images, Shift+Tab to cycle
+ * The message box of the New Task page and of sessions: `@` file and folder references
+ * (project index search), `/` agent commands, ↑ / ↓ history, pasted or dropped images, Shift+Tab to cycle
  * the agent's mode. Its draft lives in the store under `id`.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -19,6 +19,7 @@ import {
   applyCompletion,
   atEdgeLine,
   isPathQuery,
+  mergeMatches,
   resolveTyped,
   completionAt,
   imageFromDataUrl,
@@ -129,14 +130,15 @@ export function Composer(props: ComposerProps) {
           .catch(() => alive && setFiles([]));
         return;
       }
-      call(commands.findFiles(query, MAX_ITEMS))
-        .then((found) => {
+      Promise.all([call(commands.findFiles(query, MAX_ITEMS)), call(commands.findDirs(query, MAX_ITEMS))])
+        .then(([found, dirs]) => {
           if (!alive) return;
           setFiles(
-            found.map((f) => ({
+            mergeMatches(found, dirs, MAX_ITEMS).map((f) => ({
               kind: "file",
-              rel: f.relPath,
-              path: root === projectRoot ? f.path : `${root}/${f.relPath}`,
+              rel: f.rel,
+              dir: f.dir,
+              path: root === projectRoot ? f.path : `${root}/${f.rel}`,
             })),
           );
         })
@@ -171,19 +173,20 @@ export function Composer(props: ComposerProps) {
     }
   };
 
-  const accept = (item: Item | undefined) => {
+  /** Enter or a click references the item; Tab on a folder keeps completing inside it. */
+  const accept = (item: Item | undefined, descend = false) => {
     if (!item || !completion) return;
-    if (item.kind === "file" && item.dir) {
-      // Descend: keep completing inside the folder.
-      const insert = `${mentionOf(item.rel)}/`;
-      setText(text.slice(0, completion.from) + insert + text.slice(completion.to), completion.from + insert.length);
-      return;
-    }
     if (item.kind === "file") {
-      const mention = mentionOf(item.rel);
-      const next = applyCompletion(text, completion, mention);
+      const rel = item.dir ? `${item.rel}/` : item.rel;
+      // A folder stays referenced while its `@folder/` is left as typed (`toPrompt`).
       const current = composerDraft(id);
-      updateComposer(id, { files: [...current.files, { path: item.path, rel: item.rel } satisfies FileRef] });
+      updateComposer(id, { files: [...current.files, { path: item.path, rel } satisfies FileRef] });
+      if (item.dir && descend) {
+        const insert = mentionOf(rel);
+        setText(text.slice(0, completion.from) + insert + text.slice(completion.to), completion.from + insert.length);
+        return;
+      }
+      const next = applyCompletion(text, completion, mentionOf(rel));
       setText(next.text, next.caret);
     } else {
       const next = applyCompletion(text, completion, `/${item.command.name}`);
@@ -266,7 +269,7 @@ export function Composer(props: ComposerProps) {
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        accept(items[active]);
+        accept(items[active], e.key === "Tab");
         return;
       }
       if (e.key === "Escape") {
@@ -345,7 +348,10 @@ export function Composer(props: ComposerProps) {
                 {item.kind === "file" ? (
                   <>
                     <Icon name={item.dir ? "folder" : fileIconName(basename(item.rel), item.rel)} size={16} />
-                    <span className={styles.itemName}>{basename(item.rel)}</span>
+                    <span className={styles.itemName}>
+                      {basename(item.rel)}
+                      {item.dir && "/"}
+                    </span>
                     <span className={styles.itemDetail}>{item.rel}</span>
                   </>
                 ) : (

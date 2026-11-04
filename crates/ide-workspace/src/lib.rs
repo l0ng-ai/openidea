@@ -7,6 +7,7 @@ pub mod documents;
 pub mod editorconfig;
 pub mod file_defaults;
 pub mod file_moves;
+pub mod file_ops;
 pub mod file_refs;
 pub mod history;
 pub mod memory;
@@ -15,6 +16,7 @@ pub mod recent;
 pub mod roots;
 pub mod settings;
 pub mod text_refs;
+pub mod unity;
 pub mod window_groups;
 pub mod workspace;
 

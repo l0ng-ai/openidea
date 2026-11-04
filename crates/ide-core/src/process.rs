@@ -43,19 +43,21 @@ pub fn own_group(cmd: &mut Command) -> &mut Command {
 /// Kills the child and everything it started, then reaps it.
 ///
 /// - Unix: `SIGKILL` to its process group, so spawn it with [`own_group`].
-/// - Windows: `taskkill /T /F`, which walks the tree from the child's process id.
+/// - Windows: `taskkill /T /F`, which walks the tree from the child's process id, then a
+///   wait for what the child started to be gone.
 pub fn kill_tree(child: &mut Child) {
     #[cfg(unix)]
     signal_group(child, libc::SIGKILL);
     #[cfg(windows)]
-    taskkill_tree(child);
+    taskkill_tree_of(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }
 
 /// [`kill_tree`] for a child known by its process id (a `tokio` child): `SIGKILL` to its
-/// process group (spawn it with [`own_group`]) or `taskkill /T /F`. Call it before the child
-/// is reaped, so the id still names it. The child itself is left to its owner to kill and reap.
+/// process group (spawn it with [`own_group`]) or `taskkill /T /F` and a wait for what the
+/// child started to be gone. Call it before the child is reaped, so the id still names it.
+/// The child itself is left to its owner to kill and reap.
 pub fn kill_tree_of(pid: u32) {
     #[cfg(unix)]
     if let Ok(pid) = libc::pid_t::try_from(pid) {
@@ -65,15 +67,7 @@ pub fn kill_tree_of(pid: u32) {
         }
     }
     #[cfg(windows)]
-    {
-        let mut taskkill = Command::new("taskkill");
-        prepare(&mut taskkill)
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let _ = taskkill.status();
-    }
+    taskkill_tree_of(pid);
     #[cfg(not(any(unix, windows)))]
     let _ = pid;
 }
@@ -106,15 +100,107 @@ fn signal_group(child: &Child, signal: libc::c_int) {
     }
 }
 
+/// How long killing a tree waits for the processes the child started to be gone.
 #[cfg(windows)]
-fn taskkill_tree(child: &Child) {
+const TREE_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// `taskkill /T /F` from `pid`, then waits (up to [`TREE_EXIT_WAIT`]) until what the child
+/// started is gone: termination is asynchronous, and until a process is gone the files it
+/// holds open can't be opened or deleted. The child itself is left to its owner to reap.
+#[cfg(windows)]
+fn taskkill_tree_of(pid: u32) {
+    let started = windows_tree::descendants(pid);
     let mut taskkill = Command::new("taskkill");
     prepare(&mut taskkill)
-        .args(["/T", "/F", "/PID", &child.id().to_string()])
+        .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _ = taskkill.status();
+    windows_tree::wait_all(&started, TREE_EXIT_WAIT);
+}
+
+#[cfg(windows)]
+mod windows_tree {
+    use std::collections::HashSet;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{FILETIME, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    /// Every process `root` started, directly or not, opened so it can be waited for. A
+    /// parent's id is reused once it is gone, so a process counts only if it started after
+    /// its parent.
+    pub(super) fn descendants(root: u32) -> Vec<OwnedHandle> {
+        let Some(root_started) = open(root).as_ref().and_then(started) else { return Vec::new() };
+        let processes = processes();
+        let mut seen = HashSet::from([root]);
+        let mut parents = vec![(root, root_started)];
+        let mut found = Vec::new();
+        while let Some((parent, parent_started)) = parents.pop() {
+            for &(pid, ppid) in &processes {
+                if ppid != parent || !seen.insert(pid) {
+                    continue;
+                }
+                let Some(handle) = open(pid) else { continue };
+                if let Some(at) = started(&handle).filter(|&at| at >= parent_started) {
+                    parents.push((pid, at));
+                    found.push(handle);
+                }
+            }
+        }
+        found
+    }
+
+    pub(super) fn wait_all(processes: &[OwnedHandle], within: Duration) {
+        let until = Instant::now() + within;
+        for process in processes {
+            let left = until.saturating_duration_since(Instant::now());
+            // SAFETY: a live process handle opened with SYNCHRONIZE access.
+            unsafe { WaitForSingleObject(process.as_raw_handle(), left.as_millis().min(u32::MAX as u128 - 1) as u32) };
+        }
+    }
+
+    /// (process id, parent process id) of every running process.
+    fn processes() -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        // SAFETY: a snapshot handle owned here and an entry sized as the API requires.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
+                return out;
+            }
+            let snapshot = OwnedHandle::from_raw_handle(snapshot);
+            let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+            let mut more = Process32FirstW(snapshot.as_raw_handle(), &mut entry);
+            while more != 0 {
+                out.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                more = Process32NextW(snapshot.as_raw_handle(), &mut entry);
+            }
+        }
+        out
+    }
+
+    fn open(pid: u32) -> Option<OwnedHandle> {
+        // SAFETY: plain call; a non-null result is a process handle owned by the caller.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        // SAFETY: as above.
+        (!handle.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
+    }
+
+    /// When the process started, in 100 ns ticks since 1601.
+    fn started(process: &OwnedHandle) -> Option<u64> {
+        let (mut created, mut exited, mut kernel, mut user) =
+            (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        // SAFETY: a live process handle opened with query access; four out-parameters.
+        let ok = unsafe { GetProcessTimes(process.as_raw_handle(), &mut created, &mut exited, &mut kernel, &mut user) };
+        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
 }
 
 /// Gives `cmd` the host's environment back when the IDE runs from an AppImage. `AppRun` and

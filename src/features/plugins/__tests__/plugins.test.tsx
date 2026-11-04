@@ -9,6 +9,7 @@ import { executeAction, executeActionFrom, getAction, registerAction } from "@/p
 import { useProject } from "@/platform/project";
 import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
+import { InputDialogsHost } from "@/workbench/inputDialogs";
 import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
 import { applyThemeAttributes, previewTheme, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
@@ -561,7 +562,6 @@ describe("PluginsPage", () => {
     render(<PluginsPage />);
     await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
-    expect(within(list).getByText(new RegExp(NO_REPOSITORY))).toBeInTheDocument();
     await waitFor(() => expect(within(list).getByText("Toy Language")).toBeInTheDocument());
     await user.click(within(list).getByText("Toy Language"));
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Toy Language");
@@ -569,6 +569,21 @@ describe("PluginsPage", () => {
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["language-toy"]));
     expect(within(list).getAllByText("Installed").length).toBeGreaterThan(0);
     expect(notes.at(-1)).toMatchObject({ title: "Installed Toy Language 0.1.0" });
+  });
+
+  it("shows why the marketplace couldn't be read instead of claiming there is none", async () => {
+    // Commands without a result type reject with the backend's error object, not an Error.
+    setPluginsBackend({
+      ...createMemoryPluginsBackend([], sampleCatalog()),
+      marketUrl: () => Promise.reject({ kind: "unavailable", message: "Index unreachable", data: null }),
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    expect(await within(list).findByText("Index unreachable")).toBeInTheDocument();
+    expect(within(list).queryByText("[object Object]")).not.toBeInTheDocument();
+    expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
   });
 });
 
@@ -646,6 +661,53 @@ describe("marketplace", () => {
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["hello"]));
     expect(downloads).toEqual(["hello"]);
     expect(asked[0]).toMatchObject({ pluginId: "hello", kind: "install" });
+  });
+
+  it("doesn't claim there is no repository while one is configured", async () => {
+    setPluginsBackend({
+      ...createMemoryPluginsBackend([], []),
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [],
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    expect(await screen.findByText("No plugin selected")).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Filter plugins" })).toHaveAttribute("placeholder", "Search plugins");
+  });
+
+  it("edits the repository from the gear menu; an empty URL restores the default", async () => {
+    const base = createMemoryPluginsBackend([], []);
+    const set: (string | null)[] = [];
+    setPluginsBackend({
+      ...base,
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [],
+      setMarketUrl: async (url) => void set.push(url),
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <PluginsPage />
+        <ContextMenuHost />
+        <InputDialogsHost />
+      </>,
+    );
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    expect(screen.queryByRole("textbox", { name: /Marketplace index URL/ })).not.toBeInTheDocument();
+    const edit = async (value: string) => {
+      await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
+      await user.click(screen.getByRole("menuitem", { name: "Plugin Repository…" }));
+      const field = await screen.findByRole("textbox", { name: /Marketplace index URL/ });
+      await waitFor(() => expect(field).toHaveValue("https://plugins.example/index.json"));
+      await user.clear(field);
+      if (value) await user.type(field, value);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+    };
+    await edit("https://mirror.example/index.json");
+    await edit("");
+    await waitFor(() => expect(set).toEqual(["https://mirror.example/index.json", null]));
   });
 
   it("filters the marketplace by category", async () => {

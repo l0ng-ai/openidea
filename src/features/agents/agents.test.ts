@@ -15,6 +15,7 @@ import {
   nextValue,
   recall,
   toPrompt,
+  mergeMatches,
   retryParts,
   usageLabel,
   limitLabel,
@@ -67,6 +68,27 @@ const option = (category: string, values: string[], current: string | null): Age
   via: "option",
 });
 
+describe("mergeMatches", () => {
+  it("ranks folders among files by score, files first on a tie", () => {
+    const merged = mergeMatches(
+      [
+        { path: "/p/src/agents.ts", relPath: "src/agents.ts", score: 50 },
+        { path: "/p/x.ts", relPath: "x.ts", score: 10 },
+      ],
+      [
+        { path: "/p/src/agents", relPath: "src/agents/", score: 50 },
+        { path: "/p/docs", relPath: "docs/", score: 70 },
+      ],
+      3,
+    );
+    expect(merged).toEqual([
+      { path: "/p/docs", rel: "docs", dir: true, score: 70 },
+      { path: "/p/src/agents.ts", rel: "src/agents.ts", dir: false, score: 50 },
+      { path: "/p/src/agents", rel: "src/agents", dir: true, score: 50 },
+    ]);
+  });
+});
+
 describe("agent composer", () => {
   it("completes @files anywhere and /commands as the first word", () => {
     expect(completionAt("fix @src/le", 11)).toEqual({ kind: "file", query: "src/le", from: 4, to: 11 });
@@ -111,6 +133,11 @@ describe("agent composer", () => {
     });
     expect(prompt).toEqual({ text: "look at @src/a.rs:3-5 and @b.rs", files: ["/w/src/a.rs", "/w/b.rs"], images: [] });
     expect(mentionOf("a.rs", { from: 3, to: 3 })).toBe("@a.rs:3");
+    // A folder counts while `@src/` is left as typed, not once a file inside it was picked.
+    const folder = { path: "/w/src", rel: "src/" };
+    expect(toPrompt({ text: "explain @src/ please", files: [folder], images: [] }).files).toEqual(["/w/src"]);
+    expect(toPrompt({ text: "explain @src/", files: [folder], images: [] }).files).toEqual(["/w/src"]);
+    expect(toPrompt({ text: "explain @src/a.rs", files: [folder], images: [] }).files).toEqual([]);
     expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
   });
 

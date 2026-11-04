@@ -426,6 +426,7 @@ export function ProjectView() {
 
   const info = useMemo(() => visibleInfo(model, expanded), [model, expanded]);
   const mode = useProjectTree((s) => s.mode);
+  const unity = useProjectTree((s) => s.unity);
   const outlines = useProjectTree((s) => s.outlines);
   const showMembers = options.showMembers;
 
@@ -755,7 +756,7 @@ export function ProjectView() {
           editing={editing}
           cut={cutPaths.has(node.path)}
           dropTarget={dropTarget === node.key}
-          detail={node.root && !node.icon ? tildify(node.path, home) : (node.detail ?? null)}
+          detail={node.detail ?? (node.root && !node.icon ? tildify(node.path, home) : null)}
           onEditDone={focusTree}
           onClick={onRowClick}
           onDoubleClick={onRowDoubleClick}
@@ -781,6 +782,11 @@ export function ProjectView() {
       onFocus={(e) => setContext("projectViewFocus", (e.target as HTMLElement).getAttribute("role") === "tree")}
       onBlur={() => setContext("projectViewFocus", false)}
     >
+      {mode === "unity" && unity && !unity.projects.length && (
+        <div className={styles.unityNotice} role="status">
+          {tx`C# project files are missing. In Unity, select an external script editor in Preferences > External Tools, then regenerate project files.`}
+        </div>
+      )}
       {!model.roots.length && (
         <div className={styles.empty}>
           {txTemplate(`Nothing to show in ${VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "this view"}`)}

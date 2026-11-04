@@ -32,6 +32,7 @@ impl Template {
 pub struct Vars<'a> {
     pub id: &'a str,
     pub name: &'a str,
+    /// The SDK dependency, as a TOML value (`{ path = "…" }`).
     pub sdk: Option<&'a str>,
 }
 
@@ -118,7 +119,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-openidea-plugin = { path = "__SDK__" }
+openidea-plugin = __SDK__
 
 [profile.release]
 opt-level = "s"
@@ -130,7 +131,7 @@ panic = "abort"
 
 const COMMAND_LIB: &str = r#"//! __NAME__: an OpenIDEA plugin.
 
-use openidea_plugin::{Invocation, NotificationLevel, Plugin, host, register_plugin};
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, host, register_plugin};
 
 #[derive(Default)]
 pub struct Main {
@@ -138,7 +139,7 @@ pub struct Main {
 }
 
 impl Plugin for Main {
-    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, String> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
             "say-hello" => {
                 // Instance state lasts until the plugin is idle for a while;
@@ -153,7 +154,7 @@ impl Plugin for Main {
                 let text = editor.document()?.text;
                 Ok(Some(format!("{} lines in {}", text.lines().count(), editor.path())))
             }
-            _ => Err(format!("unknown command {id}")),
+            _ => Err(format!("unknown command {id}").into()),
         }
     }
 }

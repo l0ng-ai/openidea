@@ -59,7 +59,7 @@ fn source_files(root: &Path, exclude_root: &Path, excludes: Vec<String>, limit: 
     }
     let Ok(ignores) = ignores.build() else { return Vec::new() };
     let mut walk = ignore::WalkBuilder::new(root);
-    walk.require_git(false).follow_links(false).filter_entry(move |entry| {
+    walk.require_git(ide_core::ignored::inside_git_repo(root)).follow_links(false).filter_entry(move |entry| {
         if entry.depth() == 0 {
             return true;
         }

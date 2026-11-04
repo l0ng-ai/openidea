@@ -10,7 +10,7 @@ import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toTsv, type Cell } from "./model";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
-import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
+import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
 
 export interface GridColumn {
   name: string;
@@ -83,6 +83,22 @@ function initialWidth(c: GridColumn, sample: Cell[], decorations: number): numbe
 /** SQLite renders whole REALs as `3108.0`; IDEA shows `3108`. */
 const displayed = (v: string, numeric: boolean) => (numeric && /^-?\d+\.0$/.test(v) ? v.slice(0, -2) : v);
 
+/** A cell's text on one line: each line break shows as a muted `↵`. */
+function cellText(value: string) {
+  const parts = cellPreview(value).split(/\r\n|\r|\n/);
+  if (parts.length === 1) return parts[0];
+  return parts.flatMap((part, i) =>
+    i === 0
+      ? [part]
+      : [
+          <span key={i} className={styles.lineBreak}>
+            ↵
+          </span>,
+          part,
+        ],
+  );
+}
+
 function norm(s: Sel) {
   return {
     top: Math.min(s.r0, s.r1),
@@ -105,6 +121,11 @@ export function Grid(props: GridProps) {
     return () => window.removeEventListener("mouseup", stop);
   }, []);
   const [editing, setEditing] = useState<{ row: number; col: number; text: string; dialog: boolean } | null>(null);
+  /** The inline editor is being swapped for the multi-line one: its blur must not commit. */
+  const maximizing = useRef(false);
+  useEffect(() => {
+    if (!editing?.dialog) maximizing.current = false;
+  }, [editing?.dialog]);
   const columnKey = columns.map((c) => c.name).join("\u0000");
   const [widths, setWidths] = useState<number[]>([]);
   const [numeric, setNumeric] = useState<boolean[]>([]);
@@ -163,17 +184,23 @@ export function Grid(props: GridProps) {
   const commit = () => {
     if (!editing) return;
     const prev = value(editing.row, editing.col);
-    if (editing.text !== (prev ?? "") || prev === null) {
-      if (!(prev === null && editing.text === "")) onEdit?.(editing.row, editing.col, editing.text);
+    // A textarea turns CRLF into LF; a value that used CRLF throughout keeps it.
+    const text =
+      prev && prev.includes("\r\n") && !/(^|[^\r])\n/.test(prev)
+        ? editing.text.replace(/\r?\n/g, "\r\n")
+        : editing.text;
+    if (text !== (prev ?? "") || prev === null) {
+      if (!(prev === null && text === "")) onEdit?.(editing.row, editing.col, text);
     }
     setEditing(null);
     scrollRef.current?.focus();
   };
 
-  const startEdit = (row: number, col: number) => {
+  /** `maximized` (⇧Enter): the multi-line editor, which multi-line and long values always use. */
+  const startEdit = (row: number, col: number, maximized = false) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
     const text = value(row, col) ?? "";
-    setEditing({ row, col, text, dialog: text.length > CELL_PREVIEW_LIMIT });
+    setEditing({ row, col, text, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -192,7 +219,7 @@ export function Grid(props: GridProps) {
     if (!sel) return;
     if ((e.key === "Enter" || e.key === "F2") && editable) {
       e.preventDefault();
-      startEdit(sel.r1, sel.c1);
+      startEdit(sel.r1, sel.c1, e.key === "Enter" && e.shiftKey);
       return;
     }
     const moves: Record<string, [number, number]> = {
@@ -325,7 +352,13 @@ export function Grid(props: GridProps) {
             wrap="soft"
             onContextMenu={(e) => e.stopPropagation()}
             onChange={(e) => setEditing({ ...editing, text: e.target.value })}
-            onKeyDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                commit();
+              }
+            }}
           />
         </Dialog>
       )}
@@ -404,9 +437,18 @@ export function Grid(props: GridProps) {
                       aria-label={`Edit ${columns[c]!.name}`}
                       value={editing.text}
                       onChange={(e) => setEditing({ ...editing, text: e.target.value })}
-                      onBlur={commit}
+                      onBlur={() => {
+                        if (!maximizing.current) commit();
+                      }}
                       onKeyDown={(e) => {
                         e.stopPropagation();
+                        if (e.key === "Enter" && e.shiftKey) {
+                          // A line break can't be typed in a single-line field: continue in the multi-line editor.
+                          e.preventDefault();
+                          maximizing.current = true;
+                          setEditing({ ...editing, dialog: true });
+                          return;
+                        }
                         if (e.key === "Enter") commit();
                         if (e.key === "Escape") {
                           setEditing(null);
@@ -437,7 +479,7 @@ export function Grid(props: GridProps) {
                     {val === null ? (
                       <span className={styles.null}>&lt;null&gt;</span>
                     ) : (
-                      cellPreview(displayed(val, !!numeric[c]))
+                      cellText(displayed(val, !!numeric[c]))
                     )}
                   </div>
                 );

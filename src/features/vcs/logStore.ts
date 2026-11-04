@@ -16,6 +16,7 @@ import { chooseLogCommit } from "./CommitChooser";
 import { presentLogGraph } from "./logPresentation";
 import { toggleBookmark, updateBookmarks, useBookmarks } from "@/features/search/bookmarks/store";
 import { commitBookmarkPath, parseCommitBookmark } from "./logBookmarks";
+import { stripSlash } from "./model";
 
 /** Date filter: commits made (committer time) after / before the given times (epoch ms). */
 export interface LogDateFilter {
@@ -409,6 +410,17 @@ export function selectGitTab(id: string) {
 let tabSeq = 0;
 
 /**
+ * The repository whose history Show History lists: a repository's own root (a submodule
+ * folder included) is its own history, as in IDEA, not the folder's history in the
+ * enclosing repository; any other path belongs to the innermost repository containing it.
+ */
+function historyRepo(target: string): string | null {
+  const roots = useVcs.getState().roots;
+  const path = stripSlash(target);
+  return roots.includes(path) ? path : repoOf(target);
+}
+
+/**
  * Opens (or selects) a log tab of its own, leaving the main Log and its filters as
  * they are: Show History for a file, Show Git Log for a branch.
  */
@@ -427,7 +439,7 @@ export function openLogTab(
     kind === "external"
       ? target
       : kind === "history"
-        ? (repoOf(target) ??
+        ? (historyRepo(target) ??
           active?.repositories?.find((repo) => target === repo || target.startsWith(`${repo}/`)) ??
           (active?.repo && target.startsWith(`${active.repo}/`) ? active.repo : null))
         : (active?.repo ?? (kind === "log" ? null : currentRepoRoot()));

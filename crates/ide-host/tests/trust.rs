@@ -58,6 +58,11 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "vcs_write_patch",
         "remote_bootstrap_list",
         "deploy_test_connection",
+        "plugin_market",
+        "plugin_market_url",
+        "plugin_set_market_url",
+        "plugin_market_download",
+        "plugin_preview_install",
     ] {
         assert!(ide_host::trust::restricted_command_allowed(command), "{command}");
         for window in ["main", "welcome"] {
@@ -72,8 +77,6 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "tools_list",
         "tools_install",
         "tools_uninstall",
-        "plugin_install_dir",
-        "plugin_reload",
         "vcs_git_version",
         "docker_compose_op",
         "db_execute",
@@ -92,6 +95,12 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         for window in ["main", "welcome"] {
             assert!(host.authorize_command(window, command).is_err(), "{window}: {command}");
         }
+    }
+    // Plugin installs run plugin code: from the welcome screen, but not in an untrusted project.
+    for command in ["plugin_install_dir", "plugin_uninstall", "plugin_set_enabled", "plugin_reload"] {
+        assert!(!ide_host::trust::restricted_command_allowed(command), "{command}");
+        assert!(host.authorize_command("main", command).is_err(), "{command}");
+        assert!(host.authorize_command("welcome", command).is_ok(), "{command}");
     }
     // These requests validate the vendor before any network access, independently of project trust.
     for window in ["main", "welcome"] {

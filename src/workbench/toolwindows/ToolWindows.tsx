@@ -716,6 +716,9 @@ function HeaderRow({
   );
 }
 
+/** How long an activated tool window waits for lazily loaded content to focus. */
+const LATE_FOCUS_MS = 5000;
+
 function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: boolean }) {
   const ref = useRef<HTMLElement>(null);
   const focusRequest = useToolWindowLayout((s) => s.focusRequest);
@@ -726,20 +729,47 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
 
   useEffect(() => {
     if (!focusRequest || focusRequest.id !== tw.id || hidden) return;
+    let observer: MutationObserver | null = null;
+    let timer = 0;
+    const stop = () => {
+      observer?.disconnect();
+      observer = null;
+      window.clearTimeout(timer);
+    };
     const raf = requestAnimationFrame(() => {
       const root = ref.current;
       if (!root) return;
       const body = root.querySelector<HTMLElement>("[data-toolwindow-body]");
       // Like IDEA, activation focuses the content (a field, list or tree), never a button or
       // link: a scripted focus on one draws its focus ring (an empty view's "New…" link).
-      const content = [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
-        (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
-      );
-      if (body && !content && !body.hasAttribute("tabindex")) body.tabIndex = -1;
-      const target = body?.querySelector<HTMLElement>("[data-autofocus]") ?? content ?? body ?? root;
-      target.focus({ preventScroll: true });
+      const contentTarget = () =>
+        body?.querySelector<HTMLElement>("[data-autofocus]") ??
+        [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
+          (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
+        );
+      const target = contentTarget();
+      if (target || !body) {
+        (target ?? root).focus({ preventScroll: true });
+        return;
+      }
+      if (!body.hasAttribute("tabindex")) body.tabIndex = -1;
+      body.focus({ preventScroll: true });
+      // Lazily loaded views (the Terminal) render their field after this: focus it when it
+      // appears, unless focus has moved on meanwhile.
+      observer = new MutationObserver(() => {
+        if (document.activeElement !== body) return stop();
+        const late = contentTarget();
+        if (!late) return;
+        stop();
+        late.focus({ preventScroll: true });
+      });
+      observer.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-autofocus"] });
+      timer = window.setTimeout(stop, LATE_FOCUS_MS);
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      stop();
+    };
   }, [focusRequest, tw.id, hidden]);
 
   return (

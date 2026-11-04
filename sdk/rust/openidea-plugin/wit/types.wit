@@ -52,6 +52,15 @@ interface types {
         range: range,
     }
 
+    /// A case added after 1.0, carried by the `other` case of a variant that
+    /// grows (events, view bodies, view events, form fields): its kind and its
+    /// data as JSON. Whoever doesn't know the kind ignores it or shows a
+    /// fallback; the SDKs decode the kinds they know.
+    record extension {
+        kind: string,
+        data: string,
+    }
+
     /// Passed to `lifecycle.activate`.
     record context {
         plugin-id: string,

@@ -19,6 +19,7 @@ import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { isWindows } from "./jvmTypes";
+import { inheritedRunTargets } from "./inheritedMain";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
 
@@ -54,6 +55,8 @@ export interface ContextInput {
   content?: string;
   /** Go: the module path of a module directory (`go.mod`), when known. */
   goModule?: (dir: string) => string | null | undefined;
+  /** Python: whether a directory is a package (`__init__.py`), when known. */
+  pythonPackage?: (dir: string) => boolean | undefined;
   /** 0-based caret line: the element at the caret wins over the file. */
   line?: number;
   /**
@@ -408,6 +411,31 @@ function fileConfig(
   };
 }
 
+const PYTHON_RELATIVE_IMPORT = /^\s*from\s+\.+[\w.]*\s+import\b/m;
+
+/** Whether Python source imports relatively (`from .models import X`): it only runs as a module. */
+export function hasRelativeImports(content: string | undefined): boolean {
+  return !!content && PYTHON_RELATIVE_IMPORT.test(content);
+}
+
+/**
+ * A module with relative imports, run as `python -m package.module` from the directory above
+ * its top package (its own directory is a package for the import, `__init__.py` or not).
+ */
+function pythonModule(input: ContextInput): { name: string; dir: string } | null {
+  if (!hasRelativeImports(input.content)) return null;
+  let top = dirName(input.path);
+  for (let up = dirName(top); up && up !== top && input.pythonPackage?.(up); up = dirName(up)) top = up;
+  const dir = dirName(top);
+  if (!dir || dir === top) return null;
+  const parts = input.path
+    .slice(dir === "/" ? 1 : dir.length + 1)
+    .replace(/\.py$/, "")
+    .split("/");
+  if (parts.length > 1 && (parts.at(-1) === "__init__" || parts.at(-1) === "__main__")) parts.pop();
+  return { name: parts.join("."), dir };
+}
+
 /** Python: the interpreter from settings, the detected project interpreter, then `python3` on the PATH. */
 function pythonCommand(input: ContextInput, env: ToolEnv, s: FileSite): { command: string; prefix: string[] } | null {
   if (env.python) return { command: env.python, prefix: [] };
@@ -636,7 +664,10 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     }
     if (/\.(java|kt)$/.test(rel) && hasBuildTool(rel, configs, JVM_BUILDS)) {
       if (input.content === undefined) return null;
-      const targets = detectRunTargets(input.content, rel).filter((t) => t.className);
+      const targets = [
+        ...detectRunTargets(input.content, rel),
+        ...inheritedRunTargets(input.path, input.content),
+      ].filter((t) => t.className);
       const target = targets.find((t) => t.kind === "main") ?? targets.find((t) => t.kind === "suite");
       const config = target ? targetConfig(target, rel, configs, input.content) : null;
       return config ? { name: config.name, scope: "file", config } : null;
@@ -651,6 +682,22 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     case "python": {
       const py = pythonCommand(input, env, s);
       if (!py) return { name: s.file, scope: "file", missing: missing("python", s.file, ["python3", "python"]) };
+      const module = pythonModule(input);
+      if (module) {
+        // It runs in another directory: a venv-relative interpreter is relative to the project root.
+        const command =
+          input.root && py.command.includes("/") && !py.command.startsWith("/")
+            ? `${input.root}/${py.command}`
+            : py.command;
+        return {
+          name: s.file,
+          scope: "file",
+          config: {
+            ...fileConfig(s, "python", command, [...py.prefix, "-m", module.name], "debugpy"),
+            cwd: module.dir === input.root ? null : relTo(module.dir, input.root),
+          },
+        };
+      }
       return {
         name: s.file,
         scope: "file",
@@ -839,7 +886,8 @@ export function fileTargets(
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  return detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 
 function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget): Produced | null {

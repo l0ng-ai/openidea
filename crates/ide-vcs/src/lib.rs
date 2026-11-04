@@ -77,6 +77,35 @@ pub struct BlameLine {
     pub summary: String,
 }
 
+/// History for Selection: the commits that changed a block of lines, newest first.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockHistory {
+    /// The selected lines in HEAD (0-based, inclusive); None when none of them is committed.
+    pub head_lines: Option<(u32, u32)>,
+    pub revisions: Vec<BlockRevision>,
+}
+
+/// A commit that changed the block, with the block in its first parent and in it.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockRevision {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub email: String,
+    pub time_ms: f64,
+    pub summary: String,
+    /// Repository-relative path of the file in this commit (before a later rename).
+    pub path: String,
+    /// The block before the commit; empty when the commit added it.
+    pub before: String,
+    pub after: String,
+    /// 0-based first line of the block before and after the commit.
+    pub before_line: u32,
+    pub after_line: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Commit {
@@ -530,6 +559,7 @@ pub struct ChangelistState {
 
 mod bek;
 mod blame;
+mod block_history;
 pub mod changelists;
 mod cli;
 mod compare;
@@ -759,6 +789,20 @@ impl Repo {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::blame(self, path, current_text, revision, encoding)
+    }
+    /// History for Selection: commits that changed `lines` (0-based, inclusive, of the
+    /// current text: `current_text`, or the file on disk), mapped to HEAD's lines first.
+    pub fn block_history(
+        &self,
+        path: &Path,
+        current_text: Option<&str>,
+        lines: (u32, u32),
+        encoding: impl Into<TextEncoding>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<BlockHistory> {
+        let encoding = encoding.into();
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        block_history::block_history(self, path, current_text, lines, encoding, cancel)
     }
     /// Commits newest-first in topological order (children before parents).
     ///
