@@ -438,10 +438,28 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
         let edit = edit.clone();
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
-    if let Some(command) = action.command {
+    if let Some(command) = action.command
+        && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
+    {
         project.lsp.execute_command(doc, command).await?;
     }
     Ok(())
+}
+
+/// A command after a code action's edit that no server provides: what other editors'
+/// extensions do once the edit is applied (vtsls' `_typescript.didOrganizeImports`). The edit
+/// is the action; there is nothing to run.
+async fn is_client_follow_up(
+    project: &crate::project::Project,
+    doc: DocId,
+    server: Option<ide_core::ServerId>,
+    command: &Command,
+) -> bool {
+    let provided = project.lsp.provides_command(doc, server, &command.command).await;
+    if !provided {
+        tracing::debug!("skipping `{}` after the code action's edit: no server provides it", command.command);
+    }
+    !provided
 }
 
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
@@ -676,6 +694,7 @@ pub async fn lsp_execute_code_action(
         if cancel.is_cancelled() {
             return Err(ide_core::IdeError::cancelled());
         }
+        let edited = action.edit.is_some();
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
@@ -683,6 +702,9 @@ pub async fn lsp_execute_code_action(
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
         }
         match action.command {
+            Some(command) if edited && is_client_follow_up(&project, doc, Some(action.server), &command).await => {
+                Ok(Vec::new())
+            }
             Some(command) => project
                 .lsp
                 .execute_action_command(doc, action.server, command, answers, cancel)

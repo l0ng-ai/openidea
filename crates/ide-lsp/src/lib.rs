@@ -1692,6 +1692,20 @@ impl LspManager {
         Ok(())
     }
 
+    /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions
+    /// can carry commands other editors' extensions run themselves after the edit (vtsls'
+    /// `_typescript.didOrganizeImports`): no server provides those.
+    pub async fn provides_command(&self, doc: DocId, server: Option<ide_core::ServerId>, name: &str) -> bool {
+        let servers = match self.snapshot(doc) {
+            Ok(snap) => snap.servers,
+            Err(_) => self.servers.lock().clone(),
+        };
+        self.ready_targets(&servers, |c| c.commands().iter().any(|c| c == name))
+            .await
+            .iter()
+            .any(|t| server.is_none_or(|s| t.server.id == s))
+    }
+
     async fn command_target(&self, doc: DocId, server: ide_core::ServerId, name: &str) -> IdeResult<Target> {
         let snap = self.snapshot(doc)?;
         self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == name))
@@ -1710,6 +1724,10 @@ impl LspManager {
         answers: Vec<FormAnswer>,
         cancel: CancellationToken,
     ) -> IdeResult<Option<CommandForm>> {
+        // Nothing to ask for a command its server doesn't provide (executing it decides).
+        if !self.provides_command(doc, Some(server), &command.command).await {
+            return Ok(None);
+        }
         let t = self.command_target(doc, server, &command.command).await?;
         let interactive = t.server.name == "gopls"
             && t.caps()
