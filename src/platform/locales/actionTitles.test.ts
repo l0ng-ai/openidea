@@ -2,6 +2,7 @@
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { expect, it } from "vitest";
+import ko from "./text/ko.json";
 import zh from "./text/zh.json";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
@@ -76,11 +77,14 @@ const titles = actionTitles();
 /** Product names shown as they are in every language. */
 const PROPER_NAMES = new Set(["Vim"]);
 
-it("has a Chinese entry for every literal action title, including action factory arguments", () => {
+it.each([
+  ["Chinese", zh],
+  ["Korean", ko],
+] as const)("has a %s entry for every literal action title, including action factory arguments", (_, texts) => {
   // Ensure the helper-argument regression cannot disappear through a scanner change.
   expect(titles.has("Go to Declaration or Usages")).toBe(true);
   expect(titles.has("Next Result")).toBe(true);
-  const catalog: Record<string, string> = zh;
+  const catalog: Record<string, string> = texts;
   expect(
     [...titles]
       .filter(([title]) => !PROPER_NAMES.has(title) && (!catalog[title] || catalog[title] === title))

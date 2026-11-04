@@ -12,7 +12,10 @@ import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { applyKeymapSettings } from "@/platform/keymap";
 import { loadSettings, useProject } from "@/platform/project";
 import { applyAppearanceOptions, installAltDragGuard, installIdleSave } from "./appearanceRuntime";
-import { validateSettings } from "./model/schema";
+import { type LocaleId, validateSettings } from "./model/schema";
+
+/** `<html lang>` of each UI locale. */
+const HTML_LANG: Record<LocaleId, string> = { en: "en", zh: "zh-CN", ko: "ko" };
 
 export function applyRuntimeSettings(raw: unknown, root: HTMLElement = document.documentElement): void {
   const s = validateSettings(raw);
@@ -20,7 +23,7 @@ export function applyRuntimeSettings(raw: unknown, root: HTMLElement = document.
 
   applyAppearanceOptions(s, root);
 
-  root.lang = s.appearance.locale === "zh" ? "zh-CN" : "en";
+  root.lang = HTML_LANG[s.appearance.locale];
 }
 
 /** Subscribes to settings changes; returns the unsubscribe function. */
