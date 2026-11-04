@@ -534,11 +534,12 @@
   background: var(--bg-editor);
   -webkit-user-select: text;
   user-select: text;
-  cursor: text;
+  cursor: default;
 }
 .outputLine {
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
 }
 .outputTime {
   color: var(--link);
