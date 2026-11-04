@@ -51,7 +51,9 @@
   background: color-mix(in srgb, var(--vcs-ignored) 14%, transparent);
 }
 .error {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
 }

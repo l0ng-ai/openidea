@@ -426,12 +426,12 @@ export function mavenGoalConfig(
   model: Pick<MavenModel, "profiles">,
   options: MavenRunOptions,
 ): RunConfig {
-  const args = [...project.options, ...mavenArgs(goals, model, options)];
+  const args = mavenArgs(goals, model, options);
   return {
     id: `maven:goal:${project.pom}:${goals.join(" ")}`,
     name: mavenConfigName(project, goals),
     kind: "maven",
-    command: project.command,
+    command: /(?:^|[/\\])mvnw(?:\.cmd|\.bat)?$/i.test(project.command) ? project.command : "mvn",
     args,
     cwd: project.dir || null,
     env: { ...project.env },

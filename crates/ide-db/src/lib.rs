@@ -2,6 +2,7 @@
 //! execution ([`conn`]), introspection, table data paging / editing ([`sql`])
 //! and statement splitting ([`split`]), for SQLite, PostgreSQL and MySQL/MariaDB.
 
+mod clickhouse;
 pub mod conn;
 pub mod history;
 pub mod plan;
@@ -547,12 +548,14 @@ impl DbManager {
         })?;
         let version = match source.driver {
             DbDriver::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
-            DbDriver::Postgres => "SELECT version()",
+            DbDriver::Postgres | DbDriver::Clickhouse => "SELECT version()",
             DbDriver::Mysql => "SELECT CONCAT(@@version_comment, ' ', VERSION())",
             DbDriver::SqlServer => "SELECT @@VERSION",
         };
-        let v = pool.rows(version, 1).await.ok().and_then(|r| r.into_iter().next()?.into_iter().next()?);
+        let result = pool.rows(version, 1).await;
         pool.close().await;
+        let rows = if source.driver == DbDriver::Clickhouse { result? } else { result.unwrap_or_default() };
+        let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten());
         Ok(v.unwrap_or_else(|| "Connected".into()))
     }
 
@@ -701,8 +704,11 @@ impl DbManager {
                 _ => indexes.push(IndexInfo { name, unique: flag(&unique), columns: vec![col] }),
             }
         }
-        let fk_rows =
-            pool.rows(&sql::table_foreign_keys(driver, schema, table), MAX_META_ROWS).await.unwrap_or_default();
+        let fk_rows = if driver == DbDriver::Clickhouse {
+            Vec::new()
+        } else {
+            pool.rows(&sql::table_foreign_keys(driver, schema, table), MAX_META_ROWS).await.unwrap_or_default()
+        };
         let mut foreign_keys = group_foreign_keys(fk_rows, &[]);
         // SQLite keys that reference the primary key implicitly: look it up.
         for k in foreign_keys.iter_mut().filter(|k| k.ref_columns.is_empty()) {
@@ -715,13 +721,15 @@ impl DbManager {
                 .collect();
         }
         foreign_keys.retain(|k| k.columns.len() == k.ref_columns.len());
-        let triggers = pool
-            .rows(&sql::triggers(driver, schema, table), MAX_META_ROWS)
-            .await
-            .unwrap_or_else(|e| {
+        let trigger_rows = if driver == DbDriver::Clickhouse {
+            Vec::new()
+        } else {
+            pool.rows(&sql::triggers(driver, schema, table), MAX_META_ROWS).await.unwrap_or_else(|e| {
                 tracing::warn!("triggers: {}", e.message);
                 Vec::new()
             })
+        };
+        let triggers = trigger_rows
             .into_iter()
             .filter_map(|r| {
                 let mut it = r.into_iter();
@@ -822,6 +830,11 @@ impl DbManager {
                 let ddl = cells(pool.rows(&q, 1).await?, 1).into_iter().next();
                 ddl.map(|d| format!("{d};\n")).ok_or_else(missing)
             }
+            DbDriver::Clickhouse => {
+                let q = format!("SHOW CREATE TABLE {}", sql::qualified(driver, schema, name));
+                let ddl = cells(pool.rows(&q, 1).await?, 0).into_iter().next();
+                ddl.map(|d| format!("{};\n", d.trim_end().trim_end_matches(';'))).ok_or_else(missing)
+            }
             DbDriver::SqlServer => {
                 let obj = format!("{}.{}", schema, name).replace('\'', "''");
                 let ddl = cells(pool.rows(&format!("SELECT OBJECT_DEFINITION(OBJECT_ID('{}'))", obj), 1).await?, 0)
@@ -902,10 +915,14 @@ impl DbManager {
             }
         }
         // Foreign keys are a nicety (JOIN completion): a server that refuses the catalog query still completes.
-        let fk_rows = pool.rows(sql::foreign_keys(driver), MAX_META_ROWS).await.unwrap_or_else(|e| {
-            tracing::warn!("foreign keys: {}", e.message);
+        let fk_rows = if driver == DbDriver::Clickhouse {
             Vec::new()
-        });
+        } else {
+            pool.rows(sql::foreign_keys(driver), MAX_META_ROWS).await.unwrap_or_else(|e| {
+                tracing::warn!("foreign keys: {}", e.message);
+                Vec::new()
+            })
+        };
         let foreign_keys = group_foreign_keys(fk_rows, &tables);
         let default_schema = match sql::current_schema(driver) {
             None => "main".to_owned(),
@@ -980,6 +997,9 @@ impl DbManager {
         let Some(session) = session else {
             return pool.execute(statement, max_rows, cancel).await;
         };
+        if pool.driver() == DbDriver::Clickhouse {
+            return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+        }
         let mut held = session.lock().await;
         if held.is_none() {
             let mut conn = Held::acquire(&pool).await?;
@@ -998,8 +1018,11 @@ impl DbManager {
 
     /// Switches `id` between auto-commit and manual commit. Leaving manual
     /// mode rolls back what was not committed.
-    pub async fn set_manual_commit(&self, id: &str, manual: bool) {
+    pub async fn set_manual_commit(&self, id: &str, manual: bool) -> IdeResult<()> {
         if manual {
+            if self.source(id)?.driver == DbDriver::Clickhouse {
+                return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+            }
             self.sessions.lock().entry(id.to_owned()).or_default();
         } else {
             let session = self.sessions.lock().remove(id);
@@ -1007,10 +1030,14 @@ impl DbManager {
                 end_session(&s).await;
             }
         }
+        Ok(())
     }
 
     /// Commits (or rolls back) the open transaction of a manual-commit data source.
     pub async fn finish_transaction(&self, id: &str, commit: bool) -> IdeResult<()> {
+        if self.source(id).is_ok_and(|s| s.driver == DbDriver::Clickhouse) {
+            return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+        }
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else { return Ok(()) };
         let mut held = session.lock().await;
@@ -1052,6 +1079,9 @@ impl DbManager {
 
     /// Applies the table editor's pending changes in one transaction.
     pub async fn apply_edits(&self, id: &str, schema: &str, table: &str, edits: &[DbRowEdit]) -> IdeResult<u64> {
+        if self.source(id)?.driver == DbDriver::Clickhouse {
+            return Err(IdeError::invalid("ClickHouse table editing is unsupported"));
+        }
         let pool = self.pool(id).await?;
         let driver = pool.driver();
         let statements = edits
@@ -1103,5 +1133,34 @@ mod tests {
         assert_eq!(files_containing(tmp.path(), "other-pw"), Vec::<PathBuf>::new());
         let other = SecretStore::new(tmp.path().join("data/db-passwords.json"), Path::new("/other"));
         assert_eq!(other.get("s2").as_deref(), Some("other-pw"));
+    }
+
+    #[tokio::test]
+    async fn clickhouse_rejects_manual_transactions_and_table_edits_without_connecting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ssh = Arc::new(SshManager::new(root.join("ssh-passwords.json")));
+        let db = DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"), ssh);
+        db.save_sources(vec![DataSource {
+            id: "clickhouse".into(),
+            name: "clickhouse".into(),
+            driver: DbDriver::Clickhouse,
+            host: "127.0.0.1".into(),
+            port: Some(1),
+            ..Default::default()
+        }])
+        .await
+        .unwrap();
+        let error = db.set_manual_commit("clickhouse", true).await.unwrap_err();
+        assert!(error.message.contains("manual transactions are unsupported"));
+        assert!(db.sessions.lock().is_empty());
+        for commit in [false, true] {
+            let error = db.finish_transaction("clickhouse", commit).await.unwrap_err();
+            assert!(error.message.contains("manual transactions are unsupported"));
+        }
+        let error = db.apply_edits("clickhouse", "default", "events", &[]).await.unwrap_err();
+        assert!(error.message.contains("table editing is unsupported"));
+        assert!(!db.is_connected("clickhouse"));
+        db.set_manual_commit("clickhouse", false).await.unwrap();
     }
 }

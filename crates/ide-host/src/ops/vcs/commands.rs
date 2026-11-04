@@ -123,18 +123,18 @@ fn per_repo(
     Ok(())
 }
 
-/// Shelf and patches work in the primary repository only: changes of a nested one
-/// fail instead of being left out silently.
-fn in_primary_repo(project: &Project, paths: &[PathBuf]) -> IdeResult<()> {
+/// A shelf is one patch for one owning repository. Validate the whole selection before reverting files.
+fn shelf_repository(project: &Project, paths: &[PathBuf]) -> IdeResult<PathBuf> {
     let repos = project.repos();
-    let primary = repos.primary().map(|r| r.root());
-    match paths.iter().find(|p| repos.for_path(p).map(|r| r.root()) != primary) {
-        Some(p) => Err(ide_core::IdeError::invalid(format!(
-            "{} is in another git repository; shelving and patches support the project's main repository only",
-            p.display()
-        ))),
-        None => Ok(()),
+    let root = paths
+        .first()
+        .and_then(|p| repos.for_path(p))
+        .map(|r| r.root())
+        .ok_or_else(|| ide_core::IdeError::invalid("select files in a git repository to shelve"))?;
+    if paths.iter().any(|p| repos.for_path(p).map(|r| r.root()) != Some(root)) {
+        return Err(ide_core::IdeError::invalid("select files from a single git repository to shelve"));
     }
+    Ok(root.to_path_buf())
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
@@ -281,7 +281,7 @@ pub async fn vcs_add_to_ignore(
             }
         }
         apply_git_executable(&project.settings.effective());
-        let result = ide_vcs::add_to_ignore(&paths, destination);
+        let result = project.with_disk_sync(|| ide_vcs::add_to_ignore(&paths, destination));
         // Exclude may live outside a worktree's watched directory. Refresh filters and UI explicitly.
         project.watcher.reload_ignore_rules();
         for (_, watcher) in project.content_watchers.lock().iter() {
@@ -322,7 +322,7 @@ pub async fn vcs_commit(
     // Commit hooks may run for a long time.
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_at(repo.as_deref(), |r| {
+        project.with_repo_recorded(repo.as_deref(), None, |r| {
             r.commit_with(&message, &options, &|path| project.vcs_encoding(path, None))
         })
     })
@@ -552,12 +552,13 @@ pub async fn vcs_clone(
     request: RequestId,
     url: String,
     dest: PathBuf,
+    depth: Option<u32>,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
     apply_git_executable(&host.global_settings.effective());
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {
-        ide_vcs::clone(&url, &dest, &cancel, &|line| {
+        ide_vcs::clone(&url, &dest, depth, &cancel, &|line| {
             let _ = on_output.send(line);
         })
     })
@@ -729,7 +730,13 @@ pub async fn vcs_add_worktree(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_at(repo.as_deref(), |r| r.add_worktree(&path, &commitish, new_branch.as_deref()))
+        let result = project
+            .with_repo_recorded(repo.as_deref(), None, |r| r.add_worktree(&path, &commitish, new_branch.as_deref()));
+        // A worktree below the project is a new repository: rescan so its files
+        // join the status and gutter queries (the watcher picks the gitfile up
+        // too, but only as a debounced event later).
+        project.refresh_repositories();
+        result
     })
     .await
 }
@@ -743,7 +750,12 @@ pub async fn vcs_remove_worktree(
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force))).await
+    blocking(move || {
+        let result = project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force));
+        project.refresh_repositories();
+        result
+    })
+    .await
 }
 
 pub async fn vcs_compare_scope(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<CompareScope> {
@@ -846,7 +858,7 @@ pub async fn vcs_apply_patch(
 ) -> IdeResult<ApplyOutcome> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.apply_patch(&patch))).await
+    blocking(move || project.with_repo_recorded(repo.as_deref(), None, |r| r.apply_patch(&patch))).await
 }
 
 /// Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them.
@@ -854,16 +866,23 @@ pub async fn vcs_shelve(host: &Host, window: &str, name: String, paths: Vec<Path
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        in_primary_repo(&project, &paths)?;
+        let repo = shelf_repository(&project, &paths)?;
         keep_private(&project.root);
-        project.with_repo_recorded(None, Some("Shelve"), |r| r.shelve(&shelf_dir(&project.root), &name, &paths))
+        project.with_repo_recorded(Some(&repo), Some("Shelve"), |r| r.shelve(&shelf_dir(&project.root), &name, &paths))
     })
     .await
 }
 
 pub fn vcs_shelves(host: &Host, window: &str) -> IdeResult<Vec<ShelvedChangeList>> {
     let project = host.project(window)?;
-    ide_vcs::shelf::list(&shelf_dir(&project.root))
+    let mut shelves = ide_vcs::shelf::list(&shelf_dir(&project.root))?;
+    let primary = project.repos().primary().map(|r| ide_core::IpcPath::from(r.root().to_path_buf()));
+    for entry in &mut shelves {
+        if entry.repo.is_none() {
+            entry.repo = primary.clone();
+        }
+    }
+    Ok(shelves)
 }
 
 /// Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
@@ -878,7 +897,8 @@ pub async fn vcs_unshelve(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_recorded(None, Some("Unshelve"), |r| {
+        let repo = ide_vcs::shelf::repository(&shelf_dir(&project.root), &id)?;
+        project.with_repo_recorded(repo.as_deref(), Some("Unshelve"), |r| {
             ide_vcs::shelf::unshelve_path(r, &shelf_dir(&project.root), &id, remove, path.as_deref())
         })
     })
@@ -902,12 +922,30 @@ pub fn vcs_shelf_patch(host: &Host, window: &str, id: String, path: Option<Strin
 
 pub async fn vcs_shelf_diff(host: &Host, window: &str, id: String) -> IdeResult<Vec<ide_vcs::shelf::ShelfDiffFile>> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo(|r| ide_vcs::shelf::diff_files(r, &shelf_dir(&project.root), &id))).await
+    blocking(move || {
+        let repo = ide_vcs::shelf::repository(&shelf_dir(&project.root), &id)?;
+        project.with_repo_at(repo.as_deref(), |r| ide_vcs::shelf::diff_files(r, &shelf_dir(&project.root), &id))
+    })
+    .await
 }
 
-pub async fn vcs_shelf_import(host: &Host, window: &str, name: String, patch: String) -> IdeResult<()> {
+pub async fn vcs_shelf_import(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    name: String,
+    patch: String,
+) -> IdeResult<()> {
     let project = host.project(window)?;
-    blocking(move || ide_vcs::shelf::import_patch(&shelf_dir(&project.root), &name, &patch)).await
+    blocking(move || {
+        if repo.is_none() && project.repos().is_empty() {
+            return ide_vcs::shelf::import_patch(&shelf_dir(&project.root), &name, &patch, None);
+        }
+        project.with_repo_at(repo.as_deref(), |r| {
+            ide_vcs::shelf::import_patch(&shelf_dir(&project.root), &name, &patch, Some(r.root()))
+        })
+    })
+    .await
 }
 
 pub fn vcs_changelists_load(host: &Host, window: &str) -> IdeResult<ChangelistState> {
@@ -922,13 +960,20 @@ pub fn vcs_changelists_save(host: &Host, window: &str, changelists: ChangelistSt
 }
 
 /// Create Patch › Save to file.
-pub async fn vcs_write_patch(_host: &Host, _window: &str, path: PathBuf, patch: String) -> IdeResult<()> {
+pub async fn vcs_write_patch(host: &Host, window: &str, path: PathBuf, patch: String) -> IdeResult<()> {
+    let project = host.project(window).ok();
     blocking(move || {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        let write = || {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&path, patch)?;
+            Ok(())
+        };
+        match project {
+            Some(project) => project.with_disk_sync(write),
+            None => write(),
         }
-        std::fs::write(&path, patch)?;
-        Ok(())
     })
     .await
 }
@@ -1026,7 +1071,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
         |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?).await },
     );
     d.add("vcs_clone", |c| async move {
-        vcs_clone(&c.host, &c.window, c.arg("request")?, c.arg("url")?, c.arg("dest")?, c.sender("onOutput")?).await
+        vcs_clone(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("url")?,
+            c.arg("dest")?,
+            c.arg("depth")?,
+            c.sender("onOutput")?,
+        )
+        .await
     });
     d.add("vcs_init", |c| async move { vcs_init(&c.host, &c.window, c.arg("dir")?).await });
     d.add("vcs_git_version", |c| async move { vcs_git_version(&c.host, &c.window, c.arg("path")?).await });
@@ -1107,7 +1161,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_shelf_rename", |c| async move { vcs_shelf_rename(&c.host, &c.window, c.arg("id")?, c.arg("name")?) });
     d.add("vcs_shelf_diff", |c| async move { vcs_shelf_diff(&c.host, &c.window, c.arg("id")?).await });
     d.add("vcs_shelf_import", |c| async move {
-        vcs_shelf_import(&c.host, &c.window, c.arg("name")?, c.arg("patch")?).await
+        vcs_shelf_import(&c.host, &c.window, c.arg("repo")?, c.arg("name")?, c.arg("patch")?).await
     });
     d.add("vcs_shelf_patch", |c| async move { vcs_shelf_patch(&c.host, &c.window, c.arg("id")?, c.arg("path")?) });
     d.add("vcs_changelists_load", |c| async move { vcs_changelists_load(&c.host, &c.window) });

@@ -6,6 +6,7 @@ import { activeEditor, editorsFor, registerSaveParticipant, type TextEditorHandl
 import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { validateLanguages } from "@/platform/languageSettings";
+import type { Settings } from "@/bindings";
 import { explicitCompletion } from "./completion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
@@ -18,7 +19,13 @@ import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSe
 import { startRename } from "./rename";
 import { formatDocument, reformatDialog } from "./format";
 import { showHint } from "./hint";
-import { refactorThis, runRefactoring, safeDelete, showNothingHere } from "@/editor/refactor";
+import {
+  refactorThis,
+  runRefactoring,
+  safeDelete,
+  showNothingHere,
+  startHierarchyRefactoring,
+} from "@/editor/refactor";
 import { evaluateWhen } from "@/platform/context";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
@@ -117,20 +124,22 @@ function editorAction(
   return { id, title, category, when: EDITOR_WHEN, run: withEditor(run), ...extra };
 }
 
+/** Whether saving a `language` file formats it: Format on save, or Run on save of Prettier or oxfmt. */
+export function formatsOnSave(settings: Settings | null, language: string): boolean {
+  const { prettier, oxfmt } = validateLanguages(settings?.languages);
+  return (
+    !!settings?.editor?.formatOnSave ||
+    [prettier, oxfmt].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
+  );
+}
+
 /** Format on save (settings.editor.formatOnSave), run by editor/core before writing. */
 export function registerFormatOnSave(): () => void {
   return registerSaveParticipant({
     id: "lsp.formatOnSave",
     order: 50,
     beforeSave: async (ctx, handle) => {
-      const settings = useProject.getState().settings;
-      const prettier = validateLanguages(settings?.languages).prettier;
-      if (
-        !handle ||
-        ctx.readOnly ||
-        (!settings?.editor?.formatOnSave && !(prettier.runOnSave && prettier.languages.includes(ctx.language)))
-      )
-        return;
+      if (!handle || ctx.readOnly || !formatsOnSave(useProject.getState().settings, ctx.language)) return;
       await formatDocument(handle.view, { explicit: false, selectionOnly: false, onSave: true });
     },
   });
@@ -183,6 +192,20 @@ export function registerLspActions(): () => void {
     editorAction("code.reformat", "Reformat Code", "Code", reformat, {
       keywords: ["format", "prettier"],
     }),
+    editorAction(
+      "code.reformatWithPrettier",
+      "Reformat with Prettier",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "prettier" }),
+      { keywords: ["format", "prettier"] },
+    ),
+    editorAction(
+      "code.reformatWithOxfmt",
+      "Reformat with oxfmt",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "oxfmt" }),
+      { keywords: ["format", "oxfmt", "oxc"] },
+    ),
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),
     ),
@@ -297,6 +320,12 @@ export function registerLspActions(): () => void {
       { keyWhen: GENERATE_KEY_WHEN },
     ),
     editorAction("refactor.inline", "Inline…", "Refactor", (v) => runRefactoring(v, "inline")),
+    editorAction("refactor.pullMembersUp", "Pull Members Up…", "Refactor", (v) =>
+      startHierarchyRefactoring(v, "pullUp"),
+    ),
+    editorAction("refactor.pushMembersDown", "Push Members Down…", "Refactor", (v) =>
+      startHierarchyRefactoring(v, "pushDown"),
+    ),
     // Implement / Override Methods: the server's code actions for them (jdtls "Override/Implement
     // Methods…", rust-analyzer "Implement missing members", TS "Implement interface"…).
     editorAction("code.implementMethods", "Implement Methods…", "Code", (v) =>

@@ -1,22 +1,24 @@
 [package]
 name = "ide-plugin"
-description = "Sandboxed WebAssembly plugin host (wasmtime component model + WASI preview 2)"
+description = "WebAssembly runtime for plugins (wasmtime component model + WASI preview 2)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 ide-core.workspace = true
-ide-language.workspace = true
+ide-extension.workspace = true
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
-toml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
-wasmtime = { version = "49.0.4", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "parallel-compilation"] }
+semver = "1"
+wasmtime = { version = "49.0.4", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "parallel-compilation", "async"] }
 wasmtime-wasi = { version = "49.0.4", default-features = false, features = ["p2"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

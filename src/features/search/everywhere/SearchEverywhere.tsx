@@ -1,10 +1,10 @@
 import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
-import { actionToggled, executeAction, getAction } from "@/platform/actions";
+import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";
 import type { ProjectFileSet } from "@/platform/ipc";
 import { tx as translate, useTx } from "@/platform/i18n";
-import { hasPrimaryModifier, shortcutLabel } from "@/platform/keymap";
+import { hasPrimaryModifier, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
 import {
   Checkbox,
   Dialog,
@@ -73,6 +73,13 @@ const SE_SCOPES: Array<{ value: SeScope; label: string }> = [
   { value: "test", label: "Project Test Files" },
 ];
 
+/** Keys the query field handles itself (`onKeyDown`), in every modifier combination. */
+const SEARCH_KEYS: ReadonlySet<string> = new Set(["Enter", "Tab", "ArrowUp", "ArrowDown", "PageUp", "PageDown"]);
+
+/** Keeps the global keymap off the keys the query field handles while it has focus. */
+export function claimSearchKeys(input: () => HTMLElement | null): () => void {
+  return registerKeyClaim((e) => e.target === input() && SEARCH_KEYS.has(e.key));
+}
 const ROW = 24;
 const MAX_LIST = 672;
 const MIN_LIST = 10 * ROW;
@@ -281,10 +288,10 @@ function SearchEverywhereDialog() {
         if (!row.enabled) return;
         pushRecentAction(row.id);
         if (getAction(row.id)?.toggled) {
-          void executeAction(row.id).then(() => bumpToggles());
+          void executeActionFrom("search", row.id).then(() => bumpToggles());
           return;
         }
-        return closeThen(() => void executeAction(row.id));
+        return closeThen(() => void executeActionFrom("search", row.id));
       case "setting":
         return closeThen(() => void executeAction("file.settings", row.pageId));
     }
@@ -312,6 +319,10 @@ function SearchEverywhereDialog() {
     pendingEnter.current = null;
     activateSelection(pending.side);
   });
+
+  // The keys the input handles below are its own: with an editor open, the global keymap would
+  // otherwise run editor actions on them (⌥↵ Show Context Actions, ⌥↑ Extend Selection…).
+  useEffect(() => claimSearchKeys(() => inputRef.current), []);
 
   /** IDEA's ⌥↵ on an action: record a shortcut for it (written to the active keymap). */
   const assignShortcut = (id: string) => closeThen(() => void executeAction("settings.assignShortcut", id));
@@ -761,7 +772,7 @@ function ResultRow({
                 aria-label={row.title}
                 onChange={() => {
                   pushRecentAction(row.id);
-                  void executeAction(row.id).then(onToggled);
+                  void executeActionFrom("search", row.id).then(onToggled);
                 }}
               />
             </span>

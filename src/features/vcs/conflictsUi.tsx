@@ -31,7 +31,7 @@ export function openMergeEditor(path: string) {
 async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
   const path = stripSlash(f.path);
   await runOp(
-    `Accept ${side === "ours" ? "yours" : "theirs"} for ${baseName(path)}`,
+    side === "ours" ? tx`Accept yours for ${baseName(path)}` : tx`Accept theirs for ${baseName(path)}`,
     async () => {
       const v = await call(commands.vcsConflictVersions(path));
       const text = side === "ours" ? v.ours : v.theirs;
@@ -43,7 +43,7 @@ async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
       }
       await call(commands.vcsStage([path]));
     },
-    { success: `${baseName(path)} resolved` },
+    { success: tx`${baseName(path)} resolved` },
   );
 }
 
@@ -126,7 +126,7 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
           }}
           renderItem={(f) => (
             <span className={styles.fileRow} style={{ flex: 1, padding: 0 }}>
-              <Icon name={fileIconName(baseName(f.path))} size={14} />
+              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
               <span className={styles.fileName} style={{ color: "var(--vcs-conflict)" }}>
                 {baseName(f.path)}
               </span>

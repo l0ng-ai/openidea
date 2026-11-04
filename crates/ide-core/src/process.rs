@@ -53,6 +53,31 @@ pub fn kill_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// [`kill_tree`] for a child known by its process id (a `tokio` child): `SIGKILL` to its
+/// process group (spawn it with [`own_group`]) or `taskkill /T /F`. Call it before the child
+/// is reaped, so the id still names it. The child itself is left to its owner to kill and reap.
+pub fn kill_tree_of(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall; see `signal_group`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut taskkill = Command::new("taskkill");
+        prepare(&mut taskkill)
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = taskkill.status();
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,
@@ -98,12 +123,14 @@ fn taskkill_tree(child: &Child) {
 /// inherits them loads the image's (older) libraries and plugins next to its own, e.g.
 /// `curl: symbol lookup error ... nghttp2_...`. The IDE process keeps its environment
 /// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables and
-/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]).
-/// Variables the call site has already set are kept. A no-op outside an AppImage
-/// without an overlay.
+/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]),
+/// and the login shell's variables this process lacks ([`shell_env`]: an app started from
+/// Finder/Dock doesn't have what rc files export, such as `GOPATH`, `JAVA_HOME` or
+/// `MAVEN_OPTS`). Variables the call site has already set are kept.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
     let fixes = child_env_changes();
-    if fixes.is_empty() {
+    let shell: Vec<_> = shell_env().collect();
+    if fixes.is_empty() && shell.is_empty() {
         return cmd;
     }
     let explicit: Vec<OsString> = cmd.get_envs().map(|(k, _)| k.to_owned()).collect();
@@ -112,6 +139,9 @@ pub fn host_env(cmd: &mut Command) -> &mut Command {
             Some(v) => cmd.env(key, v),
             None => cmd.env_remove(key),
         };
+    }
+    for (key, value) in shell.into_iter().filter(|(k, _)| !explicit.contains(k)) {
+        cmd.env(key, value);
     }
     cmd
 }
@@ -129,12 +159,13 @@ pub fn host_vars() -> impl Iterator<Item = (OsString, OsString)> {
     apply_changes(std::env::vars_os().collect(), &child_env_changes()).into_iter()
 }
 
-/// [`std::env::var_os`] as a child should see it (see [`host_env`]).
+/// [`std::env::var_os`] as a child should see it (see [`host_env`]), the login shell's value
+/// included when this process lacks the variable.
 pub fn host_var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
     let key = key.as_ref();
     match child_env_changes().into_iter().find(|(k, _)| k == key) {
         Some((_, fixed)) => fixed,
-        None => std::env::var_os(key),
+        None => std::env::var_os(key).or_else(|| shell_env().find(|(k, _)| k == key).map(|(_, v)| v)),
     }
 }
 
@@ -395,6 +426,28 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_of_reaches_what_the_child_started() {
+        use std::io::BufRead;
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 30 & echo $!; wait"]).stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let grandchild: libc::pid_t = line.trim().parse().unwrap();
+        let alive = |pid: libc::pid_t| unsafe { libc::kill(pid, 0) } == 0;
+        assert!(alive(grandchild));
+        kill_tree_of(child.id());
+        let _ = child.wait();
+        // Reparented to init once its parent is gone, which reaps it.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !alive(grandchild)
+        });
+        assert!(gone, "the grandchild {grandchild} survived");
+    }
+
     #[cfg(windows)]
     #[test]
     fn user_path_reads_the_current_users_path() {
@@ -525,6 +578,15 @@ mod tests {
         assert_eq!(get("HOME"), Some(None));
         let shell: Vec<_> = shell_env().map(|(k, _)| k).collect();
         assert_eq!(shell, [OsString::from("OPENIDEA_OVERLAY_B")]);
+        // Every child gets what the login shell exports and the IDE process lacks (a Finder
+        // launch: `GOPATH`, `JAVA_HOME`...), unless the call site sets it.
+        assert_eq!(get("OPENIDEA_OVERLAY_B"), Some(Some("b".into())));
+        let mut own = Command::new("true");
+        own.env("OPENIDEA_OVERLAY_B", "call site");
+        host_env(&mut own);
+        let value = own.get_envs().find(|(n, _)| *n == "OPENIDEA_OVERLAY_B").and_then(|(_, v)| v);
+        assert_eq!(value, Some(OsStr::new("call site")));
+        assert_eq!(host_var_os("OPENIDEA_OVERLAY_B"), Some("b".into()));
         assert_eq!(host_var_os("PATH"), Some("/reloaded".into()));
         assert!(host_vars().all(|(k, _)| k != "HOME"));
         assert!(host_vars().any(|(k, v)| k == "OPENIDEA_OVERLAY_A" && v == "project"));

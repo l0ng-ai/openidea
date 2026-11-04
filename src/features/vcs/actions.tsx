@@ -27,7 +27,9 @@ import {
 import { setAmend, useCommit } from "./commitStore";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
-import { openDiff, workingDiffData } from "./diffInput";
+import { openDiff, withChain, workingDiffData } from "./diffInput";
+import { buildChangeTree, changeGroupPaths } from "./changes";
+import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
@@ -45,7 +47,7 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { refreshNow, repoName } from "./store";
+import { refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -325,7 +327,23 @@ export function registerVcsActions(): () => void {
           return;
         }
         if (await showDirectoryWorkingDiff(paths)) return;
-        for (const p of paths.slice(0, 5)) await openDiff(workingDiffData(p, line), { preview: paths.length === 1 });
+        const state = useVcs.getState();
+        const tree = buildChangeTree(
+          state.status,
+          state.root ?? "",
+          useCommit.getState().groupByDir,
+          useChangelists.getState().state,
+          state.roots,
+          useCommit.getState().groupByStaging,
+        );
+        for (const path of paths.slice(0, 5)) {
+          const siblings = changeGroupPaths(tree, path);
+          const items = siblings.map((path) => workingDiffData(path));
+          await openDiff(
+            { ...withChain(items, Math.max(0, siblings.indexOf(path))), line },
+            { preview: paths.length === 1 },
+          );
+        }
       },
     },
     {

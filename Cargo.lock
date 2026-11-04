@@ -4050,7 +4050,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-agent"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4073,7 +4073,7 @@ dependencies = [
 
 [[package]]
 name = "ide-analysis"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ast-grep-core",
  "ide-core",
@@ -4087,7 +4087,7 @@ dependencies = [
 
 [[package]]
 name = "ide-build"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dirs 6.0.0",
  "dunce",
@@ -4102,7 +4102,7 @@ dependencies = [
 
 [[package]]
 name = "ide-clipboard"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -4111,7 +4111,7 @@ dependencies = [
 
 [[package]]
 name = "ide-core"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4128,7 +4128,7 @@ dependencies = [
 
 [[package]]
 name = "ide-coverage"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4142,7 +4142,7 @@ dependencies = [
 
 [[package]]
 name = "ide-dap"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "ide-jsonrpc",
@@ -4160,14 +4160,17 @@ dependencies = [
 
 [[package]]
 name = "ide-db"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "bb8",
  "dirs 6.0.0",
  "futures",
  "ide-core",
+ "ide-http",
  "ide-ssh",
  "parking_lot",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "specta",
@@ -4178,11 +4181,12 @@ dependencies = [
  "tokio-util",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "ide-docker"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "serde",
@@ -4194,8 +4198,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-extension"
+version = "0.1.35"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "ed25519-dalek",
+ "ide-core",
+ "parking_lot",
+ "semver",
+ "serde",
+ "serde_json",
+ "specta",
+ "specta-typescript",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "zip",
+]
+
+[[package]]
 name = "ide-fonts"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
@@ -4207,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "ide-github"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "ide-vcs",
@@ -4220,11 +4244,15 @@ dependencies = [
 
 [[package]]
 name = "ide-host"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
+ "base64 0.22.1",
+ "criterion",
  "dirs 6.0.0",
  "dunce",
  "encoding_rs",
+ "getrandom 0.3.4",
+ "globset",
  "ide-agent",
  "ide-analysis",
  "ide-build",
@@ -4232,12 +4260,15 @@ dependencies = [
  "ide-coverage",
  "ide-dap",
  "ide-db",
+ "ide-docker",
+ "ide-extension",
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
  "ide-notebook",
+ "ide-plugin",
  "ide-remote",
  "ide-run",
  "ide-sdk",
@@ -4251,23 +4282,30 @@ dependencies = [
  "ide-vcs",
  "ide-vfs",
  "ide-workspace",
+ "ignore",
  "parking_lot",
+ "quick-xml",
+ "regex-syntax",
+ "reqwest",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
  "specta",
  "specta-typescript",
  "tempfile",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
 name = "ide-http"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4285,7 +4323,7 @@ dependencies = [
 
 [[package]]
 name = "ide-index"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "blake3",
  "criterion",
@@ -4307,7 +4345,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jsonrpc"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "encoding_rs",
  "futures",
@@ -4323,11 +4361,12 @@ dependencies = [
 
 [[package]]
 name = "ide-language"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "blake3",
  "criterion",
  "ide-core",
+ "ide-extension",
  "ide-text",
  "parking_lot",
  "regex-lite",
@@ -4378,7 +4417,7 @@ dependencies = [
 
 [[package]]
 name = "ide-lsp"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dunce",
  "futures",
@@ -4399,11 +4438,12 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
+ "zip",
 ]
 
 [[package]]
 name = "ide-notebook"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "futures",
  "ide-core",
@@ -4426,17 +4466,19 @@ dependencies = [
 
 [[package]]
 name = "ide-plugin"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
+ "blake3",
  "ide-core",
- "ide-language",
+ "ide-extension",
  "parking_lot",
+ "semver",
  "serde",
  "serde_json",
  "specta",
  "tempfile",
  "thiserror 2.0.21",
- "toml 0.9.12+spec-1.1.0",
+ "tokio",
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
@@ -4444,7 +4486,7 @@ dependencies = [
 
 [[package]]
 name = "ide-profiler"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4457,7 +4499,7 @@ dependencies = [
 
 [[package]]
 name = "ide-remote"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "globset",
  "ide-core",
@@ -4474,7 +4516,7 @@ dependencies = [
 
 [[package]]
 name = "ide-run"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4497,7 +4539,7 @@ dependencies = [
 
 [[package]]
 name = "ide-sdk"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dunce",
  "ide-core",
@@ -4516,7 +4558,7 @@ dependencies = [
 
 [[package]]
 name = "ide-search"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "criterion",
  "globset",
@@ -4536,7 +4578,7 @@ dependencies = [
 
 [[package]]
 name = "ide-spell"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4549,7 +4591,7 @@ dependencies = [
 
 [[package]]
 name = "ide-ssh"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dirs 6.0.0",
  "flate2",
@@ -4571,7 +4613,7 @@ dependencies = [
 
 [[package]]
 name = "ide-syntax"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4586,7 +4628,7 @@ dependencies = [
 
 [[package]]
 name = "ide-terminal"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "libc",
@@ -4599,7 +4641,7 @@ dependencies = [
 
 [[package]]
 name = "ide-text"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "criterion",
  "ide-core",
@@ -4611,7 +4653,7 @@ dependencies = [
 
 [[package]]
 name = "ide-tools"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "flate2",
  "hex",
@@ -4632,7 +4674,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vcs"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4651,7 +4693,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vfs"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "chardetng",
  "dunce",
@@ -4673,7 +4715,7 @@ dependencies = [
 
 [[package]]
 name = "ide-web"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "ide-core",
  "open",
@@ -4689,7 +4731,7 @@ dependencies = [
 
 [[package]]
 name = "ide-workspace"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "blake3",
  "dunce",
@@ -6242,12 +6284,14 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "block2 0.6.2",
  "dirs 6.0.0",
  "dunce",
+ "gtk",
  "ide-agent",
  "ide-analysis",
  "ide-build",
@@ -6257,6 +6301,7 @@ dependencies = [
  "ide-dap",
  "ide-db",
  "ide-docker",
+ "ide-extension",
  "ide-fonts",
  "ide-github",
  "ide-host",
@@ -6288,6 +6333,8 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-web-kit 0.3.2",
  "parking_lot",
+ "percent-encoding",
+ "security-framework",
  "serde",
  "serde_json",
  "specta",
@@ -7189,6 +7236,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -7561,6 +7609,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "saa"
 version = "5.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7881,6 +7935,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

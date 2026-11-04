@@ -44,6 +44,18 @@ describe("Collapse Linear Branches", () => {
     expect(rows[2]!.up.some((s) => s.dashed)).toBe(true);
   });
 
+  it("keeps the dashed links of a filtered log", () => {
+    // A user filter already linked y past hidden commits.
+    const commits = [
+      c("z", ["y"], ["main"]),
+      { ...c("y", ["x"], ["tag: v2"]), dashed: [true] },
+      c("x", [], ["tag: v1"]),
+    ];
+    const { graph } = collapseLinear(commits, new Set());
+    expect(graph.find((g) => g.id === "y")).toEqual({ id: "y", parents: ["x"], dashed: [true] });
+    expect(computeGraph(commits).rows[1]!.down.some((s) => s.dashed)).toBe(true);
+  });
+
   it("keeps referenced and kept commits", () => {
     const commits = [c("d", ["c"]), c("c", ["b"], ["tag: v1"]), c("b", ["a"]), c("a")];
     expect(collapseLinear(commits, new Set()).commits.map((x) => x.id)).toEqual(["d", "c", "a"]);

@@ -132,6 +132,16 @@ describe("agent unread activity", () => {
     expect(backend.notify).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the latest usage limits per provider without marking anything unread", () => {
+    const fiveHour = (usedPercent: number) => [{ window: "five_hour", usedPercent, resetsMs: null }];
+    emit({ type: "limits", provider: "claude", limits: fiveHour(10) });
+    emit({ type: "limits", provider: "codex", limits: fiveHour(50) });
+    emit({ type: "limits", provider: "claude", limits: fiveHour(12) });
+    expect(useAgents.getState().limits.get("claude")).toEqual(fiveHour(12));
+    expect(useAgents.getState().limits.get("codex")).toEqual(fiveHour(50));
+    expect(useAgents.getState().unread.size).toBe(0);
+  });
+
   it("ignores user messages, thoughts, empty replies and subagent streaming", () => {
     const entries: AgentEntry[] = [
       { type: "user", text: "Do this", attachments: [] },

@@ -70,6 +70,8 @@ export function copySelectionOnKeyDown(
     | "preventDefault"
     | "stopPropagation"
   >,
+  /** Text to copy instead of `selection.toString()`, for views that do not mount all their text. */
+  textOf: (selection: Selection) => string = (selection) => selection.toString(),
 ): boolean {
   if (e.defaultPrevented || e.nativeEvent.isComposing || e.altKey || e.shiftKey) return false;
   const copy =
@@ -87,6 +89,6 @@ export function copySelectionOnKeyDown(
     return false;
   e.preventDefault();
   e.stopPropagation();
-  void copyText(selection.toString());
+  void copyText(textOf(selection));
   return true;
 }

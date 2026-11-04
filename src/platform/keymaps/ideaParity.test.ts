@@ -21,6 +21,8 @@ describe("IDEA keymap parity", () => {
     ["vcs.branches", [], ["Ctrl+Shift+`"]],
     // Git.CreateNewBranch shares Inline's shortcut.
     ["vcs.newBranch", ["Meta+Alt+N"], ["Ctrl+Alt+N"]],
+    // ChangesView.AddUnversioned; on Windows the diff viewer's Apply Right Side wins while a diff is focused.
+    ["vcs.addToVcs", ["Meta+Alt+A"], ["Ctrl+Alt+A"]],
     ["refactor.inline", ["Meta+Alt+N"], ["Ctrl+Alt+N"]],
     ["debug.resume", ["Meta+Alt+R", "F9"], ["F9"]],
     ["code.quickDefinition", ["Alt+Space", "Meta+Y"], ["Ctrl+Shift+I"]],
@@ -104,5 +106,6 @@ describe("IDEA keymap parity", () => {
     order(km, "find.inFile", "vcs.log.goToRef");
     // Inline (text editor only) wins over New Branch.
     order(km, "vcs.newBranch", "refactor.inline");
+    order(km, "vcs.addToVcs", "diff.applyRightSide");
   });
 });

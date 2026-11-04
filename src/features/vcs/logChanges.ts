@@ -14,6 +14,7 @@ import { baseName } from "./model";
 import { readWorkingText, runOp, saveAll, writeFileText } from "./ops";
 import { reportApply } from "./shelf";
 import { currentRepoRoot } from "./store";
+import { repositoryPath } from "./repositoryPaths";
 import { confirmDialog } from "./dialogs";
 
 /** A file of the pane, with the revisions holding its content before and after the change. */
@@ -109,7 +110,7 @@ export function filterPatch(patch: string, paths: ReadonlySet<string>): string {
 
 /** Absolute path of a repository-relative one. */
 export function absolutePath(rel: string, root = currentRepoRoot()): string {
-  return root ? `${root}/${rel}` : rel;
+  return repositoryPath(root, rel);
 }
 
 /** Pane state the changed-files actions work on when they get no argument. */
@@ -183,7 +184,7 @@ export async function getFromRevision(changes: readonly LogChange[]) {
   if (!ok) return;
   await saveAll();
   await runOp(
-    "Get from Revision",
+    tx("Get from Revision"),
     async () => {
       for (const c of changes) {
         const path = absolutePath(c.path, c.repo);
@@ -210,7 +211,7 @@ export async function revertSelectedChanges(changes: readonly LogChange[], commi
   const ids = [...commits].reverse().map((c) => c.id);
   const paths = new Set(changes.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path])));
   const outcome = await runOp(
-    "Revert selected changes",
+    tx("Revert selected changes"),
     async () => {
       const patch = filterPatch(
         await call(

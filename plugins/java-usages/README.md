@@ -57,7 +57,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.2.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.3.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -70,6 +70,11 @@ and compare SHA-256. The prior 1.1.1 output was
 `1e569939cba22c7db6e2c9b53de2a4c10ccaabe762a51427119a04af3d974ae4`.
 Version 1.2.0 adds the configuration command; its reproducible SHA-256 is
 `9140f1d2ecf27eadfe66b40a17daa18a08a65927ebef79456ba55d486ce5eeba`.
+Version 1.2.1 keeps the configuration snapshot across editor open/close, saves of
+unrelated content and non-Java resource changes; its reproducible SHA-256 is
+`cbae3e3a0bcf2818b4cc9d98998bd9b81f92e1ae7803dc757134485f9776a4e1`.
+Version 1.3.0 adds the class-hierarchy refactoring commands; its reproducible SHA-256 is
+`cca4cc385ace286111730d2a6164333b8958d74d69631548eadca8863255c24a`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
@@ -98,6 +103,7 @@ not rebuild this jar. A maintainer must:
 python3 plugins/java-usages/tests/verify.py /path/to/jdtls /path/to/lombok.jar
 python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
 OPENIDEA_USAGES_INDEX_STRESS=1 python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
+python3 plugins/java-usages/tests/hierarchy.py /path/to/jdtls
 ```
 
 The harnesses select the JDT LS configuration for the current platform. The first
@@ -108,6 +114,24 @@ method references, receiver/array reads and a real cancellation response (`-3280
 
 Use the actual desktop app to check read/write toggles, mutual toggle behavior,
 Find transfer, persistence and unfiltered non-Java counts with the same fixture.
+
+`hierarchy.py` runs Pull Members Up and Push Members Down: member and destination
+listing, moving, declaring abstract, pulling up to an interface, conflicts reported
+before any change, and a class without supertypes. Each edit is applied to a copy of
+the fixture and compiled with javac.
+
+## Class-hierarchy refactorings
+
+`openidea.java.hierarchy.members(uri, line, column, kind)` describes the class at the
+position for `kind` `pullUp` or `pushDown`: its movable members (handle id, label,
+kind, preselected, can be declared abstract) and the destination supertypes, or the
+direct subtypes the members are pushed into. A position on a member preselects it.
+`openidea.java.hierarchy.refactor(uri, line, column, kind, target, choices)` runs
+JDT's `PullUpRefactoringProcessor` / `PushDownRefactoringProcessor` with the chosen
+`{id, abstract}` members and returns `{problems, edit}`. Nothing is applied by the
+server; the app shows the problems, then applies the edit as one undoable change.
+A method pulled up to an interface is always declared there, as in JDT's wizard.
+Either command answers `{refused: reason}` when the position can't be refactored.
 
 ## Review and manual reproduction
 
@@ -126,6 +150,11 @@ This is an app-owned JDT LS extension, not a standard LSP feature. It uses:
   objects (`isIncludeAccessors`).
 - `JDTUtils.resolveTypeRoot`, `findElementAtSelection`.
 - `org.eclipse.jdt.internal.corext.codemanipulation.GetterSetterUtil`.
+- `org.eclipse.jdt.internal.corext.refactoring.structure.PullUpRefactoringProcessor`,
+  `PushDownRefactoringProcessor`, `RefactoringAvailabilityTesterCore`, `JdtFlags`,
+  `JavaElementLabelsCore`, `PreferenceManager.getCodeGenerationSettings`,
+  `JsonRpcHelpers.toOffset`, `JDTUtils.resolveCompilationUnit` and
+  `ChangeUtil.convertToWorkspaceEdit`.
 - Public JDT model/DOM APIs for exact target identity and source-expression context.
 
 The fingerprint protects native target discovery, not all binary compatibility.

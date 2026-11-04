@@ -4,15 +4,47 @@
  * (platform/remote.ts).
  */
 import { registerActions } from "@/platform/actions";
-import { disconnectRemote } from "@/platform/remote";
-import { maybeEditorService, registerOverlay } from "@/workbench/contributions";
+import { disconnectRemote, useRemote } from "@/platform/remote";
+import { lazyComponent } from "@/ui";
+import { maybeEditorService, registerOverlay, registerToolWindow } from "@/workbench/contributions";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
 import { reloadEnvironment } from "./environment";
 import { closeConnectDialog, openConnectDialog } from "./model";
+import { restorePorts, usePorts } from "./ports";
+
+/** The Ports tool window, while this window is connected to a remote host. */
+function trackPortsWindow(): () => void {
+  let off: (() => void) | null = null;
+  const sync = (connected: boolean) => {
+    if (connected && !off) {
+      void restorePorts();
+      off = registerToolWindow({
+        id: "remote.ports",
+        title: "Ports",
+        icon: "web",
+        anchor: "bottom",
+        order: 40,
+        stripe: "onUse",
+        component: lazyComponent(() => import("./PortsView").then((m) => m.PortsView)),
+      });
+    } else if (!connected && off) {
+      off();
+      off = null;
+      usePorts.setState({ ports: [] });
+    }
+  };
+  sync(useRemote.getState().session !== null);
+  const unsubscribe = useRemote.subscribe((s) => sync(s.session !== null));
+  return () => {
+    unsubscribe();
+    off?.();
+  };
+}
 
 export function activate(): () => void {
   const disposers = [
+    trackPortsWindow(),
     registerOverlay({ id: "remote.connect", component: ConnectHost }),
     registerActions([
       {

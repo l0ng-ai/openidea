@@ -79,7 +79,7 @@ async function performCheckout(
   let options: CheckoutOptions = { mode: "normal", diverged: null };
   for (;;) {
     const opts = options;
-    const outcome = await runOp(`Checkout ${rev}`, () => call(commands.vcsCheckout(repo, rev, false, opts)));
+    const outcome = await runOp(tx`Checkout ${rev}`, () => call(commands.vcsCheckout(repo, rev, false, opts)));
     if (!outcome) return false;
     // `success` may name the branch now checked out.
     if (outcome.kind === "done" || outcome.kind === "conflicts") await refreshNow();
@@ -145,11 +145,18 @@ export async function checkoutBranch(name: string) {
 /** New Branch: creates a branch from HEAD (or `from`) and, by default, checks it out. */
 export async function newBranch(from?: string) {
   const repo = currentRepo();
-  const suggestion = from ? (from.includes("/") ? shortRemoteName(from) : `${from}-copy`) : "";
+  // IDEA opens the dialog with a suggestion instead of an empty field: a
+  // remote's name without the prefix, the source ref as `-copy`, or the
+  // current branch for a plain New Branch from HEAD.
+  const suggestion = from
+    ? from.includes("/")
+      ? shortRemoteName(from)
+      : `${from}-copy`
+    : (useVcs.getState().branch?.head ?? "");
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: "New branch name:",
-    initial: from && from.includes("/") && !validateBranchName(suggestion) ? suggestion : "",
+    initial: suggestion && !validateBranchName(suggestion) ? suggestion : "",
     mono: true,
     okLabel: "Create",
     validate: validateBranchName,
@@ -160,7 +167,7 @@ export async function newBranch(from?: string) {
   const previous = useVcs.getState().branch?.head;
   if (checkout) await saveAll();
   const create = () => call(commands.vcsCreateBranch(repo, r.value, from ?? null, checkout));
-  const ok = await runOp(`Create branch ${r.value}`, create, {
+  const ok = await runOp(tx`Create branch ${r.value}`, create, {
     success: checkout ? `Created and checked out ${r.value}` : `Created branch ${r.value}`,
   });
   if (ok !== undefined && checkout) {
@@ -198,12 +205,11 @@ export async function openConflictsInstead(): Promise<boolean> {
   return true;
 }
 
-export async function mergeIntoCurrent(branch: string) {
-  const repo = currentRepo();
-  const current = useVcs.getState().branch?.head ?? "HEAD";
+export async function mergeIntoCurrent(branch: string, repo: string | null = currentRepo()) {
+  const current = (repo === currentRepo() ? useVcs.getState().branch?.head : null) ?? "HEAD";
   await saveAll();
-  await runOp(`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(repo, branch)), {
-    success: `Merged ${branch} into ${current}`,
+  await runOp(tx`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(repo, branch)), {
+    success: tx`Merged ${branch} into ${current}`,
     errorActions: conflictActions,
     onError: openConflictsInstead,
   });
@@ -213,8 +219,8 @@ export async function rebaseOnto(branch: string) {
   const repo = currentRepo();
   const current = useVcs.getState().branch?.head ?? "HEAD";
   await saveAll();
-  await runOp(`Rebase ${current} onto ${branch}`, () => call(commands.vcsRebase(repo, branch)), {
-    success: `Rebased ${current} onto ${branch}`,
+  await runOp(tx`Rebase ${current} onto ${branch}`, () => call(commands.vcsRebase(repo, branch)), {
+    success: tx`Rebased ${current} onto ${branch}`,
     errorActions: conflictActions,
     onError: openConflictsInstead,
   });
@@ -232,8 +238,8 @@ export async function renameBranch(name: string) {
   });
   if (!r) return;
   const to = r.value.trim();
-  const ok = await runOp(`Rename branch ${name}`, () => call(commands.vcsRenameBranch(repo, name, to)), {
-    success: `Renamed branch ${name} to ${to}`,
+  const ok = await runOp(tx`Rename branch ${name}`, () => call(commands.vcsRenameBranch(repo, name, to)), {
+    success: tx`Renamed branch ${name} to ${to}`,
   });
   if (ok !== undefined) {
     try {
@@ -251,7 +257,7 @@ export async function renameBranch(name: string) {
  */
 export async function deleteBranch(name: string) {
   const repo = currentRepo();
-  const deleted = await runOp(`Delete branch ${name}`, () => call(commands.vcsDeleteBranch(repo, name)));
+  const deleted = await runOp(tx`Delete branch ${name}`, () => call(commands.vcsDeleteBranch(repo, name)));
   if (!deleted) return;
   const tracked = deleted.upstream;
   const otherTracking = useVcs.getState().branches.some((b) => !b.remote && b.name !== name && b.upstream === tracked);
@@ -268,8 +274,8 @@ export async function deleteBranch(name: string) {
         label: "Restore",
         run: () => {
           done();
-          void runOp(`Restore branch ${name}`, () => call(commands.vcsRestoreBranch(repo, deleted)), {
-            success: `Restored branch ${name}`,
+          void runOp(tx`Restore branch ${name}`, () => call(commands.vcsRestoreBranch(repo, deleted)), {
+            success: tx`Restored branch ${name}`,
           });
         },
       },
@@ -361,7 +367,7 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: tx`New branch name (in ${roots.length} repositories):`,
-    initial: from?.includes("/") ? shortRemoteName(from) : "",
+    initial: from ? (from.includes("/") ? shortRemoteName(from) : "") : (useVcs.getState().branch?.head ?? ""),
     mono: true,
     okLabel: "Create",
     validate: validateBranchName,
@@ -373,9 +379,13 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   await eachRepo(
     roots,
     async (root) =>
-      (await runOp(`Create branch ${name}`, () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked)), {
-        refresh: false,
-      })) !== undefined,
+      (await runOp(
+        tx`Create branch ${name}`,
+        () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked)),
+        {
+          refresh: false,
+        },
+      )) !== undefined,
     r.checked ? `Created and checked out ${name}` : `Created branch ${name}`,
   );
 }
@@ -386,7 +396,7 @@ export async function mergeInRepos(branch: string, roots: readonly string[]) {
   await eachRepo(
     roots,
     async (root) =>
-      (await runOp(`Merge ${branch} (${repoName(root)})`, () => call(commands.vcsMerge(root, branch)), {
+      (await runOp(tx`Merge ${branch} (${repoName(root)})`, () => call(commands.vcsMerge(root, branch)), {
         refresh: false,
         errorActions: conflictActions,
         onError: openConflictsInstead,
@@ -401,7 +411,7 @@ export async function rebaseInRepos(branch: string, roots: readonly string[]) {
   await eachRepo(
     roots,
     async (root) =>
-      (await runOp(`Rebase onto ${branch} (${repoName(root)})`, () => call(commands.vcsRebase(root, branch)), {
+      (await runOp(tx`Rebase onto ${branch} (${repoName(root)})`, () => call(commands.vcsRebase(root, branch)), {
         refresh: false,
         errorActions: conflictActions,
         onError: openConflictsInstead,
@@ -422,7 +432,7 @@ export async function deleteInRepos(name: string, roots: readonly string[]) {
   await eachRepo(
     roots,
     async (root) =>
-      (await runOp(`Delete branch ${name} (${repoName(root)})`, () => call(commands.vcsDeleteBranch(root, name)), {
+      (await runOp(tx`Delete branch ${name} (${repoName(root)})`, () => call(commands.vcsDeleteBranch(root, name)), {
         refresh: false,
       })) !== undefined,
     `Deleted branch ${name}`,

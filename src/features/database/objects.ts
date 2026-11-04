@@ -6,6 +6,7 @@
 import type { DbColumnInfo, DbDriver } from "@/platform/ipc";
 
 export function quoteIdent(driver: DbDriver, name: string): string {
+  if (driver === "clickhouse") return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   if (driver === "mysql") return `\`${name.replace(/`/g, "``")}\``;
   if (driver === "sqlServer") return `[${name.replace(/]/g, "]]")}]`;
   return `"${name.replace(/"/g, '""')}"`;
@@ -13,7 +14,12 @@ export function quoteIdent(driver: DbDriver, name: string): string {
 
 /** Quotes only when needed: lower-case (PostgreSQL) / plain words stay bare, like IDEA's generated SQL. */
 export function ident(driver: DbDriver, name: string): string {
-  const plain = driver === "postgres" ? /^[a-z_][a-z0-9_$]*$/ : /^[A-Za-z_][A-Za-z0-9_$]*$/;
+  const plain =
+    driver === "postgres"
+      ? /^[a-z_][a-z0-9_$]*$/
+      : driver === "clickhouse"
+        ? /^[A-Za-z_][A-Za-z0-9_]*$/
+        : /^[A-Za-z_][A-Za-z0-9_$]*$/;
   return plain.test(name) && !RESERVED.has(name.toUpperCase()) ? name : quoteIdent(driver, name);
 }
 
@@ -83,7 +89,8 @@ export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string 
       if (driver === "postgres") return `alter view ${q} rename to ${ident(driver, to)};`;
       return `rename table ${q} to ${qualifiedName(driver, o.schema, to)};`;
     default:
-      if (driver === "mysql") return `rename table ${q} to ${qualifiedName(driver, o.schema, to)};`;
+      if (driver === "mysql" || driver === "clickhouse")
+        return `rename table ${q} to ${qualifiedName(driver, o.schema, to)};`;
       return `alter table ${q} rename to ${ident(driver, to)};`;
   }
 }
@@ -94,7 +101,12 @@ export interface DropOptions {
   cascade: boolean;
 }
 
-export const canDrop = (driver: DbDriver, o: DbObjectRef) => !(o.kind === "schema" && driver === "sqlite");
+export const canDrop = (driver: DbDriver, o: DbObjectRef) =>
+  driver === "clickhouse"
+    ? ["table", "view", "materializedView", "column", "schema"].includes(o.kind)
+    : !(o.kind === "schema" && driver === "sqlite");
+
+export const canModifyTable = (driver: DbDriver) => driver !== "clickhouse";
 
 /** IDEA's Confirm Drop preview. */
 export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): string {
@@ -108,8 +120,9 @@ export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): st
         return `drop index ${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")};`;
       return `drop index ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
     case "schema":
-      return `drop ${driver === "mysql" ? "database" : "schema"} ${ifExists}${ident(driver, o.name)}${cascade};`;
+      return `drop ${driver === "mysql" || driver === "clickhouse" ? "database" : "schema"} ${ifExists}${ident(driver, o.name)}${cascade};`;
     case "materializedView":
+      if (driver === "clickhouse") return `drop table ${ifExists}${qualifiedName(driver, o.schema, o.name)};`;
       return `drop materialized view ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
     case "function":
     case "procedure": {
@@ -134,7 +147,7 @@ export function truncateSql(
 ): string {
   const q = qualifiedName(driver, schema, table);
   if (driver === "sqlite") return `delete from ${q};`;
-  if (driver === "mysql" || driver === "sqlServer") return `truncate table ${q};`;
+  if (driver === "mysql" || driver === "sqlServer" || driver === "clickhouse") return `truncate table ${q};`;
   return `truncate table ${q}${opts.restartIdentity ? " restart identity" : ""}${opts.cascade ? " cascade" : ""};`;
 }
 
@@ -169,9 +182,14 @@ export function scriptSql(
       return `insert into ${q} (${names.join(", ")})\nvalues (${names.map(() => "?").join(", ")});\n`;
     case "update": {
       const set = columns.filter((c) => !c.primaryKey).map((c) => `${ident(driver, c.name)} = ?`);
+      if (driver === "clickhouse") {
+        if (!set.length) throw new Error("ClickHouse sorting key columns cannot be updated.");
+        return `alter table ${q}\nupdate ${set.join(",\n       ")}\nwhere 1 = 0;\n`;
+      }
       return `update ${q}\nset ${(set.length ? set : names.map((n) => `${n} = ?`)).join(",\n    ")}\nwhere ${where};\n`;
     }
     case "delete":
+      if (driver === "clickhouse") return `alter table ${q}\ndelete\nwhere 1 = 0;\n`;
       return `delete\nfrom ${q}\nwhere ${where};\n`;
   }
 }
@@ -205,9 +223,9 @@ export function draftOf(c: DbColumnInfo, key: number): ColumnDraft {
 }
 
 function columnDefinition(driver: DbDriver, c: ColumnDraft): string {
-  let s = `${ident(driver, c.name)} ${c.dataType.trim() || (driver === "sqlite" ? "TEXT" : "text")}`;
+  let s = `${ident(driver, c.name)} ${c.dataType.trim() || (driver === "clickhouse" ? "String" : driver === "sqlite" ? "TEXT" : "text")}`;
   if (c.default.trim()) s += ` default ${c.default.trim()}`;
-  if (c.notNull) s += " not null";
+  if (c.notNull && driver !== "clickhouse") s += " not null";
   return s;
 }
 
@@ -221,8 +239,8 @@ export function createTableSql(
   const live = columns.filter((c) => !c.dropped && c.name.trim());
   const keys = live.filter((c) => c.primaryKey).map((c) => ident(driver, c.name));
   const items = live.map((c) => `    ${columnDefinition(driver, c)}`);
-  if (keys.length) items.push(`    primary key (${keys.join(", ")})`);
-  return `create table ${qualifiedName(driver, schema, name)}\n(\n${items.join(",\n")}\n);\n`;
+  if (keys.length && driver !== "clickhouse") items.push(`    primary key (${keys.join(", ")})`);
+  return `create table ${qualifiedName(driver, schema, name)}\n(\n${items.join(",\n")}\n)${driver === "clickhouse" ? "\nengine = MergeTree\norder by tuple()" : ""};\n`;
 }
 
 /** Whether `alterTableSql` can express changing column `c` (SQLite only renames, adds and drops). */
@@ -242,6 +260,7 @@ export function alterTableSql(
   name: string,
   columns: readonly ColumnDraft[],
 ): string[] {
+  if (!canModifyTable(driver)) return [];
   const out: string[] = [];
   const q = () => qualifiedName(driver, schema, table);
   for (const c of columns) {

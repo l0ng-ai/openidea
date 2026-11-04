@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
-import { _setSchemeSource, schemeCss, schemeTokens } from "./colorScheme";
+import { _setSchemeSource, schemeAfterThemeChange, schemeCss, schemeTokens } from "./colorScheme";
 import { fontWeightVars, validateEditorExtras } from "./editorSettings";
 import type { Settings } from "./ipc";
 import { useProject } from "./project";
@@ -62,6 +62,52 @@ describe("color schemes", () => {
     } finally {
       dispose();
       delete root.dataset.pluginTheme;
+      useProject.setState({ settings: previous });
+    }
+  });
+
+  it("switches a chosen scheme of the other kind back to the theme's own when the theme turns light or dark", async () => {
+    expect(schemeAfterThemeChange("one-dark", "light")).toBe("theme-default");
+    expect(schemeAfterThemeChange("solarized-light", "light")).toBeNull();
+    expect(schemeAfterThemeChange("theme-default", "light")).toBeNull();
+    const customs = { "custom-night": { name: "Night", parent: "dark" as const, attributes: {} } };
+    expect(schemeAfterThemeChange("custom-night", "light", customs)).toBe("theme-default");
+    expect(schemeAfterThemeChange("custom-night", "dark", customs)).toBeNull();
+
+    const root = document.documentElement;
+    root.dataset.theme = "dark";
+    const previous = useProject.getState().settings;
+    const scheme = () => useProject.getState().settings?.editor?.colorScheme;
+    useProject.setState({ settings: { editor: { colorScheme: "one-dark" } } as unknown as Settings });
+    const dispose = installColorScheme();
+    try {
+      root.dataset.theme = "light";
+      await Promise.resolve();
+      expect(scheme()).toBe("theme-default");
+      // A dark scheme chosen under the light theme stays until the theme changes again.
+      useProject.setState({ settings: { editor: { colorScheme: "dark" } } as unknown as Settings });
+      root.dataset.colorTheme = "solarized-light";
+      await Promise.resolve();
+      expect(scheme()).toBe("dark");
+      root.dataset.theme = "dark";
+      await Promise.resolve();
+      expect(scheme()).toBe("dark");
+      // A scheme chosen in the same change as the theme (one Apply) goes with it.
+      await new Promise((r) => setTimeout(r));
+      useProject.setState({ settings: { editor: { colorScheme: "solarized-dark" } } as unknown as Settings });
+      root.dataset.theme = "light";
+      await Promise.resolve();
+      expect(scheme()).toBe("solarized-dark");
+      // A later theme change on its own still switches it back.
+      await new Promise((r) => setTimeout(r));
+      root.dataset.theme = "dark";
+      await Promise.resolve();
+      root.dataset.theme = "light";
+      await Promise.resolve();
+      expect(scheme()).toBe("theme-default");
+    } finally {
+      dispose();
+      delete root.dataset.colorTheme;
       useProject.setState({ settings: previous });
     }
   });

@@ -344,7 +344,7 @@ export function Composer(props: ComposerProps) {
               >
                 {item.kind === "file" ? (
                   <>
-                    <Icon name={item.dir ? "folder" : fileIconName(basename(item.rel))} size={16} />
+                    <Icon name={item.dir ? "folder" : fileIconName(basename(item.rel), item.rel)} size={16} />
                     <span className={styles.itemName}>{basename(item.rel)}</span>
                     <span className={styles.itemDetail}>{item.rel}</span>
                   </>

@@ -193,7 +193,7 @@ export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
 }
 
 export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
-  if (input.kind === "file") return fileIconName(basename(input.path ?? ""));
+  if (input.kind === "file") return fileIconName(basename(input.path ?? ""), input.path ?? null);
   if (input.kind === "virtual") return fileIconName(tabTitle(input, kinds));
   const kind = kinds.get(input.kind);
   try {
@@ -716,6 +716,8 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "refactor.extractConstant" },
           { kind: "action", action: "refactor.extractMethod" },
           { kind: "action", action: "refactor.inline" },
+          { kind: "action", action: "refactor.pullMembersUp" },
+          { kind: "action", action: "refactor.pushMembersDown" },
           { kind: "separator" },
           { kind: "action", action: "refactor.safeDelete" },
         ],
@@ -883,8 +885,18 @@ export class EditorController implements SlotHost {
     return generation;
   }
 
+  /**
+   * A decision to leave that was authorized, but whose project change or window close never
+   * came (the window stayed with its project): released, so the window can open files and
+   * be left again instead of refusing both until it is restarted.
+   */
+  private releaseStaleClose() {
+    if (this.closeSession && this.closeCommitted && !useProject.getState().opening) this.closeSession.cancel();
+  }
+
   private checkOpening(generation: { project: number; admission: number }) {
     if (generation.project !== this.projectGeneration) throw new Error("The project changed while opening the editor");
+    this.releaseStaleClose();
     if (generation.admission !== this.admissionGeneration || this.closeSession || this.closeRequests)
       throw new Error("The project is closing");
   }
@@ -1612,6 +1624,7 @@ export class EditorController implements SlotHost {
     ++this.admissionGeneration;
     ++this.closeRequests;
     return this.enqueueRemoval(async () => {
+      this.releaseStaleClose();
       if (this.closeSession) throw new Error("An editor close decision is already pending");
       const generation = this.projectGeneration;
       const documents = [...customDocuments(useTabs.getState(), useContributions.getState().editorKinds).values()];
