@@ -210,11 +210,25 @@ describe("Maven runs", () => {
     });
     expect(root.cwd).toBeNull();
     expect(root.isTest).toBe(false);
-    // Settings › Maven options go before the goals.
-    const configured = { ...core, options: ["-s", "/m2/settings.xml"] };
+    const configured = {
+      ...core,
+      command: "//?/UNC/server/share/maven/bin/mvn.cmd",
+      options: ["-s", "/old/settings.xml", "-Dmaven.repo.local=/old/repository"],
+    };
+    const goal = mavenGoalConfig(configured, ["test"], maven, {
+      offline: false,
+      skipTests: true,
+      profiles: {},
+    });
+    expect(goal.command).toBe("mvn");
+    expect(goal.args).toEqual(["test", "-DskipTests"]);
     expect(
-      mavenGoalConfig(configured, ["test"], maven, { offline: false, skipTests: true, profiles: {} }).args,
-    ).toEqual(["-s", "/m2/settings.xml", "test", "-DskipTests"]);
+      mavenGoalConfig(configured, ["-s", "/own/settings.xml", "test"], maven, {
+        offline: false,
+        skipTests: false,
+        profiles: {},
+      }).args,
+    ).toEqual(["-s", "/own/settings.xml", "test"]);
   });
 
   it("parses typed command lines", () => {

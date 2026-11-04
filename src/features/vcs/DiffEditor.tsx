@@ -1,6 +1,16 @@
 /** Diff viewer editor tab (side-by-side / unified) built on @codemirror/merge. */
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
 import { Prec, Text, type Extension } from "@codemirror/state";
@@ -32,6 +42,7 @@ import {
   ideaDiffConfig,
   loadDiffOptions,
   saveDiffOptions,
+  getDiffInsights,
   type DiffMode,
   type DiffViewOptions,
   type HighlightPolicy,
@@ -51,6 +62,8 @@ import {
   type DiffSide,
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
+import { changedChainNeighbour } from "./diffNavigation";
+import { movedCodeHighlights } from "./movedCode";
 import {
   createDiffViewerContributions,
   type DiffPaneSide,
@@ -196,7 +209,7 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
-export function DiffEditor({ input }: { input: EditorInput }) {
+export function DiffEditor({ input, toolbarActions }: { input: EditorInput; toolbarActions?: ReactNode }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
   const [attached, setAttached] = useState<Attached | null>(null);
@@ -204,9 +217,12 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   /** Text of the sides that are not live documents. */
   const [statics, setStatics] = useState<{ a: string | null; b: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [opts, setOptsState] = useState<DiffViewOptions>(loadDiffOptions);
+  const [opts, setOptsState] = useState<DiffViewOptions>(() => {
+    const saved = loadDiffOptions();
+    return data.mode ? { ...saved, mode: data.mode } : saved;
+  });
   const [lang, setLang] = useState<Extension | null>(null);
-  const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1 });
+  const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const viewsRef = useRef<Views | null>(null);
@@ -302,7 +318,15 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     const chunks = getChunks(v.state)?.chunks ?? [];
     const head = v.state.selection.main.head;
     const current = chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB));
-    setChunkInfo((p) => (p.count === chunks.length && p.current === current ? p : { count: chunks.length, current }));
+    const { moves, whitespaceOnly } = getDiffInsights(chunks);
+    setChunkInfo((p) =>
+      p.count === chunks.length &&
+      p.current === current &&
+      p.moves === moves.length &&
+      p.whitespaceOnly === whitespaceOnly
+        ? p
+        : { count: chunks.length, current, moves: moves.length, whitespaceOnly },
+    );
   }, []);
 
   // A HEAD ↔ working file diff of a tracked change: blocks can be left out of the commit.
@@ -379,7 +403,11 @@ export function DiffEditor({ input }: { input: EditorInput }) {
                 : undefined,
           });
       // IDEA's colouring: lines by chunk type, carried into the gutters, and typed word highlights.
-      const colours = [changedLineGutters, highlightChanges ? diffWords : []];
+      const colours = [
+        changedLineGutters,
+        highlightChanges ? diffWords : [],
+        opts.highlight !== "none" ? movedCodeHighlights(highlightChanges) : [],
+      ];
       const mv = new MergeView({
         a: {
           doc: textA,
@@ -538,14 +566,35 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     if (at === undefined) return;
     if (data.line != null) revealPos(v, at);
     else v.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
-    // A left-side line: that pane gets the focus, so navigation goes on from there.
-    if (v === viewsRef.current?.a) v.focus();
+    // Keep keyboard navigation in the revealed pane after moving to another file.
+    if (data.reveal || v === viewsRef.current?.a) v.focus();
     updateChunkInfo();
   }, [ready, statics, revealKey, data.line, data.lineSide, data.reveal, updateChunkInfo]);
 
   // IDEA: past the last (first) difference F7 (Shift+F7) first hints, then moves along the chain.
   const [navHint, setNavHint] = useState<string | null>(null);
   const pendingFile = useRef<0 | 1 | -1>(0);
+  const navigation = useRef<object | null>(null);
+  useEffect(
+    () => () => {
+      navigation.current = null;
+    },
+    [data],
+  );
+  const openNeighbour = useCallback(
+    async (dir: 1 | -1) => {
+      if (navigation.current) return;
+      const request = {};
+      navigation.current = request;
+      try {
+        const neighbour = await changedChainNeighbour(data, dir, opts.ignore);
+        if (navigation.current === request && neighbour) await openDiff(neighbour, { preview: true });
+      } finally {
+        if (navigation.current === request) navigation.current = null;
+      }
+    },
+    [data, opts.ignore],
+  );
   useEffect(() => {
     if (!navHint) return;
     const t = setTimeout(() => setNavHint(null), 2500);
@@ -569,7 +618,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         if (pendingFile.current === dir) {
           pendingFile.current = 0;
           setNavHint(null);
-          void openDiff(neighbour, { preview: true });
+          void openNeighbour(dir);
         } else {
           pendingFile.current = dir;
           setNavHint(dir === 1 ? "Press again to go to the next file" : "Press again to go to the previous file");
@@ -588,7 +637,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
       }
       updateChunkInfo();
     },
-    [updateChunkInfo, data],
+    [updateChunkInfo, data, openNeighbour],
   );
 
   // A file-backed side is the source; for a diff of revisions (Git Log, Compare) the
@@ -678,7 +727,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         logConsole("info", "Nothing to stage for this change");
         return;
       }
-      await runOp(`Stage hunk of ${path}`, () => call(commands.vcsStageHunks(path, indices)));
+      await runOp(tx`Stage hunk of ${path}`, () => call(commands.vcsStageHunks(path, indices)));
       await refreshNow();
     } finally {
       setBusy(false);
@@ -757,8 +806,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     return true;
   };
   const file = (dir: 1 | -1) => {
-    const neighbour = chainNeighbour(data, dir);
-    if (neighbour) void openDiff(neighbour, { preview: true });
+    void openNeighbour(dir);
   };
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   /** The viewer settings menu, under the toolbar's gear (`from`) or its start. */
@@ -993,14 +1041,22 @@ export function DiffEditor({ input }: { input: EditorInput }) {
             : chunkInfo.count === 0
               ? identical
                 ? tx("Contents are identical")
-                : tx("No differences")
+                : chunkInfo.whitespaceOnly
+                  ? tx("Whitespace-only changes")
+                  : tx("No differences")
               : chunkInfo.current >= 0
                 ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
                 : chunkInfo.count === 1
                   ? tx`${chunkInfo.count} difference`
                   : tx`${chunkInfo.count} differences`}
+          {ready && !binary && chunkInfo.count > 0 && chunkInfo.whitespaceOnly && tx(" · Whitespace-only changes")}
+          {ready &&
+            !binary &&
+            chunkInfo.moves > 0 &&
+            (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
         </span>
         {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
+        {toolbarActions}
         <IconButton
           icon="settings"
           title="Settings"

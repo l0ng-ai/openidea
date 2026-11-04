@@ -1,5 +1,5 @@
 /**
- * Settings › Languages & Frameworks › Go / Java / Node.js / Rust / TypeScript and
+ * Settings › Languages & Frameworks › Go / Java / Node.js / PHP / Rust / TypeScript and
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
@@ -104,6 +104,32 @@ export function NodePage() {
         <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
           <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
         </Row>
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PHP
+
+export function PhpPage() {
+  const [interpreter] = useSetting<string>("languages.php.interpreter");
+  const { list } = useDetected("php");
+  const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
+  return (
+    <div className={styles.page}>
+      <Section title="CLI Interpreter">
+        <SdkRow
+          k="languages.php.interpreter"
+          label="PHP interpreter"
+          kind="php"
+          emptyLabel="Default"
+          emptyDetail="php on PATH"
+          browseTitle="Select PHP Interpreter"
+          aria-label="PHP interpreter"
+          hint="Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
+        />
+        {selected?.version && <Row label="Version">{selected.version}</Row>}
       </Section>
     </div>
   );
@@ -271,7 +297,7 @@ export function JavaPage() {
         <Row
           label="JVM options"
           htmlFor={id}
-          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx4g. jdtls runs with -XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Xmx2G -Xms100m by default; an option set here replaces the default for the same setting, and another collector (e.g. -XX:+UseG1GC) replaces the default collector options. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
+          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx4g. jdtls runs with -XX:+UseG1GC -XX:G1PeriodicGCInterval=60000 -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=30 -Xmx2G -Xms100m by default; an option set here replaces the default for the same setting, and another collector (e.g. -XX:+UseZGC) replaces the default collector options. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
         >
           <Input
             id={id}
@@ -292,9 +318,24 @@ export function JavaPage() {
 
 export function GradlePage() {
   const [distribution, setDistribution] = useSetting<string>("languages.java.gradle.distribution");
+  const [runUsing, setRunUsing] = useSetting<string>("languages.java.gradle.runUsing");
   return (
     <div className={styles.page}>
       <Section>
+        <Row
+          label="Build and run using"
+          hint="Gradle runs a main class as a JavaExec task on its source set's runtime classpath (Gradle's resource processing included). OpenIDEA launches it on the Java language server's classpath."
+        >
+          <Select
+            value={runUsing || "gradle"}
+            onChange={setRunUsing}
+            aria-label="Build and run using"
+            options={[
+              { value: "gradle", label: "Gradle" },
+              { value: "ide", label: "OpenIDEA" },
+            ]}
+          />
+        </Row>
         <SdkRow
           k="languages.java.gradle.jvm"
           label="Gradle JVM"

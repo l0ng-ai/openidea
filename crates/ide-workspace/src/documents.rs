@@ -563,6 +563,27 @@ impl Documents {
         })
     }
 
+    /// [`apply_edits`](Self::apply_edits) only if the document is still at
+    /// `version` (checked under the document's lock). `Ok(None)` when it
+    /// changed since; nothing is applied then.
+    pub fn apply_edits_at(&self, doc: DocId, version: u32, edits: &[TextEdit]) -> IdeResult<Option<u32>> {
+        self.with_doc(doc, |st| {
+            if st.doc.version() != version {
+                return Ok(None);
+            }
+            if st.read_only {
+                return Err(read_only_error(&st.path));
+            }
+            if edits.is_empty() {
+                return Ok(Some(version));
+            }
+            let (set, applied, bytes) = st.doc.apply_edits_detailed(edits)?;
+            self.patched(doc, st, version, set, &applied, &bytes);
+            self.set_dirty(doc, st, true);
+            Ok(Some(st.doc.version()))
+        })
+    }
+
     fn patched(
         &self,
         doc: DocId,

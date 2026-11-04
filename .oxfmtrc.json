@@ -10,10 +10,13 @@
     "target",
     "src/bindings.ts",
     "src/editor/core/cm/angular/parser*.ts",
+    "src/editor/core/cm/jsp/parser*.ts",
     "docs/plugins/themes.md",
     "pnpm-lock.yaml",
     "**/*.toml",
     "fixtures",
+    "plugins/*/web",
+    "plugins/official/*/web",
     "crates/**/tests/fixtures"
   ],
   "overrides": [

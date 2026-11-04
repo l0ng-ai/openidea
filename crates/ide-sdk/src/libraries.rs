@@ -11,7 +11,7 @@
 //! JDK's `src.zip` and the Maven / Gradle dependency jars (source attachments resolved by JDT).
 
 use crate::exe;
-use crate::exec::{query, query_in, which};
+use crate::exec::{query_in, which};
 use ide_core::settings::Settings;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -157,7 +157,9 @@ fn python_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
 
 /// Standard library and site-packages folders of a Python interpreter.
 pub fn python_libraries(python: &Path, root: Option<&Path>) -> Option<LibraryGroup> {
-    let out = query(python, &["-c", PYTHON_PATHS], QUERY_TIMEOUT)?;
+    // In a neutral directory: the working directory comes first on `sys.path` for `-c`.
+    let dir = crate::python::neutral_dir();
+    let out = query_in(python, &["-c", PYTHON_PATHS], dir.as_ref().map(|d| d.path()), &[], QUERY_TIMEOUT)?;
     let name = crate::discover::python_sdk(python, "system", root).map(|s| s.name).unwrap_or_else(|| "Python".into());
     group(name, "python", library_roots(parse_python_paths(&out)))
 }
@@ -290,6 +292,36 @@ pub(crate) fn dependency_libraries(
             )
         })
         .collect()
+}
+
+/// The `.toml` of a version catalog published as `group:artifact:version` (Gradle's
+/// `version-catalog` plugin) that a build imports with `from("…")`: from Gradle's cache, else
+/// the local Maven repository. `None` until a build has downloaded it.
+pub fn published_version_catalog(root: &Path, s: &Settings, coordinates: &str) -> Option<PathBuf> {
+    let mut parts = coordinates.trim().split(':');
+    let d = BuildDependency {
+        gradle: true,
+        group: parts.next()?.to_owned(),
+        artifact: parts.next()?.to_owned(),
+        version: parts.next()?.to_owned(),
+    };
+    if parts.next().is_some() || !valid_coordinate(&d) {
+        return None;
+    }
+    let file = format!("{}-{}.toml", d.artifact, d.version);
+    let gradle = crate::apply::setting_path(root, &s.languages.java.gradle.user_home).or_else(gradle_user_home);
+    let cached = gradle.and_then(|home| {
+        let dir = home.join("caches/modules-2/files-2.1").join(&d.group).join(&d.artifact).join(&d.version);
+        let mut found: Vec<PathBuf> =
+            std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path().join(&file)).filter(|p| p.is_file()).collect();
+        found.sort();
+        found.into_iter().next()
+    });
+    cached.or_else(|| {
+        let repo = crate::apply::maven_local_repository(root, s).or_else(default_maven_repository)?;
+        let path = repo.join(d.group.replace('.', "/")).join(&d.artifact).join(&d.version).join(&file);
+        path.is_file().then_some(path)
+    })
 }
 
 /// No path separators, interpolations or `..` segments (coordinates become paths).
@@ -528,6 +560,26 @@ pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
 #[cfg(test)]
 mod go_cache_tests {
     use super::*;
+
+    #[test]
+    fn finds_published_version_catalogs_in_the_gradle_cache_and_maven_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut s = Settings::default();
+        s.languages.java.gradle.user_home = root.join("gradle").to_string_lossy().into_owned();
+        s.languages.java.maven.local_repository = root.join("m2").to_string_lossy().into_owned();
+        let cached = root.join("gradle/caches/modules-2/files-2.1/com.acme/catalog/1.2/abc123/catalog-1.2.toml");
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        std::fs::write(&cached, "[libraries]").unwrap();
+        assert_eq!(published_version_catalog(root, &s, "com.acme:catalog:1.2"), Some(cached));
+        let local = root.join("m2/com/acme/other/2.0/other-2.0.toml");
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        std::fs::write(&local, "[libraries]").unwrap();
+        assert_eq!(published_version_catalog(root, &s, " com.acme:other:2.0 "), Some(local));
+        for missing in ["com.acme:catalog:9", "com.acme:catalog", "a:b:c:d", "../x:y:z"] {
+            assert_eq!(published_version_catalog(root, &s, missing), None, "{missing}");
+        }
+    }
     #[test]
     fn vendor_roots_include_local_replacements_once() {
         let dir = tempfile::tempdir().unwrap();

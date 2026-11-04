@@ -7,6 +7,7 @@ import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { call, commands, IpcError, type FsConnection, type RemoteEntry } from "@/platform/ipc";
 import { useTx, tx, txTemplate } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { Badge, Button, Checkbox, Dialog, Icon, IconButton, Input, Select, Spinner, T, Tabs } from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
@@ -15,6 +16,7 @@ import { useSetting } from "../components/context";
 import {
   addMapping,
   fixDefaultServer,
+  folderWithin,
   formatExcludes,
   newServer,
   parseExcludes,
@@ -22,6 +24,7 @@ import {
   removeMapping,
   updateMapping,
 } from "./deploymentModel";
+import { choosePath } from "../languages/api";
 import { BUILD_GROUP } from "./execution";
 import type { PageSpec } from "./spec";
 import { sshTestRemedy } from "./sshConnection";
@@ -373,6 +376,8 @@ function ConnectionTab({
   );
 }
 
+const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+
 const MAPPING_COLUMNS = [
   { key: "local", title: "Local path", placeholder: "Project root" },
   { key: "deployment", title: "Deployment path", placeholder: "Root path" },
@@ -388,7 +393,22 @@ function MappingsTab({
 }) {
   const tx = useTx();
   const [selected, setSelected] = useState<number | null>(null);
+  const [browsing, setBrowsing] = useState<number | null>(null);
+  const projectRoot = useProject((s) => s.project?.root ?? null);
   const mappings = server.mappings;
+  const remoteRoot = server.rootPath.trim().replace(/\/+$/, "");
+  // Deployment paths are relative to the root path, so the remote chooser needs an absolute one.
+  const canBrowseRemote = isAbsolute(remoteRoot) && (server.kind !== "sftp" || !!server.sshConfig);
+  const set = (i: number, patch: Partial<(typeof mappings)[number]>) =>
+    update({ mappings: updateMapping(mappings, i, patch) });
+  const chooseLocal = async (i: number) => {
+    if (!projectRoot) return;
+    const current = mappings[i]?.local.trim() ?? "";
+    const start = isAbsolute(current) ? current : current ? `${projectRoot}/${current}` : projectRoot;
+    const picked = await choosePath({ directory: true, title: "Choose Folder", defaultPath: start });
+    const rel = picked === null ? null : folderWithin(projectRoot, picked);
+    if (rel !== null) set(i, { local: rel });
+  };
   return (
     <div className={styles.panel}>
       <div className={workflow.tableBox}>
@@ -440,15 +460,35 @@ function MappingsTab({
               >
                 {MAPPING_COLUMNS.map((c) => (
                   <td key={c.key}>
-                    <Input
-                      mono
-                      variant="bare"
-                      className={styles.cellInput}
-                      value={m[c.key]}
-                      placeholder={tx(c.placeholder)}
-                      aria-label={`${tx(c.title)} ${i + 1}`}
-                      onChange={(e) => update({ mappings: updateMapping(mappings, i, { [c.key]: e.target.value }) })}
-                    />
+                    <span className={styles.cellField}>
+                      <Input
+                        mono
+                        variant="bare"
+                        className={styles.cellInput}
+                        value={m[c.key]}
+                        placeholder={tx(c.placeholder)}
+                        aria-label={`${tx(c.title)} ${i + 1}`}
+                        onChange={(e) => set(i, { [c.key]: e.target.value })}
+                      />
+                      {c.key === "local" && (
+                        <IconButton
+                          icon="folder-open"
+                          size="small"
+                          title="Browse…"
+                          disabled={!projectRoot}
+                          onClick={() => void chooseLocal(i)}
+                        />
+                      )}
+                      {c.key === "deployment" && (
+                        <IconButton
+                          icon="folder-open"
+                          size="small"
+                          title={canBrowseRemote ? "Browse…" : "Set an absolute root path on the Connection tab first"}
+                          disabled={!canBrowseRemote}
+                          onClick={() => setBrowsing(i)}
+                        />
+                      )}
+                    </span>
                   </td>
                 ))}
               </tr>
@@ -459,10 +499,22 @@ function MappingsTab({
       <div className={styles.note}>
         <T>
           {
-            "Local paths are relative to the project root (empty: the whole project); deployment paths are relative to the server's root path."
+            "Local paths are relative to the project root or absolute inside it (empty: the whole project); deployment paths are relative to the server's root path."
           }
         </T>
       </div>
+      {browsing !== null && (
+        <RemoteFolderDialog
+          connection={deploymentConnection(server)}
+          initial={[remoteRoot, mappings[browsing]?.deployment.trim().replace(/^\/+/, "")].filter(Boolean).join("/")}
+          onClose={() => setBrowsing(null)}
+          onChoose={(path) => {
+            const rel = folderWithin(remoteRoot, path);
+            if (rel !== null) set(browsing, { deployment: rel });
+            setBrowsing(null);
+          }}
+        />
+      )}
     </div>
   );
 }

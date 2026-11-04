@@ -150,7 +150,13 @@ describe("tool window", () => {
       useGhRepository.setState({
         availability: { kind: "ready", repo: {} as never, login: "me" },
         remotes: [{ owner: "org", name: "app", remote: "origin", url: "" }],
-        connection: { coordinates: { owner: "org", name: "app" }, repository, currentUser: me },
+        connection: {
+          coordinates: { owner: "org", name: "app" },
+          repository,
+          currentUser: me,
+          root: null,
+          remotes: [],
+        },
       });
       render(
         <>
@@ -161,7 +167,7 @@ describe("tool window", () => {
     });
     expect(screen.getByRole("tab", { name: /app/ })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "Search pull requests" })).toBeTruthy();
-    const body = JSON.parse(ghApi.mock.calls[0]![0].body!) as { variables: { query: string; pageSize: number } };
+    const body = JSON.parse(ghApi.mock.calls[0]![1].body!) as { variables: { query: string; pageSize: number } };
     // First run: every open pull request.
     expect(body.variables).toMatchObject({ query: "type:pr repo:org/app is:open", pageSize: 50 });
     await act(async () => openPullRequestTab(4));

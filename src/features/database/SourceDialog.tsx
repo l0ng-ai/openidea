@@ -73,6 +73,10 @@ const SSH_AUTH: Array<SelectOption<SshAuth>> = [
 
 /** Driver property names the Advanced tab suggests, and what the backend does with them. */
 const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
+  clickhouse: {
+    names: ["max_execution_time", "max_threads", "connect_timeout"],
+    hint: "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.",
+  },
   postgres: {
     names: [
       "statement_timeout",
@@ -376,6 +380,7 @@ export function SourceDialog({
   const vendor = vendorOf(s);
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
+  const clickhouse = s.driver === "clickhouse";
   const urlOnly = !sqlite && !!s.urlOnly;
   const parsedUrl = urlOnly ? parseSourceUrl(s.url ?? "") : null;
   const urlValid = !!parsedUrl && parsedUrl.source.driver === s.driver;
@@ -398,7 +403,20 @@ export function SourceDialog({
     setS((x) => {
       const old = vendorOf(x);
       const port = x.port == null || x.port === old.port ? v.port : x.port;
-      return { ...x, driver: v.driver, vendor: v.id === v.driver ? "" : v.id, port, ssl: v.ssl ?? x.ssl };
+      return {
+        ...x,
+        driver: v.driver,
+        vendor: v.id === v.driver ? "" : v.id,
+        port,
+        ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.ssl),
+        ...(v.driver === "clickhouse"
+          ? {
+              user: x.user || "default",
+              database: x.database || "default",
+              options: { ...blankOptions(), ...x.options, transaction: "auto" as const },
+            }
+          : {}),
+      };
     });
   };
 
@@ -614,8 +632,9 @@ export function SourceDialog({
       <Select
         aria-label="Transaction control"
         className={styles.narrowSelect}
-        value={options.transaction ?? "auto"}
-        options={TX}
+        value={clickhouse ? "auto" : (options.transaction ?? "auto")}
+        options={clickhouse ? TX.filter((option) => option.value === "auto") : TX}
+        disabled={clickhouse}
         onChange={(transaction) => setOptions({ transaction })}
       />
       {postgres && (
@@ -640,7 +659,9 @@ export function SourceDialog({
             id="db-time-zone"
             value={options.timeZone ?? ""}
             placeholder={
-              postgres ? "Server default, e.g. UTC or Europe/Berlin" : "UTC (+00:00), e.g. Europe/Berlin or +08:00"
+              postgres || clickhouse
+                ? "Server default, e.g. UTC or Europe/Berlin"
+                : "UTC (+00:00), e.g. Europe/Berlin or +08:00"
             }
             onChange={(e) => setOptions({ timeZone: e.target.value })}
           />
@@ -679,9 +700,11 @@ export function SourceDialog({
         placeholder={
           postgres
             ? "SET statement_timeout = '30s';"
-            : sqlite
-              ? "PRAGMA foreign_keys = ON;"
-              : "SET SESSION sql_mode = 'ANSI';"
+            : clickhouse
+              ? "SET max_execution_time = 30;"
+              : sqlite
+                ? "PRAGMA foreign_keys = ON;"
+                : "SET SESSION sql_mode = 'ANSI';"
         }
         onChange={(e) => setOptions({ startupScript: e.target.value })}
       />
@@ -834,8 +857,17 @@ export function SourceDialog({
         aria-label="SSL mode"
         className={styles.narrowSelect}
         value={s.ssl ?? "prefer"}
-        options={SSL}
-        onChange={(ssl) => set({ ssl })}
+        options={clickhouse ? SSL.filter((mode) => mode.value !== "prefer") : SSL}
+        onChange={(ssl) => {
+          const secure = ssl !== "disable" && ssl !== "prefer";
+          const oldSecure = s.ssl !== "disable" && s.ssl !== "prefer";
+          set({
+            ssl,
+            ...(clickhouse && (s.port == null || s.port === (oldSecure ? 8443 : 8123))
+              ? { port: secure ? 8443 : 8123 }
+              : {}),
+          });
+        }}
       />
       <FileField
         id="db-ssl-ca"

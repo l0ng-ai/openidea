@@ -1,11 +1,10 @@
 /** Picks an SSH configuration and a folder on that host, then opens it in this or a new window. */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
-import { call, commands, isCancelled, type RemoteEntry } from "@/platform/ipc";
+import { call, commands, isCancelled, onIdeEvent, type RemoteEntry } from "@/platform/ipc";
 import { useRemoteProgress } from "@/platform/remote";
-import { sshLabel } from "@/platform/remoteSettings";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { sshLabel, type SshConfigValid, validateRemote } from "@/platform/remoteSettings";
 import { Button, Dialog, Icon, Input, ProgressBar, Select, Spinner } from "@/ui";
 import { openRemoteProject } from "@/workbench/projectWindow";
 import {
@@ -25,10 +24,34 @@ export function ConnectHost() {
 
 const SSH_SETTINGS_PAGE = "tools.sshConfigurations";
 
+/**
+ * This machine's SSH configurations: the connection is made from here. A remote project's
+ * window has the remote host's settings, which don't list them.
+ */
+function useLocalSshConfigs(): SshConfigValid[] {
+  const [configs, setConfigs] = useState<SshConfigValid[]>([]);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      void commands.settingsGetGlobal().then(
+        (s) => live && setConfigs(validateRemote(s).ssh.configs),
+        () => {},
+      );
+    load();
+    const off = onIdeEvent("settingsChanged", load);
+    return () => {
+      live = false;
+      off();
+    };
+  }, []);
+  return configs;
+}
+
 function ConnectDialog() {
   const tx = useTx();
-  const configs = useWorkflowSettings((s) => s.ssh.configs);
-  const [ssh, setSsh] = useState(configs[0]?.id ?? "");
+  const configs = useLocalSshConfigs();
+  const [picked, setSsh] = useState("");
+  const ssh = configs.some((c) => c.id === picked) ? picked : (configs[0]?.id ?? "");
   const [path, setPath] = useState("~");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

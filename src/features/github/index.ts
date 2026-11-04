@@ -13,7 +13,13 @@ import { registerActions, type Action } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { lazyComponent } from "@/ui";
-import { maybeEditorService, registerEditorKind, registerOverlay, registerToolWindow } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  registerCloneSource,
+  registerEditorKind,
+  registerOverlay,
+  registerToolWindow,
+} from "@/workbench/contributions";
 import { activateReviewDiff, toggleReviewDiffViewed } from "./diff";
 import { reloadList } from "./data/list";
 import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree } from "./data/local";
@@ -304,6 +310,13 @@ function actions(): Action[] {
 export function activate(): () => void {
   setContext("githubPrTab", "list");
   const disposers = [
+    registerCloneSource({
+      id: "github",
+      label: "GitHub",
+      icon: "github",
+      order: 10,
+      component: lazyComponent(() => import("./clone/GitHubCloneSource").then((m) => m.GitHubCloneSource)),
+    }),
     registerToolWindow({
       id: WINDOW,
       title: "Pull Requests",

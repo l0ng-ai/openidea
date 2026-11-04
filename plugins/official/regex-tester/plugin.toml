@@ -1,0 +1,32 @@
+id = "openidea.regex-tester"
+name = "Regex Tester"
+version = "0.1.0"
+description = "Try a regular expression against sample text: matches highlighted as you type, capture groups, and a replacement preview. Takes the editor's selection as the text."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: live matching with flags, capture groups, replacement preview, the editor's selection as test text."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-view:regex", "on-command:*"]
+
+[capabilities]
+required = ["editor.read"]
+
+[[contributes.views]]
+id = "regex"
+title = "Regex Tester"
+icon = "regex"
+location = "bottom"
+
+[[contributes.commands]]
+id = "test-selection"
+title = "Regex Tester: Test Selection"
+category = "Regex Tester"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "test-selection"
+
+[contributes.settings]
+title = "Regex Tester"
+schema = "settings.schema.json"

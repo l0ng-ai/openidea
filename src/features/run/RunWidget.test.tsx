@@ -3,7 +3,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { RunConfig } from "@/platform/ipc";
-import { useDebugRunSessions, type DebugRunSession } from "@/workbench/contributions";
+import { registerMenuGroup, useDebugRunSessions, type DebugRunSession } from "@/workbench/contributions";
+import { useContextMenuStore } from "@/ui";
 import { applicationConfig } from "./application";
 import { activate } from "./index";
 import { RunWidget } from "./RunWidget";
@@ -93,9 +94,37 @@ it("targets the selected debug session while npm runs, through buttons and short
   await executeAction("run.run");
   expect(session.rerun).toHaveBeenCalledTimes(2);
   fireEvent.click(screen.getByRole("button", { name: `Stop '${app.name}'` }));
-  await executeAction("run.stop");
-  expect(session.stop).toHaveBeenCalledTimes(2);
+  await vi.waitFor(() => expect(session.stop).toHaveBeenCalledOnce());
   expect(useRun.getState().sessions[0]?.stopped).toBeUndefined();
+});
+
+it("lists every running process with Stop All for the Stop shortcut, like IDEA", async () => {
+  const session = debug(app);
+  useRun.setState({ sessions: [run(npm, 3)] });
+  useDebugRunSessions.setState({ sessions: [session] });
+  const unregister = registerMenuGroup({
+    id: "test.stopDebug",
+    menus: ["stopProcess"],
+    items: () => [{ label: app.name, run: () => session.stop() }],
+  });
+  try {
+    render(<RunWidget />);
+    await executeAction("run.stop");
+    const items = useContextMenuStore.getState().menu!.items;
+    expect(items.map((i) => ("label" in i ? i.label : i.kind))).toEqual([
+      "Stop Process",
+      npm.name,
+      app.name,
+      "separator",
+      "Stop All",
+    ]);
+    const stopAll = items.at(-1) as { run: () => void };
+    stopAll.run();
+    expect(session.stop).toHaveBeenCalledOnce();
+    expect(useRun.getState().sessions[0]?.stopped).toBe(true);
+  } finally {
+    unregister();
+  }
 });
 
 it("ignores an unrelated debug session for an idle selection", () => {

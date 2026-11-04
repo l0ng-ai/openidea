@@ -29,7 +29,8 @@ function callPattern(name: string, flags: string): RegExp {
 }
 
 function isCallBoundary(text: string, from: number): boolean {
-  return !/[\p{L}\p{N}_$]$/u.test(text.slice(Math.max(0, from - 2), from));
+  // Not `[\p{L}\p{N}_$]$`: V8 (Node 26) misses an astral letter with a lone class before `$`.
+  return !/(?:\p{L}|\p{N}|[_$])$/u.test(text.slice(Math.max(0, from - 2), from));
 }
 
 function identifierEnd(text: string, from: number): number {

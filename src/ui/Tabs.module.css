@@ -209,10 +209,10 @@
   height: 2px;
 }
 .vertical .dropBefore::before {
-  top: -2px;
+  top: 0;
 }
 .vertical .dropAfter::after {
-  bottom: -2px;
+  bottom: 0;
 }
 
 /* Close button on the left of the label */
@@ -224,9 +224,14 @@
   padding: 0 10px 0 2px;
 }
 
-/* drag & drop */
-.dragging {
-  opacity: 0.5;
+/* drag & drop: the dragged tab is an empty slot the other tabs make room for (IDEA) */
+.tab.dragging,
+.tab.dragging:hover {
+  background: var(--bg-toolbar-hover);
+  box-shadow: none;
+}
+.dragging > * {
+  visibility: hidden;
 }
 .dropBefore::before,
 .dropAfter::after {
@@ -239,11 +244,12 @@
   z-index: 1;
   pointer-events: none;
 }
+/* Inside the tab: the scroller clips anything past the first and last tab. */
 .dropBefore::before {
-  left: -2px;
+  left: 0;
 }
 .dropAfter::after {
-  right: -2px;
+  right: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

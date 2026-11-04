@@ -301,7 +301,7 @@ export function InspectionView() {
       case "file":
         return (
           <span className={clsx(styles.row, off)}>
-            <Icon name={fileIconName(basename(n.path))} size={16} className={styles.fileIcon} />
+            <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
             <span className={state.selected ? styles.strong : undefined}>{basename(n.path)}</span>
             <span className={styles.muted}>{relativeDir(root, n.path)}</span>
             <span className={styles.count}>{n.count}</span>

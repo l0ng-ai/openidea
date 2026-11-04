@@ -35,6 +35,7 @@ pub fn explain_statement(driver: DbDriver, statement: &str) -> String {
     match driver {
         DbDriver::Sqlite => format!("EXPLAIN QUERY PLAN {s}"),
         DbDriver::Postgres => format!("EXPLAIN (FORMAT JSON) {s}"),
+        DbDriver::Clickhouse => format!("EXPLAIN json = 1 {s}"),
         DbDriver::Mysql => format!("EXPLAIN {s}"),
         DbDriver::SqlServer => format!("SET SHOWPLAN_TEXT ON; {s}"),
     }
@@ -44,7 +45,7 @@ pub fn explain_statement(driver: DbDriver, statement: &str) -> String {
 pub fn parse(driver: DbDriver, result: &QueryResult) -> IdeResult<Vec<PlanNode>> {
     match driver {
         DbDriver::Sqlite => Ok(sqlite(&result.rows)),
-        DbDriver::Postgres => {
+        DbDriver::Postgres | DbDriver::Clickhouse => {
             let text: String =
                 result.rows.iter().filter_map(|r| r.first().cloned().flatten()).collect::<Vec<_>>().join("\n");
             let json: Value = serde_json::from_str(&text).map_err(|e| IdeError::invalid(format!("plan: {e}")))?;
@@ -199,6 +200,7 @@ mod tests {
         assert_eq!(explain_statement(DbDriver::Sqlite, "select 1;"), "EXPLAIN QUERY PLAN select 1");
         assert_eq!(explain_statement(DbDriver::Postgres, " select 1 "), "EXPLAIN (FORMAT JSON) select 1");
         assert_eq!(explain_statement(DbDriver::Mysql, "select 1"), "EXPLAIN select 1");
+        assert_eq!(explain_statement(DbDriver::Clickhouse, " select 1;"), "EXPLAIN json = 1 select 1");
         assert_eq!(explain_statement(DbDriver::SqlServer, "select 1"), "SET SHOWPLAN_TEXT ON; select 1");
     }
 
@@ -252,6 +254,21 @@ mod tests {
         assert!(plan[0].properties.iter().any(|p| p.name == "Total Cost" && p.value == "12.5"));
         assert_eq!((plan[1].parent, plan[1].params.as_str()), (Some(0), "table: orders o; filter: (status <> 'x');"));
         assert_eq!((plan[3].parent, plan[3].operation.as_str()), (Some(2), "Seq Scan"));
+    }
+
+    #[test]
+    fn reads_clickhouse_json_plans_and_rejects_invalid_json() {
+        let json = r#"[{"Plan": {"Node Type": "Expression", "Node Id": "Expression_5",
+            "Description": "Project names", "Plans": [
+                {"Node Type": "ReadFromMergeTree", "Node Id": "ReadFromMergeTree_0",
+                 "Description": "default.events"}
+            ]}}]"#;
+        let plan = parse(DbDriver::Clickhouse, &result(&["explain"], vec![vec![Some(json)]])).unwrap();
+        assert_eq!(plan.len(), 2);
+        assert_eq!((plan[0].parent, plan[0].operation.as_str()), (None, "Expression"));
+        assert_eq!((plan[1].parent, plan[1].operation.as_str()), (Some(0), "ReadFromMergeTree"));
+        assert!(plan[1].properties.iter().any(|p| p.name == "Description" && p.value == "default.events"));
+        assert!(parse(DbDriver::Clickhouse, &result(&["explain"], vec![vec![Some("invalid")]])).is_err());
     }
 
     #[test]

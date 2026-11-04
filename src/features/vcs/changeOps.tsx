@@ -90,8 +90,23 @@ export async function commitChanges(): Promise<string | undefined> {
       success: () => {
         const n = plan.included.length;
         const summary = firstLine(message);
-        const where = repos.length > 1 ? ` in ${repos.length} repositories` : "";
-        return `${n} file${n === 1 ? "" : "s"} ${amend ? "amended" : "committed"}${where}${summary ? `: ${summary}` : ""}`;
+        const several = repos.length;
+        const done = amend
+          ? several > 1
+            ? n === 1
+              ? tx`1 file amended in ${several} repositories`
+              : tx`${n} files amended in ${several} repositories`
+            : n === 1
+              ? tx("1 file amended")
+              : tx`${n} files amended`
+          : several > 1
+            ? n === 1
+              ? tx`1 file committed in ${several} repositories`
+              : tx`${n} files committed in ${several} repositories`
+            : n === 1
+              ? tx("1 file committed")
+              : tx`${n} files committed`;
+        return summary ? `${done}: ${summary}` : done;
       },
     },
   );
@@ -199,12 +214,12 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
     await saveAll();
     const { unstage, discard } = rollbackPlan(chosen, deleteAdded);
     await runOp(
-      "Rollback",
+      tx("Rollback"),
       async () => {
         if (unstage.length) await call(commands.vcsUnstage(unstage));
         if (discard.length) await call(commands.vcsDiscard(discard));
       },
-      { success: `Rolled back ${chosen.length} file${chosen.length === 1 ? "" : "s"}` },
+      { success: chosen.length === 1 ? tx("Rolled back 1 file") : tx`Rolled back ${chosen.length} files` },
     );
   };
   return (
@@ -245,7 +260,7 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
                   })
                 }
               />
-              <Icon name={fileIconName(baseName(f.path))} size={14} />
+              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
               <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
                 {baseName(f.path)}
               </span>
@@ -284,7 +299,7 @@ export async function addToVcs(paths: readonly string[]) {
     });
     return;
   }
-  await runOp(`Add ${targets.length} file${targets.length === 1 ? "" : "s"} to Git`, () =>
+  await runOp(targets.length === 1 ? tx("Add 1 file to Git") : tx`Add ${targets.length} files to Git`, () =>
     call(commands.vcsStage(targets.map(stripSlash))),
   );
 }
@@ -299,9 +314,9 @@ export function stashChanges(repo = currentRepo()): Promise<void> {
           if (r) {
             await saveAll();
             await runOp(
-              "Stash changes",
+              tx("Stash changes"),
               () => call(commands.vcsStashPush(repo, r.message || null, r.includeUntracked, r.keepIndex)),
-              { success: "Changes stashed" },
+              { success: tx("Changes stashed") },
             );
             void loadStashes().catch(() => undefined);
           }
@@ -372,10 +387,10 @@ export interface UnstashOptions {
 export function unstashTitles(o: UnstashOptions): { title: string; success: string } {
   const ref = `stash@{${o.index}}`;
   if (o.branch)
-    return { title: tx`Unstash ${ref} as branch ${o.branch}`, success: `Unstashed ${ref} on branch ${o.branch}` };
+    return { title: tx`Unstash ${ref} as branch ${o.branch}`, success: tx`Unstashed ${ref} on branch ${o.branch}` };
   return o.pop
-    ? { title: tx`Pop ${ref}`, success: `Unstashed ${ref}` }
-    : { title: tx`Apply ${ref}`, success: `Applied ${ref}` };
+    ? { title: tx`Pop ${ref}`, success: tx`Unstashed ${ref}` }
+    : { title: tx`Apply ${ref}`, success: tx`Applied ${ref}` };
 }
 
 export async function unstash(o: UnstashOptions, repo = currentRepo()) {
@@ -482,8 +497,8 @@ export async function dropStash(index: number, message: string, repo = currentRe
     danger: true,
   });
   if (!ok) return;
-  await runOp(`Drop stash@{${index}}`, () => call(commands.vcsStashDrop(repo, index)), {
-    success: `Dropped stash@{${index}}`,
+  await runOp(tx`Drop ${`stash@{${index}}`}`, () => call(commands.vcsStashDrop(repo, index)), {
+    success: tx`Dropped ${`stash@{${index}}`}`,
   });
   void loadStashes().catch((e) => logConsole("err", String(e)));
 }

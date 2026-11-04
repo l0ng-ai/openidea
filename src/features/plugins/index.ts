@@ -1,18 +1,38 @@
 /**
  * Plugins: Settings › Plugins (installed list, enable/disable, install from
- * disk, uninstall, theme selection) and the runtime bridge to the WASM plugin
- * host (`ide-plugin`).
+ * disk with a permission page, uninstall, theme selection) and the runtime
+ * bridge to the plugin host (`ide_host::plugins`): UI contributions are
+ * projected by `projection.ts` / `points.tsx`.
  *
  * Actions: `plugins.settings`, `plugins.installFromDisk`, `plugins.reloadAll`,
+ * `plugins.importIntellijTheme` (a theme plugin file; `arg`: its path),
+ * `plugins.importInstalledIntellijTheme` (from the JetBrains IDEs on this machine),
  * plus one action per plugin command: `plugin.<pluginId>.<commandId>`
  * (searchable in Search Everywhere › Actions and bindable in the keymap editor;
  * a string arg is forwarded to the plugin).
+ *
+ * Editor contribution `plugins.lineMarkers`: gutter icons from plugin
+ * `line-markers` providers (`lineMarkerGutter.ts`).
  */
+import { registerEditorContribution } from "@/editor/api";
 import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { registerSettingsPage } from "@/workbench/contributions";
-import { startPluginBridge, trackPluginTheme } from "./bridge";
+import { editorService, registerOverlay, registerSettingsPage } from "@/workbench/contributions";
+import {
+  followPluginChanges,
+  providePluginThemePreviews,
+  startPluginBridge,
+  syncProjection,
+  trackPluginTheme,
+} from "./bridge";
+import { ConsentDialogHost, provideConsentDialog } from "./consent";
+import { trackIconTheme } from "./iconThemes";
+import { pluginLineMarkerGutter } from "./lineMarkerGutter";
+import { defineBuiltinUiPoints } from "./points";
+import { startViewUi } from "./uiPoints";
+import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
+import { IntellijThemesDialogHost } from "./IntellijThemesDialog";
 import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, usePlugins } from "./store";
 
 function registerPluginsPage(): () => void {
@@ -28,7 +48,17 @@ function registerPluginsPage(): () => void {
 
 /** Settings › Plugins for the Settings window: the page plus the plugin theme. */
 export function activateSettingsPages(): () => void {
-  const disposers = [registerPluginsPage(), trackPluginTheme()];
+  const disposers = [
+    registerPluginsPage(),
+    registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
+    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
+    provideConsentDialog(),
+    defineBuiltinUiPoints(),
+    followPluginChanges(),
+    syncProjection(),
+    trackPluginTheme(),
+    trackIconTheme(),
+  ];
   void refreshPlugins();
   return () => disposers.reverse().forEach((d) => d());
 }
@@ -36,6 +66,10 @@ export function activateSettingsPages(): () => void {
 export function activate(): () => void {
   const disposers = [
     registerPluginsPage(),
+    registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
+    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
+    provideConsentDialog(),
+    providePluginThemePreviews(),
     registerActions([
       {
         id: "plugins.settings",
@@ -56,6 +90,27 @@ export function activate(): () => void {
         },
       },
       {
+        id: "plugins.importIntellijTheme",
+        title: "Import IntelliJ Theme from File…",
+        category: "Plugins",
+        icon: "plugin",
+        keywords: ["intellij", "jetbrains", "theme", "jar", "theme.json", "color scheme"],
+        // Installing needs a project's window.
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          await importIntellijTheme(typeof arg === "string" ? arg : undefined);
+        },
+      },
+      {
+        id: "plugins.importInstalledIntellijTheme",
+        title: "Import Theme from IntelliJ IDE…",
+        category: "Plugins",
+        icon: "plugin",
+        keywords: ["intellij", "jetbrains", "theme", "color scheme", "migrate"],
+        when: "projectOpen",
+        run: () => showInstalledIntellijThemes(),
+      },
+      {
         id: "plugins.reloadAll",
         title: "Reload Plugins",
         category: "Plugins",
@@ -68,6 +123,10 @@ export function activate(): () => void {
       },
     ]),
     startPluginBridge(),
+    // Plugin custom editors (tab kind) and context menu entries.
+    startViewUi((input) => void editorService().openInput(input)),
+    // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).
+    registerEditorContribution({ id: "plugins.lineMarkers", order: 57, extensions: pluginLineMarkerGutter }),
     // Dev plugins (`<project>/.openidea/plugins`) depend on the open project.
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) void refreshPlugins();

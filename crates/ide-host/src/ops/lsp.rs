@@ -1,9 +1,11 @@
 use super::doc::blocking;
 use crate::Host;
 use crate::apply_workspace_edit as apply_edit;
+use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
+use ide_plugin::ProviderDocument;
 
 async fn prepare_actions(
     project: std::sync::Arc<crate::Project>,
@@ -38,9 +40,99 @@ pub async fn lsp_completion(
 ) -> IdeResult<CompletionList> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.completion(doc, pos, trigger, cancel).await;
+    let result = lsp.completion(doc, pos, trigger.clone(), cancel).await;
     host.end_request(request);
-    result
+    // Plugin providers (`[[contributes.providers]]`) add theirs.
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
+    let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
+    if items.is_empty() {
+        return result;
+    }
+    let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
+    list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
+    Ok(list)
+}
+
+/// The plugin host and the document, when some plugin provides `kind`.
+fn plugin_providers(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    kind: ProviderKind,
+) -> Option<(std::sync::Arc<crate::plugins::PluginHost>, ProviderDocument)> {
+    let plugins = editor_providers(kind)?;
+    let snap = host.project(window).ok()?.documents.snapshot(doc).ok()?;
+    let d = ProviderDocument {
+        path: snap.path.0,
+        language: snap.language.0,
+        version: u64::from(snap.version),
+        text: snap.text,
+    };
+    Some((plugins, d))
+}
+
+/// Plugin calls block (the plugin's actor thread does the work).
+async fn plugin_call<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    tokio::task::spawn_blocking(f).await.ok()
+}
+
+/// Items from plugins carry no server (resolve and commands don't apply).
+const PLUGIN_SERVER: ServerId = ServerId(0);
+
+/// A plugin's `completion-item.kind` (wit/providers.wit lists them).
+fn plugin_completion_kind(kind: &str) -> Option<CompletionKind> {
+    Some(match kind {
+        "text" => CompletionKind::Text,
+        "method" => CompletionKind::Method,
+        "function" => CompletionKind::Function,
+        "constructor" => CompletionKind::Constructor,
+        "field" => CompletionKind::Field,
+        "variable" => CompletionKind::Variable,
+        "class" => CompletionKind::Class,
+        "interface" => CompletionKind::Interface,
+        "module" => CompletionKind::Module,
+        "property" => CompletionKind::Property,
+        "unit" => CompletionKind::Unit,
+        "value" => CompletionKind::Value,
+        "enum" => CompletionKind::Enum,
+        "keyword" => CompletionKind::Keyword,
+        "snippet" => CompletionKind::Snippet,
+        "color" => CompletionKind::Color,
+        "file" => CompletionKind::File,
+        "reference" => CompletionKind::Reference,
+        "folder" => CompletionKind::Folder,
+        "enum-member" => CompletionKind::EnumMember,
+        "constant" => CompletionKind::Constant,
+        "struct" => CompletionKind::Struct,
+        "event" => CompletionKind::Event,
+        "operator" => CompletionKind::Operator,
+        "type-parameter" => CompletionKind::TypeParameter,
+        _ => return None,
+    })
+}
+
+fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
+    let kind = item.kind.as_deref().and_then(plugin_completion_kind);
+    CompletionItem {
+        label: item.label,
+        label_detail: None,
+        detail: item.detail,
+        kind,
+        documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),
+        sort_text: item.sort_text,
+        filter_text: None,
+        preselect: false,
+        deprecated: false,
+        insert_text: item.insert_text,
+        is_snippet: false,
+        replace_range: item.replace,
+        replace_range_tab: None,
+        additional_edits: Vec::new(),
+        commit_characters: Vec::new(),
+        command: None,
+        data: None,
+        server: PLUGIN_SERVER,
+    }
 }
 
 /// Inline (ghost text) suggestions at `pos`; `automatic` when triggered by typing.
@@ -54,9 +146,26 @@ pub async fn lsp_inline_completion(
 ) -> IdeResult<Vec<InlineCompletionItem>> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.inline_completion(doc, pos, automatic, cancel).await;
+    let result = lsp.inline_completion(doc, pos, automatic, cancel.clone()).await;
+    // Plugins: cancelled (cooperatively) when the editor cancels the request.
+    let plugin = match plugin_providers(host, window, doc, ProviderKind::InlineCompletion) {
+        Some((plugins, d)) if !matches!(&result, Ok(items) if !items.is_empty()) => {
+            let cancel = cancel.clone();
+            plugin_call(move || plugins.provide_inline_completion(&d, pos, &cancel)).await.flatten()
+        }
+        _ => None,
+    };
     host.end_request(request);
-    result
+    match plugin {
+        Some((_, s)) => Ok(vec![InlineCompletionItem {
+            insert_text: s.insert_text,
+            range: s.replace,
+            filter_text: None,
+            command: None,
+            server: PLUGIN_SERVER,
+        }]),
+        None => result,
+    }
 }
 
 pub async fn lsp_resolve_completion(
@@ -87,7 +196,40 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
-    host.project(window)?.lsp.goto(doc, pos, kind).await
+    let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
+    if kind != GotoKind::Definition {
+        return result;
+    }
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else { return result };
+    let found = plugin_call(move || plugins.provide_definition(&d, pos)).await.unwrap_or_default();
+    if found.is_empty() {
+        return result;
+    }
+    let mut out = result.unwrap_or_default();
+    out.extend(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }));
+    Ok(out)
+}
+
+/// Gutter markers from plugins (`line-markers` providers) for `doc`.
+pub async fn plugin_line_markers(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+) -> IdeResult<Vec<crate::plugins::LineMarkerInfo>> {
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::LineMarkers) else {
+        return Ok(Vec::new());
+    };
+    let markers = plugin_call(move || plugins.provide_line_markers(&d)).await.unwrap_or_default();
+    Ok(markers
+        .into_iter()
+        .map(|(plugin_id, m)| crate::plugins::LineMarkerInfo {
+            plugin_id,
+            line: m.line,
+            icon: m.icon,
+            tooltip: m.tooltip,
+            target: m.target.map(|l| Location { path: l.path.into(), range: l.range, uri: None }),
+        })
+        .collect())
 }
 
 /// Implementations of the symbols at `positions`, one list per position (the
@@ -165,8 +307,45 @@ pub async fn lsp_code_actions(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let actions = project.lsp.code_actions(doc, range, only).await?;
+    let result = project.lsp.code_actions(doc, range, only.clone()).await;
+    let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
+        Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let plugin_actions: Vec<CodeAction> = plugin_actions
+        .into_iter()
+        .map(|(_, a)| plugin_code_action(a))
+        .filter(|a| {
+            only.is_empty()
+                || a.kind.as_ref().is_some_and(|k| only.iter().any(|o| k == o || k.starts_with(&format!("{o}."))))
+        })
+        .collect();
+    let actions = if plugin_actions.is_empty() {
+        result?
+    } else {
+        let mut out = result.unwrap_or_default();
+        out.extend(plugin_actions);
+        out
+    };
     prepare_actions(project, doc, version, actions).await
+}
+
+fn plugin_code_action(a: ide_plugin::CodeAction) -> CodeAction {
+    let files = a
+        .edits
+        .into_iter()
+        .map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None })
+        .collect();
+    CodeAction {
+        title: a.title,
+        kind: a.kind,
+        is_preferred: a.preferred,
+        disabled_reason: None,
+        edit: Some(WorkspaceEdit { files, preconditions: Vec::new() }),
+        command: None,
+        data: None,
+        server: PLUGIN_SERVER,
+    }
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -233,6 +412,56 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
+/// The class at `pos` and the members a class-hierarchy refactoring can move.
+pub async fn lsp_hierarchy_members(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+) -> IdeResult<HierarchyMembers> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.hierarchy_members(doc, pos, kind, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Checks a class-hierarchy refactoring and computes its edit without applying it.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_hierarchy_refactor(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+    target: Option<String>,
+    choices: Vec<HierarchyChoice>,
+) -> IdeResult<HierarchyRefactored> {
+    let project = host.project(window)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.hierarchy_refactor(doc, pos, kind, target, choices, cancel).await;
+    host.end_request(request);
+    let mut refactored = result?;
+    blocking(move || {
+        if project.documents.version(doc)? != version {
+            return Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing the refactoring; request it again",
+            ));
+        }
+        if let Some(edit) = &mut refactored.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(refactored)
+    })
+    .await
+}
+
 pub async fn lsp_rename(
     host: &Host,
     window: &str,
@@ -497,6 +726,22 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_rename", |c| async move {
         lsp_rename(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("newName")?).await
     });
+    d.add("lsp_hierarchy_members", |c| async move {
+        lsp_hierarchy_members(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("kind")?).await
+    });
+    d.add("lsp_hierarchy_refactor", |c| async move {
+        lsp_hierarchy_refactor(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("kind")?,
+            c.arg("target")?,
+            c.arg("choices")?,
+        )
+        .await
+    });
     d.add("lsp_format", |c| async move {
         lsp_format(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("options")?).await
     });
@@ -550,4 +795,29 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_execute_command", |c| async move {
         lsp_execute_command(&c.host, &c.window, c.arg("doc")?, c.arg("command")?).await
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_completion_kind_the_plugin_api_documents_is_understood() {
+        let wit = include_str!("../../../../wit/providers.wit");
+        let doc: String = wit
+            .lines()
+            .map(|l| l.trim().trim_start_matches("///").trim())
+            .skip_while(|l| !l.starts_with("Icon and sort group:"))
+            .take_while(|l| !l.starts_with("kind:"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let list = doc.strip_prefix("Icon and sort group:").unwrap().split(". Unknown").next().unwrap();
+        let list = list.replace(" or ", ", ");
+        let kinds: Vec<&str> = list.split(',').map(str::trim).filter(|k| !k.is_empty()).collect();
+        assert_eq!(kinds.len(), 25, "{kinds:?}");
+        for k in kinds {
+            assert!(plugin_completion_kind(k).is_some(), "{k:?}");
+        }
+        assert_eq!(plugin_completion_kind("nonsense"), None);
+    }
 }

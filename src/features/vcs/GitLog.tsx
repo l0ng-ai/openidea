@@ -18,6 +18,7 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
+import { executeAction } from "@/platform/actions";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
@@ -58,6 +59,7 @@ import {
   setLogBranches,
   setLogFilters,
   toggleCommitSelection,
+  toggleRepository,
   updateLogOptions,
   useGitLog,
 } from "./logStore";
@@ -464,7 +466,9 @@ export function BranchesPanel() {
               ? branchMenu(n.branch, n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current)
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
-                : [];
+                : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
+                  ? REMOTES_MENU
+                  : [];
             const items = n?.repo ? inRepo(n.repo, menu) : menu;
             if (!items.length) return;
             e.preventDefault();
@@ -484,6 +488,9 @@ export function BranchesPanel() {
     </div>
   );
 }
+
+/** IDEA: the Remote node and each remote of the Branches pane offer Manage Remotes…. */
+const REMOTES_MENU: MenuItem[] = [{ label: "Manage Remotes…", run: () => void executeAction("vcs.manageRemotes") }];
 
 // --- filters ----------------------------------------------------------------
 
@@ -693,7 +700,7 @@ function FilterBar() {
                 repositories.map((repo) => ({
                   label: repoName(repo),
                   checked: filters.repositories?.includes(repo) ?? false,
-                  run: () => setLogFilters({ repositories: [repo] }),
+                  run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
                 })),
               ),
             onClear: () => setLogFilters({ repositories: [] }),

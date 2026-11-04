@@ -89,6 +89,8 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
     fontStyle: `var(--syn-${t}-italic, ${t === "comment" ? "var(--syn-comment-style)" : t === "doc-comment" || t === "docstring" ? "italic" : "inherit"})`,
     backgroundColor: `var(--syn-${t}-bg, transparent)`,
     textDecoration: `var(--syn-${t}-effect, none)`,
+    // WebKit takes a decoration with a style or colour only through the prefixed property.
+    ...({ WebkitTextDecoration: `var(--syn-${t}-effect, none)` } as CSSProperties),
   };
 }
 
