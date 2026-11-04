@@ -39,6 +39,7 @@ import { IconButton, Select } from "@/ui";
 import { sourceLabel, splitTarget, targetOf } from "./model";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
 import { shouldAutoCompleteSql, sqlCandidates, type CandidateKind, type SqlCandidate } from "./sql/complete";
+import { unsafeMessage } from "./sql/unsafe";
 import { sqlSupport } from "./sqlSupport";
 import {
   bindConsole,
@@ -56,6 +57,7 @@ import {
   sourceById,
   targetLabel,
   useDatabase,
+  type ConfirmUnsafe,
 } from "./store";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
@@ -76,19 +78,31 @@ interface RunMark {
   ms: number | null;
 }
 
+/** An unsafe statement waiting for Execute / Execute and Suppress (IDEA's warning banner). */
+interface UnsafeMark {
+  from: number;
+  to: number;
+  message: string;
+}
+
 interface RunState {
   marks: readonly RunMark[];
   /** Message of the bottom error banner (`null`: hidden). */
   banner: string | null;
+  unsafe?: UnsafeMark | null;
 }
 
 const setRun = StateEffect.define<RunState>();
+const setUnsafe = StateEffect.define<UnsafeMark | null>();
 
 const runField = StateField.define<RunState>({
   create: () => ({ marks: [], banner: null }),
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setRun)) return e.value;
+    for (const e of tr.effects) if (e.is(setRun)) value = { ...e.value, unsafe: value.unsafe };
+    for (const e of tr.effects) if (e.is(setUnsafe)) value = { ...value, unsafe: e.value };
     if (!tr.docChanged) return value;
+    const u = value.unsafe;
+    if (u) value = { ...value, unsafe: { ...u, from: tr.changes.mapPos(u.from), to: tr.changes.mapPos(u.to) } };
     // Editing a statement drops its mark.
     const marks: RunMark[] = [];
     for (const m of value.marks) {
@@ -117,9 +131,16 @@ const runField = StateField.define<RunState>({
         if (m.ms !== null)
           ranges.push(Decoration.widget({ widget: new TimingWidget(m.ms), side: 1 }).range(m.timingAt));
       }
+      const u = st.unsafe;
+      if (u && u.from < u.to)
+        ranges.push(
+          Decoration.mark({ class: "cm-openidea-db-warning", attributes: { title: u.message } }).range(u.from, u.to),
+        );
       return Decoration.set(ranges, true);
     }),
-    showPanel.from(f, (st) => (st.banner ? errorBanner(st.banner) : null)),
+    showPanel.from(f, (st) =>
+      st.unsafe ? unsafeBanner(st.unsafe.message) : st.banner ? errorBanner(st.banner) : null,
+    ),
   ],
 });
 
@@ -139,13 +160,21 @@ class TimingWidget extends WidgetType {
 }
 
 class RunMarker extends GutterMarker {
-  constructor(readonly error: string | null) {
+  constructor(
+    readonly error: string | null,
+    readonly warning: string | null = null,
+  ) {
     super();
   }
   eq(other: RunMarker) {
-    return other.error === this.error;
+    return other.error === this.error && other.warning === this.warning;
   }
   toDOM() {
+    if (this.warning) {
+      const el = iconNode("warning", 14, "cm-openidea-db-run-warning");
+      el.title = this.warning;
+      return el;
+    }
     const el = iconNode(
       this.error ? "error" : "check",
       14,
@@ -161,9 +190,11 @@ const runGutter = gutter({
   markers: (view) => {
     const st = view.state.field(runField);
     const doc = view.state.doc;
+    const unsafeLine = st.unsafe && st.unsafe.from <= doc.length ? doc.lineAt(st.unsafe.from).from : -1;
     const ranges = st.marks
-      .filter((m) => m.from <= doc.length)
+      .filter((m) => m.from <= doc.length && doc.lineAt(m.from).from !== unsafeLine)
       .map((m) => new RunMarker(m.error).range(doc.lineAt(m.from).from));
+    if (st.unsafe && unsafeLine >= 0) ranges.push(new RunMarker(null, st.unsafe.message).range(unsafeLine));
     return RangeSet.of(ranges, true);
   },
 });
@@ -188,6 +219,66 @@ function errorBanner(message: string) {
   };
 }
 
+type UnsafeChoice = "execute" | "suppress" | "cancel";
+
+/** The answer to the unsafe-query banner shown in a view. */
+const unsafeAnswers = new WeakMap<EditorView, (choice: UnsafeChoice) => void>();
+/** Consoles whose unsafe queries run without asking (Execute and Suppress), until the app restarts. */
+const unsafeSuppressed = new Set<string>();
+
+function unsafeBanner(message: string) {
+  return (view: EditorView): Panel => {
+    const dom = document.createElement("div");
+    dom.className = "cm-openidea-db-banner cm-openidea-db-banner-warning";
+    dom.setAttribute("role", "alert");
+    const text = document.createElement("span");
+    text.className = "cm-openidea-db-banner-text";
+    text.textContent = message;
+    text.title = message;
+    const answer = (choice: UnsafeChoice) => unsafeAnswers.get(view)?.(choice);
+    const action = (label: string, choice: UnsafeChoice) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cm-openidea-db-banner-action";
+      b.textContent = label;
+      b.onclick = () => answer(choice);
+      return b;
+    };
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "cm-openidea-db-banner-close";
+    close.setAttribute("aria-label", tx("Close"));
+    close.appendChild(iconNode("close", 14));
+    close.onclick = () => answer("cancel");
+    dom.append(text, action(tx("Execute"), "execute"), action(tx("Execute and Suppress"), "suppress"), close);
+    return { dom, top: false };
+  };
+}
+
+/** Shows the unsafe-query banner for `statement` and waits for the answer (true: run it). */
+function confirmUnsafe(view: EditorView, path: string): ConfirmUnsafe {
+  return (statement, unsafe) => {
+    if (unsafeSuppressed.has(path)) return Promise.resolve(true);
+    unsafeAnswers.get(view)?.("cancel");
+    return new Promise<boolean>((resolve) => {
+      unsafeAnswers.set(view, (choice) => {
+        unsafeAnswers.delete(view);
+        if (choice === "suppress") unsafeSuppressed.add(path);
+        if (view.state.field(runField, false)) view.dispatch({ effects: setUnsafe.of(null) });
+        resolve(choice !== "cancel");
+      });
+      const len = view.state.doc.length;
+      view.dispatch({
+        effects: setUnsafe.of({
+          from: Math.min(len, statement.from + unsafe.from),
+          to: Math.min(len, statement.from + unsafe.to),
+          message: unsafeMessage(unsafe),
+        }),
+      });
+    });
+  };
+}
+
 /** Marks the statements that ran: gutter check or error, timing, the error banner. */
 export function markOutcomes(view: EditorView, outcomes: readonly DbStatementOutcome[]) {
   const len = view.state.doc.length;
@@ -208,7 +299,7 @@ export function markOutcomes(view: EditorView, outcomes: readonly DbStatementOut
 /** Runs the statement at the caret (or the selected ones) of `view`. */
 export async function executeInView(view: EditorView, path: string) {
   const sel = view.state.selection.main;
-  const outcomes = await executeConsole(path, view.state.doc.toString(), sel.from, sel.to);
+  const outcomes = await executeConsole(path, view.state.doc.toString(), sel.from, sel.to, confirmUnsafe(view, path));
   if (outcomes.length) markOutcomes(view, outcomes);
 }
 

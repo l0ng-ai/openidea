@@ -6085,6 +6085,7 @@
   "Default (the module's JDK)": "默认（模块的 JDK）",
   "Use classpath of module": "使用模块的类路径",
   "Find by main class": "按主类查找",
+<<<<<<< HEAD
   "Pull Members Up…": "上拉成员…",
   "Push Members Down…": "下推成员…",
   "Pull Members Up": "上拉成员",
@@ -6202,5 +6203,10 @@
   "First Page": "第一页",
   "Count rows": "统计行数",
   "Last Page": "最后一页",
-  "{first}-{last} of {total}": "{first}-{last}，共 {total}"
+  "{first}-{last} of {total}": "{first}-{last}，共 {total}",
+  "Unsafe query: 'Delete' statement without 'where' clears all data in the table": "不安全的查询：没有 'where' 的 'Delete' 语句会清除表中的所有数据",
+  "Unsafe query: 'Delete' statement clears all data in the table because 'where' condition is always true": "不安全的查询：'where' 条件始终为真，'Delete' 语句会清除表中的所有数据",
+  "Unsafe query: 'Update' statement without 'where' updates all rows in the table": "不安全的查询：没有 'where' 的 'Update' 语句会更新表中的所有行",
+  "Unsafe query: 'Update' statement updates all rows in the table because 'where' condition is always true": "不安全的查询：'where' 条件始终为真，'Update' 语句会更新表中的所有行",
+  "Execute and Suppress": "执行并不再提示"
 }
