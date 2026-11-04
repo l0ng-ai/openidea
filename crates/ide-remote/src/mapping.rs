@@ -52,9 +52,14 @@ fn local_folder(local: &str, project_root: &Path) -> Option<PathBuf> {
     {
         return Some(project_root.join(rel));
     }
-    let rel = local.trim_matches('/');
-    let relative = project_root.join(rel);
+    let relative = project_root.join(without_root(path));
     if !path.is_absolute() || relative.is_dir() || !path.exists() { Some(relative) } else { None }
+}
+
+/// `path` without its drive and root (`/a/b`, `C:\a\b` → `a/b`), to read it
+/// relative to the project: joining an absolute path would replace the root.
+fn without_root(path: &Path) -> PathBuf {
+    path.components().filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir)).collect()
 }
 
 impl Mappings {
@@ -247,14 +252,15 @@ mod tests {
 
     #[test]
     fn local_paths_may_be_absolute_inside_the_project() {
-        let root = Path::new("/p");
-        let m = Mappings::new(&server(vec![("/p", "/", ""), ("/p/static/", "cdn", "")]), root, "/mnt/deploy");
-        assert_eq!(m.remote(Path::new("/p/src/a.py")).as_deref(), Some("/mnt/deploy/src/a.py"));
-        assert_eq!(m.remote(Path::new("/p/static/x.css")).as_deref(), Some("/mnt/deploy/cdn/x.css"));
-        assert_eq!(m.local("/mnt/deploy/cdn/x.css"), Some(PathBuf::from("/p/static/x.css")));
+        let root = Path::new(if cfg!(windows) { r"C:\p" } else { "/p" });
+        let (inside, statics) = (root.to_str().unwrap(), format!("{}/static/", root.display()));
+        let m = Mappings::new(&server(vec![(inside, "/", ""), (&statics, "cdn", "")]), root, "/mnt/deploy");
+        assert_eq!(m.remote(&root.join("src/a.py")).as_deref(), Some("/mnt/deploy/src/a.py"));
+        assert_eq!(m.remote(&root.join("static/x.css")).as_deref(), Some("/mnt/deploy/cdn/x.css"));
+        assert_eq!(m.local("/mnt/deploy/cdn/x.css"), Some(root.join("static/x.css")));
         // A leading `/` that is not the project stays project-relative.
         let m = Mappings::new(&server(vec![("/static/", "", "")]), root, "/mnt/deploy");
-        assert_eq!(m.remote(Path::new("/p/static/x.css")).as_deref(), Some("/mnt/deploy/x.css"));
+        assert_eq!(m.remote(&root.join("static/x.css")).as_deref(), Some("/mnt/deploy/x.css"));
     }
 
     #[test]
@@ -264,7 +270,7 @@ mod tests {
         let outside = tmp.path().join("outside");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir(&outside).unwrap();
-        let nested = root.join(outside.strip_prefix("/").unwrap()).join("a.txt");
+        let nested = root.join(without_root(&outside)).join("a.txt");
         std::fs::create_dir_all(nested.parent().unwrap().parent().unwrap()).unwrap();
         // A nested project file at the outside path's spelling is not a mapping folder.
         std::fs::write(nested.parent().unwrap(), "nested").unwrap();
@@ -288,7 +294,7 @@ mod tests {
         assert_eq!(local_folder("/", &root), Some(root.clone()));
         let outside = tmp.path().join("outside");
         std::fs::create_dir(&outside).unwrap();
-        let relative = root.join(outside.strip_prefix("/").unwrap());
+        let relative = root.join(without_root(&outside));
         std::fs::create_dir_all(&relative).unwrap();
         assert_eq!(local_folder(outside.to_str().unwrap(), &root), Some(relative.clone()));
         let nested = relative.join("a.txt");
@@ -297,7 +303,7 @@ mod tests {
         assert_eq!(m.remote(&nested).as_deref(), Some("/srv/a.txt"));
         assert_eq!(m.local("/srv/a.txt"), Some(nested));
         let missing = tmp.path().join("missing");
-        assert_eq!(local_folder(missing.to_str().unwrap(), &root), Some(root.join(missing.strip_prefix("/").unwrap())));
+        assert_eq!(local_folder(missing.to_str().unwrap(), &root), Some(root.join(without_root(&missing))));
         assert_eq!(local_folder("/src/", &root), Some(root.join("src")));
     }
 
