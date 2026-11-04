@@ -42,7 +42,6 @@ export function activate(): () => void {
       icon: "toolwindow-database",
       anchor: "right",
       order: 20,
-      stripe: "onUse",
       component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
       headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
     }),

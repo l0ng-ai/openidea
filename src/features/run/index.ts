@@ -301,10 +301,12 @@ export function activate(): () => void {
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     // A removed workspace member (or a closed project) takes its sessions,
     // temporary configurations and Services groups with it.
+    // Only while the same project stays open: closing it tears its runs down separately.
     useProject.subscribe((s, prev) => {
-      const before = prev.project?.workspace?.projects ?? [];
-      const after = s.project?.workspace?.projects ?? null;
-      for (const root of before) if (!after?.includes(root)) void cleanupRemovedProject(root);
+      if (!s.project || s.project.root !== prev.project?.root) return;
+      const before = prev.project.workspace?.projects ?? [];
+      const after = s.project.workspace?.projects ?? [];
+      for (const root of before) if (!after.includes(root)) void cleanupRemovedProject(root);
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),

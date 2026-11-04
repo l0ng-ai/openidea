@@ -55,6 +55,7 @@ export function activate(): () => void {
       icon: "toolwindow-services",
       anchor: "bottom",
       order: 8,
+      stripe: "onUse",
       component: ServicesHost,
       headerContent: ServicesTabs,
       headerActions: ServicesHeaderActions,

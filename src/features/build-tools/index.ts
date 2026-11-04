@@ -110,7 +110,6 @@ function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, (
               icon: "toolwindow-maven",
               anchor: "right",
               order: 10,
-              stripe: "onUse",
               component: MavenView,
             })
           : registerToolWindow({
@@ -119,7 +118,6 @@ function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, (
               icon: "toolwindow-gradle",
               anchor: "right",
               order: 11,
-              stripe: "onUse",
               component: GradleView,
             });
     } else if (!has[tool] && registered[tool]) {

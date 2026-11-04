@@ -53,7 +53,6 @@ export function activate(): () => void {
       icon: "toolwindow-agents",
       anchor: "right",
       order: 0.5,
-      stripe: "onUse",
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
       headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),

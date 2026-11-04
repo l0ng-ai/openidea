@@ -405,42 +405,13 @@ export function showToolWindow(id: string, focus = false) {
   update({
     visible: { ...s.visible, [slot]: id },
     // Opening a window puts its button on the stripe (IDEA).
-    stripeButtons: trimStripeButtons(s.stripeButtons[id] ? s.stripeButtons : { ...s.stripeButtons, [id]: true }),
+    stripeButtons: s.stripeButtons[id] ? s.stripeButtons : { ...s.stripeButtons, [id]: true },
     mounted,
     lastActive: id,
     stashed: null,
     maximized: s.maximized && s.maximized !== a ? null : s.maximized,
     focusRequest: focus ? { id, seq: ++focusSeq } : s.focusRequest,
   });
-}
-
-/** The bottom stripe holds at most this many buttons. */
-const MAX_STRIPE_BUTTONS = 8;
-
-/** Whether the window's button sits on the bottom stripe (Bottom Left / Bottom Right). */
-function onBottomStripe(tw: ToolWindowContribution): boolean {
-  return slotOf(tw) === "bottom" || slotOf(tw) === "bottom-split";
-}
-
-/**
- * Keeps the bottom stripe within `MAX_STRIPE_BUTTONS` after a button is added
- * (the left and right stripes are the user's own, untouched): the windows the
- * user never opened (their button is a default, not a `true` choice) go back
- * under "…", least important (highest order) first.
- */
-function trimStripeButtons(buttons: Record<string, boolean>): Record<string, boolean> {
-  const windows = useContributions.getState().toolWindows;
-  const withButton = [...windows.values()].filter((tw) => onBottomStripe(tw) && hasStripeButton(tw, buttons));
-  if (withButton.length <= MAX_STRIPE_BUTTONS) return buttons;
-  const visible = useToolWindowLayout.getState().visible;
-  // Never the window the user just opened or is looking at; never an explicit choice.
-  const spare = withButton.filter((tw) => buttons[tw.id] !== true && visible[slotOf(tw)] !== tw.id);
-  for (const tw of spare.sort((a, b) => (b.order ?? 100) - (a.order ?? 100))) {
-    buttons = { ...buttons, [tw.id]: false };
-    if (--withButton.length <= MAX_STRIPE_BUTTONS) break;
-  }
-  // shortcut: all remaining buttons are the user's own choices, so an over-full stripe stays until one is hidden by hand.
-  return buttons;
 }
 
 export function hideToolWindow(id: string) {
