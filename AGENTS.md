@@ -18,9 +18,12 @@ Visual style: dark, low-contrast greys, one cool accent
 - `src/ui/` — design-system primitives. `src/features/<name>/` — one feature each,
   exporting `activate()` registered in `src/features/index.ts`.
 - `languages/<id>.toml` — language definitions (detection, comments, LSP, DAP).
-- `crates/ide-host` — the `openidea-server` binary for remote development.
-- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins;
-  `templates/` — plugin starter templates.
+- `crates/ide-host` — the `openidea-server` binary for remote development and the
+  `openidea-plugin` CLI (plugin starter templates live in its `templates.rs`).
+- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins.
+  Plugin docs: `plugins/README.md`, `docs/plugins/themes.md`.
+- `java/` — JDT LS extension bundles (`java-usages`, `kotlin-bridge`) and the patched
+  Lombok agent, embedded into the app by `ide-sdk` / `ide-tools`.
 - `e2e/` — Playwright UI tests (`pnpm e2e`). `fixtures/` — sample projects per language
   for manual and automated testing.
 
@@ -46,8 +49,8 @@ Visual style: dark, low-contrast greys, one cool accent
 
 ## Issues & PRs
 
-Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one issue per PR with
-`Closes #<n>`, reproduce first, keep the diff focused, short plain description, and a
+Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
+(`Closes #<n>` when it resolves an issue), reproduce first, keep the diff focused, short plain description, and a
 **How it was verified** section with commands run, results and (for UI) before/after screenshots.
 Unclear product decisions → `needs-decision` and stop.
 
@@ -64,6 +67,8 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   this worktree's running MCP bridges and actual ports.
 - `pnpm build` — typecheck + bundle frontend.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
+- `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
+  on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
 - `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion

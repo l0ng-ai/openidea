@@ -40,6 +40,8 @@ pub(crate) struct FileRecord {
     pub size: u64,
     pub hash: [u8; 32],
     pub symbols: Vec<StoredSymbol>,
+    /// Matched by an ignore file: listed by name only (no hash, no symbols).
+    pub ignored: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +74,7 @@ pub(crate) struct FileEntry {
     pub size: u64,
     pub hash: [u8; 32],
     pub symbols: Box<[Sym]>,
+    pub ignored: bool,
 }
 
 impl FileEntry {
@@ -100,6 +103,7 @@ impl FileEntry {
             size: record.size,
             hash: record.hash,
             symbols,
+            ignored: record.ignored,
         }
     }
 
@@ -126,7 +130,13 @@ impl FileEntry {
                     range: s.range,
                 })
                 .collect(),
+            ignored: self.ignored,
         }
+    }
+
+    /// Whether the entry is out of date for `found` on disk.
+    pub(crate) fn stale_for(&self, found: &crate::filter::Found) -> bool {
+        self.mtime != found.mtime || self.size != found.size || self.ignored != found.ignored
     }
 }
 

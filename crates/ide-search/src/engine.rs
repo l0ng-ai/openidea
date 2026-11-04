@@ -155,7 +155,7 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
             .git_global(true)
             .git_exclude(true)
             .parents(true)
-            .require_git(false)
+            .require_git(ide_core::ignored::inside_git_repo(first))
             .follow_links(false)
             .threads(std::thread::available_parallelism().map_or(4, |n| n.get()).min(12))
             .filter_entry(|e| e.file_name() != ".git");

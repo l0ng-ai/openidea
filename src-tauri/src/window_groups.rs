@@ -8,8 +8,16 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tauri::{AppHandle, Manager, WebviewWindow};
+
+/// Wait for the selection's asynchronous `hide` calls to take effect before moving the peers.
+const FRAME_SETTLE_AFTER_SELECT: Duration = Duration::from_millis(50);
+/// Wait for a drag/resize to stop before copying its frame to the hidden peers.
+const FRAME_SETTLE_AFTER_MOVE: Duration = Duration::from_millis(100);
+/// Coalesces the move/resize events a drag emits.
+static FRAME_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -48,7 +56,47 @@ fn changed(app: &AppHandle) {
     app.state::<AppState>().sink.emit(IdeEvent::WindowGroupsChanged);
 }
 
+/// Whether `to` already presents `from`'s frame, so moving it would only make it flicker.
+fn same_frame(from: &WebviewWindow, to: &WebviewWindow) -> bool {
+    let (Ok(from_max), Ok(to_max)) = (from.is_maximized(), to.is_maximized()) else { return false };
+    let (Ok(from_full), Ok(to_full)) = (from.is_fullscreen(), to.is_fullscreen()) else { return false };
+    if from_max != to_max || from_full != to_full {
+        return false;
+    }
+    let same_monitor = match (from.current_monitor(), to.current_monitor()) {
+        (Ok(Some(a)), Ok(Some(b))) => a.position() == b.position() && a.size() == b.size(),
+        // An unmapped window may not report a monitor; treat only equal states as matching.
+        (Ok(None), Ok(None)) | (Err(_), Err(_)) => true,
+        _ => false,
+    };
+    if !same_monitor {
+        return false;
+    }
+    from_full
+        || from_max
+        || (from.outer_position().ok() == to.outer_position().ok() && from.inner_size().ok() == to.inner_size().ok())
+}
+
+/// Moves a hidden window onto `from`'s monitor. A restored window keeps its normal position on
+/// the monitor it last occupied; maximizing or going fullscreen there would make the window
+/// visibly jump across displays when its tab is selected.
+fn place_on_monitor(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
+    // Wayland does not let clients place top-level windows; maximizing stays on that output.
+    #[cfg(target_os = "linux")]
+    if crate::linux_window_state::is_wayland() {
+        return Ok(());
+    }
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    if let Some(monitor) = from.current_monitor().map_err(err)? {
+        to.set_position(*monitor.position()).map_err(err)?;
+    }
+    Ok(())
+}
+
 fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
+    if same_frame(from, to) {
+        return Ok(());
+    }
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let fullscreen = from.is_fullscreen().map_err(err)?;
     if fullscreen {
@@ -56,6 +104,8 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
         crate::macos::transfer_fullscreen(from, to).map_err(err)?;
         #[cfg(not(target_os = "macos"))]
         {
+            to.set_fullscreen(false).map_err(err)?;
+            place_on_monitor(from, to)?;
             from.set_fullscreen(false).map_err(err)?;
             to.set_fullscreen(true).map_err(err)?;
         }
@@ -75,9 +125,57 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
         crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
         to.set_size(size).map_err(err)?;
     } else {
+        // Maximize the target on the source's monitor, not on the monitor it happened to
+        // occupy while hidden.
+        to.unmaximize().map_err(err)?;
+        place_on_monitor(from, to)?;
         to.maximize().map_err(err)?;
     }
     Ok(())
+}
+
+/// Keeps hidden group members at the selected window's frame. Selecting a tab then only
+/// changes which window is visible instead of moving or resizing one on screen.
+fn sync_member_frames(app: &AppHandle, selected: &str) {
+    let Some(group) = app.state::<WindowsState>().groups.lock().group(selected).cloned() else { return };
+    if group.selected != selected {
+        return;
+    }
+    let Some(from) = app.get_webview_window(selected) else { return };
+    if from.is_fullscreen().unwrap_or(false) || from.is_minimized().unwrap_or(false) || simple_fullscreen(selected) {
+        return;
+    }
+    for member in group.members.iter().filter(|member| member.as_str() != selected) {
+        let Some(to) = app.get_webview_window(member) else { continue };
+        // A visible peer is the one being presented; never move it behind the user's back.
+        if to.is_visible().unwrap_or(false) {
+            continue;
+        }
+        if let Err(error) = copy_frame(&from, &to) {
+            tracing::warn!("cannot align window {member} with {selected}: {}", error.message);
+        }
+    }
+}
+
+/// A presented group window moved or resized. Align its hidden peers after the user stops, so
+/// the next tab selection is only a visibility change.
+pub fn frame_changed(app: &AppHandle, label: &str) {
+    let Some(group) = app.state::<WindowsState>().groups.lock().group(label).cloned() else { return };
+    if group.selected != label {
+        return;
+    }
+    let generation = FRAME_SYNC_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    let app = app.clone();
+    let label = label.to_owned();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(FRAME_SETTLE_AFTER_MOVE).await;
+        if FRAME_SYNC_GENERATION.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        if !app.state::<WindowsState>().quitting() {
+            sync_member_frames(&app, &label);
+        }
+    });
 }
 
 fn simple_fullscreen(label: &str) -> bool {
@@ -163,6 +261,18 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
                 }
             }
         }
+    } else if !state.quitting() {
+        // Align the members that are now hidden while they stay invisible, so the next
+        // selection does not move or resize a window on screen. Hiding is asynchronous;
+        // wait for it before moving a peer that is still on screen.
+        let app = app.clone();
+        let target = target.to_owned();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(FRAME_SETTLE_AFTER_SELECT).await;
+            if !app.state::<WindowsState>().quitting() {
+                sync_member_frames(&app, &target);
+            }
+        });
     }
     changed(app);
     result

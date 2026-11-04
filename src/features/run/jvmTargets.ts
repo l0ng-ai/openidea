@@ -17,11 +17,25 @@ export interface JvmTarget {
   method?: string;
   /** The class is a `@SpringBootApplication`. */
   spring?: boolean;
+  /** Java 25 instance `main` (JEP 512): a subclass cannot inherit it on older JDKs. */
+  instance?: boolean;
+}
+
+/** A class with `extends X` and no `main` of its own: it may inherit one. */
+export interface JvmMainCandidate {
+  /** Position of the class name (0-based line, UTF-16 column). */
+  line: number;
+  col: number;
+  className: string;
+  /** The superclass as written (`a.b.Base`), so an answer lapses when the `extends` clause changes. */
+  base: string;
+  spring?: boolean;
 }
 
 interface Token {
   text: string;
   line: number;
+  col: number;
 }
 
 /** Blanks comments, strings, text blocks and char literals (newlines kept). */
@@ -69,7 +83,7 @@ function tokenize(code: string): Token[] {
   for (let line = 0; line < lines.length; line++) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(lines[line]!))) tokens.push({ text: m[0], line });
+    while ((m = re.exec(lines[line]!))) tokens.push({ text: m[0], line, col: m.index });
   }
   return tokens;
 }
@@ -90,15 +104,27 @@ interface ClassFrame {
   annotations: string[];
   kind: string;
   companion: boolean;
+  /** Java `class … extends X` that may inherit a `main` (top-level or `static` nested). */
+  inheritsFrom?: { col: number; base: string };
 }
 
 /** Targets of a Java (`kotlin = false`) or Kotlin source file. */
 export function scanJvmTargets(src: string, relPath: string, kotlin: boolean): JvmTarget[] {
+  return scan(src, relPath, kotlin).targets;
+}
+
+/** Java classes that extend another class but declare no `main`; see `inheritedMain.ts`. */
+export function jvmMainCandidates(src: string, relPath: string): JvmMainCandidate[] {
+  return scan(src, relPath, false).candidates;
+}
+
+function scan(src: string, relPath: string, kotlin: boolean) {
   const code = stripCommentsAndStrings(src);
   const pkg = /^\s*package\s+([\w.]+)/m.exec(code)?.[1] ?? "";
   const qualify = (binary: string) => (pkg ? `${pkg}.${binary}` : binary);
   const tokens = tokenize(code);
   const out: JvmTarget[] = [];
+  const candidates: JvmMainCandidate[] = [];
   const classes: ClassFrame[] = [];
   /** A class header seen, waiting for its `{`. */
   let pendingClass: Omit<ClassFrame, "depth"> | null = null;
@@ -151,6 +177,9 @@ export function scanJvmTargets(src: string, relPath: string, kotlin: boolean): J
       const name = isIdent(next) && !TYPE_KEYWORDS.has(next!) ? unquote(next!) : companion ? "Companion" : null;
       if (name) {
         pendingClass = { name, line: tokens[i]!.line, annotations, kind: t, companion };
+        const base = !kotlin && t === "class" ? extendsClause(tokens, i) : null;
+        if (base && (classes.length === 0 || hasModifier(tokens, i, "static")))
+          pendingClass.inheritsFrom = { col: tokens[i + 1]!.col, base };
         annotations = [];
       }
       continue;
@@ -158,7 +187,16 @@ export function scanJvmTargets(src: string, relPath: string, kotlin: boolean): J
 
     if (t === "{") {
       if (pendingClass) {
-        classes.push({ ...pendingClass, depth: depth + 1 });
+        const frame = { ...pendingClass, depth: depth + 1 };
+        if (frame.inheritsFrom)
+          candidates.push({
+            line: frame.line,
+            col: frame.inheritsFrom.col,
+            className: qualify(binaryName([...classes, frame])),
+            base: frame.inheritsFrom.base,
+            spring: frame.annotations.includes("SpringBootApplication") || undefined,
+          });
+        classes.push(frame);
         pendingClass = null;
       }
       depth++;
@@ -223,7 +261,8 @@ export function scanJvmTargets(src: string, relPath: string, kotlin: boolean): J
       }
     } else if (name === "main") {
       const paramText = params.filter((p) => p !== "final").join(" ");
-      const stringArgs = /^String\s*(\[\s*]|\.\s*\.\s*\.)/.test(paramText) || paramText === "";
+      const stringArgs =
+        /^(java\s*\.\s*lang\s*\.\s*)?String\s*(\[\s*]|\.\s*\.\s*\.)/.test(paramText) || paramText === "";
       const kotlinArgs = /^\w+\s*:\s*Array\s*<\s*(out\s+)?String\s*>$/.test(paramText) || paramText === "";
       if (kotlin && kotlinArgs) {
         if (!owner) {
@@ -254,6 +293,7 @@ export function scanJvmTargets(src: string, relPath: string, kotlin: boolean): J
             kind: "main",
             className: qualify(binaryName(frames)),
             spring: spring || undefined,
+            instance: !isStatic || undefined,
           });
         }
       }
@@ -269,7 +309,33 @@ export function scanJvmTargets(src: string, relPath: string, kotlin: boolean): J
   // One main per class is enough (overloads).
   const seen = new Set<string>();
   const unique = out.filter((t) => t.kind !== "main" || (!seen.has(t.className) && !!seen.add(t.className)));
-  return [...suites, ...unique].sort((a, b) => a.line - b.line);
+  const own = new Set(unique.filter((t) => t.kind === "main").map((t) => t.className));
+  return {
+    targets: [...suites, ...unique].sort((a, b) => a.line - b.line),
+    candidates: candidates.filter((c) => !own.has(c.className)),
+  };
+}
+
+function hasModifier(tokens: Token[], at: number, modifier: string): boolean {
+  for (let k = at - 1; k >= 0 && !MEMBER_END.has(tokens[k]!.text); k--) if (tokens[k]!.text === modifier) return true;
+  return false;
+}
+
+/** The superclass named by the `extends` clause of the `class` at `at` (not a type-parameter bound), if any. */
+function extendsClause(tokens: Token[], at: number): string | null {
+  let angle = 0;
+  for (let k = at + 2; k < tokens.length && tokens[k]!.text !== "{" && tokens[k]!.text !== ";"; k++) {
+    const t = tokens[k]!.text;
+    if (t === "<") angle++;
+    else if (t === ">") angle--;
+    else if (angle === 0 && t === "extends") {
+      let base = "";
+      for (let j = k + 1; j < tokens.length && !["<", "{", "implements", "permits"].includes(tokens[j]!.text); j++)
+        base += tokens[j]!.text;
+      return base || null;
+    }
+  }
+  return null;
 }
 
 /** Simple name of a binary class name (`a.b.Outer$Inner` → `Inner`). */
