@@ -324,6 +324,7 @@ export const commands = {
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
+	indexFileExtensions: () => typedError<ExtensionCount[], IdeError>(__TAURI_INVOKE("index_file_extensions")),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
@@ -3324,6 +3325,12 @@ export type ExpressionAt = {
 	functionBoundary: SyntaxNode | null,
 	/**  The statement (or the expression when there is none) contains syntax errors. */
 	hasError: boolean,
+};
+
+/**  How many indexed files share an extension (lower case, without the dot). */
+export type ExtensionCount = {
+	extension: string,
+	files: number,
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */

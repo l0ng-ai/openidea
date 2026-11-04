@@ -63,8 +63,15 @@ vi.mock("@/platform/ipc", async (orig) => ({
 }));
 
 const { FindInFilesOverlay } = await import("../find/FindInFiles");
-const { findHistory, hideFindPopup, rememberFindString, runFindPopupCommand, showFindPopup, useFindPopup } =
-  await import("../find/store");
+const {
+  findHistory,
+  hideFindPopup,
+  rememberFindString,
+  runFindPopupCommand,
+  showFindPopup,
+  useFindPopup,
+  useProjectMasks,
+} = await import("../find/store");
 
 const { formatBinding } = await import("@/platform/keymap");
 
@@ -379,6 +386,17 @@ describe("footer, as IDEA", () => {
     expect(screen.queryByText(/to select usages$/)).not.toBeInTheDocument();
     fireEvent.change(field(), { target: { value: "order\nitem" } });
     expect(screen.getByText(/^Use .+ and .+ to select usages$/)).toBeInTheDocument();
+  });
+});
+
+describe("file mask, as IDEA", () => {
+  it("turned on with nothing typed takes the first suggestion", () => {
+    useProjectMasks.setState({ masks: ["*.rs", "*.toml"] });
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false));
+    expect(screen.getByLabelText("File mask")).toHaveAttribute("placeholder", "*.rs");
+    fireEvent.click(screen.getByRole("checkbox", { name: "File mask:" }));
+    expect([useFindPopup.getState().maskEnabled, useFindPopup.getState().mask]).toEqual([true, "*.rs"]);
   });
 });
 

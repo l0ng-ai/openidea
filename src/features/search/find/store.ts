@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import type { ContextKeys } from "@/platform/context";
-import type { ProjectFileSet, SearchContext, SearchQuery, SearchScope } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  type ProjectFileSet,
+  type SearchContext,
+  type SearchQuery,
+  type SearchScope,
+} from "@/platform/ipc";
 import { SEARCH_CONTEXTS, customScopes, findCustomScope, rememberSearch, searchHistory } from "@/platform/search";
 import { loadJson, saveJson } from "../common/open";
 
@@ -171,12 +178,34 @@ export function hideFindPopup() {
 }
 
 const MASKS_KEY = "openidea.search.fileMasks.v1";
-const DEFAULT_MASKS = ["*.ts,*.tsx", "*.rs", "*.kt", "*.java", "*.py", "*.go", "*.md", "*.json", "!*.test.*"];
+const PROJECT_MASKS = 5;
 
+/**
+ * `*.ext` masks of the project's most common language file types. IDEA seeds its
+ * mask list with the IDE's languages; a multi-language IDE takes the project's.
+ */
+export const useProjectMasks = create<{ masks: string[] }>(() => ({ masks: [] }));
+
+export async function refreshProjectMasks() {
+  try {
+    const [counts, languages] = await Promise.all([call(commands.indexFileExtensions()), commands.languages()]);
+    const known = new Set(languages.flatMap((l) => l.extensions.map((e) => e.toLowerCase())));
+    const masks = counts
+      .filter((c) => known.has(c.extension))
+      .slice(0, PROJECT_MASKS)
+      .map((c) => `*.${c.extension}`);
+    useProjectMasks.setState({ masks });
+  } catch {
+    /* no project index (welcome screen, tests) */
+  }
+}
+
+/** Masks to offer: the ones used recently, then the project's file types. */
 export function recentMasks(): string[] {
   const v = loadJson<unknown>(MASKS_KEY, []);
   const recent = Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  return [...recent, ...DEFAULT_MASKS.filter((m) => !recent.includes(m))];
+  const project = useProjectMasks.getState().masks;
+  return [...recent, ...project.filter((m) => !recent.includes(m))];
 }
 
 export function rememberMask(mask: string) {

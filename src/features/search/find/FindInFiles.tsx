@@ -60,6 +60,7 @@ import {
   hideFindPopup,
   recentMasks,
   rememberFindString,
+  refreshProjectMasks,
   rememberMask,
   resolveDirectory,
   resolveFindScope,
@@ -71,6 +72,7 @@ import {
   setFindPopupNewTab,
   setFindPopupPinned,
   useFindPopup,
+  useProjectMasks,
   type FindOptions,
   type BuiltinScope,
   type FindPopupCommand,
@@ -159,6 +161,11 @@ function FindInFilesDialog() {
   const set = (patch: Partial<FindOptions>) => useFindPopup.setState(patch);
 
   useEffect(() => () => session.dispose(), [session]);
+  const projectMasks = useProjectMasks((p) => p.masks);
+  useEffect(() => void refreshProjectMasks(), []);
+  /** Turning the mask on with nothing typed takes the first suggestion, as IDEA's combo box shows one. */
+  const enableMask = (on: boolean) =>
+    set(on && !s.mask.trim() ? { maskEnabled: true, mask: recentMasks()[0] ?? "" } : { maskEnabled: on });
   useEffect(() => {
     if (modules.length && !modules.some((m) => m.path === s.module))
       useFindPopup.setState({ module: modules[0]!.path });
@@ -384,7 +391,7 @@ function FindInFilesDialog() {
       | undefined;
     if (toggle) set({ [toggle]: !s[toggle] });
     else if (code === "KeyK") {
-      set({ maskEnabled: !s.maskEnabled });
+      enableMask(!s.maskEnabled);
       if (!s.maskEnabled) setTimeout(() => maskInputRef.current?.select(), 0);
     } else if (code === "KeyE" && s.replace) set({ preserveCase: !s.preserveCase });
     else if (code === "KeyB") setFindPopupNewTab(!s.newTab);
@@ -565,13 +572,13 @@ function FindInFilesDialog() {
             {summary}
           </span>
           <span className={styles.spacer} />
-          <Checkbox checked={s.maskEnabled} onChange={(v) => set({ maskEnabled: v })} label="File mask:" />
+          <Checkbox checked={s.maskEnabled} onChange={enableMask} label="File mask:" />
           <div ref={maskRef} className={clsx(styles.mask, !s.maskEnabled && styles.maskOff)}>
             <input
               ref={maskInputRef}
               className={styles.maskInput}
               value={s.mask}
-              placeholder="*.kt, !*Test*"
+              placeholder={projectMasks[0] ?? ""}
               aria-label={tx("File mask")}
               spellCheck={false}
               onChange={(e) => set({ mask: e.target.value, maskEnabled: true })}
