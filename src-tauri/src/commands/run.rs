@@ -202,6 +202,18 @@ pub async fn run_tomcat_build(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn run_tomcat_sync(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+    module: std::path::PathBuf,
+    class_paths: Vec<String>,
+    resources_only: bool,
+) -> IdeResult<bool> {
+    ide_host::ops::run::run_tomcat_sync(&state.host, window.label(), config, module, class_paths, resources_only).await
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn run_tomcat_update(
     window: Window,
     state: State<'_, AppState>,
