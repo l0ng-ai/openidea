@@ -1,4 +1,8 @@
 {
+  "Unity": "Unity 项目",
+  "Show Meta Files": "显示 Meta 文件",
+  "Show Generated Files": "显示生成的文件",
+  "C# project files are missing. In Unity, select an external script editor in Preferences > External Tools, then regenerate project files.": "缺少 C# 项目文件。请在 Unity 的偏好设置 > 外部工具中选择外部脚本编辑器，然后重新生成项目文件。",
   "Edit {name}": "编辑 {name}",
   "Whitespace-only changes": "仅空白字符更改",
   " · Whitespace-only changes": " · 仅空白字符更改",
