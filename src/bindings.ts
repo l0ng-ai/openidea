@@ -750,6 +750,8 @@ export const commands = {
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective")),
+	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
+	sdkPhpLanguageLevel: (path: string) => typedError<PhpLanguageLevels, IdeError>(__TAURI_INVOKE("sdk_php_language_level", { path })),
 	/**
 	 *  SDK / library source folders shown under "External Libraries" in the Project view,
 	 *  with the Maven / Gradle dependency jars of the build model.
@@ -5391,6 +5393,37 @@ export type PathCompletion = {
 	name: string,
 	dir: boolean,
 };
+
+/**  A PHP version and where it comes from. */
+export type PhpLanguageLevel = {
+	/**  `X.Y.Z`. */
+	version: string,
+	source: PhpLevelSource,
+};
+
+/**
+ *  The PHP language level of the project `path` belongs to (a workspace member, by path, as
+ *  the language server configuration picks it).
+ */
+export type PhpLanguageLevels = {
+	/**  The one Intelephense checks against; `None`: its default. */
+	effective: PhpLanguageLevel | null,
+	/**  The one Auto picks, from `composer.json`. */
+	auto: PhpLanguageLevel | null,
+	/**
+	 *  The workspace member `path` belongs to: its own settings choose the level, not the
+	 *  workspace's. `None`: the opened project.
+	 */
+	member: IpcPath | null,
+};
+
+export type PhpLevelSource = 
+/**  `languages.php.languageLevel`. */
+"settings" | 
+/**  `config.platform.php` of `composer.json`. */
+"platform" | 
+/**  The lowest version `require.php` of `composer.json` allows. */
+"require";
 
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */

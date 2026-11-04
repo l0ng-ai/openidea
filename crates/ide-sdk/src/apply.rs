@@ -612,9 +612,9 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
 
     // Intelephense reads it as `intelephense.environment.phpVersion` (`workspace/configuration`).
     if name == "intelephense"
-        && let Some(version) = crate::php::language_level(root, s)
+        && let Some(level) = crate::php::language_level(root, s)
     {
-        merge_init_options(cfg, json!({ "environment": { "phpVersion": version } }));
+        merge_init_options(cfg, json!({ "environment": { "phpVersion": level.version } }));
     }
     if name == "intelephense" {
         if let Some(stubs) = crate::php::intelephense_stubs(root, s) {
