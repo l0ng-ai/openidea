@@ -1109,3 +1109,74 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     assert!(live(&mgr, &task.id));
     mgr.shutdown();
 }
+
+/// Deleting a task whose agent still runs in the worktree removes both and leaves no
+/// process behind. On Windows the running agent would lock the folder (os error 32);
+/// that the wait comes first is checked by `ide-jsonrpc`'s `exited` tests.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_task_waits_for_its_agent_to_exit_before_removing_the_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("file.txt"), "original\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "initial"]);
+
+    let agent = Arc::new(FakeAgent::default());
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::default();
+    let (fake, started) = (agent.clone(), pids.clone());
+    // The fake agent, served on behalf of a real process that exits only when killed.
+    let connector: Connector = Arc::new(move |_spec, cwd, client, _stderr| {
+        let mut cmd = tokio::process::Command::new("sleep");
+        cmd.arg("30").current_dir(cwd).kill_on_drop(true);
+        let child = cmd.spawn()?;
+        started.lock().push(child.id().unwrap());
+        let (a, b) = duplex(1 << 20);
+        let (ar, aw) = tokio::io::split(a);
+        let (br, bw) = tokio::io::split(b);
+        // `connect_with_child` frames with Content-Length.
+        fake.servers.lock().push(Peer::connect(br, bw, fake.clone()));
+        Ok(Peer::connect_with_child(ar, aw, client, child))
+    });
+    let mgr = AgentManager::with_connector(
+        AgentPaths {
+            project_root: root.clone(),
+            store_dir: root.join("store"),
+            worktrees_dir: root.join("worktrees"),
+            models_file: root.join("models.json"),
+            custom_agents_dir: None,
+            home_dir: None,
+        },
+        tokio::runtime::Handle::current(),
+        connector,
+    );
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Fix the lexer"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Worktree,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let pid = *pids.lock().last().expect("the agent was started");
+
+    mgr.delete(&task.id, true).await.unwrap();
+    assert!(!task.cwd.0.exists());
+    // Killed and reaped: not even a zombie is left.
+    let alive = std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().unwrap().success();
+    assert!(!alive, "the agent (pid {pid}) is still running");
+}

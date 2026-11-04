@@ -5,7 +5,7 @@ use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_vcs::{ChangeKind, Repo};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 pub(crate) struct Created {
     pub path: PathBuf,
@@ -65,7 +65,27 @@ pub(crate) fn remove(project_root: &Path, worktrees_dir: &Path, path: &Path) -> 
     if !path.starts_with(worktrees_dir) || path == worktrees_dir {
         return Err(err);
     }
-    std::fs::remove_dir_all(path).map_err(|e| IdeError::internal(e.to_string()))
+    retrying(REMOVE_ATTEMPTS, REMOVE_PAUSE, || std::fs::remove_dir_all(path))
+        .map_err(|e| IdeError::internal(format!("{}: {e}", path.display())))
+}
+
+/// On Windows a folder can't be deleted while a process still has a file in it open
+/// (os error 32): an agent's helper that outlived it, an antivirus scan, the search indexer.
+/// Those let go within moments, so removing is retried for a few seconds.
+const REMOVE_ATTEMPTS: u32 = 10;
+const REMOVE_PAUSE: Duration = Duration::from_millis(300);
+
+fn retrying(attempts: u32, pause: Duration, mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    for _ in 1..attempts {
+        match op() {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => std::thread::sleep(pause),
+            _ => return Ok(()),
+        }
+    }
+    match op() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
 }
 
 /// Files under `cwd` that differ from `base` (untracked files included), with line counts.
@@ -148,6 +168,29 @@ fn unique_slug(base: &str, taken: impl Fn(&str) -> bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_is_retried_while_a_file_is_still_in_use() {
+        use std::io::{Error, ErrorKind};
+        // A sharing violation as Windows reports it (os error 32), a vanished folder, other errors.
+        let in_use = || Error::from_raw_os_error(32);
+        for (fails, outcome) in [(0, true), (3, true), (REMOVE_ATTEMPTS - 1, true), (REMOVE_ATTEMPTS, false)] {
+            let mut calls = 0;
+            let r = retrying(REMOVE_ATTEMPTS, Duration::ZERO, || {
+                calls += 1;
+                if calls <= fails { Err(in_use()) } else { Ok(()) }
+            });
+            assert_eq!(r.is_ok(), outcome, "{fails} failures");
+            assert_eq!(calls, (fails + 1).min(REMOVE_ATTEMPTS));
+        }
+        let mut calls = 0;
+        let gone = retrying(REMOVE_ATTEMPTS, Duration::ZERO, || {
+            calls += 1;
+            if calls == 1 { Err(in_use()) } else { Err(Error::from(ErrorKind::NotFound)) }
+        });
+        assert!(gone.is_ok(), "deleted meanwhile: done");
+        assert_eq!(calls, 2);
+    }
 
     #[test]
     fn slugs_are_branch_safe() {
