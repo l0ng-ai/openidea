@@ -93,6 +93,14 @@ function Details({
     onChanged?.();
     return command === agent.defaultProgram ? "" : (command ?? "");
   });
+  const envBase = formatEnv(agent.env);
+  const env = form.useExternal(`agents.${agent.id}.env`, envBase, async (draft) => {
+    const parsed = parseEnv(draft);
+    await backend.setEnv(agent.id, parsed);
+    await refresh();
+    onChanged?.();
+    return formatEnv(parsed);
+  });
   const [error, setError] = useState<string | null>(null);
   // An edit can have been staged by a previous page instance. Its Apply callback
   // refreshes that instance; the mounted one follows the newly applied value too.
@@ -174,6 +182,26 @@ function Details({
           )}
         </p>
       )}
+      {agent.commandReadOnlyReason !== "registry" && agent.commandReadOnlyReason !== "customAgent" && (
+        <>
+          <label className={styles.label} htmlFor={`agent-env-${agent.id}`}>
+            <T>Environment variables</T>
+          </label>
+          <div className={styles.controls}>
+            <Input
+              id={`agent-env-${agent.id}`}
+              mono
+              value={env.value}
+              disabled={env.saving}
+              placeholder="NAME=value; OTHER=value"
+              onChange={(e) => env.set(e.target.value)}
+            />
+          </div>
+          <p className={styles.hint}>
+            <T>Passed to the agent process, replacing variables of the same name. Changes apply to new sessions.</T>
+          </p>
+        </>
+      )}
       {agent.loginHint && (
         <>
           <h4 className={styles.section}>
@@ -192,6 +220,25 @@ function Details({
     </section>
   );
 }
+
+/** `NAME=value` pairs separated by `;` or new lines. */
+function parseEnv(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const raw of text.split(/[;\n]/)) {
+    const pair = raw.trim();
+    if (!pair) continue;
+    const eq = pair.indexOf("=");
+    const key = eq < 0 ? "" : pair.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(tx`Expected NAME=value: ${pair}`);
+    env[key] = pair.slice(eq + 1).trim();
+  }
+  return env;
+}
+
+const formatEnv = (env: Record<string, string>) =>
+  Object.entries(env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
 
 /** Login hints are plain text with optional backtick-delimited command spans. */
 function LoginHint({ text }: { text: string }) {

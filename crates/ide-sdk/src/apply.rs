@@ -703,8 +703,10 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 {
                     c.command = pm.to_owned();
                 }
-                if let Some(dir) = &node {
-                    path_dirs.push(dir.clone());
+                // The configuration's own Node interpreter, else the project's.
+                let own = c.extras.params.get("nodeInterpreter").and_then(|p| setting_path(root, p));
+                if let Some(dir) = own.and_then(|p| p.parent().map(Path::to_path_buf)).or_else(|| node.clone()) {
+                    path_dirs.push(dir);
                 }
             }
             "php" | "phpunit" | "composer" => {
@@ -825,14 +827,17 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
     };
     let mut out = config.clone();
     // Until nothing changes: some entries are derived only once others are gone
-    // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`).
+    // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`). An entry derived before
+    // the configuration's own choice (an npm script's Node interpreter) is derived too.
     while let Some(key) = out
         .env
         .iter()
         .find(|(key, value)| {
             let mut probe = out.clone();
             probe.env.remove(*key);
-            applied(&probe).env.get(*key) == Some(*value)
+            let mut plain = probe.clone();
+            plain.extras.params.clear();
+            applied(&probe).env.get(*key) == Some(*value) || applied(&plain).env.get(*key) == Some(*value)
         })
         .map(|(key, _)| key.clone())
     {

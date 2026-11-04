@@ -92,6 +92,11 @@ export const commands = {
 	 */
 	agentSetCommand: (id: string, command: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_command", { id, command })),
 	/**
+	 *  Environment variables built-in agent `id` starts with (saved in its agent file);
+	 *  an empty map clears them.
+	 */
+	agentSetEnv: (id: string, env: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_env", { id, env })),
+	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 	 */
@@ -623,6 +628,7 @@ export const commands = {
 }) & (RunExtras_Serialize) | null, IdeError>(__TAURI_INVOKE("run_tomcat_build", { config })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
+	runTomcatSync: (config: RunConfig_Deserialize, module: string, classPaths: string[], resourcesOnly: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("run_tomcat_sync", { config, module, classPaths, resourcesOnly })),
 	runTomcatUpdate: (config: RunConfig_Deserialize, mode: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_tomcat_update", { config, mode })),
 	/**
 	 *  Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
@@ -637,6 +643,11 @@ export const commands = {
 	 *  Returns the refreshed model; a failed build is reported in its `syncError`.
 	 */
 	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, onProgress })),
+	/**
+	 *  The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
+	 *  build has downloaded it.
+	 */
+	gradlePublishedCatalog: (coordinates: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("gradle_published_catalog", { coordinates })),
 	/**  Where the direct dependency `dependency` of the Maven module `pom` is declared. */
 	mavenDependencyDeclaration: (pom: string, dependency: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_dependency_declaration", { pom, dependency })),
 	/**
@@ -774,6 +785,8 @@ export const commands = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -1021,6 +1034,8 @@ export const commands = {
 	 *  daemon and puts the docker executable on `PATH`.
 	 */
 	dockerRunEnv: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_run_env", { endpoint })),
+	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
+	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
 	ghAvailability: (repo: string | null) => typedError<GhAvailability, IdeError>(__TAURI_INVOKE("gh_availability", { repo })),
 	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
 	ghApi: (repo: string | null, request: GhApiRequest) => typedError<string, IdeError>(__TAURI_INVOKE("gh_api", { repo, request })),
@@ -1112,6 +1127,15 @@ export const commands = {
 	commands: string[],
 } | null>("remote_current"),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
+	/**  The remote ports this window forwards to this machine. */
+	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
+	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
+	 */
+	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
+	/**  Stops forwarding `remote_port`. */
+	remoteStopForwarding: (remotePort: number) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort })),
 	/**
 	 *  Runs a command on the window's remote server; `args` and the result are JSON
 	 *  text. Streaming arguments are `{ "$channel": id }`; their values arrive on
@@ -1374,6 +1398,8 @@ export type AgentProvider = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  Environment variables it starts with (from its agent file). */
+	env: { [key in string]: string },
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
 	config: AgentConfigOption[],
 	/**  Slash commands it offered last time. */
@@ -3336,6 +3362,13 @@ export type FileMove = {
 	to: IpcPath,
 };
 
+/**  A caret position for a file opened from the command line: 0-based line and column. */
+export type FilePosition = {
+	path: IpcPath,
+	line: number,
+	column: number,
+};
+
 /**  What the editor needs to know before choosing a viewer for a file. */
 export type FileProbe = {
 	size: number,
@@ -3453,6 +3486,12 @@ export type FormatOptions = {
 	tool?: ExternalFormatter | null,
 };
 
+/**  A port of the remote host reachable on this machine at `localhost:local_port`. */
+export type ForwardedPort = {
+	remotePort: number,
+	localPort: number,
+};
+
 /**  One occurrence of a duplicated code fragment. */
 export type Fragment = {
 	path: IpcPath,
@@ -3495,6 +3534,25 @@ export type GeneralSettings = {
 	/**  File › Rename Project… (project layer): the name shown for the project; empty = its folder name. */
 	projectName?: string,
 };
+
+/**  A repository of the signed-in account (owned, collaborator, or organization member). */
+export type GhAccountRepo = {
+	/**  `owner/name`. */
+	nameWithOwner: string,
+	description: string | null,
+	private: boolean,
+	fork: boolean,
+	archived: boolean,
+	/**  What `git clone` takes: HTTPS, or SSH when gh's `git_protocol` is `ssh`. */
+	cloneUrl: string,
+};
+
+/**  The account's repositories, or why they can't be listed. */
+export type GhAccountRepos = { kind: "ready"; login: string; repos: GhAccountRepo[] } | 
+/**  No `gh` executable was found. */
+{ kind: "notInstalled" } | 
+/**  `gh auth login` has not been run (or the token expired). */
+{ kind: "notLoggedIn"; message: string } | { kind: "error"; message: string };
 
 /**
  *  A GitHub API call through `gh api`: GraphQL (`endpoint` `graphql`, `body`
@@ -4398,6 +4456,8 @@ export type Launch = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
 };
 
 export type LaunchConfig = {

@@ -247,6 +247,9 @@ const UNTRANSLATED = new Set<string>([
   "text",
 ]);
 
+/** Locales that must translate every UI text; the others show English for text they lack. */
+const COMPLETE_LOCALES = new Set(["zh"]);
+
 /**
  * Template literals that reach an exact lookup on purpose: the text around the
  * values is code or a format that reads the same in every locale.
@@ -614,7 +617,7 @@ describe.each(Object.keys(catalogs))("source-text catalog %s", (locale) => {
   const found = ({ text, match }: Use) =>
     has(text) || (match === "pattern" && matchesTemplate(text)) || (match === "shape" && shapes.has(shape(text)));
 
-  it("translates every literal UI text", () => {
+  it.runIf(COMPLETE_LOCALES.has(locale))("translates every literal UI text", () => {
     const missing = new Map<string, string>();
     for (const use of scan.translated)
       if (!found(use) && needsTranslation(use.text) && !missing.has(use.text)) missing.set(use.text, use.at);

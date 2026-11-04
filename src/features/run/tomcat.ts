@@ -1,4 +1,5 @@
-import { call, commands, type RunConfig } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
+import { call, commands, nextRequestId, type RunConfig } from "@/platform/ipc";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
 import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
 import { runUpdateBuild } from "./buildUpdate";
@@ -94,6 +95,25 @@ export async function buildTomcatArtifact(config: RunConfig): Promise<void> {
   const build = await call(commands.runTomcatBuild(config));
   if (!build) return;
   await runUpdateBuild(build);
+}
+
+/**
+ * Updates a running artifact deployment without rebuilding the WAR: compiles the WAR module
+ * incrementally and copies its changed classes, resources and web files into the deployment.
+ * `false` when that isn't possible (other deployment kinds, no Java language server, a changed
+ * dependency module): the caller rebuilds the WAR.
+ */
+export async function syncTomcatOutputs(config: RunConfig, resourcesOnly: boolean): Promise<boolean> {
+  const p = config.params ?? {};
+  if ((p.deployment ?? "artifact") !== "artifact") return false;
+  const artifacts = await call(commands.runTomcatArtifacts());
+  const artifact = p.artifact ? artifacts.find((a) => a.id === p.artifact) : artifacts[0];
+  if (!artifact) return false;
+  const info = await call(commands.javaResolveLaunch(artifact.module, false, true, nextRequestId())).catch(() => null);
+  if (!info) return false;
+  if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
+    throw new Error(tx("Application update build failed"));
+  return call(commands.runTomcatSync(config, artifact.module, info.classPaths, resourcesOnly));
 }
 
 export function tomcatBrowserUrl(config: RunConfig): string {

@@ -35,13 +35,14 @@ export type Translate = (key: string, params?: MessageParams) => string;
 export const DEFAULT_LOCALE = "en";
 /**
  * The UI languages: `name` is written in the language itself, `tag` is its BCP 47
- * tag for `<html lang>`. Adding one here offers it in the settings; the catalog
- * tests then ask for `locales/<locale>.json` and `locales/text/<locale>.json`.
+ * tag for `<html lang>`. Adding one here offers it in the settings. Its catalogs are
+ * `locales/<locale>.json` and `locales/text/<locale>.json`; text they lack shows in English.
  */
 export const LOCALES = {
   en: { name: "English", tag: "en" },
-  fr: { name: "Français (French)", tag: "fr" },
   zh: { name: "简体中文 (Chinese, Simplified)", tag: "zh-CN" },
+  ko: { name: "한국어 (Korean)", tag: "ko" },
+  fr: { name: "Français (French)", tag: "fr" },
 } as const;
 export type Locale = keyof typeof LOCALES;
 export const SUPPORTED_LOCALES = Object.keys(LOCALES) as Locale[];
@@ -64,7 +65,7 @@ interface I18nState {
 
 export const useI18n = create<I18nState>(() => ({ locale: DEFAULT_LOCALE, messages: en as Catalog, texts: {} }));
 
-/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `system` → browser). */
+/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `ko-KR` → `ko`, `system` → browser). */
 export function resolveLocale(input: string | null | undefined): Locale {
   let tag = (input ?? "").trim();
   if (!tag || tag === "system" || tag === "auto")

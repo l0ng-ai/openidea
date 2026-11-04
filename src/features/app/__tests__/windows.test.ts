@@ -62,7 +62,10 @@ provideNotificationService({ notify });
 const opened: string[] = [];
 let activePath: string | null = null;
 provideEditorService({
-  openFile: async (path, options) => void opened.push(`${path}${options?.focus ? " (focus)" : ""}`),
+  openFile: async (path, options) =>
+    void opened.push(
+      `${path}${options?.focus ? " (focus)" : ""}${options?.selection ? ` @${options.selection.line}:${options.selection.col}` : ""}`,
+    ),
   openInput: async () => {},
   activePath: () => activePath,
   activeCursor: () => null,
@@ -271,6 +274,16 @@ describe("launch", () => {
     expect(openProject).toHaveBeenCalledWith("/x/notes");
     expect(lightEditOpen).not.toHaveBeenCalled();
     expect(opened).toEqual(["/x/notes/a.txt (focus)"]);
+  });
+
+  it("places the caret where the command line asked (openidea --line --column)", async () => {
+    windowTakeLaunch.mockResolvedValueOnce({
+      project: "/x/notes",
+      files: ["/x/notes/a.txt", "/x/notes/b.txt"],
+      positions: [{ path: "/x/notes/a.txt", line: 119, column: 7 }],
+    });
+    await consumeLaunch();
+    expect(opened).toEqual(["/x/notes/a.txt @119:7", "/x/notes/b.txt (focus)"]);
   });
 });
 

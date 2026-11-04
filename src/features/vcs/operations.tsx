@@ -165,7 +165,7 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
     {
       progress,
       success,
-      failure: `${controlLabel(op, control)} failed`,
+      failure: tx`${controlLabel(op, control)} failed`,
       onError: control === "abort" ? undefined : conflictsInstead,
     },
   );
@@ -241,8 +241,8 @@ export async function cherryPick(commits: Commit[]) {
     { op: "cherryPick", commits: ordered.map((c) => c.id) },
     {
       progress: "Cherry-picking",
-      success: `Cherry-picked ${label}`,
-      failure: "Cherry-pick failed",
+      success: tx`Cherry-picked ${label}`,
+      failure: tx("Cherry-pick failed"),
       onError: conflictsInstead,
     },
     commitRepo(commits[0]!) ?? currentRepo(),
@@ -256,7 +256,7 @@ export async function revertCommits(commits: Commit[]) {
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
   await runGitOperation(
     { op: "revert", commits: ordered.map((c) => c.id) },
-    { progress: "Reverting", success: `Reverted ${label}`, failure: "Revert failed", onError: conflictsInstead },
+    { progress: "Reverting", success: tx`Reverted ${label}`, failure: tx("Revert failed"), onError: conflictsInstead },
     commitRepo(commits[0]!) ?? currentRepo(),
   );
 }
@@ -294,8 +294,8 @@ function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void
       { op: "reset", commit: rev, mode },
       {
         progress: "Resetting",
-        success: `Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
-        failure: "Reset failed",
+        success: tx`Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
+        failure: tx("Reset failed"),
       },
       repo,
     );
@@ -374,8 +374,8 @@ export async function newTagOn(commit: Commit) {
   });
   if (!r) return;
   const create = () => call(commands.vcsCreateTag(repo, r.value, commit.id, null, false));
-  const ok = await runOp(`Create tag ${r.value}`, create, {
-    success: `Created tag ${r.value} on ${short(commit.id)}`,
+  const ok = await runOp(tx`Create tag ${r.value}`, create, {
+    success: tx`Created tag ${r.value} on ${short(commit.id)}`,
   });
   // Tags are not part of the refs signature that reloads the log.
   if (ok !== undefined) void reloadLog();
@@ -402,9 +402,9 @@ function TagDialog({ onClose }: { onClose: () => void }) {
     onClose();
     const tag = name.trim();
     const ok = await runOp(
-      `Create tag ${tag}`,
+      tx`Create tag ${tag}`,
       () => call(commands.vcsCreateTag(repo, tag, commit.trim() || "HEAD", message || null, force)),
-      { success: `Created tag ${tag}` },
+      { success: tx`Created tag ${tag}` },
     );
     if (ok !== undefined && useGitLog.getState().commits.length) void reloadLog();
   };

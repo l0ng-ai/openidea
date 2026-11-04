@@ -81,6 +81,7 @@ describe("t / locales", () => {
   it("resolves locale tags", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
+    expect(resolveLocale("ko-KR")).toBe("ko");
     expect(resolveLocale("EN-us")).toBe("en");
     expect(resolveLocale("fr")).toBe("fr");
     expect(resolveLocale("fr-CA")).toBe("fr");
@@ -104,6 +105,13 @@ describe("t / locales", () => {
     );
     await setLocale("zh-CN");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 个快捷键");
+  });
+
+  it("switches to Korean", async () => {
+    await setLocale("ko-KR");
+    expect(useI18n.getState().locale).toBe("ko");
+    expect(t("common.cancel")).toBe("취소");
+    expect(tx("Cancel")).toBe("취소");
   });
 
   it("falls back to English for unsupported locales", async () => {
@@ -198,8 +206,10 @@ describe("catalogs", () => {
   const { en: _en, ...translations } = readCatalogs(LOCALES_DIR);
   const texts = readCatalogs(join(LOCALES_DIR, "text"));
   const catalogs: Record<string, Catalog> = { en, ...translations };
+  /** Must have every key; the other locales show English for keys they lack. */
+  const COMPLETE = ["zh"];
   /** Written in another script, so a text equal to its English source was not translated. */
-  const OWN_SCRIPT = new Set(["zh"]);
+  const OWN_SCRIPT = new Set(["zh", "ko"]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 
   it("exist for exactly the supported locales", () => {
@@ -226,9 +236,16 @@ describe("catalogs", () => {
         expect(names(text), `${locale}:${source}`).toEqual(names(source));
   });
 
-  it("have the same keys", () => {
-    for (const catalog of Object.values(translations))
-      expect(Object.keys(catalog).sort()).toEqual(Object.keys(en).sort());
+  it.each(COMPLETE)("have the same keys as English (%s)", (locale) => {
+    expect(Object.keys(translations[locale]!).sort()).toEqual(Object.keys(en).sort());
+  });
+
+  it("have no keys English lacks", () => {
+    for (const [locale, catalog] of Object.entries(translations))
+      expect(
+        Object.keys(catalog).filter((key) => !Object.hasOwn(en, key)),
+        locale,
+      ).toEqual([]);
   });
 
   it("contain only well-formed messages", () => {
@@ -240,7 +257,7 @@ describe("catalogs", () => {
   it("use the same parameters across locales", () => {
     const params = (m: string) => [...m.matchAll(/\{\s*([a-z]\w*)\s*[,}]/g)].map((x) => x[1]).sort();
     for (const [locale, catalog] of Object.entries(translations))
-      for (const key of Object.keys(en))
-        expect(params(catalog[key] ?? ""), `${locale}:${key}`).toEqual(params((en as Record<string, string>)[key]!));
+      for (const [key, message] of Object.entries(catalog))
+        expect(params(message), `${locale}:${key}`).toEqual(params((en as Record<string, string>)[key] ?? ""));
   });
 });

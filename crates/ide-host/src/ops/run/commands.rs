@@ -241,6 +241,35 @@ pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mod
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Updates a running Tomcat artifact deployment from the module's compiled output and web
+/// resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
+pub async fn run_tomcat_sync(
+    host: &Host,
+    window: &str,
+    config: RunConfig,
+    module: std::path::PathBuf,
+    class_paths: Vec<String>,
+    resources_only: bool,
+) -> IdeResult<bool> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
+        return Err(IdeError::invalid("Start this Tomcat configuration before updating it"));
+    }
+    if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
+        return Ok(false);
+    }
+    tokio::task::spawn_blocking(move || {
+        let module = dunce::canonicalize(project.root.join(module))?;
+        let class_paths: Vec<_> =
+            class_paths.iter().filter_map(|p| dunce::canonicalize(project.root.join(p)).ok()).collect();
+        let base = ide_run::tomcat::base_dir(&project.cache_dir, &config.id);
+        ide_run::tomcat::sync_outputs(&base, &module, &class_paths, resources_only)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_dotnet_resolve", |c| async move {
@@ -255,6 +284,17 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_tomcat_home", |c| async move { run_tomcat_home(&c.host, &c.window, c.arg("home")?).await });
     d.add("run_tomcat_artifacts", |c| async move { run_tomcat_artifacts(&c.host, &c.window).await });
     d.add("run_tomcat_build", |c| async move { run_tomcat_build(&c.host, &c.window, c.arg("config")?).await });
+    d.add("run_tomcat_sync", |c| async move {
+        run_tomcat_sync(
+            &c.host,
+            &c.window,
+            c.arg("config")?,
+            c.arg("module")?,
+            c.arg("classPaths")?,
+            c.arg("resourcesOnly")?,
+        )
+        .await
+    });
     d.add("run_tomcat_update", |c| async move {
         run_tomcat_update(&c.host, &c.window, c.arg("config")?, c.arg("mode")?).await
     });
