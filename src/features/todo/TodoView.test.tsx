@@ -68,4 +68,24 @@ describe("TodoView", () => {
     expect(screen.queryByText("Select an item to preview")).toBeNull();
     act(() => useTodoViewOptions.setState({ preview: true }));
   });
+
+  it("previews the selected item as an editable editor, without a switch", async () => {
+    act(() =>
+      useTodos.setState({
+        scannedOnce: true,
+        scanned: new Map([
+          ["/p/src/a.ts", [{ path: "/p/src/a.ts", line: 4, col: 3, keyword: "TODO", text: "TODO: x" }]],
+        ]),
+      }),
+    );
+    render(<TodoView />);
+    // Select the file group so the preview has an item (trees select on mousedown).
+    fireEvent.mouseDown(screen.getByText("a.ts").closest("[role=treeitem]")!);
+    await screen.findByText("(5, 4)");
+    // No editing switch: the preview is simply an editor, like IntelliJ's.
+    expect(screen.queryByLabelText("Allow editing")).toBeNull();
+    // No document attacher in tests: the editable pane degrades to its error
+    // state ("editor not started") instead of crashing.
+    await screen.findByText("editor not started");
+  });
 });
