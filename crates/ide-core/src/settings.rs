@@ -716,6 +716,12 @@ pub struct PhpSettings {
     /// PHP version the language server checks the code against (`7.4`); empty = from
     /// `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
     pub language_level: String,
+    /// Folders outside the project whose code the language server indexes too (a platform a
+    /// module extends); absolute, `~/`, or relative to the project.
+    pub include_paths: Vec<String>,
+    /// Intelephense stub sets loaded on top of its defaults and the `ext-*` entries of
+    /// `composer.json` (`wordpress`).
+    pub stubs: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
