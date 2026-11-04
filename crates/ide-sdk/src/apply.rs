@@ -964,20 +964,6 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                         c.command = mvn.to_string_lossy().into_owned();
                     }
                     add_maven_options(&mut c.args, &mvn_options);
-                } else if c.kind == "maven"
-                    && let Some(mvn) = &mvn
-                    && is_maven_launcher(&c.command)
-                {
-                    // A goal configuration saved from the tool window bakes in the
-                    // launcher that was current then — the literal `mvn` (#328) or
-                    // its resolved absolute path. Matching by file name redirects
-                    // all of those to the settings-resolved launcher on every
-                    // launch: a later Maven home or daemon change takes effect
-                    // without editing each saved config, and one saved while the
-                    // daemon was on heals back to mvn when it is turned off.
-                    // Detected configs take the Maven options too, but the saved
-                    // ones already baked them into `args`.
-                    c.command = mvn.to_string_lossy().into_owned();
                 }
             }
             _ => {}
@@ -1054,14 +1040,6 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
 
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-/// Whether `command` names one of the Maven launchers (`mvn`, the `mvnw` wrapper
-/// or `mvnd`), bare or as a full path — the shapes goal configurations saved from
-/// the tool window can carry.
-fn is_maven_launcher(command: &str) -> bool {
-    let name = Path::new(command).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    matches!(name.as_str(), "mvn" | "mvn.cmd" | "mvn.bat" | "mvnw" | "mvnw.cmd" | "mvnd" | "mvnd.cmd")
 }
 
 /// Command typed into a new terminal to activate the project virtualenv

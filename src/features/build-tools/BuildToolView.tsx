@@ -1,7 +1,7 @@
 /** The Maven and Gradle tool windows: toolbar, status banner and the project tree. */
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import type { BuildTool, GradleModel, MavenModel } from "@/platform/ipc";
+import type { BuildTool, GradleModel, MavenModel, RunConfig } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { editorService } from "@/workbench/contributions";
@@ -29,7 +29,6 @@ import {
   nodeIcon,
   nodeLabel,
   profileChecked,
-  skippedTestRun,
   withGradleOptions,
   type BuildNode,
 } from "./model";
@@ -87,12 +86,23 @@ export function nodeConfig(
 }
 
 /** Memoised children lookup (node objects stay stable while the model is unchanged). */
-function childrenOf(tool: BuildTool, maven: MavenModel | null, gradle: GradleModel | null) {
+function childrenOf(
+  tool: BuildTool,
+  maven: MavenModel | null,
+  gradle: GradleModel | null,
+  configs: readonly RunConfig[],
+) {
   const cache = new Map<string, BuildNode[] | undefined>();
   return (n: BuildNode) => {
     if (cache.has(n.key)) return cache.get(n.key);
     const kids =
-      tool === "maven" ? (maven ? mavenChildren(n, maven) : undefined) : gradle ? gradleChildren(n, gradle) : undefined;
+      tool === "maven"
+        ? maven
+          ? mavenChildren(n, maven, configs)
+          : undefined
+        : gradle
+          ? gradleChildren(n, gradle, configs)
+          : undefined;
     cache.set(n.key, kids);
     return kids;
   };
@@ -110,7 +120,6 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
   const model = useBuild((s) => s.model);
   const runnable = selection.filter(isRunnable);
   const runSelected = () => {
-    if (skippedTestRun(runnable, settings.maven.skipTests)) return;
     const config = model && nodeConfig(runnable, model);
     if (config) runConfig(config, "run");
   };
@@ -213,7 +222,6 @@ function Banner({ tool }: { tool: BuildTool }) {
 
 function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
   const choices = useBuild((s) => s.settings.maven.profiles);
-  const skipTests = useBuild((s) => s.settings.maven.skipTests);
   if (node.kind === "profile") {
     return (
       <span className={styles.row} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
@@ -237,15 +245,7 @@ function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
   return (
     <span className={styles.row} title={node.kind === "task" ? (node.task.description ?? undefined) : undefined}>
       <Icon name={nodeIcon(node)} size={16} className={styles.icon} />
-      <span
-        className={clsx(
-          styles.label,
-          state.selected && styles.selectedLabel,
-          skipTests && node.kind === "phase" && node.phase === "test" && styles.skippedLabel,
-        )}
-      >
-        {nodeLabel(node)}
-      </span>
+      <span className={clsx(styles.label, state.selected && styles.selectedLabel)}>{nodeLabel(node)}</span>
       {detail && <span className={styles.detail}>{detail}</span>}
     </span>
   );
@@ -253,6 +253,7 @@ function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
 
 function BuildToolView({ tool }: { tool: BuildTool }) {
   const model = useBuild((s) => s.model);
+  const configs = useBuild((s) => s.configs);
   const loading = useBuild((s) => s.loading);
   const error = useBuild((s) => s.error);
   const expanded = useBuild((s) => s.expanded[tool]);
@@ -265,7 +266,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
     () => (tool === "maven" ? (maven ? mavenRoots(maven) : []) : gradle ? gradleRoots(gradle) : []),
     [tool, maven, gradle],
   );
-  const getChildren = useMemo(() => childrenOf(tool, maven, gradle), [tool, maven, gradle]);
+  const getChildren = useMemo(() => childrenOf(tool, maven, gradle, configs), [tool, maven, gradle, configs]);
 
   const hasModel = tool === "maven" ? !!maven : !!gradle;
   useEffect(() => {
@@ -289,7 +290,6 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
   );
 
   const run = (nodes: BuildNode[], mode: "run" | "debug") => {
-    if (skippedTestRun(nodes, useBuild.getState().settings.maven.skipTests)) return;
     const config = model && nodeConfig(nodes, model);
     if (config) runConfig(config, mode);
   };
@@ -299,11 +299,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
     e.preventDefault();
     const nodes = keys.has(node.key) ? nodesByKey(keys) : [node];
     const items: MenuItem[] = [];
-    const runnableNodes = nodes.filter(isRunnable);
-    const config =
-      isRunnable(node) && model && !skippedTestRun(runnableNodes, useBuild.getState().settings.maven.skipTests)
-        ? nodeConfig(runnableNodes, model)
-        : null;
+    const config = isRunnable(node) && model ? nodeConfig(nodes.filter(isRunnable), model) : null;
     if (config) {
       items.push(
         { label: tx`Run '${config.name}'`, icon: "run", run: () => runConfig(config, "run") },

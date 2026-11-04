@@ -48,18 +48,18 @@ const BUILD_FILE =
   /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|gradle\.properties|gradle-wrapper\.properties|[^/]+\.versions\.toml)$/;
 
 function expandAll(tool: BuildTool) {
-  const { model } = useBuild.getState();
+  const { model, configs } = useBuild.getState();
   if (tool === "maven" && model?.maven) {
     const m = model.maven;
     setExpanded(
       tool,
-      expandableKeys(mavenRoots(m), (n) => mavenChildren(n, m)),
+      expandableKeys(mavenRoots(m), (n) => mavenChildren(n, m, configs)),
     );
   } else if (tool === "gradle" && model?.gradle) {
     const g = model.gradle;
     setExpanded(
       tool,
-      expandableKeys(gradleRoots(g), (n) => gradleChildren(n, g)),
+      expandableKeys(gradleRoots(g), (n) => gradleChildren(n, g, configs)),
     );
   }
 }

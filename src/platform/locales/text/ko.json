@@ -1893,7 +1893,7 @@
   "Runs Maven with -o": "-o로 Maven을 실행합니다",
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "파일에 오류가 없으면 import 최적화를 실행합니다. 단, 캐럿 줄이 변경되는 경우는 제외합니다.",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "npm 스크립트와 Node 기반 언어 서버(vtsls, eslint, pyright…)를 실행합니다.",
-  "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw.": "동기화, 빌드 및 Maven 실행 구성을 실행합니다. 선택한 홈이 프로젝트의 mvnw 대신 사용됩니다.",
+  "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled.": "동기화, 빌드 및 Maven 실행 구성을 실행합니다. 선택한 홈이 프로젝트의 mvnw 대신 사용됩니다. Maven 데몬이 활성화되어 있으면 사용되지 않습니다.",
   "Runs the language server's Organize Imports action.": "언어 서버의 import 정리 액션을 실행합니다.",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "명시적으로 저장하기 전에 언어 서버의 포매터를 실행합니다(저장 시 액션).",
   "Search history": "검색 기록",

@@ -167,7 +167,7 @@ fn mise_and_asdf_installs_are_detected_and_pinned_versions_used() {
 }
 
 #[test]
-fn maven_daemon_run_configs_follow_the_jdk_and_heal_back() {
+fn maven_daemon_run_configs_follow_the_setting_and_the_jdk() {
     let tmp = tempfile::tempdir().unwrap();
     let tmp = dunce::canonicalize(tmp.path()).unwrap();
     let project = tmp.join("project");
@@ -205,13 +205,12 @@ fn maven_daemon_run_configs_follow_the_jdk_and_heal_back() {
     assert_eq!(configs[0].command, mvnd_path, "detected config runs the daemon");
     assert_eq!(configs[1].command, mvnd_path, "saved `mvn` config is pointed at the daemon");
 
-    // A goal config saved from the tool window carries the launcher's absolute
-    // path as it was then (`detected: false`); matching by file name redirects
-    // it too, and leaves non-Maven commands alone.
-    let mut configs = [run(&mvn_path, false), run("/bin/echo", false)];
+    // A launcher the user wrote into a configuration is theirs: an absolute path
+    // or a bare `mvnd` stays as configured.
+    let mut configs = [run(&mvn_path, false), run("mvnd", false)];
     ide_sdk::apply::apply_to_run_configs(&mut configs, &project, &s);
-    assert_eq!(configs[0].command, mvnd_path, "stale absolute `mvn` path follows the daemon");
-    assert_eq!(configs[1].command, "/bin/echo", "non-Maven commands are not rewritten");
+    assert_eq!(configs[0].command, mvn_path, "a custom absolute launcher is kept");
+    assert_eq!(configs[1].command, "mvnd", "a user-written mvnd is kept");
 
     // A project JDK older than the daemon's Java 17 requirement keeps mvn.
     let jdk8 = tmp.join("jdk8");
@@ -222,17 +221,11 @@ fn maven_daemon_run_configs_follow_the_jdk_and_heal_back() {
     assert_eq!(configs[0].command, mvn_path, "JDK 8 cannot host the daemon JVM");
     assert_eq!(configs[1].command, mvn_path);
 
-    // A config saved while the daemon was on heals back to mvn when it is off.
+    // With the daemon off, the same configurations run the configured Maven.
     s.languages.java.maven.daemon = false;
-    let mut configs = [run("mvnd", false)];
-    ide_sdk::apply::apply_to_run_configs(&mut configs, &project, &s);
-    assert_eq!(configs[0].command, mvn_path, "literal `mvnd` is rewritten to the resolved Maven");
-
-    // And with the daemon back on (and no JDK holding it back), a literal `mvnd`
-    // resolves to the configured one.
-    s.languages.java.maven.daemon = true;
     s.languages.java.jdk = String::new();
-    let mut configs = [run("mvnd", false)];
+    let mut configs = [run("mvn", true), run("mvn", false)];
     ide_sdk::apply::apply_to_run_configs(&mut configs, &project, &s);
-    assert_eq!(configs[0].command, mvnd_path);
+    assert_eq!(configs[0].command, mvn_path);
+    assert_eq!(configs[1].command, mvn_path);
 }

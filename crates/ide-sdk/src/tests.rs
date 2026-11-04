@@ -272,10 +272,7 @@ fn saved_maven_goal_configs_take_the_configured_launcher() {
     // own args are left alone.
     let mut saved = run("maven", "mvn", &["-s", "/m2/settings.xml", "clean"]);
     saved.detected = false;
-    // Launchers baked in by name — a custom absolute mvn, the project's
-    // wrapper — heal to the settings-resolved launcher on every launch, so a
-    // later Maven home or daemon switch takes effect without editing each
-    // saved config.
+    // A custom path / the wrapper stay as configured.
     let mut custom = run("maven", "/opt/other/bin/mvn", &["package"]);
     custom.detected = false;
     let mut wrapper = run("maven", "./mvnw", &["package"]);
@@ -284,8 +281,8 @@ fn saved_maven_goal_configs_take_the_configured_launcher() {
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, maven.join("bin/mvn").to_string_lossy());
     assert_eq!(configs[0].args, ["-s", "/m2/settings.xml", "clean"], "saved args are kept");
-    assert_eq!(configs[1].command, maven.join("bin/mvn").to_string_lossy());
-    assert_eq!(configs[2].command, maven.join("bin/mvn").to_string_lossy());
+    assert_eq!(configs[1].command, "/opt/other/bin/mvn");
+    assert_eq!(configs[2].command, "./mvnw");
 }
 
 #[test]
