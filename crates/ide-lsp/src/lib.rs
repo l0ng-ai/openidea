@@ -23,6 +23,7 @@ mod scope;
 mod server;
 mod tcp;
 mod text;
+mod ts_file_moves;
 mod tsserver_bridge;
 pub mod types;
 mod uri;
@@ -2010,7 +2011,30 @@ impl LspManager {
             servers.iter().zip(ready).filter_map(|(s, run)| Some(Target { server: s.clone(), run: run? })).collect();
         let mut out = FileRenameEdits::default();
         for t in targets {
-            let Some(params) = Self::file_op_params(&t, "willRename", &moves) else { continue };
+            let Some(params) = Self::file_op_params(&t, "willRename", &moves) else {
+                if t.server.config.tsserver_project && t.caps().commands().iter().any(|c| c == ts_file_moves::COMMAND) {
+                    out.servers.push(t.server.name.clone());
+                    let opened = self.open_for_file_op(&t, &moves);
+                    for (from, to, _) in &moves {
+                        let r: IdeResult<Value> = self
+                            .call(
+                                &t,
+                                "workspace/executeCommand",
+                                ts_file_moves::request(from, to),
+                                Some(&cancel),
+                                LONG_TIMEOUT,
+                            )
+                            .await;
+                        match r {
+                            Ok(result) => out.edit.files.extend(ts_file_moves::edit(&result).files),
+                            Err(e) if e.kind == ErrorKind::Cancelled && cancel.is_cancelled() => return Err(e),
+                            Err(e) => out.errors.push(e.message),
+                        }
+                    }
+                    drop(opened);
+                }
+                continue;
+            };
             out.servers.push(t.server.name.clone());
             let opened = self.open_for_file_op(&t, &moves);
             let r: IdeResult<Option<lsp::WorkspaceEdit>> =

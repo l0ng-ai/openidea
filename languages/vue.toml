@@ -30,6 +30,14 @@ useAliasesForRenames = false
 [language-servers.initialization-options.javascript.preferences]
 useAliasesForRenames = false
 
+# Moving a file: the IDE asks for the import updates up front (preview, undo); the server
+# doesn't prompt after the move.
+[language-servers.initialization-options.typescript.updateImportsOnFileMove]
+enabled = "never"
+
+[language-servers.initialization-options.javascript.updateImportsOnFileMove]
+enabled = "never"
+
 [[language-servers]]
 name = "oxlint"
 command = "oxlint"
