@@ -89,7 +89,7 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
       notifications().notify({
         group: "vcs",
         level: "error",
-        title: `${title} failed`,
+        title: tx`${title} failed`,
         body: message,
         actions: opts.errorActions?.(message),
       });
