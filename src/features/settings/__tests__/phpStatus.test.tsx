@@ -3,18 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction, registerAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
-import type { PhpLanguageLevels, ProjectInfo } from "@/bindings";
+import type { PhpLanguageLevels, ProjectInfo, Settings } from "@/bindings";
+
+type FsChange = { created: string[]; modified: string[]; removed: string[] };
 
 const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   level: vi.fn(),
   set: vi.fn(),
+  fsChanged: undefined as ((e: FsChange) => void) | undefined,
   component: null as React.ComponentType | null,
 }));
 vi.mock("@/platform/ipc", () => ({
   call: (p: unknown) => p,
   isTauri: () => true,
-  onIdeEvent: () => () => {},
+  onIdeEvent: (name: string, handler: (e: FsChange) => void) => {
+    if (name === "fsChanged") mocks.fsChanged = handler;
+    return () => {};
+  },
   commands: { sdkPhpLanguageLevel: mocks.level, settingsSet: mocks.set },
 }));
 vi.mock("@/workbench/contributions", () => ({
@@ -52,6 +58,7 @@ beforeEach(() => {
   dispose = activatePhpStatus();
 });
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   dispose();
 });
@@ -119,6 +126,7 @@ describe("PHP language level status", () => {
 
   it("shows what Auto resolves to and clears the level with it", async () => {
     mocks.level.mockResolvedValue({ ...fromComposer, effective: { version: "8.1.0", source: "settings" } });
+    useProject.setState({ settings: { languages: { php: { languageLevel: "8.1" } } } as Settings });
     mount();
     await focus("php", "/project/src/Invoice.php");
     await screen.findByRole("button", { name: "PHP Language Level: PHP 8.1" });
@@ -133,6 +141,35 @@ describe("PHP language level status", () => {
       expect(mocks.set).toHaveBeenCalledWith("project", "languages.php.languageLevel", JSON.stringify("")),
     );
     expect(await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" })).toBeTruthy();
+  });
+
+  it("re-reads the level once after composer.json of the project or a linked project changes", async () => {
+    useProject.setState({ project: { root: "/project", workspace: { projects: ["/linked/api"] } } as ProjectInfo });
+    mount();
+    await focus("php", "/project/src/Invoice.php");
+    await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" });
+    vi.useFakeTimers();
+    const change = (...modified: string[]) => act(() => mocks.fsChanged!({ created: [], modified, removed: [] }));
+    await change("/project/vendor/acme/lib/composer.json", "/project/src/composer.json");
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(mocks.level).toHaveBeenCalledTimes(1);
+    for (const file of ["/project/composer.json", "/project/composer.json", "/linked/api/composer.json"]) {
+      await change(file);
+    }
+    await act(() => vi.advanceTimersByTimeAsync(299));
+    expect(mocks.level).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(mocks.level).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads the level when the PHP language level setting changes, not other settings", async () => {
+    mount();
+    await focus("php", "/project/src/Invoice.php");
+    await screen.findByRole("button", { name: "PHP Language Level: PHP 7.4" });
+    act(() => useProject.setState({ settings: { editor: { fontSize: 15 } } as Settings }));
+    expect(mocks.level).toHaveBeenCalledTimes(1);
+    act(() => useProject.setState({ settings: { languages: { php: { languageLevel: "8.1" } } } as Settings }));
+    await waitFor(() => expect(mocks.level).toHaveBeenCalledTimes(2));
   });
 
   it("shows a workspace member's level but leaves its choice to the member's settings", async () => {

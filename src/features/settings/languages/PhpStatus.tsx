@@ -29,8 +29,6 @@ function popupShown(): boolean {
 /** `8.1.0` as `8.1`, the way the levels are listed. */
 const shortVersion = (level: PhpLanguageLevel) => level.version.split(".").slice(0, 2).join(".");
 
-const isComposerJson = (path: string) => path.replaceAll("\\", "/").split("/").at(-1) === "composer.json";
-
 function origin(level: PhpLanguageLevel | null): string {
   if (!level) return tx("No PHP version in the settings or composer.json: Intelephense uses its default");
   const version = level.version;
@@ -46,8 +44,8 @@ function origin(level: PhpLanguageLevel | null): string {
 
 function PhpStatus() {
   const root = useProject((s) => s.project?.root);
-  // Re-read on every settings change: Auto writes the same empty value the default has.
-  const settings = useProject((s) => s.settings);
+  const linked = useProject((s) => s.project?.workspace?.projects);
+  const configured = useProject((s) => s.settings?.languages?.php?.languageLevel ?? "");
   const path = useContextKeys((s) =>
     s.editorLangId === "php" && typeof s.editorPath === "string" ? s.editorPath : null,
   );
@@ -62,6 +60,9 @@ function PhpStatus() {
     if (!root || !path) return;
     let live = true;
     let sequence = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Auto reads the composer.json of the project or of the linked project the file is in.
+    const manifests = new Set([root, ...(linked ?? [])].map((dir) => `${dir}/composer.json`));
     const refresh = async () => {
       const request = ++sequence;
       try {
@@ -73,13 +74,16 @@ function PhpStatus() {
     };
     void refresh();
     const off = onIdeEvent("fsChanged", (e) => {
-      if ([...e.created, ...e.modified, ...e.removed].some(isComposerJson)) void refresh();
+      if (![...e.created, ...e.modified, ...e.removed].some((file) => manifests.has(file))) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => void refresh(), 300);
     });
     return () => {
       live = false;
+      clearTimeout(timer);
       off();
     };
-  }, [root, path, settings]);
+  }, [root, linked, path, configured]);
   // The widget only renders once its project's level is in the store, so the popup action
   // sees the same state as the button without waiting for an effect to publish a flag.
   if (!path || !popupShown() || !status) return null;
