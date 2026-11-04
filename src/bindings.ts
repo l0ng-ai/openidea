@@ -647,6 +647,8 @@ export const commands = {
 	 *  Returns the refreshed model; a failed build is reported in its `syncError`.
 	 */
 	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, onProgress })),
+	/**  The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer). */
+	gradleDependencies: (gradlePath: string, configuration: string, offline: boolean, request: RequestId) => typedError<GradleDependency[], IdeError>(__TAURI_INVOKE("gradle_dependencies", { gradlePath, configuration, offline, request })),
 	/**
 	 *  The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
 	 *  build has downloaded it.
@@ -3734,6 +3736,27 @@ export type GoSettings = {
 };
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";
+
+/**  One line of the report: an occurrence of a dependency where it is requested. */
+export type GradleDependency = {
+	/**  `group`, empty for a project dependency. */
+	group: string,
+	/**  Artifact name, or the project path (`:core`) of a project dependency. */
+	name: string,
+	/**  The version asked for here; `None` when a platform or constraint supplies it. */
+	requested: string | null,
+	/**  The version Gradle selected (`-> 1.2`), when it differs from the request. */
+	selected: string | null,
+	/**  A project of the build (`project :core`, or a module substituted by one). */
+	project: boolean,
+	/**  `(*)`: listed with its dependencies earlier in the tree. */
+	repeated: boolean,
+	/**  `(c)`: a dependency constraint rather than a dependency. */
+	constraint: boolean,
+	/**  `(n)` / `FAILED`: not resolved. */
+	unresolved: boolean,
+	children: GradleDependency[],
+};
 
 export type GradleDistribution = "wrapper" | "local";
 
