@@ -269,6 +269,7 @@ fn harness_configured(
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: servers
             .iter()

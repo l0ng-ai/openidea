@@ -60,6 +60,9 @@ pub struct LanguageConfig {
     /// External formatter used when no language server can format, or selected in settings.
     #[serde(default)]
     pub formatter: Option<FormatterConfig>,
+    /// Content of a new scratch file; `$END$` marks where the caret goes.
+    #[serde(default)]
+    pub scratch_template: Option<String>,
 }
 
 /// An external formatting tool and its language-specific parser.
@@ -242,6 +245,10 @@ pub struct LanguageInfo {
     #[serde(default)]
     #[specta(optional)]
     pub first_line: Option<String>,
+    /// Content of a new scratch file; `$END$` marks where the caret goes.
+    #[serde(default)]
+    #[specta(optional)]
+    pub scratch_template: Option<String>,
 }
 
 impl From<&LanguageConfig> for LanguageInfo {
@@ -258,6 +265,7 @@ impl From<&LanguageConfig> for LanguageInfo {
             language_servers: c.language_servers.iter().map(|s| s.name.clone()).collect(),
             filenames: c.filenames.clone(),
             first_line: c.first_line.clone(),
+            scratch_template: c.scratch_template.clone(),
         }
     }
 }

@@ -4534,6 +4534,8 @@ export type LanguageInfo_Deserialize = {
 	filenames?: string[],
 	/**  First-line regex of the definition (shebangs, `<?php`). */
 	firstLine?: string | null,
+	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
+	scratchTemplate?: string | null,
 };
 
 /**  The UI-facing view of a language. */
@@ -4553,6 +4555,8 @@ export type LanguageInfo_Serialize = {
 	filenames?: string[],
 	/**  First-line regex of the definition (shebangs, `<?php`). */
 	firstLine?: string | null,
+	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
+	scratchTemplate?: string | null,
 };
 
 export type LanguageServerSettings = LanguageServerSettings_Serialize | LanguageServerSettings_Deserialize;
