@@ -215,7 +215,7 @@ impl PathFilter {
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
-            .require_git(false)
+            .require_git(ide_core::ignored::inside_git_repo(dir))
             .follow_links(false)
             .filter_entry(move |e| {
                 let name = e.file_name().to_string_lossy();
@@ -309,6 +309,25 @@ mod tests {
         assert!(filter.is_excluded(&root.join(".git/HEAD"), false));
         assert!(filter.is_excluded(Path::new("/elsewhere/x.rs"), false));
         assert!(!filter.is_excluded(&root.join("src/new.rs"), false));
+    }
+
+    #[test]
+    fn a_nested_repository_is_not_hidden_by_the_outer_repositorys_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(dir.path()).unwrap();
+        for f in ["projects/nested/src/a.rs", "projects/nested/out/x.rs"] {
+            touch(&base, f);
+        }
+        std::fs::create_dir(base.join(".git")).unwrap();
+        std::fs::create_dir(base.join("projects/nested/.git")).unwrap();
+        std::fs::write(base.join("projects/.gitignore"), "*\n!.gitignore\n").unwrap();
+        std::fs::write(base.join("projects/nested/.gitignore"), "out/\n").unwrap();
+        let root = base.join("projects/nested");
+        let filter = PathFilter::new(&root, &vec![].into(), &[]);
+        let mut found: Vec<String> =
+            filter.walk(&root, &AtomicBool::new(false)).iter().filter_map(|f| filter.rel(&f.path)).collect();
+        found.sort();
+        assert_eq!(found, [".gitignore", "src/a.rs"]);
     }
 
     #[test]
