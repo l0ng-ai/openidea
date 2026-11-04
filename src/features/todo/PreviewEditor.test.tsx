@@ -14,6 +14,7 @@ function stubAttacher(docs: Map<string, { text: string; dirty?: boolean; readOnl
   _provideDocumentAttacher((path) => {
     const att: DocumentAttachment = {
       path,
+      doc: 1,
       text: () => docs.get(path)!.text,
       dirty: () => !!docs.get(path)!.dirty,
       uiMode: () => null,
@@ -28,6 +29,10 @@ function stubAttacher(docs: Map<string, { text: string; dirty?: boolean; readOnl
       save: async () => {
         docs.get(path)!.dirty = false;
       },
+      synced: () => Promise.resolve(),
+      undo: () => false,
+      redo: () => false,
+      edit: () => {},
       release: () => released.push(path),
     };
     return Promise.resolve(att);
@@ -41,23 +46,25 @@ describe("PreviewEditor", () => {
   it("shows the document as an editable CodeMirror view", async () => {
     const docs = new Map([["/p/a.ts", { text: "// TODO: fix\n" }]]);
     stubAttacher(docs);
-    render(<PreviewEditor path="/p/a.ts" line={0} col={3} />);
+    render(<PreviewEditor path="/p/a.ts" line={0} col={3} fallbackLoad={previewText} />);
     await waitFor(() => expect(document.querySelector(".cm-editor")).toBeTruthy());
     expect(document.querySelector(".cm-content")?.textContent).toContain("TODO: fix");
   });
 
-  it("refuses read-only documents", async () => {
+  it("falls back to the read-only preview for read-only documents", async () => {
     const docs = new Map([["/p/ro.ts", { text: "// TODO\n", readOnly: true }]]);
     const { released } = stubAttacher(docs);
-    render(<PreviewEditor path="/p/ro.ts" line={0} col={0} />);
-    await screen.findByText("This file cannot be edited");
+    render(<PreviewEditor path="/p/ro.ts" line={0} col={0} fallbackLoad={previewText} />);
+    // No editor, no attach error: the read-only SourcePreview shows instead.
+    await waitFor(() => expect(document.querySelector(".cm-editor")).toBeNull());
+    expect(screen.queryByText("editor not started")).toBeNull();
     expect(released).toEqual(["/p/ro.ts"]);
   });
 
   it("releases a clean document on unmount", async () => {
     const docs = new Map([["/p/clean.ts", { text: "// TODO\n" }]]);
     const { released } = stubAttacher(docs);
-    const { unmount } = render(<PreviewEditor path="/p/clean.ts" line={0} col={0} />);
+    const { unmount } = render(<PreviewEditor path="/p/clean.ts" line={0} col={0} fallbackLoad={previewText} />);
     await waitFor(() => expect(document.querySelector(".cm-editor")).toBeTruthy());
     unmount();
     expect(released).toEqual(["/p/clean.ts"]);
@@ -67,7 +74,7 @@ describe("PreviewEditor", () => {
   it("holds a dirty document instead of releasing, and previewText reads its text", async () => {
     const docs = new Map([["/p/dirty.ts", { text: "// TODO: edit me\n", dirty: false }]]);
     const { released } = stubAttacher(docs);
-    const { unmount } = render(<PreviewEditor path="/p/dirty.ts" line={0} col={7} />);
+    const { unmount } = render(<PreviewEditor path="/p/dirty.ts" line={0} col={7} fallbackLoad={previewText} />);
     const content = await waitFor(() => {
       const el = document.querySelector<HTMLElement>(".cm-content");
       expect(el).toBeTruthy();
@@ -94,7 +101,7 @@ describe("PreviewEditor", () => {
     const docs = new Map([["/p/held.ts", { text: "kept", dirty: true }]]);
     const { released } = stubAttacher(docs);
     // Fake a held attachment through a mounted-then-edited view.
-    const { unmount } = render(<PreviewEditor path="/p/held.ts" line={0} col={0} />);
+    const { unmount } = render(<PreviewEditor path="/p/held.ts" line={0} col={0} fallbackLoad={previewText} />);
     await waitFor(() => expect(document.querySelector(".cm-content")).toBeTruthy());
     docs.get("/p/held.ts")!.dirty = true;
     unmount();

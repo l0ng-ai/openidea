@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { TodoView, useTodoView, useTodoViewOptions } from "./TodoView";
 import { useTodos } from "./store";
 import { setLocalChanges } from "@/workbench/contributions";
@@ -69,7 +69,7 @@ describe("TodoView", () => {
     act(() => useTodoViewOptions.setState({ preview: true }));
   });
 
-  it("previews read-only until Allow editing is checked", async () => {
+  it("previews the selected item as an editable editor, without a switch", async () => {
     act(() =>
       useTodos.setState({
         scannedOnce: true,
@@ -82,17 +82,10 @@ describe("TodoView", () => {
     // Select the file group so the preview has an item (trees select on mousedown).
     fireEvent.mouseDown(screen.getByText("a.ts").closest("[role=treeitem]")!);
     await screen.findByText("(5, 4)");
-    const check = screen.getByLabelText("Allow editing") as HTMLInputElement;
-    expect(check.checked).toBe(false);
-    // Read-only preview: lines render, no CodeMirror editor.
-    expect(document.querySelector(".cm-editor")).toBeNull();
-    fireEvent.click(check);
-    expect(screen.getByLabelText("Allow editing")).toBeChecked();
+    // No editing switch: the preview is simply an editor, like IntelliJ's.
+    expect(screen.queryByLabelText("Allow editing")).toBeNull();
     // No document attacher in tests: the editable pane degrades to its error
     // state ("editor not started") instead of crashing.
     await screen.findByText("editor not started");
-    // Unchecking returns to the read-only preview.
-    fireEvent.click(screen.getByLabelText("Allow editing"));
-    await waitFor(() => expect(screen.queryByText("editor not started")).toBeNull());
   });
 });

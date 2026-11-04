@@ -72,27 +72,19 @@ export function buildTodoQuery(s: TodoSettings, scope: SearchScope = { kind: "pr
 }
 
 // 注释开符，行内任意位置（行首或空白后）都算：// /* <!-- # -- {- (* 。
+// 杀掉 URL 里的 //、字符串里的 #、f(*)、a * b 这类代码误报。残留误报
+// （语言感知才能根除）："x # y" 字符串、--y 前置自减。
 // `*` `;` `%` `"""` `'''` 是代码字符，只在行首算注释（LINE_START_MARKER）。
-const INLINE_MARKER = /(\/\/|\/\*|<!--|#|--|\{-|\(\*)/g;
+// IDEA 的默认模式匹配注释内任意位置的 TODO，所以关键字不要求"引领"注释。
+const INLINE_MARKER = /(?:^|\s)(?:\/\/|\/\*|<!--|#|--|\{-|\(\*)/;
 const LINE_START_MARKER = /^\s*(?:\*|;|%|"""|''')/;
-// 关键字必须"引领"注释：最后一个开符与关键字之间只允许空白和文档注释
-// 装饰（/** 的斜杠星号）。`// fixed the TODO bug`、`/** …，TODO 待办 */`
-// 是在正文里"提及"TODO，不是任务标记。
-const BETWEEN_MARKER_AND_KEYWORD = /^[\s*/]*$/;
 // 长行被后端截断（ide-search line.rs：textOffset > 0）时 prefix 不始于真实行首，
-// "引领"规则无从判定——退回只查开符存在，宁误报不漏报。
+// 锚定无从判定——退回只查开符存在，宁误报不漏报。
 const LENIENT_MARKER = /(\/\/|\/\*|<!--|#|--|\{-|\(\*|\*|;|%|"""|''')/;
 
 export function looksLikeComment(prefix: string, truncated = false): boolean {
   if (truncated) return LENIENT_MARKER.test(prefix);
-  // 取最后一个合法开符的位置：代码中间的 http://、a--b、"a#b" 不开注释。
-  let end = -1;
-  const head = LINE_START_MARKER.exec(prefix);
-  if (head) end = head[0].length;
-  for (const m of prefix.matchAll(INLINE_MARKER)) {
-    if (m.index === 0 || /\s/.test(prefix[m.index - 1]!)) end = m.index + m[0].length;
-  }
-  return end >= 0 && BETWEEN_MARKER_AND_KEYWORD.test(prefix.slice(end));
+  return INLINE_MARKER.test(prefix) || LINE_START_MARKER.test(prefix);
 }
 
 function cleanText(text: string): string {

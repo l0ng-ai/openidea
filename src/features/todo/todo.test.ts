@@ -40,6 +40,10 @@ describe("comment markers", () => {
     "x = 1; // TODO", // marker after whitespace, not just line start
     "x (* TODO *)", // OCaml trailing comment
     "x {- TODO -}", // Haskell trailing comment
+    // IDEA's default pattern matches anywhere inside a comment, so mentions count too:
+    "/** 业务类别：WORK_NOTICE 工作通知，TODO 待办。 */", // documents an enum value
+    "// fixed the TODO bug",
+    "/* see the TODO list */",
   ];
   const drop = [
     "foo(); TODO", // statement separator
@@ -51,10 +55,6 @@ describe("comment markers", () => {
     '"//"; TODO', // // inside a string
     "f(*) TODO", // OCaml-style wildcard
     "a * b; TODO", // infix multiplication
-    // The keyword must lead the comment, not be mentioned mid-text:
-    "/** 业务类别：WORK_NOTICE 工作通知，TODO 待办。 */", // documents an enum value
-    "// fixed the TODO bug", // mentions TODO inside the comment body
-    "/* see the TODO list */",
   ];
 
   it.each(keep)("keeps %s", (line) => expect(looksLikeComment(`${line.slice(0, line.indexOf("TODO"))}`)).toBe(true));

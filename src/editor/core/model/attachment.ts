@@ -85,7 +85,6 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
     path,
     doc: model.doc,
     text: () => model.sync.localText.toString(),
-    dirty: () => model.getMeta().dirty,
     uiMode: () => model.getMeta().uiMode,
     readOnly: model.getMeta().readOnly || model.virtual,
     extension: [

@@ -13,7 +13,6 @@ import {
   IconButton,
   Menu,
   Select,
-  SourcePreview,
   SplitGroup,
   SplitHandle,
   SplitPanel,
@@ -530,28 +529,16 @@ export function TodoView() {
 
 function TodoPreview({ node }: { node: Node | null }) {
   const item = node?.kind === "item" ? node.item : (node?.group.items[0] ?? null);
-  // Session-local, deliberately not persisted: editing is an explicit opt-in
-  // each time the tool window opens, so previews start read-only.
-  const [editable, setEditable] = useState(false);
   const highlights = item ? [{ line: item.line, ranges: [[item.col, item.col + item.text.length] as const] }] : [];
+  // IDEA's TODO preview is simply an editor on the file: editable in place,
+  // with read-only files falling back to the read-only preview (in PreviewEditor).
   return (
-    <div className={styles.previewPane}>
-      <div className={styles.previewBar}>
-        <label className={styles.previewToggle}>
-          <input
-            type="checkbox"
-            checked={editable}
-            onChange={(e) => setEditable(e.target.checked)}
-            aria-label={tx("Allow editing")}
-          />
-          <T>Allow editing</T>
-        </label>
-      </div>
-      {item && editable ? (
-        <PreviewEditor path={item.path} line={item.line} col={item.col} />
-      ) : (
-        <SourcePreview path={item?.path ?? null} line={item?.line ?? 0} highlights={highlights} load={previewText} />
-      )}
-    </div>
+    <PreviewEditor
+      path={item?.path ?? null}
+      line={item?.line ?? 0}
+      col={item?.col ?? 0}
+      highlights={highlights}
+      fallbackLoad={previewText}
+    />
   );
 }

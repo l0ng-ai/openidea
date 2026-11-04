@@ -1,7 +1,9 @@
 /**
- * Editable preview for the TODO tool window: a CodeMirror view attached to the
- * real document (attachDocument), so edits share the buffer with the editor
- * tabs and are saved by Save All. Opt-in via the "Allow editing" checkbox.
+ * The TODO preview as an editor, like IntelliJ's: a CodeMirror view attached
+ * to the real document (attachDocument), so edits share the buffer with the
+ * editor tabs and are saved by Save All. There is no editing switch.
+ *
+ * Read-only files (and no selection) fall back to the read-only `SourcePreview`.
  *
  * Dirty buffers are never released: releasing a document nobody else shows
  * would either auto-save it or close it and drop the edits. Instead they are
@@ -18,8 +20,7 @@ import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
-import { T } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { SourcePreview, T, type SourceHighlight } from "@/ui";
 import styles from "./TodoView.module.css";
 
 /** Dirty attachments kept alive after their view unmounted (see header note). */
@@ -37,16 +38,31 @@ export function heldAttachment(path: string): DocumentAttachment | null {
 }
 
 /**
- * The editable pane for one TODO item's file. Mounts a CodeMirror view over
- * the attached document and centres the item's line. Remounts per `path`;
- * switching files unmounts (holding or releasing the previous attachment,
- * see the cleanup below).
+ * The editable pane for one TODO item's file: mounts a CodeMirror view over
+ * the attached document and centres the item's line; read-only files show the
+ * read-only preview instead. Switching files holds or releases the previous
+ * attachment (see the cleanup below).
  */
-export function PreviewEditor({ path, line, col }: { path: string; line: number; col: number }) {
+export function PreviewEditor({
+  path,
+  line,
+  col,
+  highlights = [],
+  fallbackLoad,
+}: {
+  path: string | null;
+  line: number;
+  col: number;
+  highlights?: readonly SourceHighlight[];
+  /** Loader of the read-only fallback (the held-dirty-aware `previewText`). */
+  fallbackLoad: (path: string) => Promise<string>;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [readOnly, setReadOnly] = useState(false);
 
   useEffect(() => {
+    if (!path) return;
     let alive = true;
     let view: EditorView | null = null;
     let att: DocumentAttachment | null = null;
@@ -55,9 +71,9 @@ export function PreviewEditor({ path, line, col }: { path: string; line: number;
         att = await attachDocument(path);
         if (!alive) return void att.release();
         if (att.readOnly) {
-          // Read-only files (disk flag, virtual docs) cannot be edited here.
+          // Read-only files (disk flag, virtual docs) show the plain preview.
           att.release();
-          if (alive) setError(tx("This file cannot be edited"));
+          if (alive) setReadOnly(true);
           return;
         }
         const language = new Compartment();
@@ -108,6 +124,7 @@ export function PreviewEditor({ path, line, col }: { path: string; line: number;
     return () => {
       alive = false;
       view?.destroy();
+      setReadOnly(false);
       // Hold dirty buffers (see header); release clean ones.
       if (att) {
         if (att.dirty()) heldDirty.set(path, att);
@@ -117,6 +134,7 @@ export function PreviewEditor({ path, line, col }: { path: string; line: number;
     // `line`/`col` only place the initial caret; the view itself is per path.
   }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (!path || readOnly) return <SourcePreview path={path} line={line} highlights={highlights} load={fallbackLoad} />;
   if (error)
     return (
       <div className={styles.previewError}>

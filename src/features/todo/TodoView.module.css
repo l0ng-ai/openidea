@@ -107,34 +107,8 @@
   flex: 1;
   min-height: 0;
 }
-.previewPane {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
-}
-.previewBar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border);
-}
-.previewToggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-small);
-  color: var(--fg-muted);
-  cursor: pointer;
-  user-select: none;
-}
-.previewToggle input {
-  accent-color: var(--accent);
-}
-.previewPane > .previewEditor,
-.previewPane > .previewError {
+.previewEditor,
+.previewError {
   flex: 1;
   min-height: 0;
 }
