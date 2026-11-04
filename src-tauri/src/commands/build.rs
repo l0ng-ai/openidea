@@ -43,6 +43,18 @@ pub async fn build_sync(
     .await
 }
 
+/// The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
+/// build has downloaded it.
+#[tauri::command]
+#[specta::specta]
+pub async fn gradle_published_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    coordinates: String,
+) -> IdeResult<Option<ide_core::IpcPath>> {
+    ide_host::ops::build::gradle_published_catalog(&state.host, window.label(), coordinates).await
+}
+
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.
 #[tauri::command]
 #[specta::specta]
