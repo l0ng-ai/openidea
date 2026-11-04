@@ -38,6 +38,7 @@ export function activate(): () => void {
       anchor: "bottom",
       // IDEA's stripe: right above Git (order 5).
       order: 4,
+      stripe: "onUse",
       component: GraphQLView,
       headerContent: GraphQLTabs,
     }),
