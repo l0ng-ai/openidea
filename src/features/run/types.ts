@@ -13,6 +13,7 @@ import {
   gradleForkedJvm,
   isWindows,
   mavenForkedJvm,
+  ROOT_MODULE,
   springBootType,
   type ForkedJvm,
 } from "./jvmTypes";
@@ -505,9 +506,12 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(params.goKind ? { isTest: params.goKind === "test" } : {}),
     command: line.command,
     args: line.args,
-    ...(isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass
-      ? { module: undefined }
-      : {}),
+    // "Use classpath of module": the chosen module; else it is found again for another main class.
+    ...(isJvmApplication(config) && params.module
+      ? { module: params.module === ROOT_MODULE ? "" : params.module }
+      : isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass
+        ? { module: undefined }
+        : {}),
     ...(type?.ownsWorkingDirectory ? { cwd: line.cwd ?? null } : {}),
     ...(line.stop ? { stopCommand: line.stop } : {}),
   };

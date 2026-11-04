@@ -1107,7 +1107,9 @@ export interface RunConfigTypeField {
   /** Visible lines of a `textarea` (default 4). */
   rows?: number;
   placeholder?: string;
-  options?: ReadonlyArray<{ value: string; label: string }>;
+  options?: ReadonlyArray<{ value: string; label: string; detail?: string }>;
+  /** A `select`'s further options, read when the form shows it (installed JDKs, build modules). */
+  loadOptions?(): Promise<ReadonlyArray<{ value: string; label: string; detail?: string }>>;
   /** Values offered while typing (e.g. the scripts of detected configurations). */
   suggestions?(configs: readonly RunConfig[], params: Readonly<Record<string, string>>): string[];
   required?: boolean;
