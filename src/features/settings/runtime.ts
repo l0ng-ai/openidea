@@ -8,14 +8,12 @@
  * Settings written by any window (e.g. the Settings window) reach every window
  * through `settingsChanged`, which re-reads the effective settings.
  */
+import { LOCALES } from "@/platform/i18n";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { applyKeymapSettings } from "@/platform/keymap";
 import { loadSettings, useProject } from "@/platform/project";
 import { applyAppearanceOptions, installAltDragGuard, installIdleSave } from "./appearanceRuntime";
-import { type LocaleId, validateSettings } from "./model/schema";
-
-/** `<html lang>` of each UI locale. */
-const HTML_LANG: Record<LocaleId, string> = { en: "en", zh: "zh-CN", ko: "ko" };
+import { validateSettings } from "./model/schema";
 
 export function applyRuntimeSettings(raw: unknown, root: HTMLElement = document.documentElement): void {
   const s = validateSettings(raw);
@@ -23,7 +21,7 @@ export function applyRuntimeSettings(raw: unknown, root: HTMLElement = document.
 
   applyAppearanceOptions(s, root);
 
-  root.lang = HTML_LANG[s.appearance.locale];
+  root.lang = LOCALES[s.appearance.locale].tag;
 }
 
 /** Subscribes to settings changes; returns the unsubscribe function. */

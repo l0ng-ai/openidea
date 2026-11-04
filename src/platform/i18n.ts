@@ -33,8 +33,19 @@ export type MessageParams = Record<string, string | number | boolean | null | un
 export type Translate = (key: string, params?: MessageParams) => string;
 
 export const DEFAULT_LOCALE = "en";
-export const SUPPORTED_LOCALES = ["en", "zh", "ko"] as const;
-export type Locale = (typeof SUPPORTED_LOCALES)[number];
+/**
+ * The UI languages: `name` is written in the language itself, `tag` is its BCP 47
+ * tag for `<html lang>`. Adding one here offers it in the settings. Its catalogs are
+ * `locales/<locale>.json` and `locales/text/<locale>.json`; text they lack shows in English.
+ */
+export const LOCALES = {
+  en: { name: "English", tag: "en" },
+  zh: { name: "简体中文 (Chinese, Simplified)", tag: "zh-CN" },
+  ko: { name: "한국어 (Korean)", tag: "ko" },
+  fr: { name: "Français (French)", tag: "fr" },
+} as const;
+export type Locale = keyof typeof LOCALES;
+export const SUPPORTED_LOCALES = Object.keys(LOCALES) as Locale[];
 
 const loaders = import.meta.glob<Catalog>(["./locales/*.json", "!./locales/en.json"], { import: "default" });
 const textLoaders = import.meta.glob<Catalog>("./locales/text/*.json", { import: "default" });
@@ -106,7 +117,7 @@ export async function setLocale(input: string | null | undefined): Promise<Local
   }
   if (token === switchToken) {
     useI18n.setState({ locale, messages: merged(locale), texts: textCatalogs.get(locale) ?? {} });
-    if (typeof document !== "undefined") document.documentElement.lang = locale;
+    if (typeof document !== "undefined") document.documentElement.lang = LOCALES[locale].tag;
   }
   return locale;
 }
