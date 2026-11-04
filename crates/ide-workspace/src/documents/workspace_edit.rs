@@ -402,13 +402,18 @@ impl Documents {
             return Ok(());
         }
         let mut edit = normalize_edit(edit)?;
+        let captured = !edit.preconditions.is_empty();
         self.prepare_workspace_edit(&mut edit)?;
         self.validate_preconditions(&edit.preconditions)?;
         for file in &edit.files {
             if let FileEdit::Edit { path, version: Some(version), .. } = file {
-                let doc = self.by_path(path).ok_or_else(|| stale(path))?;
-                if i64::from(self.version(doc)?) != i64::from(*version) {
-                    return Err(stale(path));
+                match self.by_path(path) {
+                    Some(doc) if i64::from(self.version(doc)?) != i64::from(*version) => return Err(stale(path)),
+                    Some(_) => {}
+                    // Servers version files the editor never opened (gopls renames). The
+                    // preconditions captured with the edit already cover its disk contents.
+                    None if captured => {}
+                    None => return Err(stale(path)),
                 }
             }
         }

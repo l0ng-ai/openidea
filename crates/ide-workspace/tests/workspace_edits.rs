@@ -112,6 +112,37 @@ fn matching_document_version_is_applied() {
 }
 
 #[test]
+fn versioned_edit_of_a_closed_file_is_guarded_by_its_preconditions() {
+    // gopls versions every file of a rename, including ones the editor never opened.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("closed.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let docs = documents();
+    let versioned = || {
+        let mut operation = edit(&path, "new");
+        if let FileEdit::Edit { version, .. } = &mut operation {
+            *version = Some(0);
+        }
+        WorkspaceEdit { files: vec![operation], ..Default::default() }
+    };
+    // Without a snapshot of what the server saw, a version for a closed file can't be trusted.
+    assert_eq!(docs.apply_workspace_edit(&versioned()).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+
+    let mut changed = versioned();
+    docs.prepare_workspace_edit(&mut changed).unwrap();
+    std::fs::write(&path, "own\n").unwrap();
+    assert_eq!(docs.apply_workspace_edit(&changed).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "own\n");
+
+    std::fs::write(&path, "old\n").unwrap();
+    let mut prepared = versioned();
+    docs.prepare_workspace_edit(&mut prepared).unwrap();
+    docs.apply_workspace_edit(&prepared).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+}
+
+#[test]
 fn unversioned_preview_rejects_changed_disk_and_dirty_buffers() {
     let tmp = tempfile::tempdir().unwrap();
     for open in [false, true] {
