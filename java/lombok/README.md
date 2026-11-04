@@ -52,7 +52,7 @@ git fetch https://github.com/Rawi01/lombok.git eclipse-constructor-call-statemen
 git cherry-pick 2d535482a913de46c27d06c5b0b294918ede3f9c 3098f4dd78b5349c2f382e7310e64db810dd380b
 git cherry-pick 7832faa49b35c839088866daf865384c82cd555f 3f3a80b857a969839ab1baba12767aec4965ac32
 ant dist
-cp dist/lombok.jar /path/to/openidea/plugins/lombok/lombok-1.18.48-openidea.2.jar
+cp dist/lombok.jar /path/to/openidea/java/lombok/lombok-1.18.48-openidea.2.jar
 ```
 
 The changelog context conflicts because the first commit adds a release-note line under the
@@ -96,7 +96,7 @@ On macOS arm64 with JDT LS 1.63.0 / Equinox 3.25.0, server OpenJDK 25 and projec
   programs ran with identical output, and `@NonNull` checks run after the constructor call again.
 - Real JDT LS `java/buildWorkspace(true)` of the same sources with the agent: `openidea.1` reported
   Failed with three internal errors and wrote no classes; `openidea.2` Succeeded with all classes.
-- `plugins/java-usages/tests/verify.py` and `read-write.py` passed with `openidea.2`.
+- `java/java-usages/tests/verify.py` and `read-write.py` passed with `openidea.2`.
 
 Windows and Linux runtime validation has not been performed. Rust tests cover source selection
 for both supported architectures on all three OS variants, offline provisioning, corruption
