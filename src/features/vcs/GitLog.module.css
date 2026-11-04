@@ -414,7 +414,7 @@
   font-size: var(--fs-small);
   line-height: 18px;
   -webkit-user-select: text;
-  cursor: text;
+  cursor: default;
   -webkit-user-select: text;
   user-select: text;
 }
@@ -422,6 +422,7 @@
   white-space: pre-wrap;
   word-break: break-all;
   color: var(--fg-secondary);
+  cursor: text;
 }
 .line-cmd {
   color: var(--fg-emphasis);

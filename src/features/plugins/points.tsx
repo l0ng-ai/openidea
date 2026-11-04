@@ -13,7 +13,7 @@ import { Button, Kbd, T } from "@/ui";
 import { addIconTheme, iconThemeKey, selectIconTheme, useSelectedIconTheme } from "./iconThemes";
 import { defineUiPoint, type UiItem } from "./projection";
 import { SecretsDetails, type SecretDecl } from "./secrets";
-import { defineViewUiPoints } from "./uiPoints";
+import { defineViewUiPoints, pluginSettingsPageId } from "./uiPoints";
 import { isLive, runPluginCommand } from "./store";
 import styles from "./PluginsPage.module.css";
 
@@ -168,7 +168,13 @@ export function defineBuiltinUiPoints(): () => void {
     defineUiPoint<IconThemeDecl>("iconThemes", {
       title: "File Icon Themes",
       project: ({ pluginId, decl }, { plugin }) =>
-        addIconTheme({ pluginId, id: decl.id, label: decl.label, origin: plugin.name }),
+        addIconTheme({
+          pluginId,
+          id: decl.id,
+          label: decl.label,
+          origin: plugin.name,
+          settingsPage: `${pluginSettingsPageId(pluginId)}.${decl.id.replace(/\./g, "-")}`,
+        }),
       Details: IconThemesDetails,
     }),
     // Stored by the backend; listed here with a field per secret.

@@ -5,6 +5,7 @@
  * back to the default (mirrors `ide-core::settings` defaults).
  */
 import { validateCMake } from "@/platform/cmakeSettings";
+import { SUPPORTED_LOCALES, type Locale } from "@/platform/i18n";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
 import type { AgentSettings, LanguageServerSettings, Settings } from "@/platform/ipc";
@@ -35,7 +36,6 @@ import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
 
 /** A built-in theme, a plugin's (`plugin:<id>/<theme>`) or the legacy `"system"`. */
 export type ThemeId = ThemeChoiceId | "system";
-export type LocaleId = "en" | "zh";
 
 /** A user keymap (Keymap › Duplicate…): its own overrides on top of a bundled preset. */
 export interface CustomKeymapSettings {
@@ -46,7 +46,7 @@ export interface CustomKeymapSettings {
 
 export interface ValidSettings extends WorkflowSettings {
   general: { reopenLastProject: boolean; confirmExit: boolean } & GeneralExtras;
-  appearance: { theme: ThemeId; accent: string; uiFontSize: number; locale: LocaleId } & AppearanceExtras;
+  appearance: { theme: ThemeId; accent: string; uiFontSize: number; locale: Locale } & AppearanceExtras;
   editor: {
     fontFamily: string;
     fontSize: number;
@@ -175,7 +175,6 @@ export const LIMITS = {
 } as const;
 
 const theme = (v: unknown, d: ThemeId): ThemeId => (v === "system" || isThemeChoiceId(v) ? v : d);
-const LOCALES: readonly LocaleId[] = ["en", "zh"];
 export const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
 type Obj = Record<string, unknown>;
@@ -224,7 +223,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       theme: theme(a.theme, d.appearance.theme),
       accent: typeof a.accent === "string" && HEX_COLOR.test(a.accent) ? a.accent.toLowerCase() : d.appearance.accent,
       uiFontSize: num(a.uiFontSize, d.appearance.uiFontSize, LIMITS.uiFontSize, true),
-      locale: oneOf(a.locale, LOCALES, d.appearance.locale),
+      locale: oneOf(a.locale, SUPPORTED_LOCALES, d.appearance.locale),
     },
     editor: {
       fontFamily: str(e.fontFamily, d.editor.fontFamily),

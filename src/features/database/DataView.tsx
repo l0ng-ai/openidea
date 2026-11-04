@@ -20,6 +20,7 @@ import {
   type LocalSort,
 } from "./resultView";
 import { openDialog } from "./store";
+import { hasLineBreak } from "./cellPreview";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -346,17 +347,30 @@ function RecordField(props: { column: GridColumn; cell: Cell; editable: boolean;
         {c.name}
         {c.type && c.type !== "NULL" && <span className={styles.treeType}>{c.type}</span>}
       </span>
-      <Input
-        mono
-        value={text}
-        readOnly={!props.editable}
-        placeholder={props.cell === null ? "<null>" : undefined}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit();
-        }}
-      />
+      {hasLineBreak(props.cell ?? "") ? (
+        // A single-line field would drop the line breaks on the first edit.
+        <textarea
+          className={styles.recordText}
+          rows={Math.min(8, (props.cell ?? "").split(/\r\n|\r|\n/).length)}
+          value={text}
+          readOnly={!props.editable}
+          spellCheck={false}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={commit}
+        />
+      ) : (
+        <Input
+          mono
+          value={text}
+          readOnly={!props.editable}
+          placeholder={props.cell === null ? "<null>" : undefined}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+          }}
+        />
+      )}
     </label>
   );
 }

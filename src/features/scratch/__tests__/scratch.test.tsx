@@ -4,14 +4,26 @@ import userEvent from "@testing-library/user-event";
 import { getAction } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProjectViewRoots } from "@/workbench/contributions";
-import { chooserRows, pushRecent, scratchFileName, scratchLanguages, type ScratchLanguage } from "../model";
+import {
+  chooserRows,
+  pushRecent,
+  scratchContent,
+  scratchFileName,
+  scratchLanguages,
+  type ScratchLanguage,
+} from "../model";
 import { createScratch, setScratchBackend, tauriScratchBackend, type ScratchBackend } from "../scratches";
 import { useScratch } from "../store";
 import { ScratchChooserHost } from "../ScratchChooser";
 import { activate } from "..";
 
 const LANGS: ScratchLanguage[] = scratchLanguages([
-  { id: "java", name: "Java", extensions: ["java"] },
+  {
+    id: "java",
+    name: "Java",
+    extensions: ["java"],
+    scratchTemplate: "class Scratch {\n    public static void main(String[] args) {\n        $END$\n    }\n}\n",
+  },
   { id: "python", name: "Python", extensions: ["py", "pyi"] },
   { id: "javascript", name: "JavaScript", extensions: ["js", "mjs"] },
   { id: "plaintext", name: "Plain Text", extensions: ["txt"] },
@@ -24,6 +36,22 @@ describe("scratch naming", () => {
     expect(scratchFileName(["scratch.java"], "java")).toBe("scratch_1.java");
     expect(scratchFileName(["Scratch.java", "scratch_1.java", "scratch.py"], "java")).toBe("scratch_2.java");
     expect(scratchFileName(["scratch.java"], "py")).toBe("scratch.py");
+  });
+});
+
+describe("scratch content", () => {
+  it("starts from the language's template with the caret at $END$", () => {
+    const cases: [string | undefined, string, { line: number; col: number } | null][] = [
+      [undefined, "", null],
+      ["", "", null],
+      ["fn main() {\n    $END$\n}\n", "fn main() {\n    \n}\n", { line: 1, col: 4 }],
+      ["package main\n\nfunc main() {\n\t$END$\n}\n", "package main\n\nfunc main() {\n\t\n}\n", { line: 3, col: 1 }],
+      ["$END$x", "x", { line: 0, col: 0 }],
+      ["// é\n$END$ $END$", "// é\n ", { line: 1, col: 0 }],
+      ["no caret\n", "no caret\n", null],
+    ];
+    for (const [template, text, caret] of cases)
+      expect(scratchContent(template), String(template)).toEqual({ text, caret });
   });
 });
 
@@ -62,20 +90,30 @@ describe("language chooser rows", () => {
 
 describe("creating scratch files", () => {
   let files: Set<string>;
+  let contents: Map<string, string>;
   let opened: string[];
+  let carets: ({ line: number; col: number } | null)[];
   let backend: ScratchBackend;
   beforeEach(() => {
     localStorage.clear();
     useScratch.setState({ languages: null, recent: [] });
     files = new Set(["/data/scratches/scratch.java"]);
+    contents = new Map();
     opened = [];
+    carets = [];
     backend = {
       dataDir: async () => "/data/",
       listNames: async (dir) => [...files].filter((f) => f.startsWith(dir + "/")).map((f) => f.slice(dir.length + 1)),
       createDir: async () => {},
-      createFile: async (p) => void files.add(p),
+      createFile: async (p, text) => {
+        files.add(p);
+        contents.set(p, text);
+      },
       languages: async () => LANGS,
-      open: async (p) => void opened.push(p),
+      open: async (p, caret) => {
+        opened.push(p);
+        carets.push(caret);
+      },
     };
     setScratchBackend(backend);
   });
@@ -89,6 +127,16 @@ describe("creating scratch files", () => {
     expect(files.has("/data/scratches/scratch_1.java")).toBe(true);
     expect(events).toEqual([["/data/scratches/scratch_1.java"]]);
     expect(opened).toEqual(["/data/scratches/scratch_1.java"]);
+  });
+
+  it("fills a new scratch from its language's template, caret in the body; others start empty", async () => {
+    await createScratch(LANGS.find((l) => l.id === "java")!);
+    await createScratch(LANGS.find((l) => l.id === "python")!);
+    expect(contents.get("/data/scratches/scratch_1.java")).toBe(
+      "class Scratch {\n    public static void main(String[] args) {\n        \n    }\n}\n",
+    );
+    expect(contents.get("/data/scratches/scratch.py")).toBe("");
+    expect(carets).toEqual([{ line: 2, col: 8 }, null]);
   });
 
   it("registers the action and the Scratches root; the chooser creates the picked language", async () => {

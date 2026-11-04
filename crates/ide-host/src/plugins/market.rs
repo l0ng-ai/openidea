@@ -3,11 +3,14 @@
 //! plugins, and revocations. The host keeps the last index it read
 //! (`market-index.json`), checks signatures against it, and disables what it
 //! revokes — at start-up and on every refresh (the desktop refreshes daily).
+//! Release builds pin the official publisher to the keys they were built
+//! with, so no index can sign `openidea.*` plugins with another key.
 
-use super::{PluginHost, PluginSource, PluginStatus};
+use super::{PackageFile, PluginEvent, PluginHost, PluginSource, PluginStatus, PluginUpdate, install};
 use ide_core::{IdeError, IdeResult};
-use ide_extension::Manifest;
 use ide_extension::package::{self, Index, IndexEntry, PackageSignature, SIGNATURE_FILE};
+use ide_extension::{MANIFEST_FILE, Manifest};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -15,11 +18,18 @@ use std::path::{Path, PathBuf};
 /// the app, next to the signed packages of the official plugins.
 pub const OFFICIAL_INDEX: &str = "https://github.com/l0ng-ai/openidea/releases/latest/download/plugins-index.json";
 
+/// The publisher of the official plugins.
+pub const OFFICIAL_PUBLISHER: &str = "openidea";
+
 /// The last index read, in the plugins directory.
 pub const INDEX_FILE: &str = "market-index.json";
 const DOWNLOADS: &str = ".downloads";
 const MAX_INDEX: usize = 16 << 20;
 const MAX_PACKAGE: usize = 256 << 20;
+const MAX_STAGED_FILES: usize = 256;
+const MAX_STAGED_BYTES: usize = 16 << 20;
+/// `moved` links followed before giving up (a loop, or a misconfiguration).
+const MAX_MOVES: usize = 3;
 
 /// A marketplace entry with what is installed.
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -29,6 +39,32 @@ pub struct MarketPlugin {
     pub entry: IndexEntry,
     /// Installed version, if any.
     pub installed: Option<String>,
+    /// Whether this IDE can load `entry` (the newest version it can, else the newest).
+    pub compatible: bool,
+}
+
+impl MarketPlugin {
+    /// A version this IDE can load, newer than the one installed.
+    pub fn is_update(&self) -> bool {
+        let newer = |installed: &String| match (Version::parse(&self.entry.version), Version::parse(installed)) {
+            (Ok(offered), Ok(installed)) => offered > installed,
+            _ => false,
+        };
+        self.compatible && self.installed.as_ref().is_some_and(newer)
+    }
+}
+
+/// The official publisher's keys this IDE was built with
+/// (`OPENIDEA_OFFICIAL_PLUGIN_KEYS`: base64, comma-separated). Development
+/// builds have none: the index decides.
+pub(super) fn built_in_official_keys() -> Vec<String> {
+    let keys = option_env!("OPENIDEA_OFFICIAL_PLUGIN_KEYS").unwrap_or_default();
+    keys.split(',').map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned).collect()
+}
+
+fn pinned(mut index: Index, official_keys: &[String]) -> Index {
+    index.pin_publisher(OFFICIAL_PUBLISHER, "OpenIDEA", official_keys);
+    index
 }
 
 /// Reads `url`: `http(s)://…`, `file://…` or a local path.
@@ -56,6 +92,33 @@ pub fn read_url(url: &str, max: usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The index at `url`, following `moved`, with downloads made absolute against
+/// where it was read from.
+fn read_index(url: &str) -> IdeResult<Index> {
+    let mut url = url.to_owned();
+    for _ in 0..=MAX_MOVES {
+        let bytes = read_url(&url, MAX_INDEX).map_err(IdeError::unavailable)?;
+        let text = String::from_utf8(bytes).map_err(|_| IdeError::invalid("the index is not UTF-8"))?;
+        let mut index = Index::parse(&text).map_err(IdeError::invalid)?;
+        match index.moved.take().filter(|m| !m.trim().is_empty()) {
+            Some(next) => {
+                let next = resolve(&url, &next);
+                if url.starts_with("https://") && !next.starts_with("https://") {
+                    return Err(IdeError::invalid(format!("the marketplace moved to {next}, which isn't https")));
+                }
+                url = next;
+            }
+            None => {
+                for e in &mut index.plugins {
+                    e.download = resolve(&url, &e.download);
+                }
+                return Ok(index);
+            }
+        }
+    }
+    Err(IdeError::unavailable(format!("the marketplace index moved more than {MAX_MOVES} times")))
+}
+
 /// `href` relative to the index at `base`: a URL, or a local path (with the
 /// platform's separators, e.g. `C:\\market\\index.json`).
 pub fn resolve(base: &str, href: &str) -> String {
@@ -75,9 +138,16 @@ pub fn resolve(base: &str, href: &str) -> String {
 }
 
 impl PluginHost {
-    pub(super) fn load_market_index(dir: &Path) -> Option<Index> {
+    pub(super) fn load_market_index(dir: &Path, official_keys: &[String]) -> Option<Index> {
         let text = std::fs::read_to_string(dir.join(INDEX_FILE)).ok()?;
-        Index::parse(&text).map_err(|e| tracing::warn!("{INDEX_FILE}: {e}")).ok()
+        let index = Index::parse(&text).map_err(|e| tracing::warn!("{INDEX_FILE}: {e}")).ok()?;
+        Some(pinned(index, official_keys))
+    }
+
+    /// Pins the official publisher to `keys` (base64) instead of the built-in
+    /// ones, from the next index read.
+    pub fn set_official_keys(&self, keys: Vec<String>) {
+        *self.official_keys.write() = keys;
     }
 
     /// The marketplace index URL: the user's, else the default (none: no marketplace).
@@ -95,14 +165,16 @@ impl PluginHost {
         self.save_state();
     }
 
-    /// Reads the index again, keeps it, and applies its revocations.
+    /// Reads the index again, keeps it, and applies its revocations. Announces
+    /// updates of installed plugins it hasn't announced yet.
     pub fn refresh_market(&self) -> IdeResult<Vec<MarketPlugin>> {
         let url = self.market_url().ok_or_else(|| IdeError::unavailable("no plugin marketplace is configured"))?;
-        let bytes = read_url(&url, MAX_INDEX).map_err(IdeError::unavailable)?;
-        let text = String::from_utf8(bytes).map_err(|_| IdeError::invalid("the index is not UTF-8"))?;
-        let index = Index::parse(&text).map_err(IdeError::invalid)?;
-        let _ = std::fs::write(self.plugins_dir.join(INDEX_FILE), &text);
-        *self.market.write() = Some(index);
+        let index = read_index(&url)?;
+        if let Ok(json) = serde_json::to_string(&index) {
+            let _ = std::fs::write(self.plugins_dir.join(INDEX_FILE), json);
+        }
+        let newer = index.is_newer().then_some(index.format);
+        *self.market.write() = Some(pinned(index, &self.official_keys.read()));
         // Trust may have changed: who signed what, what is revoked.
         let installed: Vec<_> =
             self.plugins.read().values().filter(|p| p.source == PluginSource::Installed).cloned().collect();
@@ -111,7 +183,41 @@ impl PluginHost {
             plugin.meta.lock().publisher = publisher;
         }
         self.apply_revocations();
-        Ok(self.market_plugins())
+        if let Some(format) = newer {
+            return Err(IdeError::unavailable(format!(
+                "the marketplace needs a newer OpenIDEA (index format {format}); its revocations still apply"
+            )));
+        }
+        let plugins = self.market_plugins();
+        self.announce_updates(&plugins);
+        Ok(plugins)
+    }
+
+    /// Tells the windows about updates once per set of versions: a later
+    /// refresh offering the same ones says nothing.
+    fn announce_updates(&self, plugins: &[MarketPlugin]) {
+        let updates: Vec<PluginUpdate> = plugins
+            .iter()
+            .filter(|p| p.is_update())
+            .map(|p| PluginUpdate {
+                id: p.entry.id.clone(),
+                name: p.entry.name.clone(),
+                version: p.entry.version.clone(),
+            })
+            .collect();
+        let key: Vec<String> = updates.iter().map(|u| format!("{}@{}", u.id, u.version)).collect();
+        if std::mem::replace(&mut *self.announced_updates.lock(), key.clone()) != key && !updates.is_empty() {
+            self.emit(None, PluginEvent::UpdatesAvailable { updates });
+        }
+    }
+
+    /// Whether the package in `src` would replace the installed `id`'s copy
+    /// with one signed by another key than that copy, without that key's
+    /// endorsement: the user confirms the change of signer.
+    pub(super) fn signer_changed(&self, id: &str, src: &Path) -> bool {
+        let Some(current) = install::active_dir(&self.plugins_dir.join(id)) else { return false };
+        let market = self.market.read();
+        !package::signer_continues(market.as_ref(), read_signature(&current).as_ref(), read_signature(src).as_ref())
     }
 
     /// The plugins of the last index read.
@@ -119,16 +225,14 @@ impl PluginHost {
         let Some(index) = self.market.read().clone() else { return Vec::new() };
         let plugins = self.plugins.read();
         index
-            .plugins
-            .iter()
-            .filter(|e| index.revocation(&e.id, &e.version).is_none())
-            .cloned()
-            .map(|entry| {
+            .offered()
+            .into_iter()
+            .map(|(entry, compatible)| {
                 let installed = plugins
                     .get(&entry.id)
                     .filter(|p| p.source == PluginSource::Installed)
                     .map(|p| p.manifest().version.clone());
-                MarketPlugin { entry, installed }
+                MarketPlugin { entry: entry.clone(), installed, compatible }
             })
             .collect()
     }
@@ -139,12 +243,18 @@ impl PluginHost {
     pub fn download_market_plugin(&self, id: &str) -> IdeResult<PathBuf> {
         let url = self.market_url().ok_or_else(|| IdeError::unavailable("no plugin marketplace is configured"))?;
         let index = self.market.read().clone().ok_or_else(|| IdeError::unavailable("refresh the marketplace first"))?;
-        let entry = index
-            .plugins
-            .iter()
-            .find(|e| e.id == id)
-            .cloned()
+        let (entry, compatible) = index
+            .offered()
+            .into_iter()
+            .find(|(e, _)| e.id == id)
+            .map(|(e, ok)| (e.clone(), ok))
             .ok_or_else(|| IdeError::not_found(format!("{id} is not in the marketplace")))?;
+        if !compatible {
+            return Err(IdeError::unavailable(format!(
+                "{} {} needs plugin API {}: update OpenIDEA",
+                entry.name, entry.version, entry.engine
+            )));
+        }
         let bytes = read_url(&resolve(&url, &entry.download), MAX_PACKAGE).map_err(IdeError::unavailable)?;
         let downloads = self.plugins_dir.join(DOWNLOADS);
         std::fs::create_dir_all(&downloads)?;
@@ -178,6 +288,45 @@ impl PluginHost {
         if let Some(sig) = unpacked.signature {
             let json = serde_json::to_string_pretty(&sig).map_err(|e| IdeError::internal(e.to_string()))?;
             std::fs::write(dir.join(SIGNATURE_FILE), json)?;
+        }
+        Ok(dir)
+    }
+
+    /// Writes a package the UI generated (an imported IntelliJ theme) into a
+    /// folder next to the downloads, named after `name` (its plugin id); returns the folder.
+    /// The install page validates it like any other package.
+    pub fn stage_package(&self, name: &str, files: &[PackageFile]) -> IdeResult<PathBuf> {
+        ide_extension::validate_item_id(name, "package name").map_err(IdeError::invalid)?;
+        if !files.iter().any(|f| f.path == MANIFEST_FILE) {
+            return Err(IdeError::invalid(format!("a package needs a {MANIFEST_FILE}")));
+        }
+        let total: usize = files.iter().map(|f| f.text.len()).sum();
+        if files.len() > MAX_STAGED_FILES || total > MAX_STAGED_BYTES {
+            return Err(IdeError::invalid("the package is too large"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for f in files {
+            let valid = !f.path.is_empty()
+                && f.path.len() <= 255
+                && f.path.split('/').all(|part| {
+                    !matches!(part, "" | "." | "..") && !part.contains(['\\', ':', '\0']) && !part.starts_with('.')
+                });
+            if !valid {
+                return Err(IdeError::invalid(format!("invalid package path {:?}", f.path)));
+            }
+            if !seen.insert(f.path.to_ascii_lowercase()) {
+                return Err(IdeError::invalid(format!("{} is in the package twice", f.path)));
+            }
+        }
+        // One folder per package, replaced by the next import of it: they don't pile up.
+        let dir = self.plugins_dir.join(DOWNLOADS).join(format!("{name}-generated"));
+        let _ = std::fs::remove_dir_all(&dir);
+        for f in files {
+            let path = dir.join(&f.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, &f.text)?;
         }
         Ok(dir)
     }

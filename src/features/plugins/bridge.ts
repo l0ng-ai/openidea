@@ -6,13 +6,18 @@
  * variables, notifications become balloons, consent requests open the
  * permission dialog, and opened files fire `on-language` / `on-file`.
  */
-import type { ActiveTheme, PluginEvent } from "@/bindings";
+import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
 import { notifications } from "@/workbench/contributions";
 import { useProducerNames } from "@/platform/inspections";
 import { languageListChanged } from "@/platform/languageList";
-import { isThemeAvailable, parsePluginThemeRef, useContributedThemes } from "@/platform/themes";
+import {
+  isThemeAvailable,
+  parsePluginThemeRef,
+  providePluginThemePreview,
+  useContributedThemes,
+} from "@/platform/themes";
 import {
   applyThemeAttributes,
   currentThemeChoice,
@@ -22,13 +27,14 @@ import {
   useThemeOverride,
   windowBackgroundHex,
 } from "@/workbench/theme";
+import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { pluginsBackend } from "./backend";
 import { trackIconTheme } from "./iconThemes";
 import { defineBuiltinUiPoints } from "./points";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, selectPluginTheme, usePlugins } from "./store";
+import { grantPlugin, refreshPlugins, selectPluginTheme, updateAllPlugins, usePlugins } from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -90,6 +96,22 @@ export function applyPluginTheme(theme: ActiveTheme | null, root: HTMLElement = 
     applyThemeAttributes(currentThemeId(), root);
   }
   if (had || theme) syncWindowBackground();
+}
+
+/**
+ * Quick Switch's theme preview of plugin themes: a live plugin's theme as it
+ * contributes it, shown in this window only; nothing is selected or saved.
+ */
+export function providePluginThemePreviews(): () => void {
+  return providePluginThemePreview((ref) => {
+    const state = usePlugins.getState();
+    if (ref === "selected") return applyPluginTheme(state.activeTheme);
+    const want = ref ? parsePluginThemeRef(ref) : null;
+    const item = want
+      ? state.ui.find((c) => c.point === "themes" && c.pluginId === want.pluginId && c.key === want.themeId)
+      : undefined;
+    applyPluginTheme(item ? { pluginId: item.pluginId, theme: item.decl as ActiveTheme["theme"] } : null);
+  });
 }
 
 /** localStorage key read by public/boot.js: the selected theme's stylesheet, applied before the app loads. */
@@ -223,10 +245,27 @@ function trackActiveFile(): () => void {
 
 // --- events -----------------------------------------------------------------
 
+function announceUpdates(updates: readonly PluginUpdate[]) {
+  const names = updates.map((u) => `${u.name} ${u.version}`).join(", ");
+  notifications().notify({
+    group: "plugins",
+    level: "info",
+    title: updates.length === 1 ? "Plugin update available" : `${updates.length} plugin updates available`,
+    body: names,
+    actions: [
+      { label: "Update All", run: () => void updateAllPlugins() },
+      { label: "Show Plugins", run: () => void executeAction("plugins.settings") },
+    ],
+  });
+}
+
 export function handlePluginEvent(e: PluginEvent) {
   switch (e.type) {
     case "commandsChanged":
       scheduleRefresh();
+      break;
+    case "updatesAvailable":
+      announceUpdates(e.updates);
       break;
     case "notification": {
       const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;

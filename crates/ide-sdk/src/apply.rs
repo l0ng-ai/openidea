@@ -123,8 +123,21 @@ fn not_a_jdk(p: &Path) -> String {
 
 /// `mvn` of the configured Maven home (`languages.java.maven.home`): the
 /// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
-/// pins for mise / asdf when it has no Maven wrapper.
+/// pins for mise / asdf when it has no Maven wrapper. With `maven.daemon` on, the
+/// Maven Daemon (`mvnd`) replaces all of that — it embeds its own Maven — unless
+/// it is not installed or the project JDK is older than the Java 17 its daemon
+/// needs, in which case the build stays on mvn (with a logged warning).
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
+    if s.languages.java.maven.daemon {
+        match mvnd_command(root, s) {
+            // No project JDK at all lets mvnd pick its own Java, which may still be new enough.
+            Some(mvnd) if project_jdk(root, s).is_none_or(|j| j.major >= 17) => return Some(mvnd),
+            Some(_) => tracing::warn!(
+                "Maven daemon: the project JDK is older than the Java 17 its daemon needs; building with mvn"
+            ),
+            None => tracing::warn!("Maven daemon is enabled but mvnd was not found; building with mvn"),
+        }
+    }
     let name = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
     let Some(p) = setting_path(root, &s.languages.java.maven.home) else {
         if root.join("mvnw").is_file() || root.join("mvnw.cmd").is_file() {
@@ -139,6 +152,41 @@ pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
         tracing::warn!("Maven home {} has no {name}", p.display());
     }
     found
+}
+
+/// The `mvnd` executable when the Maven Daemon is enabled: the configured home
+/// (`languages.java.maven.mvndHome`, the executable itself or `<home>/bin/mvnd`),
+/// else `$MVND_HOME`, else `mvnd` on `PATH`, else the common Homebrew / sdkman
+/// locations. `None` = not found; the caller falls back to `mvn`.
+pub fn mvnd_command(root: &Path, s: &Settings) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "mvnd.cmd" } else { "mvnd" };
+    if let Some(p) = setting_path(root, &s.languages.java.maven.mvnd_home) {
+        let found = [p.clone(), p.join("bin").join(name), p.join(name)].into_iter().find(|c| c.is_file());
+        if found.is_none() {
+            tracing::warn!("Maven Daemon home {} has no {name}", p.display());
+        }
+        return found;
+    }
+    if let Some(home) = std::env::var_os("MVND_HOME").map(PathBuf::from) {
+        let found = [home.join("bin").join(name), home.join(name)].into_iter().find(|c| c.is_file());
+        if found.is_none() {
+            tracing::warn!("MVND_HOME {} has no {name}", home.display());
+        }
+        return found;
+    }
+    if let Some(found) = crate::exec::which(name) {
+        return Some(found);
+    }
+    if let Some(home) = crate::home_dir() {
+        let sdkman = home.join(".sdkman/candidates/mvnd/current");
+        let candidates = [
+            sdkman.join("bin").join(name),
+            PathBuf::from("/opt/homebrew/opt/mvnd").join("bin").join(name),
+            PathBuf::from("/usr/local/opt/mvnd").join("bin").join(name),
+        ];
+        return candidates.into_iter().find(|c| c.is_file());
+    }
+    None
 }
 
 /// Project launcher policy for sync and tool-window tasks.
@@ -192,6 +240,88 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     out
 }
 
+fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
+    let mut prefixes = vec![0];
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        if arg == "-s" && args.get(i + 1).is_some() {
+            i += 2;
+        } else if arg.starts_with("-Dmaven.repo.local=") {
+            i += 1;
+        } else {
+            break;
+        }
+        prefixes.push(i);
+    }
+    prefixes
+}
+
+fn generated_maven_goal(config: &RunConfig) -> bool {
+    config.id.starts_with("maven:goal:") && config.extras.params.is_empty()
+}
+
+fn maven_goal_prefix(config: &RunConfig) -> Option<usize> {
+    let (_, goals) = config.id.split_once(".xml:")?;
+    maven_settings_prefixes(&config.args)
+        .into_iter()
+        .find(|&start| (start + 1..=config.args.len()).any(|end| config.args[start..end].join(" ") == goals))
+}
+
+/// Applies the current Maven settings at launch, including temporary configurations
+/// made before build-tool defaults stopped being stored in their command and arguments.
+pub fn prepare_maven_run(config: &mut RunConfig, root: &Path, s: &Settings) {
+    let mut detected = config.detected;
+    if generated_maven_goal(config) {
+        // The id records the user's original goals; only the settings prefix before them is derived.
+        if let Some(prefix) = maven_goal_prefix(config) {
+            config.args.drain(..prefix);
+        }
+        let name = config.command.rsplit(['/', '\\']).next().unwrap_or_default().to_ascii_lowercase();
+        if !matches!(name.as_str(), "mvnw" | "mvnw.cmd" | "mvnw.bat") {
+            config.command = "mvn".into();
+            if maven_command(root, s).is_none() {
+                let cwd = config.cwd.as_ref().map_or_else(|| root.to_path_buf(), |dir| root.join(dir.as_ref()));
+                for dir in cwd.ancestors().take_while(|dir| dir.starts_with(root)) {
+                    let wrapper = dir.join(if cfg!(windows) { "mvnw.cmd" } else { "mvnw" });
+                    if wrapper.is_file() {
+                        config.command = wrapper.to_string_lossy().into_owned();
+                        break;
+                    }
+                }
+            }
+        }
+    } else if config.detected || config.id.starts_with("context:") {
+        let saved = ide_run::load_user_configs(root).unwrap_or_default();
+        let id = config
+            .id
+            .strip_prefix("context:target:context:")
+            .or_else(|| config.id.strip_prefix("context:"))
+            .unwrap_or(&config.id);
+        let id = id.strip_prefix("workspace:").and_then(|id| id.split_once(':')).map_or(id, |(_, id)| id);
+        let source = ide_run::detect(root)
+            .into_iter()
+            .chain(saved.iter().cloned())
+            .filter(|base| base.kind == "maven" && (id == base.id || id.starts_with(&format!("{}:", base.id))))
+            .max_by_key(|base| base.id.len())
+            .filter(|base| !saved.iter().any(|user| user.id == base.id));
+        if let Some(base) = source.filter(|_| config.extras.params.is_empty()) {
+            if let Some(prefix) = maven_settings_prefixes(&config.args)
+                .into_iter()
+                .find(|&start| config.args[start..].starts_with(&base.args))
+            {
+                config.args.drain(..prefix);
+            }
+            config.command = base.command;
+        } else {
+            detected = false;
+        }
+    }
+    let original = config.detected;
+    config.detected = detected;
+    apply_to_run_configs(std::slice::from_mut(config), root, s);
+    config.detected = original;
+}
+
 /// The Maven local repository from settings: the configured one, else
 /// `<localRepository>` of the configured user `settings.xml`; `None` = Maven's default.
 pub fn maven_local_repository(root: &Path, s: &Settings) -> Option<PathBuf> {
@@ -219,7 +349,7 @@ pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
 
 const PYTHON_SERVERS: [&str; 7] = ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff"];
 
-fn merge(base: &mut Value, layer: Value) {
+pub(crate) fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
         (Value::Object(base), Value::Object(layer)) => {
             for (k, v) in layer {
@@ -480,6 +610,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         configure_vue_typescript(cfg, root, server_root, s);
     }
 
+    // Intelephense reads it as `intelephense.environment.phpVersion` (`workspace/configuration`).
+    if name == "intelephense"
+        && let Some(version) = crate::php::language_level(root, s)
+    {
+        merge_init_options(cfg, json!({ "environment": { "phpVersion": version } }));
+    }
+
     // Node-based servers (`#!/usr/bin/env node`) run on the selected Node.js.
     if let Some(dir) = node_dir(root, s) {
         path_dirs.push(dir);
@@ -546,6 +683,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
         pinned: None,
     }
 }
@@ -646,6 +784,40 @@ fn is_python_command(cmd: &str) -> bool {
 }
 
 const PY_RUNNERS: [&str; 3] = ["uv", "poetry", "pdm"];
+
+/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`).
+fn maven_option_groups(options: &[String]) -> Vec<&[String]> {
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < options.len() {
+        let n = if options[i] == "-s" { 2.min(options.len() - i) } else { 1 };
+        groups.push(&options[i..i + n]);
+        i += n;
+    }
+    groups
+}
+
+/// Whether `args` set what `group` sets: a user settings file, or the local repository.
+fn sets_maven_option(args: &[String], group: &[String]) -> bool {
+    match group.first().map(String::as_str) {
+        Some("-s") => args.iter().any(|a| a == "-s" || a == "--settings" || a.starts_with("--settings=")),
+        Some(flag) => {
+            let key = flag.split_once('=').map_or(flag, |(k, _)| k);
+            args.iter().any(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k) == key)
+                || args
+                    .windows(2)
+                    .any(|a| a[0] == "-D" && format!("-D{}", a[1].split('=').next().unwrap_or_default()) == key)
+        }
+        None => true,
+    }
+}
+
+/// Settings › Maven's options ahead of the goals, each unless the configuration sets it itself.
+fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
+    let missing: Vec<String> =
+        maven_option_groups(options).into_iter().filter(|g| !sets_maven_option(args, g)).flatten().cloned().collect();
+    args.splice(0..0, missing);
+}
 
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
@@ -783,24 +955,15 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-                if c.kind == "maven" && c.detected {
-                    if let Some(mvn) = &mvn {
+                if c.kind == "maven" {
+                    if let Some(mvn) = &mvn
+                        && (c.detected
+                            || generated_maven_goal(c)
+                            || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
+                    {
                         c.command = mvn.to_string_lossy().into_owned();
                     }
-                    if !c.args.starts_with(&mvn_options) {
-                        c.args.splice(0..0, mvn_options.iter().cloned());
-                    }
-                } else if c.kind == "maven"
-                    && matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat")
-                    && let Some(mvn) = &mvn
-                {
-                    // A goal configuration saved from the tool window keeps the
-                    // literal `mvn` / `mvn.cmd` the launcher resolved to; without a
-                    // wrapper it cannot start when Maven lives on a version
-                    // manager's shims or a configured home (#328). Detected configs
-                    // take the Maven options too, but the saved ones already baked
-                    // them into `args`.
-                    c.command = mvn.to_string_lossy().into_owned();
+                    add_maven_options(&mut c.args, &mvn_options);
                 }
             }
             _ => {}
@@ -842,6 +1005,25 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
         .map(|(key, _)| key.clone())
     {
         out.env.remove(&key);
+    }
+    // Settings › Maven's options, which applying puts back ahead of the goals.
+    if out.kind == "maven" {
+        let options = maven_options(root, s);
+        let mut probe = out.clone();
+        let mut prefix = generated_maven_goal(&out).then(|| maven_goal_prefix(&out)).flatten();
+        for group in maven_option_groups(&options) {
+            if let Some(at) = probe.args.windows(group.len()).position(|w| w == group)
+                && prefix.is_none_or(|limit| at + group.len() <= limit)
+            {
+                probe.args.drain(at..at + group.len());
+                if let Some(limit) = &mut prefix {
+                    *limit -= group.len();
+                }
+            }
+        }
+        if applied(&probe).args == out.args {
+            out.args = probe.args;
+        }
     }
     let path = Path::new(&config.command);
     if path.is_absolute()

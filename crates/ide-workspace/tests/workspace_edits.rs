@@ -201,6 +201,37 @@ fn matching_document_version_is_applied() {
 }
 
 #[test]
+fn versioned_edit_of_a_closed_file_is_guarded_by_its_preconditions() {
+    // gopls versions every file of a rename, including ones the editor never opened.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("closed.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let docs = documents();
+    let versioned = || {
+        let mut operation = edit(&path, "new");
+        if let FileEdit::Edit { version, .. } = &mut operation {
+            *version = Some(0);
+        }
+        WorkspaceEdit { files: vec![operation], ..Default::default() }
+    };
+    // Without a snapshot of what the server saw, a version for a closed file can't be trusted.
+    assert_eq!(docs.apply_workspace_edit(&versioned()).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+
+    let mut changed = versioned();
+    docs.prepare_workspace_edit(&mut changed).unwrap();
+    std::fs::write(&path, "own\n").unwrap();
+    assert_eq!(docs.apply_workspace_edit(&changed).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "own\n");
+
+    std::fs::write(&path, "old\n").unwrap();
+    let mut prepared = versioned();
+    docs.prepare_workspace_edit(&mut prepared).unwrap();
+    docs.apply_workspace_edit(&prepared).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+}
+
+#[test]
 fn unversioned_preview_rejects_changed_disk_and_dirty_buffers() {
     let tmp = tempfile::tempdir().unwrap();
     for open in [false, true] {
@@ -230,6 +261,38 @@ fn unversioned_preview_rejects_changed_disk_and_dirty_buffers() {
         } else {
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "own\n");
         }
+    }
+}
+
+#[test]
+fn saving_between_preview_and_apply_keeps_the_edit_valid() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A new scratch (empty on disk) and an edited file, saved after the edit was computed.
+    for (name, disk, typed) in [("scratch.c", "", "int\n"), ("a.txt", "old\n", "own")] {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, disk).unwrap();
+        let docs = documents();
+        let info = docs.open(&path).unwrap();
+        let replace = if disk.is_empty() { 0 } else { 3 };
+        docs.edit(
+            info.id,
+            info.version,
+            ChangeSet { changes: vec![TextChange { from: 0, to: replace, insert: typed.into() }] },
+        )
+        .unwrap();
+        let mut change = WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() };
+        docs.prepare_workspace_edit(&mut change).unwrap();
+        docs.save(info.id).unwrap();
+        docs.apply_workspace_edit(&change).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(docs.snapshot(info.id).unwrap().text.starts_with("new"), "{name}");
+        // A real change after the preview still invalidates it.
+        let mut change = WorkspaceEdit { files: vec![edit(&path, "xyz")], ..Default::default() };
+        docs.prepare_workspace_edit(&mut change).unwrap();
+        let version = docs.snapshot(info.id).unwrap().version;
+        docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "!".into() }] })
+            .unwrap();
+        docs.save(info.id).unwrap();
+        assert!(docs.apply_workspace_edit(&change).is_err(), "{name}");
     }
 }
 

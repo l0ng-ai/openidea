@@ -1,4 +1,5 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
+import { useProject } from "@/platform/project";
 import { outsideProjectNotice } from "./outsideProject";
 
 const text = (message: string) => outsideProjectNotice(message)?.text ?? null;
@@ -36,7 +37,22 @@ it("recognizes each server's report that a file is outside its projects", () => 
   expect(outsideProjectNotice("No packages found for open file x.go.")?.reload).toBeFalsy();
 });
 
+afterEach(() => useProject.setState({ project: null }));
+
+const openProject = (root: string, projects?: string[]) =>
+  useProject.setState({
+    project: {
+      root,
+      name: "p",
+      trusted: true,
+      isGit: false,
+      settings: {},
+      ...(projects && { workspace: { version: 1, name: "p", projects } }),
+    },
+  });
+
 it("shows a banner while the server reports the file, with the build reloads available", async () => {
+  openProject("/p");
   const { renderHook, act } = await import("@testing-library/react");
   const { setFileDiagnostics } = await import("./diagnostics");
   const { registerActions } = await import("@/platform/actions");
@@ -62,5 +78,41 @@ it("shows a banner while the server reports the file, with the build reloads ava
   } finally {
     off();
     setFileDiagnostics(path, "jdtls", []);
+  }
+});
+
+it("offers a build reload only for files of the open project", async () => {
+  const { renderHook, act } = await import("@testing-library/react");
+  const { setFileDiagnostics } = await import("./diagnostics");
+  const { registerActions } = await import("@/platform/actions");
+  const { outsideProjectBanner } = await import("./outsideProject");
+  const off = registerActions([{ id: "maven.reload", title: "Reload All Maven Projects", run: () => {} }]);
+  openProject("/ws", ["/p"]);
+  // A scratch lives in the app data dir; a module the import missed lives in the project.
+  const cases: [string, string[]][] = [
+    ["/data/scratches/scratch.java", []],
+    ["/p/tools/Gen.java", ["Reload Maven Projects"]],
+    ["/ws/Gen.java", ["Reload Maven Projects"]],
+  ];
+  try {
+    for (const [path, labels] of cases) {
+      const { result } = renderHook(() => outsideProjectBanner.useBanner(path));
+      const warning = {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+        severity: "warning" as const,
+        message: `${path.split("/").pop()} is a non-project file, only syntax errors are reported`,
+        source: "Java",
+        code: "32",
+      };
+      act(() => setFileDiagnostics(path, "jdtls", [warning]));
+      expect(result.current?.text, path).toMatch(/only JDK classes resolve/);
+      expect(
+        result.current?.actions?.map((a) => a.label),
+        path,
+      ).toEqual(labels);
+      act(() => setFileDiagnostics(path, "jdtls", []));
+    }
+  } finally {
+    off();
   }
 });

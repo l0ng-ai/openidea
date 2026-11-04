@@ -5,6 +5,7 @@ description = "Draw and edit Excalidraw diagrams (.excalidraw). The drawing is t
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: the Excalidraw canvas next to (or instead of) the file's text, kept in step both ways; export to PNG and SVG through the save dialog; a file icon and a New › Excalidraw Drawing template. Based on the Excalidraw editor proposed by Deng Liu (#738)."
+categories = ["tools"]
 engines.openidea = "^1.0"
 
 [capabilities]

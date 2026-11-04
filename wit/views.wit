@@ -8,6 +8,8 @@ package openidea:plugin@1.0.0;
 /// runs in the WebView, except a `html` body, which is shown in a sandboxed
 /// frame that can only exchange messages with the plugin.
 interface view-types {
+    use types.{extension};
+
     record button {
         id: string,
         label: string,
@@ -43,6 +45,8 @@ interface view-types {
         checkbox(bool),
         /// The options and the chosen one.
         choice(tuple<list<string>, string>),
+        /// A field type added after 1.0 (an IDE that doesn't know it leaves it out).
+        other(extension),
     }
 
     record field {
@@ -72,6 +76,8 @@ interface view-types {
         /// network, no IDE API. Its script talks to the plugin with
         /// `openidea.postMessage(text)` / `openidea.onMessage(fn)`.
         html(string),
+        /// A body added after 1.0; an IDE that doesn't know it says it needs updating.
+        other(extension),
     }
 
     record view {
@@ -109,6 +115,8 @@ interface view-types {
         delete-rows(list<u32>),
         /// From the `html` body's script.
         message(string),
+        /// An event added after 1.0, from a body or field added after 1.0.
+        other(extension),
     }
 }
 

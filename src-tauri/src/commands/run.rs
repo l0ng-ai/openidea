@@ -64,6 +64,34 @@ pub fn run_save_configs(
     ide_host::ops::run::save_configs(&state.host, window.label(), &configs, &removed_detected_ids.unwrap_or_default())
 }
 
+/// Temporary configurations as they are kept between sessions: without what settings derived.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_without_derived(
+    window: Window,
+    state: State<'_, AppState>,
+    configs: Vec<RunConfig>,
+) -> IdeResult<Vec<RunConfig>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::run::without_derived(&host, &label, configs))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+}
+
+/// Kept temporary configurations with the current settings applied.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_apply_settings(
+    window: Window,
+    state: State<'_, AppState>,
+    configs: Vec<RunConfig>,
+) -> IdeResult<Vec<RunConfig>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::run::apply_settings(&host, &label, configs))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn run_start(

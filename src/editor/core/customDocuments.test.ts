@@ -631,6 +631,30 @@ describe("custom editor document lifetime", () => {
     expect(b.saved).toBe("edited");
   });
 
+  it("releases an authorized decision to leave when the project never changed", async () => {
+    const doc = await open();
+    const session = await ctrl.prepareClose();
+    session.commit();
+    expect(doc.frozen).toBe(true);
+    // The window stayed with its project: files open again, and it can be left again.
+    await open("b");
+    expect(findTab(useTabs.getState(), input("b").key)).not.toBeNull();
+    expect(doc.frozen).toBe(false);
+    const again = await ctrl.prepareClose();
+    expect(() => session.commit()).toThrow();
+    again.cancel();
+  });
+
+  it("keeps an authorized decision while the project it leaves for is opening", async () => {
+    await open();
+    const session = await ctrl.prepareClose();
+    session.commit();
+    useProject.setState({ opening: true });
+    await expect(open("b")).rejects.toThrow("The project is closing");
+    await expect(ctrl.prepareClose()).rejects.toThrow("already pending");
+    useProject.setState({ opening: false });
+  });
+
   it("rejects authorization from a cancelled project close session", async () => {
     const doc = await open();
     const session = await ctrl.prepareClose();

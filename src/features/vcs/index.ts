@@ -32,6 +32,7 @@ import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
+import { SELECTION_HISTORY_KIND, type SelectionHistoryData } from "./selectionHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
@@ -147,6 +148,18 @@ function conflictsBody(names: string[]): string {
 }
 
 /** Settings › Version Control › Log (also used by the Settings window). */
+export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
+
+/** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
+export function activateDiffViewer(): () => void {
+  return registerEditorKind({
+    kind: DIFF_KIND,
+    component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
+    title: (input) => diffTitle(input.data as DiffData),
+    icon: () => "diff",
+  });
+}
+
 export function activateSettingsPages(): () => void {
   return registerSettingsPage({
     id: "vcs.log",
@@ -228,12 +241,7 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow)),
       headerContent: lazyComponent(() => import("./GitLog").then((m) => m.GitTabs)),
     }),
-    registerEditorKind({
-      kind: DIFF_KIND,
-      component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
-      title: (input) => diffTitle(input.data as DiffData),
-      icon: () => "diff",
-    }),
+    activateDiffViewer(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),
@@ -245,6 +253,15 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./LocalHistory").then((m) => m.LocalHistoryEditor)),
       title: (input) => `Local History: ${baseName((input.data as { path: string }).path)}`,
       icon: () => "clock",
+    }),
+    registerEditorKind({
+      kind: SELECTION_HISTORY_KIND,
+      component: lazyComponent(() => import("./SelectionHistory").then((m) => m.SelectionHistoryEditor)),
+      title: (input) => {
+        const { path, lines } = input.data as SelectionHistoryData;
+        return `History: ${baseName(path)}:${lines[0] + 1}-${lines[1] + 1}`;
+      },
+      icon: () => "history",
     }),
     registerEditorContribution({
       id: "vcs.changeMarkers",
