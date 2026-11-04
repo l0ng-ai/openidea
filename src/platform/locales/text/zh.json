@@ -5800,5 +5800,7 @@
   "Reports code the built-in parser cannot read, in files no language server checks (none is configured for the language, or it is not installed, stopped or crashed). A running language server reports syntax errors itself.": "报告内置解析器无法解析的代码，仅针对没有语言服务器检查的文件（该语言未配置语言服务器，或未安装、已停止、已崩溃）。语言服务器运行时由它自己报告语法错误。",
   "Some items could not be restored": "部分项目无法恢复",
   "Not in Local History: {names}. They are in the Trash.": "本地历史中没有：{names}。它们在回收站中。",
-  "Show All Commits": "显示所有提交"
+  "Show All Commits": "显示所有提交",
+  "Pin": "固定",
+  "Unpin": "取消固定"
 }

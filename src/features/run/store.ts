@@ -112,6 +112,8 @@ interface RunState {
   selectedId: string | null;
   /** Ids of temporary configurations (created by gutter / context runs, not saved; last in `configs`). */
   temporary: string[];
+  /** Ids of configurations pinned to the top of the chooser, in pin order. */
+  pinned: string[];
   sessions: RunSession[];
   activeSession: string | null;
   /** Output version per session (re-render trigger for the console). */
@@ -137,6 +139,7 @@ export const useRun = create<RunState>(() => ({
   loadError: null,
   selectedId: null,
   temporary: [],
+  pinned: [],
   sessions: [],
   activeSession: null,
   versions: {},
@@ -199,7 +202,14 @@ export async function loadConfigs(): Promise<void> {
       stored === CURRENT_FILE || configs.some((c) => c.id === stored)
         ? stored
         : (defaultSelection(saved)?.id ?? CURRENT_FILE);
-    useRun.setState({ configs, temporary: temps.map((t) => t.id), loaded: true, loadError: null, selectedId });
+    useRun.setState({
+      configs,
+      temporary: temps.map((t) => t.id),
+      pinned: readPinned(root),
+      loaded: true,
+      loadError: null,
+      selectedId,
+    });
   } catch (e) {
     useRun.setState({ loaded: true, loadError: e instanceof Error ? e.message : String(e) });
   }
@@ -222,6 +232,32 @@ export function selectConfig(id: string | null) {
   useRun.setState({ selectedId: id });
   const root = useProject.getState().project?.root;
   if (root) writeSelected(root, id);
+}
+
+const PINNED_KEY = "openidea.run.pinned:";
+
+function readPinned(root: string): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PINNED_KEY + root) ?? "[]") as unknown;
+    return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Pins a configuration to the top of the chooser, or unpins it. Kept per project. */
+export function togglePinned(id: string) {
+  const { pinned } = useRun.getState();
+  const next = pinned.includes(id) ? pinned.filter((p) => p !== id) : [...pinned, id];
+  useRun.setState({ pinned: next });
+  const root = useProject.getState().project?.root;
+  if (!root) return;
+  try {
+    if (next.length) localStorage.setItem(PINNED_KEY + root, JSON.stringify(next));
+    else localStorage.removeItem(PINNED_KEY + root);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 /** Whether the chooser's "Current File" is selected. */
@@ -1094,6 +1130,7 @@ export function resetRuns() {
     loadError: null,
     selectedId: null,
     temporary: [],
+    pinned: [],
     sessions: [],
     activeSession: null,
     versions: {},
