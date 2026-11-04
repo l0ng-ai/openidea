@@ -216,6 +216,9 @@ pub trait Handler: Send + Sync + 'static {
     fn on_request_with_data(&self, method: &str, params: Value) -> Result<Value, (i64, String, Option<Value>)> {
         self.on_request(method, params).map_err(|(code, message)| (code, message, None))
     }
+
+    /// Called once the response to a `method` request is queued: what it sends follows the response.
+    fn after_response(&self, _method: &str) {}
 }
 
 /// A [`Handler`] that ignores notifications and rejects requests.
@@ -755,7 +758,8 @@ enum Incoming {
 
 async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {
     let m = method.clone();
-    let result = tokio::task::spawn_blocking(move || handler.on_request_with_data(&m, params)).await;
+    let h = handler.clone();
+    let result = tokio::task::spawn_blocking(move || h.on_request_with_data(&m, params)).await;
     let reply = match result {
         Ok(Ok(result)) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Ok(Err((code, message, data))) => {
@@ -770,7 +774,9 @@ async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value,
             "error": { "code": codes::INTERNAL_ERROR, "message": format!("handler for {method} panicked") }
         }),
     };
-    let _ = inner.send_value(&reply);
+    if inner.send_value(&reply).is_ok() {
+        handler.after_response(&method);
+    }
 }
 
 fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {

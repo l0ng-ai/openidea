@@ -252,6 +252,34 @@ async fn server_to_client_request() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn after_response_messages_follow_the_response() {
+    #[derive(Default)]
+    struct Client(std::sync::OnceLock<Peer>);
+    impl Handler for Client {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, _: &str, _: Value) -> Result<Value, (i64, String)> {
+            Ok(json!("answer"))
+        }
+        fn after_response(&self, method: &str) {
+            self.0.get().unwrap().notify("after", method).unwrap();
+        }
+    }
+    let client = Arc::new(Client::default());
+    let (client_io, server_io) = duplex(64 * 1024);
+    let (cr, cw) = tokio::io::split(client_io);
+    assert!(client.0.set(Peer::connect(cr, cw, client.clone())).is_ok());
+    let (sr, mut sw) = tokio::io::split(server_io);
+    let request = br#"{"jsonrpc":"2.0","id":1,"method":"workspace/configuration","params":{}}"#;
+    framing::write_message(&mut sw, request).await.unwrap();
+    let mut reader = tokio::io::BufReader::new(sr);
+    let mut next = async || -> Value {
+        serde_json::from_slice(&framing::read_message(&mut reader).await.unwrap().unwrap()).unwrap()
+    };
+    assert_eq!(next().await, json!({ "jsonrpc": "2.0", "id": 1, "result": "answer" }));
+    assert_eq!(next().await, json!({ "jsonrpc": "2.0", "method": "after", "params": "workspace/configuration" }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn requests_start_after_the_notifications_before_them() {
     // `seen` answers with the notifications handled so far; handling one is slow.
     struct Server(Recorder);
