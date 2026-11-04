@@ -490,18 +490,10 @@ describe("Find in Files dialog", () => {
   });
 
   it.each([
-    ["macos", ["⌥C", "⌥↓", "⇧⌘↵"], ["↵ Replace Selected", "⌥⇧↵ Replace All", "⌘↵ Open in Find Window"]],
-    [
-      "linux",
-      ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"],
-      ["Enter Replace Selected", "Alt+Shift+Enter Replace All", "Ctrl+Enter Open in Find Window"],
-    ],
-    [
-      "windows",
-      ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"],
-      ["Enter Replace Selected", "Alt+Shift+Enter Replace All", "Ctrl+Enter Open in Find Window"],
-    ],
-  ] as const)("spells its shortcuts the %s way", (os, [matchCase, history, newLine], hints) => {
+    ["macos", ["⌥C", "⌥↓", "⇧⌘↵"], ["⌘↵", "⌥⇧↵"]],
+    ["linux", ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"], ["Ctrl+Enter", "Alt+Shift+Enter"]],
+    ["windows", ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"], ["Ctrl+Enter", "Alt+Shift+Enter"]],
+  ] as const)("spells its shortcuts the %s way", (os, [matchCase, history, newLine], [openKey, replaceAllKey]) => {
     const previous = { os: usePlatform.getState().os, preset: useKeymap.getState().preset };
     usePlatform.setState({ os });
     useKeymap.setState({ preset: defaultPreset() });
@@ -513,8 +505,8 @@ describe("Find in Files dialog", () => {
       expect(shortcut("Match Case")).toEqual([matchCase]);
       expect(shortcut("Recent Searches")).toEqual([history, history]);
       expect(shortcut("New Line")).toEqual([newLine, newLine]);
-      const footer = document.querySelector("footer")!.textContent!;
-      for (const hint of hints) expect(footer).toContain(hint);
+      expect(document.querySelector("footer")!.textContent).toContain(`${openKey}Open in Find Window`);
+      expect(screen.getByRole("button", { name: "Replace All" })).toHaveAttribute("title", replaceAllKey);
       if (os !== "macos") expect(document.querySelector("[role=dialog]")!.innerHTML).not.toMatch(/[⌘⌥⇧↵]/);
     } finally {
       usePlatform.setState({ os: previous.os });

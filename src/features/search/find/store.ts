@@ -52,9 +52,12 @@ interface FindPopupState extends FindOptions {
   session: number;
   /** Title-bar pin: the popup stays open when a result is opened or the user clicks outside. */
   pinned: boolean;
+  /** IDEA's "Open results in new tab": Open in Find Window keeps the active Find tab. */
+  newTab: boolean;
 }
 
 const PINNED_KEY = "openidea.search.findPinned.v1";
+const NEW_TAB_KEY = "openidea.search.findNewTab.v1";
 
 export const useFindPopup = create<FindPopupState>(() => ({
   open: false,
@@ -74,11 +77,17 @@ export const useFindPopup = create<FindPopupState>(() => ({
   namedScope: "projectFiles",
   context: "any",
   pinned: loadJson<unknown>(PINNED_KEY, false) === true,
+  newTab: loadJson<unknown>(NEW_TAB_KEY, false) === true,
 }));
 
 export function setFindPopupPinned(pinned: boolean) {
   useFindPopup.setState({ pinned });
   saveJson(PINNED_KEY, pinned);
+}
+
+export function setFindPopupNewTab(newTab: boolean) {
+  useFindPopup.setState({ newTab });
+  saveJson(NEW_TAB_KEY, newTab);
 }
 
 /**

@@ -238,3 +238,9 @@
 .link:hover {
   color: var(--link-hover);
 }
+/* IDEA's disabled "Ctrl+Enter" label before Open in Find Window. */
+.okHint {
+  flex: none;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}

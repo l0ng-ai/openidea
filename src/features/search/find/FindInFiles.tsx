@@ -4,7 +4,7 @@ import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { t, useTxTemplate, tx } from "@/platform/i18n";
-import { formatBinding, hostBinding } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { call, commands, isTauri, type SearchScope } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
@@ -27,22 +27,19 @@ import {
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { basename, dirname, openLocation } from "../common/open";
-import { CodePreview, MatchText, ReplaceDiffPreview } from "./parts";
+import { CodePreview, MatchText } from "./parts";
 import { clearPreviewCache } from "./preview";
 import {
   NO_MARKS,
   confirmText,
   countUsages,
   groupState,
-  loadReplacePreview,
   markDone,
   nextPending,
   pendingUsages,
-  replacePreviewLines,
   replaceTargets,
   startReplace,
   summaryText,
-  type PreviewLine,
   type ReplaceMarks,
   type ReplaceProgress,
   type ReplaceRun,
@@ -64,6 +61,7 @@ import {
   resolveDirectory,
   resolveFindScope,
   setFindPopupCommandHandler,
+  setFindPopupNewTab,
   setFindPopupPinned,
   useFindPopup,
   type FindOptions,
@@ -138,8 +136,6 @@ function FindInFilesDialog() {
   const [marks, setMarks] = useState<ReplaceMarks>(NO_MARKS);
   const [running, setRunning] = useState<ReplaceRun | null>(null);
   const [progress, setProgress] = useState<ReplaceProgress | null>(null);
-  const [previewMode, setPreviewMode] = useState(false);
-  const [diffPreview, setDiffPreview] = useState<{ key: string; lines: PreviewLine[] } | null>(null);
   const busy = !!running;
   const patternRef = useRef<HTMLInputElement>(null);
   const patternBoxRef = useRef<HTMLDivElement>(null);
@@ -259,7 +255,11 @@ function FindInFilesDialog() {
     if (s.maskEnabled) rememberMask(s.mask);
     const pinned = buildQuery(options, scope, 0);
     close();
-    openInFindWindow(pinned, describeQuery(pinned, root), s.replace ? s.replacement : null, undefined, s.preserveCase);
+    openInFindWindow(pinned, describeQuery(pinned, root), {
+      replacement: s.replace ? s.replacement : null,
+      preserveCase: s.preserveCase,
+      newTab: s.newTab,
+    });
   };
 
   // Check again after a confirmation: its captured rows may have been superseded.
@@ -351,53 +351,10 @@ function FindInFilesDialog() {
       if (i >= 0) setIndex(i);
     }
   };
-  const skip = () => {
-    const i = nextPending(rows, rows.indexOf(chosen[chosen.length - 1]!), marks);
-    if (i >= 0) setIndex(i);
-  };
-  const replaceInFile = async () => {
-    if (!selected) return;
-    const next = await replaceUsages(
-      pendingUsages(
-        rows.filter((r) => r.path === selected.path),
-        marks,
-      ),
-    );
-    if (next) {
-      const i = nextPending(rows, active, next);
-      if (i >= 0) setIndex(i);
-    }
-  };
   const replaceAll = async (usages: Usage[]) => {
     const done = await replaceUsages(usages);
     if (done) close();
   };
-
-  const diffPreviewKey = JSON.stringify([
-    selected?.key,
-    queryKey,
-    s.replacement,
-    s.preserveCase,
-    rerun,
-    previewVersion,
-  ]);
-  useEffect(() => {
-    if (stale || !previewMode || !s.replace || !selected) return;
-    let alive = true;
-    const key = diffPreviewKey;
-    const usages = pendingUsages([selected], marks);
-    const t = setTimeout(() => {
-      loadReplacePreview(query, s.replacement, s.preserveCase, selected.path, usages).then(
-        (p) => alive && setDiffPreview({ key, lines: replacePreviewLines(p.before, p.edits) }),
-        () => alive && setDiffPreview(null),
-      );
-    }, 80);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stale, previewMode, s.replace, diffPreviewKey, marks]);
 
   const moveTo = (next: number, extend: boolean) =>
     setSel((cur) => selectRow(rows, cur, next, extend ? "range" : "single"));
@@ -417,6 +374,7 @@ function FindInFilesDialog() {
       set({ maskEnabled: !s.maskEnabled });
       if (!s.maskEnabled) setTimeout(() => maskInputRef.current?.select(), 0);
     } else if (code === "KeyE" && s.replace) set({ preserveCase: !s.preserveCase });
+    else if (code === "KeyB") setFindPopupNewTab(!s.newTab);
     else if (code === "KeyA" && s.replace) {
       if (rows.length && !busy) void confirmReplaceAll();
     } else return false;
@@ -509,6 +467,11 @@ function FindInFilesDialog() {
     run: () => set({ context: c.value }),
   }));
   const pendingSelected = s.replace && !stale ? pendingUsages(chosen, marks).length : 0;
+  // A multi-line query takes the arrow keys, so IDEA names the keys that still move through results.
+  const nextKey = shortcutLabel("find.popup.nextResult");
+  const previousKey = shortcutLabel("find.popup.previousResult");
+  const navigationHint =
+    s.pattern.includes("\n") && nextKey && previousKey ? tx`Use ${nextKey} and ${previousKey} to select usages` : "";
 
   return (
     <Dialog
@@ -782,66 +745,45 @@ function FindInFilesDialog() {
           )}
         </div>
         <div className={styles.previewBox}>
-          {!stale && previewMode && s.replace && selected ? (
-            <ReplaceDiffPreview
-              lines={diffPreview?.key === diffPreviewKey ? diffPreview.lines : null}
-              line={selected.line}
-            />
-          ) : (
-            <CodePreview
-              path={selected?.path ?? null}
-              line={selected?.line ?? 0}
-              highlights={fileHighlights}
-              version={previewVersion}
-            />
-          )}
+          <CodePreview
+            path={selected?.path ?? null}
+            line={selected?.line ?? 0}
+            highlights={fileHighlights}
+            version={previewVersion}
+          />
         </div>
         <footer className={styles.footer}>
-          <span className={styles.hint}>
-            {s.replace
-              ? tx`${formatBinding("Enter")} Replace Selected · ${formatBinding("Shift+Alt+Enter")} Replace All · ${formatBinding(hostBinding("Meta+Enter"))} Open in Find Window`
-              : tx`${formatBinding("Enter")} Open · ${formatBinding("Shift+Enter")} Open to the side · ${formatBinding(hostBinding("Meta+Enter"))} Open in Find Window`}
-          </span>
+          <Checkbox checked={s.newTab} onChange={setFindPopupNewTab} label="Open results in new tab" />
+          {navigationHint && <span className={styles.hint}>{navigationHint}</span>}
+          <span className={styles.spacer} />
           {s.replace && progress && (
             <span className={styles.hint} aria-live="polite">
               {tx`Replacing… ${progress.done}/${progress.total} files`}
             </span>
           )}
           {s.replace && running && (
-            <Button size="small" onClick={() => running.cancel()}>
+            <Button onClick={() => running.cancel()}>
               <T>Stop</T>
             </Button>
           )}
+          <span className={styles.okHint}>{formatBinding(hostBinding("Meta+Enter"))}</span>
+          <Button disabled={!s.pattern} onClick={pin}>
+            <T>Open in Find Window</T>
+          </Button>
           {s.replace && (
             <>
-              <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />
-              <Button size="small" variant="secondary" disabled={stale || !selected || busy} onClick={skip}>
-                <T>Skip</T>
-              </Button>
               <Button
-                size="small"
-                variant="primary"
-                disabled={stale || !selected || busy}
-                onClick={() => void replaceSelected()}
-              >
-                {pendingSelected > 1 ? txt(`Replace ${pendingSelected} Occurrences`) : <T>Replace</T>}
-              </Button>
-              <Button size="small" disabled={stale || !selected || busy} onClick={() => void replaceInFile()}>
-                <T>Replace All in This File</T>
-              </Button>
-              <Button
-                size="small"
-                title={tx`Replace All (${formatBinding("Shift+Alt+Enter")}, ${formatBinding("Alt+A")})`}
+                title={formatBinding("Shift+Alt+Enter")}
                 disabled={stale || !rows.length || busy || state.status === "searching"}
                 onClick={() => void confirmReplaceAll()}
               >
                 <T>Replace All</T>
               </Button>
+              <Button variant="primary" disabled={stale || !selected || busy} onClick={() => void replaceSelected()}>
+                {pendingSelected > 1 ? txt(`Replace ${pendingSelected} Occurrences`) : <T>Replace</T>}
+              </Button>
             </>
           )}
-          <Button size="small" variant={s.replace ? "secondary" : "primary"} disabled={!s.pattern} onClick={pin}>
-            <T>Open in Find Window</T>
-          </Button>
         </footer>
       </div>
       <Menu

@@ -17,7 +17,6 @@ import {
   type ReplaceTarget,
   type RequestId,
   type SearchQuery,
-  type TextEdit,
 } from "@/platform/ipc";
 
 /** One usage (match) of the search. */
@@ -225,54 +224,4 @@ export function summaryText(s: ReplaceSummary): string {
   const occ = `${s.replacements} occurrence${s.replacements === 1 ? "" : "s"}`;
   const files = `${s.files} file${s.files === 1 ? "" : "s"}`;
   return `${s.cancelled ? "Stopped after replacing" : "Replaced"} ${occ} in ${files}${s.failed ? ` (${s.failed} failed)` : ""}`;
-}
-
-export interface PreviewLine {
-  kind: "same" | "del" | "add";
-  /** 0-based line in the old text (`same` / `del`) or the new text (`add`). */
-  line: number;
-  text: string;
-}
-
-/** Unified line preview of `edits` (non-overlapping, UTF-16 line/col) applied to `before`. */
-export function replacePreviewLines(before: string, edits: readonly TextEdit[]): PreviewLine[] {
-  const lines = before.split("\n");
-  const sorted = [...edits].sort(
-    (a, b) => a.range.start.line - b.range.start.line || a.range.start.col - b.range.start.col,
-  );
-  const out: PreviewLine[] = [];
-  const between = (from: Pos, to: Pos) => {
-    if (from.line === to.line) return (lines[from.line] ?? "").slice(from.col, to.col);
-    const parts = [(lines[from.line] ?? "").slice(from.col)];
-    for (let l = from.line + 1; l < to.line; l++) parts.push(lines[l] ?? "");
-    parts.push((lines[to.line] ?? "").slice(0, to.col));
-    return parts.join("\n");
-  };
-  let next = 0;
-  let delta = 0;
-  for (let i = 0; i < sorted.length;) {
-    const first = sorted[i]!;
-    const startLine = first.range.start.line;
-    let endLine = first.range.end.line;
-    const group = [first];
-    for (i++; i < sorted.length && sorted[i]!.range.start.line <= endLine; i++) {
-      group.push(sorted[i]!);
-      endLine = Math.max(endLine, sorted[i]!.range.end.line);
-    }
-    for (let l = next; l < startLine; l++) out.push({ kind: "same", line: l, text: lines[l] ?? "" });
-    let cursor: Pos = { line: startLine, col: 0 };
-    let text = "";
-    for (const e of group) {
-      text += between(cursor, e.range.start) + e.new_text;
-      cursor = e.range.end;
-    }
-    text += between(cursor, { line: endLine, col: (lines[endLine] ?? "").length });
-    for (let l = startLine; l <= endLine; l++) out.push({ kind: "del", line: l, text: lines[l] ?? "" });
-    const added = text.split("\n");
-    added.forEach((t, k) => out.push({ kind: "add", line: startLine + delta + k, text: t }));
-    delta += added.length - (endLine - startLine + 1);
-    next = endLine + 1;
-  }
-  for (let l = next; l < lines.length; l++) out.push({ kind: "same", line: l, text: lines[l] ?? "" });
-  return out;
 }

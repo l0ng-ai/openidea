@@ -1750,7 +1750,6 @@
   "Reopen projects on startup": "启动时重新打开项目",
   "Replace": "替换",
   "Replace All": "全部替换",
-  "Replace All in This File": "在此文件中全部替换",
   "Replace Preview": "替换预览",
   "Replace Selected": "替换所选内容",
   "Replace Structurally": "结构化替换",
@@ -1760,7 +1759,6 @@
   "Replace in Files": "在文件中替换",
   "Replace in Files…": "在文件中替换…",
   "Replace in file": "在文件中替换",
-  "Replace preview": "替换预览",
   "Replace template": "替换模板",
   "Replace this occurrence only": "仅替换此匹配项",
   "Replace with": "替换为",
@@ -2526,7 +2524,6 @@
   "{name} has unsaved changes": "{name} 有未保存的更改",
   "{name} installed": "{name} 已安装",
   "{name} is not installed": "{name} 未安装",
-  "{open} Open · {side} Open to the side · {window} Open in Find Window": "{open} 打开 · {side} 在侧边打开 · {window} 在查找窗口中打开",
   "{key} to open in Find tool window": "{key} 在“查找”工具窗口中打开",
   "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.": "⌥← / ⌥→ 和 ⌥⌫ 会在 camelCase 名称的驼峰处停止。",
   "Specify commit message": "请填写提交信息",
@@ -2625,7 +2622,6 @@
   "Except Comments and String Literals": "注释和字符串字面量除外",
   "Recent Replacements": "最近的替换",
   "No recent replacements": "没有最近的替换",
-  "{select} Replace Selected · {replaceAll} Replace All · {window} Open in Find Window": "{select} 替换所选 · {replaceAll} 全部替换 · {window} 在查找窗口中打开",
   "Replace {count} Occurrences": "替换 {count} 处",
   "Add Mnemonic Bookmark": "添加助记符书签",
   "Change Mnemonic": "更改助记符",
@@ -3773,7 +3769,6 @@
   "Godot command line options, e.g. --debug-collisions": "Godot 命令行选项，例如 --debug-collisions",
   "Bookmark description": "书签描述",
   "Cannot open {path}": "无法打开 {path}",
-  "Replace All ({key}, {mnemonic})": "全部替换 ({key}, {mnemonic})",
   "Search context": "搜索上下文",
   "not": "非",
   "and": "与",
@@ -6069,5 +6064,7 @@
   "Search option used: {label}": "搜索已用选项：{label}",
   "Search options used:": "搜索已用选项：",
   "Clear option": "清除选项",
-  "Clear all options": "清除所有选项"
+  "Clear all options": "清除所有选项",
+  "Open results in new tab": "在新标签打开",
+  "Use {next} and {previous} to select usages": "使用 {next} 和 {previous} 选择用法"
 }

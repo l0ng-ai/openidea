@@ -10,7 +10,6 @@ import {
   markDone,
   nextPending,
   pendingUsages,
-  replacePreviewLines,
   replaceTargets,
   startReplace,
   summaryText,
@@ -166,23 +165,5 @@ describe("replace previews", () => {
     expect(
       previewReplacement("Foo1", { pattern: "foo(\\d)", isRegex: true, caseSensitive: false }, "bar$1", true),
     ).toBe("Bar1");
-  });
-
-  it("unified line preview of the edits", () => {
-    const before = "a\nfoo x foo\nb\nfoo";
-    const edits = [
-      { range: { start: { line: 1, col: 0 }, end: { line: 1, col: 3 } }, new_text: "bar" },
-      { range: { start: { line: 1, col: 6 }, end: { line: 1, col: 9 } }, new_text: "q\nq" },
-      { range: { start: { line: 3, col: 0 }, end: { line: 3, col: 3 } }, new_text: "z" },
-    ];
-    expect(replacePreviewLines(before, edits)).toEqual([
-      { kind: "same", line: 0, text: "a" },
-      { kind: "del", line: 1, text: "foo x foo" },
-      { kind: "add", line: 1, text: "bar x q" },
-      { kind: "add", line: 2, text: "q" },
-      { kind: "same", line: 2, text: "b" },
-      { kind: "del", line: 3, text: "foo" },
-      { kind: "add", line: 4, text: "z" },
-    ]);
   });
 });

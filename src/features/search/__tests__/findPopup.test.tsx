@@ -94,6 +94,7 @@ beforeEach(() => {
     preserveCase: false,
     context: "any",
     replacement: "",
+    newTab: false,
   });
 });
 
@@ -264,7 +265,7 @@ describe("outdated popup results", () => {
     },
   );
 
-  it.each(["Replace", "Replace All in This File", "Replace All", "Enter", "All shortcut", "All mnemonic"])(
+  it.each(["Replace", "Replace All", "Enter", "All shortcut", "All mnemonic"])(
     "blocks %s during debounce and validation",
     async (action) => {
       render(<FindInFilesOverlay />);
@@ -356,6 +357,28 @@ describe("outdated popup results", () => {
     await settle();
     await act(async () => confirm(true));
     expect(replaced).toHaveLength(0);
+  });
+});
+
+describe("footer, as IDEA", () => {
+  it("remembers Open results in new tab and passes it on; ⌥B toggles it", () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    const box = screen.getByRole("checkbox", { name: "Open results in new tab" });
+    expect(box).not.toBeChecked();
+    fireEvent.keyDown(field(), { key: "b", code: "KeyB", altKey: true });
+    expect(box).toBeChecked();
+    expect(localStorage.getItem("openidea.search.findNewTab.v1")).toBe("true");
+    fireEvent.click(box);
+    expect(useFindPopup.getState().newTab).toBe(false);
+  });
+
+  it("names the result keys only for a multi-line query", () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    expect(screen.queryByText(/to select usages$/)).not.toBeInTheDocument();
+    fireEvent.change(field(), { target: { value: "order\nitem" } });
+    expect(screen.getByText(/^Use .+ and .+ to select usages$/)).toBeInTheDocument();
   });
 });
 
