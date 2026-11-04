@@ -3,7 +3,6 @@ use crate::source::{DataSource, DbSslMode, DbTxMode};
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use parking_lot::RwLock;
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
-use serde::Deserialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -24,20 +23,9 @@ struct State {
     closed: CancellationToken,
 }
 
-#[derive(Deserialize)]
-struct Column {
-    name: String,
-    #[serde(rename = "type")]
-    type_name: String,
-}
-
-#[derive(Deserialize)]
-struct ResultBody {
-    meta: Vec<Column>,
-    data: Vec<Vec<Box<serde_json::value::RawValue>>>,
-    #[serde(default)]
-    exception: Option<String>,
-}
+/// The response format: a names line, a types line, then one JSON array per row, so rows past
+/// the grid's limit are skipped without being parsed.
+const FORMAT: &str = "JSONCompactEachRowWithNamesAndTypes";
 
 pub(crate) fn transaction_error() -> IdeError {
     IdeError::invalid("ClickHouse HTTP does not support SQL transactions; use auto-commit and run writes directly")
@@ -172,7 +160,7 @@ impl ClickhousePool {
                 ("session_id", self.0.session_id.clone()),
                 ("session_timeout", "3600".into()),
                 ("query_id", query_id.to_owned()),
-                ("default_format", "JSONCompact".into()),
+                ("default_format", FORMAT.into()),
                 ("output_format_json_quote_denormals", "1".into()),
                 ("max_result_rows", max_rows.saturating_add(1).to_string()),
                 ("result_overflow_mode", "break".into()),
@@ -203,34 +191,36 @@ impl ClickhousePool {
         let request = self.request(&client, &query_id, max_rows, *session).body(sql.to_owned());
         let started = Instant::now();
         let fetch = async {
-            let response = request.send().await.map_err(http_error)?;
+            let mut response = request.send().await.map_err(http_error)?;
             let execution_ms = started.elapsed().as_secs_f64() * 1000.0;
             let status = response.status();
-            let exception_code =
-                response.headers().get("X-ClickHouse-Exception-Code").and_then(|v| v.to_str().ok()).map(str::to_owned);
-            let format = response.headers().get("X-ClickHouse-Format").and_then(|v| v.to_str().ok()).map(str::to_owned);
-            let affected = response
-                .headers()
-                .get("X-ClickHouse-Summary")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+            let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
+            let exception_code = header("X-ClickHouse-Exception-Code");
+            let format = header("X-ClickHouse-Format");
+            let affected = header("X-ClickHouse-Summary")
+                .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
                 .and_then(|v| {
                     v.get("written_rows")
                         .and_then(|n| n.as_str().and_then(|n| n.parse::<u64>().ok()).or_else(|| n.as_u64()))
                 });
-            let body = response.bytes().await.map_err(http_error)?;
             if !status.is_success() || exception_code.as_deref().is_some_and(|code| code != "0") {
+                let body = response.bytes().await.map_err(http_error)?;
                 return Err(self.server_error(status, exception_code.as_deref(), &body));
             }
-            let (columns, rows, has_more) = if body.iter().all(u8::is_ascii_whitespace) {
-                (Vec::new(), Vec::new(), false)
-            } else {
-                if format.as_deref().is_some_and(|f| f != "JSONCompact") {
+            let (columns, rows, has_more) = if format.as_deref().is_some_and(|f| f != FORMAT) {
+                let body = response.bytes().await.map_err(http_error)?;
+                if !body.iter().all(u8::is_ascii_whitespace) {
                     return Err(IdeError::invalid(
-                        "ClickHouse result grids require JSONCompact; remove the query's FORMAT clause",
+                        "ClickHouse result grids need the default output format; remove the query's FORMAT clause",
                     ));
                 }
-                decode_result(&body, max_rows).map_err(|error| self.redact_error(error))?
+                (Vec::new(), Vec::new(), false)
+            } else {
+                let mut reader = RowReader::new(max_rows);
+                while let Some(chunk) = response.chunk().await.map_err(http_error)? {
+                    reader.push(&chunk)?;
+                }
+                reader.finish().map_err(|error| self.redact_error(error))?
             };
             let affected = if columns.is_empty() { affected.map(|n| n as f64) } else { None };
             Ok(QueryResult {
@@ -320,49 +310,114 @@ impl ClickhousePool {
 
 type DecodedResult = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, bool);
 
-fn decode_result(body: &[u8], max_rows: usize) -> IdeResult<DecodedResult> {
-    let mut result: ResultBody = serde_json::from_slice(body).map_err(|error| {
-        let text = String::from_utf8_lossy(body);
-        if text.contains("DB::Exception") || text.trim_start().starts_with("Code:") {
-            let detail: String = text.chars().take(16_384).collect();
-            IdeError::invalid(format!("ClickHouse: {detail}"))
-        } else {
-            IdeError::new(
-                ErrorKind::Protocol,
-                format!("invalid ClickHouse JSONCompact response: {error}; remove any FORMAT clause"),
-            )
+/// Decodes a streamed [`FORMAT`] body. Keeps the first `max_rows` rows; later rows only set
+/// `has_more` and are read past unparsed, so a grid limit bounds memory however large the
+/// block `result_overflow_mode=break` lets the server send. A line that is not a JSON array
+/// starts the exception ClickHouse writes when a query fails mid-stream.
+struct RowReader {
+    max_rows: usize,
+    pending: Vec<u8>,
+    names: Option<Vec<String>>,
+    types: Option<Vec<String>>,
+    rows: Vec<Vec<Option<String>>>,
+    more: bool,
+    exception: Option<String>,
+}
+
+impl RowReader {
+    fn new(max_rows: usize) -> Self {
+        Self { max_rows, pending: Vec::new(), names: None, types: None, rows: Vec::new(), more: false, exception: None }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> IdeResult<()> {
+        self.pending.extend_from_slice(chunk);
+        let buffer = std::mem::take(&mut self.pending);
+        let mut start = 0;
+        while let Some(end) = buffer[start..].iter().position(|&b| b == b'\n') {
+            self.line(&buffer[start..start + end])?;
+            start += end + 1;
         }
-    })?;
-    if let Some(error) = result.exception.filter(|error| !error.is_empty()) {
-        return Err(IdeError::invalid(format!("ClickHouse: {error}")));
+        self.pending = buffer[start..].to_vec();
+        Ok(())
     }
-    if result.data.iter().any(|row| row.len() != result.meta.len()) {
-        return Err(IdeError::new(ErrorKind::Protocol, "ClickHouse result row width does not match its metadata"));
+
+    fn line(&mut self, line: &[u8]) -> IdeResult<()> {
+        if let Some(exception) = &mut self.exception {
+            if exception.len() < 16_384 {
+                exception.push_str(&String::from_utf8_lossy(line));
+                exception.push('\n');
+            }
+            return Ok(());
+        }
+        let text = line.trim_ascii();
+        if text.is_empty() {
+            return Ok(());
+        }
+        if text[0] != b'[' {
+            self.exception = Some(format!("{}\n", String::from_utf8_lossy(line)));
+            return Ok(());
+        }
+        if self.names.is_some() && self.types.is_some() && self.rows.len() >= self.max_rows {
+            self.more = true;
+            return Ok(());
+        }
+        let Ok(values) = serde_json::from_slice::<Vec<Box<serde_json::value::RawValue>>>(text) else {
+            self.exception = Some(format!("{}\n", String::from_utf8_lossy(line)));
+            return Ok(());
+        };
+        let protocol = |message: String| IdeError::new(ErrorKind::Protocol, message);
+        let header = |values: Vec<Box<serde_json::value::RawValue>>| {
+            values
+                .iter()
+                .map(|v| serde_json::from_str::<String>(v.get()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| protocol(format!("invalid ClickHouse result header: {e}")))
+        };
+        let Some(names) = &self.names else {
+            self.names = Some(header(values)?);
+            return Ok(());
+        };
+        if self.types.is_none() {
+            self.types = Some(header(values)?);
+            return Ok(());
+        }
+        if values.len() != names.len() {
+            return Err(protocol("ClickHouse result row width does not match its metadata".into()));
+        }
+        let row = values
+            .into_iter()
+            .map(|value| {
+                let text = value.get();
+                if text == "null" {
+                    Ok(None)
+                } else if text.starts_with('"') {
+                    serde_json::from_str::<String>(text).map(Some).map_err(|e| protocol(e.to_string()))
+                } else {
+                    Ok(Some(text.to_owned()))
+                }
+            })
+            .collect::<IdeResult<_>>()?;
+        self.rows.push(row);
+        Ok(())
     }
-    let has_more = result.data.len() > max_rows;
-    result.data.truncate(max_rows);
-    let columns = result.meta.into_iter().map(|c| ResultColumn { name: c.name, type_name: c.type_name }).collect();
-    let rows = result
-        .data
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|value| {
-                    let text = value.get();
-                    if text == "null" {
-                        Ok(None)
-                    } else if text.starts_with('"') {
-                        serde_json::from_str::<String>(text)
-                            .map(Some)
-                            .map_err(|error| IdeError::new(ErrorKind::Protocol, error.to_string()))
-                    } else {
-                        Ok(Some(text.to_owned()))
-                    }
-                })
-                .collect()
-        })
-        .collect::<IdeResult<_>>()?;
-    Ok((columns, rows, has_more))
+
+    fn finish(mut self) -> IdeResult<DecodedResult> {
+        let rest = std::mem::take(&mut self.pending);
+        self.line(&rest)?;
+        if let Some(exception) = self.exception {
+            let detail = exception
+                .find("Code:")
+                .map_or(exception.trim(), |at| exception[at..].lines().next().unwrap_or_default().trim());
+            return Err(IdeError::invalid(format!("ClickHouse: {detail}")));
+        }
+        let Some(names) = self.names else { return Ok((Vec::new(), Vec::new(), false)) };
+        let types = self.types.unwrap_or_default();
+        if types.len() != names.len() {
+            return Err(IdeError::new(ErrorKind::Protocol, "ClickHouse result types do not match its columns"));
+        }
+        let columns = names.into_iter().zip(types).map(|(name, type_name)| ResultColumn { name, type_name }).collect();
+        Ok((columns, self.rows, self.more))
+    }
 }
 
 fn http_error(error: reqwest::Error) -> IdeError {
@@ -431,7 +486,7 @@ mod tests {
     use crate::source::{DbDriver, DbOptions, DbProperty};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const ONE: &str = r#"{"meta":[{"name":"1","type":"UInt8"}],"data":[[1]],"rows":1}"#;
+    const ONE: &str = "[\"1\"]\n[\"UInt8\"]\n[1]\n";
 
     async fn read_request(stream: &mut tokio::net::TcpStream) -> String {
         let mut bytes = Vec::new();
@@ -483,39 +538,70 @@ mod tests {
         DataSource { driver: DbDriver::Clickhouse, host: "127.0.0.1".into(), port: Some(port), ..Default::default() }
     }
 
+    fn decode(body: &[u8], max_rows: usize, chunk: usize) -> IdeResult<DecodedResult> {
+        let mut reader = RowReader::new(max_rows);
+        for part in body.chunks(chunk) {
+            reader.push(part)?;
+        }
+        reader.finish()
+    }
+
     #[test]
-    fn compact_results_preserve_precision_nulls_strings_and_empty_metadata() {
-        let body = br#"{"meta":[{"name":"n","type":"UInt64"},{"name":"d","type":"Decimal(38, 9)"},{"name":"v","type":"Nullable(String)"},{"name":"v","type":"Nullable(String)"},{"name":"v","type":"Nullable(String)"}],"data":[[18446744073709551615,12345678901234567890.123456789,null,"null","\u1d3a\u1d41\u1d38\u1d38"]]}"#;
-        let (columns, rows, more) = decode_result(body, 1).unwrap();
-        assert_eq!(columns.len(), 5);
-        assert_eq!(columns[1].type_name, "Decimal(38, 9)");
-        assert_eq!(
-            rows[0],
-            vec![
-                Some("18446744073709551615".into()),
-                Some("12345678901234567890.123456789".into()),
-                None,
-                Some("null".into()),
-                Some("ᴺᵁᴸᴸ".into()),
-            ]
+    fn rows_preserve_precision_nulls_and_strings_across_chunks() {
+        let body = concat!(
+            r#"["n", "d", "v", "v", "v"]"#,
+            "\n",
+            r#"["UInt64", "Decimal(38, 9)", "Nullable(String)", "Nullable(String)", "Nullable(String)"]"#,
+            "\n",
+            r#"[18446744073709551615, 12345678901234567890.123456789, null, "null", "ᴺᵁᴸᴸ"]"#,
         );
-        assert!(!more);
-        let (columns, rows, more) = decode_result(br#"{"meta":[{"name":"x","type":"String"}],"data":[]}"#, 0).unwrap();
+        for chunk in [1, 7, body.len()] {
+            let (columns, rows, more) = decode(body.as_bytes(), 1, chunk).unwrap();
+            assert_eq!(columns.len(), 5);
+            assert_eq!(columns[1].type_name, "Decimal(38, 9)");
+            assert_eq!(
+                rows[0],
+                vec![
+                    Some("18446744073709551615".into()),
+                    Some("12345678901234567890.123456789".into()),
+                    None,
+                    Some("null".into()),
+                    Some("ᴺᵁᴸᴸ".into()),
+                ]
+            );
+            assert!(!more);
+        }
+        let (columns, rows, more) = decode(b"[\"x\"]\n[\"String\"]\n", 0, 64).unwrap();
         assert_eq!(columns[0].name, "x");
         assert!(rows.is_empty() && !more);
-        assert!(decode_result(br#"{"meta":[],"data":[[1]]}"#, 1).is_err());
-        assert!(decode_result(br#"{"meta":[],"data":[],"exception":"query failed"}"#, 1).is_err());
+        assert_eq!(decode(b"", 5, 64).unwrap().0.len(), 0);
+        assert!(decode(b"[\"x\"]\n[\"UInt8\"]\n[1, 2]\n", 1, 64).is_err());
+    }
+
+    #[test]
+    fn rows_past_the_limit_are_skipped_but_a_later_exception_still_fails() {
+        let mut body = String::from("[\"n\"]\n[\"UInt64\"]\n");
+        for n in 0..1000 {
+            body.push_str(&format!("[{n}]\n"));
+        }
+        let (_, rows, more) = decode(body.as_bytes(), 2, 4096).unwrap();
+        assert_eq!(rows, vec![vec![Some("0".into())], vec![Some("1".into())]]);
+        assert!(more);
+        body.push_str("\n__exception__\nabcdefgh\nCode: 395. DB::Exception: Value passed to 'throwIf' is non-zero\n");
+        body.push_str("62 abcdefgh\n__exception__\n");
+        let error = decode(body.as_bytes(), 2, 4096).unwrap_err();
+        assert_eq!(error.message, "ClickHouse: Code: 395. DB::Exception: Value passed to 'throwIf' is non-zero");
     }
 
     #[tokio::test]
     async fn http_requests_use_auth_settings_limits_and_a_shared_session() {
         let (port, requests) = server(vec![
-            ("200 OK", "X-ClickHouse-Format: JSONCompact\r\n", ONE),
+            ("200 OK", "X-ClickHouse-Format: JSONCompactEachRowWithNamesAndTypes\r\n", ONE),
             ("200 OK", "", ""),
             (
                 "200 OK",
-                "X-ClickHouse-Format: JSONCompact\r\n",
-                r#"{"meta":[{"name":"n","type":"UInt64"}],"data":[["1"],["2"],["3"]]}"#,
+                "X-ClickHouse-Format: JSONCompactEachRowWithNamesAndTypes\r\n",
+                "[\"n\"]\n[\"UInt64\"]\n[\"1\"]\n[\"2\"]\n[\"3\"]\n",
             ),
         ])
         .await;
