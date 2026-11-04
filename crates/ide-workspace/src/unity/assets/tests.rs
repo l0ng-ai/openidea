@@ -3,6 +3,8 @@ use crate::{documents::Documents, file_moves::FileMoves};
 use ide_core::{LanguageId, WorkspaceEdit};
 use std::sync::Arc;
 
+mod links;
+
 const A: &str = "11111111111111111111111111111111";
 const B: &str = "22222222222222222222222222222222";
 const C: &str = "33333333333333333333333333333333";

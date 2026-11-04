@@ -11,7 +11,7 @@ use std::{
 
 mod duplicate;
 mod workspace_edit;
-pub(crate) use workspace_edit::expand_workspace_edit;
+pub(crate) use workspace_edit::{expand_workspace_edit, validate_workspace_edit_paths};
 #[cfg(test)]
 mod tests;
 
@@ -56,7 +56,11 @@ fn no_links(path: &Path) -> IdeResult<()> {
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(IdeError::invalid("Unity asset operations require paths without '..'"));
     }
-    for p in path.ancestors() {
+    // Trust the opened project's location, including a linked root or parent
+    // (macOS /var and /tmp). Check inside it, including Library staging paths.
+    // The outermost root prevents a nested Unity project from hiding a link.
+    let root = path.ancestors().filter(|p| super::is_project(p)).last();
+    for p in path.ancestors().take_while(|p| Some(*p) != root) {
         match fs::symlink_metadata(p) {
             Ok(m) if is_link(&m) => {
                 return Err(IdeError::invalid(format!("Unity asset operations do not follow links: {}", p.display())));

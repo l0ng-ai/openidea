@@ -1,7 +1,45 @@
 //! Include sidecars in the document transaction's preflight, recovery and undo.
-use super::{exists, key, meta_path, no_links, project_root, validate_asset};
+use super::{exists, fs, is_link, key, meta_path, no_links, project_root, validate_asset};
 use ide_core::{FileEdit, IdeError, IdeResult, WorkspaceEdit};
 use std::path::Path;
+
+pub(crate) fn validate_workspace_edit_paths(edit: &WorkspaceEdit) -> IdeResult<()> {
+    for file in &edit.files {
+        let validate = |path: &Path| -> IdeResult<()> {
+            validate_asset(path)?;
+            no_links(&meta_path(path))?;
+            no_nested_links(path)
+        };
+        match file {
+            FileEdit::Rename { from, to } if project_root(from).is_some() || project_root(to).is_some() => {
+                validate(from)?;
+                validate(to)?;
+            }
+            FileEdit::Delete { path, .. } if project_root(path).is_some() => validate(path)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// Transactions snapshot directories recursively. Reject linked descendants
+// before backup, including junctions and children renamed by a later operation.
+fn no_nested_links(path: &Path) -> IdeResult<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if is_link(&metadata) {
+        return Err(IdeError::invalid(format!("Unity asset operations do not follow links: {}", path.display())));
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            no_nested_links(&entry?.path())?;
+        }
+    }
+    Ok(())
+}
 
 // Resolve against the state produced by earlier operations without touching disk.
 // This also handles renaming a folder before renaming/deleting a child asset.
