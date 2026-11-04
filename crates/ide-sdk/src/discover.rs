@@ -579,6 +579,31 @@ fn maven_version(home: &Path) -> Option<String> {
     })
 }
 
+/// `path` with symlinks resolved (Homebrew's `bin/mvn` → its Cellar), except that a Windows
+/// drive letter is kept: on a mapped network drive or a `subst` drive canonicalizing gives
+/// `\\?\UNC\server\share\…` or another drive, and cmd.exe can't start `mvn.cmd` from a
+/// `\\?\` path (nor is it the path the user knows).
+fn launch_path(path: &Path) -> std::io::Result<PathBuf> {
+    let real = dunce::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let drive = |p: &Path| match p.components().next() {
+            Some(Component::Prefix(x)) => match x.kind() {
+                Prefix::Disk(d) | Prefix::VerbatimDisk(d) => Some(d.to_ascii_uppercase()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(d) = drive(path)
+            && drive(&real) != Some(d)
+        {
+            return std::path::absolute(path);
+        }
+    }
+    Ok(real)
+}
+
 /// A Maven home (`bin/mvn` and `lib/`); Homebrew's formula keeps it in `libexec`.
 fn maven_home(dir: &Path) -> Option<PathBuf> {
     let mvn = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
@@ -595,7 +620,7 @@ fn maven() -> Vec<Sdk> {
     } else {
         which("mvn")
     };
-    if let Some(mvn) = on_path.and_then(|p| dunce::canonicalize(p).ok())
+    if let Some(mvn) = on_path.and_then(|p| launch_path(&p).ok())
         && let Some(home) = mvn.parent().and_then(Path::parent)
     {
         found.push((home.to_path_buf(), "path"));
@@ -629,7 +654,7 @@ fn maven() -> Vec<Sdk> {
     let mut out = Vec::new();
     for (dir, source) in found {
         let Some(home) = maven_home(&dir) else { continue };
-        let home = dunce::canonicalize(&home).unwrap_or(home);
+        let home = launch_path(&home).unwrap_or(home);
         if !seen.insert(home.clone()) {
             continue;
         }
