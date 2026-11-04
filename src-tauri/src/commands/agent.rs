@@ -49,6 +49,19 @@ pub fn agent_set_command(
     agent::set_command(&state.host, window.label(), id, command)
 }
 
+/// Environment variables built-in agent `id` starts with (saved in its agent file);
+/// an empty map clears them.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_set_env(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    env: std::collections::BTreeMap<String, String>,
+) -> IdeResult<()> {
+    agent::set_env(&state.host, window.label(), id, env)
+}
+
 /// Agents of the ACP Registry this machine can run, with what is installed; the list
 /// saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 #[tauri::command]

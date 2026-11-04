@@ -279,7 +279,20 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     assert_eq!(dev.args, s(&["run", "dev", "--host", "0.0.0.0"]));
     assert_eq!(cwd(dev), Some(PathBuf::from("web")));
     assert_eq!(dev.env["VITE_API"], "http://localhost:8000");
-    assert_eq!(ignored(&r, "dev"), ["node-interpreter", "scripts"]);
+    // The configuration's Node interpreter goes to the npm form, with the fields it shows.
+    let params: Vec<(&str, &str)> = dev.extras.params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert_eq!(
+        params,
+        [
+            ("arguments", "--host 0.0.0.0"),
+            ("command", "run"),
+            ("nodeInterpreter", "/opt/node22/bin/node"),
+            ("packageDir", "web"),
+            ("packageManager", "pnpm"),
+            ("script", "dev"),
+        ]
+    );
+    assert_eq!(ignored(&r, "dev"), ["scripts"]);
     // Neither the template nor the temporary `build` is listed as skipped.
     assert_eq!(r.skipped.len(), 2);
 }
