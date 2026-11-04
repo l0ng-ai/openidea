@@ -758,6 +758,8 @@ files).
 openidea-plugin keygen acme.key                     # once; keep the file secret
 openidea-plugin pack plugins/acme-tools --key acme.key --publisher acme
 openidea-plugin index market/ --publisher acme --name "ACME" --key acme.key
+openidea-plugin check acme.tools-1.0.0.oiplugin      # a package as installing would check it
+openidea-plugin merge market/index.json https://example.com/index.json --keep acme
 ```
 
 A **marketplace** is static: an `index.json` and the packages next to it, on
@@ -775,6 +777,34 @@ and the publisher's key, then shows the install page.
   with the reason and the user is notified — also after a restart, before
   their code could run. A publisher rotates keys by adding the new one; older
   keys stay valid until revoked.
+
+`index` with a key registers the publisher and replaces its plugins, keeping
+the other publishers'; without one, it lists every package in the folder,
+each checked against the publishers the index already has. `merge` takes the
+publishers, plugins and revocations of another index (downloads made absolute)
+in place of every publisher but `--keep`; `check` also takes a `.oiplugin`.
+
+### 8.1 Official and community plugins
+
+The IDE's default marketplace is `plugins-index.json` of the latest release.
+It lists two kinds of plugins:
+
+- **Official** (`plugins/official/`, ids `openidea.*`): maintained in this
+  repository, built and signed by its release workflow, and kept working as
+  the API changes. New official plugins are proposed in an issue first; they
+  cover general needs or show how to use part of the API.
+- **Community** (their authors' ids and keys): developed in their authors'
+  repositories and listed through the registry,
+  [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins).
+  An author registers a publisher (an id prefix, its public key and the GitHub
+  accounts that may change it) and adds each plugin version by pull request;
+  the registry checks the package (digest, signature, `openidea-plugin check`)
+  and publishes its index, which `plugins-index.yml` merges into the release's
+  within the hour. Its README has the rules.
+
+Pull requests that add a plugin to this repository are for official plugins.
+A plugin that needs a new extension point brings the extension point here, as
+its own pull request, and the plugin to the registry.
 
 ## 9. Testing the host
 

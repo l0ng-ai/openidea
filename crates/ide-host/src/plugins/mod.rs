@@ -36,7 +36,10 @@ pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
-pub use market::{INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX};
+pub use market::{
+    INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX,
+    read_url as read_market_url, resolve as resolve_market_href,
+};
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub(crate) use providers::editor_providers as editor_providers_for;
 pub use providers::{ProviderKind, set_editor_providers};

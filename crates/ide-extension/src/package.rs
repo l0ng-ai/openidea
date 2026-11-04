@@ -335,6 +335,53 @@ impl Index {
         sig.check(id, version, digest)?;
         Ok(publisher.id.clone())
     }
+
+    /// Replaces what this index lists for every publisher but `keep` with what
+    /// `other` lists: its publishers, their plugins and their revocations
+    /// (`other`'s downloads should already be absolute). `other` may only
+    /// speak for its own publishers, and none of them may be in `keep`.
+    pub fn include(&mut self, other: Index, keep: &[&str]) -> Result<(), String> {
+        let mut theirs: Vec<&str> = Vec::new();
+        for p in &other.publishers {
+            if !publisher_id_ok(&p.id) {
+                return Err(format!("invalid publisher id {:?}: use a-z, 0-9, '-' and '_'", p.id));
+            }
+            if keep.contains(&p.id.as_str()) {
+                return Err(format!("may not list publisher {:?}", p.id));
+            }
+            if theirs.contains(&p.id.as_str()) {
+                return Err(format!("publisher {:?} is listed twice", p.id));
+            }
+            theirs.push(&p.id);
+        }
+        let owned_by = |id: &str| theirs.iter().any(|p| owns(p, id));
+        for e in &other.plugins {
+            if !theirs.contains(&e.publisher.as_str()) || !owns(&e.publisher, &e.id) {
+                return Err(format!("{}: not a plugin of publisher {:?}", e.id, e.publisher));
+            }
+        }
+        if let Some(r) = other.revoked.iter().find(|r| !owned_by(&r.id)) {
+            return Err(format!("{}: revoked by an index that doesn't publish it", r.id));
+        }
+        let kept = |id: &str| keep.iter().any(|p| owns(p, id));
+        self.publishers.retain(|p| keep.contains(&p.id.as_str()));
+        self.plugins.retain(|e| keep.contains(&e.publisher.as_str()));
+        self.revoked.retain(|r| kept(&r.id));
+        self.publishers.extend(other.publishers);
+        self.plugins.extend(other.plugins);
+        self.revoked.extend(other.revoked);
+        Ok(())
+    }
+}
+
+/// Whether the plugin `id` is in `publisher`'s namespace.
+fn owns(publisher: &str, id: &str) -> bool {
+    id.strip_prefix(publisher).is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// A publisher id is a single segment of a plugin id.
+pub fn publisher_id_ok(id: &str) -> bool {
+    !id.contains('.') && crate::validate_plugin_id(id).is_ok()
 }
 
 #[cfg(test)]
@@ -397,6 +444,80 @@ mod tests {
         assert_eq!(index.revocation("acme.bad", "1.0.0").unwrap().reason, "malware");
         assert!(index.revocation("acme.bad", "1.0.1").is_none());
         assert_eq!(PublisherKey::from_base64(&key.seed_base64()).unwrap().public_base64(), key.public_base64());
+    }
+
+    fn entry(id: &str, publisher: &str) -> IndexEntry {
+        IndexEntry {
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            authors: Vec::new(),
+            publisher: publisher.into(),
+            download: format!("https://example.com/{id}.oiplugin"),
+            digest: "d".into(),
+            capabilities: Vec::new(),
+        }
+    }
+
+    fn publisher(id: &str) -> Publisher {
+        Publisher { id: id.into(), name: id.into(), keys: vec![KeyEntry { key: format!("{id}-key"), revoked: false }] }
+    }
+
+    fn revocation(id: &str) -> Revocation {
+        Revocation { id: id.into(), versions: Vec::new(), reason: "r".into() }
+    }
+
+    #[test]
+    fn including_an_index_replaces_everything_but_the_kept_publishers() {
+        let mut official = Index {
+            format: INDEX_FORMAT,
+            publishers: vec![publisher("openidea"), publisher("gone")],
+            plugins: vec![entry("openidea.a", "openidea"), entry("gone.x", "gone")],
+            revoked: vec![revocation("openidea.old"), revocation("gone.x")],
+        };
+        let community = Index {
+            format: INDEX_FORMAT,
+            publishers: vec![publisher("alice")],
+            plugins: vec![entry("alice.arthas", "alice")],
+            revoked: vec![revocation("alice.bad")],
+        };
+        official.include(community.clone(), &["openidea"]).unwrap();
+        let ids = |v: &[IndexEntry]| v.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        assert_eq!(official.publishers.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["openidea", "alice"]);
+        assert_eq!(ids(&official.plugins), ["openidea.a", "alice.arthas"]);
+        assert_eq!(official.revoked.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["openidea.old", "alice.bad"]);
+
+        // Including again is idempotent.
+        let once = official.clone();
+        official.include(community.clone(), &["openidea"]).unwrap();
+        assert_eq!(official, once);
+    }
+
+    #[test]
+    fn an_included_index_speaks_only_for_its_own_publishers() {
+        let base = Index { format: INDEX_FORMAT, publishers: vec![publisher("openidea")], ..Index::default() };
+        let with = |publishers: Vec<Publisher>, plugins: Vec<IndexEntry>, revoked: Vec<Revocation>| Index {
+            format: INDEX_FORMAT,
+            publishers,
+            plugins,
+            revoked,
+        };
+        let cases = [
+            (with(vec![publisher("openidea")], vec![], vec![]), "may not list"),
+            (with(vec![publisher("alice"), publisher("alice")], vec![], vec![]), "listed twice"),
+            (with(vec![publisher("openidea.x")], vec![], vec![]), "invalid publisher"),
+            (with(vec![publisher("alice")], vec![entry("openidea.a", "alice")], vec![]), "not a plugin of"),
+            (with(vec![publisher("alice")], vec![entry("alice.a", "bob")], vec![]), "not a plugin of"),
+            (with(vec![publisher("alice")], vec![entry("alicex.a", "alice")], vec![]), "not a plugin of"),
+            (with(vec![publisher("alice")], vec![], vec![revocation("openidea.a")]), "doesn't publish"),
+        ];
+        for (other, error) in cases {
+            let mut index = base.clone();
+            let err = index.include(other, &["openidea"]).unwrap_err();
+            assert!(err.contains(error), "{err}");
+            assert_eq!(index, base);
+        }
     }
 
     #[test]
