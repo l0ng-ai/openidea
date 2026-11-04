@@ -26,7 +26,7 @@ jobs:
     outputs:
       release_id: ${{ steps.release.outputs.id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
       - name: Tag matches app version
         run: |
@@ -36,7 +36,7 @@ jobs:
             exit 1
           fi
       - id: release
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const tag = process.env.TAG;
@@ -81,11 +81,11 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
@@ -155,7 +155,7 @@ jobs:
           - { runner: macos-latest, target: x86_64-apple-darwin, os: macos, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
@@ -198,7 +198,7 @@ jobs:
             echo "::warning::PLUGIN_SIGNING_KEY is not set: the official plugins are not published"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.key.outputs.skip != 'true'
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
@@ -207,10 +207,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.key.outputs.skip != 'true'
         with: { key: release-plugins }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         if: steps.key.outputs.skip != 'true'
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.key.outputs.skip != 'true'
         with: { node-version: 22 }
       # Builds the web pages; fails when a checked-in component isn't built from these sources.
@@ -249,7 +249,7 @@ jobs:
     needs: [create-release, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
@@ -309,7 +309,7 @@ jobs:
     needs: [create-release, build, server, plugins, updater-manifest]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
