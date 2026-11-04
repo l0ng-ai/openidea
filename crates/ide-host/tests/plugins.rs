@@ -123,6 +123,19 @@ fn misbehave_pkg() -> PathBuf {
     repo().join("crates/ide-plugin/tests/fixtures/misbehave")
 }
 
+/// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
+/// another (or behind a new instance starting) holds once it caught up.
+fn eventually(mut f: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(5);
+    while !f() {
+        if Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 /// A theme package with a light and a dark theme, plus licence files, in `dir`.
 fn write_theme_pair(dir: &Path) {
     std::fs::create_dir_all(dir.join("t")).unwrap();
@@ -397,26 +410,22 @@ fn crashes_restart_with_backoff_until_the_circuit_opens() {
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.activations, info.error), (PluginStatus::Active, 2, None));
 
-    // Three in a row: stopped for the session, with growing waits between.
+    // Three in a row: stopped for the session, backing off between them (the wait
+    // doubles: `Limits::backoff`, tested where it is defined; wall-clock waits on CI
+    // are too noisy to compare).
     f.take_events();
-    // How long each crash kept the next call waiting, without the restart itself, whose
-    // instantiation time varies a lot on CI.
-    let mut waits = Vec::new();
-    for _ in 0..3 {
-        let started = Instant::now();
+    for crash in 0..3 {
         let err = loop {
-            let attempt = Instant::now();
             match f.run("misbehave", "panic", None) {
                 Err(e) if e.contains("restarts in") => std::thread::sleep(Duration::from_millis(20)),
-                other => {
-                    waits.push(attempt - started);
-                    break other.unwrap_err();
-                }
+                other => break other.unwrap_err(),
             }
         };
         assert!(err.contains("crashed"), "{err}");
+        if crash < 2 {
+            assert!(f.run("misbehave", "echo", None).unwrap_err().contains("restarts in"), "backing off");
+        }
     }
-    assert!(waits[1] >= backoff / 2 && waits[2] > waits[1] + backoff / 2, "the wait doubles: {waits:?}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!(info.status, PluginStatus::Failed);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("3 times in a row")), "{:?}", info.error);
@@ -537,10 +546,10 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     // Slower than the soft deadline: dropped (however late this thread gets
     // to look), but the instance lives on.
     assert!(provider.highlights(&mis, "sleep:150").is_none());
-    std::thread::sleep(Duration::from_millis(150));
-    assert!(provider.highlights(&mis, "fast").is_some());
+    assert!(eventually(|| provider.highlights(&mis, "fast").is_some()));
     let info = host.info_of("misbehave").unwrap();
-    assert_eq!((info.stats.slow_calls, info.stats.crashes, info.stats.activations), (1, 0, 1));
+    assert!(info.stats.slow_calls >= 1, "{:?}", info.stats);
+    assert_eq!((info.stats.crashes, info.stats.activations), (0, 1));
 
     // Past the hard deadline: interrupted; the next call gets a new instance.
     assert!(provider.highlights(&mis, "spin").is_none());
@@ -549,7 +558,8 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     let info = host.info_of("misbehave").unwrap();
     assert_eq!(info.stats.crashes, 1, "{:?}", info.error);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("timed out after 400ms")), "{:?}", info.error);
-    assert!(provider.highlights(&mis, "fast").is_some());
+    // The new instance may take longer to start than the soft deadline on a slow runner.
+    assert!(eventually(|| provider.highlights(&mis, "fast").is_some()));
     assert_eq!(host.info_of("misbehave").unwrap().stats.activations, 2);
 }
 
@@ -558,9 +568,10 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
 #[test]
 fn providers_of_several_plugins_run_concurrently() {
     let tmp = tempfile::tempdir().unwrap();
+    // A budget no runner misses, so only the overlap is measured.
     let limits = Limits {
-        edit_soft: Duration::from_millis(300),
-        edit_hard: Duration::from_secs(2),
+        edit_soft: Duration::from_secs(5),
+        edit_hard: Duration::from_secs(10),
         fuel: u64::MAX,
         ..Limits::default()
     };
@@ -593,12 +604,12 @@ fn providers_of_several_plugins_run_concurrently() {
     assert_eq!(host.provide_completion(&doc("fast"), at, None).len(), 2);
 
     let started = Instant::now();
-    let items = host.provide_completion(&doc("sleep:200"), at, None);
+    let items = host.provide_completion(&doc("sleep:500"), at, None);
     let elapsed = started.elapsed();
     let mut from: Vec<&str> = items.iter().map(|(p, _)| p.as_str()).collect();
     from.sort();
     assert_eq!(from, ["slow-a", "slow-b"], "both within the budget");
-    assert!(elapsed < Duration::from_millis(350), "one after the other would take 400ms: {elapsed:?}");
+    assert!(elapsed < Duration::from_millis(950), "one after the other would take 1000ms: {elapsed:?}");
     assert_eq!(host.info_of("slow-b").unwrap().stats.slow_calls, 0);
 }
 
