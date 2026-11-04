@@ -493,12 +493,15 @@ fn running_calls_can_be_cancelled() {
         let f = f.clone();
         std::thread::spawn(move || f.run("misbehave", "spin", None))
     };
-    std::thread::sleep(Duration::from_millis(100));
-    let started = Instant::now();
-    f.host.cancel("misbehave");
+    // A cancel before the call runs (the instance may still be starting) does nothing: repeat it.
+    let until = Instant::now() + Duration::from_secs(5);
+    while !spinning.is_finished() {
+        assert!(Instant::now() < until, "the running call wasn't interrupted");
+        f.host.cancel("misbehave");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let err = spinning.join().unwrap().unwrap_err();
     assert!(err.contains("was cancelled"), "{err}");
-    assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(f.run("misbehave", "echo", Some("x")).unwrap().as_deref(), Some("x"), "no backoff");
     let stats = f.host.info_of("misbehave").unwrap().stats;
     assert_eq!((stats.crashes, stats.activations), (0, 2));
