@@ -680,7 +680,9 @@ pub static TOOLS: &[ToolSpec] = &[
                 rule(Linux, Arm64, "kotlin-lsp-*-linux-aarch64.zip"),
                 rule(Windows, X64, "kotlin-lsp-*-win-x64.zip"),
             ],
-            locate: &["kotlin-lsp", "kotlin-lsp.sh", "kotlin-lsp.cmd"],
+            // `bin/intellij-server` is the launcher; current releases still ship the
+            // `kotlin-lsp.sh` / `kotlin-lsp.cmd` wrappers around it, deprecated, and old ones only those.
+            locate: &["intellij-server", "kotlin-lsp", "kotlin-lsp.sh", "kotlin-lsp.cmd"],
         },
         fallback: None,
         version: V,
@@ -1044,6 +1046,25 @@ mod tests {
     /// The v263 kotlin-server-* release notes: the CLI distribution archives plus
     /// the VS Code extension and checksums; each platform must pick its native
     /// distribution and the aarch64 archive must never be picked on x64.
+    #[test]
+    fn kotlin_lsp_runs_its_launcher_rather_than_the_deprecated_wrapper() {
+        let Method::Release { locate, .. } = &find("kotlin-lsp").unwrap().method else { unreachable!() };
+        let names: Vec<String> = locate.iter().map(|n| n.to_string()).collect();
+        let tmp = tempfile::tempdir().unwrap();
+        // Current releases: `kotlin-lsp.sh` warns that it will go and execs `bin/intellij-server`.
+        let current = tmp.path().join("current");
+        let dist = current.join("kotlin-server-263.7084.0");
+        std::fs::create_dir_all(dist.join("bin")).unwrap();
+        std::fs::write(dist.join("kotlin-lsp.sh"), "").unwrap();
+        std::fs::write(dist.join("bin/intellij-server"), "").unwrap();
+        assert_eq!(crate::archive::locate(&current, &names), Some(dist.join("bin/intellij-server")));
+        // Older releases have only the script.
+        let old = tmp.path().join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("kotlin-lsp.sh"), "").unwrap();
+        assert_eq!(crate::archive::locate(&old, &names), Some(old.join("kotlin-lsp.sh")));
+    }
+
     #[test]
     fn kotlin_lsp_picks_the_native_archive_for_each_platform() {
         use crate::platform::{Platform, select_asset};
