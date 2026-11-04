@@ -1,4 +1,4 @@
-use ide_core::NullSink;
+use ide_core::{NullSink, RequestId};
 use ide_host::{Host, HostConfig, ops};
 use std::{sync::Arc, time::Duration};
 
@@ -38,6 +38,27 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     for name in ["Cached.cs", "Temporary.cs", "Editor.log"] {
         assert!(project.index.find_files(name, 100).is_empty(), "indexed generated file {name}");
     }
+    let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let out = hits.clone();
+    let query = serde_json::from_value(serde_json::json!({
+        "pattern": "class", "isRegex": false, "caseSensitive": false, "wholeWord": false,
+        "include": [], "exclude": [], "scope": { "kind": "project" }, "maxMatches": 100,
+    }))
+    .unwrap();
+    ops::search::start(
+        &host,
+        "main",
+        RequestId::next(),
+        query,
+        Arc::new(move |event| {
+            if let ops::search::SearchEvent::File { file } = event {
+                out.lock().unwrap().push(file.rel_path);
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(*hits.lock().unwrap(), ["Assets/Scripts/Player.cs"]);
     let listing = ops::fs::read_dir(&host, "main", root.clone()).await.unwrap();
     assert!(listing.iter().any(|e| e.name == "Library" && e.excluded));
     assert!(project.exclude_globs().contains(&"/Obj".to_owned()));
