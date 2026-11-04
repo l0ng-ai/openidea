@@ -24,10 +24,11 @@ interface LogcatState {
   serial: string | null;
   /** Drop lines below this level. */
   level: LogcatLevel;
-  /** Substring of the tag or message, or `#pid`. */
+  /** Filter expression: `tag:`, `message:`, `-term`, … (see `query.ts`). */
   query: string;
   /** Freeze the view: lines keep arriving but are only applied when resumed. */
   paused: boolean;
+  /** Keep the view on the last line; scrolling up turns it off, the icon turns it back on. */
   follow: boolean;
   status: LogcatStatus;
   error: string | null;

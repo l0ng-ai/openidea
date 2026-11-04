@@ -8,7 +8,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import type { LogcatLevel, LogcatLine } from "@/platform/ipc";
-import { Input, IconButton, Select, T, EmptyState, Toggle } from "@/ui";
+import { Input, IconButton, Select, T, EmptyState } from "@/ui";
 import { FILTER_LEVELS, LEVEL_CLASS, filterLines, shortTime } from "./model";
 import { compileQuery } from "./query";
 import { appendLines, clearLines, setDevices, setDevicesError, setPaused, setStatus, useLogcat } from "./store";
@@ -59,8 +59,8 @@ export function LogcatView() {
   }, [refreshDevices]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  /** The view is at the bottom, so new lines keep it there. */
-  const stick = useRef(true);
+  /** The scrollTop we last wrote: only the user can move the view above it. */
+  const written = useRef(0);
 
   // One stream per device: switching devices (or closing the window) cancels it.
   useEffect(() => {
@@ -71,7 +71,7 @@ export function LogcatView() {
     if (bufferedFor !== serial) {
       clearLines();
       bufferedFor = serial;
-      stick.current = true;
+      written.current = 0;
     }
     const request = nextRequestId();
     const channel = new Channel<LogcatLine[]>();
@@ -99,12 +99,17 @@ export function LogcatView() {
     overscan: 16,
   });
 
-  // Follow the tail while the view is scrolled to the bottom (IDEA's soft wrap off /
-  // "Scroll to End" behaviour); scrolling up stops it until scrolled back down.
+  // Follow the tail: `totalSize` changes only after the rows below have been
+  // measured, so waiting on it as well is what lands us on the real last line
+  // when a burst arrives (React commits, the virtualiser measures, this runs again).
+  const totalSize = virtualizer.getTotalSize();
   useLayoutEffect(() => {
+    if (!follow) return;
     const el = scrollRef.current;
-    if (el && follow && stick.current) el.scrollTop = el.scrollHeight;
-  }, [rows, follow]);
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    written.current = el.scrollTop;
+  }, [rows, follow, totalSize]);
 
   const deviceOptions = devices.map((d) => ({
     value: d.serial,
@@ -147,8 +152,14 @@ export function LogcatView() {
           pressed={paused}
           onClick={() => setPaused(!paused)}
         />
+        <IconButton
+          icon="arrow-down"
+          title={follow ? "Following the end (click to stop)" : "Scroll to end"}
+          size="small"
+          pressed={follow}
+          onClick={() => useLogcat.setState({ follow: !follow })}
+        />
         <IconButton icon="trash" title="Clear" size="small" onClick={clearLines} />
-        <Toggle checked={follow} onChange={(v) => useLogcat.setState({ follow: v })} label="Scroll to end" />
         <IconButton
           icon="refresh"
           title="Refresh devices"
@@ -177,7 +188,16 @@ export function LogcatView() {
           tabIndex={0}
           onScroll={(e) => {
             const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
+            // Our own writes always end at the bottom, so a move upwards is the user's:
+            // scrolling up stops following, dragging back down to the end resumes it.
+            const up = el.scrollTop < written.current - 4;
+            written.current = el.scrollTop;
+            if (up) {
+              if (follow) useLogcat.setState({ follow: false });
+            } else if (atEnd && !follow) {
+              useLogcat.setState({ follow: true });
+            }
           }}
         >
           <div className={styles.canvas} style={{ height: virtualizer.getTotalSize() }}>
