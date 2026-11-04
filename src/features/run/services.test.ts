@@ -436,6 +436,8 @@ describe("add service categories", () => {
       "scala-cli": "Java",
       ruby: "Others",
       php: "Others",
+      phpunit: "Others",
+      composer: "Others",
       perl: "Others",
       lua: "Others",
       r: "Others",
