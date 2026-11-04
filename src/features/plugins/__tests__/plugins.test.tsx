@@ -7,6 +7,7 @@ import type { PluginInfo } from "@/bindings";
 import { _setActiveEditor } from "@/editor/api";
 import { executeAction, executeActionFrom, getAction, registerAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useContributedIconThemes } from "@/platform/themes";
 import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
 import { applyThemeAttributes, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
@@ -19,7 +20,7 @@ import {
   startPluginBridge,
   syncProjection,
 } from "../bridge";
-import { iconResolver } from "../iconThemes";
+import { iconResolver, selectedIconTheme, useIconThemes } from "../iconThemes";
 import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
 import { usePluginStatusItems } from "../runtimeUi";
@@ -28,6 +29,7 @@ import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
 import { catalogState, filterCatalog, filterPlugins, NO_REPOSITORY, PluginsPage } from "../PluginsPage";
 import {
+  adoptIconTheme,
   compareVersions,
   installFromDisk,
   refreshPlugins,
@@ -606,6 +608,42 @@ describe("marketplace", () => {
 });
 
 describe("icon themes", () => {
+  const iconThemeUi = (pluginId: string, id: string) => ({
+    pluginId,
+    point: "iconThemes",
+    key: id,
+    decl: { id, label: id.toUpperCase(), icons: 1 },
+  });
+
+  it("adopts the first icon theme of a plugin when none is selected", async () => {
+    useIconThemes.setState({ override: undefined });
+    usePlugins.setState({ ui: [iconThemeUi("q", "other"), iconThemeUi("p", "first"), iconThemeUi("p", "second")] });
+    await adoptIconTheme("p");
+    expect(selectedIconTheme()).toBe("p/first");
+    await adoptIconTheme("q");
+    expect(selectedIconTheme()).toBe("p/first");
+    useIconThemes.setState({ override: undefined });
+  });
+
+  it("names each icon theme's settings page after its plugin and theme", () => {
+    syncUiContributions([iconThemeUi("acme.icons", "atom.dark")], [plugin({ id: "acme.icons", name: "Acme" })]);
+    try {
+      expect(useContributedIconThemes.getState().themes.find((t) => t.id === "acme.icons/atom.dark")).toMatchObject({
+        label: "ATOM.DARK",
+        settingsPage: "plugins.acme-icons.atom-dark",
+      });
+    } finally {
+      clearUiContributions();
+    }
+  });
+
+  it("adopts nothing for plugins without icon themes", async () => {
+    useIconThemes.setState({ override: undefined });
+    usePlugins.setState({ ui: [iconThemeUi("q", "other")] });
+    await adoptIconTheme("p");
+    expect(selectedIconTheme()).toBeNull();
+  });
+
   it("resolves file names, then the longest extension, then the default icon", () => {
     const theme = iconResolver(
       {

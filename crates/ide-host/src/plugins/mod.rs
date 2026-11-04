@@ -16,6 +16,9 @@
 //! projects) and folders linked with `openidea-plugin link` (`links.json`).
 
 mod api;
+mod icon_extensions;
+mod icon_patterns;
+mod icon_settings;
 mod icons;
 mod install;
 mod market;

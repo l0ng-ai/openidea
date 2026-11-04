@@ -40,6 +40,7 @@ import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
+import { trackIconThemePages } from "./iconThemePages";
 
 /** Settings-driven runtime state (zoom, fonts, theme) of a secondary window. */
 export const activateRuntimeSettings = trackRuntimeSettings;
@@ -106,6 +107,7 @@ async function showSettings(page?: string, newProjects = false) {
 export function activate(): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     activatePythonStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
@@ -194,6 +196,7 @@ function installWindowKeys(): () => void {
 export function activateSettingsWindow(parent: string): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     unloadBuiltinPages,
     registerActions(settingsActions((page, newProjects) => relaunch({ page, newProjects: !!newProjects }))),
     installActionProxies(parent),

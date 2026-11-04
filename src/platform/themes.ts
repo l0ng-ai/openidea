@@ -102,11 +102,63 @@ export function baseTheme(id: ThemeChoiceId, fallback: BuiltinThemeId = "light")
 
 // --- file icon themes (plugins) -------------------------------------------------
 
+export interface IconThemePack {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface IconThemeVariant {
+  id: string;
+  name: string;
+  default: string;
+  options: readonly { id: string; name: string }[];
+}
+
+export type IconThemeSettingOption =
+  | "hideFiles"
+  | "hideFolders"
+  | "hideUiIcons"
+  | "hidePsiIcons"
+  | "hollowFolders"
+  | "groups"
+  | "choice"
+  | "accent"
+  | "monochrome"
+  | "saturation"
+  | "opacity"
+  | "iconSize"
+  | "rowHeight";
+
+export interface IconThemeSettingItem {
+  option: IconThemeSettingOption;
+  label?: string | null;
+  hint?: string | null;
+  invert?: boolean;
+  choice?: string | null;
+  columns?: number | null;
+  default?: number | string | null;
+}
+
+export interface IconThemeSettingsSection {
+  title: string;
+  items: readonly IconThemeSettingItem[];
+}
+
+export interface IconThemeDetails {
+  groups: readonly IconThemePack[];
+  choices: readonly IconThemeVariant[];
+  accent: boolean;
+  settings: readonly IconThemeSettingsSection[];
+}
+
 export interface IconThemeChoice {
   /** `<pluginId>/<themeId>`: the `appearance.fileIconTheme` value. */
   id: string;
   label: string;
   origin?: string;
+  settingsPage?: string;
+  details?: () => Promise<IconThemeDetails | null>;
 }
 
 /** File icon themes of live plugins, for Settings › Appearance. */

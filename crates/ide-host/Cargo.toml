@@ -14,6 +14,7 @@ encoding_rs.workspace = true
 ide-core.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
+regex-syntax.workspace = true
 ide-workspace.workspace = true
 ide-language.workspace = true
 ide-index.workspace = true

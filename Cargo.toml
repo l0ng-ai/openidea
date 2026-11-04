@@ -86,6 +86,7 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # search, index, language
 grep-searcher = "0.1"
 grep-regex = "0.1"
+regex-syntax = "0.8"
 grep-matcher = "0.1"
 nucleo-matcher = "0.3"
 redb = "4"

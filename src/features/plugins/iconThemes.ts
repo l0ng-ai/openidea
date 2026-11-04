@@ -7,10 +7,16 @@
  */
 import { create } from "zustand";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { validateIconThemeOptions } from "@/platform/iconThemeOptions";
 import { useProject } from "@/platform/project";
-import { addContributedIconTheme } from "@/platform/themes";
-import { registerExternalIcons, setFileIconTheme, type FileIconTheme } from "@/ui";
+import type { FileIconThemeOptions } from "@/bindings";
+import { addContributedIconTheme, type IconThemeDetails } from "@/platform/themes";
+import { registerExternalIcons, setFileIconTheme } from "@/ui";
+import { setIconAppearance } from "@/ui/iconAppearance";
 import { pluginsBackend } from "./backend";
+import { iconResolver, type IconThemeMap } from "./iconThemeResolver";
+
+export { iconResolver } from "./iconThemeResolver";
 
 export interface IconThemeRef {
   pluginId: string;
@@ -18,15 +24,7 @@ export interface IconThemeRef {
   label: string;
   /** The plugin's name. */
   origin?: string;
-}
-
-export interface IconThemeMap {
-  file: string | null;
-  folder?: string | null;
-  folderExpanded?: string | null;
-  fileExtensions: Record<string, string>;
-  fileNames: Record<string, string>;
-  folderNames?: Record<string, string>;
+  settingsPage?: string;
 }
 
 interface IconThemesState {
@@ -47,6 +45,25 @@ export const useIconThemes = create<IconThemesState>(() => ({
 const fromSettings = (s: ReturnType<typeof useProject.getState>) =>
   (s.settings?.appearance as { fileIconTheme?: unknown } | undefined)?.fileIconTheme;
 
+const optionsFromSettings = (s: ReturnType<typeof useProject.getState>) =>
+  (s.settings?.appearance as { fileIconThemeOptions?: unknown } | undefined)?.fileIconThemeOptions;
+
+type ProjectState = ReturnType<typeof useProject.getState>;
+
+function optionsChanged(key: string, s: ProjectState, prev: ProjectState): boolean {
+  if (optionsFromSettings(s) === optionsFromSettings(prev)) return false;
+  return JSON.stringify(optionsOf(s, key)) !== JSON.stringify(optionsOf(prev, key));
+}
+
+function optionsOf(state: ProjectState, key: string): FileIconThemeOptions {
+  const own = (optionsFromSettings(state) as Record<string, unknown> | undefined)?.[key];
+  return validateIconThemeOptions(own);
+}
+
+function themeOptions(key: string): FileIconThemeOptions {
+  return optionsOf(useProject.getState(), key);
+}
+
 /** The selected icon theme (`<pluginId>/<themeId>`), or null for the built-in icons. */
 export function selectedIconTheme(): string | null {
   const { override } = useIconThemes.getState();
@@ -63,11 +80,24 @@ export function useSelectedIconTheme(): string | null {
 
 export const iconThemeKey = (pluginId: string, id: string) => `${pluginId}/${id}`;
 
+async function loadDetails(theme: IconThemeRef): Promise<IconThemeDetails | null> {
+  const id = `iconTheme/${theme.id}/settings`;
+  const assets = await pluginsBackend().assets(theme.pluginId, id);
+  const json = assets.find(([asset]) => asset === id)?.[1];
+  return json ? (JSON.parse(json) as IconThemeDetails) : null;
+}
+
 /** Called by the `iconThemes` projection: the theme can be selected while its plugin is live. */
 export function addIconTheme(theme: IconThemeRef): () => void {
   const key = iconThemeKey(theme.pluginId, theme.id);
   useIconThemes.setState((s) => ({ available: new Map(s.available).set(key, theme) }));
-  const unlist = addContributedIconTheme({ id: key, label: theme.label, origin: theme.origin });
+  const unlist = addContributedIconTheme({
+    id: key,
+    label: theme.label,
+    origin: theme.origin,
+    settingsPage: theme.settingsPage,
+    details: () => loadDetails(theme),
+  });
   return () => {
     unlist();
     useIconThemes.setState((s) => {
@@ -92,44 +122,32 @@ export async function selectIconTheme(key: string | null) {
   }
 }
 
-/**
- * The theme's resolver. Files: exact name, then the longest matching
- * extension, then its default file icon. Folders: exact name, then its
- * default (expanded) folder icon.
- */
-export function iconResolver(
-  map: IconThemeMap,
-  iconName: (icon: string) => string,
-  has: (name: string) => boolean,
-): FileIconTheme {
-  const pick = (icon: string | undefined | null) => (icon && has(iconName(icon)) ? iconName(icon) : null);
-  return {
-    file(fileName) {
-      const lower = fileName.toLowerCase();
-      const named = pick(map.fileNames[lower]);
-      if (named) return named;
-      let rest = lower;
-      for (let dot = rest.indexOf("."); dot >= 0; dot = rest.indexOf(".")) {
-        rest = rest.slice(dot + 1);
-        const byExt = pick(map.fileExtensions[rest]);
-        if (byExt) return byExt;
-      }
-      return pick(map.file);
-    },
-    folder(folderName, expanded) {
-      const named = pick(map.folderNames?.[folderName.toLowerCase()]);
-      if (named) return named;
-      return (expanded && pick(map.folderExpanded)) || pick(map.folder);
-    },
-  };
-}
-
 let undo: (() => void) | null = null;
 let loading: string | null = null;
 
+interface Loaded {
+  key: string;
+  map: IconThemeMap;
+  iconName: (icon: string) => string;
+  names: ReadonlySet<string>;
+}
+
+let loaded: Loaded | null = null;
+
+const HIDDEN_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>';
+
+function install(theme: Loaded) {
+  const options = themeOptions(theme.key);
+  const hidden = theme.iconName("__hidden");
+  setFileIconTheme(
+    iconResolver(theme.map, theme.iconName, (n) => theme.names.has(n) || n === hidden, { hidden, options }),
+  );
+  setIconAppearance(options);
+}
+
 async function apply(key: string | null) {
   const theme = key ? useIconThemes.getState().available.get(key) : undefined;
-  if (!theme) {
+  if (!key || !theme) {
     undo?.();
     undo = null;
     useIconThemes.setState({ applied: null });
@@ -151,10 +169,14 @@ async function apply(key: string | null) {
       .map(([id, svg]) => [iconName(id.slice(svgPrefix.length)), svg] as const);
     const names = new Set(icons.map(([n]) => n));
     undo?.();
-    const unregister = registerExternalIcons(icons);
-    setFileIconTheme(iconResolver(map, iconName, (n) => names.has(n)));
+    const unregister = registerExternalIcons([...icons, [iconName("__hidden"), HIDDEN_SVG]]);
+    const current: Loaded = { key, map, iconName, names };
+    loaded = current;
+    install(current);
     undo = () => {
+      loaded = null;
       setFileIconTheme(null);
+      setIconAppearance(null);
       unregister();
     };
     useIconThemes.setState({ applied: key });
@@ -179,6 +201,7 @@ export function trackIconTheme(): () => void {
     // Settings are shared by every window: a choice made in one shows in all.
     useProject.subscribe((s, prev) => {
       if (fromSettings(s) !== fromSettings(prev)) sync();
+      else if (loaded && optionsChanged(loaded.key, s, prev)) install(loaded);
     }),
   ];
   return () => {
