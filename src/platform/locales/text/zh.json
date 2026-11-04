@@ -6066,5 +6066,6 @@
   "Clear option": "清除选项",
   "Clear all options": "清除所有选项",
   "Open results in new tab": "在新标签打开",
-  "Use {next} and {previous} to select usages": "使用 {next} 和 {previous} 选择用法"
+  "Use {next} and {previous} to select usages": "使用 {next} 和 {previous} 选择用法",
+  "Replace preview": "替换预览"
 }

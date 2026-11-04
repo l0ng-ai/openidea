@@ -380,6 +380,17 @@ describe("footer, as IDEA", () => {
     expect(useFindPopup.getState().newTab).toBe(false);
   });
 
+  it("keeps OpenIDEA's Replace preview: a diff in place of the code preview", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    expect(screen.queryByRole("checkbox", { name: "Preview" })).not.toBeInTheDocument();
+    act(() => showFindPopup(true, { query: "order" }));
+    await settle();
+    expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Preview" }));
+    expect(screen.queryByRole("region", { name: "Preview" })).not.toBeInTheDocument();
+  });
+
   it("names the result keys only for a multi-line query", () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(false, { query: "order" }));

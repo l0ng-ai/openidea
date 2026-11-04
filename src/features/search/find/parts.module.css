@@ -55,7 +55,7 @@
   background: color-mix(in srgb, var(--success) 18%, transparent);
 }
 .preview {
-  /* Holds the absolutely placed editor and placeholder. */
+  /* offsetParent for the scroll-to-line math in ReplaceDiffPreview. */
   position: relative;
   flex: 1;
   min-height: 0;
@@ -83,6 +83,49 @@
   color: var(--fg-faint);
   font-family: var(--font-ui);
 }
+.pre {
+  margin: 0;
+  padding: 4px 0;
+  font: inherit;
+  min-width: max-content;
+}
+.codeLine {
+  display: flex;
+  white-space: pre;
+}
+.currentLine {
+  background: var(--bg-current-line);
+}
+.gutter {
+  flex: none;
+  position: sticky;
+  left: 0;
+  width: 48px;
+  padding-right: 12px;
+  text-align: right;
+  color: var(--fg-gutter);
+  background: inherit;
+  background-color: var(--bg-app);
+}
+.currentLine .gutter {
+  color: var(--fg-muted);
+  background-color: var(--bg-current-line);
+}
 .code {
   padding-right: 16px;
+}
+.lineDeleted {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+.lineAdded {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+}
+.lineDeleted .gutter,
+.lineAdded .gutter {
+  background-color: transparent;
+}
+.sign {
+  flex: none;
+  width: 14px;
+  color: var(--fg-faint);
 }

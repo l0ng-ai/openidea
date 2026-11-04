@@ -5799,5 +5799,6 @@
   "Make abstract": "Rendre abstrait",
   "Keep abstract": "Garder abstrait",
   "Methods pulled up to an interface are declared abstract there.": "Les méthodes remontées dans une interface y sont déclarées abstraites.",
-  "The file changed; open the dialog again": "Le fichier a changé ; rouvrez la boîte de dialogue"
+  "The file changed; open the dialog again": "Le fichier a changé ; rouvrez la boîte de dialogue",
+  "Replace preview": "Aperçu du remplacement"
 }

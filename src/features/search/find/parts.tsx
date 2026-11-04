@@ -7,6 +7,7 @@ import { tokenSpans, useLineTokens, type LineSource } from "@/editor/lineTokens"
 import type { SearchQuery } from "@/platform/ipc";
 import { previewReplacement } from "./session";
 import { loadPreviewText } from "./preview";
+import type { PreviewLine } from "./replaceFlow";
 import styles from "./parts.module.css";
 import { T } from "@/ui";
 import { tx } from "@/platform/i18n";
@@ -58,6 +59,8 @@ export function MatchText({
   if (pos < text.length) parts.push(...tokenSpans(text, pos, text.length, tokens, "end:"));
   return <span className={clsx(styles.text, styles.code)}>{parts}</span>;
 }
+
+const WINDOW = 300;
 
 export interface PreviewHighlight {
   line: number;
@@ -176,6 +179,42 @@ export function CodePreview({
     <div className={styles.preview} role="region" aria-label={tx("Preview")}>
       <div ref={hostRef} className={clsx(styles.previewEditor, (!current || placeholder) && styles.previewHidden)} />
       {placeholder && <div className={styles.previewEmpty}>{placeholder}</div>}
+    </div>
+  );
+}
+
+/** Replace › Preview: unified line diff of the replacement around `line`. */
+export function ReplaceDiffPreview({ lines, line }: { lines: readonly PreviewLine[] | null; line: number }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const box = scrollRef.current;
+    const el = box?.querySelector<HTMLElement>("[data-focus]");
+    if (box && el) box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
+  }, [lines, line]);
+  if (!lines) return <div className={styles.preview} />;
+  const focus = lines.findIndex((l) => l.kind !== "same" && (l.kind === "del" ? l.line >= line : true));
+  const from = Math.max(0, focus - WINDOW);
+  const shown = lines.slice(from, Math.max(focus, 0) + WINDOW);
+  return (
+    <div ref={scrollRef} className={styles.preview} role="region" aria-label={tx("Replace preview")}>
+      <pre className={styles.pre}>
+        {shown.map((l, i) => (
+          <div
+            key={from + i}
+            data-focus={from + i === focus ? "" : undefined}
+            data-kind={l.kind}
+            className={clsx(
+              styles.codeLine,
+              l.kind === "del" && styles.lineDeleted,
+              l.kind === "add" && styles.lineAdded,
+            )}
+          >
+            <span className={styles.gutter}>{l.line + 1}</span>
+            <span className={styles.sign}>{l.kind === "del" ? "-" : l.kind === "add" ? "+" : " "}</span>
+            <span className={styles.code}>{l.text || " "}</span>
+          </div>
+        ))}
+      </pre>
     </div>
   );
 }

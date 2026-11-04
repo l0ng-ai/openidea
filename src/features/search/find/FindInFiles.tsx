@@ -30,19 +30,22 @@ import {
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { basename, dirname, openLocation } from "../common/open";
-import { CodePreview, MatchText } from "./parts";
+import { CodePreview, MatchText, ReplaceDiffPreview } from "./parts";
 import { clearPreviewCache } from "./preview";
 import {
   NO_MARKS,
   confirmText,
   countUsages,
   groupState,
+  loadReplacePreview,
   markDone,
   nextPending,
   pendingUsages,
+  replacePreviewLines,
   replaceTargets,
   startReplace,
   summaryText,
+  type PreviewLine,
   type ReplaceMarks,
   type ReplaceProgress,
   type ReplaceRun,
@@ -142,6 +145,9 @@ function FindInFilesDialog() {
   const [historyMenu, setHistoryMenu] = useState<"find" | "replace" | null>(null);
   const [contextMenu, setContextMenu] = useState(false);
   const [previewVersion, setPreviewVersion] = useState(0);
+  // OpenIDEA's Replace › Preview: the preview shows the replacement as a diff.
+  const [previewMode, setPreviewMode] = useState(false);
+  const [diffPreview, setDiffPreview] = useState<{ key: string; lines: PreviewLine[] } | null>(null);
   const [initialSize] = useState(loadFindPopupSize);
   const [split, setSplit] = useState(loadFindPopupSplit);
   const keepSplit = (layout: Record<string, number>) => {
@@ -375,6 +381,32 @@ function FindInFilesDialog() {
     const done = await replaceUsages(usages);
     if (done) close();
   };
+
+  const diffPreviewKey = JSON.stringify([
+    selected?.key,
+    queryKey,
+    s.replacement,
+    s.preserveCase,
+    rerun,
+    previewVersion,
+  ]);
+  useEffect(() => {
+    if (stale || !previewMode || !s.replace || !selected) return;
+    let alive = true;
+    const key = diffPreviewKey;
+    const usages = pendingUsages([selected], marks);
+    const t = setTimeout(() => {
+      loadReplacePreview(query, s.replacement, s.preserveCase, selected.path, usages).then(
+        (p) => alive && setDiffPreview({ key, lines: replacePreviewLines(p.before, p.edits) }),
+        () => alive && setDiffPreview(null),
+      );
+    }, 80);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stale, previewMode, s.replace, diffPreviewKey, marks]);
 
   const moveTo = (next: number, extend: boolean) =>
     setSel((cur) => selectRow(rows, cur, next, extend ? "range" : "single"));
@@ -776,12 +808,19 @@ function FindInFilesDialog() {
                   )}
                 </div>
                 <div className={styles.previewBox}>
-                  <CodePreview
-                    path={selected?.path ?? null}
-                    line={selected?.line ?? 0}
-                    highlights={fileHighlights}
-                    version={previewVersion}
-                  />
+                  {!stale && previewMode && s.replace && selected ? (
+                    <ReplaceDiffPreview
+                      lines={diffPreview?.key === diffPreviewKey ? diffPreview.lines : null}
+                      line={selected.line}
+                    />
+                  ) : (
+                    <CodePreview
+                      path={selected?.path ?? null}
+                      line={selected?.line ?? 0}
+                      highlights={fileHighlights}
+                      version={previewVersion}
+                    />
+                  )}
                 </div>
               </SplitPanel>
             </SplitGroup>
@@ -791,6 +830,7 @@ function FindInFilesDialog() {
         </div>
         <footer className={styles.footer}>
           <Checkbox checked={s.newTab} onChange={setFindPopupNewTab} label="Open results in new tab" />
+          {s.replace && <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />}
           {navigationHint && <span className={styles.hint}>{navigationHint}</span>}
           <span className={styles.spacer} />
           {s.replace && progress && (

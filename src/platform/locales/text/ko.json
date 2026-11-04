@@ -5845,5 +5845,6 @@
   "Make abstract": "추상으로 만들기",
   "Keep abstract": "추상 선언 유지",
   "Methods pulled up to an interface are declared abstract there.": "인터페이스로 끌어올린 메서드는 그곳에 추상 메서드로 선언됩니다.",
-  "The file changed; open the dialog again": "파일이 변경되었습니다. 대화상자를 다시 여세요"
+  "The file changed; open the dialog again": "파일이 변경되었습니다. 대화상자를 다시 여세요",
+  "Replace preview": "바꾸기 미리 보기"
 }
