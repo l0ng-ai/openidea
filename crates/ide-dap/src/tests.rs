@@ -698,6 +698,37 @@ async fn js_debug_launch_gets_port_and_workspace_folder() {
     assert_eq!(launch["type"], "pwa-node");
 }
 
+/// CodeLLDB treats console input as LLDB commands unless told otherwise: Evaluate Expression
+/// and the Debug Console send expressions, so its console evaluates them. A launch
+/// configuration that picks a console mode keeps it.
+#[tokio::test]
+async fn codelldb_console_evaluates_expressions() {
+    let launch_with = |extra: Value| async move {
+        let h = harness(Script::default());
+        let config = LaunchConfig {
+            name: "demo".into(),
+            adapter: "codelldb".into(),
+            request: "launch".into(),
+            program: Some("/p/target/debug/demo".into()),
+            args: vec![],
+            cwd: Some("/p".into()),
+            env: BTreeMap::new(),
+            extra_json: Some(extra.to_string()),
+        };
+        h.start(config).await.unwrap();
+        h.request("launch")["arguments"].clone()
+    };
+    let launch = launch_with(json!({})).await;
+    assert_eq!(launch["_adapterSettings"]["consoleMode"], "evaluate");
+    assert_eq!(launch["sourceLanguages"], json!(["rust"]));
+
+    let launch =
+        launch_with(json!({"_adapterSettings": {"consoleMode": "commands", "showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "commands", "showDisassembly": "never"}));
+    let launch = launch_with(json!({"_adapterSettings": {"showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "evaluate", "showDisassembly": "never"}));
+}
+
 /// An adapter that is already listening (java-debug inside jdtls): the client
 /// connects over TCP to the `debugServer` port instead of spawning anything.
 #[tokio::test]
@@ -923,6 +954,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {

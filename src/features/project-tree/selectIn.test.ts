@@ -14,6 +14,24 @@ afterEach(() => {
   useContextMenuStore.setState({ menu: null });
 });
 
+describe("Open in Terminal", () => {
+  it("opens the edited file's folder unless the Project view has focus", async () => {
+    const opened: unknown[] = [];
+    disposers.push(
+      registerProjectActions(),
+      registerActions([{ id: "terminal.openAt", title: "Open Terminal At", run: ({ arg }) => void opened.push(arg) }]),
+      () => setContext("projectOpen", false),
+      () => setContext("projectViewFocus", false),
+    );
+    setContext("projectOpen", true);
+    provideEditorService({ activePath: () => "/p/src/a.ts" } as unknown as EditorService);
+    await executeAction("project.openInTerminal");
+    expect(opened).toEqual(["/p/src"]);
+    await executeAction("project.openInTerminal", "/p/docs/readme.md");
+    expect(opened.at(-1)).toBe("/p/docs");
+  });
+});
+
 describe("Select In (⌥F1)", () => {
   it("lists the project view, contributed targets, Finder and the terminal", () => {
     disposers.push(

@@ -92,12 +92,18 @@ pub struct CompletionItem {
     pub label: String,
     pub detail: Option<String>,
     pub kind: Option<CompletionKind>,
+    /// With `snippet`, tab stops and placeholders (`$1`, `${1:name}`, `$0`).
     pub insert_text: String,
+    pub snippet: bool,
     /// Replaced on accept; `None`: the word at the caret.
     pub replace: Option<Range>,
     pub sort_text: Option<String>,
+    /// Matched against what was typed instead of `label`.
+    pub filter_text: Option<String>,
     /// Markdown.
     pub documentation: Option<String>,
+    /// Applied with the item elsewhere in the document (an import).
+    pub additional_edits: Vec<TextEdit>,
 }
 
 impl CompletionItem {
@@ -107,9 +113,12 @@ impl CompletionItem {
             detail: None,
             kind: Some(kind),
             insert_text: label.into(),
+            snippet: false,
             replace: None,
             sort_text: None,
+            filter_text: None,
             documentation: None,
+            additional_edits: Vec::new(),
         }
     }
 }
@@ -129,6 +138,9 @@ pub struct CodeAction {
     pub preferred: bool,
     /// (absolute path, edits) per file.
     pub edits: Vec<(String, Vec<TextEdit>)>,
+    /// The plugin's own reference: with it and no `edits`, the edits come
+    /// from [`Providers::resolve_code_action`] once the user picks the action.
+    pub data: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,6 +167,12 @@ pub trait Providers {
 
     fn code_actions(&mut self, _doc: &Document, _selection: Range) -> Vec<CodeAction> {
         Vec::new()
+    }
+
+    /// The edits of an action [`Providers::code_actions`] returned with
+    /// `data`, when the user picks it (the command budget applies, not 50 ms).
+    fn resolve_code_action(&mut self, _doc: &Document, action: CodeAction) -> Result<CodeAction, crate::Error> {
+        Ok(action)
     }
 
     fn definition(&mut self, _doc: &Document, _at: Position) -> Vec<Location> {

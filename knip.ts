@@ -9,6 +9,7 @@ const config: KnipConfig = {
     "scripts/**/*.ts",
     "perf/**/*.ts",
     "e2e/**/*.ts",
+    "smoke/**/*.ts",
   ],
   // Plugins' web pages are projects of their own (own package.json, checked by plugins/build.sh and CI).
   ignore: ["plugins/**/web-src/**"],

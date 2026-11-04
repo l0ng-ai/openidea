@@ -1,3 +1,4 @@
+import { parseCommitBookmark } from "./logBookmarks";
 import { commitKey, commitRepo } from "./multiRoot";
 /**
  * Actions for operations in progress, Git Log commits, change lists, the shelf
@@ -23,7 +24,7 @@ import { useChangelists } from "./changelists";
 import { commitWindowFocused } from "./actions";
 import { useCommit } from "./commitStore";
 import { openCommit } from "./commitUi";
-import { goToChild, goToParent, goToRef, selectedCommits, useGitLog } from "./logStore";
+import { goToChild, goToParent, goToRef, openLogTab, selectedCommits, useGitLog } from "./logStore";
 import { chooseRevision } from "./RevisionChooser";
 import {
   cherryPick,
@@ -59,9 +60,10 @@ import {
   unshelve,
 } from "./shelf";
 import { currentRepo, focusRepo, useVcs } from "./store";
+import { openExternalLog } from "./RevisionBrowser";
 
 const VCS = "vcsAvailable";
-const IN_GIT_LOG = "vcsAvailable && activeToolWindow == git";
+const IN_GIT_LOG = "(vcsAvailable || projectOpen) && (activeToolWindow == git || vcsLogFocus)";
 const IN_COMMIT = "vcsAvailable && activeToolWindow == commit";
 
 /** The commit an action refers to: its argument (commit or id), else the Git Log selection. */
@@ -84,16 +86,18 @@ export function commitsArg(arg: unknown): Commit[] {
   return selection.length ? selection : [commitArg(undefined)].filter((c): c is Commit => !!c);
 }
 
-function withCommits(fn: (cs: Commit[]) => unknown) {
+function withCommits(fn: (cs: Commit[]) => unknown, allowReadOnly = false) {
   return async ({ arg }: { arg?: unknown }) => {
     const cs = commitsArg(arg);
     if (!cs.length) {
       notifications().notify({ group: "vcs", level: "info", title: "Select a commit in the Git log" });
       return;
     }
-    if (new Set(cs.map(commitRepo)).size > 1) return;
+    if (!allowReadOnly && new Set(cs.map(commitRepo)).size > 1) return;
+    const readOnly = cs.some((c) => "readOnly" in c && c.readOnly === true);
+    if (readOnly && !allowReadOnly) return;
     const repo = commitRepo(cs[0]!);
-    if (repo) await focusRepo(repo);
+    if (repo && !readOnly) await focusRepo(repo);
     void fn(cs);
   };
 }
@@ -108,7 +112,7 @@ async function openCommitInBrowser(c: Commit) {
   else notifications().notify({ group: "vcs", level: "warning", title: `No web URL for remote '${remote}'` });
 }
 
-function withCommit(fn: (c: Commit) => unknown) {
+function withCommit(fn: (c: Commit) => unknown, allowReadOnly = false) {
   return async ({ arg }: { arg?: unknown }) => {
     const c = commitArg(arg);
     if (!c) {
@@ -116,7 +120,9 @@ function withCommit(fn: (c: Commit) => unknown) {
       return;
     }
     const repo = commitRepo(c);
-    if (repo) await focusRepo(repo);
+    const readOnly = "readOnly" in c && c.readOnly === true;
+    if (readOnly && !allowReadOnly) return;
+    if (repo && !readOnly) await focusRepo(repo);
     void fn(c);
   };
 }
@@ -154,6 +160,21 @@ export function trackOperationContext(): () => void {
 
 export function registerHistoryActions(): () => void {
   const actions: Action[] = [
+    {
+      id: "vcs.log.revealBookmark",
+      title: "Show Commit Bookmark",
+      category: "Git Log",
+      run: async ({ arg }) => {
+        const target = typeof arg === "string" ? parseCommitBookmark(arg) : null;
+        if (target) {
+          if (target.repo && !useVcs.getState().roots.includes(target.repo)) {
+            const root = await call(commands.vcsOpenExternalLog(target.repo));
+            openLogTab("external", root, "editor", [root]);
+          }
+          await goToRef(target.id, target.repo || null);
+        }
+      },
+    },
     // --- operation in progress (Git › Continue Rebase…) ---
     {
       id: "vcs.rebase.continue",
@@ -226,18 +247,27 @@ export function registerHistoryActions(): () => void {
 
     // --- Git Log toolbar ---
     {
+      id: "vcs.log.openExternal",
+      title: "Open External Git Log…",
+      category: "Git Log",
+      run: openExternalLog,
+    },
+    {
       id: "vcs.log.goToRef",
       title: "Go to Hash/Branch/Tag",
       category: "Git Log",
       icon: "search",
-      when: VCS,
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
       keyWhen: IN_GIT_LOG,
       keywords: ["find commit", "jump"],
       run: async () => {
-        toolWindowService().show("git", true);
+        const log = useGitLog.getState();
+        const tab = log.logTabs.find((t) => t.id === log.shownLog);
+        if (tab?.location !== "editor") toolWindowService().show("git", true);
         const rev = await chooseRevision("Go to Hash/Branch/Tag", {
           tags: true,
           placeholder: "Enter hash or branch/tag name",
+          repositories: tab?.repo ? [tab.repo] : log.filters.repositories,
         });
         if (rev && !(await goToRef(rev)))
           notifications().notify({ group: "vcs", level: "warning", title: `'${rev}' was not found in the log` });
@@ -250,9 +280,9 @@ export function registerHistoryActions(): () => void {
       title: "Copy Revision Number",
       category: "Git Log",
       icon: "copy",
-      when: VCS,
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
       keyWhen: IN_GIT_LOG,
-      run: withCommits((cs) => navigator.clipboard?.writeText(cs.map((c) => c.id).join(" "))),
+      run: withCommits((cs) => navigator.clipboard?.writeText(cs.map((c) => c.id).join(" ")), true),
     },
     {
       id: "vcs.log.createPatch",
@@ -382,16 +412,16 @@ export function registerHistoryActions(): () => void {
       title: "Go to Child Commit",
       category: "Git Log",
       icon: "arrow-left",
-      when: VCS,
-      run: withCommit(goToChild),
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      run: withCommit(goToChild, true),
     },
     {
       id: "vcs.log.goToParent",
       title: "Go to Parent Commit",
       category: "Git Log",
       icon: "arrow-right",
-      when: VCS,
-      run: withCommit(goToParent),
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      run: withCommit(goToParent, true),
     },
     {
       id: "vcs.log.openInBrowser",

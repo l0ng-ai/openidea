@@ -65,6 +65,7 @@ const { showSearchEverywhere, hideSearchEverywhere, useSearchEverywhere, pushSea
   await import("../everywhere/store");
 const { FindInFilesOverlay } = await import("../find/FindInFiles");
 const { showFindPopup, hideFindPopup } = await import("../find/store");
+const { defaultPreset, useKeymap } = await import("@/platform/keymap");
 
 const tick = () => act(() => new Promise((r) => setTimeout(r, 100)));
 
@@ -476,13 +477,40 @@ describe("Recent Files multi-selection", () => {
 });
 
 describe("Find in Files dialog", () => {
-  it("streams results and previews the replacement", async () => {
+  it("streams results and highlights the matches while replacing, as IDEA", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(true, { query: "order" }));
     await act(() => new Promise((r) => setTimeout(r, 250)));
     expect(screen.getByText("1 match in 1 file")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Replace with"), { target: { value: "item" } });
-    expect(screen.getByText("item", { ignore: "script, style, textarea" })).toBeInTheDocument();
+    const matches = screen.getByRole("listbox", { name: "Matches" });
+    expect(matches.querySelector("mark")).not.toBeNull();
+    expect(matches.querySelector("del, ins")).toBeNull();
     expect(screen.getByRole("button", { name: "Replace All" })).toBeEnabled();
+  });
+
+  it.each([
+    ["macos", ["⌥C", "⌥↓", "⇧⌘↵"], ["⌘↵", "⌥⇧↵"]],
+    ["linux", ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"], ["Ctrl+Enter", "Alt+Shift+Enter"]],
+    ["windows", ["Alt+C", "Alt+Down", "Ctrl+Shift+Enter"], ["Ctrl+Enter", "Alt+Shift+Enter"]],
+  ] as const)("spells its shortcuts the %s way", (os, [matchCase, history, newLine], [openKey, replaceAllKey]) => {
+    const previous = { os: usePlatform.getState().os, preset: useKeymap.getState().preset };
+    usePlatform.setState({ os });
+    useKeymap.setState({ preset: defaultPreset() });
+    try {
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(true, { query: "order" }));
+      const shortcut = (name: string) =>
+        screen.getAllByRole("button", { name }).map((b) => b.getAttribute("data-tooltip-shortcut"));
+      expect(shortcut("Match Case")).toEqual([matchCase]);
+      expect(shortcut("Recent Searches")).toEqual([history, history]);
+      expect(shortcut("New Line")).toEqual([newLine, newLine]);
+      expect(document.querySelector("footer")!.textContent).toContain(`${openKey}Open in Find Window`);
+      expect(screen.getByRole("button", { name: "Replace All" })).toHaveAttribute("title", replaceAllKey);
+      if (os !== "macos") expect(document.querySelector("[role=dialog]")!.innerHTML).not.toMatch(/[⌘⌥⇧↵]/);
+    } finally {
+      usePlatform.setState({ os: previous.os });
+      useKeymap.setState({ preset: previous.preset });
+    }
   });
 });

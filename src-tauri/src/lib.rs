@@ -176,6 +176,9 @@ pub fn run() {
             }
         }
         tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
+        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+            window_groups::frame_changed(window.app_handle(), window.label());
+        }
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
             {

@@ -262,6 +262,7 @@
   background: var(--bg-elev);
 }
 .markdown :global(pre) {
+  margin: 0 0 8px;
   padding: 8px 10px;
   border-radius: var(--radius-small);
   background: var(--bg-elev);
@@ -306,44 +307,6 @@
   text-decoration: underline;
 }
 
-/* Lezer classHighlighter tokens in fenced code (same colours as the Markdown preview). */
-.markdown :global(.tok-keyword),
-.markdown :global(.tok-modifier),
-.markdown :global(.tok-controlKeyword),
-.markdown :global(.tok-operatorKeyword) {
-  color: var(--syn-keyword);
-}
-.markdown :global(.tok-string),
-.markdown :global(.tok-string2) {
-  color: var(--syn-string);
-}
-.markdown :global(.tok-number),
-.markdown :global(.tok-bool),
-.markdown :global(.tok-atom) {
-  color: var(--syn-number);
-}
-.markdown :global(.tok-typeName),
-.markdown :global(.tok-className),
-.markdown :global(.tok-namespace) {
-  color: var(--syn-type);
-}
-.markdown :global(.tok-comment) {
-  color: var(--syn-comment);
-}
-.markdown :global(.tok-meta),
-.markdown :global(.tok-macroName) {
-  color: var(--syn-annotation);
-}
-.markdown :global(.tok-propertyName) {
-  color: var(--syn-property);
-}
-.markdown :global(.tok-variableName.tok-definition) {
-  color: var(--syn-function);
-}
-.markdown :global(.tok-punctuation),
-.markdown :global(.tok-operator) {
-  color: var(--syn-punct);
-}
 .markdown :global(ul),
 .markdown :global(ol) {
   margin: 0 0 8px;
@@ -351,6 +314,60 @@
 }
 .markdown :global(a) {
   color: var(--link);
+}
+.markdown :global(table) {
+  display: block;
+  margin: 0 0 8px;
+  overflow: auto;
+  border-collapse: collapse;
+}
+.markdown :global(th),
+.markdown :global(td) {
+  /* `overflow-wrap: anywhere` from .markdown would otherwise squeeze a column to a few letters. */
+  min-width: 6em;
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+.markdown :global(h1),
+.markdown :global(h2),
+.markdown :global(h3),
+.markdown :global(h4),
+.markdown :global(h5),
+.markdown :global(h6) {
+  margin: 12px 0 6px;
+  color: var(--fg-strong);
+  font-size: 1em;
+  line-height: 1.3;
+}
+.markdown :global(h1) {
+  font-size: 1.15em;
+}
+.markdown :global(h2) {
+  font-size: 1.08em;
+}
+.markdown :global(blockquote) {
+  margin: 0 0 8px;
+  padding: 0 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--fg-secondary);
+}
+.markdown :global(hr) {
+  margin: 8px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.markdown :global(img) {
+  max-width: 100%;
+}
+.markdown :global(li:has(> input[type="checkbox"])) {
+  margin-left: -20px;
+  list-style: none;
+}
+.markdown > :global(:first-child) {
+  margin-top: 0;
+}
+.markdown > :global(:last-child) {
+  margin-bottom: 0;
 }
 
 .thought summary,

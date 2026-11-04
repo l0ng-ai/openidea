@@ -1,0 +1,110 @@
+name: Language smoke
+# Everyday code intelligence (completion, go to definition, Find Usages, hover, diagnostics
+# with a quick fix, an intention, formatting, rename) per language, against the language
+# server the app starts by default: crates/ide-host/tests/language_smoke.rs.
+# Then running and testing each fixture through the run store and openidea-server
+# (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - "crates/**"
+      - "languages/**"
+      - "fixtures/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/features/run/**"
+      - "src/platform/**"
+      - "smoke/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/language-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: language-smoke-${{ github.ref }}
+  # A new push supersedes a PR's run; on main every merge runs to the end (and saves the cache).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Pinned so a server release can't fail an unrelated PR; bump them deliberately.
+  VTSLS: 0.3.0
+  TYPESCRIPT: 6.0.3
+  BASEDPYRIGHT: 1.40.2
+  RUFF: 0.17.3
+  GOPLS: v0.24.0
+  JDTLS: 1.63.0-202610191322
+  KOTLIN_LSP: 263.7084.0
+  GRADLE: 8.14.3
+
+jobs:
+  smoke:
+    name: Language smoke (${{ matrix.language }})
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [typescript, python, rust, go, java, kotlin]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "rust-analyzer, rustfmt" }
+      # One build cache for every language; main saves it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: language-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.language == 'rust' }}
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - if: matrix.language == 'typescript'
+        run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
+
+      - if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - if: matrix.language == 'python'
+        run: pip install "basedpyright==$BASEDPYRIGHT" "ruff==$RUFF"
+
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with: { go-version: "1.27", cache: false }
+      - if: matrix.language == 'go'
+        run: go install "golang.org/x/tools/gopls@$GOPLS"
+
+      - if: matrix.language == 'java' || matrix.language == 'kotlin'
+        uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - if: matrix.language == 'java'
+        run: |
+          mkdir -p "$RUNNER_TEMP/jdtls"
+          curl -fsSL "https://download.eclipse.org/jdtls/milestones/${JDTLS%-*}/jdt-language-server-$JDTLS.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP/jdtls"
+          echo "$RUNNER_TEMP/jdtls/bin" >> "$GITHUB_PATH"
+
+      # The Kotlin fixture has no Gradle wrapper: the server imports it with the Gradle on PATH.
+      - if: matrix.language == 'kotlin'
+        uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "${{ env.GRADLE }}" }
+      - if: matrix.language == 'kotlin'
+        run: |
+          mkdir -p "$RUNNER_TEMP/kotlin-lsp" "$RUNNER_TEMP/bin"
+          curl -fsSL "https://download.jetbrains.com/language-server/kotlin-server/$KOTLIN_LSP/kotlin-server-$KOTLIN_LSP.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP/kotlin-lsp" --strip-components=1
+          ln -s "$RUNNER_TEMP/kotlin-lsp/kotlin-lsp.sh" "$RUNNER_TEMP/bin/kotlin-lsp"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - run: cargo test --locked -p ide-host --test language_smoke --no-run
+      - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
+
+      - run: pnpm install --frozen-lockfile
+      - run: cargo build --locked -p ide-host --bin openidea-server
+      - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"

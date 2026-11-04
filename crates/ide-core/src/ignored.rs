@@ -2,6 +2,18 @@
 //! treats as nonexistent — hidden from the project view and navigation, never
 //! indexed or searched, never offered as unversioned changes.
 
+use std::path::Path;
+
+/// Whether `dir` lies in a Git (or jj) working tree: it or an ancestor holds `.git` / `.jj`.
+///
+/// Walkers pass it to `ignore::WalkBuilder::require_git`: inside a repository, `.gitignore`
+/// rules then stop at a nested repository's root as in git, so an outer repository's
+/// `.gitignore` does not hide a project that is its own repository. A folder outside any
+/// repository still honours its `.gitignore`.
+pub fn inside_git_repo(dir: &Path) -> bool {
+    dir.ancestors().any(|d| d.join(".git").exists() || d.join(".jj").exists())
+}
+
 /// IDEA's default list, plus `.jj` and the Windows shell files.
 pub const DEFAULT_IGNORED_NAMES: &[&str] = &[
     "*.pyc",
@@ -102,5 +114,16 @@ mod tests {
         assert!(m.is_ignored_path("pkg/__pycache__/"));
         assert!(m.is_ignored_path("pkg/__pycache__/mod.cpython-312.pyc"));
         assert!(!m.is_ignored_path("src/main.rs"));
+    }
+
+    #[test]
+    fn finds_the_repository_at_or_above_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert!(!inside_git_repo(&sub));
+        std::fs::create_dir(dir.path().join("a/.git")).unwrap();
+        assert!(inside_git_repo(&sub));
+        assert!(inside_git_repo(&dir.path().join("a")));
     }
 }

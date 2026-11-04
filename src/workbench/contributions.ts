@@ -120,6 +120,10 @@ export interface EditorKindContribution {
    * `data` must be plain JSON). The editor closes tabs whose target is gone itself.
    */
   restorable?: boolean;
+  /** Can remain visible in a window without a project (for example, an external Git log). */
+  standalone?: boolean;
+  /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
+  onClose?(input: EditorInput): void;
   /**
    * The editor owns a document with unsaved state (a notebook): it takes part in
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
@@ -158,6 +162,7 @@ export interface EditorDocumentLifecycle {
 
 /** Bumped by `notifyEditorDocumentChanged`; selectors reading `isDirty` re-run on it. */
 export const useEditorDocuments = create<{ revision: number }>(() => ({ revision: 0 }));
+export const useStandaloneEditor = create<{ title: string | null }>(() => ({ title: null }));
 
 /** A custom editor document's dirty state (or pending edits) may have changed: tab marks and counts refresh. */
 export function notifyEditorDocumentChanged() {

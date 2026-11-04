@@ -256,6 +256,37 @@ describe("context configuration", () => {
     expect(contextConfig("docs/readme.md", configs)).toBeNull();
   });
 
+  it("runs a module that imports relatively as a module of its package", () => {
+    const cli = "from .models import Priority, TaskList\n\n\ndef main():\n    pass\n";
+    expect(contextConfig("src/tasks/cli.py", configs, cli)).toMatchObject({
+      kind: "python",
+      command: "../.venv/bin/python",
+      args: ["-m", "tasks.cli"],
+      cwd: "src",
+      debugAdapter: "debugpy",
+    });
+    expect(contextConfig("app/api/routes.py", [], "from . import models\n")).toMatchObject({
+      command: "python3",
+      args: ["-m", "app.api.routes"],
+      cwd: null,
+    });
+    expect(contextConfig("src/app/__main__.py", [], "from .cli import main\n")).toMatchObject({
+      args: ["-m", "app"],
+      cwd: "src",
+    });
+    // Inside a nested Python project: from its folder (the venv command stays relative to the root).
+    const nested = [cfg({ id: "pytest", kind: "pytest", command: "backend/.venv/bin/pytest", cwd: "backend" })];
+    expect(contextConfig("backend/app/jobs.py", nested, "from .db import session\n")).toMatchObject({
+      command: "../backend/.venv/bin/python",
+      args: ["-m", "app.jobs"],
+      cwd: "backend",
+    });
+    // Absolute imports, a top-level file, a folder that can't be a package: as a script.
+    expect(contextConfig("src/tasks/cli.py", configs, "import os\n")!.args).toEqual(["src/tasks/cli.py"]);
+    expect(contextConfig("tool.py", [], "from .x import y\n")!.args).toEqual(["tool.py"]);
+    expect(contextConfig("my-scripts/run.py", [], "from .x import y\n")!.args).toEqual(["my-scripts/run.py"]);
+  });
+
   it("runs pytest for a test file even without a detected pytest config", () => {
     expect(contextConfig("worker/test_worker.py", [])).toMatchObject({
       command: "python3",

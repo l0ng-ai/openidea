@@ -369,15 +369,12 @@
   padding: 4px 8px;
 }
 
-.marketBar {
-  display: flex;
-  gap: 4px;
-  align-items: center;
+.categorySelect {
+  width: 100%;
 }
 
-.marketBar > :first-child {
-  flex: 1;
-  min-width: 0;
+.detailsNotice {
+  margin: 0 0 12px;
 }
 
 .marketOverview {
