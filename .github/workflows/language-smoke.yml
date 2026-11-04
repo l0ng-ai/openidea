@@ -26,7 +26,8 @@ on:
 
 concurrency:
   group: language-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push supersedes a PR's run; on main every merge runs to the end (and saves the cache).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
