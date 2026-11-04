@@ -1,0 +1,38 @@
+/* Completion popup under an expression field: menu metrics, scrolling past ~12 rows. */
+.popup {
+  padding: 6px 0;
+  min-width: 240px;
+  max-width: 520px;
+}
+.list {
+  max-height: calc(12 * var(--h-list-row));
+  overflow-y: auto;
+}
+.item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-list-row);
+  margin: 0 6px;
+  padding: 0 8px 0 6px;
+  border-radius: var(--radius-selection, 5px);
+  color: var(--fg-strong);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  cursor: default;
+}
+.active {
+  background: var(--bg-tree-selected);
+}
+.label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detail {
+  margin-left: 16px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

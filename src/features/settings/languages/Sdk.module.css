@@ -31,6 +31,9 @@
 .interpreterLabel::after {
   content: ":";
 }
+:lang(fr) .interpreterLabel::after {
+  content: "\00a0:";
+}
 .path {
   color: var(--fg-muted);
   font-family: var(--font-mono);

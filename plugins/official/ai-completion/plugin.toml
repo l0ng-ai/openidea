@@ -1,0 +1,44 @@
+id = "openidea.ai-completion"
+name = "AI Completion"
+version = "0.1.0"
+description = "Inline code suggestions (ghost text) from a local model (Ollama) or OpenAI, as you type."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: local (Ollama) and OpenAI backends; the key stays in the system keychain."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["storage"]
+# Grant the backends you use; the key is only ever sent to api.openai.com.
+optional = ["net:localhost", "net:api.openai.com", "secrets"]
+
+[[contributes.providers]]
+kinds = ["inline-completion"]
+languages = ["*"]
+
+[[contributes.secrets]]
+name = "api-key"
+label = "OpenAI API key"
+description = "Used only with the OpenAI backend."
+
+[[contributes.commands]]
+id = "use-local"
+title = "AI Completion: Use Local Model (Ollama)"
+category = "AI Completion"
+
+[[contributes.commands]]
+id = "use-openai"
+title = "AI Completion: Use OpenAI"
+category = "AI Completion"
+
+[[contributes.commands]]
+id = "toggle"
+title = "AI Completion: Enable / Disable"
+category = "AI Completion"
+
+[[contributes.commands]]
+id = "set-endpoint"
+title = "AI Completion: Set Endpoint URL"
+category = "AI Completion"

@@ -4,7 +4,7 @@ import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useTxTemplate, tx } from "@/platform/i18n";
-import { call, commands, type SearchScope } from "@/platform/ipc";
+import { call, commands, isTauri, type SearchScope } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
@@ -60,6 +60,7 @@ import {
   recentMasks,
   rememberFindString,
   rememberMask,
+  resolveDirectory,
   resolveFindScope,
   setFindPopupCommandHandler,
   setFindPopupPinned,
@@ -72,6 +73,19 @@ import {
 } from "./store";
 import { ipcFindDeps, openInFindWindow } from "./windowStore";
 import styles from "./FindInFiles.module.css";
+
+/** The Directory scope's browse button: a folder chooser opened at the current directory. */
+async function chooseDirectory(current: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    directory: true,
+    multiple: false,
+    title: tx("Select Search Directory"),
+    defaultPath: current || undefined,
+  });
+  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+}
 
 const POPUP_MAX_MATCHES = 2000;
 const SEARCH_DEBOUNCE_MS = 150;
@@ -629,6 +643,17 @@ function FindInFilesDialog() {
                 spellCheck={false}
                 // Keep the raw text (resolved only when searching), or a typed "/" would be stripped.
                 onChange={(e) => set({ directory: e.target.value })}
+              />
+            )}
+            {s.scopeTab === "directory" && (
+              <IconButton
+                icon="folder-open"
+                title="Browse…"
+                onClick={() =>
+                  void chooseDirectory(resolveDirectory(s.directory, root)).then(
+                    (dir) => dir && set({ directory: dir }),
+                  )
+                }
               />
             )}
             {s.scopeTab === "module" && (

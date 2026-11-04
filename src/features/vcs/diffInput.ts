@@ -6,6 +6,7 @@ import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
 import { renamedFromPath } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
+import { repositoryPath } from "./repositoryPaths";
 
 export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
@@ -129,7 +130,13 @@ export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?
 }
 
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
-export function workingDiffData(path: string, line?: number): DiffData {
+export function workingDiffData(path: string, line?: number, side?: "staged" | "unstaged" | null): DiffData {
+  if (side === "staged") {
+    return { path, left: { type: "rev", rev: "HEAD" }, right: { type: "rev", rev: ":0", label: "Index" }, line };
+  }
+  if (side === "unstaged") {
+    return { path, left: { type: "rev", rev: ":0", label: "Index" }, right: { type: "worktree" }, line };
+  }
   const st = statusOf(path);
   const kind = st ? effectiveKind(st) : null;
   const left: DiffSide =
@@ -144,7 +151,7 @@ export function workingDiffData(path: string, line?: number): DiffData {
 
 /** A path of the selected repository's log (repository-relative) made absolute. */
 function joinRoot(rel: string, root = currentRepoRoot()): string {
-  return root ? `${root}/${rel}` : rel;
+  return repositoryPath(root, rel);
 }
 
 /** Diff of one file changed by `commit` (first parent ↔ commit). */

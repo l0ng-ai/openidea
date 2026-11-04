@@ -7,6 +7,61 @@ use std::path::Path;
 
 const PROFILE: &str = "OpenIDEA IntelliJ IDEA";
 const XML: &str = include_str!("intellij.xml");
+const GENERATED_PROFILE: &str = "OpenIDEA Code Style";
+const TAB_CHAR: &str = "org.eclipse.jdt.core.formatter.tabulation.char";
+const TAB_SIZE: &str = "org.eclipse.jdt.core.formatter.tabulation.size";
+const INDENT_SIZE: &str = "org.eclipse.jdt.core.formatter.indentation.size";
+
+/// The Tabs and Indents override as Eclipse formatter settings. The profile must
+/// carry them too: `indentation.size`, the per-level width, cannot come from the
+/// format request, and an unset Indent follows the tab size, as in IDEA.
+fn indent_settings(style: &LanguageCodeStyle) -> Option<Vec<(&'static str, String)>> {
+    let tab_char = style.use_tab.map(|tab| if tab { "tab" } else { "space" });
+    let indent = style.indent.or(style.tab_size);
+    if tab_char.is_none() && style.tab_size.is_none() && indent.is_none() {
+        return None;
+    }
+    let mut settings: Vec<(&'static str, String)> = Vec::new();
+    if let Some(char) = tab_char {
+        settings.push((TAB_CHAR, char.to_owned()));
+    }
+    if let Some(size) = style.tab_size {
+        settings.push((TAB_SIZE, size.to_string()));
+    }
+    if let Some(size) = indent {
+        settings.push((INDENT_SIZE, size.to_string()));
+    }
+    Some(settings)
+}
+
+fn patch_profile_xml(mut xml: String, settings: &[(&'static str, String)]) -> String {
+    for (id, value) in settings {
+        let marker = format!(r#"<setting id="{id}" value=""#);
+        let Some(at) = xml.find(&marker) else { continue };
+        let start = at + marker.len();
+        let Some(end) = xml[start..].find('"') else { continue };
+        xml.replace_range(start..start + end, value);
+    }
+    xml
+}
+
+/// A minimal Eclipse profile with just the override: unset keys keep jdtls's
+/// built-in formatter defaults.
+fn indent_profile_xml(settings: &[(&'static str, String)]) -> String {
+    let mut xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<profiles version="21">
+  <profile kind="CodeFormatterProfile" name="{}" version="21">
+"#,
+        GENERATED_PROFILE
+    );
+    for (id, value) in settings {
+        xml.push_str(&format!(r#"    <setting id="{id}" value="{value}"/>"#));
+        xml.push('\n');
+    }
+    xml.push_str("  </profile>\n</profiles>\n");
+    xml
+}
 
 /// Protocol settings only: switching profiles reaches a running jdtls through
 /// didChangeConfiguration. Explicit language-server settings are applied later.
@@ -31,12 +86,17 @@ pub fn configure_formatter(
     settings["java"]["format"]["settings"] = formatter_overrides(defaults, overrides);
     cfg.settings = Some(settings);
     let Some(style) = style else { return Ok(()) };
+    let indent = indent_settings(style);
     let (path, profile) = match style.formatter.as_deref() {
         Some("intellij") => {
             let path = data_dir.join("lsp/jdtls/intellij.xml");
             std::fs::create_dir_all(path.parent().unwrap())?;
-            if std::fs::read_to_string(&path).ok().as_deref() != Some(XML) {
-                ide_vfs::write_atomic(&path, XML.as_bytes())?;
+            let xml = match indent {
+                Some(indent) => patch_profile_xml(XML.to_owned(), &indent),
+                None => XML.to_owned(),
+            };
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(xml.as_str()) {
+                ide_vfs::write_atomic(&path, xml.as_bytes())?;
             }
             (path, PROFILE)
         }
@@ -54,9 +114,22 @@ pub fn configure_formatter(
             if !path.is_file() {
                 return Err(ide_core::IdeError::invalid(format!("Not a formatter XML file: {}", path.display())));
             }
+            // The user's profile defines the style; the override stays editor-only.
             (path, "")
         }
-        _ => return Ok(()),
+        _ => {
+            // Default formatter: with a Tabs and Indents override, hand jdtls a
+            // minimal generated profile carrying it — the format request cannot
+            // set indentation.size. Without an override the built-in style stays.
+            let Some(indent) = indent else { return Ok(()) };
+            let path = data_dir.join("lsp/jdtls/indent.xml");
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            let xml = indent_profile_xml(&indent);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(xml.as_str()) {
+                ide_vfs::write_atomic(&path, xml.as_bytes())?;
+            }
+            (path, GENERATED_PROFILE)
+        }
     };
     let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
     settings["java"]["format"]["settings"] = formatter_overrides(
@@ -142,6 +215,73 @@ mod tests {
                 assert_eq!(std::fs::read_to_string(path).unwrap(), XML);
             }
         }
+    }
+
+    #[test]
+    fn tabs_and_indents_override_reaches_the_formatter_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // The IntelliJ profile is the bundled XML with the override patched in.
+        let mut cfg = config("jdtls");
+        let style = LanguageCodeStyle {
+            formatter: Some("intellij".into()),
+            use_tab: Some(true),
+            tab_size: Some(1),
+            indent: Some(1),
+            ..Default::default()
+        };
+        configure_formatter(&mut cfg, Some(&style), &root, &data, None).unwrap();
+        let settings = crate::handler::all_settings(&cfg)["java"]["format"]["settings"].clone();
+        assert_eq!(settings["profile"], PROFILE);
+        let patched = std::fs::read_to_string(data.join("lsp/jdtls/intellij.xml")).unwrap();
+        assert!(patched.contains(&format!(r#"<setting id="{TAB_CHAR}" value="tab"/>"#)));
+        assert!(patched.contains(&format!(r#"<setting id="{TAB_SIZE}" value="1"/>"#)));
+        assert!(patched.contains(&format!(r#"<setting id="{INDENT_SIZE}" value="1"/>"#)));
+
+        // The default formatter gets a minimal generated profile.
+        let mut cfg = config("jdtls");
+        let style = LanguageCodeStyle { use_tab: Some(false), tab_size: Some(2), ..Default::default() };
+        configure_formatter(&mut cfg, Some(&style), &root, &data, None).unwrap();
+        let settings = crate::handler::all_settings(&cfg)["java"]["format"]["settings"].clone();
+        let path = data.join("lsp/jdtls/indent.xml");
+        assert_eq!(settings["url"], crate::uri::path_to_uri_string(&path));
+        assert_eq!(settings["profile"], GENERATED_PROFILE);
+        let xml = std::fs::read_to_string(&path).unwrap();
+        assert!(xml.contains(&format!(r#"<setting id="{TAB_CHAR}" value="space"/>"#)));
+        // An unset Indent follows the tab size, as in IDEA.
+        assert!(xml.contains(&format!(r#"<setting id="{INDENT_SIZE}" value="2"/>"#)));
+
+        // Only Indent: the bundled tab settings stay.
+        let mut cfg = config("jdtls");
+        let style = LanguageCodeStyle { formatter: Some("intellij".into()), indent: Some(2), ..Default::default() };
+        configure_formatter(&mut cfg, Some(&style), &root, &data, None).unwrap();
+        let patched = std::fs::read_to_string(data.join("lsp/jdtls/intellij.xml")).unwrap();
+        assert!(patched.contains(&format!(r#"<setting id="{INDENT_SIZE}" value="2"/>"#)));
+        assert!(patched.contains(&format!(r#"<setting id="{TAB_CHAR}" value="space"/>"#)));
+        assert!(patched.contains(&format!(r#"<setting id="{TAB_SIZE}" value="4"/>"#)));
+    }
+
+    #[test]
+    fn tabs_and_indents_override_leaves_custom_profiles_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let custom = root.join("style.xml");
+        std::fs::write(&custom, XML).unwrap();
+        let mut cfg = config("jdtls");
+        let style = LanguageCodeStyle {
+            formatter: Some("custom".into()),
+            formatter_path: Some("style.xml".into()),
+            use_tab: Some(true),
+            tab_size: Some(1),
+            indent: Some(1),
+            ..Default::default()
+        };
+        configure_formatter(&mut cfg, Some(&style), &root, dir.path(), None).unwrap();
+        assert_eq!(std::fs::read_to_string(&custom).unwrap(), XML);
     }
 
     #[test]

@@ -135,10 +135,11 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       },
       deps,
     );
-    if (!ok && ctx.quitting) await commands.appCancelQuit();
+    if (!ok) await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
     return ok;
   } catch (e) {
     maybeEditorService()?.cancelClose?.();
+    void commands.windowGroupCancelClose().catch(() => {});
     deps.onSaveFailed(e);
     return false;
   } finally {

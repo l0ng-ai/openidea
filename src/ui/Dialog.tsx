@@ -299,6 +299,7 @@ function DialogInner({
     const rect = el.getBoundingClientRect();
     const base = { left: rect.left - offset.x, top: rect.top - offset.y };
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return up();
       // Keep the title bar reachable.
       const x = Math.min(
         Math.max(ev.clientX - start.x, -base.left - rect.width + 80),
@@ -331,6 +332,7 @@ function DialogInner({
     const minH = chrome + 120;
     const origin = offset;
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return up();
       const w = Math.min(Math.max(rect.width + ev.clientX - start.x, minW), window.innerWidth - 24);
       const h = Math.min(Math.max(rect.height + ev.clientY - start.y, minH), window.innerHeight - 24);
       setSize({ w, h });

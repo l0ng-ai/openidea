@@ -1,0 +1,29 @@
+# Test fixture: a tool window listing what an external program reports, and a
+# terminal following one entry. Covers pinned programs (`process:`), terminals,
+# settings and tree views, locally and in remote projects.
+id = "jobs"
+name = "Jobs"
+version = "0.1.0"
+description = "Test fixture: lists the jobs `jobs list` prints and follows one in the terminal."
+authors = ["OpenIDEA contributors"]
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-view:jobs", "on-command:*"]
+
+[capabilities]
+required = ["process:jobs"]
+
+[[contributes.views]]
+id = "jobs"
+title = "Jobs"
+icon = "toolwindow-services"
+location = "right"
+
+[[contributes.commands]]
+id = "follow"
+title = "Jobs: Follow Selected Job"
+category = "Jobs"
+
+[contributes.settings]
+title = "Jobs"
+schema = "settings.schema.json"

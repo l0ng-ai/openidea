@@ -49,6 +49,7 @@
   "app.lightEdit.openProject": "Open as Project",
   "app.lightEdit.openProjectTooltip": "Open {folder} as a project",
   "app.log.failed": "Cannot show the log",
+  "app.project.opening": "Opening {name}…",
   "app.title.default": "OpenIDEA",
   "app.unsaved.body": "{count, plural, one {# file has} other {# files have}} unsaved changes in {project}. Save before closing?",
   "app.unsaved.discard": "Don't Save",

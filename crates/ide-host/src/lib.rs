@@ -1,6 +1,6 @@
 //! The IDE backend without a UI toolkit: open projects per window, terminals,
 //! processes, settings and the remote services. The desktop shell (`src-tauri`)
-//! wraps one [`Host`] and adds windows, menus and plugins; `openidea-server`
+//! wraps one [`Host`] and adds windows and menus; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod data_dirs;
@@ -10,6 +10,7 @@ mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;
 pub mod ops;
+pub mod plugins;
 mod project;
 mod proxy;
 mod requests;
@@ -133,6 +134,17 @@ impl Host {
         self.syntax.get_or_init(|| Arc::new(Syntax::new())).clone()
     }
 
+    /// Plugin languages or the servers they may start changed (they are part
+    /// of [`Self::languages`] and every project's fork): open documents are
+    /// detected again and language servers follow their new configuration.
+    pub fn plugin_languages_changed(&self) {
+        for project in self.projects() {
+            project.documents.redetect_languages();
+            let lsp = project.lsp.clone();
+            self.runtime.spawn(async move { lsp.reconfigure().await });
+        }
+    }
+
     /// Every open project (all windows).
     pub fn projects(&self) -> Vec<Arc<Project>> {
         self.projects.read().values().cloned().collect()
@@ -174,6 +186,7 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.documents.clear_workspace_edit_history();
             project.agents.shutdown();
             project.notebooks.stop_admission();
             // What the closing window started goes with it — the builds and searches it
@@ -251,6 +264,13 @@ impl Host {
         );
     }
 
+    /// Called before desktop exit, which may bypass document destructors.
+    pub fn clear_workspace_edit_history_on_exit(&self) {
+        for project in self.projects() {
+            project.documents.clear_workspace_edit_history();
+        }
+    }
+
     /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
@@ -262,6 +282,7 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }

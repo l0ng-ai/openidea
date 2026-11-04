@@ -48,6 +48,9 @@ pub struct Launch {
     pub settings_page: Option<String>,
     /// Settings windows: edit the global layer only ("Settings for New Projects").
     pub new_projects: bool,
+    /// Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`).
+    #[serde(default)]
+    pub positions: Vec<FilePosition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison: Option<Box<ComparisonLaunch>>,
 }
@@ -72,6 +75,15 @@ pub struct ComparisonLaunch {
     pub repo: Option<ide_core::IpcPath>,
 }
 
+/// A caret position for a file opened from the command line: 0-based line and column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePosition {
+    pub path: ide_core::IpcPath,
+    pub line: u32,
+    pub column: u32,
+}
+
 /// A project folder on the host of an SSH configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -86,10 +98,14 @@ pub struct WindowsState {
     pub groups_restored: AtomicBool,
     pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
+    /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
+    positions: Mutex<HashMap<PathBuf, (u32, u32)>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// Project tabs closing one by one (Close Other Tabs and friends).
+    pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
     comparison_id: AtomicU64,
@@ -101,7 +117,21 @@ impl WindowsState {
     }
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
-        self.launches.lock().remove(label)
+        let mut launch = self.launches.lock().remove(label)?;
+        let mut positions = self.positions.lock();
+        for file in &launch.files {
+            let path = dunce::canonicalize(&file.0).unwrap_or_else(|_| file.0.clone());
+            if let Some((line, column)) = positions.remove(&path) {
+                launch.positions.push(FilePosition { path: file.clone(), line, column });
+            }
+        }
+        Some(launch)
+    }
+
+    /// The caret goes to `position` (0-based line, column) when a window opens `file`.
+    pub fn set_position(&self, file: &Path, position: (u32, u32)) {
+        let path = dunce::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+        self.positions.lock().insert(path, position);
     }
 
     /// Adds `files` to `label`'s pending launch, so files sent before its frontend took the last batch aren't lost.
@@ -133,7 +163,9 @@ impl WindowsState {
 
     pub fn set_quitting(&self, on: bool) {
         self.quitting.store(on, Ordering::SeqCst);
-        if !on {
+        if on {
+            *self.tab_closes.lock() = None;
+        } else {
             self.restart.store(false, Ordering::SeqCst);
         }
     }
@@ -223,13 +255,50 @@ pub fn cycle_target(sorted: &[String], current: &str, forward: bool) -> Option<S
     Some(sorted[j].clone())
 }
 
+/// Flags followed by a value (`--line 12`).
+const VALUE_FLAGS: [&str; 2] = ["--line", "--column"];
+
 /// The project path from command-line arguments (`openidea /path/to/project`):
-/// the first argument after the binary that is not a flag, resolved against `cwd`.
+/// the first argument after the binary that is not a flag or a flag's value, resolved against `cwd`.
 pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
-    args.iter().skip(1).find(|a| !a.starts_with('-') && !a.is_empty() && !a.starts_with("psn_")).map(|a| {
+    let mut rest = args.iter().skip(1);
+    while let Some(a) = rest.next() {
+        if VALUE_FLAGS.contains(&a.as_str()) {
+            rest.next();
+            continue;
+        }
+        if a.starts_with('-') || a.is_empty() || a.starts_with("psn_") {
+            continue;
+        }
         let p = PathBuf::from(a);
-        if p.is_absolute() { p } else { cwd.join(p) }
-    })
+        return Some(if p.is_absolute() { p } else { cwd.join(p) });
+    }
+    None
+}
+
+/// `--line <n>` and `--column <n>` (1-based, also as `--line=<n>`) as a 0-based position;
+/// without `--line` there is none, without `--column` it is the line's start.
+pub fn cli_position(args: &[String]) -> Option<(u32, u32)> {
+    let value = |flag: &str| {
+        let prefix = format!("{flag}=");
+        args.iter().enumerate().skip(1).find_map(|(i, a)| match a.strip_prefix(&prefix) {
+            Some(v) => Some(v.to_owned()),
+            None if a == flag => args.get(i + 1).cloned(),
+            None => None,
+        })
+    };
+    let number = |flag: &str| value(flag).and_then(|v| v.trim().parse::<u32>().ok());
+    let line = number("--line")?;
+    Some((line.saturating_sub(1), number("--column").unwrap_or(1).saturating_sub(1)))
+}
+
+/// Remembers the command line's `--line` / `--column` for `path` (a file) before it is opened.
+pub fn remember_cli_position(windows: &WindowsState, args: &[String], path: &Path) {
+    if let Some(position) = cli_position(args)
+        && !path.is_dir()
+    {
+        windows.set_position(path, position);
+    }
 }
 
 pub fn focus(window: &WebviewWindow) {
@@ -340,6 +409,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     let window = WebviewWindowBuilder::from_config(app, &config)
         .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    #[cfg(target_os = "linux")]
+    decorate_csd(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -360,6 +431,17 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         }
     }
     Ok(window)
+}
+
+/// Wayland: tao already makes frameless windows client-side decorated (an empty GTK title bar, so
+/// the compositor adds no frame), but undecorated GTK windows get no shadow or resize margin.
+/// Decorating keeps that empty title bar, so GTK adds the theme's shadow and resize edges and
+/// nothing else. X11 has no such title bar: decorating there would bring back the WM frame.
+#[cfg(target_os = "linux")]
+fn decorate_csd(window: &WebviewWindow) {
+    if crate::linux_window_state::is_wayland() {
+        let _ = window.set_decorations(true);
+    }
 }
 
 /// Sets the saved IDE zoom before the page loads; applied later by the frontend,
@@ -772,7 +854,10 @@ pub fn path_launch(path: PathBuf) -> Launch {
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     match cli_path(&args, Path::new(&cwd)) {
-        Some(path) => open_path(app, &path),
+        Some(path) => {
+            remember_cli_position(&app.state::<WindowsState>(), &args, &path);
+            open_path(app, &path)
+        }
         None => {
             if let Some(w) = target_window(app) {
                 focus(&w);
@@ -872,13 +957,19 @@ pub fn open_settings_window(
     #[cfg(target_os = "linux")]
     crate::linux_window_state::prepare(app, &mut config);
     let builder = WebviewWindowBuilder::from_config(app, &config);
-    // AppKit child windows can disappear when dragged to another display's Space.
-    // The settings label already tracks ownership and parent-close cleanup.
-    #[cfg(not(target_os = "macos"))]
+    // Windows: an owned child (WS_POPUP) of a borderless parent gets no DWM
+    // shadow, leaving the frameless settings window flat against its parent.
+    // Ownership is tracked by the `settings-<parent>` label instead
+    // (parent-close cleanup, menu modality), so only Linux keeps the native
+    // parent link. AppKit child windows can disappear when dragged to another
+    // display's Space, so macOS keeps it too.
+    #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
     let window = builder
         .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
+    #[cfg(target_os = "linux")]
+    decorate_csd(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -959,7 +1050,12 @@ pub(super) fn place_settings_window(window: &WebviewWindow, parent: &WebviewWind
     let size = parent.outer_size()?.to_logical::<f64>(scale);
     let own_scale = window.scale_factor()?;
     let own = window.outer_size()?.to_logical::<f64>(own_scale);
-    let inner = window.inner_size()?.to_logical::<f64>(own_scale);
+    // On Wayland, the frame is GTK's CSD shadow margin, which tao's inner size includes.
+    #[cfg(target_os = "linux")]
+    let inner = crate::linux_window_state::content_size(&window.as_ref().window())?;
+    #[cfg(not(target_os = "linux"))]
+    let inner = window.inner_size()?;
+    let inner = inner.to_logical::<f64>(own_scale);
     let frame = (own.width - inner.width, own.height - inner.height);
     let bounds = fit_bounds(
         (pos.x, pos.y, size.width, size.height),
@@ -1118,6 +1214,38 @@ mod tests {
         assert_eq!(cli_path(&s(&["openidea", "/abs/p"]), cwd), Some(PathBuf::from("/abs/p")));
         assert_eq!(cli_path(&s(&["openidea"]), cwd), None);
         assert_eq!(cli_path(&s(&["openidea", "-psn_0_123"]), cwd), None);
+        // A flag's value is not the path.
+        let args = s(&["openidea", "--line", "120", "--column", "8", "src/Main.java"]);
+        assert_eq!(cli_path(&args, cwd), Some(PathBuf::from("/work/src/Main.java")));
+        assert_eq!(
+            cli_path(&s(&["openidea", "--line=3", "a b/文件.rs"]), cwd),
+            Some(PathBuf::from("/work/a b/文件.rs"))
+        );
+    }
+
+    #[test]
+    fn cli_position_is_one_based_on_the_command_line() {
+        assert_eq!(cli_position(&s(&["openidea", "--line", "120", "--column", "8", "f"])), Some((119, 7)));
+        assert_eq!(cli_position(&s(&["openidea", "--line=5", "f"])), Some((4, 0)));
+        assert_eq!(cli_position(&s(&["openidea", "--line", "0", "f"])), Some((0, 0)));
+        assert_eq!(cli_position(&s(&["openidea", "--column", "8", "f"])), None);
+        assert_eq!(cli_position(&s(&["openidea", "--line", "x", "f"])), None);
+        assert_eq!(cli_position(&s(&["openidea", "f"])), None);
+    }
+
+    #[test]
+    fn a_launch_carries_the_positions_of_its_files() {
+        let st = WindowsState::default();
+        let file = std::env::current_exe().unwrap();
+        let other = std::env::temp_dir().join("openidea-not-opened.txt");
+        st.set_position(&file, (11, 4));
+        st.set_position(&other, (1, 0));
+        st.add_files("main", vec![file.clone()]);
+        let launch = st.take_launch("main").unwrap();
+        assert_eq!(launch.positions, vec![FilePosition { path: file.into(), line: 11, column: 4 }]);
+        // Taken once: the next launch of that file opens it where it was.
+        st.add_files("main", vec![std::env::current_exe().unwrap()]);
+        assert!(st.take_launch("main").unwrap().positions.is_empty());
     }
 
     #[test]

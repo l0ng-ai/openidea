@@ -20,7 +20,7 @@ pub fn emit_document_edit(
     version: u32,
     changes: Vec<ide_core::TextChange>,
 ) {
-    let event = IdeEvent::DocPatched { doc, base_version, version, changes };
+    let event = IdeEvent::DocPatched { doc, base_version, version, changes, workspace_edit: false };
     for label in peers {
         if let Err(e) = app.emit_to(label, IDE_EVENT, &event) {
             tracing::warn!("failed to mirror document edit: {e}");

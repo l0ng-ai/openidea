@@ -35,6 +35,7 @@ import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
+import { openImport } from "./importConfigs";
 import { registerGoActions } from "./goActions";
 import { invalidateGoModules } from "./goModules";
 import { RunWidget } from "./RunWidget";
@@ -45,7 +46,9 @@ import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
+import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
 import {
@@ -68,6 +71,7 @@ import {
   selectedConfig,
   startRun,
   stopSession,
+  trackRecentConfigurations,
   useRun,
 } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
@@ -116,6 +120,12 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
     await launchProduced(compiled, true);
+    return;
+  }
+  // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
+  const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  if (delegated) {
+    await debugWithAgent(delegated);
     return;
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
@@ -186,7 +196,12 @@ function configFromArg(arg: unknown): RunConfig | undefined {
  * Stop: in the Run or Debug tool window, the selected tab's process; otherwise the selected
  * configuration's session, or a chooser of every running process.
  */
-function stopAction() {
+/**
+ * Stop. In the Run tool window: its active tab. From the run widget (`arg` "widget"): the selected
+ * configuration's process. Elsewhere (shortcut, menu, Find Action), like IDEA's Stop: the only
+ * stoppable process, or a list of them with Stop All when there are several.
+ */
+function stopAction(arg?: unknown) {
   const ctx = getContext();
   if (ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
     void executeAction("debug.stop");
@@ -201,16 +216,17 @@ function stopAction() {
     }
   }
   const debug = useDebugRunSessions.getState().sessions;
-  const selected = selectedConfig();
-  const compound = compoundTargets(selected, running, debug);
-  if (compound.length) {
-    compound.forEach((s) => s.stop());
-    return;
-  }
-  const target = selectedTarget(useRun.getState().selectedId, running, debug);
-  if (target) {
-    target.stop();
-    return;
+  if (arg === "widget") {
+    const compound = compoundTargets(selectedConfig(), running, debug);
+    if (compound.length) {
+      compound.forEach((s) => s.stop());
+      return;
+    }
+    const target = selectedTarget(useRun.getState().selectedId, running, debug);
+    if (target) {
+      target.stop();
+      return;
+    }
   }
   const items = [
     ...running.map((s): MenuItem => ({
@@ -281,8 +297,10 @@ export function activate(): () => void {
     registerExternalTools(),
     activateStackTrace(),
     listenForApplicationDeactivation(),
+    trackRecentConfigurations(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
+    registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
     registerMenuGroup({
       id: "run.context",
       menus: ["editor", "projectView", "editorTab"],
@@ -347,7 +365,7 @@ export function activate(): () => void {
         category: "Run",
         icon: "stop",
         when: "projectOpen",
-        run: () => stopAction(),
+        run: ({ arg }) => stopAction(arg),
       },
       {
         id: "run.rerun",
@@ -404,6 +422,22 @@ export function activate(): () => void {
             editTarget: typeof arg === "string" ? arg : null,
           });
         },
+      },
+      {
+        id: "run.importVscodeLaunch",
+        title: "Import Run Configurations from .vscode/launch.json",
+        category: "Run",
+        when: "projectOpen",
+        keywords: ["launch.json", "vscode", "visual studio code", "debug configuration"],
+        run: () => openImport("vscode"),
+      },
+      {
+        id: "run.importJetbrains",
+        title: "Import Run Configurations from JetBrains (.run, .idea)",
+        category: "Run",
+        when: "projectOpen",
+        keywords: ["pycharm", "webstorm", "intellij", "run.xml", "workspace.xml", "run configuration"],
+        run: () => openImport("jetbrains"),
       },
       {
         id: "run.debugConfig",

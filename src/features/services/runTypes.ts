@@ -115,8 +115,21 @@ export const dockerfileType: RunConfigTypeContribution = {
   ownsWorkingDirectory: true,
   fields: [
     connectionField,
-    { key: "dockerfile", label: "Dockerfile", mono: true, required: true, placeholder: "Relative to the project root" },
-    { key: "context", label: "Context folder", mono: true, placeholder: "The Dockerfile's folder" },
+    {
+      key: "dockerfile",
+      label: "Dockerfile",
+      mono: true,
+      required: true,
+      browse: "file",
+      placeholder: "Relative to the project root",
+    },
+    {
+      key: "context",
+      label: "Context folder",
+      mono: true,
+      browse: "directory",
+      placeholder: "The Dockerfile's folder",
+    },
     { key: "tag", label: "Image tag", mono: true, placeholder: "Derived from the context folder" },
     { key: "target", label: "Build stage", mono: true, placeholder: "The last stage" },
     { key: "buildArgs", label: "Build args", mono: true, placeholder: "KEY=value; OTHER=value" },

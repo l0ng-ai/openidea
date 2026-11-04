@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { joinPath, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
+import { joinPath, previewLineAtOffset, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
 
 describe("markdown preview rendering", () => {
   it("tags blocks with their source line", () => {
@@ -61,5 +61,19 @@ describe("markdown preview rendering", () => {
     expect(previewOffsetForLine(blocks, 10, 400)).toBe(100);
     expect(previewOffsetForLine(blocks, 10.5, 400)).toBe(250);
     expect(previewOffsetForLine([], 3, 400)).toBe(0);
+  });
+
+  it("finds the block at the top of a scrolled preview", () => {
+    const blocks = [
+      { line: 2, top: 0 },
+      { line: 10, top: 100 },
+      { line: 20, top: 300 },
+    ];
+    expect(previewLineAtOffset(blocks, 0)).toBe(2);
+    expect(previewLineAtOffset(blocks, 99)).toBe(10);
+    expect(previewLineAtOffset(blocks, 299)).toBe(20);
+    expect(previewLineAtOffset(blocks, 250)).toBe(10);
+    expect(previewLineAtOffset(blocks, 5000)).toBe(20);
+    expect(previewLineAtOffset([], 50)).toBe(0);
   });
 });

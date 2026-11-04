@@ -59,7 +59,7 @@ impl ClientHandler {
                         .get("title")
                         .and_then(Value::as_str)
                         .filter(|t| !t.is_empty())
-                        .map(str::to_owned)
+                        .map(ide_core::task::display_title)
                         .unwrap_or_else(|| self.server.name.clone());
                     let task = TaskId::next();
                     let cancel = (cancellable == Some(true)).then(|| self.cancel_handle(task, &params["token"]));
@@ -111,6 +111,10 @@ impl ClientHandler {
     }
 
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
+        // Problems come only from servers used for `diagnostics`.
+        if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
+            return;
+        }
         let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
@@ -228,6 +232,10 @@ impl Handler for ClientHandler {
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 match params.get("type").and_then(Value::as_u64) {
+                    Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
+                        tracing::warn!("[{}] {text}", self.server.name);
+                        mgr.report_import_failure(self.server.root.clone(), text.to_owned());
+                    }
                     Some(1) => tracing::warn!("[{}] {text}", self.server.name),
                     Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
                     _ => tracing::debug!("[{}] {text}", self.server.name),
@@ -236,6 +244,9 @@ impl Handler for ClientHandler {
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
                 mgr.java_import_ready(self.server.clone(), self.generation);
+            }
+            "language/status" if self.server.name == "jdtls" && params["type"] == "ProjectStatus" => {
+                mgr.java_projects_updated(self.server.clone(), self.generation);
             }
             // The Angular server's project loading, shown like `$/progress`; one
             // task while several projects load.

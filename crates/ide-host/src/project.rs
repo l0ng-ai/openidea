@@ -91,7 +91,8 @@ impl Host {
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
         let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
-        let extra_roots = content_roots(&settings.effective(), &root);
+        let build_cache = self.local_data_dir.join("cache").join(project_key(&root)).join("build");
+        let extra_roots = content_roots(&settings.effective(), &root, &build_cache);
         mark("roots");
 
         // The project's own registry: File Types associations may be project-scoped.
@@ -129,6 +130,7 @@ impl Host {
             let root = root.clone();
             let data_dir = self.local_data_dir.clone();
             let config_dir = self.config_dir.clone();
+            let build_cache = self.local_data_dir.join("cache").join(&project_key).join("build");
             let sink = sink.clone();
             let formatter_problem = std::sync::Mutex::new(None);
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
@@ -142,6 +144,15 @@ impl Host {
                 let root = member.as_ref().unwrap_or(&root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                if cfg.name == "jdtls" {
+                    // A workspace member keeps its build model under its own key (Build Project).
+                    let cache = match &member {
+                        Some(member) => build_cache.join(crate::project::project_key(member)),
+                        None => build_cache.clone(),
+                    };
+                    let profiles = ide_build::maven_profiles(&cache);
+                    ide_sdk::maven_profiles::configure_jdtls(cfg, root, &effective, &profiles, &cache);
+                }
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
                     let problem = ide_lsp::jdtls::configure_formatter(
@@ -207,8 +218,10 @@ impl Host {
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
-                let excluded_poms = unlinked_maven_poms(root, &effective);
-                ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms);
+                if cfg.name == "jdtls" {
+                    let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
+                    ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
+                }
             }));
         }
         {
@@ -255,7 +268,7 @@ impl Host {
 
         let kotlin_bridge = crate::kotlin_bridge::KotlinBridge::new(
             root.clone(),
-            self.local_data_dir.join("cache").join(&project_key).join("build"),
+            build_cache.clone(),
             &self.local_data_dir,
             settings.clone(),
             lsp.clone(),
@@ -282,6 +295,7 @@ impl Host {
             let runtime = self.runtime.clone();
             let lsp = lsp.clone();
             let trusted = trusted.clone();
+            let build_cache = build_cache.clone();
             Watcher::start(
                 &root.clone(),
                 excludes.clone(),
@@ -291,6 +305,7 @@ impl Host {
                     index.update(&changed, &batch.removed);
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
+                    lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed);
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&changed);
                     // A framework's root marker (`angular.json`) created or deleted: its
@@ -318,25 +333,45 @@ impl Host {
                             // Detected excluded folders (`target`, `build`) leave the index too.
                             let effective = settings.effective();
                             index.set_scope(
-                                index_roots(&root, content_roots(&effective, &root)),
+                                index_roots(&root, content_roots(&effective, &root, &build_cache)),
                                 exclude_globs(&root, &effective, &fresh),
                             );
                             *detected_roots.write() = fresh;
                             sink.emit(IdeEvent::ProjectRootsChanged { root: root.clone().into() });
                         }
                     }
-                    // A repository was cloned / initialised / removed below the project: its
-                    // `.git/HEAD` (the watcher reports nothing else of `.git`) appeared or went.
+                    // A repository was cloned / initialised / removed below the project:
+                    // its `.git/HEAD` appeared or went. A linked worktree's `.git` is a
+                    // plain gitfile, and that file is the only marker written inside the
+                    // worktree itself, so the `.git` path counts too.
                     let known = repos.read().roots();
-                    let git_dirs = changed.iter().chain(&batch.removed).chain(&batch.vcs).any(|p| {
-                        let Some(dir) = p.ends_with(".git/HEAD").then(|| p.parent().and_then(Path::parent)).flatten()
-                        else {
-                            return false;
+                    let mut git_dirs = changed.iter().chain(&batch.removed).chain(&batch.vcs).any(|p| {
+                        let dir = if p.ends_with(".git/HEAD") {
+                            p.parent().and_then(Path::parent)
+                        } else if p.ends_with(".git") {
+                            p.parent()
+                        } else {
+                            None
                         };
-                        known.iter().any(|r| r == dir) != p.is_file()
+                        let Some(dir) = dir else { return false };
+                        known.iter().any(|r| r == dir) != p.exists()
+                    });
+                    // A linked worktree was registered or unregistered in the main
+                    // gitdir: `git worktree add` / `remove` creates or deletes
+                    // `.git/worktrees/<name>`. Its own gitfile is written before the
+                    // watcher can watch the new directory, so this entry is what
+                    // Linux per-directory watchers see.
+                    git_dirs |= batch.vcs.iter().any(|p| {
+                        let rest: Vec<_> = p
+                            .components()
+                            .skip_while(|c| c.as_os_str() != ".git")
+                            .skip(1) // the `.git` component itself
+                            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                            .collect();
+                        matches!(rest.as_slice(), [first, ..] if first == "worktrees" && rest.len() <= 2)
                     });
                     if git_dirs {
-                        scan_repositories(&root, &repos, &settings, &sink);
+                        scan_repositories(&root, &repos, &settings, &sink, &build_cache);
                     }
                     let vcs_moved = batch.vcs.iter().any(|p| vcs_path_changed(p));
                     if git_dirs || vcs_moved {
@@ -345,6 +380,13 @@ impl Host {
                 }),
             )?
         };
+        if let Some(reason) = watcher.polling() {
+            sink.emit(IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Warning,
+                title: "External file changes sync may be slow".into(),
+                body: Some(reason.into()),
+            });
+        }
 
         // Scratch files live outside the project; watch them too so the
         // Project view and open editors follow changes made there.
@@ -376,9 +418,10 @@ impl Host {
         mark("watcher");
         {
             let (root, repos, settings, sink) = (root.clone(), repos.clone(), settings.clone(), sink.clone());
+            let build_cache = build_cache.clone();
             std::thread::Builder::new()
                 .name("openidea-vcs-roots".into())
-                .spawn(move || scan_repositories(&root, &repos, &settings, &sink))?;
+                .spawn(move || scan_repositories(&root, &repos, &settings, &sink, &build_cache))?;
         }
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
@@ -457,12 +500,14 @@ impl Host {
             ide_agent::AgentPaths {
                 project_root: root.to_path_buf(),
                 store_dir: self.data_dir.join("agents").join(project_key),
-                // Outside the app data dir: its path has spaces on macOS, which trips up build scripts.
-                worktrees_dir: dirs::home_dir()
-                    .unwrap_or_else(|| self.data_dir.clone())
-                    .join(".openidea")
-                    .join("worktrees")
-                    .join(project_key),
+                worktrees_dir: agent_worktrees_dir(root, || {
+                    // Outside the app data dir: its path has spaces on macOS, which trips up build scripts.
+                    dirs::home_dir()
+                        .unwrap_or_else(|| self.data_dir.clone())
+                        .join(".openidea")
+                        .join("worktrees")
+                        .join(project_key)
+                }),
                 models_file: self.data_dir.join("agents").join("models.json"),
                 custom_agents_dir: Some(self.config_dir.join("agents")),
                 home_dir: dirs::home_dir(),
@@ -611,11 +656,17 @@ fn light_watcher(
 
 /// Looks for repositories nested below the project (and the one containing it);
 /// emits `VcsChanged` when the set of roots changed.
-fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStore, sink: &SharedSink) {
+fn scan_repositories(
+    root: &Path,
+    repos: &RwLock<Repos>,
+    settings: &SettingsStore,
+    sink: &SharedSink,
+    build_cache: &Path,
+) {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
     let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root));
+    roots.extend(content_roots(&settings.effective(), root, build_cache));
     match Repos::discover_roots(&roots, &skip) {
         Ok(found) => {
             if found.roots() != repos.read().roots() {
@@ -629,7 +680,7 @@ fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStor
 
 impl Project {
     pub fn refresh_repositories(&self) {
-        scan_repositories(&self.root, &self.repos, &self.settings, &self.sink);
+        scan_repositories(&self.root, &self.repos, &self.settings, &self.sink, &self.build_cache_dir());
     }
 
     /// The project's git repositories.
@@ -682,17 +733,24 @@ impl Project {
         self.with_repo_at(None, f)
     }
 
+    pub(crate) fn with_disk_sync<T>(&self, f: impl FnOnce() -> IdeResult<T>) -> IdeResult<T> {
+        let result = f();
+        // Failed operations can also leave changed files (for example merge conflicts).
+        self.documents.sync_after_disk_change();
+        result
+    }
+
     /// Runs a VCS operation that rewrites the working tree (checkout, merge,
     /// rebase, pull, reset, stash, rollback): Local History gets a label and a
     /// snapshot of every locally changed file before, and a label after.
-    /// `None` runs `f` like [`with_repo`](Self::with_repo) (operations that keep the working tree).
+    /// Clean buffers follow the resulting files before returning; `None` omits the history labels.
     pub fn with_repo_recorded<T>(
         &self,
         at: Option<&Path>,
         operation: Option<&str>,
         f: impl FnOnce(&Repo) -> IdeResult<T>,
     ) -> IdeResult<T> {
-        let Some(name) = operation else { return self.with_repo_at(at, f) };
+        let Some(name) = operation else { return self.with_disk_sync(|| self.with_repo_at(at, f)) };
         self.history_label(&format!("Before {name}"));
         if let Ok(changed) = self.with_repo_at(at, |r| r.status()) {
             for file in changed.iter().take(HISTORY_BATCH_LIMIT) {
@@ -701,7 +759,7 @@ impl Project {
                 }
             }
         }
-        let result = self.with_repo_at(at, f);
+        let result = self.with_disk_sync(|| self.with_repo_at(at, f));
         self.history_label(&format!("After {name}"));
         result
     }
@@ -728,7 +786,8 @@ impl Project {
 
     /// Effective source / test / resource / excluded roots (detected + Project Structure marks).
     pub fn roots(&self) -> ProjectRoots {
-        linked_roots(&self.root, &self.settings.effective(), &self.detected_roots.read())
+        let detected = with_gradle_roots(&self.root, &self.build_cache_dir(), &self.detected_roots.read());
+        linked_roots(&self.root, &self.settings.effective(), &detected)
     }
 
     /// Where the Maven / Gradle tool windows cache what the build tools reported.
@@ -795,7 +854,7 @@ impl Project {
 
     /// Project Structure content roots besides the project folder (existing directories).
     pub fn content_roots(&self) -> Vec<PathBuf> {
-        content_roots(&self.settings.effective(), &self.root)
+        content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir())
     }
 
     /// Applies Settings › File Types; open documents whose language changed are
@@ -881,37 +940,7 @@ impl Project {
 
 /// Applies a multi-file edit through the document layer so open editors update live.
 pub fn apply_workspace_edit(documents: &Documents, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
-    use ide_core::FileEdit;
-    let mut edit = edit.clone();
-    edit.deduplicate();
-    for file in &edit.files {
-        match file {
-            FileEdit::Edit { path, edits } => {
-                // Files not open in an editor are opened transiently and closed again.
-                let (doc, transient) = match documents.by_path(path) {
-                    Some(doc) => (doc, false),
-                    None => (documents.open(path)?.id, true),
-                };
-                let result = documents.apply_edits(doc, edits).and_then(|_| documents.save(doc));
-                if transient {
-                    documents.close(doc);
-                }
-                result?;
-            }
-            FileEdit::Create { path, overwrite } => {
-                if path.exists() {
-                    if *overwrite {
-                        ide_vfs::save_text(path, "", "utf-8", false)?;
-                    }
-                } else {
-                    ide_vfs::create_file(path)?;
-                }
-            }
-            FileEdit::Rename { from, to } => ide_vfs::rename(from, to)?,
-            FileEdit::Delete { path, .. } => ide_vfs::delete(path)?,
-        }
-    }
-    Ok(())
+    documents.apply_workspace_edit(edit)
 }
 
 /// Files the watcher reports per batch that Local History snapshots.
@@ -944,14 +973,15 @@ fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
     ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
 }
 
-/// Workspace members in manifest order, or extra Project Structure directories.
-fn content_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+/// Workspace members in manifest order, or extra Project Structure directories and the
+/// Gradle project folders outside the project as of the last sync (`build_cache`).
+fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         return workspace.projects;
     }
     let mut out: Vec<PathBuf> = Vec::new();
-    for r in &settings.project_structure.content_roots {
-        let p = PathBuf::from(r.trim());
+    let user = settings.project_structure.content_roots.iter().map(|r| PathBuf::from(r.trim()));
+    for p in user.chain(ide_build::gradle_external_roots(root, build_cache)) {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
@@ -990,8 +1020,74 @@ fn content_root_watcher(
     .ok()
 }
 
+/// Where agent tasks create their worktrees: next to the project, `<parent>/<name>.worktrees`,
+/// so they sit on the project's drive and outside its tree (not indexed, watched or shown in
+/// its git status); `fallback` for a project at a filesystem root.
+fn agent_worktrees_dir(root: &Path, fallback: impl FnOnce() -> PathBuf) -> PathBuf {
+    match (root.parent(), root.file_name()) {
+        (Some(parent), Some(name)) => {
+            let mut dir = name.to_os_string();
+            dir.push(".worktrees");
+            parent.join(dir)
+        }
+        _ => fallback(),
+    }
+}
+
 pub(crate) fn unlinked_maven_poms(root: &Path, settings: &ide_core::settings::Settings) -> Vec<PathBuf> {
     ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven).poms().map(PathBuf::from).collect()
+}
+
+/// The unlinked Maven POMs jdtls leaves out, and the build files (`file:` URIs) it is to
+/// import when that takes more than exclusions: an unlinked module of a linked reactor.
+/// Those then include the Gradle build, which jdtls would otherwise find by itself.
+pub(crate) fn jdtls_maven_import(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+) -> (Vec<PathBuf>, Option<Vec<String>>) {
+    let maven = &settings.languages.java.maven;
+    if maven.unlinked_projects.is_empty() {
+        return (Vec::new(), None);
+    }
+    let model = ide_build::maven::load(root);
+    let unlinked = ide_build::maven::UnlinkedProjects::from_model(&model, maven);
+    let excluded = unlinked.poms().map(PathBuf::from).collect();
+    let build_files = unlinked.import_poms(&model).map(|poms| {
+        let gradle = ide_build::gradle::load(root).and_then(|g| {
+            let dir = root.join(&g.dir);
+            let names = ide_build::gradle::SETTINGS_FILES.iter().chain(ide_build::gradle::BUILD_FILES);
+            names.map(|n| dir.join(n)).find(|f| f.is_file())
+        });
+        poms.iter().map(|pom| root.join(pom)).chain(gradle).map(|f| ide_lsp::path_to_uri_string(&f)).collect()
+    });
+    (excluded, build_files)
+}
+
+/// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
+/// static detection guesses. Folders outside the project keep their absolute path, which
+/// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
+fn with_gradle_roots(root: &Path, build_cache: &Path, detected: &[SourceFolder]) -> Vec<SourceFolder> {
+    use ide_build::gradle::ReportedRoot;
+    use ide_workspace::roots::RootKind;
+    let mut out: Vec<SourceFolder> = Vec::new();
+    for (dir, kind) in ide_build::gradle_source_roots(build_cache) {
+        if !dir.is_dir() {
+            continue;
+        }
+        let path = ide_workspace::roots::normalize(&dir.strip_prefix(root).unwrap_or(&dir).to_string_lossy());
+        let kind = match kind {
+            ReportedRoot::Source => RootKind::Source,
+            ReportedRoot::Test => RootKind::Test,
+            ReportedRoot::Resources => RootKind::Resources,
+            ReportedRoot::TestResources => RootKind::TestResources,
+            ReportedRoot::Excluded => RootKind::Excluded,
+        };
+        if !out.iter().any(|f| f.path == path) {
+            out.push(SourceFolder { path, kind, detected_from: Some("Gradle".into()) });
+        }
+    }
+    out.extend(detected.iter().filter(|d| !out.iter().any(|o| o.path == d.path)).cloned().collect::<Vec<_>>());
+    out
 }
 
 fn linked_roots(root: &Path, settings: &ide_core::settings::Settings, detected: &[SourceFolder]) -> ProjectRoots {
@@ -1145,6 +1241,27 @@ pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
 #[cfg(test)]
 mod maven_linkage_tests {
     #[test]
+    fn jdtls_imports_the_linked_modules_and_the_gradle_build_once_a_reactor_module_is_unlinked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (dir, body) in [("", "<modules><module>x</module><module>y</module></modules>"), ("x", ""), ("y", "")] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("pom.xml"), format!("<project>{body}</project>")).unwrap();
+        }
+        std::fs::write(root.join("settings.gradle"), "rootProject.name = 'g'").unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        assert_eq!(super::jdtls_maven_import(root, &settings), (Vec::new(), None));
+        settings.languages.java.maven.unlinked_projects.push("y/pom.xml".into());
+        let (excluded, files) = super::jdtls_maven_import(root, &settings);
+        assert_eq!(excluded, vec![std::path::PathBuf::from("y/pom.xml")]);
+        let uri = |f: &str| ide_lsp::path_to_uri_string(&root.join(f));
+        assert_eq!(files, Some(vec![uri("x/pom.xml"), uri("settings.gradle")]));
+        // The whole reactor unlinked: the import exclusions are enough.
+        settings.languages.java.maven.unlinked_projects = vec!["pom.xml".into()];
+        assert_eq!(super::jdtls_maven_import(root, &settings).1, None);
+    }
+
+    #[test]
     fn unlinked_roots_remain_plain_files() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["a", "b"] {
@@ -1172,7 +1289,7 @@ mod maven_linkage_tests {
             serde_json::json!({"name": "jdtls", "command": "jdtls"}),
         )
         .unwrap();
-        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms);
+        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms, None);
         let options = serde_json::to_value(server.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));
@@ -1193,6 +1310,46 @@ mod maven_linkage_tests {
 
 fn vcs_path_changed(path: &Path) -> bool {
     !path.ends_with(".git/index") || !ide_vcs::is_own_index_write(path)
+}
+
+#[cfg(test)]
+mod gradle_roots_tests {
+    use super::*;
+    use ide_workspace::RootKind;
+
+    #[test]
+    fn gradle_sync_roots_win_and_reach_outside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, svc, cache) = (ws.join("p"), ws.join("svc"), ws.join("cache"));
+        for d in [root.join("src/it/java"), svc.join("src/main/java"), svc.join("build")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(root.clone()), "sourceSets": [
+                { "name": "integrationTest", "test": true, "src": [s(root.join("src/it/java"))], "res": [] } ] },
+            { "path": ":svc", "dir": s(svc.clone()), "buildDir": s(svc.join("build")), "sourceSets": [
+                { "name": "main", "test": false,
+                  "src": [s(svc.join("src/main/java")), s(svc.join("src/main/kotlin"))], "res": [] } ] },
+        ]});
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        let guessed = SourceFolder { path: "src/it/java".into(), kind: RootKind::Source, detected_from: None };
+        let other = SourceFolder { path: "web".into(), kind: RootKind::Source, detected_from: None };
+        let out = with_gradle_roots(&root, &cache, &[guessed, other.clone()]);
+        let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
+        assert_eq!(
+            got,
+            [
+                ("src/it/java".into(), RootKind::Test),
+                (abs(svc.join("src/main/java")), RootKind::Source),
+                (abs(svc.join("build")), RootKind::Excluded),
+                ("web".into(), RootKind::Source),
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1253,11 +1410,29 @@ mod workspace_edit_tests {
         let doc = documents.open(&alias).unwrap();
         let changes = |path: PathBuf| FileEdit::Edit {
             path: path.into(),
+            version: None,
             edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
         };
-        apply_workspace_edit(&documents, &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)] })
-            .unwrap();
+        apply_workspace_edit(
+            &documents,
+            &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)], ..Default::default() },
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
+    }
+}
+
+#[cfg(test)]
+mod agent_worktree_tests {
+    use super::agent_worktrees_dir;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn agent_worktrees_sit_next_to_the_project() {
+        let fallback = || PathBuf::from("/home/me/.openidea/worktrees/key");
+        let project = Path::new("/work").join("acme-api");
+        assert_eq!(agent_worktrees_dir(&project, fallback), Path::new("/work").join("acme-api.worktrees"));
+        assert_eq!(agent_worktrees_dir(Path::new("/"), fallback), fallback());
     }
 }
