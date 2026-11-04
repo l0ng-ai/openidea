@@ -288,11 +288,12 @@ impl Host {
                 sink.clone(),
                 Box::new(move |batch| {
                     let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
-                    index.update(&changed, &batch.removed);
+                    let (ignored, ignored_gone) = ignored_changes(batch);
+                    index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     // Atomic saves by external tools surface as `created`.
-                    documents.on_disk_changed(&changed);
+                    documents.on_disk_changed(&[&changed[..], &ignored].concat());
                     // A framework's root marker (`angular.json`) created or deleted: its
                     // templates gain or lose their mode. Markers in `node_modules` only
                     // count here when the folder isn't excluded (it is by default).
@@ -896,6 +897,11 @@ const HISTORY_BATCH_LIMIT: usize = 500;
 
 /// Local History for changes made outside the IDE (other tools, VCS, deletions).
 /// Contents equal to the last snapshot (e.g. the IDE's own saves) are skipped.
+/// The batch's ignored files (`.env`), split into those still on disk and those removed.
+fn ignored_changes(batch: &ide_vfs::FsBatch) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    batch.ignored.iter().cloned().partition(|p| p.symlink_metadata().is_ok())
+}
+
 fn record_external_changes(history: &LocalHistory, changed: &[PathBuf], removed: &[PathBuf]) {
     for path in changed.iter().take(HISTORY_BATCH_LIMIT) {
         if let Err(e) = history.record_file(path, "External change", false) {
@@ -955,11 +961,12 @@ fn content_root_watcher(
         sink.clone(),
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
-            index.update(&changed, &batch.removed);
+            let (ignored, ignored_gone) = ignored_changes(batch);
+            index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
             if let Some(bridge) = &kotlin_bridge {
                 bridge.files_changed(changed.iter().chain(&batch.removed));
             }
-            documents.on_disk_changed(&changed);
+            documents.on_disk_changed(&[&changed[..], &ignored].concat());
             record_external_changes(&history, &changed, &batch.removed);
         }),
     )

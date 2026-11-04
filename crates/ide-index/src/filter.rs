@@ -1,10 +1,16 @@
 //! Which paths belong in the index: `.gitignore`/`.ignore` rules (via the
 //! `ignore` crate) plus the user's `files.exclude` globs, below the project root
 //! and the extra content roots (Project Structure).
+//!
+//! Like IDEA, ignored directories are left out entirely, while ignored files in
+//! the remaining directories (`.env`) are listed by name only, so Go to File finds
+//! them but their symbols stay out of the index.
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::{WalkBuilder, WalkState};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -57,11 +63,25 @@ fn rel_string(rel: &Path) -> String {
     out
 }
 
+/// Whether `path` below `root` matches the exclude globs.
+fn glob_excluded(excludes: &GlobSet, root: &Path, path: &Path) -> bool {
+    match path.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => {
+            let rel = rel.to_string_lossy();
+            let rel = if std::path::MAIN_SEPARATOR == '/' { rel } else { rel.replace('\\', "/").into() };
+            excludes.is_match(rel.as_ref())
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Found {
     pub path: PathBuf,
     pub mtime: u64,
     pub size: u64,
+    /// Matched by an ignore file: listed by name only.
+    pub ignored: bool,
 }
 
 pub(crate) fn mtime_of(meta: &std::fs::Metadata) -> u64 {
@@ -177,8 +197,9 @@ impl PathFilter {
         ALWAYS_SKIP.contains(&name)
     }
 
-    /// Whether a path reported by the watcher should be ignored (outside the
-    /// root, inside an excluded/ignored directory, or ignored itself).
+    /// Whether a path reported by the watcher should be left out (outside the
+    /// root, excluded, or an ignored directory or inside one). Ignored files
+    /// elsewhere stay in, listed by name only.
     pub(crate) fn is_excluded(&self, path: &Path, is_dir: bool) -> bool {
         let Some((base, _, gitignore)) = self.base_of(path) else { return true };
         let rel = path.strip_prefix(base).map(rel_string).unwrap_or_default();
@@ -198,16 +219,27 @@ impl PathFilter {
                 return true;
             }
         }
-        gitignore.matched_path_or_any_parents(path, is_dir).is_ignore()
+        let dir = if is_dir { Some(path) } else { path.parent().filter(|p| *p != base) };
+        dir.is_some_and(|d| gitignore.matched_path_or_any_parents(d, true).is_ignore())
     }
 
     /// All indexable files at or below `dir`, walked in parallel.
     /// Stops early (returning what was found so far) once `cancel` is set.
     pub(crate) fn walk(&self, dir: &Path, cancel: &AtomicBool) -> Vec<Found> {
+        self.walk_to(dir, None, cancel)
+    }
+
+    /// The indexable files directly in `dir`, classified by the same rules as [`Self::walk`].
+    pub(crate) fn list_dir(&self, dir: &Path) -> Vec<Found> {
+        self.walk_to(dir, Some(1), &AtomicBool::new(false))
+    }
+
+    fn walk_to(&self, dir: &Path, max_depth: Option<usize>, cancel: &AtomicBool) -> Vec<Found> {
         let (tx, rx) = mpsc::channel::<Vec<Found>>();
         let Some((root, _, _)) = self.base_of(dir) else { return Vec::new() };
         let root = root.to_path_buf();
         let excludes = self.excludes.clone();
+        let (walk_root, walk_excludes) = (root.clone(), excludes.clone());
         let walker = WalkBuilder::new(dir)
             .hidden(false)
             .parents(true)
@@ -217,41 +249,63 @@ impl PathFilter {
             .git_exclude(true)
             .require_git(false)
             .follow_links(false)
+            .max_depth(max_depth)
             .filter_entry(move |e| {
                 let name = e.file_name().to_string_lossy();
-                if Self::skip_name(&name) {
-                    return false;
-                }
-                match e.path().strip_prefix(&root) {
-                    Ok(rel) if !rel.as_os_str().is_empty() => {
-                        let rel = rel.to_string_lossy();
-                        let rel = if std::path::MAIN_SEPARATOR == '/' { rel } else { rel.replace('\\', "/").into() };
-                        !excludes.is_match(rel.as_ref())
-                    }
-                    _ => true,
-                }
+                !Self::skip_name(&name) && !glob_excluded(&walk_excludes, &walk_root, e.path())
             })
             .build_parallel();
         walker.run(|| {
+            let (root, excludes) = (&root, &excludes);
             let mut batch = Batch { tx: tx.clone(), items: Vec::with_capacity(256) };
             Box::new(move |entry| {
                 if cancel.load(Ordering::Relaxed) {
                     return WalkState::Quit;
                 }
                 let Ok(entry) = entry else { return WalkState::Continue };
-                if entry.file_type().is_some_and(|t| t.is_file())
+                let Some(file_type) = entry.file_type() else { return WalkState::Continue };
+                if file_type.is_dir() && max_depth.is_none_or(|max| entry.depth() < max) {
+                    // The walker drops ignored files unseen: list every file of a
+                    // walked directory; those the walker doesn't report are ignored.
+                    let Ok(children) = std::fs::read_dir(entry.path()) else { return WalkState::Continue };
+                    for child in children.flatten() {
+                        let path = child.path();
+                        if child.file_type().is_ok_and(|t| t.is_file())
+                            && !Self::skip_name(&child.file_name().to_string_lossy())
+                            && !glob_excluded(excludes, root, &path)
+                            && let Ok(meta) = child.metadata()
+                        {
+                            batch.items.push(Found { path, mtime: mtime_of(&meta), size: meta.len(), ignored: true });
+                        }
+                    }
+                } else if file_type.is_file()
                     && let Ok(meta) = entry.metadata()
                 {
-                    batch.items.push(Found { path: entry.into_path(), mtime: mtime_of(&meta), size: meta.len() });
-                    if batch.items.len() >= 256 && batch.tx.send(std::mem::take(&mut batch.items)).is_err() {
-                        return WalkState::Quit;
-                    }
+                    batch.items.push(Found {
+                        path: entry.into_path(),
+                        mtime: mtime_of(&meta),
+                        size: meta.len(),
+                        ignored: false,
+                    });
+                }
+                if batch.items.len() >= 256 && batch.tx.send(std::mem::take(&mut batch.items)).is_err() {
+                    return WalkState::Quit;
                 }
                 WalkState::Continue
             })
         });
         drop(tx);
-        rx.into_iter().flatten().collect()
+        // Each file comes once from its directory listing and, unless ignored, once from the walker.
+        let mut by_path: HashMap<PathBuf, Found> = HashMap::new();
+        for f in rx.into_iter().flatten() {
+            match by_path.entry(f.path.clone()) {
+                Entry::Occupied(mut e) => e.get_mut().ignored &= f.ignored,
+                Entry::Vacant(e) => {
+                    e.insert(f);
+                }
+            }
+        }
+        by_path.into_values().collect()
     }
 }
 
@@ -309,6 +363,84 @@ mod tests {
         assert!(filter.is_excluded(&root.join(".git/HEAD"), false));
         assert!(filter.is_excluded(Path::new("/elsewhere/x.rs"), false));
         assert!(!filter.is_excluded(&root.join("src/new.rs"), false));
+    }
+
+    #[test]
+    fn ignored_files_are_listed_but_ignored_directories_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        for f in [
+            ".env",
+            "src/a.rs",
+            "src/debug.log",
+            "src/local/secrets.json",
+            "pkg/.gitignore",
+            "pkg/gen.rs",
+            "pkg/keep.rs",
+            "build/out.rs",
+            "build/nested/deep.rs",
+            "logs/app.log",
+            "node_modules/x/.env",
+            "src/.DS_Store",
+            "src/.git",
+        ] {
+            touch(&root, f);
+        }
+        std::fs::write(
+            root.join(".gitignore"),
+            ".env
+*.log
+build/
+logs/
+src/local/
+",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("pkg/.gitignore"),
+            "gen.rs
+",
+        )
+        .unwrap();
+        let filter = PathFilter::new(&root, &vec![].into(), &["**/node_modules".into(), "**/.DS_Store".into()]);
+        let mut found: Vec<(String, bool)> = filter
+            .walk(&root, &AtomicBool::new(false))
+            .iter()
+            .filter_map(|f| Some((filter.rel(&f.path)?, f.ignored)))
+            .collect();
+        found.sort();
+        let expected = [
+            (".env", true),
+            (".gitignore", false),
+            ("pkg/.gitignore", false),
+            ("pkg/gen.rs", true),
+            ("pkg/keep.rs", false),
+            ("src/a.rs", false),
+            ("src/debug.log", true),
+        ];
+        assert_eq!(found, expected.map(|(p, i)| (p.to_owned(), i)));
+
+        // One directory at a time (watcher updates): same classification, no descent.
+        let mut listed: Vec<(String, bool)> =
+            filter.list_dir(&root.join("pkg")).iter().filter_map(|f| Some((filter.rel(&f.path)?, f.ignored))).collect();
+        listed.sort();
+        let expected = [("pkg/.gitignore", false), ("pkg/gen.rs", true), ("pkg/keep.rs", false)];
+        assert_eq!(listed, expected.map(|(p, i)| (p.to_owned(), i)));
+        let top: Vec<String> = filter.list_dir(&root).iter().filter_map(|f| filter.rel(&f.path)).collect();
+        assert!(top.iter().all(|p| !p.contains('/')), "{top:?}");
+
+        for (rel, excluded) in [
+            (".env", false),
+            ("src/new.log", false),
+            ("src/new.rs", false),
+            ("build/x.rs", true),
+            ("logs/app.log", true),
+            ("src/local/x.json", true),
+        ] {
+            assert_eq!(filter.is_excluded(&root.join(rel), false), excluded, "{rel}");
+        }
+        assert!(filter.is_excluded(&root.join("build"), true));
+        assert!(!filter.is_excluded(&root.join("src"), true));
     }
 
     #[test]

@@ -2,13 +2,13 @@
 //! updates queued by the watcher.
 
 use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
-use crate::filter::{Found, PathFilter, mtime_of};
+use crate::filter::{Found, PathFilter};
 use crate::store::Store;
 use ide_core::{IdeEvent, SharedSink, TaskId};
 use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::{Condvar, Mutex, RwLock};
 use rayon::prelude::*;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -233,10 +233,7 @@ impl Shared {
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
         let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
             let d = self.data.read();
-            let todo = found
-                .iter()
-                .filter(|f| d.get(&f.path).is_none_or(|e| e.mtime != f.mtime || e.size != f.size))
-                .collect();
+            let todo = found.iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect();
             let stale = d.paths().filter(|p| !seen.contains(p.as_path())).cloned().collect();
             (todo, stale)
         };
@@ -311,6 +308,7 @@ impl Shared {
                         let mut rec = d.get(&f.path)?.record();
                         rec.mtime = f.mtime;
                         rec.size = f.size;
+                        rec.ignored = f.ignored;
                         Some((rel, rec, f.path.clone()))
                     }
                     Extracted::New(rec) => Some((rel, rec, f.path.clone())),
@@ -342,8 +340,8 @@ impl Shared {
     }
 
     fn extract(&self, f: &Found, prev_hash: Option<[u8; 32]>) -> Extracted {
-        let mut rec = FileRecord { mtime: f.mtime, size: f.size, ..Default::default() };
-        if f.size > MAX_SYMBOL_FILE {
+        let mut rec = FileRecord { mtime: f.mtime, size: f.size, ignored: f.ignored, ..Default::default() };
+        if f.ignored || f.size > MAX_SYMBOL_FILE {
             return Extracted::New(rec);
         }
         let mut bytes = Vec::with_capacity(f.size as usize);
@@ -420,6 +418,7 @@ impl Shared {
 
         let mut files: Vec<Found> = Vec::new();
         let mut seen = HashSet::new();
+        let mut by_dir: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
         for path in changed {
             if !seen.insert(path.clone()) {
                 continue;
@@ -430,16 +429,19 @@ impl Shared {
             }
             if meta.is_dir() {
                 files.extend(filter.walk(&path, &self.cancelled));
-            } else if meta.is_file() {
-                files.push(Found { mtime: mtime_of(&meta), size: meta.len(), path });
+            } else if meta.is_file()
+                && let Some(dir) = path.parent()
+            {
+                by_dir.entry(dir.to_owned()).or_default().insert(path);
             }
+        }
+        // Listing the folder applies every ignore file (nested, global) to tell ignored files apart.
+        for (dir, wanted) in by_dir {
+            files.extend(filter.list_dir(&dir).into_iter().filter(|f| wanted.contains(&f.path)));
         }
         let files: Vec<Found> = {
             let d = self.data.read();
-            files
-                .into_iter()
-                .filter(|f| d.get(&f.path).is_none_or(|e| e.mtime != f.mtime || e.size != f.size))
-                .collect()
+            files.into_iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect()
         };
         if !files.is_empty() {
             touched = true;
@@ -457,7 +459,7 @@ impl Shared {
                     .filter(|p| before.detect(p, None) != self.languages.detect(p, None))
                     .filter_map(|p| {
                         let e = d.get(p)?;
-                        Some(Found { path: p.clone(), mtime: e.mtime, size: e.size })
+                        Some(Found { path: p.clone(), mtime: e.mtime, size: e.size, ignored: e.ignored })
                     })
                     .collect()
             };

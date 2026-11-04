@@ -450,6 +450,13 @@ impl EventFilter {
             && !self.gitignore.is_ignored(path, is_dir)
     }
 
+    /// Whether a filtered-out file is ignored by a rule on the file itself, in a folder
+    /// that is neither excluded nor ignored.
+    fn is_ignored_file(&self, path: &Path, rel: &Path) -> bool {
+        !self.excludes.read().is_excluded(rel)
+            && path.parent().is_some_and(|dir| dir == self.root || !self.gitignore.is_ignored(dir, true))
+    }
+
     fn classify(&self, path: &Path, change: Change, out: &mut BTreeMap<PathBuf, Change>) {
         let rel = match path.strip_prefix(&self.root) {
             Ok(rel) if rel.as_os_str().is_empty() => return,
@@ -561,6 +568,9 @@ impl EventFilter {
                     if change != Change::Modified {
                         excluded_dirs.extend(path.parent().map(Path::to_path_buf));
                     }
+                    if !is_dir && self.is_ignored_file(&path, rel) {
+                        batch.ignored.push(path);
+                    }
                     continue;
                 }
             }
@@ -619,6 +629,7 @@ mod tests {
         assert_eq!(batch.vcs, vec![root.join(".git/HEAD"), root.join(".git/refs/heads/feature")]);
         assert_eq!(batch.modified, vec![root.join("kept.txt")]);
         assert_eq!(batch.removed, vec![root.join("from.txt"), root.join("gone.txt"), root.join("old.txt")]);
+        assert_eq!(batch.ignored, vec![root.join("debug.log")], "ignored files are reported apart");
     }
 
     #[test]
@@ -670,6 +681,20 @@ mod tests {
         ]);
         assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty(), "{batch:?}");
         assert_eq!(batch.excluded_dirs, vec![root.clone(), root.join("dist"), root.join("target/debug")]);
+        assert_eq!(batch.ignored, vec![root.join("debug.log")], "only the ignored file outside ignored folders");
+
+        // An ignored file's edit and removal reach the index too (nothing else changes).
+        let modify = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        let batch = filter.batch(&[ev(modify, vec![root.join("debug.log")])]);
+        assert_eq!(batch.ignored, vec![root.join("debug.log")]);
+        assert!(!batch.is_empty() && batch.excluded_dirs.is_empty());
+        std::fs::remove_file(root.join("debug.log")).unwrap();
+        let batch = filter.batch(&[
+            ev(EventKind::Remove(RemoveKind::File), vec![root.join("debug.log")]),
+            ev(EventKind::Remove(RemoveKind::File), vec![root.join("dist/app.js")]),
+        ]);
+        // A removed path can't tell file from folder: it goes out as a removal, as before.
+        assert_eq!(batch.removed, vec![root.join("debug.log")]);
 
         // Sibling files in unignored directories still come through.
         let batch = filter.batch(&[ev(create_file, vec![root.join("src/main.rs")])]);
@@ -709,6 +734,7 @@ mod tests {
             |paths: &[&str]| -> Vec<DebouncedEvent> { paths.iter().map(|p| ev(modify, vec![root.join(p)])).collect() };
         let (batch, rules) = filter.batch_detailed(&touch(&["pkg/a.tmp", "pkg/gen/x.rs", "pkg/keep.rs", "b.tmp"]));
         assert_eq!(batch.modified, vec![root.join("b.tmp"), root.join("pkg/keep.rs")]);
+        assert_eq!(batch.ignored, vec![root.join("pkg/a.tmp")], "nested rules, but not inside ignored folders");
         assert!(rules.is_empty());
         assert!(!filter.should_watch_dir(&root.join("pkg/gen")));
 
@@ -726,7 +752,8 @@ mod tests {
         std::fs::create_dir_all(root.join(".git/info")).unwrap();
         std::fs::write(root.join(".git/info/exclude"), "b.tmp\n").unwrap();
         let (batch, rules) = filter.batch_detailed(&touch(&[".git/info/exclude", "b.tmp"]));
-        assert!(batch.is_empty(), "{batch:?}");
+        assert!(batch.modified.is_empty() && batch.vcs.is_empty(), "{batch:?}");
+        assert_eq!(batch.ignored, vec![root.join("b.tmp")]);
         assert_eq!(rules, vec![root.clone()]);
     }
 
