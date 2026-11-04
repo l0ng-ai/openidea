@@ -31,7 +31,7 @@ import {
 } from "@codemirror/view";
 import { useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
-import type { EditorDocContext } from "@/editor/api";
+import { problemProviders, type ContributedProblem, type EditorDocContext } from "@/editor/api";
 import { iconNode } from "@/editor/lsp/iconMarkup";
 import type { DbDriver, DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
@@ -124,23 +124,27 @@ const runField = StateField.define<RunState>({
     EditorView.decorations.from(f, (st) => {
       const ranges = [];
       for (const m of st.marks) {
-        if (m.error)
-          ranges.push(
-            Decoration.mark({ class: "cm-openidea-db-error", attributes: { title: m.error } }).range(m.from, m.to),
-          );
+        if (m.error) ranges.push(Decoration.mark({ class: "cm-openidea-db-error" }).range(m.from, m.to));
         if (m.ms !== null)
           ranges.push(Decoration.widget({ widget: new TimingWidget(m.ms), side: 1 }).range(m.timingAt));
       }
       const u = st.unsafe;
-      if (u && u.from < u.to)
-        ranges.push(
-          Decoration.mark({ class: "cm-openidea-db-warning", attributes: { title: u.message } }).range(u.from, u.to),
-        );
+      if (u && u.from < u.to) ranges.push(Decoration.mark({ class: "cm-openidea-db-warning" }).range(u.from, u.to));
       return Decoration.set(ranges, true);
     }),
     showPanel.from(f, (st) =>
       st.unsafe ? unsafeBanner(st.unsafe.message) : st.banner ? errorBanner(st.banner) : null,
     ),
+    // The editor's hover shows the run errors and the unsafe-query warning like other problems.
+    problemProviders.compute([f], (state) => {
+      const st = state.field(f);
+      const problems: ContributedProblem[] = [];
+      for (const m of st.marks)
+        if (m.error && m.from < m.to) problems.push({ from: m.from, to: m.to, severity: "error", message: m.error });
+      const u = st.unsafe;
+      if (u && u.from < u.to) problems.push({ from: u.from, to: u.to, severity: "warning", message: u.message });
+      return () => problems;
+    }),
   ],
 });
 
@@ -172,7 +176,7 @@ class RunMarker extends GutterMarker {
   toDOM() {
     if (this.warning) {
       const el = iconNode("warning", 14, "cm-openidea-db-run-warning");
-      el.title = this.warning;
+      el.dataset.tooltip = this.warning;
       return el;
     }
     const el = iconNode(
@@ -180,7 +184,7 @@ class RunMarker extends GutterMarker {
       14,
       this.error ? "cm-openidea-db-run-error" : "cm-openidea-db-run-ok",
     );
-    el.title = this.error ?? "Executed";
+    el.dataset.tooltip = this.error ?? "Executed";
     return el;
   }
 }
@@ -207,7 +211,7 @@ function errorBanner(message: string) {
     const text = document.createElement("span");
     text.className = "cm-openidea-db-banner-text";
     text.textContent = message;
-    text.title = message;
+    text.dataset.tooltip = message;
     const close = document.createElement("button");
     close.type = "button";
     close.className = "cm-openidea-db-banner-close";
@@ -234,7 +238,7 @@ function unsafeBanner(message: string) {
     const text = document.createElement("span");
     text.className = "cm-openidea-db-banner-text";
     text.textContent = message;
-    text.title = message;
+    text.dataset.tooltip = message;
     const answer = (choice: UnsafeChoice) => unsafeAnswers.get(view)?.(choice);
     const action = (label: string, choice: UnsafeChoice) => {
       const b = document.createElement("button");

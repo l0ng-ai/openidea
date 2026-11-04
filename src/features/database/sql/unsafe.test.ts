@@ -64,6 +64,89 @@ describe("unsafeStatement", () => {
       expect(check(text), text).toBeNull();
   });
 
+  it("flags more constant conditions", () => {
+    for (const where of [
+      "NULL IS NULL",
+      "1 + 1 = 2",
+      "2 * 3 > 5",
+      "(1 + 2) * 2 = 6",
+      "10 / 2 = 5",
+      "1 IN (1, 2)",
+      "3 NOT IN (1, 2)",
+      "'a' IN ('a', 'b')",
+      "2 BETWEEN 1 AND 3",
+      "5 NOT BETWEEN 1 AND 3",
+      "'abc' LIKE 'a%'",
+      "'abc' LIKE '_b_'",
+      "'x' NOT LIKE 'y%'",
+      "'ABC' ILIKE 'abc'",
+      "EXISTS (SELECT 1)",
+      "TRUE = TRUE",
+      "id IS NULL OR id IS NOT NULL",
+      "status = 1 OR t.x IS NOT NULL OR t.x IS NULL",
+      "NOT NOT TRUE",
+      "1 = 1 AND 2 BETWEEN 1 AND 3",
+    ])
+      expect(check(`delete from t where ${where}`), where).toMatchObject({ reason: "always-true" });
+  });
+
+  it("leaves conditions that are not certainly true alone", () => {
+    for (const where of [
+      "NULL = NULL",
+      "NULL IS NOT NULL",
+      "1 IN (2, NULL)",
+      "1 NOT IN (2, NULL)",
+      "id IN (1, 2)",
+      "1 IN (SELECT id FROM u)",
+      "'a' = 'A'",
+      "'a' < 'b'",
+      "'1' = 1",
+      "5 / 2 = 2",
+      "1 / 0 = 1",
+      "'ABC' LIKE 'abc'",
+      "'a_c' LIKE 'a!_c' ESCAPE '!'",
+      "EXISTS (SELECT 1 FROM u)",
+      "EXISTS (SELECT 1 WHERE false)",
+      "id IS NULL OR name IS NOT NULL",
+      "NULL",
+      "0",
+      "id = id",
+      "x BETWEEN 1 AND 3",
+    ])
+      expect(check(`delete from t where ${where}`), where).toBeNull();
+  });
+
+  it("flags statements that drop or clear tables", () => {
+    expect(check("TRUNCATE TABLE t")).toMatchObject({ kind: "truncate", reason: "clears-table" });
+    expect(check("truncate t, u cascade")).toMatchObject({ kind: "truncate" });
+    expect(check("DROP TABLE t")).toMatchObject({ kind: "drop", reason: "drops-table" });
+    expect(check("drop table if exists t")).toMatchObject({ reason: "drops-table" });
+    expect(check("DROP TEMPORARY TABLE t")).toMatchObject({ reason: "drops-table" });
+    expect(check("DROP DATABASE app")).toMatchObject({ reason: "drops-database" });
+    expect(check("DROP SCHEMA s CASCADE")).toMatchObject({ reason: "drops-schema" });
+    expect(check("ALTER TABLE t DROP COLUMN c")).toMatchObject({ kind: "alter", reason: "drops-column" });
+    expect(check("alter table t drop c")).toMatchObject({ reason: "drops-column" });
+    expect(check("ALTER TABLE t ADD x int, DROP COLUMN IF EXISTS c")).toMatchObject({ reason: "drops-column" });
+    const all = check("DROP TABLE t")!;
+    expect([all.from, all.to]).toEqual([0, "DROP TABLE t".length]);
+  });
+
+  it("leaves drops that keep the data alone", () => {
+    for (const text of [
+      "DROP VIEW v",
+      "DROP INDEX i",
+      "DROP FUNCTION f()",
+      "ALTER TABLE t DROP CONSTRAINT c",
+      "ALTER TABLE t ALTER COLUMN c DROP DEFAULT",
+      "ALTER TABLE t ALTER COLUMN c DROP NOT NULL",
+      "ALTER TABLE t DROP PRIMARY KEY",
+      "ALTER TABLE t DROP FOREIGN KEY fk",
+      "ALTER TABLE t ADD COLUMN c int",
+      "ALTER INDEX i RENAME TO j",
+    ])
+      expect(check(text), text).toBeNull();
+  });
+
   it("reads past a WITH clause and comments", () => {
     expect(check("WITH x AS (SELECT 1) DELETE FROM t")).toMatchObject({ kind: "delete", reason: "no-where" });
     expect(check("with x as (select id from u where true) delete from t where id in (select id from x)")).toBeNull();
@@ -84,6 +167,12 @@ describe("unsafeMessage", () => {
     );
     expect(unsafeMessage({ kind: "update", reason: "no-where", from: 0, to: 0 })).toBe(
       "Unsafe query: 'Update' statement without 'where' updates all rows in the table",
+    );
+    expect(unsafeMessage({ kind: "truncate", reason: "clears-table", from: 0, to: 0 })).toBe(
+      "Unsafe query: 'Truncate' statement clears all data in the table",
+    );
+    expect(unsafeMessage({ kind: "drop", reason: "drops-database", from: 0, to: 0 })).toBe(
+      "Unsafe query: 'Drop' statement deletes the database with all its data",
     );
   });
 });
