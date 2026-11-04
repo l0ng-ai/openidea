@@ -44,7 +44,8 @@ The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.0.0`, world
 The `openidea-plugin` tool scaffolds, builds, checks and links plugins:
 
 ```sh
-cargo install --path crates/ide-host --bin openidea-plugin   # or: cargo run -p ide-host --bin openidea-plugin -- …
+cargo install --locked --git https://github.com/l0ng-ai/openidea ide-host --bin openidea-plugin
+# in a checkout of this repository: cargo install --path crates/ide-host --bin openidea-plugin
 
 openidea-plugin new my-plugin                          # Rust command plugin (SDK)
 openidea-plugin new my-theme --template theme          # also: icon-theme, language
@@ -53,6 +54,17 @@ cargo test                                             # logic, against the SDK'
 openidea-plugin build                                  # → dist/plugin.wasm, then `check`
 openidea-plugin link                                   # load this folder in the IDE
 ```
+
+Each release also attaches the tool for Linux x64
+(`openidea-plugin-linux-x86_64.gz`). A plugin is a project of its own: keep it
+in its own repository, and list it in the community marketplace when it is
+ready (§8.1).
+
+A Rust plugin made by `new` depends on the SDK of the tool's release, from
+this repository's tag (`openidea-plugin = { git = "…", tag = "vX.Y.Z" }`);
+change the tag to build against a later API. Inside a checkout of this
+repository, or with `--sdk <path to sdk/rust/openidea-plugin>`, it depends on
+that SDK by path instead.
 
 `build` runs `cargo build --release --target wasm32-wasip2` (installing the
 target through rustup if needed), copies the component to the manifest's
@@ -212,7 +224,7 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-openidea-plugin = { path = "…/sdk/rust/openidea-plugin" }
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", tag = "vX.Y.Z" }   # or { path = "…/sdk/rust/openidea-plugin" }
 
 [profile.release]
 opt-level = "s"
@@ -773,8 +785,19 @@ granted, and starts the approved program.
 - **Project plugins:** put (or symlink) the package in
   `<project>/.openidea/plugins/<name>/`. They load only in trusted projects and
   only after you approve their capabilities.
+- **Where:** installing, removing, enabling, granting and reloading plugins
+  work on the welcome screen and in trusted projects. A project opened in
+  restricted mode can browse the marketplace and show a package's install
+  page, but not change which plugin code runs.
 - Commands appear in Search Everywhere › Actions under their category, and can
   be bound in Settings › Keymap like any other action.
+- **Troubleshooting:** `openidea-plugin check` says why a package would be
+  refused. Settings › Plugins shows each plugin's state, why it failed if it
+  did, and its call stats (§3, _Sandbox and limits_). `host::log` lines go to
+  the IDE log (Help › _Show Log in Finder_ / _Explorer_ / _Files_) tagged with
+  the plugin id; debug and trace lines are written when the IDE is started
+  with `RUST_LOG=info,ide_plugin=trace`. `eprintln!` output is logged as
+  well, and a panic's message is shown with the crash.
 
 ## 8. Distribution
 
