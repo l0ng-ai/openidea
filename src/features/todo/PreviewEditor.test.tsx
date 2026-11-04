@@ -51,6 +51,23 @@ describe("PreviewEditor", () => {
     expect(document.querySelector(".cm-content")?.textContent).toContain("TODO: fix");
   });
 
+  it("moves the caret to another item of the same file without a new view", async () => {
+    const docs = new Map([["/p/two.ts", { text: "// TODO: one\nconst x = 1;\n// TODO: two\n" }]]);
+    stubAttacher(docs);
+    const { rerender } = render(<PreviewEditor path="/p/two.ts" line={0} col={3} fallbackLoad={previewText} />);
+    const content = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>(".cm-content");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    const view = EditorView.findFromDOM(content)!;
+    expect(view.state.selection.main.head).toBe(3);
+    rerender(<PreviewEditor path="/p/two.ts" line={2} col={3} fallbackLoad={previewText} />);
+    expect(EditorView.findFromDOM(document.querySelector<HTMLElement>(".cm-content")!)).toBe(view);
+    expect(view.state.doc.lineAt(view.state.selection.main.head).number).toBe(3);
+    expect(view.state.selection.main.head - view.state.doc.line(3).from).toBe(3);
+  });
+
   it("falls back to the read-only preview for read-only documents", async () => {
     const docs = new Map([["/p/ro.ts", { text: "// TODO\n", readOnly: true }]]);
     const { released } = stubAttacher(docs);

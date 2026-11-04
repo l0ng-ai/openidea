@@ -58,6 +58,7 @@ export function PreviewEditor({
   fallbackLoad: (path: string) => Promise<string>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [readOnly, setReadOnly] = useState(false);
 
@@ -99,6 +100,7 @@ export function PreviewEditor({
           }),
           parent: hostRef.current!,
         });
+        viewRef.current = view;
         // Centre the TODO item; the view starts at its line.
         const at = Math.min(view.state.doc.lines, line + 1);
         const text = view.state.doc.line(at);
@@ -123,6 +125,7 @@ export function PreviewEditor({
     })();
     return () => {
       alive = false;
+      viewRef.current = null;
       view?.destroy();
       setReadOnly(false);
       // Hold dirty buffers (see header); release clean ones.
@@ -133,6 +136,15 @@ export function PreviewEditor({
     };
     // `line`/`col` only place the initial caret; the view itself is per path.
   }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Another item of the same file: move the caret there (the view stays).
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const text = view.state.doc.line(Math.min(view.state.doc.lines, line + 1));
+    const pos = Math.min(text.from + col, text.to);
+    view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+  }, [line, col]);
 
   if (!path || readOnly) return <SourcePreview path={path} line={line} highlights={highlights} load={fallbackLoad} />;
   if (error)
