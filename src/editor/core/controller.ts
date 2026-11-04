@@ -685,7 +685,8 @@ export class EditorController implements SlotHost {
       {
         label: "Copy / Paste Special",
         submenu: [
-          { label: "Copy Path", run: () => void navigator.clipboard?.writeText(slot.model.path) },
+          { kind: "action", action: "editor.copyReference" },
+          { kind: "action", action: "code.pasteAsPlainText" },
           { kind: "action", action: "code.pasteFromHistory" },
         ],
       },
