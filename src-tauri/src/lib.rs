@@ -148,6 +148,7 @@ pub fn run() {
         if let Ok(cwd) = std::env::current_dir()
             && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
         {
+            windows::remember_cli_position(&windows, &std::env::args().collect::<Vec<_>>(), &path);
             windows.set_launch("main", windows::path_launch(path));
         }
         let menu_state = menu::MenuState::default();

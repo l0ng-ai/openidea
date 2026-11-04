@@ -774,6 +774,8 @@ export const commands = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -3336,6 +3338,13 @@ export type FileMove = {
 	to: IpcPath,
 };
 
+/**  A caret position for a file opened from the command line: 0-based line and column. */
+export type FilePosition = {
+	path: IpcPath,
+	line: number,
+	column: number,
+};
+
 /**  What the editor needs to know before choosing a viewer for a file. */
 export type FileProbe = {
 	size: number,
@@ -4398,6 +4407,8 @@ export type Launch = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
 };
 
 export type LaunchConfig = {
