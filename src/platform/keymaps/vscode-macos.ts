@@ -291,6 +291,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.showMessageHistory": [],
   "vcs.update": [],
   "vcs.rollback": [],
+  "vcs.addToVcs": [],
   "vcs.showDiff": [],
   "vcs.nextChange": ["Alt+F5"],
   "vcs.prevChange": ["Alt+Shift+F5"],
