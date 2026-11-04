@@ -19,6 +19,7 @@ import type {
   PruneTarget,
   RequestId,
 } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 
@@ -292,24 +293,32 @@ async function guarded(connId: string, title: string, run: () => Promise<unknown
 }
 
 export function containerOp(connId: string, ids: string[], op: ContainerOp): Promise<boolean> {
-  const verb = { start: "start", stop: "stop", restart: "restart", pause: "pause", unpause: "unpause", kill: "kill" }[
-    op
-  ];
-  return guarded(connId, `Could not ${verb} container`, () =>
-    call(commands.dockerContainerOp(endpointOf(connId), ids, op)),
-  );
+  const failure = {
+    start: tx("Could not start container"),
+    stop: tx("Could not stop container"),
+    restart: tx("Could not restart container"),
+    pause: tx("Could not pause container"),
+    unpause: tx("Could not unpause container"),
+    kill: tx("Could not kill container"),
+  }[op];
+  return guarded(connId, failure, () => call(commands.dockerContainerOp(endpointOf(connId), ids, op)));
 }
 
 export function removeObjects(connId: string, object: DockerObject, ids: string[], force: boolean): Promise<boolean> {
-  return guarded(connId, `Could not remove ${object}`, () =>
-    call(commands.dockerRemove(endpointOf(connId), object, ids, force)),
-  );
+  const failure = {
+    container: tx("Could not remove container"),
+    image: tx("Could not remove image"),
+    volume: tx("Could not remove volume"),
+    network: tx("Could not remove network"),
+  }[object];
+  return guarded(connId, failure, () => call(commands.dockerRemove(endpointOf(connId), object, ids, force)));
 }
 
 /** Runs a streaming operation, showing its latest output line in the view's banner. */
 async function task(
   connId: string,
   title: string,
+  failure: string,
   run: (request: RequestId, out: Channel<string>) => Promise<unknown>,
 ): Promise<boolean> {
   if (useServices.getState().task) {
@@ -330,7 +339,7 @@ async function task(
   };
   useServices.setState({ task: { title, line: "", request } });
   try {
-    return await guarded(connId, title.replace(/…$/, "") + " failed", () => run(request, out));
+    return await guarded(connId, failure, () => run(request, out));
   } finally {
     useServices.setState({ task: null });
     if (last)
@@ -350,15 +359,38 @@ export function cancelTask() {
 }
 
 export const pullImage = (connId: string, reference: string) =>
-  task(connId, `Pulling ${reference}…`, (r, out) => call(commands.dockerPull(r, endpointOf(connId), reference, out)));
-
-export const prune = (connId: string, target: PruneTarget) =>
-  task(connId, `Pruning ${target === "allImages" ? "unused images" : target}…`, (r, out) =>
-    call(commands.dockerPrune(r, endpointOf(connId), target, out)),
+  task(connId, `Pulling ${reference}…`, tx`Could not pull ${reference}`, (r, out) =>
+    call(commands.dockerPull(r, endpointOf(connId), reference, out)),
   );
 
+export function prune(connId: string, target: PruneTarget) {
+  const title = {
+    containers: tx("Pruning stopped containers…"),
+    images: tx("Pruning dangling images…"),
+    allImages: tx("Pruning unused images…"),
+    volumes: tx("Pruning unused volumes…"),
+    networks: tx("Pruning unused networks…"),
+    system: tx("Pruning the system…"),
+  }[target];
+  return task(connId, title, tx("Could not prune"), (r, out) =>
+    call(commands.dockerPrune(r, endpointOf(connId), target, out)),
+  );
+}
+
 export function composeOp(connId: string, project: string, files: string[], workingDir: string | null, op: ComposeOp) {
-  return task(connId, `Compose ${op} ${project}…`, (r, out) =>
+  const { title, failure } = {
+    start: { title: tx`Starting Compose project ${project}…`, failure: tx`Could not start Compose project ${project}` },
+    stop: { title: tx`Stopping Compose project ${project}…`, failure: tx`Could not stop Compose project ${project}` },
+    restart: {
+      title: tx`Restarting Compose project ${project}…`,
+      failure: tx`Could not restart Compose project ${project}`,
+    },
+    down: {
+      title: tx`Taking down Compose project ${project}…`,
+      failure: tx`Could not take down Compose project ${project}`,
+    },
+  }[op];
+  return task(connId, title, failure, (r, out) =>
     call(commands.dockerComposeOp(r, endpointOf(connId), project, files, workingDir, op, out)),
   );
 }

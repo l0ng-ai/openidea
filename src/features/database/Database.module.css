@@ -292,7 +292,9 @@
 
 /* Inline statement errors in consoles. */
 :global(.cm-openidea-db-error) {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-underline-offset: 3px;
 }
 
@@ -624,9 +626,6 @@
   background: transparent;
   color: var(--fg-secondary);
   cursor: pointer;
-}
-:global(.cm-openidea-db-banner-close:hover) {
-  background: var(--bg-hover);
 }
 
 /* Parameter info in `VALUES (…)`. */
@@ -1258,4 +1257,19 @@
   content: "";
   flex: none;
   width: 2px;
+}
+
+/* Wrap large values instead of laying megabytes out as one line. */
+.largeCellEditor {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: min(60vh, 480px);
+  padding: 8px;
+  font: inherit;
+  color: inherit;
+  background: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: vertical;
 }

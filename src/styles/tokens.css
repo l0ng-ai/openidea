@@ -18,6 +18,13 @@ html {
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --splash-logo-size: 56px;
+  --splash-bar-width: 120px;
+  --splash-bar-height: 2px;
+  --splash-gap: 14px;
+  --splash-offset: 38px;
+  --splash-progress-duration: 4s;
+  --splash-progress-easing: cubic-bezier(0.1, 0.7, 0.3, 1);
   /* surfaces */
   --bg-app: #191a1c;
   --bg-elev: #212326;
@@ -314,6 +321,8 @@ html {
   --bg-tree-selected: #2a4371;
   --bg-tree-selected-inactive: #33353b;
   --bg-tree-hover: #ffffff10;
+  /* IDEA's "Tests" file colour (FileColor.Green), derived so every theme gets a matching tint. */
+  --bg-file-tests: color-mix(in srgb, var(--success) 14%, var(--bg-island));
   --bg-list-selected: var(--bg-tree-selected);
   --bg-toolbar-hover: #ffffff17;
   --bg-toolbar-pressed: #ffffff29;

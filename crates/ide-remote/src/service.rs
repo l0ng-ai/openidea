@@ -2,7 +2,7 @@
 //! Shared by IPC commands and project save/delete hooks.
 
 use crate::deploy::{Deployment, SyncEntry, SyncStep, TransferReport};
-use crate::mapping::{Excludes, Mappings};
+use crate::mapping::{Excludes, Mappings, ResolvedMapping};
 use crate::target::{RemoteRuns, RemoteStart, SyncFn};
 use ide_core::remote_settings::{AutoUpload, DeploymentServer, DeploymentType, RunTarget};
 use ide_core::settings::Settings;
@@ -33,6 +33,13 @@ pub struct DeployedPath {
     pub server: String,
     pub remote_path: String,
     pub web_url: Option<String>,
+}
+
+/// Resolved root and project mappings of the Remote Host browser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DeploymentRoot {
+    pub root: String,
+    pub mappings: Vec<ResolvedMapping>,
 }
 
 pub struct RemoteService {
@@ -214,6 +221,18 @@ impl RemoteService {
         let r = fs.resolve(&server.root_path).await;
         fs.close().await;
         r
+    }
+
+    pub async fn server_info(
+        &self,
+        settings: &Settings,
+        project_root: Option<&Path>,
+        server_id: &str,
+    ) -> IdeResult<DeploymentRoot> {
+        let root = self.server_root(settings, server_id).await?;
+        let server = server(settings, Some(server_id))?;
+        let mappings = project_root.map(|p| Mappings::new(&server, p, &root).resolved()).unwrap_or_default();
+        Ok(DeploymentRoot { root, mappings })
     }
 
     pub async fn list(&self, connection: &FsConnection, path: &str) -> IdeResult<Vec<RemoteEntry>> {

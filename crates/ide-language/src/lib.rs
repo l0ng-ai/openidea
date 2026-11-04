@@ -8,16 +8,20 @@ use ide_core::{LanguageId, Range, SymbolKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 mod markers;
+pub mod plugin_point;
 mod registry;
 mod syntax;
 pub use markers::marked_root;
+pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
-    CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, FileReference, Literal, LiteralKind, MAX_CACHED_TREES,
-    MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion, Syntax, SyntaxCache, SyntaxCacheStats,
-    SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference, WebReferenceKind, merge_visibility,
+    CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken,
+    FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion,
+    Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference,
+    WebReferenceKind, merge_visibility, set_external_syntax,
 };
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
@@ -127,6 +131,16 @@ pub struct LanguageServerConfig {
     /// basedpyright): only used while none of those is installed.
     #[serde(default)]
     pub fallback: bool,
+    /// What the server is used for (`completion`, `code-action`, `diagnostics`,
+    /// … `FEATURES` in `ide-lsp/src/caps.rs`); empty means everything. The other
+    /// capabilities it announces are ignored, so a refactoring-only server next
+    /// to the language's own one adds no completion, hover or formatting.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Code action kinds kept from the server, matched like LSP's `only`
+    /// (`refactor` keeps `refactor.extract`); empty keeps every kind.
+    #[serde(default)]
+    pub code_action_kinds: Vec<String>,
     /// Newest Java release the server runs on (kotlin-language-server: 21). A
     /// newer `JAVA_HOME` is replaced by the newest installed JDK that fits.
     #[serde(default)]
@@ -138,6 +152,9 @@ pub struct LanguageServerConfig {
     /// Register source files with tsserver when no project configuration exists.
     #[serde(default)]
     pub tsserver_project: bool,
+    /// Set on plugin languages: start exactly this approved program.
+    #[serde(skip)]
+    pub pinned: Option<ProgramPin>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,6 +174,41 @@ pub struct DebuggerConfig {
     pub connect: Option<String>,
     #[serde(default)]
     pub install_hint: Option<String>,
+    /// Set on plugin languages: start exactly this approved program.
+    #[serde(skip)]
+    pub pinned: Option<ProgramPin>,
+}
+
+/// The program a plugin's `process:` grant approved:
+/// a plugin language's server or debug adapter starts from this exact path,
+/// and only while the file still has the approved content. Set by the plugin
+/// host, never read from a definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgramPin {
+    pub path: PathBuf,
+    /// blake3 of the file when approved.
+    pub hash: String,
+}
+
+impl ProgramPin {
+    /// Approves `path` as it is now.
+    pub fn approve(path: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let path = path.into();
+        let hash = ide_extension::ledger::file_hash(&path)?;
+        Ok(Self { path, hash })
+    }
+
+    /// Checks the file right before it is started; the error tells the user what to do.
+    pub fn verify(&self) -> Result<&Path, String> {
+        match ide_extension::ledger::file_hash(&self.path) {
+            Ok(hash) if hash == self.hash => Ok(&self.path),
+            Ok(_) => Err(format!(
+                "{} changed since it was approved; review the plugin's permissions in Settings › Plugins",
+                self.path.display()
+            )),
+            Err(e) => Err(format!("{}: {e}", self.path.display())),
+        }
+    }
 }
 
 fn default_transport() -> String {

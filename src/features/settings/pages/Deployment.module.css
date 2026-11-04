@@ -123,8 +123,15 @@
 .mappingTable tbody tr.selectedRow {
   background: var(--bg-tree-selected);
 }
+.cellField {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .cellInput {
   width: 100%;
+  min-width: 0;
+  flex: 1;
 }
 
 /* Remote folder chooser. */

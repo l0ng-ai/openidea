@@ -6,6 +6,9 @@
  */
 import { useEditorRegistry } from "@/editor/api";
 import { basename, useProject } from "@/platform/project";
+import { useT } from "@/platform/i18n";
+import { ProgressBar } from "@/ui";
+import projectMark from "../../src-tauri/icons/source/openidea-mark.svg";
 import { useDistractionFree } from "./distractionFree";
 import { EditorArea } from "./EditorArea";
 import { OverlayHost } from "./OverlayHost";
@@ -37,11 +40,33 @@ function LightEditFrame() {
   );
 }
 
+function ProjectOpening({ path }: { path: string }) {
+  const t = useT();
+  const label = t("app.project.opening", { name: basename(path) });
+  return (
+    <div className={styles.opening} data-project-opening>
+      <TitleBar bare />
+      <div className={styles.openingBody} role="status" aria-label={label}>
+        <div className={styles.openingBrand} aria-hidden="true">
+          <img className={styles.openingLogo} src={projectMark} alt="" draggable={false} />
+          <span>OpenIDEA</span>
+        </div>
+        <ProgressBar className={styles.openingProgress} aria-label={label} />
+        <div className={styles.openingTitle}>{label}</div>
+        <div className={styles.openingPath} title={path}>
+          {path}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Workbench() {
   useApplyTheme();
   const banners = useContributions((s) => s.workbenchBanners);
   const project = useProject((s) => s.project);
   const lightEdit = useProject((s) => s.lightEdit);
+  const openingPath = useProject((s) => s.openingPath);
   const root = project?.root ?? null;
   const distractionFree = useDistractionFree((s) => s.active);
   const frame = project ? styles.framed : lightEdit ? styles.lightEditFrame : undefined;
@@ -51,22 +76,25 @@ export function Workbench() {
       className={frame ? `${styles.workbench} ${frame}` : styles.workbench}
       style={project ? projectColorVars(project.name) : undefined}
     >
-      {project ? (
-        <>
-          {/* Distraction Free Mode keeps the bar for the traffic lights and window dragging only. */}
-          <TitleBar bare={distractionFree} />
-          {!distractionFree && <WindowGroupTabs />}
-          {[...banners.values()].map(({ id, component: Banner }) => (
-            <Banner key={id} />
-          ))}
-          <ToolWindowLayout key={root} editor={<EditorArea />} />
-          {!distractionFree && <StatusBar />}
-        </>
-      ) : lightEdit ? (
-        <LightEditFrame />
-      ) : (
-        <Welcome />
-      )}
+      <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
+        {project ? (
+          <>
+            {/* Distraction Free Mode keeps the bar for the traffic lights and window dragging only. */}
+            <TitleBar bare={distractionFree} />
+            {!distractionFree && <WindowGroupTabs />}
+            {[...banners.values()].map(({ id, component: Banner }) => (
+              <Banner key={id} />
+            ))}
+            <ToolWindowLayout key={root} editor={<EditorArea />} />
+            {!distractionFree && <StatusBar />}
+          </>
+        ) : lightEdit ? (
+          <LightEditFrame />
+        ) : (
+          <Welcome />
+        )}
+      </div>
+      {openingPath && <ProjectOpening path={openingPath} />}
       <OverlayHost />
       <WindowResizeHandles />
     </div>

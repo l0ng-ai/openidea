@@ -1,0 +1,14 @@
+{
+  "properties": {
+    "ignoreCase": {
+      "type": "boolean",
+      "title": "Ignore case by default",
+      "default": false
+    },
+    "multiLine": {
+      "type": "boolean",
+      "title": "^ and $ match at line breaks by default",
+      "default": true
+    }
+  }
+}

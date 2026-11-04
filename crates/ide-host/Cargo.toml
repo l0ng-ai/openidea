@@ -30,15 +30,24 @@ ide-terminal.workspace = true
 ide-run.workspace = true
 ide-sdk.workspace = true
 ide-http.workspace = true
+reqwest.workspace = true
+ignore.workspace = true
+base64.workspace = true
+getrandom = "0.3"
+globset.workspace = true
 ide-db.workspace = true
 ide-ssh.workspace = true
 ide-remote.workspace = true
 ide-jsonrpc.workspace = true
 ide-agent.workspace = true
 ide-notebook.workspace = true
+ide-extension.workspace = true
+ide-plugin.workspace = true
 ide-tools = { path = "../ide-tools" }
+ide-docker = { path = "../ide-docker" }
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
@@ -53,9 +62,15 @@ tempfile.workspace = true
 [dev-dependencies]
 ide-ssh = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
+criterion = { version = "0.5", default-features = false }
+zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["fs", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[[bench]]
+name = "plugins"
+harness = false

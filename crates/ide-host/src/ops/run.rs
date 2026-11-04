@@ -62,13 +62,76 @@ fn detected_and_saved(
     all
 }
 
+/// Saves the user configurations. They come from [`configs`], toolchains applied, so what
+/// settings derived is dropped again: only the user's own choices reach `run.toml`.
 pub fn save_configs(
     host: &Host,
     window: &str,
     configs: &[RunConfig],
     removed_detected_ids: &[String],
 ) -> IdeResult<()> {
-    ide_run::save_user_configs_with_removals(&host.project(window)?.root, configs, removed_detected_ids)
+    let project = host.project(window)?;
+    let settings = project.settings.effective();
+    let configs: Vec<RunConfig> = configs
+        .iter()
+        .map(|c| match c.kind.as_str() {
+            "gradle" => c.clone(),
+            _ => ide_sdk::apply::without_derived(c, &project.root, &settings),
+        })
+        .collect();
+    ide_run::save_user_configs_with_removals(&project.root, &configs, removed_detected_ids)
+}
+
+/// The project `config` runs in (a workspace member, by its working directory) and its settings.
+fn settings_for(
+    host: &Host,
+    project: &crate::project::Project,
+    config: &RunConfig,
+) -> IdeResult<(std::path::PathBuf, ide_core::settings::Settings)> {
+    let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|workspace| {
+        let cwd = config.cwd.as_deref()?;
+        workspace.projects.into_iter().filter(|root| cwd.starts_with(root)).max_by_key(|root| root.components().count())
+    });
+    Ok(match member {
+        Some(root) => {
+            let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&root)).effective();
+            (root, settings)
+        }
+        None => (project.root.clone(), project.settings.effective()),
+    })
+}
+
+/// Temporary configurations as they are kept between sessions: without what settings derived
+/// (toolchain commands, Maven options, `JAVA_HOME`…), so they follow later settings changes.
+pub fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    configs
+        .into_iter()
+        .map(|c| {
+            if c.kind == "gradle" {
+                return Ok(c);
+            }
+            let (root, settings) = settings_for(host, &project, &c)?;
+            Ok(ide_sdk::apply::without_derived(&c, &root, &settings))
+        })
+        .collect()
+}
+
+/// Kept temporary configurations with today's settings applied, as [`configs`] lists the others.
+pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    configs
+        .into_iter()
+        .map(|mut c| {
+            if c.kind != "gradle" {
+                let (root, settings) = settings_for(host, &project, &c)?;
+                ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut c), &root, &settings);
+            }
+            Ok(c)
+        })
+        .collect()
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
@@ -89,15 +152,8 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
             .run(&settings, &project.root, &config, project.sink.clone(), Box::new(move |c| out(c)))
             .await;
     }
-    let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|workspace| {
-        let cwd = config.cwd.as_deref()?;
-        workspace.projects.into_iter().filter(|root| cwd.starts_with(root)).max_by_key(|root| root.components().count())
-    });
-    let root = member.as_ref().unwrap_or(&project.root);
-    let settings = match &member {
-        Some(root) => ide_workspace::SettingsStore::load(&host.config_dir, Some(root)).effective(),
-        None => project.settings.effective(),
-    };
+    let (root, settings) = settings_for(host, &project, &config)?;
+    let root = &root;
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     let mut config = config;
     if matches!(config.kind.as_str(), "gradle" | "tomcat") {
@@ -136,7 +192,7 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
-        python_paths: if member.is_some() { vec![root.clone()] } else { super::python::paths(&project) },
+        python_paths: if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) },
     };
     project.require_trust()?;
     let mut sink = project.sink.clone();

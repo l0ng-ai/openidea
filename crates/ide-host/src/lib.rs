@@ -1,6 +1,6 @@
 //! The IDE backend without a UI toolkit: open projects per window, terminals,
 //! processes, settings and the remote services. The desktop shell (`src-tauri`)
-//! wraps one [`Host`] and adds windows, menus and plugins; `openidea-server`
+//! wraps one [`Host`] and adds windows and menus; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod data_dirs;
@@ -10,6 +10,7 @@ mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;
 pub mod ops;
+pub mod plugins;
 mod project;
 mod proxy;
 mod requests;
@@ -131,6 +132,17 @@ impl Host {
     /// The tree-sitter grammars (blocks only if start-up warm-up is still running).
     pub fn syntax(&self) -> Arc<Syntax> {
         self.syntax.get_or_init(|| Arc::new(Syntax::new())).clone()
+    }
+
+    /// Plugin languages or the servers they may start changed (they are part
+    /// of [`Self::languages`] and every project's fork): open documents are
+    /// detected again and language servers follow their new configuration.
+    pub fn plugin_languages_changed(&self) {
+        for project in self.projects() {
+            project.documents.redetect_languages();
+            let lsp = project.lsp.clone();
+            self.runtime.spawn(async move { lsp.reconfigure().await });
+        }
     }
 
     /// Every open project (all windows).

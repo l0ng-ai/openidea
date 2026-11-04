@@ -245,7 +245,8 @@ struct RawPom {
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
     profiles: Vec<RawProfile>,
-    /// `<build><plugins>` `maven-compiler-plugin` `<release>` / `<source>`.
+    /// `maven-compiler-plugin` `<release>` / `<source>` of `<build><plugins>`, else of
+    /// `<pluginManagement>`.
     compiler_release: Option<String>,
 }
 
@@ -300,6 +301,16 @@ fn read_build(e: &Element, plugins: &mut Vec<RawPlugin>, managed: &mut Vec<RawPl
     managed.extend(e.list("build/pluginManagement/plugins", "plugin").into_iter().filter_map(read_plugin));
 }
 
+/// `maven-compiler-plugin` `<release>` / `<source>` among the plugins at `path`.
+fn compiler_level(project: &Element, path: &str) -> Option<String> {
+    project
+        .list(path, "plugin")
+        .into_iter()
+        .find(|p| p.text_of("artifactId").as_deref() == Some("maven-compiler-plugin"))
+        .and_then(|p| p.child("configuration"))
+        .and_then(|c| c.text_of("release").or_else(|| c.text_of("source")))
+}
+
 fn read_raw(project: &Element) -> RawPom {
     let parent = project.child("parent").and_then(|p| {
         Some(ParentRef {
@@ -328,13 +339,8 @@ fn read_raw(project: &Element) -> RawPom {
         ..RawPom::default()
     };
     read_build(project, &mut pom.plugins, &mut pom.managed_plugins);
-    if let Some(c) = pom.plugins.iter().position(|p| p.artifact_id == "maven-compiler-plugin") {
-        let plugin =
-            project.list("build/plugins", "plugin").into_iter().filter(|p| p.text_of("artifactId").is_some()).nth(c);
-        if let Some(cfg) = plugin.and_then(|p| p.child("configuration")) {
-            pom.compiler_release = cfg.text_of("release").or_else(|| cfg.text_of("source"));
-        }
-    }
+    pom.compiler_release =
+        compiler_level(project, "build/plugins").or_else(|| compiler_level(project, "build/pluginManagement/plugins"));
     for p in project.list("profiles", "profile") {
         let mut profile = RawProfile {
             id: p.text_of("id").unwrap_or_else(|| "default".into()),
@@ -411,6 +417,9 @@ struct Inherited {
     managed: Vec<RawDep>,
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
+    /// The nearest `maven-compiler-plugin` `<release>` / `<source>`: a module usually
+    /// inherits its compiler level from the parent's (managed) plugin configuration.
+    compiler_release: Option<String>,
     /// `<id>`, `activeByDefault`: profiles of the POM and its ancestors —
     /// Maven lets a child enable a parent's profiles with `-P`.
     profiles: Vec<(String, bool)>,
@@ -451,6 +460,8 @@ const MAX_PARENT_DEPTH: usize = 10;
 
 struct Resolver {
     local_repo: Option<PathBuf>,
+    /// The chosen profiles (`-P` entries; `!id` / `-id` deactivates).
+    profiles: Vec<String>,
     poms: HashMap<PathBuf, Option<RawPom>>,
     contexts: HashMap<PathBuf, Inherited>,
 }
@@ -475,8 +486,16 @@ pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
 }
 
 impl Resolver {
-    fn new(local_repo: Option<PathBuf>) -> Self {
-        Self { local_repo, poms: HashMap::new(), contexts: HashMap::new() }
+    fn new(local_repo: Option<PathBuf>, profiles: &[String]) -> Self {
+        Self { local_repo, profiles: profiles.to_vec(), poms: HashMap::new(), contexts: HashMap::new() }
+    }
+
+    /// The active profiles of a POM: the chosen ones, and the `activeByDefault` ones not turned
+    /// off while none of the POM's other profiles is chosen (Maven's rule).
+    fn active<'a>(&self, profiles: &'a [RawProfile]) -> impl Iterator<Item = &'a RawProfile> {
+        let chosen = |id: &str| profile_choice(&self.profiles, id);
+        let any_chosen = profiles.iter().any(|p| chosen(&p.id) == Some(true));
+        profiles.iter().filter(move |p| chosen(&p.id).unwrap_or(p.active_by_default && !any_chosen))
     }
 
     fn pom(&mut self, path: &Path) -> Option<RawPom> {
@@ -538,7 +557,10 @@ impl Resolver {
         merge_by(&mut ctx.deps, &pom.deps, RawDep::key);
         merge_plugins(&mut ctx.plugins, &pom.plugins);
         merge_plugins(&mut ctx.managed_plugins, &pom.managed_plugins);
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        if pom.compiler_release.is_some() {
+            ctx.compiler_release = pom.compiler_release.clone();
+        }
+        for p in self.active(&pom.profiles) {
             merge_by(&mut ctx.properties, &p.properties, |(k, _)| k.clone());
             merge_by(&mut ctx.deps, &p.deps, RawDep::key);
             merge_plugins(&mut ctx.plugins, &p.plugins);
@@ -654,7 +676,7 @@ pub(crate) fn launch_inputs(
         }
         Some(())
     }
-    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo));
+    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo), &[]);
     let mut out = Vec::new();
     for project in projects {
         let dir = root.join(&project.dir);
@@ -966,13 +988,19 @@ fn rel_path(root: &Path, p: &Path) -> String {
 }
 
 /// The POMs that are not modules of another one: the root `pom.xml`, else the
-/// shallowest `pom.xml` of each branch (a folder holding several builds).
+/// shallowest `pom.xml` of each branch (a folder holding several builds). An
+/// aggregate POM directly inside `src/` counts too (issue #1001: `src/pom.xml`
+/// with its modules beside it, `src/app/pom.xml` and so on).
 fn top_level_poms(root: &Path) -> Vec<PathBuf> {
     let top = root.join("pom.xml");
     if top.is_file() {
         return vec![top];
     }
     let mut out = Vec::new();
+    let src_pom = root.join("src").join("pom.xml");
+    if src_pom.is_file() {
+        out.push(src_pom);
+    }
     let mut queue: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = queue.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -986,9 +1014,16 @@ fn top_level_poms(root: &Path) -> Vec<PathBuf> {
         }
         dirs.sort();
         for d in dirs.into_iter().rev() {
-            if d.join("pom.xml").is_file() {
-                out.push(d.join("pom.xml"));
-            } else if depth + 1 < POM_SEARCH_DEPTH {
+            let pom = d.join("pom.xml");
+            if pom.is_file() {
+                out.push(pom);
+                continue;
+            }
+            let src_pom = d.join("src").join("pom.xml");
+            if src_pom.is_file() {
+                out.push(src_pom);
+            }
+            if depth + 1 < POM_SEARCH_DEPTH {
                 queue.push((d, depth + 1));
             }
         }
@@ -1030,8 +1065,32 @@ pub fn load(root: &Path) -> MavenModel {
     load_with_repo(root, default_local_repo())
 }
 
+/// [`load`] with the chosen `profiles` (`-P` entries; `!id` deactivates): their modules,
+/// dependencies and properties are part of the model, those turned off are not.
+pub fn load_with_profiles(root: &Path, profiles: &[String]) -> MavenModel {
+    load_with(root, default_local_repo(), profiles)
+}
+
 pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenModel {
-    let mut resolver = Resolver::new(local_repo);
+    load_with(root, local_repo, &[])
+}
+
+/// The `-P` entries' choice for profile `id`: on, off (`!id` / `-id`), or none (the last wins).
+fn profile_choice(chosen: &[String], id: &str) -> Option<bool> {
+    chosen.iter().rev().find_map(|c| {
+        let c = c.trim();
+        if c == id {
+            Some(true)
+        } else if c.strip_prefix('!').or_else(|| c.strip_prefix('-')) == Some(id) {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn load_with(root: &Path, local_repo: Option<PathBuf>, profiles: &[String]) -> MavenModel {
+    let mut resolver = Resolver::new(local_repo, profiles);
     let mut model = MavenModel::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     // (pom, aggregated)
@@ -1051,7 +1110,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
         let i = |s: &str| interpolate(s, &props);
 
         let mut module_names: Vec<String> = pom.modules.clone();
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        for p in resolver.active(&pom.profiles) {
             module_names.extend(p.modules.iter().cloned());
         }
         let mut modules: Vec<PathBuf> = Vec::new();
@@ -1110,7 +1169,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
         let jv = ["maven.compiler.release", "java.version", "maven.compiler.source", "maven.compiler.target"]
             .iter()
             .find_map(|k| props.get(*k).map(|v| i(v)))
-            .or_else(|| pom.compiler_release.as_deref().map(i))
+            .or_else(|| ctx.compiler_release.as_deref().map(i))
             .and_then(|v| java_version(&v));
 
         // The project can activate the profiles of its own POM and its ancestors'.
@@ -1181,6 +1240,40 @@ impl UnlinkedProjects {
 
     pub fn poms(&self) -> impl Iterator<Item = &str> {
         self.poms.iter().map(String::as_str)
+    }
+
+    /// The POMs the Java language server should import when an unlinked POM is a module of a
+    /// linked reactor, else `None` (excluding the unlinked directories is enough then).
+    ///
+    /// jdtls imports an aggregator together with all of its modules, whatever its import
+    /// exclusions say, so a reactor keeping an unlinked module is left out; its other linked
+    /// modules are listed on their own. Such an aggregator (`pom` packaging) has no sources.
+    pub fn import_poms(&self, model: &MavenModel) -> Option<Vec<String>> {
+        let linked: Vec<&MavenProject> = model.projects.iter().filter(|p| !self.contains(&p.pom)).collect();
+        if !linked.iter().any(|p| p.modules.iter().any(|m| self.contains(m))) {
+            return None;
+        }
+        let by_pom: std::collections::HashMap<String, &MavenProject> =
+            model.projects.iter().map(|p| (normalized_pom(&p.pom), p)).collect();
+        // Whether `pom`'s module tree reaches an unlinked POM.
+        let reaches_unlinked = |pom: &str| {
+            let mut seen = std::collections::HashSet::new();
+            let mut pending = vec![normalized_pom(pom)];
+            while let Some(pom) = pending.pop() {
+                if !seen.insert(pom.clone()) {
+                    continue;
+                }
+                let Some(project) = by_pom.get(&pom) else { continue };
+                for module in &project.modules {
+                    if self.contains(module) {
+                        return true;
+                    }
+                    pending.push(normalized_pom(module));
+                }
+            }
+            false
+        };
+        Some(linked.into_iter().filter(|p| !reaches_unlinked(&p.pom)).map(|p| normalized_pom(&p.pom)).collect())
     }
 
     pub fn filter(&self, model: &mut MavenModel) {
@@ -1512,6 +1605,52 @@ mod tests {
     }
 
     #[test]
+    fn modules_inherit_the_compiler_level_of_the_parent_plugin_configuration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let parent = |build: &str| {
+            format!(
+                r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+                  <modules><module>core</module><module>app</module></modules>
+                  <properties><jdk>17</jdk></properties>{build}</project>"#
+            )
+        };
+        let child = |name: &str, build: &str| {
+            format!(
+                r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent>
+                  <artifactId>{name}</artifactId>{build}</project>"#
+            )
+        };
+        let compiler = |level: &str| {
+            format!(
+                "<plugin><artifactId>maven-compiler-plugin</artifactId><configuration><source>{level}</source></configuration></plugin>"
+            )
+        };
+        let versions = |model: &MavenModel| -> Vec<(String, Option<u32>)> {
+            model.projects.iter().map(|p| (p.pom.clone(), p.java_version)).collect()
+        };
+        let app_build = format!("<build><plugins>{}</plugins></build>", compiler("21"));
+        write(root, "core/pom.xml", &child("core", ""));
+        write(root, "app/pom.xml", &child("app", &app_build));
+        for build in [
+            format!("<build><pluginManagement><plugins>{}</plugins></pluginManagement></build>", compiler("${jdk}")),
+            format!("<build><plugins>{}</plugins></build>", compiler("1.8")),
+        ] {
+            write(root, "pom.xml", &parent(&build));
+            let expected = if build.contains("1.8") { 8 } else { 17 };
+            assert_eq!(
+                versions(&load_with_repo(root, None)),
+                [
+                    ("pom.xml".to_owned(), Some(expected)),
+                    ("core/pom.xml".to_owned(), Some(expected)),
+                    ("app/pom.xml".to_owned(), Some(21)),
+                ],
+                "{build}"
+            );
+        }
+    }
+
+    #[test]
     fn multi_module_parent_properties_and_managed_versions() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1592,6 +1731,52 @@ mod tests {
         assert_eq!(parent.profiles, ["dev", "extra"]);
         assert_eq!(core.profiles, ["dev", "extra"], "a module inherits its parent's profiles");
         assert!(model.projects.iter().all(|p| p.command == if cfg!(windows) { "mvn.cmd" } else { "mvn" }));
+    }
+
+    #[test]
+    fn chosen_profiles_bring_their_modules_and_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+              <modules><module>core</module></modules>
+              <profiles>
+                <profile><id>flink-1.17</id><activation><activeByDefault>true</activeByDefault></activation>
+                  <modules><module>flink-1.17</module></modules></profile>
+                <profile><id>flink-1.20</id><modules><module>flink-1.20</module></modules>
+                  <dependencies><dependency><groupId>org.apache.flink</groupId><artifactId>flink-core</artifactId><version>1.20.0</version></dependency></dependencies>
+                </profile>
+              </profiles>
+            </project>"#,
+        );
+        for m in ["core", "flink-1.17", "flink-1.20"] {
+            write(
+                root,
+                &format!("{m}/pom.xml"),
+                &format!(
+                    "<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent><artifactId>{m}</artifactId></project>"
+                ),
+            );
+        }
+        let dirs = |m: &MavenModel| m.projects.iter().map(|p| p.dir.clone()).collect::<Vec<_>>();
+        let flink = |m: &MavenModel, dir: &str| {
+            m.projects.iter().find(|p| p.dir == dir).unwrap().dependencies.iter().any(|d| d.artifact_id == "flink-core")
+        };
+
+        let default = load_with(root, None, &[]);
+        assert_eq!(dirs(&default), ["", "core", "flink-1.17"]);
+        assert!(!flink(&default, "core"));
+
+        // Choosing another profile of the POM turns its activeByDefault one off (as `-P` does).
+        let chosen = load_with(root, None, &["flink-1.20".into()]);
+        assert_eq!(dirs(&chosen), ["", "core", "flink-1.20"]);
+        assert!(flink(&chosen, "core"), "a module inherits the chosen profile's dependencies");
+
+        let both = load_with(root, None, &["flink-1.20".into(), "flink-1.17".into()]);
+        assert_eq!(dirs(&both), ["", "core", "flink-1.17", "flink-1.20"]);
+        assert_eq!(dirs(&load_with(root, None, &["!flink-1.17".into()])), ["", "core"]);
     }
 
     #[test]
@@ -1704,6 +1889,25 @@ mod tests {
         assert_eq!(names, ["a", "b"]);
         assert!(is_maven_project(root));
         assert!(!is_maven_project(&root.join("c")));
+    }
+
+    #[test]
+    fn aggregate_pom_in_src_is_a_build() {
+        // Issue #1001: `src/pom.xml` aggregating modules under `src/` is recognized,
+        // with its modules loaded — while `src` stays unsearched otherwise.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "src/pom.xml",
+            "<project><groupId>g</groupId><artifactId>parent</artifactId><packaging>pom</packaging>\
+             <modules><module>app</module></modules></project>",
+        );
+        write(root, "src/app/pom.xml", "<project><groupId>g</groupId><artifactId>app</artifactId></project>");
+        let model = load_with_repo(root, None);
+        let names: Vec<&str> = model.projects.iter().map(|p| p.artifact_id.as_str()).collect();
+        assert_eq!(names, ["parent", "app"]);
+        assert!(is_maven_project(root));
     }
 
     #[test]
@@ -1902,5 +2106,52 @@ mod linkage_tests {
         let mut restored = original.clone();
         UnlinkedProjects::from_model(&original, &MavenSettings::default()).filter(&mut restored);
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn language_server_imports_reactor_modules_individually_once_one_is_unlinked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // r ─┬─ x
+        //    ├─ y ─┬─ y/y1
+        //    │     └─ y/y2
+        //    └─ z          other/ is a separate root.
+        for (dir, modules) in [
+            ("r", "<modules><module>x</module><module>y</module><module>z</module></modules>"),
+            ("r/x", ""),
+            ("r/y", "<modules><module>y1</module><module>y2</module></modules>"),
+            ("r/y/y1", ""),
+            ("r/y/y2", ""),
+            ("r/z", ""),
+            ("other", ""),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(
+                root.join(dir).join("pom.xml"),
+                format!("<project><artifactId>{dir}</artifactId>{modules}</project>"),
+            )
+            .unwrap();
+        }
+        let model = load_with_repo(root, None);
+        let cases: [(&[&str], Option<&[&str]>); 5] = [
+            // Nothing unlinked, or whole roots: the import exclusions do it.
+            (&[], None),
+            (&["other/pom.xml"], None),
+            (&["r/pom.xml"], None),
+            // A module of a linked reactor: every other linked POM, minus the aggregators above it.
+            (&["r/y/y1/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/y/y2/pom.xml", "r/z/pom.xml"])),
+            (&["./r/y/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/z/pom.xml"])),
+        ];
+        for (unlinked, expected) in cases {
+            let settings = MavenSettings {
+                unlinked_projects: unlinked.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            };
+            let mut poms = UnlinkedProjects::from_model(&model, &settings).import_poms(&model);
+            if let Some(poms) = &mut poms {
+                poms.sort();
+            }
+            assert_eq!(poms, expected.map(|e| e.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{unlinked:?}");
+        }
     }
 }

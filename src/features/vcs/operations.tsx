@@ -21,6 +21,7 @@ import { ComparisonTree } from "./ComparisonTree";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
+import { repositoryPath } from "./repositoryPaths";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -164,7 +165,7 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
     {
       progress,
       success,
-      failure: `${controlLabel(op, control)} failed`,
+      failure: tx`${controlLabel(op, control)} failed`,
       onError: control === "abort" ? undefined : conflictsInstead,
     },
   );
@@ -178,24 +179,22 @@ export function OperationBanner() {
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const busy = useVcs((s) => s.remoteBusy);
   const op = inProgress(branch?.operation);
-  if (!op) return null;
+  // Conflicts need a notice with no operation in progress too (applying a stash leaves them).
+  if (!op && !conflicts) return null;
+  const count = conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`;
   return (
-    <div className={styles.banner} role="status" aria-label={tx(IN_PROGRESS[op])}>
+    <div className={styles.banner} role="status" aria-label={tx(op ? IN_PROGRESS[op] : "Merge conflicts")}>
       <Icon name={conflicts ? "warning" : "branch"} size={14} />
       <span className={styles.bannerText}>
-        {operationTitle(op, branch?.head ?? null)}
-        {conflicts
-          ? ` · ${conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`}`
-          : op === "merge"
-            ? tx(" · commit to conclude")
-            : ""}
+        {op ? operationTitle(op, branch?.head ?? null) : tx("Unresolved merge conflicts")}
+        {conflicts ? ` · ${count}` : op === "merge" ? tx(" · commit to conclude") : ""}
       </span>
       {conflicts > 0 && (
         <button type="button" className={styles.linkButton} onClick={() => void executeAction("vcs.resolveConflicts")}>
           <T>Resolve…</T>
         </button>
       )}
-      {operationControls(op).map((c) => (
+      {(op ? operationControls(op) : []).map((c) => (
         <button
           key={c}
           type="button"
@@ -242,8 +241,8 @@ export async function cherryPick(commits: Commit[]) {
     { op: "cherryPick", commits: ordered.map((c) => c.id) },
     {
       progress: "Cherry-picking",
-      success: `Cherry-picked ${label}`,
-      failure: "Cherry-pick failed",
+      success: tx`Cherry-picked ${label}`,
+      failure: tx("Cherry-pick failed"),
       onError: conflictsInstead,
     },
     commitRepo(commits[0]!) ?? currentRepo(),
@@ -257,7 +256,7 @@ export async function revertCommits(commits: Commit[]) {
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
   await runGitOperation(
     { op: "revert", commits: ordered.map((c) => c.id) },
-    { progress: "Reverting", success: `Reverted ${label}`, failure: "Revert failed", onError: conflictsInstead },
+    { progress: "Reverting", success: tx`Reverted ${label}`, failure: tx("Revert failed"), onError: conflictsInstead },
     commitRepo(commits[0]!) ?? currentRepo(),
   );
 }
@@ -295,8 +294,8 @@ function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void
       { op: "reset", commit: rev, mode },
       {
         progress: "Resetting",
-        success: `Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
-        failure: "Reset failed",
+        success: tx`Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
+        failure: tx("Reset failed"),
       },
       repo,
     );
@@ -375,8 +374,8 @@ export async function newTagOn(commit: Commit) {
   });
   if (!r) return;
   const create = () => call(commands.vcsCreateTag(repo, r.value, commit.id, null, false));
-  const ok = await runOp(`Create tag ${r.value}`, create, {
-    success: `Created tag ${r.value} on ${short(commit.id)}`,
+  const ok = await runOp(tx`Create tag ${r.value}`, create, {
+    success: tx`Created tag ${r.value} on ${short(commit.id)}`,
   });
   // Tags are not part of the refs signature that reloads the log.
   if (ok !== undefined) void reloadLog();
@@ -403,9 +402,9 @@ function TagDialog({ onClose }: { onClose: () => void }) {
     onClose();
     const tag = name.trim();
     const ok = await runOp(
-      `Create tag ${tag}`,
+      tx`Create tag ${tag}`,
       () => call(commands.vcsCreateTag(repo, tag, commit.trim() || "HEAD", message || null, force)),
-      { success: `Created tag ${tag}` },
+      { success: tx`Created tag ${tag}` },
     );
     if (ok !== undefined && useGitLog.getState().commits.length) void reloadLog();
   };
@@ -580,7 +579,7 @@ export function ChangesBetweenDialog({
   const diffFor = (f: ComparisonFile): DiffData => {
     const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
     return {
-      path: `${f.root}/${f.path}`,
+      path: repositoryPath(f.root, f.path),
       left:
         f.kind === "added" || f.kind === "untracked"
           ? missing("(does not exist)")
@@ -588,7 +587,7 @@ export function ChangesBetweenDialog({
               type: "rev",
               rev: f.revision,
               label: from.label,
-              path: f.oldPath ? `${f.root}/${f.oldPath}` : undefined,
+              path: f.oldPath ? repositoryPath(f.root, f.oldPath) : undefined,
             },
       right:
         f.kind === "deleted"

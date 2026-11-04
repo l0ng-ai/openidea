@@ -15,6 +15,8 @@ pub struct AppInfo {
     pub version: String,
     pub platform: String,
     pub config_dir: ide_core::IpcPath,
+    /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
+    pub wayland: bool,
 }
 
 pub use ide_host::ops::project::ProjectInfo;
@@ -27,6 +29,10 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
         config_dir: state.config_dir.clone().into(),
+        #[cfg(target_os = "linux")]
+        wayland: crate::linux_window_state::is_wayland(),
+        #[cfg(not(target_os = "linux"))]
+        wayland: false,
     }
 }
 
@@ -120,14 +126,8 @@ pub fn close_project(window: Window, state: State<'_, AppState>) {
 #[specta::specta]
 pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
     state.note_ipc();
-    let mut out: Vec<LanguageInfo> = state.languages.all().iter().map(LanguageInfo::from).collect();
-    // Plugin-contributed languages; built-in definitions win on id clashes.
-    for lang in state.plugins.languages() {
-        if !out.iter().any(|l| l.id == lang.id) {
-            out.push(LanguageInfo::from(&lang));
-        }
-    }
-    out
+    // Includes plugin languages (built-in definitions win on id clashes).
+    state.languages.all().iter().map(LanguageInfo::from).collect()
 }
 
 /// Effective settings for the window's project, or global settings without one.

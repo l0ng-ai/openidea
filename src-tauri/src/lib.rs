@@ -14,6 +14,7 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+mod plugin_web;
 mod remote_dev;
 
 mod state;
@@ -91,6 +92,8 @@ pub fn run() {
     let app = app
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Files of plugins' web views, for their sandboxed frames.
+    let app = app.register_asynchronous_uri_scheme_protocol(plugin_web::SCHEME, plugin_web::handle);
     // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
     #[cfg(debug_assertions)]
     let app = app.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
@@ -145,6 +148,7 @@ pub fn run() {
         if let Ok(cwd) = std::env::current_dir()
             && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
         {
+            windows::remember_cli_position(&windows, &std::env::args().collect::<Vec<_>>(), &path);
             windows.set_launch("main", windows::path_launch(path));
         }
         let menu_state = menu::MenuState::default();

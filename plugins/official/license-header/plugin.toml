@@ -1,0 +1,35 @@
+id = "openidea.license-header"
+name = "License Header"
+version = "0.1.0"
+description = "Keeps a copyright and SPDX license header at the top of source files: files without one are reported when they open, a quick fix adds it, and a project scan lists every file that still needs one."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: missing headers reported on open and save, Add License Header quick fix and command, project scan in the background."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-event:file-opened", "on-event:file-saved", "on-command:*"]
+
+[capabilities]
+required = ["events", "project.read", "editor.read", "editor.write"]
+
+[[contributes.providers]]
+kinds = ["code-actions"]
+languages = ["*"]
+
+[[contributes.commands]]
+id = "add"
+title = "License Header: Add to Current File"
+category = "License Header"
+
+[[contributes.commands]]
+id = "scan"
+title = "License Header: Find Files Without a Header"
+category = "License Header"
+
+[[contributes.menus]]
+menu = "tools"
+command = "scan"
+
+[contributes.settings]
+title = "License Header"
+schema = "settings.schema.json"
