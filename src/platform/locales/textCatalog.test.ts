@@ -180,6 +180,7 @@ const UNTRANSLATED = new Set<string>([
   // Language names, written in their own language
   "English",
   "简体中文 (Chinese, Simplified)",
+  "한국어 (Korean)",
   // Terms, keywords and acronyms kept in English
   "DDL",
   "GOPATH",
@@ -244,6 +245,30 @@ const UNTRANSLATED = new Set<string>([
   "Running processes requires the desktop app.\n",
   "text",
 ]);
+
+/** Per locale: text that reads as in English there (names, code, examples), so it has no entry. */
+const AS_IN_ENGLISH: Record<string, ReadonlySet<string>> = {
+  ko: new Set([
+    "any, rust, typescript…",
+    "docker.io, ghcr.io, registry.example.com:5000",
+    "Go Mod Tidy",
+    "Gradle JVM",
+    "JRE",
+    "LightEdit",
+    "Microsoft SQL Server",
+    "One Dark",
+    "One Light",
+    "Rake",
+    "Raw",
+    "RSpec",
+    "Ruby",
+    "SFTP",
+    "Solarized Dark",
+    "Solarized Light",
+    "SSH: {name}",
+    "URL:",
+  ]),
+};
 
 /**
  * Template literals that reach an exact lookup on purpose: the text around the
@@ -570,7 +595,8 @@ describe.each(Object.keys(catalogs))("source-text catalog %s", (locale) => {
   const catalog = catalogs[locale]!;
   const patterns = templatePatterns(catalog);
   const shapes = new Set(Object.keys(catalog).map(shape));
-  const has = (text: string) => Object.hasOwn(catalog, text);
+  const asInEnglish = AS_IN_ENGLISH[locale] ?? new Set<string>();
+  const has = (text: string) => Object.hasOwn(catalog, text) || asInEnglish.has(text);
   // Placeholders of the source stand for any text, as the runtime values would.
   const matchesTemplate = (text: string) => patterns.some((p) => p.test(text.replace(/\{[^{}]*\}/g, "\u0001")));
   const found = ({ text, match }: Use) =>
