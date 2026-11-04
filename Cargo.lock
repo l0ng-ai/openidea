@@ -4170,7 +4170,7 @@ dependencies = [
 
 [[package]]
 name = "ide-cli"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "dirs 6.0.0",
  "serde",
