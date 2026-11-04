@@ -1,0 +1,41 @@
+id = "openidea.solidity"
+name = "Solidity"
+version = "0.1.0"
+description = "Solidity support: file detection, highlighting, structure view and folding, plus the Solidity language server when it is installed."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: .sol detection, highlighting, structure view, folding; language server via @nomicfoundation/solidity-language-server or solc."
+engines.openidea = "^1.0"
+# Highlighting, structure and folding come from this component; it is loaded
+# when the first Solidity file is opened.
+wasm = "dist/plugin.wasm"
+activation = ["on-language:solidity"]
+
+# The language servers in the definition need `process:` capabilities; they
+# are asked for on install and can be refused (the rest keeps working).
+[[contributes.languages]]
+path = "languages/solidity.toml"
+
+# Offered in Foundry / Hardhat projects once the program is allowed.
+[[contributes.runDetectors]]
+id = "forge-test"
+name = "forge test"
+files = ["foundry.toml"]
+command = "forge"
+args = ["test"]
+test = true
+
+[[contributes.runDetectors]]
+id = "forge-build"
+name = "forge build"
+files = ["foundry.toml"]
+command = "forge"
+args = ["build"]
+
+[[contributes.runDetectors]]
+id = "hardhat-test"
+name = "hardhat test"
+files = ["hardhat.config.ts", "hardhat.config.js"]
+command = "npx"
+args = ["hardhat", "test"]
+test = true

@@ -4,10 +4,21 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { BUILTIN_THEMES, isBuiltinTheme, themeKind, type BuiltinThemeId } from "@/platform/themes";
+import {
+  baseTheme,
+  isThemeChoiceId,
+  parsePluginThemeRef,
+  themeChoices,
+  themeKind,
+  useContributedThemes,
+  type BuiltinThemeId,
+  type ThemeChoice,
+  type ThemeChoiceId,
+} from "@/platform/themes";
 import { resolveTokenColor, toHex } from "@/platform/cssColor";
+import type { SelectOption } from "@/ui";
 
-export type ThemeSetting = BuiltinThemeId | "system";
+export type ThemeSetting = ThemeChoiceId | "system";
 /** PyCharm's brand blue: the accent both Islands themes ship with. */
 export const DEFAULT_ACCENT = "#3871e1";
 /** Accent presets (Settings › Appearance, Welcome › Customize); the first is the Islands default. */
@@ -26,13 +37,13 @@ export const useThemeOverride = create<{ theme: ThemeSetting | null }>(() => ({ 
 const media = () =>
   typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
 
-function subscribeScheme(cb: () => void) {
+export function subscribeScheme(cb: () => void) {
   const m = media();
   m?.addEventListener?.("change", cb);
   return () => m?.removeEventListener?.("change", cb);
 }
 
-const prefersLight = () => !!media()?.matches;
+export const prefersLight = () => !!media()?.matches;
 
 interface AppearanceLike {
   theme?: string;
@@ -42,14 +53,24 @@ interface AppearanceLike {
 }
 
 /**
- * Concrete theme id: the chosen theme, or with "Sync with OS" (legacy
- * `theme = "system"`) the preferred light / dark theme for the OS mode.
+ * The theme in effect as the settings name it: the chosen theme, or with
+ * "Sync with OS" (legacy `theme = "system"`) the preferred light / dark theme
+ * for the OS mode. A plugin theme (`plugin:<id>/<theme>`) is returned as is.
  */
-export function resolveThemeId(a: AppearanceLike | undefined, systemLight: boolean): BuiltinThemeId {
-  const concrete = (v: string | undefined, d: "dark" | "light") => (isBuiltinTheme(v) ? v : d);
+export function resolveThemeChoice(a: AppearanceLike | undefined, systemLight: boolean): ThemeChoiceId {
+  const concrete = (v: string | undefined, d: "dark" | "light") => (isThemeChoiceId(v) ? v : d);
   if (a?.syncWithOs || a?.theme === "system")
     return systemLight ? concrete(a?.preferredLightTheme, "light") : concrete(a?.preferredDarkTheme, "dark");
   return concrete(a?.theme, "light");
+}
+
+/**
+ * Concrete built-in theme id: the one chosen, or the base of a chosen plugin
+ * theme (its light / dark default, which also shows while its plugin is off).
+ */
+export function resolveThemeId(a: AppearanceLike | undefined, systemLight: boolean): BuiltinThemeId {
+  const sync = !!(a?.syncWithOs || a?.theme === "system");
+  return baseTheme(resolveThemeChoice(a, systemLight), sync && !systemLight ? "dark" : "light");
 }
 
 /** `dark-hc` resolves to `dark` plus `data-contrast="high"`. */
@@ -63,6 +84,8 @@ export function useApplyTheme() {
   const appearance = useProject((s) => s.settings?.appearance);
   const override = useThemeOverride((s) => s.theme);
   const systemLight = useSyncExternalStore(subscribeScheme, prefersLight, () => false);
+  // A plugin theme's kind is known once its plugin is live.
+  useContributedThemes((s) => s.themes);
   const id = override
     ? resolveThemeId({ theme: override }, systemLight)
     : resolveThemeId(appearance as AppearanceLike | undefined, systemLight);
@@ -171,15 +194,26 @@ export function currentTheme(): "dark" | "light" {
   return themeKind(currentThemeId());
 }
 
-/** Themes offered by quick switch menus, in IDEA's order. */
-export const THEME_CHOICES = BUILTIN_THEMES;
+/** Themes offered by the theme pickers and quick switch menus: built-in, then plugins'. */
+export function useThemeChoices(): ThemeChoice[] {
+  const contributed = useContributedThemes((s) => s.themes);
+  return themeChoices(contributed);
+}
 
-/** The concrete theme in effect (`dark-hc` kept distinct). */
+/** The concrete built-in theme in effect (`dark-hc` kept distinct; a plugin theme's base). */
 export function currentThemeId(): BuiltinThemeId {
   const override = useThemeOverride.getState().theme;
   return override
     ? resolveThemeId({ theme: override }, prefersLight())
     : resolveThemeId(useProject.getState().settings?.appearance as AppearanceLike | undefined, prefersLight());
+}
+
+/** The theme in effect as selected: built-in or a plugin's. */
+export function currentThemeChoice(): ThemeChoiceId {
+  const override = useThemeOverride.getState().theme;
+  return override
+    ? resolveThemeChoice({ theme: override }, prefersLight())
+    : resolveThemeChoice(useProject.getState().settings?.appearance as AppearanceLike | undefined, prefersLight());
 }
 
 export async function setTheme(next: ThemeSetting) {
@@ -199,4 +233,25 @@ export async function setTheme(next: ThemeSetting) {
 
 export async function toggleTheme() {
   await setTheme(currentTheme() === "dark" ? "light" : "dark");
+}
+
+/** The plugin named beside a contributed theme, unless the theme carries its name already. */
+export function originDetail(t: { label: string; origin?: string }): string | undefined {
+  return t.origin && t.origin !== t.label ? t.origin : undefined;
+}
+
+/**
+ * Options for a theme picker: built-in themes, then plugins' (with the plugin
+ * named beside them). A selected plugin theme whose plugin is off stays listed.
+ */
+export function themeSelectOptions(choices: readonly ThemeChoice[], selected?: string): SelectOption<ThemeChoiceId>[] {
+  const options: SelectOption<ThemeChoiceId>[] = choices.map((c) => ({
+    value: c.id,
+    label: c.label,
+    detail: originDetail(c),
+  }));
+  const missing = parsePluginThemeRef(selected);
+  if (missing && !options.some((o) => o.value === selected))
+    options.push({ value: selected as ThemeChoiceId, label: missing.themeId, detail: "Plugin not enabled" });
+  return options;
 }

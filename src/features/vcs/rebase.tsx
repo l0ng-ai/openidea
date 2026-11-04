@@ -62,8 +62,8 @@ export async function undoCommit(commit: Commit) {
     if (!ok) return;
   }
   const undo = () => call(commands.vcsUndoCommit(repo, commit.id));
-  const message = await runOp(`Undo commit ${short(commit.id)}`, undo, {
-    success: `Undid commit ${short(commit.id)} “${commit.summary}”; its changes are staged`,
+  const message = await runOp(tx`Undo commit ${short(commit.id)}`, undo, {
+    success: tx`Undid commit ${short(commit.id)} “${commit.summary}”; its changes are staged`,
   });
   // IDEA offers the undone message for the next commit.
   if (message !== undefined && !useCommit.getState().message.trim()) useCommit.setState({ message });
@@ -123,7 +123,7 @@ async function runRebase(base: string | null, entries: RebaseEntry[], done: stri
     {
       progress: "Rebasing",
       success: () => (inProgress() === "rebase" ? "Rebase stopped for editing; continue the rebase when done" : done),
-      failure: "Rebase failed",
+      failure: tx("Rebase failed"),
       onError: conflictsInstead,
     },
     repo,

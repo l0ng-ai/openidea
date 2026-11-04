@@ -12,7 +12,7 @@ import { activate as projectTree } from "./project-tree";
 import { activate as search } from "./search";
 import { activate as dependencies } from "./dependencies";
 import { activate as codeInsight } from "./code-insight";
-import { activate as vcs, activateSettingsPages as vcsPages } from "./vcs";
+import { activate as vcs, activateComparisonWindow, activateSettingsPages as vcsPages } from "./vcs";
 import { activate as terminal } from "./terminal";
 import { activate as run } from "./run";
 import { activate as runAnything } from "./run-anything";
@@ -24,8 +24,8 @@ import { activate as buildTools } from "./build-tools";
 import { activate as build } from "./build";
 import { activate as templates, activateSettingsPages as templatesPages } from "./templates";
 import { activate as todo, activateSettingsPages as todoPages } from "./todo";
-import { activate as settings, activateSettingsWindow } from "./settings";
-import { activate as app, activateLocale as appLocale } from "./app";
+import { activate as settings, activateRuntimeSettings, activateSettingsWindow } from "./settings";
+import { activate as app, activateLocale as appLocale, activateMenuBridge, confirmLeave } from "./app";
 import { activate as perf } from "./perf";
 import { activate as plugins, activateSettingsPages as pluginsPages } from "./plugins";
 import { activate as tools, activateSettingsPages as toolsPages } from "./tools";
@@ -90,20 +90,40 @@ const features: Array<[string, Activate]> = [
   ["remote-dev", remoteDev],
 ];
 
-export function activateFeatures(): () => void {
+function activateAll(what: string, list: Array<[string, Activate]>): () => void {
   const disposers: Array<() => void> = [];
-  for (const [name, activate] of features) {
+  for (const [name, activate] of list) {
     try {
       const d = activate();
       if (d) disposers.push(d);
     } catch (e) {
-      console.error(`feature ${name} failed to activate`, e);
+      console.error(`${what} of ${name} failed to activate`, e);
     }
   }
   return () => disposers.reverse().forEach((d) => d());
 }
 
-export { SettingsWindow, settingsWindowParent } from "./settings";
+export function activateFeatures(): () => void {
+  return activateAll("feature", features);
+}
+
+export { SettingsWindow } from "./settings";
+export { ComparisonWindow } from "./vcs";
+
+/**
+ * A comparison window of project window `parent`: the changed files between two revisions and
+ * their diffs, with the editor and Git but no workbench.
+ */
+export function activateComparisonWindowFeatures(parent: string): () => void {
+  return activateAll("comparison window", [
+    ["locale", appLocale],
+    ["settings", activateRuntimeSettings],
+    ["menu", activateMenuBridge],
+    ["editor", editor],
+    ["vcs", vcs],
+    ["comparison", () => activateComparisonWindow(parent, (project) => confirmLeave(undefined, project))],
+  ]);
+}
 
 /**
  * The native Settings window of project window `parent`: only the settings
@@ -122,14 +142,5 @@ export function activateSettingsWindowFeatures(parent: string): () => void {
     ["vim", vimPages],
     ["vcs", vcsPages],
   ];
-  const disposers: Array<() => void> = [];
-  for (const [name, activate] of pages) {
-    try {
-      const d = activate();
-      if (d) disposers.push(d);
-    } catch (e) {
-      console.error(`settings pages of ${name} failed to activate`, e);
-    }
-  }
-  return () => disposers.reverse().forEach((d) => d());
+  return activateAll("settings pages", pages);
 }

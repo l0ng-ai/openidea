@@ -6,9 +6,9 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Settings open in a separate window `settings-<parent>` (one per project
-//! window) that shares its parent's project (see [`AppState::project`]); its
-//! [`Launch::settings_page`] tells it which page to show.
+//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local) belong to a project window and share its project (see
+//! [`AppState::project`]). Their labels name the kind and the parent
+//! (`settings-main`, `comparison-project-2-3`); their [`Launch`] says what to show.
 
 use crate::state::AppState;
 use crate::theme_frame::builtin_frame;
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::utils::config::{Color, WindowConfig};
 use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuilder};
 
@@ -27,11 +27,11 @@ use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuil
 pub const LAUNCH_EVENT: &str = "openidea://launch";
 const MAIN: &str = "main";
 const PREFIX: &str = "project-";
-const SETTINGS_PREFIX: &str = "settings-";
-const DEPLOYMENT_PREFIX: &str = "deployment-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
+const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 
 /// What a freshly opened window should do once its frontend is up.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -48,15 +48,44 @@ pub struct Launch {
     pub settings_page: Option<String>,
     /// Settings windows: edit the global layer only ("Settings for New Projects").
     pub new_projects: bool,
-    /// Deployment comparison window: server and local selection to compare.
-    pub deployment: Option<DeploymentLaunch>,
+    /// Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`).
+    #[serde(default)]
+    pub positions: Vec<FilePosition>,
+    /// Comparison windows: the revisions to compare (boxed: most launches have none).
+    #[serde(default)]
+    pub comparison: Option<Box<ComparisonLaunch>>,
 }
 
+/// A Git revision and how the comparison window names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ComparisonRevision {
+    pub rev: String,
+    pub label: String,
+}
+
+/// Limits a comparison to some paths (Compare with Branch on a selection).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ComparisonScope {
+    pub paths: Vec<ide_core::IpcPath>,
+    pub repositories: Option<Vec<ide_core::IpcPath>>,
+}
+
+/// Files that differ between `from` and `to` (the working tree when `None`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ComparisonLaunch {
+    pub from: ComparisonRevision,
+    pub to: Option<ComparisonRevision>,
+    pub scope: Option<ComparisonScope>,
+    pub repo: Option<ide_core::IpcPath>,
+}
+
+/// A caret position for a file opened from the command line: 0-based line and column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
-pub struct DeploymentLaunch {
-    pub server: String,
-    pub paths: Vec<ide_core::IpcPath>,
+pub struct FilePosition {
+    pub path: ide_core::IpcPath,
+    pub line: u32,
+    pub column: u32,
 }
 
 /// A project folder on the host of an SSH configuration.
@@ -73,6 +102,8 @@ pub struct WindowsState {
     pub groups_restored: AtomicBool,
     pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
+    /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
+    positions: Mutex<HashMap<PathBuf, (u32, u32)>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
@@ -81,6 +112,8 @@ pub struct WindowsState {
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
+    /// Numbers windows of kinds that can open several times per project window.
+    aux_serial: AtomicU64,
 }
 
 impl WindowsState {
@@ -89,7 +122,21 @@ impl WindowsState {
     }
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
-        self.launches.lock().remove(label)
+        let mut launch = self.launches.lock().remove(label)?;
+        let mut positions = self.positions.lock();
+        for file in &launch.files {
+            let path = dunce::canonicalize(&file.0).unwrap_or_else(|_| file.0.clone());
+            if let Some((line, column)) = positions.remove(&path) {
+                launch.positions.push(FilePosition { path: file.clone(), line, column });
+            }
+        }
+        Some(launch)
+    }
+
+    /// The caret goes to `position` (0-based line, column) when a window opens `file`.
+    pub fn set_position(&self, file: &Path, position: (u32, u32)) {
+        let path = dunce::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+        self.positions.lock().insert(path, position);
     }
 
     /// Adds `files` to `label`'s pending launch, so files sent before its frontend took the last batch aren't lost.
@@ -141,45 +188,97 @@ impl WindowsState {
     }
 }
 
-/// The project window a settings window belongs to (`settings-main` → `main`).
-pub fn settings_parent(label: &str) -> Option<&str> {
-    label.strip_prefix(SETTINGS_PREFIX)
+/// A window that belongs to a project window (its parent) and shares its project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuxKind {
+    Settings,
+    Comparison,
 }
 
-pub fn is_settings_window(label: &str) -> bool {
-    settings_parent(label).is_some()
-}
+impl AuxKind {
+    const ALL: [AuxKind; 2] = [AuxKind::Settings, AuxKind::Comparison];
 
-pub fn deployment_parent(label: &str) -> Option<&str> {
-    label.strip_prefix(DEPLOYMENT_PREFIX)
-}
-
-pub fn auxiliary_parent(label: &str) -> Option<&str> {
-    settings_parent(label).or_else(|| deployment_parent(label))
-}
-
-pub fn deployment_label(parent: &str) -> String {
-    format!("{DEPLOYMENT_PREFIX}{parent}")
-}
-
-pub fn close_deployment_window(app: &AppHandle, parent: &str) {
-    if let Some(w) = app.get_webview_window(&deployment_label(parent)) {
-        let _ = w.destroy();
+    /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
+    pub fn name(self) -> &'static str {
+        match self {
+            AuxKind::Settings => "settings",
+            AuxKind::Comparison => "comparison",
+        }
     }
+
+    /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
+    fn multiple(self) -> bool {
+        self == AuxKind::Comparison
+    }
+
+    /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
+    /// and asks about its own unsaved changes before the parent closes it.
+    pub fn shares_documents(self) -> bool {
+        self != AuxKind::Settings
+    }
+
+    /// Modal for its parent: menu items other than app-level ones are dropped.
+    pub fn modal(self) -> bool {
+        self == AuxKind::Settings
+    }
+
+    /// Needs its parent to have a project open.
+    fn needs_project(self) -> bool {
+        self != AuxKind::Settings
+    }
+}
+
+/// The kind and parent of an auxiliary window (`comparison-project-2-3` → `Comparison`, `project-2`).
+pub fn auxiliary(label: &str) -> Option<(AuxKind, &str)> {
+    AuxKind::ALL.into_iter().find_map(|kind| {
+        let rest = label.strip_prefix(kind.name())?.strip_prefix('-')?;
+        let parent = if kind.multiple() {
+            let (parent, n) = rest.rsplit_once('-')?;
+            n.parse::<u64>().ok()?;
+            parent
+        } else {
+            rest
+        };
+        (!parent.is_empty()).then_some((kind, parent))
+    })
+}
+
+/// The project window an auxiliary window belongs to (`settings-main` → `main`).
+pub fn auxiliary_parent(label: &str) -> Option<&str> {
+    auxiliary(label).map(|(_, parent)| parent)
 }
 
 pub fn settings_label(parent: &str) -> String {
-    format!("{SETTINGS_PREFIX}{parent}")
+    format!("{}-{parent}", AuxKind::Settings.name())
 }
 
-/// Closes `parent`'s settings window: it shows (and would apply to) the project the parent is leaving.
-pub fn close_settings_window(app: &AppHandle, parent: &str) {
-    if let Some(w) = app.get_webview_window(&settings_label(parent)) {
-        let _ = w.close();
+/// The window state key: one geometry per auxiliary kind, else the label itself.
+pub fn state_key(label: &str) -> &str {
+    auxiliary(label).map_or(label, |(kind, _)| kind.name())
+}
+
+/// `parent`'s auxiliary windows that show its project's documents.
+pub fn document_windows(app: &AppHandle, parent: &str) -> Vec<String> {
+    app.webview_windows()
+        .into_keys()
+        .filter(|label| auxiliary(label).is_some_and(|(kind, p)| kind.shares_documents() && p == parent))
+        .collect()
+}
+
+/// Closes `parent`'s auxiliary windows: they show (and would apply to) the project it is leaving.
+/// Windows with documents are destroyed: the parent's leave guard has already settled their
+/// unsaved changes (`closeAuxiliaryWindows` in the UI).
+pub fn close_auxiliary_windows(app: &AppHandle, parent: &str) {
+    for (label, window) in app.webview_windows() {
+        match auxiliary(&label) {
+            Some((kind, p)) if p == parent && kind.shares_documents() => drop(window.destroy()),
+            Some((_, p)) if p == parent => drop(window.close()),
+            _ => {}
+        }
     }
 }
 
-/// Project windows (excluding auxiliary windows), for counting and cycling.
+/// Project windows, excluding auxiliary windows, for counting and cycling.
 pub fn project_window_labels(app: &AppHandle) -> Vec<String> {
     sorted_labels(app.webview_windows().keys().map(String::as_str).filter(|l| auxiliary_parent(l).is_none()))
 }
@@ -218,13 +317,50 @@ pub fn cycle_target(sorted: &[String], current: &str, forward: bool) -> Option<S
     Some(sorted[j].clone())
 }
 
+/// Flags followed by a value (`--line 12`).
+const VALUE_FLAGS: [&str; 2] = ["--line", "--column"];
+
 /// The project path from command-line arguments (`openidea /path/to/project`):
-/// the first argument after the binary that is not a flag, resolved against `cwd`.
+/// the first argument after the binary that is not a flag or a flag's value, resolved against `cwd`.
 pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
-    args.iter().skip(1).find(|a| !a.starts_with('-') && !a.is_empty() && !a.starts_with("psn_")).map(|a| {
+    let mut rest = args.iter().skip(1);
+    while let Some(a) = rest.next() {
+        if VALUE_FLAGS.contains(&a.as_str()) {
+            rest.next();
+            continue;
+        }
+        if a.starts_with('-') || a.is_empty() || a.starts_with("psn_") {
+            continue;
+        }
         let p = PathBuf::from(a);
-        if p.is_absolute() { p } else { cwd.join(p) }
-    })
+        return Some(if p.is_absolute() { p } else { cwd.join(p) });
+    }
+    None
+}
+
+/// `--line <n>` and `--column <n>` (1-based, also as `--line=<n>`) as a 0-based position;
+/// without `--line` there is none, without `--column` it is the line's start.
+pub fn cli_position(args: &[String]) -> Option<(u32, u32)> {
+    let value = |flag: &str| {
+        let prefix = format!("{flag}=");
+        args.iter().enumerate().skip(1).find_map(|(i, a)| match a.strip_prefix(&prefix) {
+            Some(v) => Some(v.to_owned()),
+            None if a == flag => args.get(i + 1).cloned(),
+            None => None,
+        })
+    };
+    let number = |flag: &str| value(flag).and_then(|v| v.trim().parse::<u32>().ok());
+    let line = number("--line")?;
+    Some((line.saturating_sub(1), number("--column").unwrap_or(1).saturating_sub(1)))
+}
+
+/// Remembers the command line's `--line` / `--column` for `path` (a file) before it is opened.
+pub fn remember_cli_position(windows: &WindowsState, args: &[String], path: &Path) {
+    if let Some(position) = cli_position(args)
+        && !path.is_dir()
+    {
+        windows.set_position(path, position);
+    }
 }
 
 pub fn focus(window: &WebviewWindow) {
@@ -780,7 +916,10 @@ pub fn path_launch(path: PathBuf) -> Launch {
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     match cli_path(&args, Path::new(&cwd)) {
-        Some(path) => open_path(app, &path),
+        Some(path) => {
+            remember_cli_position(&app.state::<WindowsState>(), &args, &path);
+            open_path(app, &path)
+        }
         None => {
             if let Some(w) = target_window(app) {
                 focus(&w);
@@ -799,57 +938,88 @@ pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
     }
 }
 
-/// Opens or focuses an independent comparison sharing `parent`'s project.
-pub fn open_deployment_window(
-    app: &AppHandle,
-    parent: &WebviewWindow,
-    server: String,
-    paths: Vec<PathBuf>,
-    background: Option<String>,
-) -> IdeResult<()> {
-    let parent_label = AppState::owner_window(parent.label());
-    // Resolve before creating a window, so a stale action cannot compare another project.
-    app.state::<AppState>().project(parent_label)?;
-    let label = deployment_label(parent_label);
-    let launch = Launch {
-        deployment: Some(DeploymentLaunch { server, paths: paths.into_iter().map(Into::into).collect() }),
-        ..Default::default()
+/// An auxiliary window to open over its parent.
+pub struct AuxWindow {
+    pub kind: AuxKind,
+    pub title: &'static str,
+    pub size: (f64, f64),
+    pub min_size: (f64, f64),
+    pub launch: Launch,
+    /// `#rrggbb` painted until the page has loaded (the theme's frame colour).
+    pub background: Option<String>,
+}
+
+/// Opens an auxiliary window of `caller`'s project window, centred over it. A kind with one window
+/// per parent reuses it: the new launch is handed over ([`LAUNCH_EVENT`]) and the window focused.
+pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWindow) -> IdeResult<()> {
+    // Asked from an auxiliary window itself: open it for that window's parent.
+    let parent_label = auxiliary_parent(caller.label()).unwrap_or(caller.label()).to_owned();
+    if aux.kind.needs_project() {
+        let state = app.state::<AppState>();
+        if state.project(&parent_label).is_err() && state.remote_dev.get(&parent_label).is_none() {
+            return Err(IdeError::not_found("no project is open"));
+        }
+    }
+    let windows = app.state::<WindowsState>();
+    let label = if aux.kind.multiple() {
+        format!("{}-{parent_label}-{}", aux.kind.name(), windows.aux_serial.fetch_add(1, Ordering::Relaxed))
+    } else {
+        format!("{}-{parent_label}", aux.kind.name())
     };
-    app.state::<WindowsState>().set_launch(&label, launch);
     if let Some(existing) = app.get_webview_window(&label) {
-        let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
+        if aux.launch != Launch::default() {
+            windows.set_launch(&label, aux.launch);
+            let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
+        }
         focus(&existing);
         return Ok(());
     }
-    let parent = app.get_webview_window(parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
+    let parent = app.get_webview_window(&parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
     let mut config = window_config(app)?;
     config.label = label.clone();
-    config.title = "Deployment Comparison".into();
-    (config.width, config.height) = (1400.0, 900.0);
-    (config.min_width, config.min_height) = (Some(800.0), Some(500.0));
+    config.title = aux.title.into();
+    // Frameless on Windows and Linux like project windows (tauri.<os>.conf.json): the page draws
+    // the title bar in the app theme instead of a system caption that follows the OS theme.
+    (config.width, config.height) = aux.size;
+    (config.min_width, config.min_height) = (Some(aux.min_size.0), Some(aux.min_size.1));
     config.center = false;
     config.visible = false;
     config.maximized = false;
     config.fullscreen = false;
     config.drag_drop_enabled = false;
-    if let Some(color) = background.as_deref().and_then(hex_color) {
+    // Paint the theme's frame colour before the page loads.
+    if let Some(color) = aux.background.as_deref().and_then(hex_color) {
         config.background_color = Some(color);
     }
-    // A top-level native window can move to another monitor and has its own taskbar entry.
-    let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
-        .map_err(|e| IdeError::internal(format!("cannot create deployment window: {e}")))?;
+    windows.set_launch(&label, aux.launch);
+    #[cfg(target_os = "linux")]
+    crate::linux_window_state::prepare(app, &mut config);
+    let builder = WebviewWindowBuilder::from_config(app, &config);
+    // Windows: an owned child (WS_POPUP) of a borderless parent gets no DWM
+    // shadow, leaving the frameless window flat against its parent.
+    // Ownership is tracked by the `<kind>-<parent>` label instead
+    // (parent-close cleanup, menu modality), so only Linux keeps the native
+    // parent link. AppKit child windows can disappear when dragged to another
+    // display's Space, so macOS keeps it too.
+    #[cfg(target_os = "linux")]
+    let builder = builder.and_then(|b| b.parent(&parent));
+    let window = builder.and_then(|b| dev_font_preferences(b).build()).map_err(|e| {
+        windows.forget(&label);
+        IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
+    })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
+    // Restore runs during build; fit its size to the parent's current display before showing.
     #[cfg(target_os = "macos")]
-    let placement = fit_settings_window(&window, &parent);
+    if let Err(e) = fit_over_parent(&window, &parent, aux.min_size) {
+        tracing::warn!("cannot fit {} window: {e}", aux.kind.name());
+    }
     #[cfg(not(target_os = "macos"))]
-    let placement = place_settings_window(&window, &parent);
-    if let Err(e) = placement {
-        tracing::warn!("cannot place deployment window: {e}");
+    if let Err(e) = place_over_parent(&window, &parent) {
+        tracing::warn!("cannot place {} window: {e}", aux.kind.name());
     }
     focus(&window);
     Ok(())
@@ -864,71 +1034,45 @@ pub fn open_settings_window(
     new_projects: bool,
     background: Option<String>,
 ) -> IdeResult<()> {
-    // Asked from a settings window itself: navigate it.
-    let parent_label = settings_parent(parent.label()).unwrap_or(parent.label()).to_owned();
-    let label = settings_label(&parent_label);
-    let windows = app.state::<WindowsState>();
-    if let Some(existing) = app.get_webview_window(&label) {
-        if page.is_some() || new_projects {
-            windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
-            let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
-        }
-        focus(&existing);
-        return Ok(());
-    }
-    let parent = app.get_webview_window(&parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
-    let mut config = window_config(app)?;
-    config.label = label.clone();
-    config.title = "Settings".into();
-    // Frameless on Windows and Linux like project windows (tauri.<os>.conf.json): the page draws
-    // the title bar in the app theme instead of a system caption that follows the OS theme.
-    (config.width, config.height) = SETTINGS_SIZE;
-    (config.min_width, config.min_height) = (Some(SETTINGS_MIN_SIZE.0), Some(SETTINGS_MIN_SIZE.1));
-    config.center = false;
-    config.visible = false;
-    config.maximized = false;
-    config.fullscreen = false;
-    config.drag_drop_enabled = false;
-    // Paint the theme's frame colour before the page loads.
-    if let Some(color) = background.as_deref().and_then(hex_color) {
-        config.background_color = Some(color);
-    }
-    windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
-    #[cfg(target_os = "linux")]
-    crate::linux_window_state::prepare(app, &mut config);
-    let builder = WebviewWindowBuilder::from_config(app, &config);
-    // Windows: an owned child (WS_POPUP) of a borderless parent gets no DWM
-    // shadow, leaving the frameless settings window flat against its parent.
-    // Ownership is tracked by the `settings-<parent>` label instead
-    // (parent-close cleanup, menu modality), so only Linux keeps the native
-    // parent link. AppKit child windows can disappear when dragged to another
-    // display's Space, so macOS keeps it too.
-    #[cfg(target_os = "linux")]
-    let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder
-        .and_then(|b| dev_font_preferences(b).build())
-        .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
-    #[cfg(target_os = "linux")]
-    decorate_csd(&window);
-    apply_zoom(app, &window);
-    #[cfg(target_os = "macos")]
-    align_titlebar(app, &window);
-    // Restore runs during build; fit its size to the parent's current display before showing.
-    #[cfg(target_os = "macos")]
-    if let Err(e) = fit_settings_window(&window, &parent) {
-        tracing::warn!("cannot fit settings window: {e}");
-    }
-    #[cfg(not(target_os = "macos"))]
-    if let Err(e) = place_settings_window(&window, &parent) {
-        tracing::warn!("cannot place settings window: {e}");
-    }
-    focus(&window);
-    Ok(())
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Settings,
+            title: "Settings",
+            size: SETTINGS_SIZE,
+            min_size: SETTINGS_MIN_SIZE,
+            launch: Launch { settings_page: page, new_projects, ..Default::default() },
+            background,
+        },
+    )
+}
+
+/// Opens a window listing the files that differ between two revisions (Compare with Local and
+/// friends), next to its project window like IDEA's diff windows.
+pub fn open_comparison_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    comparison: ComparisonLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Comparison,
+            title: "Compare",
+            size: COMPARISON_SIZE,
+            min_size: COMPARISON_MIN_SIZE,
+            launch: Launch { comparison: Some(Box::new(comparison)), ..Default::default() },
+            background,
+        },
+    )
 }
 
 /// Fit outer bounds, including native decorations, using one monitor's logical coordinate space.
 #[cfg(target_os = "macos")]
-fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+fn fit_over_parent(window: &WebviewWindow, parent: &WebviewWindow, min_size: (f64, f64)) -> tauri::Result<()> {
     let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
         return Ok(());
     };
@@ -951,8 +1095,8 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
     // A small work area takes precedence over the usual minimum window size.
     window.set_min_size(Some(
         tauri::LogicalSize::new(
-            SETTINGS_MIN_SIZE.0.min((available.width - frame.0).max(1.0)),
-            SETTINGS_MIN_SIZE.1.min((available.height - frame.1).max(1.0)),
+            min_size.0.min((available.width - frame.0).max(1.0)),
+            min_size.1.min((available.height - frame.1).max(1.0)),
         )
         .to_physical::<u32>(scale),
     ))?;
@@ -969,7 +1113,7 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
 /// may still be on another display with a different scale, so its size is converted with its own
 /// scale and its position is given in physical pixels.
 #[cfg(not(target_os = "macos"))]
-pub(super) fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
     // Placement setters leave maximized mode. Fit the restored frame, then reapply the saved state.
     // A restored fullscreen window already covers its display and must not be fitted to the work area.
     if window.is_fullscreen()? {
@@ -1154,6 +1298,38 @@ mod tests {
         assert_eq!(cli_path(&s(&["openidea", "/abs/p"]), cwd), Some(PathBuf::from("/abs/p")));
         assert_eq!(cli_path(&s(&["openidea"]), cwd), None);
         assert_eq!(cli_path(&s(&["openidea", "-psn_0_123"]), cwd), None);
+        // A flag's value is not the path.
+        let args = s(&["openidea", "--line", "120", "--column", "8", "src/Main.java"]);
+        assert_eq!(cli_path(&args, cwd), Some(PathBuf::from("/work/src/Main.java")));
+        assert_eq!(
+            cli_path(&s(&["openidea", "--line=3", "a b/文件.rs"]), cwd),
+            Some(PathBuf::from("/work/a b/文件.rs"))
+        );
+    }
+
+    #[test]
+    fn cli_position_is_one_based_on_the_command_line() {
+        assert_eq!(cli_position(&s(&["openidea", "--line", "120", "--column", "8", "f"])), Some((119, 7)));
+        assert_eq!(cli_position(&s(&["openidea", "--line=5", "f"])), Some((4, 0)));
+        assert_eq!(cli_position(&s(&["openidea", "--line", "0", "f"])), Some((0, 0)));
+        assert_eq!(cli_position(&s(&["openidea", "--column", "8", "f"])), None);
+        assert_eq!(cli_position(&s(&["openidea", "--line", "x", "f"])), None);
+        assert_eq!(cli_position(&s(&["openidea", "f"])), None);
+    }
+
+    #[test]
+    fn a_launch_carries_the_positions_of_its_files() {
+        let st = WindowsState::default();
+        let file = std::env::current_exe().unwrap();
+        let other = std::env::temp_dir().join("openidea-not-opened.txt");
+        st.set_position(&file, (11, 4));
+        st.set_position(&other, (1, 0));
+        st.add_files("main", vec![file.clone()]);
+        let launch = st.take_launch("main").unwrap();
+        assert_eq!(launch.positions, vec![FilePosition { path: file.into(), line: 11, column: 4 }]);
+        // Taken once: the next launch of that file opens it where it was.
+        st.add_files("main", vec![std::env::current_exe().unwrap()]);
+        assert!(st.take_launch("main").unwrap().positions.is_empty());
     }
 
     #[test]
@@ -1324,25 +1500,17 @@ mod tests {
     }
 
     #[test]
-    fn settings_windows_map_to_their_parent() {
+    fn auxiliary_windows_map_to_their_parent() {
         assert_eq!(settings_label("project-2"), "settings-project-2");
-        assert_eq!(settings_parent("settings-main"), Some("main"));
-        assert_eq!(settings_parent("main"), None);
-        assert!(is_settings_window("settings-project-1"));
-        assert!(!is_settings_window("project-1"));
-    }
-
-    #[test]
-    fn deployment_comparisons_share_their_own_project_without_becoming_project_windows() {
-        assert_eq!(deployment_label("project-2"), "deployment-project-2");
-        assert_eq!(AppState::owner_window("deployment-project-2"), "project-2");
-        assert_eq!(AppState::owner_window("deployment-main"), "main");
-        let labels = ["deployment-main", "project-2", "main", "settings-main", "deployment-project-2"];
-        assert_eq!(
-            sorted_labels(labels.into_iter().filter(|label| auxiliary_parent(label).is_none())),
-            ["main", "project-2"]
-        );
-        assert!(!is_settings_window("deployment-project-2"));
+        assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
+        assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
+        for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
+            assert_eq!(auxiliary(label), None, "{label}");
+        }
+        assert_eq!(state_key("comparison-main-3"), "comparison");
+        assert_eq!(state_key("project-3"), "project-3");
+        let labels = ["comparison-main-0", "project-2", "main", "settings-main", "comparison-project-2-1"];
+        assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 
     #[test]

@@ -3,14 +3,20 @@ import ReactDOM from "react-dom/client";
 import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
-import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
+import {
+  activateComparisonWindowFeatures,
+  activateFeatures,
+  activateSettingsWindowFeatures,
+  ComparisonWindow,
+  SettingsWindow,
+} from "./features";
+import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
+import { installErrorLogging } from "./platform/errorLog";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
-import { DeploymentWindow, activateDeploymentWindow } from "./features/deployment/window";
-import { deploymentWindowParent } from "./features/deployment/windowBridge";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -20,17 +26,18 @@ if (import.meta.env.DEV && isTauri()) {
 }
 
 installRepeatedDoubleClick();
+installErrorLogging();
 
-// The native Settings window (`settings-<parent>`) loads this page too.
-const settingsParent = settingsWindowParent();
-const deploymentParent = deploymentWindowParent();
+// Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`) load this page too.
+const aux = auxiliaryWindow();
 
-if (deploymentParent !== null) {
+if (aux?.kind === "settings") {
   activateSecondaryWindow();
-  activateDeploymentWindow();
-} else if (settingsParent !== null) {
+  activateSettingsWindowFeatures(aux.parent);
+} else if (aux?.kind === "comparison") {
   activateSecondaryWindow();
-  activateSettingsWindowFeatures(settingsParent);
+  activateComparisonWindowFeatures(aux.parent);
+  installKeyboardDispatcher();
 } else {
   activateWorkbench();
   // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
@@ -51,9 +58,9 @@ if (deploymentParent !== null) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {deploymentParent !== null ? <DeploymentWindow /> : settingsParent !== null ? <SettingsWindow /> : <Workbench />}
+    {aux?.kind === "settings" ? <SettingsWindow /> : aux?.kind === "comparison" ? <ComparisonWindow /> : <Workbench />}
   </React.StrictMode>,
 );
 hideSplash();
 // Views split out of the start-up bundle load in the background once the UI is up.
-if (settingsParent === null && deploymentParent === null) prefetchLazyComponents();
+if (!aux) prefetchLazyComponents();

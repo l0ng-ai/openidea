@@ -735,7 +735,7 @@ export function DiffEditor({
         logConsole("info", "Nothing to stage for this change");
         return;
       }
-      await runOp(`Stage hunk of ${path}`, () => call(commands.vcsStageHunks(path, indices)));
+      await runOp(tx`Stage hunk of ${path}`, () => call(commands.vcsStageHunks(path, indices)));
       await refreshNow();
     } finally {
       setBusy(false);

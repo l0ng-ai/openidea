@@ -4154,8 +4154,11 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "ide-core",
+ "ide-http",
  "ide-ssh",
  "parking_lot",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "specta",
@@ -4166,6 +4169,7 @@ dependencies = [
  "tokio-util",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4179,6 +4183,26 @@ dependencies = [
  "tempfile",
  "tracing",
  "which",
+]
+
+[[package]]
+name = "ide-extension"
+version = "0.1.35"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "ed25519-dalek",
+ "ide-core",
+ "parking_lot",
+ "semver",
+ "serde",
+ "serde_json",
+ "specta",
+ "specta-typescript",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "zip",
 ]
 
 [[package]]
@@ -4210,9 +4234,13 @@ dependencies = [
 name = "ide-host"
 version = "0.1.35"
 dependencies = [
+ "base64 0.22.1",
+ "criterion",
  "dirs 6.0.0",
  "dunce",
  "encoding_rs",
+ "getrandom 0.3.4",
+ "globset",
  "ide-agent",
  "ide-analysis",
  "ide-build",
@@ -4220,12 +4248,15 @@ dependencies = [
  "ide-coverage",
  "ide-dap",
  "ide-db",
+ "ide-docker",
+ "ide-extension",
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
  "ide-notebook",
+ "ide-plugin",
  "ide-remote",
  "ide-run",
  "ide-sdk",
@@ -4239,7 +4270,9 @@ dependencies = [
  "ide-vcs",
  "ide-vfs",
  "ide-workspace",
+ "ignore",
  "parking_lot",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
@@ -4247,10 +4280,12 @@ dependencies = [
  "specta-typescript",
  "tempfile",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -4316,6 +4351,7 @@ dependencies = [
  "blake3",
  "criterion",
  "ide-core",
+ "ide-extension",
  "ide-text",
  "parking_lot",
  "regex-lite",
@@ -4417,19 +4453,20 @@ dependencies = [
 name = "ide-plugin"
 version = "0.1.35"
 dependencies = [
+ "blake3",
  "ide-core",
- "ide-language",
+ "ide-extension",
  "parking_lot",
+ "semver",
  "serde",
  "serde_json",
  "specta",
  "tempfile",
  "thiserror 2.0.21",
- "toml 0.9.12+spec-1.1.0",
+ "tokio",
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
- "zip",
 ]
 
 [[package]]
@@ -6150,6 +6187,7 @@ dependencies = [
 name = "openidea"
 version = "0.1.35"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "block2 0.6.2",
  "dirs 6.0.0",
@@ -6164,6 +6202,7 @@ dependencies = [
  "ide-dap",
  "ide-db",
  "ide-docker",
+ "ide-extension",
  "ide-fonts",
  "ide-github",
  "ide-host",
@@ -6195,6 +6234,8 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-web-kit 0.3.2",
  "parking_lot",
+ "percent-encoding",
+ "security-framework",
  "serde",
  "serde_json",
  "specta",
@@ -7096,6 +7137,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -7455,6 +7497,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "saa"
 version = "5.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7756,6 +7804,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

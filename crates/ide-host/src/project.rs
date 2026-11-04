@@ -218,8 +218,10 @@ impl Host {
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
-                let excluded_poms = unlinked_maven_poms(root, &effective);
-                ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms);
+                if cfg.name == "jdtls" {
+                    let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
+                    ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
+                }
             }));
         }
         {
@@ -303,6 +305,7 @@ impl Host {
                     index.update(&changed, &batch.removed);
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
+                    lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed);
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&changed);
                     // A framework's root marker (`angular.json`) created or deleted: its
@@ -1035,6 +1038,31 @@ pub(crate) fn unlinked_maven_poms(root: &Path, settings: &ide_core::settings::Se
     ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven).poms().map(PathBuf::from).collect()
 }
 
+/// The unlinked Maven POMs jdtls leaves out, and the build files (`file:` URIs) it is to
+/// import when that takes more than exclusions: an unlinked module of a linked reactor.
+/// Those then include the Gradle build, which jdtls would otherwise find by itself.
+pub(crate) fn jdtls_maven_import(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+) -> (Vec<PathBuf>, Option<Vec<String>>) {
+    let maven = &settings.languages.java.maven;
+    if maven.unlinked_projects.is_empty() {
+        return (Vec::new(), None);
+    }
+    let model = ide_build::maven::load(root);
+    let unlinked = ide_build::maven::UnlinkedProjects::from_model(&model, maven);
+    let excluded = unlinked.poms().map(PathBuf::from).collect();
+    let build_files = unlinked.import_poms(&model).map(|poms| {
+        let gradle = ide_build::gradle::load(root).and_then(|g| {
+            let dir = root.join(&g.dir);
+            let names = ide_build::gradle::SETTINGS_FILES.iter().chain(ide_build::gradle::BUILD_FILES);
+            names.map(|n| dir.join(n)).find(|f| f.is_file())
+        });
+        poms.iter().map(|pom| root.join(pom)).chain(gradle).map(|f| ide_lsp::path_to_uri_string(&f)).collect()
+    });
+    (excluded, build_files)
+}
+
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
 /// static detection guesses. Folders outside the project keep their absolute path, which
 /// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
@@ -1213,6 +1241,27 @@ pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
 #[cfg(test)]
 mod maven_linkage_tests {
     #[test]
+    fn jdtls_imports_the_linked_modules_and_the_gradle_build_once_a_reactor_module_is_unlinked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (dir, body) in [("", "<modules><module>x</module><module>y</module></modules>"), ("x", ""), ("y", "")] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("pom.xml"), format!("<project>{body}</project>")).unwrap();
+        }
+        std::fs::write(root.join("settings.gradle"), "rootProject.name = 'g'").unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        assert_eq!(super::jdtls_maven_import(root, &settings), (Vec::new(), None));
+        settings.languages.java.maven.unlinked_projects.push("y/pom.xml".into());
+        let (excluded, files) = super::jdtls_maven_import(root, &settings);
+        assert_eq!(excluded, vec![std::path::PathBuf::from("y/pom.xml")]);
+        let uri = |f: &str| ide_lsp::path_to_uri_string(&root.join(f));
+        assert_eq!(files, Some(vec![uri("x/pom.xml"), uri("settings.gradle")]));
+        // The whole reactor unlinked: the import exclusions are enough.
+        settings.languages.java.maven.unlinked_projects = vec!["pom.xml".into()];
+        assert_eq!(super::jdtls_maven_import(root, &settings).1, None);
+    }
+
+    #[test]
     fn unlinked_roots_remain_plain_files() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["a", "b"] {
@@ -1240,7 +1289,7 @@ mod maven_linkage_tests {
             serde_json::json!({"name": "jdtls", "command": "jdtls"}),
         )
         .unwrap();
-        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms);
+        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms, None);
         let options = serde_json::to_value(server.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));

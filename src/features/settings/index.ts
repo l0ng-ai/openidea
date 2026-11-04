@@ -16,6 +16,7 @@ import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isPopupOpen, lazyComponent } from "@/ui";
 import { loadSettings, useProject } from "@/platform/project";
+import { logError } from "@/platform/errorLog";
 import { restoreRemote } from "@/platform/remote";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
@@ -39,7 +40,8 @@ import { activatePythonStatus } from "./languages/PythonStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
 
-export { settingsWindowParent } from "./window/bridge";
+/** Settings-driven runtime state (zoom, fonts, theme) of a secondary window. */
+export const activateRuntimeSettings = trackRuntimeSettings;
 export const SettingsWindow = lazyComponent(() => import("./window/SettingsWindow").then((m) => m.SettingsWindow));
 
 /** Same event as `windows::LAUNCH_EVENT`: a pending launch (page) is waiting. */
@@ -206,14 +208,20 @@ export function activateSettingsWindow(parent: string): () => void {
     }),
   ];
   void (async () => {
-    await loadBuiltinPages();
-    await restoreRemote();
-    const project = await commands.projectCurrent().catch(() => null);
-    if (project) useProject.setState({ project, settings: project.settings });
-    else await loadSettings().catch((e) => console.warn("cannot load settings", e));
-    // `listenLaunch` may have taken the launch first and applied it already.
-    const launch = await takeLaunch();
-    openSettings(launch?.page, { newProjects: launch?.newProjects ?? useSettingsDialog.getState().newProjects });
+    let launch: SettingsLaunch | null = null;
+    try {
+      // A page that fails to register is reported; the window still opens with the others.
+      await loadBuiltinPages().catch((e) => logError("cannot register settings pages", e));
+      await restoreRemote();
+      const project = await commands.projectCurrent().catch(() => null);
+      if (project) useProject.setState({ project, settings: project.settings });
+      else await loadSettings().catch((e) => console.warn("cannot load settings", e));
+      // `listenLaunch` may have taken the launch first and applied it already.
+      launch = await takeLaunch();
+    } finally {
+      // Without this the window would stay an empty title bar.
+      openSettings(launch?.page, { newProjects: launch?.newProjects ?? useSettingsDialog.getState().newProjects });
+    }
   })();
   return () => disposers.reverse().forEach((d) => d());
 }

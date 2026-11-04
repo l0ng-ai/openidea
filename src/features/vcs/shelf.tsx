@@ -144,7 +144,7 @@ function ShelveDialog({
     if (!chosen.length || !name.trim()) return;
     onClose();
     await saveAll();
-    const entry = await runOp(`Shelve changes “${name.trim()}”`, () => call(commands.vcsShelve(name.trim(), chosen)));
+    const entry = await runOp(tx`Shelve changes “${name.trim()}”`, () => call(commands.vcsShelve(name.trim(), chosen)));
     if (!entry) return;
     void loadShelves().catch(() => undefined);
     notifications().notify({
@@ -218,7 +218,7 @@ function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; pa
     onClose();
     await saveAll();
     const outcome = await runOp(
-      `Unshelve “${entry.name}”`,
+      tx`Unshelve “${entry.name}”`,
       () => call(commands.vcsUnshelve(entry.id, remove, path ?? null)),
       {
         refresh: false,
@@ -272,7 +272,7 @@ export async function deleteShelf(entry: ShelvedChangeList, path?: string) {
     danger: true,
   });
   if (!ok) return;
-  await runOp(`Delete shelved changes “${entry.name}”`, () => call(commands.vcsShelfDelete(entry.id, path ?? null)), {
+  await runOp(tx`Delete shelved changes “${entry.name}”`, () => call(commands.vcsShelfDelete(entry.id, path ?? null)), {
     refresh: false,
   });
   void loadShelves().catch(() => undefined);
@@ -286,7 +286,7 @@ export async function renameShelf(entry: ShelvedChangeList) {
     okLabel: "Rename",
   });
   if (!r || r.value === entry.name) return;
-  await runOp("Rename shelved changes", () => call(commands.vcsShelfRename(entry.id, r.value)), { refresh: false });
+  await runOp(tx("Rename shelved changes"), () => call(commands.vcsShelfRename(entry.id, r.value)), { refresh: false });
   void loadShelves().catch(() => undefined);
 }
 
@@ -388,7 +388,7 @@ export async function importShelfPatches(paths?: string[]) {
   if (!picked) return;
   for (const path of typeof picked === "string" ? [picked] : picked) {
     await runOp(
-      "Import patches",
+      tx("Import patches"),
       async () => call(commands.vcsShelfImport(repo, baseName(path), await call(commands.fsReadText(path)))),
       { refresh: false },
     );

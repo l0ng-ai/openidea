@@ -16,8 +16,8 @@ pub struct AppState {
     pub host: Arc<Host>,
     pub startup: Startup,
     pub recent: RecentProjects,
-    /// WASM plugins (`ide-plugin`), shared by all windows.
-    pub plugins: Arc<ide_plugin::PluginHost>,
+    /// Plugins (`ide_host::plugins`), shared by all windows.
+    pub plugins: Arc<ide_host::plugins::PluginHost>,
     /// The built-in web server (Open In › Browser, the editor's browser bar).
     pub web: ide_web::WebServer,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
@@ -129,7 +129,7 @@ impl AppState {
         });
     }
 
-    /// The window that owns what `window` starts: an auxiliary window's parent, else `window`.
+    /// The window that owns what `window` starts: a settings window's parent, else `window`.
     pub fn owner_window(window: &str) -> &str {
         crate::windows::auxiliary_parent(window).unwrap_or(window)
     }

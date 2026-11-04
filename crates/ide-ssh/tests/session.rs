@@ -218,6 +218,21 @@ async fn password_authentication_and_forwarding() {
 }
 
 #[tokio::test]
+async fn forwarding_keeps_the_port_number_when_it_is_free() {
+    let env = env().await;
+    let target = env.target(SshAuth::Password);
+    let session = Arc::new(env.connect_trusted(&target, Some("secret")).await.ok().unwrap());
+    let free = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    let tunnel = Tunnel::listen_on(session.clone(), Some(free), "127.0.0.1", env.echo_port).await.unwrap();
+    assert_eq!(tunnel.port(), free);
+    round_trip(&tunnel).await;
+    // Taken here: another free port.
+    let other = Tunnel::listen_on(session, Some(free), "127.0.0.1", env.echo_port).await.unwrap();
+    assert_ne!(other.port(), free);
+    round_trip(&other).await;
+}
+
+#[tokio::test]
 async fn key_pair_authentication_with_and_without_passphrase() {
     let env = env().await;
     let target = SshTarget { key_file: fixture("client").to_string_lossy().into(), ..env.target(SshAuth::KeyPair) };

@@ -28,6 +28,7 @@ enum State {
 /// Every statement of `text` that contains more than whitespace and comments.
 pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     let mysql = driver == DbDriver::Mysql;
+    let clickhouse = driver == DbDriver::Clickhouse;
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     // UTF-16 offset of each char index (plus the end).
     let mut u16_at = Vec::with_capacity(chars.len() + 1);
@@ -81,7 +82,7 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                     state = State::Double;
                     has_code = true;
                 }
-                '`' if mysql => {
+                '`' if mysql || clickhouse => {
                     state = State::Backtick;
                     has_code = true;
                 }
@@ -117,7 +118,7 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                 _ => {}
             },
             State::Single => {
-                if mysql && c == '\\' {
+                if (mysql || clickhouse) && c == '\\' {
                     i += 1;
                 } else if c == '\'' {
                     if next == Some('\'') {
@@ -128,7 +129,9 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                 }
             }
             State::Double => {
-                if c == '"' {
+                if clickhouse && c == '\\' {
+                    i += 1;
+                } else if c == '"' {
                     if next == Some('"') {
                         i += 1;
                     } else {
@@ -137,7 +140,9 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                 }
             }
             State::Backtick => {
-                if c == '`' {
+                if clickhouse && (c == '\\' || (c == '`' && next == Some('`'))) {
+                    i += 1;
+                } else if c == '`' {
                     state = State::Code;
                 }
             }
@@ -222,6 +227,12 @@ mod tests {
     fn mysql_backticks_hashes_and_backslashes() {
         let sql = "select `a;b`, 'it\\'s;' from t # x;y\n; select 2";
         assert_eq!(texts(sql, DbDriver::Mysql), vec!["select `a;b`, 'it\\'s;' from t # x;y", "select 2"]);
+    }
+
+    #[test]
+    fn clickhouse_backticks_and_escaped_quotes_keep_statements_intact() {
+        let query = r#"SELECT `a\`;b`, "c\";d", 'it\'s;safe'; SELECT 2"#;
+        assert_eq!(texts(query, DbDriver::Clickhouse), vec![r#"SELECT `a\`;b`, "c\";d", 'it\'s;safe'"#, "SELECT 2"]);
     }
 
     #[test]

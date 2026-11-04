@@ -25,7 +25,8 @@ import { setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
 import { publishPreviewTop, useLiveMarkdown } from "./live";
-import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
+import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {

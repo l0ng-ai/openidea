@@ -11,6 +11,10 @@
   font-size: var(--fs-ui);
   line-height: 19px;
   color: var(--fg);
+  /* The workbench disables selection globally; preview text stays selectable/copyable. */
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 .empty {
   display: flex;
@@ -41,6 +45,9 @@
   text-align: right;
   color: var(--fg-gutter);
   background-color: var(--bg-app);
+  /* Copying the code leaves the line numbers out. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 .currentLine .gutter {
   color: var(--fg-muted);

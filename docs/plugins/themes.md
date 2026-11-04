@@ -17,7 +17,8 @@ my-theme/
    └─ my-theme.scheme.json        # editor colours, optional (IntelliJ: .icls)
 ```
 
-The quickest way to start is to copy [`templates/theme-plugin`](../../templates/theme-plugin).
+The quickest way to start is `openidea-plugin new --template theme`, or a copy of
+[`plugins/official/harbor-night`](../../plugins/official/harbor-night).
 It contains *Harbor Night*, a complete example dark theme that sets every
 themeable token. The rest of this page covers the file format, the token
 reference, porting themes from IntelliJ IDEA and VS Code, and testing.
@@ -106,11 +107,13 @@ built-in theme returns.
 
 There is no build step. The package *is* the folder.
 
-1. Copy `templates/theme-plugin` and rename `id`, `name` and the theme files.
+1. Run `openidea-plugin new --template theme` (or copy
+   `plugins/official/harbor-night`) and rename `id`, `name` and the theme files.
 2. Edit the colours. Keep `kind` truthful (`light` for light backgrounds).
 3. **Install:** *Settings › Plugins › ⚙ › Install Plugin from Disk…* (or the
-   *Install Plugin from Disk…* action) and pick the package's `plugin.toml`, or
-   a `.zip` of the folder. The manifest and the files it references are copied to
+   *Install Plugin from Disk…* action) and pick the package folder, or
+   *Install Plugin from Package File…* and pick its `plugin.toml` or a `.zip` of
+   the folder. The manifest and the files it references are copied to
    `<app-data>/plugins/<id>/`.
 4. **Apply:** in *Settings › Plugins*, select the plugin and press *Apply* next
    to the theme. *Use Default Theme* switches back.

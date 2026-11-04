@@ -8,7 +8,8 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { PRESET_TITLES, useKeymap } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import type { MenuItem } from "@/ui";
-import { currentThemeId, setTheme, THEME_CHOICES } from "./theme";
+import { themeChoices } from "@/platform/themes";
+import { currentThemeChoice, setTheme } from "./theme";
 
 async function setGlobal(key: string, value: unknown, what: string) {
   if (!isTauri()) return;
@@ -21,10 +22,12 @@ async function setGlobal(key: string, value: unknown, what: string) {
 
 export const selectKeymap = (id: string) => setGlobal("keymap", id, "keymap");
 
-export function themeItems(themeId: string = currentThemeId()): MenuItem[] {
-  return THEME_CHOICES.map<MenuItem>((c) => ({
+export function themeItems(themeId: string = currentThemeChoice()): MenuItem[] {
+  return themeChoices().map<MenuItem>((c) => ({
     id: `theme.${c.id}`,
     label: c.label,
+    // Plugin themes keep their own names.
+    verbatim: !!c.origin,
     checked: c.id === themeId,
     run: () => void setTheme(c.id),
   }));

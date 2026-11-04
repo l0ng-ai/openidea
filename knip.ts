@@ -10,6 +10,8 @@ const config: KnipConfig = {
     "perf/**/*.ts",
     "e2e/**/*.ts",
   ],
+  // Plugins' web pages are projects of their own (own package.json, checked by plugins/build.sh and CI).
+  ignore: ["plugins/**/web-src/**"],
   ignoreExportsUsedInFile: true,
   // lint-staged formats Rust files with the toolchain's rustfmt.
   ignoreBinaries: ["rustfmt"],

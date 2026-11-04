@@ -147,6 +147,8 @@ function conflictsBody(names: string[]): string {
 }
 
 /** Settings › Version Control › Log (also used by the Settings window). */
+export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
+
 export function activateSettingsPages(): () => void {
   return registerSettingsPage({
     id: "vcs.log",

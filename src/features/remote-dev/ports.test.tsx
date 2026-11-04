@@ -1,0 +1,80 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const forwarded: Array<{ remotePort: number; localPort: number }> = [];
+const ipc = vi.hoisted(() => ({
+  remoteForwardedPorts: vi.fn(),
+  remoteForwardPort: vi.fn(),
+  remoteStopForwarding: vi.fn(),
+}));
+vi.mock("@/platform/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/ipc")>()),
+  isTauri: () => true,
+  commands: ipc,
+}));
+
+import { PortsView } from "./PortsView";
+import { parsePort, usePorts } from "./ports";
+
+ipc.remoteForwardedPorts.mockImplementation(async () => [...forwarded]);
+ipc.remoteForwardPort.mockImplementation(async (remotePort: number) => {
+  // 3000 is taken here: another local port.
+  const port = { remotePort, localPort: remotePort === 3000 ? 53000 : remotePort };
+  forwarded.push(port);
+  return { status: "ok", data: port };
+});
+ipc.remoteStopForwarding.mockImplementation(async (remotePort: number) => {
+  forwarded.splice(
+    forwarded.findIndex((p) => p.remotePort === remotePort),
+    1,
+  );
+  return { status: "ok", data: null };
+});
+
+afterEach(() => {
+  cleanup();
+  forwarded.length = 0;
+  usePorts.setState({ ports: [] });
+});
+
+describe("Ports tool window", () => {
+  it("accepts port numbers 1–65535 only", () => {
+    expect(parsePort(" 8080 ")).toBe(8080);
+    expect([parsePort("0"), parsePort("65536"), parsePort("80a"), parsePort("")]).toEqual([null, null, null, null]);
+  });
+
+  it("forwards a typed port, shows where it is reachable here, and stops it", async () => {
+    render(<PortsView />);
+    expect(screen.getByText("No forwarded ports")).toBeInTheDocument();
+    const field = screen.getByRole("textbox", { name: "Remote port" });
+    fireEvent.change(field, { target: { value: "70000" } });
+    expect(screen.getByRole("button", { name: "Forward Port" })).toBeDisabled();
+    fireEvent.change(field, { target: { value: "3000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Forward Port" }));
+    await screen.findByText("localhost:53000");
+    expect(ipc.remoteForwardPort).toHaveBeenCalledWith(3000);
+    expect(field).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Stop Forwarding Port 3000" }));
+    await waitFor(() => expect(screen.getByText("No forwarded ports")).toBeInTheDocument());
+  });
+});
+
+describe("restoring forwarded ports", () => {
+  it("forwards the ports of this host and folder again after reconnecting", async () => {
+    const { useRemote } = await import("@/platform/remote");
+    const { forwardPort, restorePorts, savedPorts } = await import("./ports");
+    useRemote.setState({ session: { sshConfig: "lh", root: "/srv/app", host: "h", commands: [] } });
+    await forwardPort(8080);
+    expect(savedPorts()).toEqual([8080]);
+    // Reconnected: the new connection forwards nothing yet.
+    forwarded.length = 0;
+    ipc.remoteForwardPort.mockClear();
+    await restorePorts();
+    expect(ipc.remoteForwardPort).toHaveBeenCalledWith(8080);
+    expect(usePorts.getState().ports).toEqual([{ remotePort: 8080, localPort: 8080 }]);
+    // Another folder on the same host has its own list.
+    useRemote.setState({ session: { sshConfig: "lh", root: "/srv/other", host: "h", commands: [] } });
+    expect(savedPorts()).toEqual([]);
+    useRemote.setState({ session: null });
+  });
+});

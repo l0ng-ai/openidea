@@ -33,9 +33,12 @@ fn server(name: &str) -> LanguageServerConfig {
         install_hint: None,
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     }
 }
 
@@ -168,6 +171,35 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[5].args, ["manage.py", "test"]);
     assert_eq!(configs[6].command, "/opt/py/bin/python3");
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
+}
+
+#[test]
+fn npm_config_runs_on_its_own_node_interpreter() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.node.interpreter = "/opt/node22/bin/node".into();
+    let mut own = run("npm", "npm", &["run", "dev"]);
+    own.extras.params.insert("nodeInterpreter".into(), "/opt/node18/bin/node".into());
+    let mut configs = vec![own, run("npm", "npm", &["run", "build"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let first = |c: &RunConfig| c.env["PATH"].split(':').next().unwrap().to_owned();
+    assert_eq!(first(&configs[0]), "/opt/node18/bin");
+    assert_eq!(first(&configs[1]), "/opt/node22/bin", "the project's Node.js without one");
+    // Saved without the derived PATH, keeping the choice itself.
+    let saved = without_derived(&configs[0], tmp.path(), &s);
+    assert!(!saved.env.contains_key("PATH"));
+    assert_eq!(saved.extras.params["nodeInterpreter"], "/opt/node18/bin/node");
+    // Chosen on a configuration loaded with the project's PATH: that PATH isn't kept either.
+    let mut edited = configs[1].clone();
+    edited.extras.params.insert("nodeInterpreter".into(), "/opt/node18/bin/node".into());
+    let saved = without_derived(&edited, tmp.path(), &s);
+    assert!(!saved.env.contains_key("PATH"));
+    let mut reloaded = vec![saved];
+    apply_to_run_configs(&mut reloaded, tmp.path(), &s);
+    assert_eq!(first(&reloaded[0]), "/opt/node18/bin");
 }
 
 fn fake_jdk(dir: &Path) {
@@ -328,6 +360,26 @@ fn language_server_settings_disable_add_and_override() {
     let init = serde_json::to_value(ra.initialization_options.unwrap()).unwrap();
     assert_eq!(init, json!({ "checkOnSave": false, "check": { "command": "clippy" } }));
     assert_eq!(ra.settings, Some(json!({ "rust-analyzer": { "cargo": { "features": "all" } } })));
+    assert!(ra.features.is_empty() && ra.code_action_kinds.is_empty(), "no setting keeps the definition's");
+
+    // `features` / `codeActionKinds` replace the definition's; empty lifts them.
+    let mut pylsp = server("pylsp");
+    pylsp.features = vec!["code-action".into()];
+    pylsp.code_action_kinds = vec!["refactor".into()];
+    s.language_servers.insert(
+        "pylsp".into(),
+        LanguageServerSettings {
+            features: Some(vec!["code-action".into(), "hover".into()]),
+            code_action_kinds: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    server_protocol_overrides(&mut pylsp, &s);
+    assert_eq!(pylsp.features, ["code-action", "hover"]);
+    assert!(pylsp.code_action_kinds.is_empty());
+    let parsed: LanguageServerSettings =
+        serde_json::from_value(json!({ "features": ["code-action"], "codeActionKinds": ["refactor"] })).unwrap();
+    assert_eq!(parsed.code_action_kinds, Some(vec!["refactor".to_string()]));
 }
 
 #[test]
@@ -1211,6 +1263,8 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     s.languages.java.jdk = root.join("jdk17").to_string_lossy().into_owned();
     touch("maven/bin/mvn");
     s.languages.java.maven.home = root.join("maven").to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "/m2/settings.xml".into();
+    s.languages.java.maven.local_repository = "/m2/repo".into();
     s.languages.ruby.interpreter = touch("ruby/bin/ruby");
     touch("ruby/bin/bundle");
     s.tools.insert("godot".into(), ide_core::settings::ToolSettings { path: touch("Godot/godot") });
@@ -1264,4 +1318,28 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     let ruby2 = root.join("ruby2/bin");
     assert_eq!(next.command, ruby2.join("ruby").to_string_lossy());
     assert!(next.env["PATH"].starts_with(&*ruby2.to_string_lossy()), "{}", next.env["PATH"]);
+
+    // A Maven configuration (a detected one narrowed to a test, a tool window goal) follows a
+    // later Maven home, settings file, local repository and JDK; options it sets itself stay.
+    for detected in [true, false] {
+        let mut goal = saved("maven", "mvn", &["test", "-Dtest=AppTest"], &[]);
+        goal.detected = detected;
+        let mut own = saved("maven", "mvn", &["-s", "/mine.xml", "test"], &[]);
+        own.detected = detected;
+        let mut loaded = [goal, own];
+        apply_to_run_configs(&mut loaded, root, &s);
+        let mut next = loaded.map(|c| without_derived(&c, root, &s));
+        touch("maven2/bin/mvn");
+        fake_jdk(&root.join("jdk21"));
+        let mut s2 = s.clone();
+        s2.languages.java.maven.home = root.join("maven2").to_string_lossy().into_owned();
+        s2.languages.java.maven.user_settings = "/m3/settings.xml".into();
+        s2.languages.java.maven.local_repository = "/m3/repo".into();
+        s2.languages.java.jdk = root.join("jdk21").to_string_lossy().into_owned();
+        apply_to_run_configs(&mut next, root, &s2);
+        assert_eq!(next[0].command, root.join("maven2/bin/mvn").to_string_lossy());
+        assert_eq!(next[0].args, ["-s", "/m3/settings.xml", "-Dmaven.repo.local=/m3/repo", "test", "-Dtest=AppTest"]);
+        assert!(next[0].env["JAVA_HOME"].ends_with("jdk21"), "{}", next[0].env["JAVA_HOME"]);
+        assert_eq!(next[1].args, ["-Dmaven.repo.local=/m3/repo", "-s", "/mine.xml", "test"]);
+    }
 }

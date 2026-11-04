@@ -682,6 +682,8 @@ fn file_at_in_a_blobless_clone() {
     fx.write("f.txt", "v2\n");
     fx.commit_all("v2");
     fx.git(&["config", "uploadpack.allowFilter", "true"]);
+    // Git refuses a clone source with a local hooks-path override.
+    fx.git(&["config", "--unset", "core.hooksPath"]);
     let clone = fx.dir.parent().unwrap().join("clone");
     let url = format!("file://{}", fx.dir.display());
     git_in(fx.dir.parent().unwrap(), &["clone", "-q", "--filter=blob:none", &url, "clone"]);
@@ -1255,6 +1257,62 @@ fn errors_carry_git_messages() {
     let err = repo.stage(&[PathBuf::from("../outside")]).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
     assert!(repo.stash_apply(5, false, false).is_err());
+}
+
+#[test]
+fn packed_refs_reload_without_a_newer_modification_time() {
+    for keep_time in [false, true] {
+        for linked in [false, true] {
+            let fx = Fixture::new();
+            fx.write("file.txt", "one\n");
+            let first = fx.commit_all("one");
+            fx.git(&["branch", "-m", "master"]);
+            let root = if linked {
+                let path = fx._tmp.path().join("linked");
+                fx.git(&["worktree", "add", "-qb", "agent/check", path.to_str().unwrap()]);
+                path
+            } else {
+                fx.dir.clone()
+            };
+            let packed = fx.path(".git/packed-refs");
+            std::fs::write(
+                &packed,
+                format!("# pack-refs with: peeled fully-peeled sorted \n{first} refs/remotes/origin/master\n"),
+            )
+            .unwrap();
+            let set_modified = |time| {
+                std::fs::OpenOptions::new().write(true).open(&packed).unwrap().set_modified(time).unwrap();
+            };
+            set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
+            let original_time = std::fs::metadata(&packed).unwrap().modified().unwrap();
+            let original_len = std::fs::metadata(&packed).unwrap().len();
+            let repo = Repo::discover(&root).unwrap().unwrap();
+            let query = LogQuery { branches: vec!["HEAD".into()], limit: 1, ..Default::default() };
+            assert_eq!(repo.log(&query).unwrap()[0].id, first);
+
+            std::fs::write(root.join("file.txt"), "two\n").unwrap();
+            git_in(&root, &["add", "file.txt"]);
+            git_in(&root, &["commit", "-qm", "two"]);
+            let second = git_in(&root, &["rev-parse", "HEAD"]);
+            fx.git(&["pack-refs", "--all", "--prune"]);
+            set_modified(if keep_time { original_time } else { original_time - std::time::Duration::from_secs(60) });
+            assert_ne!(std::fs::metadata(&packed).unwrap().len(), original_len);
+            let branch = if linked { "agent/check" } else { "master" };
+            assert!(!fx.path(&format!(".git/refs/heads/{branch}")).exists());
+            for revision in ["HEAD", "@", branch] {
+                let q = LogQuery { branches: vec![revision.into()], ..query.clone() };
+                let rows = repo.log(&q).unwrap_or_else(|error| {
+                    panic!("linked={linked}, keep_time={keep_time}, revision={revision}: {error}")
+                });
+                assert_eq!(rows[0].id, second);
+            }
+            assert_eq!(repo.head().unwrap().1.as_deref(), Some(second.as_str()));
+            assert_eq!(
+                repo.file_at(Path::new("file.txt"), Some("HEAD"), encoding_rs::UTF_8).unwrap().as_deref(),
+                Some("two\n")
+            );
+        }
+    }
 }
 
 #[test]

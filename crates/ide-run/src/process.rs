@@ -329,6 +329,12 @@ impl ProcessManager {
         if config.command.trim().is_empty() {
             return Err(IdeError::invalid("run configuration has no command"));
         }
+        let approved = match crate::external::approved(config) {
+            Some(Ok(c)) => Some(c),
+            Some(Err(e)) => return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e)),
+            None => None,
+        };
+        let config = approved.as_ref().unwrap_or(config);
         let plan = crate::go::plan(root, config)?;
         let followup = plan.as_ref().and_then(|p| p.run.as_ref()).map(|run| {
             let cwd = resolve_cwd(root, run.cwd.as_deref());

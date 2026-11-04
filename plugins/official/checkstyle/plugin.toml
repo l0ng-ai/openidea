@@ -1,0 +1,33 @@
+id = "openidea.checkstyle"
+name = "Checkstyle"
+version = "0.1.0"
+description = "Checks Java files with Checkstyle when you save them: problems in the editor and the Problems view, quick fixes for tabs, trailing spaces and missing final newlines."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: check on save (a newer save cancels the running check), Google style by default, quick fixes."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-event:file-saved", "on-command:*"]
+
+[capabilities]
+# `process:checkstyle`: the `checkstyle` command line (e.g. `brew install checkstyle`).
+required = ["project.read", "events", "storage", "process:checkstyle"]
+
+[[contributes.providers]]
+kinds = ["code-actions"]
+languages = ["java"]
+
+[[contributes.commands]]
+id = "check"
+title = "Checkstyle: Check Current File"
+category = "Checkstyle"
+
+[[contributes.commands]]
+id = "use-sun"
+title = "Checkstyle: Use Sun Checks"
+category = "Checkstyle"
+
+[[contributes.commands]]
+id = "use-google"
+title = "Checkstyle: Use Google Checks"
+category = "Checkstyle"

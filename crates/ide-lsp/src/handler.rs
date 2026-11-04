@@ -59,7 +59,7 @@ impl ClientHandler {
                         .get("title")
                         .and_then(Value::as_str)
                         .filter(|t| !t.is_empty())
-                        .map(str::to_owned)
+                        .map(ide_core::task::display_title)
                         .unwrap_or_else(|| self.server.name.clone());
                     let task = TaskId::next();
                     let cancel = (cancellable == Some(true)).then(|| self.cancel_handle(task, &params["token"]));
@@ -111,6 +111,10 @@ impl ClientHandler {
     }
 
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
+        // Problems come only from servers used for `diagnostics`.
+        if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
+            return;
+        }
         let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {

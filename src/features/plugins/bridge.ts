@@ -1,66 +1,52 @@
 /**
- * Glue between backend plugins and the workbench: plugin commands become
- * actions, editor requests are applied to the active editor, the selected
- * theme becomes a stylesheet of CSS variables, notifications become balloons.
+ * Glue between backend plugins and the workbench: UI contributions are
+ * projected (`projection.ts` + `points.tsx`), status items, tasks and event
+ * subscriptions of running code go through `runtimeUi.tsx`, the selected
+ * theme becomes a stylesheet of CSS
+ * variables, notifications become balloons, consent requests open the
+ * permission dialog, and opened files fire `on-language` / `on-file`.
  */
-import { EditorSelection } from "@codemirror/state";
-import type { ActiveTheme, PluginEvent, PluginInfo } from "@/bindings";
-import { activeEditor, useEditorRegistry } from "@/editor/api";
-import { registerAction, type Action } from "@/platform/actions";
+import type { ActiveTheme, PluginEvent } from "@/bindings";
+import { useEditorRegistry } from "@/editor/api";
+import { refreshLanguageInfos } from "@/editor/core/cm/languages";
 import { notifications } from "@/workbench/contributions";
-import { applyThemeAttributes, currentThemeId, syncWindowBackground, windowBackgroundHex } from "@/workbench/theme";
+import { useProducerNames } from "@/platform/inspections";
+import { languageListChanged } from "@/platform/languageList";
+import { isThemeAvailable, parsePluginThemeRef, useContributedThemes } from "@/platform/themes";
+import {
+  applyThemeAttributes,
+  currentThemeChoice,
+  currentThemeId,
+  subscribeScheme,
+  syncWindowBackground,
+  useThemeOverride,
+  windowBackgroundHex,
+} from "@/workbench/theme";
+import { useProject } from "@/platform/project";
 import { pluginsBackend } from "./backend";
-import { refreshPlugins, runPluginCommand, usePlugins } from "./store";
-import { tx } from "@/platform/i18n";
+import { trackIconTheme } from "./iconThemes";
+import { defineBuiltinUiPoints } from "./points";
+import { clearUiContributions, syncUiContributions } from "./projection";
+import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
+import { grantPlugin, refreshPlugins, selectPluginTheme, usePlugins } from "./store";
 
-export const pluginActionId = (pluginId: string, commandId: string) => `plugin.${pluginId}.${commandId}`;
+export { pluginActionId } from "./points";
 
-/** Actions for every command of every running plugin. */
-export function pluginActions(plugins: readonly PluginInfo[]): Action[] {
-  return plugins
-    .filter((p) => p.status === "active")
-    .flatMap((p) =>
-      p.commands.map((c): Action => ({
-        id: pluginActionId(p.id, c.id),
-        title: c.title,
-        category: c.category ?? p.name,
-        icon: "package",
-        keywords: ["plugin", p.name, p.id],
-        description: tx`From plugin ${p.name}`,
-        run: async ({ arg }) => {
-          await runPluginCommand(p.id, c.id, typeof arg === "string" ? arg : null);
-        },
-      })),
-    );
-}
-
-/** Keeps the action registry in sync with the plugin list; re-registers only changed actions. */
-export function syncPluginActions(): () => void {
-  const registered = new Map<string, { key: string; dispose: () => void }>();
-  const apply = (plugins: readonly PluginInfo[]) => {
-    const next = new Map(pluginActions(plugins).map((a) => [a.id, a]));
-    for (const [id, entry] of registered) {
-      if (!next.has(id)) {
-        entry.dispose();
-        registered.delete(id);
-      }
-    }
-    for (const [id, action] of next) {
-      const key = `${action.title}\u0000${action.category}`;
-      const prev = registered.get(id);
-      if (prev?.key === key) continue;
-      prev?.dispose();
-      registered.set(id, { key, dispose: registerAction(action) });
-    }
+/** Keeps the projected UI contributions in line with the plugin list. */
+export function syncProjection(): () => void {
+  const apply = () => {
+    const s = usePlugins.getState();
+    syncUiContributions(s.ui, s.plugins);
+    // Their problems are listed by name in Settings › Inspections.
+    useProducerNames.setState({ names: new Map(s.plugins.map((p) => [`plugin:${p.id}`, p.name])) });
   };
-  apply(usePlugins.getState().plugins);
+  apply();
   const unsubscribe = usePlugins.subscribe((s, prev) => {
-    if (s.plugins !== prev.plugins) apply(s.plugins);
+    if (s.ui !== prev.ui || s.plugins !== prev.plugins) apply();
   });
   return () => {
     unsubscribe();
-    registered.forEach((e) => e.dispose());
-    registered.clear();
+    clearUiContributions();
   };
 }
 
@@ -174,35 +160,54 @@ export function trackPluginTheme(): () => void {
   };
 }
 
-// --- editor -----------------------------------------------------------------
-
-/** Inserts (`select: false`) or replaces-and-selects (`select: true`) at every selection range. */
-export function applyTextToActiveEditor(text: string, select: boolean, pluginId: string): boolean {
-  const editor = activeEditor();
-  const name = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.name ?? pluginId;
-  if (!editor || editor.ctx.readOnly) {
-    notifications().notify({
-      group: "plugins",
-      level: "warning",
-      title: `${name}: ${editor ? "the editor is read-only" : "no editor to insert into"}`,
-    });
-    return false;
-  }
-  const { view } = editor;
-  view.dispatch(
-    view.state.changeByRange((range) => ({
-      changes: { from: range.from, to: range.to, insert: text },
-      range: select
-        ? EditorSelection.range(range.from, range.from + text.length)
-        : EditorSelection.cursor(range.from + text.length),
-    })),
-    { scrollIntoView: true, userEvent: "input.plugin" },
-  );
-  view.focus();
-  return true;
+/**
+ * Makes the plugin host's theme the one the Appearance settings select: a
+ * plugin theme (`plugin:<id>/<theme>`, from any theme picker, the OS mode with
+ * "Sync with OS", or the plugin's details page) is selected there once its
+ * plugin is live; a built-in one clears it. While the selected plugin is off,
+ * its built-in base shows and the selection is kept for when it is back.
+ */
+export function followThemeSetting(): () => void {
+  let requested: string | undefined;
+  const reconcile = () => {
+    const plugins = usePlugins.getState();
+    if (!plugins.loaded || plugins.error || !useProject.getState().settings?.appearance) return;
+    const choice = currentThemeChoice();
+    const want = parsePluginThemeRef(choice);
+    const target = want && isThemeAvailable(choice) ? choice : null;
+    const active = plugins.activeTheme;
+    const current = active ? `plugin:${active.pluginId}/${active.theme.id}` : null;
+    if (target === current || (want && !target && !current)) {
+      requested = undefined;
+      return;
+    }
+    // A selected plugin that is off: leave the host's selection for when it is back.
+    if (want && !target) {
+      if (requested === "") return;
+      requested = "";
+      void selectPluginTheme(null, null);
+      return;
+    }
+    if (requested === (target ?? "")) return;
+    requested = target ?? "";
+    void selectPluginTheme(want && target ? want.pluginId : null, want && target ? want.themeId : null);
+  };
+  reconcile();
+  const disposers = [
+    usePlugins.subscribe((s, prev) => {
+      if (s.loaded !== prev.loaded || s.activeTheme !== prev.activeTheme) reconcile();
+    }),
+    useProject.subscribe((s, prev) => {
+      if (s.settings?.appearance !== prev.settings?.appearance) reconcile();
+    }),
+    useThemeOverride.subscribe(reconcile),
+    useContributedThemes.subscribe(reconcile),
+    subscribeScheme(reconcile),
+  ];
+  return () => disposers.forEach((d) => d());
 }
 
-/** Reports the focused editor's file to the backend (`active-file` for plugins). */
+/** Reports the focused editor's file to the backend (`editor-focused` events). */
 function trackActiveFile(): () => void {
   let last: string | null | undefined;
   const report = (path: string | null) => {
@@ -228,16 +233,31 @@ export function handlePluginEvent(e: PluginEvent) {
       notifications().notify({ group: "plugins", level: e.level, title: e.title || name, body: e.body || undefined });
       break;
     }
-    case "insertText":
-      applyTextToActiveEditor(e.text, false, e.pluginId);
-      break;
-    case "replaceSelection":
-      applyTextToActiveEditor(e.text, true, e.pluginId);
-      break;
     case "themeChanged":
       usePlugins.setState({ activeTheme: e.theme });
       break;
+    case "consentRequested":
+      void refreshPlugins().then(() => grantPlugin(e.pluginId, e.capabilities));
+      break;
+    case "languagesChanged":
+      void refreshLanguageInfos();
+      languageListChanged();
+      break;
+    default:
+      handleRuntimeEvent(e);
   }
+}
+
+/**
+ * For windows that only show plugins (Settings): stays in line with what
+ * changes elsewhere — installs, enable / disable, the theme, languages —
+ * while notifications and permission prompts stay with the project windows.
+ */
+export function followPluginChanges(): () => void {
+  return pluginsBackend().onEvent((e) => {
+    if (e.type === "commandsChanged" || e.type === "themeChanged" || e.type === "languagesChanged")
+      handlePluginEvent(e);
+  });
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -247,15 +267,48 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     void refreshPlugins();
+    refreshEventKinds();
   }, 30);
+}
+
+/**
+ * Fires `on-language:<id>` and `on-file:<project-relative path>` for files
+ * opened in the editor; the backend activates the plugins waiting for them.
+ */
+function trackActivationEvents(): () => void {
+  const seenLanguages = new Set<string>();
+  const report = (ctx: { path: string | null; language: string } | undefined) => {
+    if (!ctx?.path) return;
+    if (!seenLanguages.has(ctx.language)) {
+      seenLanguages.add(ctx.language);
+      void pluginsBackend()
+        .activationEvent("language", ctx.language)
+        .catch(() => seenLanguages.delete(ctx.language));
+    }
+    const root = useProject.getState().project?.root;
+    if (root && ctx.path.startsWith(`${root}/`)) {
+      void pluginsBackend()
+        .activationEvent("file", ctx.path.slice(root.length + 1))
+        .catch(() => {});
+    }
+  };
+  report(useEditorRegistry.getState().active?.ctx);
+  return useEditorRegistry.subscribe((s, prev) => {
+    if (s.active?.ctx.path !== prev.active?.ctx.path) report(s.active?.ctx);
+  });
 }
 
 export function startPluginBridge(): () => void {
   const disposers = [
+    defineBuiltinUiPoints(),
     pluginsBackend().onEvent(handlePluginEvent),
-    syncPluginActions(),
+    syncProjection(),
     trackPluginTheme(),
+    followThemeSetting(),
+    trackIconTheme(),
     trackActiveFile(),
+    trackActivationEvents(),
+    startRuntimeUi(),
   ];
   return () => {
     if (refreshTimer) clearTimeout(refreshTimer);

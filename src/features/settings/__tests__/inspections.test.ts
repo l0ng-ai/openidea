@@ -40,6 +40,28 @@ const find = (nodes: readonly InspectionNode[], key: string): InspectionNode | u
   return undefined;
 };
 
+describe("plugin inspections", () => {
+  it("list each plugin by name under Plugins, from seen codes and stored overrides", () => {
+    const tree = buildInspectionTree(
+      [],
+      [{ producer: "plugin:acme.license", code: "missing-header", source: "", sample: "No licence header" }],
+      [{ "lsp:plugin:acme.license:old-code": { enabled: false }, "lsp:plugin:acme.other": { severity: "warning" } }],
+      new Map([["plugin:acme.license", "License Header"]]),
+    );
+    const plugins = find(tree, "group:Plugins")!;
+    expect(plugins.children.map((n) => [n.id, n.name])).toEqual([
+      ["lsp:plugin:acme.license", "License Header"],
+      ["lsp:plugin:acme.other", "acme.other"],
+    ]);
+    expect(plugins.children[0]!.children.map((n) => n.id)).toEqual([
+      "lsp:plugin:acme.license:missing-header",
+      "lsp:plugin:acme.license:old-code",
+    ]);
+    expect(plugins.children[0]!.description).toContain("License Header plugin");
+    expect(find(tree, "group:Other")).toBeUndefined();
+  });
+});
+
 describe("inspections tree", () => {
   const tree = buildInspectionTree(languages, seen, [{ "lsp:ruff:E501": { severity: "typo" } }]);
 
