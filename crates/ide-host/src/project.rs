@@ -34,6 +34,8 @@ pub struct Project {
     pub lsp: Arc<LspManager>,
     /// Git repositories: the one containing the project root and those nested below it.
     pub repos: Arc<RwLock<Repos>>,
+    /// Explicitly opened external logs remain read-only and outside project indexing.
+    pub(crate) external_log_repos: RwLock<Vec<Arc<Repo>>>,
     /// Incrementally maintained syntax trees of the open documents.
     pub syntax: Arc<SyntaxCache>,
     /// Tree-sitter structure queries (LSP fallback) over `syntax`.
@@ -462,6 +464,7 @@ impl Host {
             index,
             lsp,
             repos,
+            external_log_repos: RwLock::default(),
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots,
@@ -595,6 +598,7 @@ impl Host {
             index,
             lsp,
             repos: Arc::default(),
+            external_log_repos: RwLock::default(),
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots: Arc::default(),
@@ -744,6 +748,51 @@ impl Project {
                 None => Err(IdeError::unavailable("project is not a git repository")),
             },
         }
+    }
+
+    pub fn open_external_log(&self, path: &Path) -> IdeResult<PathBuf> {
+        let root = dunce::canonicalize(path)?;
+        let repo = Repo::discover(&root)?.ok_or_else(|| IdeError::unavailable("folder is not a Git worktree"))?;
+        let root = repo.root().to_path_buf();
+        repo.set_execution_allowed(false);
+        let mut external = self.external_log_repos.write();
+        if !external.iter().any(|r| r.root() == root) {
+            external.push(Arc::new(repo));
+        }
+        Ok(root)
+    }
+
+    /// Log read operations may also use an explicitly opened external worktree.
+    /// Mutations continue to use `with_repo_at` and cannot reach these repositories.
+    pub fn with_log_repo_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
+        if let Some(path) = at
+            && self.repos().at_root(path).is_none()
+        {
+            let repo = self
+                .external_log_repos
+                .read()
+                .iter()
+                .find(|r| r.root() == path)
+                .cloned()
+                .ok_or_else(|| IdeError::unavailable("external Git log is not open"))?;
+            return f(&repo);
+        }
+        self.with_repo_at(at, f)
+    }
+
+    pub fn with_log_repo_of<T>(&self, path: &Path, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
+        if self.repos().for_path(path).is_some() {
+            return self.with_repo_of(path, f);
+        }
+        let repo = self
+            .external_log_repos
+            .read()
+            .iter()
+            .filter(|r| path.starts_with(r.root()))
+            .max_by_key(|r| r.root().components().count())
+            .cloned()
+            .ok_or_else(|| IdeError::unavailable("path is not in an open Git log"))?;
+        f(&repo)
     }
 
     /// Runs `f` with the repository `path` (a file or folder) belongs to.
@@ -962,7 +1011,7 @@ impl Project {
             return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
         }
-        let bytes = self.with_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
+        let bytes = self.with_log_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
         Ok(ide_vfs::detect_encoding(&bytes, fallback))
     }
 

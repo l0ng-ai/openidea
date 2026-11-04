@@ -90,6 +90,91 @@ pub async fn vcs_log(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_log_refs(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    ide_host::ops::vcs::vcs_log_refs(&state.host, window.label(), repo).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_users(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::vcs::vcs_log_users(&state.host, window.label(), repo).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_open_external_log(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<ide_core::IpcPath> {
+    ide_host::ops::vcs::vcs_open_external_log(&state.host, window.label(), path).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_details(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revision: String,
+) -> IdeResult<LogDetails> {
+    ide_host::ops::vcs::vcs_log_details(&state.host, window.label(), repo, revision).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_details_batch(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revisions: Vec<String>,
+    request: RequestId,
+) -> IdeResult<Vec<LogDetails>> {
+    ide_host::ops::vcs::vcs_log_details_batch(&state.host, window.label(), repo, revisions, request).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_index(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    request: Option<RequestId>,
+) -> IdeResult<LogIndexProgress> {
+    ide_host::ops::vcs::vcs_log_index(&state.host, window.label(), repo, request).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_revision_children(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revision: String,
+    directory: String,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::vcs::vcs_revision_children(&state.host, window.label(), repo, revision, directory).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_revision_files(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revision: String,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::vcs::vcs_revision_files(&state.host, window.label(), repo, revision).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_commit_files(
     window: Window,
     state: State<'_, AppState>,

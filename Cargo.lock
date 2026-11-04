@@ -4662,12 +4662,14 @@ dependencies = [
 name = "ide-vcs"
 version = "0.1.36"
 dependencies = [
+ "blake3",
  "dunce",
  "encoding_rs",
  "gix",
  "ide-core",
  "ignore",
  "libc",
+ "redb",
  "regex-lite",
  "serde",
  "serde_json",

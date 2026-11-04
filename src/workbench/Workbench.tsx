@@ -20,16 +20,16 @@ import { useApplyTheme } from "./theme";
 import { ToolWindowLayout } from "./toolwindows/ToolWindows";
 import { Welcome } from "./Welcome";
 import { WindowResizeHandles } from "./WindowResizeHandles";
-import { useContributions } from "./contributions";
+import { useContributions, useStandaloneEditor } from "./contributions";
 import styles from "./Workbench.module.css";
 
 /** LightEdit: editor tabs only; no tool windows, toolbar widgets or project status items. */
-function LightEditFrame() {
+function LightEditFrame({ title }: { title?: string }) {
   const path = useEditorRegistry((s) => s.active?.ctx.path);
   const distractionFree = useDistractionFree((s) => s.active);
   return (
     <>
-      <TitleBar lightEdit bare={distractionFree} title={path ? basename(path) : "LightEdit"} />
+      <TitleBar lightEdit bare={distractionFree} title={title ?? (path ? basename(path) : "LightEdit")} />
       <main className={styles.lightEdit} data-light-edit>
         <div className={styles.lightEditIsland}>
           <EditorArea />
@@ -66,10 +66,11 @@ export function Workbench() {
   const banners = useContributions((s) => s.workbenchBanners);
   const project = useProject((s) => s.project);
   const lightEdit = useProject((s) => s.lightEdit);
+  const standaloneTitle = useStandaloneEditor((s) => s.title);
   const openingPath = useProject((s) => s.openingPath);
   const root = project?.root ?? null;
   const distractionFree = useDistractionFree((s) => s.active);
-  const frame = project ? styles.framed : lightEdit ? styles.lightEditFrame : undefined;
+  const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
 
   return (
     <div
@@ -88,8 +89,8 @@ export function Workbench() {
             <ToolWindowLayout key={root} editor={<EditorArea />} />
             {!distractionFree && <StatusBar />}
           </>
-        ) : lightEdit ? (
-          <LightEditFrame />
+        ) : lightEdit || standaloneTitle ? (
+          <LightEditFrame title={standaloneTitle ?? undefined} />
         ) : (
           <Welcome />
         )}

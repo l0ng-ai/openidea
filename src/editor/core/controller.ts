@@ -24,6 +24,7 @@ import {
   notifications,
   resolveFileEditor,
   useContributions,
+  useStandaloneEditor,
   type EditorCloseSession,
   type EditorInput,
   type OpenOptions,
@@ -230,6 +231,7 @@ export class EditorController implements SlotHost {
   private closeSession: EditorCloseSession | null = null;
   private closeCommitted = false;
   private projectGeneration = 0;
+  private replacingProject = false;
   private admissionGeneration = 0;
   private openSequence = 0;
   private selectionRequests = new Map<string, number>();
@@ -255,7 +257,14 @@ export class EditorController implements SlotHost {
     _provideOpenEditorPaths(() => openFilePaths(useTabs.getState()));
     let prevTabs = useTabs.getState();
     this.disposers.push(
-      useTabs.subscribe((s) => {
+      useTabs.subscribe((s, previous) => {
+        const open = openKeys(s);
+        const closed = new Map<string, EditorInput>();
+        for (const pane of Object.values(previous.panes))
+          for (const tab of pane.tabs) if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
+        if (!this.replacingProject)
+          for (const input of closed.values())
+            useContributions.getState().editorKinds.get(input.kind)?.onClose?.(input);
         const prev = prevTabs;
         prevTabs = s;
         if (
@@ -265,6 +274,11 @@ export class EditorController implements SlotHost {
           ++this.activationGeneration;
         this.stampActive(s);
         this.onTabsChanged(prev, s);
+        const kinds = useContributions.getState().editorKinds;
+        const standalone = Object.values(s.panes)
+          .flatMap((pane) => pane.tabs)
+          .find((tab) => kinds.get(tab.input.kind)?.standalone);
+        useStandaloneEditor.setState({ title: standalone ? tabTitle(standalone.input, kinds) : null });
       }),
     );
     tabOptions.activateOnClose = editorPrefs().tabs.activateOnClose as typeof tabOptions.activateOnClose;
@@ -299,7 +313,12 @@ export class EditorController implements SlotHost {
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
           // The guard decided already. Disposal must never prompt or autosave
           // custom documents after the backend has replaced their project.
-          useTabs.setState(initialTabsState(), true);
+          this.replacingProject = true;
+          try {
+            useTabs.setState(initialTabsState(), true);
+          } finally {
+            this.replacingProject = false;
+          }
           this.closeSession = null;
           this.closeCommitted = false;
           this.preparedDocuments.clear();
@@ -367,6 +386,7 @@ export class EditorController implements SlotHost {
     this.selectionRequests.clear();
     this.manager.stop();
     useTabs.setState(initialTabsState(), true);
+    useStandaloneEditor.setState({ title: null });
     void this.releaseDocuments(documents.values()).catch((e) => this.documentError(e));
   }
 
