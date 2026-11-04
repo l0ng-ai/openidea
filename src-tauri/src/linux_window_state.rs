@@ -120,7 +120,7 @@ mod runtime {
     }
 
     fn key(label: &str) -> &str {
-        if crate::windows::is_settings_window(label) { "settings" } else { label }
+        crate::windows::state_key(label)
     }
 
     pub fn prepare(app: &AppHandle, config: &mut WindowConfig) -> bool {
@@ -198,7 +198,7 @@ mod runtime {
             pending.phase = Phase::Mapping;
             pending.mode_requested = false;
         }
-        let mut fit_settings = false;
+        let mut place_aux = false;
         let mut position = None;
         if matches!(pending.phase, Phase::Mapping) {
             if pending.restore_position {
@@ -286,7 +286,7 @@ mod runtime {
                 return;
             }
             pending.phase = Phase::Tracking;
-            fit_settings = crate::windows::is_settings_window(window.label());
+            place_aux = crate::windows::auxiliary_parent(window.label()).is_some();
         }
         pending.history = ModeHistory(frame.mode);
         pending.normal = remember_size(pending.normal, frame.size, false, frame.mode);
@@ -304,15 +304,15 @@ mod runtime {
         if let Some(position) = position {
             let _ = window.set_position(position);
         }
-        if fit_settings {
+        if place_aux {
             let app = window.app_handle().clone();
             let label = window.label().to_owned();
             let _ = window.run_on_main_thread(move || {
-                if let Some(parent) = crate::windows::settings_parent(&label).and_then(|p| app.get_webview_window(p))
-                    && let Some(settings) = app.get_webview_window(&label)
-                    && let Err(error) = crate::windows::place_settings_window(&settings, &parent)
+                if let Some(parent) = crate::windows::auxiliary_parent(&label).and_then(|p| app.get_webview_window(p))
+                    && let Some(aux) = app.get_webview_window(&label)
+                    && let Err(error) = crate::windows::place_over_parent(&aux, &parent)
                 {
-                    tracing::warn!("cannot fit restored settings window: {error}");
+                    tracing::warn!("cannot fit restored auxiliary window: {error}");
                 }
             });
         }

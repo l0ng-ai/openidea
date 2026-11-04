@@ -56,7 +56,7 @@
 .preview :global(h5),
 .preview :global(h6) {
   margin: 1.2em 0 0.6em;
-  color: var(--syn-markup-heading, var(--fg-strong));
+  color: var(--fg-editor, var(--fg-strong));
   line-height: 1.25;
 }
 .preview :global(h1) {

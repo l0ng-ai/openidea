@@ -1,5 +1,24 @@
-import { describe, expect, it } from "vitest";
-import { accessorSegments, catalogEntry, chainAt, declaredCatalogs, parseCatalog } from "./versionCatalog";
+import { describe, expect, it, vi } from "vitest";
+
+const ipc = vi.hoisted(() => ({ fsReadText: vi.fn(), gradlePublishedCatalog: vi.fn() }));
+vi.mock("@/platform/ipc", () => ({
+  call: async (p: Promise<{ status: string; data?: unknown; error?: unknown }>) => {
+    const r = await p;
+    if (r.status !== "ok") throw r.error;
+    return r.data;
+  },
+  commands: ipc,
+  onIdeEvent: () => () => {},
+}));
+
+import {
+  accessorSegments,
+  catalogEntry,
+  chainAt,
+  declaredCatalogs,
+  parseCatalog,
+  readCatalogs,
+} from "./versionCatalog";
 
 const toml = `[versions]
 springBoot = "3.5.16"
@@ -64,11 +83,35 @@ describe("Gradle version catalogs", () => {
         create('tools') {
           from(files('gradle/tools.versions.toml'))
         }
+        create("platformLibs") { from("com.acme:platform-catalog:1.4.0") }
       }
     }`;
     expect(declaredCatalogs(settings)).toEqual([
       { name: "commonLibs", file: "../shared/common.versions.toml" },
       { name: "tools", file: "gradle/tools.versions.toml" },
+      { name: "platformLibs", artifact: "com.acme:platform-catalog:1.4.0" },
     ]);
+  });
+
+  it("reads a published catalog from where a build downloaded it", async () => {
+    const files: Record<string, string> = {
+      "/p/settings.gradle.kts": `dependencyResolutionManagement { versionCatalogs {
+        create("platformLibs") { from("com.acme:platform-catalog:1.4.0") }
+        create("later") { from("com.acme:later:1.0") }
+      } }`,
+      "/cache/platform-catalog-1.4.0.toml": '[libraries]\nspring-core = "org.springframework:spring-core:6.2.0"\n',
+    };
+    ipc.fsReadText.mockImplementation(async (path: string) =>
+      path in files ? { status: "ok", data: files[path] } : { status: "error", error: { kind: "notFound" } },
+    );
+    ipc.gradlePublishedCatalog.mockImplementation(async (coordinates: string) => ({
+      status: "ok",
+      data: coordinates === "com.acme:platform-catalog:1.4.0" ? "/cache/platform-catalog-1.4.0.toml" : null,
+    }));
+    const { catalogs, complete } = await readCatalogs("/p/build.gradle.kts", "/p");
+    expect(catalogs.map((c) => [c.name, c.path])).toEqual([["platformLibs", "/cache/platform-catalog-1.4.0.toml"]]);
+    expect(catalogEntry(catalogs[0]!, ["spring", "core"])?.value).toBe('"org.springframework:spring-core:6.2.0"');
+    // `later` isn't downloaded yet: read again next time.
+    expect(complete).toBe(false);
   });
 });

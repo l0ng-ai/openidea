@@ -71,6 +71,14 @@ beforeEach(() => {
 });
 
 describe("Diff toolbar", () => {
+  it("can start an embedded comparison side by side without overwriting saved viewer preferences", async () => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "unified" }));
+    const mounted = render(<DiffEditor input={{ ...input, data: { ...(input.data as object), mode: "split" } }} />);
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
+    expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("unified");
+    mounted.unmount();
+    localStorage.removeItem("openidea.vcs.diffOptions");
+  });
   it("shows a binary notice for disk comparisons instead of identical empty text", async () => {
     probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: true, tooLarge: false } });
     const binaryInput = {

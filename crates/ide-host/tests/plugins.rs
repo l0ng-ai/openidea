@@ -1064,7 +1064,16 @@ fn plugin_syntax_for_languages_without_a_grammar() {
     let sol = LanguageId::new("solidity");
     let text = "// c\ncontract A {\n    uint256 public x;\n    function f() public {}\n}\n";
     assert!(provider.highlights(&LanguageId::new("rust"), text).is_none(), "only its own languages");
-    let tokens = provider.highlights(&sol, text).unwrap();
+    // The first call of a new instance can run past the edit-path budget on a
+    // slow machine; its answer is dropped and a later call asks again.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let tokens = loop {
+        match provider.highlights(&sol, text) {
+            Some(tokens) => break tokens,
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            None => panic!("no highlights"),
+        }
+    };
     let kind_at =
         |s: &str| tokens.iter().find(|t| &text[t.start as usize..t.end as usize] == s).map(|t| t.kind.as_str());
     assert_eq!(kind_at("contract"), Some("keyword"));
