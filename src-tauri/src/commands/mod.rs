@@ -340,6 +340,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_test_reports,
         build::build_model,
         build::build_sync,
+        build::gradle_dependencies,
         build::gradle_published_catalog,
         build::maven_dependency_declaration,
         build::maven_exclude_dependency,
