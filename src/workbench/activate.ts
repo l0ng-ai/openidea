@@ -75,6 +75,7 @@ export function activateWorkbench(): () => void {
       icon: "bell",
       anchor: "right",
       order: 0,
+      stripe: "onUse",
       component: NotificationsToolWindow,
       headerActions: NotificationsHeaderActions,
       useBadge: useUnreadNotifications,

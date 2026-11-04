@@ -30,6 +30,7 @@ export function activate(): () => void {
       icon: hasIcon("toolwindow-todo") ? "toolwindow-todo" : "list",
       anchor: "bottom",
       order: 40,
+      stripe: "onUse",
       component: TodoView,
       headerContent: TodoTabs,
       headerActions: TodoHeaderActions,

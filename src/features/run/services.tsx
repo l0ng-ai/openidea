@@ -29,7 +29,7 @@ import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { startRun, useRun, type RunSession } from "./store";
+import { loadConfigs, persistTemporary, startRun, stopSession, useRun, type RunSession } from "./store";
 import {
   currentServiceSession,
   currentServiceSessions,
@@ -134,6 +134,65 @@ export function recordRun(configId: string) {
     localStorage.setItem(RAN_KEY + root, JSON.stringify(ids));
   } catch {
     /* storage unavailable */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Project removal: a workspace member's data leaves with it
+
+/** Whether `path` is inside the directory `root` (a removed member, not a sibling with a shared prefix). */
+function insideRoot(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+/**
+ * Drops a removed workspace member's data from Services: stops and forgets its
+ * sessions (a finished one still groups the tree), removes its temporary
+ * configurations, reloads (the backend no longer lists the member) and clears
+ * the added types and remembered runs that would otherwise render empty groups.
+ */
+export async function cleanupRemovedProject(removedRoot: string): Promise<void> {
+  const { configs, sessions, temporary } = useRun.getState();
+  const ofRemoved = (c: RunConfig) => !!c.cwd && insideRoot(c.cwd, removedRoot);
+  const removedIds = new Set(configs.filter(ofRemoved).map((c) => c.id));
+
+  const removedSessions = sessions.filter((s) => removedIds.has(s.config.id));
+  for (const s of removedSessions) if (busy(s)) await stopSession(s.id);
+  if (removedSessions.length) {
+    const ids = new Set(removedSessions.map((s) => s.id));
+    useRun.setState((s) => ({ sessions: s.sessions.filter((x) => !ids.has(x.id)) }));
+  }
+
+  if (temporary.some((id) => removedIds.has(id))) {
+    const temporaryLeft = temporary.filter((id) => !removedIds.has(id));
+    useRun.setState({
+      configs: useRun.getState().configs.filter((c) => !removedIds.has(c.id)),
+      temporary: temporaryLeft,
+    });
+    persistTemporary();
+  }
+
+  // The kinds the member had configurations of; after the reload those that are
+  // left without any (and without a session) are removed from the added types.
+  const kinds = new Set(configs.filter(ofRemoved).map((c) => c.kind));
+  await loadConfigs();
+
+  const { configs: fresh, sessions: liveSessions } = useRun.getState();
+  const liveKinds = new Set([...fresh.map((c) => c.kind), ...liveSessions.map((s) => s.config.kind)]);
+  for (const kind of kinds) if (!liveKinds.has(kind)) removeType(kind);
+
+  const root = useProject.getState().project?.root ?? null;
+  if (root) {
+    const freshIds = new Set(fresh.map((c) => c.id));
+    const ids = ranIds(root).filter((id) => freshIds.has(id));
+    if (ids.length !== ranIds(root).length) {
+      useRanConfigs.setState({ root, ids });
+      try {
+        localStorage.setItem(RAN_KEY + root, JSON.stringify(ids));
+      } catch {
+        /* storage unavailable */
+      }
+    }
   }
 }
 

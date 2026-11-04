@@ -40,7 +40,7 @@ import { registerGoActions } from "./goActions";
 import { invalidateGoModules } from "./goModules";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { recordRun, runServiceProvider } from "./services";
+import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
@@ -299,6 +299,13 @@ export function activate(): () => void {
     listenForApplicationDeactivation(),
     trackRecentConfigurations(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
+    // A removed workspace member (or a closed project) takes its sessions,
+    // temporary configurations and Services groups with it.
+    useProject.subscribe((s, prev) => {
+      const before = prev.project?.workspace?.projects ?? [];
+      const after = s.project?.workspace?.projects ?? null;
+      for (const root of before) if (!after?.includes(root)) void cleanupRemovedProject(root);
+    }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
     registerMenuGroup({

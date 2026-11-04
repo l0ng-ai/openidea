@@ -366,3 +366,53 @@ describe("stripe buttons", () => {
     expect(buttons()).toEqual({});
   });
 });
+
+describe("stripe button limit", () => {
+  // The limit applies to the bottom stripe only; left and right never count.
+  const bottom = (id: string, order: number) =>
+    registerToolWindow({ id, title: id, icon: "folder", anchor: "bottom", order, component: Empty });
+  const side = (id: string, anchor: "left" | "right") =>
+    registerToolWindow({ id, title: id, icon: "folder", anchor, component: Empty });
+  const buttons = () => useToolWindowLayout.getState().stripeButtons;
+
+  it("hides never-opened bottom buttons beyond eight, most peripheral first", () => {
+    // Bottom defaults from beforeEach (terminal, problems; order 100) plus six
+    // more (lower order): nine bottom buttons once "run" opens, so one
+    // never-opened default (highest order) goes back under "…". The left
+    // stripe's buttons never count.
+    disposers.push(
+      registerToolWindow({ id: "run", title: "Run", icon: "run", anchor: "bottom", component: Empty, stripe: "onUse" }),
+    );
+    for (const [id, order] of [
+      ["todo", 52],
+      ["maven", 53],
+      ["database", 54],
+      ["agents", 55],
+      ["coverage", 56],
+      ["profiler", 57],
+    ] as const)
+      disposers.push(bottom(id, order));
+    disposers.push(side("git", "left"));
+    disposers.push(side("structure", "left"));
+    showToolWindow("run");
+    // The side buttons are untouched; one never-opened bottom default was trimmed.
+    expect(buttons()).toEqual({ run: true, terminal: false });
+    expect(isToolWindowVisible("run")).toBe(true);
+  });
+
+  it("keeps the user's opened bottom buttons even beyond eight", () => {
+    for (const [id, order] of [
+      ["todo", 52],
+      ["maven", 53],
+      ["database", 54],
+      ["agents", 55],
+      ["coverage", 56],
+    ] as const)
+      disposers.push(bottom(id, order));
+    // The user opened every bottom window: all buttons are explicit choices.
+    for (const id of ["todo", "maven", "database", "agents", "coverage"]) showToolWindow(id);
+    showToolWindow("terminal");
+    showToolWindow("problems");
+    expect(Object.values(buttons()).every((v) => v !== false)).toBe(true);
+  });
+});
