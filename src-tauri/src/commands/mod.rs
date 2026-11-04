@@ -316,6 +316,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_configs,
         run::run_dotnet_resolve,
         run::run_save_configs,
+        run::run_without_derived,
+        run::run_apply_settings,
         run::run_templates,
         run::run_save_templates,
         run::run_import_sources,
