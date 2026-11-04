@@ -45,6 +45,16 @@ IDEA analyses Python more deeply, so "ready" doesn't mean the same work on
 both sides. Both are measured from the outside, the same way: see
 [`perf/compare`](perf/compare) to run it on your machine and projects.
 
+## Plugins
+
+Plugins add actions, completion, quick fixes, tool windows, custom editors,
+themes, file icons and languages. They run as sandboxed WebAssembly components;
+themes, icon themes and languages need no code at all.
+
+Install them from Settings › Plugins, or start your own with
+`openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
+the [official plugins](plugins/official). The plugin API is still a preview.
+
 ## License
 
 [Apache 2.0](LICENSE). Bundled third-party assets are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
