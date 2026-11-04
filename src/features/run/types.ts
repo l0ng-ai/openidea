@@ -232,6 +232,14 @@ const npm: RunConfigTypeContribution = {
       control: "select",
       options: PACKAGE_MANAGERS.map((v) => ({ value: v, label: v })),
     },
+    {
+      key: "nodeInterpreter",
+      label: "Node interpreter",
+      mono: true,
+      browse: "file",
+      placeholder: "Project default",
+      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.",
+    },
   ],
   commandLine(p) {
     const command = p.command || "run";

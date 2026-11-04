@@ -5802,5 +5802,7 @@
   "Not in Local History: {names}. They are in the Trash.": "本地历史中没有：{names}。它们在回收站中。",
   "Show All Commits": "显示所有提交",
   "Pin": "固定",
-  "Unpin": "取消固定"
+  "Unpin": "取消固定",
+  "Project default": "项目默认",
+  "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.": "运行此脚本的 node 可执行文件；留空则使用“设置 › 语言和框架 › Node.js”中的解释器。"
 }

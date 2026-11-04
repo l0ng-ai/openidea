@@ -173,6 +173,35 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
+#[test]
+fn npm_config_runs_on_its_own_node_interpreter() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.node.interpreter = "/opt/node22/bin/node".into();
+    let mut own = run("npm", "npm", &["run", "dev"]);
+    own.extras.params.insert("nodeInterpreter".into(), "/opt/node18/bin/node".into());
+    let mut configs = vec![own, run("npm", "npm", &["run", "build"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let first = |c: &RunConfig| c.env["PATH"].split(':').next().unwrap().to_owned();
+    assert_eq!(first(&configs[0]), "/opt/node18/bin");
+    assert_eq!(first(&configs[1]), "/opt/node22/bin", "the project's Node.js without one");
+    // Saved without the derived PATH, keeping the choice itself.
+    let saved = without_derived(&configs[0], tmp.path(), &s);
+    assert!(!saved.env.contains_key("PATH"));
+    assert_eq!(saved.extras.params["nodeInterpreter"], "/opt/node18/bin/node");
+    // Chosen on a configuration loaded with the project's PATH: that PATH isn't kept either.
+    let mut edited = configs[1].clone();
+    edited.extras.params.insert("nodeInterpreter".into(), "/opt/node18/bin/node".into());
+    let saved = without_derived(&edited, tmp.path(), &s);
+    assert!(!saved.env.contains_key("PATH"));
+    let mut reloaded = vec![saved];
+    apply_to_run_configs(&mut reloaded, tmp.path(), &s);
+    assert_eq!(first(&reloaded[0]), "/opt/node18/bin");
+}
+
 fn fake_jdk(dir: &Path) {
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin").join(exe("java")), "").unwrap();
