@@ -61,7 +61,7 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 
 ## Where it's going
 
-Roughly in order of priority. Concrete work is tracked in
+Concrete work is tracked in
 [`planned` issues](https://github.com/l0ng-ai/openidea/issues?q=is%3Aopen+label%3Aplanned).
 
 - **Fast, and staying fast.** Instant typing, smooth scrolling and little memory, even on the largest projects.
