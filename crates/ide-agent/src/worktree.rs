@@ -192,6 +192,31 @@ mod tests {
         assert_eq!(calls, 2);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn removing_waits_for_a_windows_file_lock_to_be_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let worktrees = tmp.path().join("wt");
+        let created = create(&repo, &worktrees, "Locked file", None).unwrap();
+        let file = std::fs::OpenOptions::new().read(true).share_mode(0).open(created.path.join("a.txt")).unwrap();
+        assert_eq!(std::fs::remove_file(created.path.join("a.txt")).unwrap_err().raw_os_error(), Some(32));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            drop(file);
+        });
+        let result = remove(&repo, &worktrees, &created.path);
+        release.join().unwrap();
+        result.unwrap();
+        assert!(!created.path.exists());
+    }
+
     #[test]
     fn slugs_are_branch_safe() {
         assert_eq!(slugify("Fix lexer UTF-16 columns!"), "fix-lexer-utf-16-columns");
