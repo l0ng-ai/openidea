@@ -38,7 +38,10 @@ describe("the native Settings window", () => {
   it("opens even when a page fails to register, and logs why", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const dispose = activateSettingsWindow("main");
+    expect(useSettingsDialog.getState().open).toBe(true);
+    expect(useSettingsDialog.getState().pagesLoading).toBe(true);
     await vi.waitFor(() => expect(useSettingsDialog.getState().open).toBe(true));
+    await vi.waitFor(() => expect(useSettingsDialog.getState().pagesLoading).toBe(false));
     expect(logFrontend).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("cannot register settings pages: Error: page failed"),
