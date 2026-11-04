@@ -635,7 +635,15 @@ function CategoryFilter({
       detail: String(counts.get(c)),
     })),
   ];
-  return <Select aria-label={tx("Category")} value={value} options={options} onChange={onChange} />;
+  return (
+    <Select
+      aria-label={tx("Category")}
+      className={styles.categorySelect}
+      value={value}
+      options={options}
+      onChange={onChange}
+    />
+  );
 }
 
 /** The marketplace index URL, editable in place. */
@@ -722,7 +730,7 @@ function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalle
       </header>
       <div className={styles.marketOverview}>
         {!entry.compatible && (
-          <p className={styles.notice} role="note">
+          <p className={clsx(styles.notice, styles.detailsNotice)} role="note">
             <Icon name="info" size={14} />
             <span>{tx`Needs plugin API ${entry.engine}. Update OpenIDEA to install it.`}</span>
           </p>

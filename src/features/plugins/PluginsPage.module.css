@@ -380,6 +380,14 @@
   min-width: 0;
 }
 
+.categorySelect {
+  width: 100%;
+}
+
+.detailsNotice {
+  margin: 0 0 12px;
+}
+
 .marketOverview {
   padding: 12px 16px;
   overflow: auto;
