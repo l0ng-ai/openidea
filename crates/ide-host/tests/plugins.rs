@@ -1934,6 +1934,37 @@ fn official_csv_editor_edits_the_shared_document() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
 }
 
+#[test]
+fn view_item_menus_name_a_declared_view() {
+    fn with_menu(extra: &str) -> impl Fn(&str) -> String + '_ {
+        move |m: &str| format!("{m}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n")
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+
+    let ok = hello_variant(
+        tmp.path(),
+        with_menu("menu = \"view.item.context\"\nview = \"greetings\"\nwhen = \"viewItemKind == English\""),
+    );
+    assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
+    let item = f.host.ui_items("menus").into_iter().find(|i| i.decl["menu"] == "view.item.context").unwrap();
+    assert_eq!(
+        (item.key.as_str(), item.decl["view"].as_str()),
+        ("view.item.context/greetings/word-count", Some("greetings"))
+    );
+    f.host.uninstall("hello").unwrap();
+
+    for (extra, message) in [
+        ("menu = \"view.item.context\"", "needs `view`"),
+        ("menu = \"view.item.context\"\nview = \"nope\"", "view \"nope\" is not declared"),
+        ("menu = \"projectView.context\"\nview = \"greetings\"", "`view` is only for view.item.context"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let err = f.host.install_from_dir(&hello_variant(dir.path(), with_menu(extra)), &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{extra}: {}", err.message);
+    }
+}
+
 /// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.
