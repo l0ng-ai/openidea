@@ -89,7 +89,7 @@ for ((i = 1; i <= MAX_ITER; i++)); do
     if ! cargo test "${crates[@]}" --no-fail-fast >"$check" 2>&1; then
         # Only failures that are not already known (docs/php-engine/known-failures.txt) count.
         new=$(grep -E '^test .* \.\.\. FAILED$' "$check" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' |
-            grep -vxF -f <(grep -v '^#' "$KNOWN" | tr -d '') || true)
+            grep -vxF -f <(grep -v '^#' "$KNOWN" | tr -d '\r') || true)
         if [[ -n "$new" ]] || ! grep -qE '^test .* \.\.\. FAILED$' "$check"; then
             say "tests are red after session $i (see $check): stopping"
             [[ -n "$new" ]] && printf '  new failure: %s\n' $new | tee -a "$LIVE"
