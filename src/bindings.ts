@@ -8,6 +8,13 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**  Devices `adb` knows about, online ones first. */
+	androidDevices: () => typedError<AndroidDevice[], IdeError>(__TAURI_INVOKE("android_devices")),
+	/**
+	 *  Follows `serial`'s log until the request is cancelled, in batches of lines.
+	 *  `clear` empties the device's buffers first.
+	 */
+	androidLogcat: (request: RequestId, serial: string, clear: boolean, onLines: Channel<LogcatLine[]>) => typedError<null, IdeError>(__TAURI_INVOKE("android_logcat", { request, serial, clear, onLines })),
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**  The welcome screen's project groups. */
@@ -724,6 +731,8 @@ export const commands = {
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
+	debugHotReload: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session })),
+	debugHotRestart: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_restart", { session })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
 	debugRunTo: (session: DebugSessionId, threadId: number, path: string, line: number, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("debug_run_to", { session, threadId, path, line, force })),
 	debugStop: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_stop", { session })),
@@ -1604,6 +1613,19 @@ export type AgentUsage = {
 	size: number,
 	/**  What the session has cost so far (ACP `usage_update.cost`), when the agent reports it. */
 	cost?: AgentCost | null,
+};
+
+/**  One entry of `adb devices -l`. */
+export type AndroidDevice = {
+	/**  `adb -s` value: a USB serial number, `emulator-5554`, or `host:port`. */
+	serial: string,
+	/**  `device` (usable), `offline`, `unauthorized` or `no permissions`. */
+	state: string,
+	model: string | null,
+	product: string | null,
+	/**  The device's own name from the build (`ro.product.device`). */
+	device: string | null,
+	transportId: string | null,
 };
 
 export type AppInfo = {
@@ -5033,6 +5055,22 @@ export type LogQuery = {
 	summaryOnly?: boolean,
 	/**  Inclusive refresh boundary. Clients join only verified linear prefixes. */
 	stopAt?: string | null,
+};
+
+/**  The single-letter logcat priority, in increasing severity. */
+export type LogcatLevel = "verbose" | "debug" | "info" | "warn" | "error" | "fatal" | 
+/**  A line logcat prints outside the message format (`--------- beginning of main`). */
+"unknown";
+
+/**  One [`LogcatLevel`]-tagged line of `adb logcat -v threadtime`. */
+export type LogcatLine = {
+	/**  `MM-DD HH:MM:SS.mmm`, as logcat prints it (no year, device time zone). */
+	time: string,
+	pid: number,
+	tid: number,
+	level: LogcatLevel,
+	tag: string,
+	message: string,
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";

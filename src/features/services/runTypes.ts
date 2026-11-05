@@ -9,7 +9,7 @@
 import { splitCommandLine } from "@/platform/commandLine";
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { registerRunConfigType, type RunConfigTypeContribution } from "@/workbench/contributions";
-import { isWindows } from "@/features/run/jvmTypes";
+import { hostOs } from "@/platform/remote";
 import { imageTag, targetTitle, type DockerTarget } from "./compose";
 import { connections, endpointOf, loadSettings, useServices } from "./store";
 import { tx } from "@/platform/i18n";
@@ -20,6 +20,7 @@ export const DOCKER_COMPOSE = "docker-compose";
 
 const GROUP = "Docker";
 const on = (v: string | undefined) => v === "true";
+const isWindows = () => hostOs() === "windows";
 
 /** One word for the platform shell the run executes the line with (`/bin/sh -c` or `cmd /C`). */
 export function shellQuote(word: string, windows = isWindows()): string {

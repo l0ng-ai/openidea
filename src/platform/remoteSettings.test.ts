@@ -3,6 +3,7 @@ import { CLIENT_SETTINGS_KEYS } from "./clientSettings";
 import { commands, call, type Settings } from "./ipc";
 import { loadSettings, useProject } from "./project";
 import { connectRemote, disableRemote, enableRemote, isRemoteWindow, remoteRouting } from "./remote";
+import { invoke as routedInvoke } from "./tauriCore";
 
 const handlers = vi.hoisted(() => new Map<string, () => void>());
 vi.mock("./ipc", async (original) => ({
@@ -69,15 +70,17 @@ describe("remote client settings", () => {
     },
     { gradle: null, expected: null },
   ])("accepts the released and current remote Gradle build models: $gradle", async ({ gradle, expected }) => {
-    enableRemote({
-      target: { kind: "wsl", distro: "Ubuntu" },
-      root: "/remote",
-      host: "Ubuntu",
-      os: "linux",
-      commands: ["build_model"],
-    });
-    invoke.mockResolvedValue(JSON.stringify({ gradle, maven: null }));
-    expect(await call(commands.buildModel())).toEqual({ gradle: expected, maven: null });
+    for (const command of ["build_model", "build_sync", "gradle_link_projects", "gradle_unlink_projects"]) {
+      enableRemote({
+        target: { kind: "wsl", distro: "Ubuntu" },
+        root: "/remote",
+        host: "Ubuntu",
+        os: "linux",
+        commands: [command],
+      });
+      invoke.mockResolvedValue(JSON.stringify({ gradle, maven: null }));
+      expect(await routedInvoke(command)).toEqual({ gradle: expected, maven: null });
+    }
   });
 
   it("ends remote routing before a successful local open is published, even at the same path", async () => {

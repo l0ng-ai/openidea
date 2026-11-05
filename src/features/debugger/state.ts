@@ -328,6 +328,8 @@ export function publishContext() {
   setContext("debugSessionActive", anyLive);
   setContext("debugSessionRunning", s?.status === "running");
   setContext("debugSessionPaused", s?.status === "paused");
+  // Dart and Flutter sessions: Hot Reload / Hot Restart.
+  setContext("debugSessionDart", !!s && rootOf(s).adapter === "dart");
   setContext("debugCanRerun", !!s && !!(rootOf(s).runConfig || rootOf(s).launch));
   setContext(
     "debugCanHotSwap",

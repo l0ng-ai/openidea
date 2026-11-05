@@ -52,6 +52,17 @@ const session: DebugSession = {
 };
 
 describe("debug tool window", () => {
+  it("offers Hot Reload and Hot Restart for Dart and Flutter sessions only", () => {
+    const hot = () => ["debug.hotReload", "debug.hotRestart"].map((name) => !!screen.queryByRole("button", { name }));
+    useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    expect(hot()).toEqual([false, false]);
+    unmount();
+    useDebug.setState({ sessions: { 1: { ...session, adapter: "dart", status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(hot()).toEqual([true, true]);
+  });
+
   it("shows preparation output, preserves a chosen tab and opens variables on pause", () => {
     useDebug.setState({ sessions: { 1: { ...session, status: "starting" } }, active: 1 });
     render(<DebugToolWindow />);

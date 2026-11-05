@@ -13,7 +13,7 @@ vi.mock("../dialogs", async (original) => ({
   confirmDialog: mocks.confirm,
 }));
 
-const { nodeMenu } = await import("../CommitView");
+const { deletableUnversioned, nodeMenu } = await import("../CommitView");
 const { deleteUnversioned } = await import("../changeOps");
 
 const file = (rel: string, unstaged: FileStatus["unstaged"]): ChangeNode => {
@@ -34,6 +34,16 @@ describe("Delete… for unversioned files", () => {
     expect(deleteItem(nodeMenu([file("a.txt", "untracked"), file("b.txt", "untracked")], ["/p"]))).toBeDefined();
     expect(deleteItem(nodeMenu([file("a.txt", "untracked"), file("c.txt", "modified")], ["/p"]))).toBeUndefined();
     expect(deleteItem(nodeMenu([file("c.txt", "modified")], ["/p"]))).toBeUndefined();
+  });
+
+  it("shows the Delete key and gives the key handler the same paths", () => {
+    expect(deleteItem(nodeMenu([file("a.txt", "untracked")], ["/p"]))).toMatchObject({ shortcut: "⌫" });
+    expect(deletableUnversioned([file("a.txt", "untracked"), file("b.txt", "untracked")])).toEqual([
+      "/p/a.txt",
+      "/p/b.txt",
+    ]);
+    expect(deletableUnversioned([file("a.txt", "untracked"), file("c.txt", "modified")])).toEqual([]);
+    expect(deletableUnversioned([])).toEqual([]);
   });
 
   it("asks first, then deletes each file", async () => {
