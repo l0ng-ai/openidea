@@ -196,6 +196,28 @@ fn write_index(
     path.to_string_lossy().into_owned()
 }
 
+/// First run: nothing cached yet, so listing the marketplace reads its index
+/// instead of showing an empty one; later listings use the index read.
+#[test]
+fn the_first_marketplace_listing_reads_the_index() {
+    let f = fixture();
+    assert!(f.host.market_listing(false).unwrap().is_empty(), "no marketplace configured");
+
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    let url = write_index(&market, &key, vec![entry], vec![], false);
+    f.host.set_market_url(Some(url.clone()));
+
+    let listed = f.host.market_listing(false).unwrap();
+    assert_eq!(listed.iter().map(|p| p.entry.id.as_str()).collect::<Vec<_>>(), ["acme.hello"]);
+
+    std::fs::remove_file(&url).unwrap();
+    assert_eq!(f.host.market_listing(false).unwrap().len(), 1, "the index read is kept");
+    assert!(f.host.market_listing(true).is_err(), "refresh reads the index again");
+}
+
 #[test]
 fn signed_marketplace_plugins_install_and_revocations_disable_them() {
     let f = fixture();
