@@ -3,6 +3,27 @@ import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { findLanguageDescription, loadSupport } from "./languages";
 
 describe("language modes", () => {
+  it("distinguishes PHP classes, method declarations and fields for imported schemes", async () => {
+    const support = await loadSupport(findLanguageDescription("PHP", "/tmp/palette.php")!);
+    const source = "<?php class Palette extends BasePalette { var $name; function example() {} }";
+    const found: Array<[string, string]> = [];
+    highlightTree(
+      support!.language.parser.parse(source),
+      tagHighlighter([
+        { tag: t.className, class: "class" },
+        { tag: t.function(t.definition(t.variableName)), class: "function" },
+        { tag: t.definition(t.propertyName), class: "field" },
+      ]),
+      (from, to, style) => found.push([source.slice(from, to), style]),
+    );
+    expect(found).toEqual([
+      ["Palette", "class"],
+      ["BasePalette", "class"],
+      ["$name", "field"],
+      ["example", "function"],
+    ]);
+  });
+
   it("recognizes AsciiDoc files and loads their lightweight syntax mode", async () => {
     for (const path of ["/docs/guide.adoc", "/docs/guide.asciidoc"]) {
       const description = findLanguageDescription("AsciiDoc", path);

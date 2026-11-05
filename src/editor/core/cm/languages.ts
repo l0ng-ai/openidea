@@ -5,6 +5,7 @@
  * and indentation fall back to the backend definition when the mode lacks them.
  */
 import { EditorState, Prec, type Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   LRLanguage,
   LanguageDescription,
@@ -246,6 +247,12 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
+  PHP: {
+    "; ,": t.separator,
+    "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,
+    "MethodDeclaration/Name FunctionDefinition/Name": t.function(t.definition(t.variableName)),
+    "PropertyDeclaration/VariableDeclarator/VariableName": t.definition(t.propertyName),
+  },
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,
@@ -255,8 +262,14 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
-  if (!extra || !(support.language instanceof LRLanguage)) return support;
-  const patched = new LanguageSupport(support.language.configure({ props: [styleTags(extra)] }), support.support);
+  const language =
+    extra && support.language instanceof LRLanguage
+      ? support.language.configure({ props: [styleTags(extra)] })
+      : support.language;
+  const patched = new LanguageSupport(language, [
+    support.support,
+    EditorView.editorAttributes.of({ "data-language": desc.name }),
+  ]);
   // `loadedSupport` reads `desc.support` synchronously; keep it on the patched instance.
   (desc as { support: LanguageSupport | undefined }).support = patched;
   return patched;
