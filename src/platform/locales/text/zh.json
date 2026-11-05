@@ -4915,6 +4915,7 @@
   "The registry has no agents for this system": "Registry 中没有适用于此系统的 Agent",
   "{version} available": "{version} 可用",
   "Installing {name} {version}…": "正在安装 {name} {version}…",
+  "Installing {name} in the background…": "正在后台安装 {name}…",
   "Website": "网站",
   "Removing…": "正在移除…",
   "Registry agents": "Registry Agent",
