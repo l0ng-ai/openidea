@@ -99,8 +99,6 @@ fn lazy_summaries_seek_and_index_survive_refresh_and_restart() {
     let cancel = ide_core::CancellationToken::new();
     cancel.cancel();
     assert!(repo.log_cancellable(&query, &cancel).is_err());
-    let progress = repo.index_log(&ide_core::CancellationToken::new()).unwrap();
-    assert_eq!((progress.indexed, progress.total, progress.running), (70, 70, false));
     assert_eq!(repo.log(&LogQuery { text: Some("needle body 5".into()), ..query.clone() }).unwrap().len(), 5);
     let new = commit(dir, "b", "new head");
     let refreshed = repo.log(&LogQuery { retain_until: Some(ids[0].clone()), ..query.clone() }).unwrap();
@@ -435,4 +433,32 @@ fn multiple_paths_are_simplified_together_at_merges() {
         assert_eq!(log[0].parents.len(), 2);
         assert_eq!(log[0].graph_parents.as_ref().unwrap().len(), 2);
     }
+}
+
+#[test]
+fn paths_are_literal_and_text_matches_bodies_or_hash_prefixes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    let star = commit(dir, "[a]", "star\n\nBody Needle");
+    let plain = commit(dir, "a", "plain");
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let ids = |q: LogQuery| repo.log(&q).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(ids(LogQuery { path: Some("[a]".into()), ..Default::default() }), vec![star.clone()]);
+    assert_eq!(ids(LogQuery { text: Some("body needle".into()), ..Default::default() }), vec![star.clone()]);
+    assert!(ids(LogQuery { text: Some("body needle".into()), text_match_case: true, ..Default::default() }).is_empty());
+    assert_eq!(ids(LogQuery { text: Some(plain[..7].to_uppercase()), ..Default::default() }), vec![plain]);
+}
+
+#[test]
+fn case_insensitive_text_folds_non_ascii() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    let hit = commit(dir, "a", "Ärger ПРИВЕТ");
+    commit(dir, "a", "other");
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let ids = |q: LogQuery| repo.log(&q).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(ids(LogQuery { text: Some("ärger привет".into()), ..Default::default() }), vec![hit.clone()]);
+    assert!(ids(LogQuery { text: Some("ärger".into()), text_match_case: true, ..Default::default() }).is_empty());
 }

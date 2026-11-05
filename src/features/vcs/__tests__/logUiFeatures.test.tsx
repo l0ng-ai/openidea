@@ -23,7 +23,6 @@ vi.mock("@/platform/ipc", async (original) => {
         status: "ok",
         data: await Promise.all(ids.map(async () => (await api.details()).data)),
       }),
-      vcsLogIndex: () => ok({ indexed: 0, total: 0, running: false }),
       vcsDiffRevisions: (...args: unknown[]) => api.diff(...args),
     },
   };

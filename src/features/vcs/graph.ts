@@ -264,14 +264,13 @@ export function collapseLinear<
   return { commits: visible, graph };
 }
 
-/** Ids of the loaded commits reachable from `head` (log order: children before parents). */
+/** Ids reachable from the given heads (log order: children before parents). */
 export function reachableFrom(
   commits: ReadonlyArray<{ id: string; parents: readonly string[] }>,
-  head: string | null,
+  heads: Iterable<string>,
 ): Set<string> {
-  const out = new Set<string>();
-  if (!head) return out;
-  out.add(head);
+  const out = new Set(heads);
+  if (!out.size) return out;
   for (const c of commits) if (out.has(c.id)) for (const p of c.parents) out.add(p);
   return out;
 }
