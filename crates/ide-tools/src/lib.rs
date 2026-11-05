@@ -395,6 +395,11 @@ pub fn parse_version(text: &str) -> Option<String> {
     None
 }
 
+/// A Windows App Execution Alias (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`).
+fn is_app_execution_alias(path: &Path) -> bool {
+    path.parent().and_then(Path::file_name).is_some_and(|d| d.eq_ignore_ascii_case("WindowsApps"))
+}
+
 /// A tool whose "command" is a plugin jar (e.g. a jdtls bundle) rather than an executable.
 fn is_bundle(command: &str) -> bool {
     command.ends_with(".jar")
@@ -491,8 +496,21 @@ impl Tools {
         cmd
     }
 
+    /// The interpreter that installs and probes Python tools. Windows installs `python.exe`
+    /// and the `py` launcher, not `python3.exe`; its `WindowsApps` entries are App Execution
+    /// Aliases that only open the Store unless the Store's Python is installed, so they count
+    /// only when they run.
     fn python(&self) -> Option<PathBuf> {
-        self.which_any(&["python3", "python"])
+        if self.platform.os != Os::Windows {
+            return self.which_any(&["python3", "python"]);
+        }
+        ["python", "py", "python3"].into_iter().filter_map(|c| self.which(c)).find(|p| {
+            !is_app_execution_alias(p) || {
+                let mut c = self.python_command(p);
+                c.arg("--version");
+                run_quiet(c, Duration::from_secs(5)).is_some_and(|(ok, _)| ok)
+            }
+        })
     }
 
     /// Executable `cmd` inside `dir`, honouring Windows suffixes.

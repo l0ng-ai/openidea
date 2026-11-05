@@ -700,6 +700,28 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     assert!(!env.root.join("rust-analyzer").exists());
 }
 
+/// Windows has `python.exe` and `py`, not `python3.exe`; the `WindowsApps` aliases only count
+/// when the Store's Python behind them runs.
+#[cfg(unix)]
+#[test]
+fn windows_python_skips_store_aliases_that_do_not_run() {
+    let env = Env::new();
+    let aliases = env.sys.parent().unwrap().join("Microsoft").join("WindowsApps");
+    env.script(&aliases, "python", "exit 9009");
+    env.script(&aliases, "python3", "exit 9009");
+    env.script(&env.sys, "py", "echo Python 3.12.0");
+    let windows = Platform { os: Os::Windows, arch: platform::Arch::X64 };
+    let found = || {
+        let dirs = std::env::join_paths([aliases.clone(), env.sys.clone()]).unwrap();
+        let python = Tools::with_paths(env.root.clone(), dirs, windows).python().unwrap();
+        let dir = python.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        format!("{dir}/{}", python.file_name().unwrap().to_string_lossy())
+    };
+    assert_eq!(found(), "sysbin/py");
+    env.script(&aliases, "python", "echo Python 3.13.0");
+    assert_eq!(found(), "WindowsApps/python", "the Store's Python runs");
+}
+
 #[cfg(unix)]
 #[test]
 fn python_probes_run_in_an_empty_private_directory() {
