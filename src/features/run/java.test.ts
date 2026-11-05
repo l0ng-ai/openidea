@@ -11,7 +11,7 @@ import { useProject } from "@/platform/project";
 import { applicationConfig, jvmModuleDir, jvmTestConfig } from "./application";
 import { buildRows } from "./ConfigChooser";
 import { jdwpLaunch } from "./javaDebug";
-import { jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
+import { firstTopLevelType, jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
 import { adoptTemporary, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
 import { detectRunTargets, targetConfig } from "./targets";
 
@@ -93,6 +93,47 @@ describe("scanJvmTargets (Java)", () => {
       [15, "suite", "a.b.OrderTest$Fixture", null, false],
       [16, "test", "a.b.OrderTest$Fixture", "inner", false],
     ]);
+  });
+
+  it("treats the public void methods of a TestNG class-level @Test as tests", () => {
+    const src = [
+      "package a.b;", // 0
+      "import org.testng.annotations.*;",
+      '@Test(groups = "unit")',
+      "public class PriceTest {", // 3
+      "  @BeforeMethod public void setUp() {}",
+      "  public void rounds() {}", // 5
+      '  @Test(dataProvider = "rows")',
+      "  public void parses(String row) {}", // 7
+      "  @DataProvider public Object[][] rows() { return null; }",
+      '  @DataProvider(name = "more") public void notATest() {}',
+      "  void packagePrivate() {}",
+      "  private void util() {}",
+      "  public static void shared() {}",
+      "  public int value() { return 1; }",
+      "}",
+    ].join("\n");
+    expect(pick(src, "src/test/java/a/b/PriceTest.java")).toEqual([
+      [3, "suite", "a.b.PriceTest", null, false],
+      [5, "test", "a.b.PriceTest", "rounds", false],
+      [7, "test", "a.b.PriceTest", "parses", false],
+    ]);
+  });
+});
+
+describe("firstTopLevelType", () => {
+  it("is the first top-level class, interface, enum, record or annotation, with the package", () => {
+    const src = [
+      "package demo;",
+      "import java.util.List; // class Commented {}",
+      '/* enum Old {} */ @Tag(type = List.class, name = "class Str")',
+      "interface Shape { class Nested {} }",
+      "public class Test { public static void main(String[] args) {} }",
+    ].join("\n");
+    expect(firstTopLevelType(src)).toBe("demo.Shape");
+    expect(firstTopLevelType("record Point(int x) {}\nclass Test {}")).toBe("Point");
+    expect(firstTopLevelType("@interface Marker {}\nclass Test {}")).toBe("Marker");
+    expect(firstTopLevelType("void main() {\n  IO.println(1);\n}\n")).toBeNull();
   });
 });
 
@@ -336,6 +377,18 @@ describe("debugging build tool configurations", () => {
     expect(out.env.JAVA_TOOL_OPTIONS).toMatch(AGENT);
     const merged = jdwpLaunch({ ...rc, env: { JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8" } })!;
     expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -agentlib:jdwp=/);
+  });
+
+  it("debugs a single Java file: the agent before the file, or for java only on a javac line", () => {
+    const source = jdwpLaunch(cfg({ id: "f", kind: "java-file", command: "/bin/java", args: ["Hi.java"] }))!;
+    expect(source.args).toEqual([expect.stringMatching(AGENT), "Hi.java"]);
+    const line = "mkdir -p /tmp/c && /bin/javac -g -d /tmp/c Test.java && /bin/java -cp /tmp/c Test";
+    const compiled = jdwpLaunch(
+      cfg({ id: "f", kind: "java-file", command: line, env: { JDK_JAVA_OPTIONS: "-Xmx1g" } }),
+    )!;
+    expect(compiled).toMatchObject({ command: line, args: [] });
+    expect(compiled.env.JDK_JAVA_OPTIONS).toMatch(/^-Xmx1g -agentlib:jdwp=/);
+    expect(compiled.env.JAVA_TOOL_OPTIONS).toBeUndefined();
   });
 
   it("leaves Application configurations and other debuggers alone", () => {

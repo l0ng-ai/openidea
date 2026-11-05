@@ -15,7 +15,7 @@ import {
   type InspectionNode,
 } from "../pages/editor/inspectionsModel";
 import { splitPageTarget } from "../model/staging";
-import { validateInspections } from "@/platform/inspections";
+import { JAVA_SERIAL_VERSION_INSPECTION, validateInspections } from "@/platform/inspections";
 import { NATURAL_LANGUAGES_PAGE, SPELLING_PAGE } from "../pages/editor/spelling";
 import { INSPECTIONS_PAGE } from "../pages/editor/inspections";
 import { EDITOR_PAGES } from "../pages/editor";
@@ -69,6 +69,7 @@ describe("inspections tree", () => {
     expect(tree.map((g) => g.name)).toEqual([
       "Cargo",
       "General",
+      "Java",
       "JavaScript",
       "Other",
       "Proofreading",
@@ -107,6 +108,19 @@ describe("inspections tree", () => {
     o = setEnabled(o, python, true);
     expect(o).toEqual({});
     expect(checkState(o, python)).toBe("on");
+  });
+
+  it("keeps an inspection that is off by default off until turned on", () => {
+    const serial = find(tree, `Java/${JAVA_SERIAL_VERSION_INSPECTION}`)!;
+    expect(checkState({}, serial)).toBe("off");
+    let o = setEnabled({}, serial, true);
+    expect(o).toEqual({ [JAVA_SERIAL_VERSION_INSPECTION]: { enabled: true } });
+    expect(checkState(o, serial)).toBe("on");
+    o = setEnabled(o, serial, false);
+    expect(o).toEqual({});
+    // Turning a whole group on or off only records what differs from each default.
+    const java = find(tree, "group:Java")!;
+    expect(setEnabled({}, java, true)).toEqual({ [JAVA_SERIAL_VERSION_INSPECTION]: { enabled: true } });
   });
 
   it("keeps severity and enabled overrides independent", () => {

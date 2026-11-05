@@ -230,7 +230,8 @@ html {
 
   /* metrics (theme JSON at 100%) */
   --h-titlebar: 40px;
-  --h-stripe-button: 48px;
+  /* tool window stripe button, icons only */
+  --stripe-icon-button: 28px;
   --h-header: 40px;
   --h-tabbar: 38px;
   --h-tab: 28px;
@@ -1351,7 +1352,7 @@ html {
   --h-row: 20px;
   --h-list-row: 20px;
   --h-statusbar: 24px;
-  --h-stripe-button: 40px;
+  --stripe-icon-button: 24px;
   --h-field: 24px;
   --h-button: 24px;
 }

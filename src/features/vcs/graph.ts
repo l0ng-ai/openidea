@@ -21,6 +21,9 @@ export interface GraphSegment {
   arrow?: "up" | "down";
   /** Destination row of a long-edge arrow in the displayed graph. */
   targetRow?: number;
+  /** Drawn lane positions when they differ from `from` / `to` (see {@link straightenLaneChanges}). */
+  fromX?: number;
+  toX?: number;
 }
 
 export interface GraphRow {
@@ -499,6 +502,43 @@ export function hideLongEdges(rows: readonly GraphRow[], minLength = LONG_EDGE):
       }
       start = -1;
     }
+  }
+  return out;
+}
+
+/**
+ * Draws a lane change as one straight diagonal across the row boundary, like IDEA: a half-row
+ * segment that changes lane and the vertical half of the neighbouring row that continues it meet
+ * halfway between the two lanes. Only the drawn positions change; `from` / `to` stay the lanes.
+ */
+export function straightenLaneChanges(rows: readonly GraphRow[]): GraphRow[] {
+  const out = rows.map((r) => ({ ...r, up: [...r.up], down: [...r.down] }));
+  const vertical = (s: GraphSegment, lane: number) => s.from === lane && s.to === lane && !s.arrow;
+  for (let r = 0; r < out.length; r++) {
+    const row = out[r]!;
+    // Leaving the node towards another lane: continues straight down in the next row.
+    const next = out[r + 1];
+    // Another line ending at the same lane (a merge into a lane that continues) keeps its position.
+    const shared = (list: readonly GraphSegment[], lane: number, end: "from" | "to") =>
+      list.filter((x) => x[end] === lane).length > 1;
+    row.down.forEach((s, i) => {
+      if (s.from === s.to || s.arrow || !next || shared(row.down, s.to, "to")) return;
+      const j = next.up.findIndex((u) => vertical(u, s.to) && u.edge === s.edge && u.fromX === undefined);
+      if (j < 0) return;
+      const mid = (s.from + s.to) / 2;
+      row.down[i] = { ...s, toX: mid };
+      next.up[j] = { ...next.up[j]!, fromX: mid };
+    });
+    // Converging into the node from another lane: continues a vertical line of the previous row.
+    const prev = out[r - 1];
+    row.up.forEach((s, i) => {
+      if (s.from === s.to || s.arrow || !prev || shared(prev.down, s.from, "to")) return;
+      const j = prev.down.findIndex((d) => vertical(d, s.from) && d.edge === s.edge && d.toX === undefined);
+      if (j < 0) return;
+      const mid = (s.from + s.to) / 2;
+      row.up[i] = { ...s, fromX: mid };
+      prev.down[j] = { ...prev.down[j]!, toX: mid };
+    });
   }
   return out;
 }

@@ -213,6 +213,8 @@ pub struct DbManager {
     /// App-wide SSH connections and host-key trust.
     ssh: Arc<SshManager>,
     saved_passwords: SecretStore,
+    /// Directory of the global data sources and their saved passwords ([`DbManager::with_global_sources`]).
+    global: Option<(PathBuf, SecretStore)>,
     history: Arc<HistoryStore>,
     /// Records executed statements in the history off the async threads, in order.
     recorder: std::sync::mpsc::Sender<(String, String, f64)>,
@@ -339,6 +341,7 @@ impl DbManager {
         }
         Self {
             saved_passwords: SecretStore::new(passwords, &root),
+            global: None,
             history,
             recorder,
             root,
@@ -351,8 +354,42 @@ impl DbManager {
         }
     }
 
+    /// Also lists the global data sources stored in `dir` (the app data directory).
+    pub fn with_global_sources(mut self, dir: PathBuf) -> Self {
+        let passwords = self.saved_passwords.scoped(&dir);
+        self.global = Some((dir, passwords));
+        self
+    }
+
+    /// The project's data sources, then the global ones (a project one wins on the same id).
     pub fn sources(&self) -> IdeResult<Vec<DataSource>> {
-        source::load(&self.root)
+        let mut all = source::load(&self.root)?;
+        let global: Vec<_> = self.global_sources().into_iter().filter(|g| all.iter().all(|s| s.id != g.id)).collect();
+        all.extend(global);
+        Ok(all)
+    }
+
+    fn global_sources(&self) -> Vec<DataSource> {
+        let Some((dir, _)) = &self.global else { return Vec::new() };
+        source::load_global(dir).unwrap_or_else(|e| {
+            tracing::warn!("global data sources: {}", e.message);
+            Vec::new()
+        })
+    }
+
+    /// Where the saved passwords of data source `id` live: app-wide for a global one.
+    fn saved_for(&self, id: &str) -> &SecretStore {
+        match &self.global {
+            Some((_, store)) if self.global_sources().iter().any(|s| s.id == id) => store,
+            _ => &self.saved_passwords,
+        }
+    }
+
+    fn store_of(&self, source: &DataSource) -> &SecretStore {
+        match &self.global {
+            Some((_, store)) if source.global => store,
+            _ => &self.saved_passwords,
+        }
     }
 
     /// The connection settings of target `target` ([`DataSource::resolved`]), with
@@ -372,18 +409,43 @@ impl DbManager {
     }
 
     /// Saves the data source list; connections of removed or changed sources are closed.
+    /// Global ones (`global`) go to the app-wide list, the others to the project's.
     pub async fn save_sources(&self, sources: Vec<DataSource>) -> IdeResult<()> {
         let old = self.sources().unwrap_or_default();
-        source::save(&self.root, &sources)?;
+        let (global, project): (Vec<_>, Vec<_>) = sources.iter().cloned().partition(|s| s.global);
+        match &self.global {
+            // Rewritten only when it changes: other projects' windows edit the same file.
+            Some((dir, _)) => {
+                if global != old.iter().filter(|s| s.global).cloned().collect::<Vec<_>>() {
+                    source::save_global(dir, &global)?;
+                }
+            }
+            None if !global.is_empty() => return Err(IdeError::invalid("global data sources are not available here")),
+            None => {}
+        }
+        source::save(&self.root, &project)?;
         for o in old {
             match sources.iter().find(|s| s.id == o.id) {
                 Some(n) if *n == o => {}
                 gone_or_changed => {
-                    if gone_or_changed.is_none() {
-                        for k in [o.id.clone(), secrets::ssh_key(&o.id)] {
-                            self.session_passwords.lock().remove(&k);
-                            self.saved_passwords.delete(&k);
+                    let keys = [o.id.clone(), secrets::ssh_key(&o.id)];
+                    match gone_or_changed {
+                        None => {
+                            for k in &keys {
+                                self.session_passwords.lock().remove(k);
+                                self.store_of(&o).delete(k);
+                            }
                         }
+                        // Made global or project-level: its saved passwords move along.
+                        Some(n) if n.global != o.global => {
+                            for k in &keys {
+                                if let Some(p) = self.store_of(&o).get(k) {
+                                    self.store_of(n).set(k, &p)?;
+                                    self.store_of(&o).delete(k);
+                                }
+                            }
+                        }
+                        Some(_) => {}
                     }
                     self.disconnect_source(&o.id).await;
                 }
@@ -395,7 +457,7 @@ impl DbManager {
     /// Remembers `password` for the session, and in the saved passwords when
     /// the data source saves passwords (`None` forgets it).
     pub async fn set_password(&self, id: &str, password: Option<String>, save: bool) -> IdeResult<()> {
-        self.remember(id.to_owned(), password, save).await
+        self.remember(id, id.to_owned(), password, save).await
     }
 
     /// [`DbManager::set_password`] for the SSH password / key passphrase.
@@ -407,10 +469,10 @@ impl DbManager {
             self.ssh.set_secret(&c, secret, save);
             return Ok(());
         }
-        self.remember(secrets::ssh_key(id), secret, save).await
+        self.remember(id, secrets::ssh_key(id), secret, save).await
     }
 
-    async fn remember(&self, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
+    async fn remember(&self, id: &str, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
         match &secret {
             Some(p) => {
                 self.session_passwords.lock().insert(key.clone(), p.clone());
@@ -419,10 +481,11 @@ impl DbManager {
                 self.session_passwords.lock().remove(&key);
             }
         }
+        let store = self.saved_for(id);
         let result = match (secret, save) {
-            (Some(p), true) => self.saved_passwords.set(&key, &p),
+            (Some(p), true) => store.set(&key, &p),
             _ => {
-                self.saved_passwords.delete(&key);
+                store.delete(&key);
                 Ok(())
             }
         };
@@ -433,18 +496,18 @@ impl DbManager {
         Ok(())
     }
 
-    async fn secret(&self, key: String, saved: bool) -> Option<String> {
+    async fn secret(&self, source: &DataSource, key: String, saved: bool) -> Option<String> {
         if let Some(p) = self.session_passwords.lock().get(&key) {
             return Some(p.clone());
         }
         if !saved {
             return None;
         }
-        self.saved_passwords.get(&key)
+        self.store_of(source).get(&key)
     }
 
     async fn password(&self, source: &DataSource) -> Option<String> {
-        match self.secret(source.id.clone(), source.driver != DbDriver::Sqlite && source.save_password).await {
+        match self.secret(source, source.id.clone(), source.driver != DbDriver::Sqlite && source.save_password).await {
             Some(p) => Some(p),
             None => source.url_password(),
         }
@@ -500,7 +563,7 @@ impl DbManager {
         let session = if config.is_empty() {
             let secret = match ssh_secret {
                 Some(s) => Some(s),
-                None => self.secret(secrets::ssh_key(&source.id), ssh.save_secret).await,
+                None => self.secret(source, secrets::ssh_key(&source.id), ssh.save_secret).await,
             };
             let target = SshTarget {
                 host: ssh.host.clone(),
@@ -1098,6 +1161,81 @@ impl DbManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ide_ssh::secrets::testing::files_containing;
+    use std::path::Path;
+
+    fn manager(dir: &Path) -> DbManager {
+        ide_ssh::secrets::testing::use_memory_store();
+        let data = dir.join("data");
+        let ssh = Arc::new(SshManager::new(data.join("ssh-passwords.json")));
+        DbManager::new(dir.join("project"), data.join("db-passwords.json"), data.join("db-history.json"), ssh)
+    }
+
+    #[tokio::test]
+    async fn saved_passwords_stay_off_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        manager(tmp.path()).set_password("s1", Some("hunter2-db".into()), true).await.unwrap();
+        manager(tmp.path()).set_ssh_secret("s1", Some("hunter2-tunnel".into()), true).await.unwrap();
+        assert_eq!(files_containing(tmp.path(), "hunter2-db"), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(tmp.path(), "hunter2-tunnel"), Vec::<PathBuf>::new());
+        let reopened = manager(tmp.path());
+        assert_eq!(reopened.secret(&DataSource::default(), "s1".into(), true).await.as_deref(), Some("hunter2-db"));
+        assert_eq!(
+            reopened.secret(&DataSource::default(), secrets::ssh_key("s1"), true).await.as_deref(),
+            Some("hunter2-tunnel")
+        );
+    }
+
+    #[tokio::test]
+    async fn moves_plaintext_passwords_of_older_versions_off_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project").to_string_lossy().into_owned();
+        let legacy = serde_json::json!({ project: { "s1": "old-db-pw" }, "/other": { "s2": "other-pw" } });
+        std::fs::create_dir_all(tmp.path().join("data")).unwrap();
+        std::fs::write(tmp.path().join("data/db-passwords.json"), legacy.to_string()).unwrap();
+        let m = manager(tmp.path());
+        assert_eq!(m.secret(&DataSource::default(), "s1".into(), true).await.as_deref(), Some("old-db-pw"));
+        assert_eq!(files_containing(tmp.path(), "old-db-pw"), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(tmp.path(), "other-pw"), Vec::<PathBuf>::new());
+        let other = SecretStore::new(tmp.path().join("data/db-passwords.json"), Path::new("/other"));
+        assert_eq!(other.get("s2").as_deref(), Some("other-pw"));
+    }
+
+    #[tokio::test]
+    async fn global_data_sources_are_shared_by_projects_with_their_passwords() {
+        ide_ssh::secrets::testing::use_memory_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, one, two) = (tmp.path().join("app"), tmp.path().join("one"), tmp.path().join("two"));
+        let manager = |root: &std::path::Path| {
+            let ssh = Arc::new(SshManager::new(app.join("ssh-passwords.json")));
+            DbManager::new(root.to_path_buf(), app.join("passwords.json"), app.join("history.json"), ssh)
+                .with_global_sources(app.clone())
+        };
+        let (a, b) = (manager(&one), manager(&two));
+        let source = |id: &str, global: bool| DataSource {
+            id: id.into(),
+            name: id.into(),
+            driver: DbDriver::Postgres,
+            save_password: true,
+            global,
+            ..Default::default()
+        };
+        a.save_sources(vec![source("local", false), source("shared", false)]).await.unwrap();
+        a.set_password("shared", Some("pw".into()), true).await.unwrap();
+        // Made global: listed in the other project too, with its saved password.
+        a.save_sources(vec![source("local", false), source("shared", true)]).await.unwrap();
+        let ids = |m: &DbManager| m.sources().unwrap().into_iter().map(|s| (s.id, s.global)).collect::<Vec<_>>();
+        assert_eq!(ids(&a), [("local".into(), false), ("shared".into(), true)]);
+        assert_eq!(ids(&b), [("shared".into(), true)]);
+        assert_eq!(b.password(&b.source("shared").unwrap()).await.as_deref(), Some("pw"));
+        let project_file = std::fs::read_to_string(one.join(".openidea/data-sources.toml")).unwrap();
+        assert!(!project_file.contains("shared") && !project_file.contains("global"), "{project_file}");
+        assert!(!std::fs::read_to_string(app.join("data-sources.toml")).unwrap().contains("global"));
+        // Made project-level again: gone from the other project, the password stays with it.
+        a.save_sources(vec![source("local", false), source("shared", false)]).await.unwrap();
+        assert!(b.sources().unwrap().is_empty());
+        assert_eq!(a.password(&a.source("shared").unwrap()).await.as_deref(), Some("pw"));
+    }
 
     #[tokio::test]
     async fn clickhouse_rejects_manual_transactions_and_table_edits_without_connecting() {

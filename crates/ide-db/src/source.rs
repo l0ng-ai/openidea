@@ -1,6 +1,7 @@
-//! Data sources: per-project connection settings in `.openidea/data-sources.toml`.
-//! Passwords never go there: saved ones live in [`crate::secrets`], the others
-//! only in memory for the session.
+//! Data sources: per-project connection settings in `.openidea/data-sources.toml`, and
+//! global ones (IDEA's Make Global: listed in every project) in `data-sources.toml` of the
+//! app data directory. Passwords never go there: saved ones live in [`crate::secrets`],
+//! the others only in memory for the session.
 
 use ide_core::{IdeError, IdeResult, IpcPath, project_dir};
 use serde::{Deserialize, Serialize};
@@ -181,6 +182,9 @@ pub struct DataSource {
     pub options: DbOptions,
     pub introspection: DbIntrospection,
     pub properties: Vec<DbProperty>,
+    /// Stored app-wide and listed in every project. Implied by the file it is read from,
+    /// so not written to it.
+    pub global: bool,
 }
 
 impl Default for DataSource {
@@ -209,6 +213,7 @@ impl Default for DataSource {
             options: DbOptions::default(),
             introspection: DbIntrospection::default(),
             properties: Vec::new(),
+            global: false,
         }
     }
 }
@@ -397,9 +402,32 @@ struct SourcesFile {
     sources: Vec<DataSource>,
 }
 
+/// The project's data sources.
 pub fn load(root: &Path) -> IdeResult<Vec<DataSource>> {
-    let path = project_dir::path(root, FILE);
-    let text = match std::fs::read_to_string(&path) {
+    read(&project_dir::path(root, FILE))
+}
+
+/// Saves the project's data sources.
+pub fn save(root: &Path, sources: &[DataSource]) -> IdeResult<()> {
+    write(&project_dir::path(root, FILE), sources)
+}
+
+/// The global data sources stored in `dir` (the app data directory).
+pub fn load_global(dir: &Path) -> IdeResult<Vec<DataSource>> {
+    let mut sources = read(&dir.join(FILE))?;
+    for s in &mut sources {
+        s.global = true;
+    }
+    Ok(sources)
+}
+
+/// Saves the global data sources in `dir`.
+pub fn save_global(dir: &Path, sources: &[DataSource]) -> IdeResult<()> {
+    write(&dir.join(FILE), sources)
+}
+
+fn read(path: &Path) -> IdeResult<Vec<DataSource>> {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
@@ -408,19 +436,23 @@ pub fn load(root: &Path) -> IdeResult<Vec<DataSource>> {
     Ok(file.sources)
 }
 
-pub fn save(root: &Path, sources: &[DataSource]) -> IdeResult<()> {
+fn write(path: &Path, sources: &[DataSource]) -> IdeResult<()> {
     for s in sources {
         if s.id.is_empty() || s.name.trim().is_empty() {
             return Err(IdeError::invalid("every data source needs an id and a name"));
         }
     }
-    let path = project_dir::path(root, FILE);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let text = toml::to_string_pretty(&SourcesFile { sources: sources.to_vec() })
-        .map_err(|e| IdeError::internal(e.to_string()))?;
-    std::fs::write(path, text)?;
+    let internal = |e: &dyn std::fmt::Display| IdeError::internal(e.to_string());
+    let mut value = toml::Value::try_from(SourcesFile { sources: sources.to_vec() }).map_err(|e| internal(&e))?;
+    if let Some(list) = value.get_mut("data-source").and_then(toml::Value::as_array_mut) {
+        for table in list.iter_mut().filter_map(toml::Value::as_table_mut) {
+            table.remove("global");
+        }
+    }
+    std::fs::write(path, toml::to_string_pretty(&value).map_err(|e| internal(&e))?)?;
     Ok(())
 }
 
