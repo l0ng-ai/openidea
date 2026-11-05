@@ -464,9 +464,17 @@ describe("bridge events", () => {
     expect(useTasks.getState().tasks.find((t) => t.id === "plugin:7")?.done).toBe(true);
   });
 
-  it("shows plugin notifications and tracks theme changes", () => {
+  it("shows plugin notifications, copies to clipboard, opens URLs and tracks theme changes", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
     handlePluginEvent({ type: "notification", pluginId: "p", level: "info", title: "Done", body: "3 words" });
     expect(notes).toEqual([{ group: "plugins", level: "info", title: "Done", body: "3 words" }]);
+    handlePluginEvent({ type: "copyToClipboard", pluginId: "p", text: "https://github.com/o/r" });
+    expect(writeText).toHaveBeenCalledWith("https://github.com/o/r");
+    handlePluginEvent({ type: "openUrl", pluginId: "p", url: "https://github.com/o/r/blob/main/a.rs" });
+    expect(open).toHaveBeenCalledWith("https://github.com/o/r/blob/main/a.rs", "_blank", "noopener");
+    open.mockRestore();
     handlePluginEvent({ type: "themeChanged", theme: null });
     expect(usePlugins.getState().activeTheme).toBeNull();
   });

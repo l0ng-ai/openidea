@@ -32,7 +32,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.0";
+pub const API_VERSION: &str = "1.1";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -45,6 +45,14 @@ pub const CANCELLED: &str = "was cancelled";
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
     fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
+    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
+        let _ = (client, text);
+        Ok(())
+    }
+    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
+        let _ = (client, url);
+        Ok(())
+    }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
     /// Roots of the open projects.
@@ -66,6 +74,10 @@ pub trait HostApi: Send + Sync {
     fn storage_set(&self, key: &str, value: Option<String>) -> Result<(), HostError>;
     fn storage_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError>;
+    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
+        let _ = root;
+        Ok(Vec::new())
+    }
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
     /// Subscribes to (or unsubscribes from) a kind of workbench event.
     /// Project files matching `glob` (root-relative), at most `limit`.
