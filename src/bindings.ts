@@ -6016,6 +6016,8 @@ export type RegistryAgent = {
 	installed: string | null,
 	/**  Whether [`Self::version`] is newer than the installed one. */
 	update: boolean,
+	/**  An install of it is running (it goes on after the Settings page that started it closes). */
+	installing: boolean,
 };
 
 export type RegistryDistribution = 
