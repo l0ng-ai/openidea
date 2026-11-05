@@ -1338,6 +1338,28 @@ fn official_material_icons_install() {
     );
 }
 
+#[test]
+fn official_catppuccin_icons_install() {
+    let f = fixture(Limits::default());
+    let info = f.install(&repo().join("plugins/official/catppuccin-icons"));
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    for flavor in ["mocha", "macchiato", "frappe", "latte"] {
+        let theme: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                repo().join(format!("plugins/official/catppuccin-icons/icons/{flavor}/theme.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let defined = theme["iconDefinitions"].as_object().unwrap().len();
+        let svgs = f.host.assets("openidea.catppuccin-icons", &icon_theme_svg_prefix(flavor)).unwrap();
+        assert_eq!(svgs.len(), defined, "{flavor}: every icon survives the sanitiser");
+        let map = &f.host.assets("openidea.catppuccin-icons", &icon_theme_map_asset(flavor)).unwrap()[0].1;
+        assert!(map.contains("\"src\":\"folder-src\""), "{flavor}: folder names are part of the mapping");
+        assert!(map.contains("\"openIcon\":\"folder-src-open\""), "{flavor}: open folders have their icon");
+    }
+}
+
 /// An icon theme with thousands of SVGs (sanitising, package size, start-up).
 #[test]
 fn thousands_of_icons_install_and_reload_within_budget() {

@@ -20,6 +20,7 @@ plugins/
 └─ official/
    ├─ harbor-night/           # data only: a colour theme (UI and editor scheme)
    ├─ material-icons/         # data only: a file icon theme
+   ├─ catppuccin-icons/       # data only: four file icon themes, generated from catppuccin/vscode-icons
    ├─ solidity/               # language + syntax provider + run configurations
    ├─ string-tools/           # 26 text commands, versioned multi-cursor edits
    ├─ key-promoter/           # action events, storage
