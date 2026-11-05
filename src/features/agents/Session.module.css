@@ -46,9 +46,14 @@
   border-bottom: 1px solid var(--border);
   flex: none;
   min-width: 0;
+  overflow: hidden;
 }
+.header > * {
+  flex: none;
+}
+/* Shrinks ahead of the meters. */
 .title {
-  flex: 0 1 auto;
+  flex: 0 1000 auto;
   min-width: 0;
   font-weight: 600;
   color: var(--fg-strong);
@@ -539,11 +544,17 @@
   white-space: nowrap;
 }
 
+/* Meters that don't fit wrap onto a hidden second row instead of being cut in half. */
 .meters {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 22px;
+  overflow: hidden;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  align-content: flex-start;
+  gap: 0 10px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -552,6 +563,7 @@
 .meter {
   display: inline-flex;
   align-items: center;
+  height: 22px;
   gap: 5px;
 }
 .usageBar {
