@@ -631,6 +631,21 @@ pub async fn vcs_diff_revisions(
     ide_host::ops::vcs::vcs_diff_revisions(&state.host, window.label(), repo, from, to).await
 }
 
+/// Added and deleted lines between two revisions (Git Log › lines added and deleted).
+/// `paths` limits the diff to those repository-relative paths; empty diffs every file.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_diff_numstat(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    from: String,
+    to: String,
+    paths: Vec<String>,
+) -> IdeResult<Vec<FileLineStats>> {
+    ide_host::ops::vcs::vcs_diff_numstat(&state.host, window.label(), repo, from, to, paths).await
+}
+
 /// The best common ancestor of `a` and `b` (`git merge-base`), if any.
 #[tauri::command]
 #[specta::specta]

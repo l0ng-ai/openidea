@@ -11,6 +11,7 @@ const OPTIONS: { key: Flag; label: string }[] = [
   { key: "tagNames", label: "Show tag names" },
   { key: "commitTimestamp", label: "Show commit time rather than author time" },
   { key: "refsOnLeft", label: "Show references on the left" },
+  { key: "showLineStats", label: "Show lines added and deleted" },
 ];
 
 const COLUMNS: { key: Flag; label: string }[] = [
