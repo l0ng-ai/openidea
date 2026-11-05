@@ -300,7 +300,7 @@ export function pageWindow({ page, pageSize, rows, hasMore, total }: PageState):
   };
 }
 
-/** A page is read by fetching every row up to its end and skipping those before it. */
+/** A page is read by running the query again: the backend reads past the rows before it and returns only the page. */
 export function pageFetch(page: number, pageSize: number): { maxRows: number; skip: number } {
-  return { maxRows: (page + 1) * pageSize, skip: page * pageSize };
+  return { maxRows: pageSize, skip: page * pageSize };
 }

@@ -650,15 +650,19 @@ function promptOf(id: string): string {
   return useDatabase.getState().completion[id]?.defaultSchema || sourceById(id)?.name || id;
 }
 
-/** Runs `statements` on `id`, logging to Output; errors stop the batch (backend). */
+/**
+ * Runs `statements` on `id`, logging to Output; errors stop the batch (backend).
+ * Results keep `maxRows` rows after the first `skip`, which the backend reads past.
+ */
 async function run(
   id: string,
   statements: SqlStatement[],
   request: RequestId,
   maxRows = useDatabase.getState().maxRows,
+  skip = 0,
 ): Promise<DbStatementOutcome[]> {
   const wasConnected = useDatabase.getState().connected.has(id);
-  const outcomes = await withConnection(id, () => call(commands.dbExecute(request, id, statements, maxRows)));
+  const outcomes = await withConnection(id, () => call(commands.dbExecute(request, id, statements, skip, maxRows)));
   if (!wasConnected) log("info", "Connected");
   for (const o of outcomes) {
     log("statement", o.statement.text, `${promptOf(id)}>`);
@@ -947,7 +951,7 @@ function patchResult(tabId: number, p: Partial<ResultTab>) {
 
 /**
  * Shows page `page` of `pageSize` rows of result tab `tabId`: its query runs
- * again, fetching the rows up to the page's end (IDEA's result paging).
+ * again and the backend returns only that page (IDEA's result paging).
  * `rerun` also forgets the counted total.
  */
 export async function loadResultPage(tabId: number, page: number, pageSize: number, rerun = false): Promise<void> {
@@ -957,12 +961,12 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
   patchResult(tabId, { busy: true });
   const { maxRows, skip } = pageFetch(page, pageSize);
   try {
-    const [outcome] = await run(tab.sourceId, [tab.outcome.statement], nextRequestId(), maxRows);
+    const [outcome] = await run(tab.sourceId, [tab.outcome.statement], nextRequestId(), maxRows, skip);
     const r = outcome?.result;
     if (r) {
       const sizeChanged = pageSize !== tab.pageSize;
       patchResult(tabId, {
-        outcome: { ...outcome, result: { ...r, rows: r.rows.slice(skip) } },
+        outcome,
         page,
         pageSize,
         busy: false,

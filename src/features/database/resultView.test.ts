@@ -298,6 +298,6 @@ describe("result pages", () => {
 
   it("slices the rows of a page from a fetch of every row up to it", () => {
     expect(pageFetch(0, 500)).toEqual({ maxRows: 500, skip: 0 });
-    expect(pageFetch(2, 100)).toEqual({ maxRows: 300, skip: 200 });
+    expect(pageFetch(2, 100)).toEqual({ maxRows: 100, skip: 200 });
   });
 });
