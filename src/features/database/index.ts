@@ -7,6 +7,7 @@
 import { lazyComponent } from "@/ui";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
+import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
 import {
   registerEditorKind,
@@ -94,6 +95,7 @@ export function activate(): () => void {
     }),
     () => setFileDecorations("database", new Map()),
     watchIdleConnections(),
+    installTableEditorFocus(),
     registerDatabaseTreeActions(),
     registerActions([
       {
@@ -151,6 +153,22 @@ export function activate(): () => void {
           }
           await executeInView(e.view, e.ctx.path);
         },
+      },
+      {
+        id: "db.submitChanges",
+        title: "Submit",
+        category: "Tools",
+        keywords: ["table editor", "apply changes", "commit"],
+        when: "dbTableEditorFocus && dbTableEditorChanges",
+        run: () => activeTableEditor()?.submit(),
+      },
+      {
+        id: "db.revertChanges",
+        title: "Revert",
+        category: "Tools",
+        keywords: ["table editor", "discard changes", "undo"],
+        when: "dbTableEditorFocus && dbTableEditorChanges",
+        run: () => activeTableEditor()?.revert(),
       },
       {
         id: "db.explainPlan",

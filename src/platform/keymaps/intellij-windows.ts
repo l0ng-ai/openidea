@@ -350,6 +350,9 @@ export const intellijWindows: Record<string, string[]> = {
   "graphql.runQuery": ["Ctrl+Enter"],
   "http.runAll": [],
   "db.execute": ["Ctrl+Enter"],
+  // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).
+  "db.submitChanges": ["Ctrl+Enter"],
+  "db.revertChanges": ["Ctrl+Alt+Z"],
   "db.showToolWindow": [],
   "agents.newTask": ["Ctrl+Alt+Shift+I"],
   "agents.showToolWindow": [],

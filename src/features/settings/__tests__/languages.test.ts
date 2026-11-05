@@ -78,7 +78,9 @@ describe("languages settings", () => {
     }
     expect(PHP_LANGUAGE_LEVELS[0]).toBe("");
     expect(PHP_LANGUAGE_LEVELS).toContain("5.6");
-    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("8.5");
+    // Newest first after Auto (#1557).
+    expect(PHP_LANGUAGE_LEVELS[1]).toBe("8.5");
+    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("5.6");
   });
 
   it("finds the PHP page by its language level", () => {

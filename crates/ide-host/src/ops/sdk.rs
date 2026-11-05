@@ -52,6 +52,14 @@ pub fn sdk_python_effective(host: &Host, window: &str) -> IdeResult<Option<ide_c
     Ok(ide_sdk::apply::python_interpreter(&project.root, &project.settings.effective()).map(Into::into))
 }
 
+/// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
+pub fn sdk_php_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core::IpcPath>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let settings = project.settings.effective();
+    Ok(ide_sdk::apply::setting_path(&project.root, &settings.languages.php.interpreter).map(Into::into))
+}
+
 /// The PHP language level of the project `path` belongs to (a workspace member, by path, as
 /// the language server configuration picks it).
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
@@ -198,6 +206,7 @@ pub async fn sdk_python_pip(
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window) });
+    d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
     d.add(
         "sdk_php_language_level",
         |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?).await },

@@ -98,7 +98,13 @@ export async function produceResolved(input: ContextInput, dir = false): Promise
   // Project configurations (tests, cargo, gradle…) need no runtime lookup.
   if (named.config && !named.config.id.startsWith("context:file:")) return named;
   const lang = scriptLanguage(input.path, input.content);
-  const env = await toolEnv(neededTools(fresh), input.path, fresh.root, lang === "python" || lang === "shebang");
+  const env = await toolEnv(
+    neededTools(fresh),
+    input.path,
+    fresh.root,
+    lang === "python" || lang === "shebang",
+    lang === "php" || lang === "shebang",
+  );
   return produceContext(fresh, env);
 }
 
