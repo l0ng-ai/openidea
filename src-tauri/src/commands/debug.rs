@@ -100,6 +100,18 @@ pub async fn debug_pause(state: State<'_, AppState>, session: DebugSessionId, th
 
 #[tauri::command]
 #[specta::specta]
+pub async fn debug_hot_reload(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
+    ide_host::ops::debug::debug_hot_reload(&state.host, "", session).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_hot_restart(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
+    ide_host::ops::debug::debug_hot_restart(&state.host, "", session).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn debug_step(
     state: State<'_, AppState>,
     session: DebugSessionId,
