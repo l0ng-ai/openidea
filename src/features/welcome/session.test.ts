@@ -1,14 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const openProject = vi.fn();
+const connectRemote = vi.fn();
+const UNC = String.raw`\\wsl.localhost\Ubuntu\home\me\app`;
 
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return {
     ...real,
     isTauri: () => true,
-    commands: { ...real.commands, settingsGet: async () => ({ general: { reopenLastProject: true } }) },
+    commands: {
+      ...real.commands,
+      settingsGet: async () => ({ general: { reopenLastProject: true } }),
+      wslResolve: async (p: string) =>
+        p === UNC ? { target: { kind: "wsl", distro: "Ubuntu" }, path: "/home/me/app" } : null,
+    },
   };
+});
+vi.mock("@/platform/remote", async (orig) => {
+  const real = await orig<typeof import("@/platform/remote")>();
+  return { ...real, connectRemote: (t: unknown, p: string) => connectRemote(t, p) };
 });
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "main" }) }));
 vi.mock("@/platform/project", async (orig) => {
@@ -21,6 +32,7 @@ const { provideStartupLaunch, useProject } = await import("@/platform/project");
 
 beforeEach(() => {
   openProject.mockReset();
+  connectRemote.mockReset();
   useProject.setState({ project: null, lightEdit: false });
   sessionStorage.clear();
   localStorage.setItem("openidea.session.openProject", "/p/last");
@@ -66,5 +78,13 @@ describe("reopenLastProject", () => {
     provideStartupLaunch(Promise.resolve());
     await reopenLastProject();
     expect(openProject).toHaveBeenCalledWith("/p/last");
+  });
+
+  it("restores a session saved as a WSL UNC folder through the distro", async () => {
+    localStorage.setItem("openidea.session.openProject", UNC);
+    provideStartupLaunch(Promise.resolve());
+    await reopenLastProject();
+    expect(connectRemote).toHaveBeenCalledWith({ kind: "wsl", distro: "Ubuntu" }, "/home/me/app");
+    expect(openProject).not.toHaveBeenCalled();
   });
 });

@@ -63,7 +63,9 @@ describe("restoring forwarded ports", () => {
   it("forwards the ports of this host and folder again after reconnecting", async () => {
     const { useRemote } = await import("@/platform/remote");
     const { forwardPort, restorePorts, savedPorts } = await import("./ports");
-    useRemote.setState({ session: { sshConfig: "lh", root: "/srv/app", host: "h", commands: [] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "lh" }, root: "/srv/app", host: "h", os: "linux", commands: [] },
+    });
     await forwardPort(8080);
     expect(savedPorts()).toEqual([8080]);
     // Reconnected: the new connection forwards nothing yet.
@@ -73,7 +75,13 @@ describe("restoring forwarded ports", () => {
     expect(ipc.remoteForwardPort).toHaveBeenCalledWith(8080);
     expect(usePorts.getState().ports).toEqual([{ remotePort: 8080, localPort: 8080 }]);
     // Another folder on the same host has its own list.
-    useRemote.setState({ session: { sshConfig: "lh", root: "/srv/other", host: "h", commands: [] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "lh" }, root: "/srv/other", host: "h", os: "linux", commands: [] },
+    });
+    expect(savedPorts()).toEqual([]);
+    useRemote.setState({
+      session: { target: { kind: "wsl", distro: "lh" }, root: "/srv/app", host: "lh", os: "linux", commands: [] },
+    });
     expect(savedPorts()).toEqual([]);
     useRemote.setState({ session: null });
   });

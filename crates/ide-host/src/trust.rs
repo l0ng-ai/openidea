@@ -251,6 +251,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_disconnect"
             | "remote_connect"
             | "remote_bootstrap_list"
+            | "wsl_distros"
+            | "wsl_resolve"
             | "remote_list"
             | "remote_open"
             | "remote_of"

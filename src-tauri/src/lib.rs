@@ -16,6 +16,7 @@ mod macos;
 mod menu;
 mod plugin_web;
 mod remote_dev;
+mod remote_wsl;
 
 mod state;
 mod theme_frame;
