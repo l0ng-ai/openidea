@@ -21,6 +21,7 @@ import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles } from "./conflicts";
 import {
   mergeChanged,
+  mergeStripe,
   mergeTheme,
   resultControls,
   resultMarks,
@@ -176,6 +177,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       }),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
       sideControls(which, controls),
+      mergeStripe(which),
       mergeTheme,
     ];
     const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side("left") });
@@ -192,6 +194,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         embeddedEditorExtensions(path),
         lang,
         resultMarks,
+        mergeStripe("result"),
         resultControls(controls),
         mergeTheme,
         EditorView.updateListener.of((u) => {

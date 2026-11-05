@@ -9,7 +9,8 @@
 
 <!-- Required. Commands you actually ran and their results; what else this could
      affect and how you checked it still works.
-     UI changes: before/after screenshots. Multi-step interactions: a recording.
+     Visible UI changes: before/after screenshots (not for removed UI or copy-only
+     changes). Multi-step interactions: a recording.
      Backend changes: logs or command output. -->
 
 ## Review focus

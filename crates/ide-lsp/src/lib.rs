@@ -18,6 +18,7 @@ mod inspect;
 pub mod jdtls;
 mod launch;
 mod library_source;
+mod loading;
 mod pull;
 mod scope;
 mod server;
@@ -214,6 +215,15 @@ fn runtime_handle() -> tokio::runtime::Handle {
             .handle()
             .clone()
     })
+}
+
+fn goto_is_empty(r: &Option<lsp::GotoDefinitionResponse>) -> bool {
+    match r {
+        None => true,
+        Some(lsp::GotoDefinitionResponse::Scalar(_)) => false,
+        Some(lsp::GotoDefinitionResponse::Array(v)) => v.is_empty(),
+        Some(lsp::GotoDefinitionResponse::Link(v)) => v.is_empty(),
+    }
 }
 
 fn rpc_err(server: &str, method: &str, e: RpcError) -> IdeError {
@@ -1163,8 +1173,13 @@ impl LspManager {
         let mut out = Outcome::new();
         for t in targets.iter().filter(|t| snap.asks(t, pos)) {
             let r: IdeResult<Option<lsp::Hover>> =
-                self.call(t, "textDocument/hover", snap.pos_params(t, pos), Some(&cancel), DEFAULT_TIMEOUT).await;
+                loading::while_loading(&t.server, Some(&cancel), loading::LOADING_WAIT, Option::is_none, || {
+                    self.call(t, "textDocument/hover", snap.pos_params(t, pos), Some(&cancel), DEFAULT_TIMEOUT)
+                })
+                .await;
             match r {
+                // Still loading: no documentation yet, not an error.
+                Err(e) if e.kind == ErrorKind::TimedOut && t.server.is_loading() => out.value = Some(None),
                 Ok(Some(h)) => {
                     if let Some(h) = convert::hover(&self.conv(t.enc()), &snap.path, h) {
                         return Ok(Some(h));
@@ -1254,16 +1269,17 @@ impl LspManager {
     ) -> IdeResult<Vec<Location>> {
         let mut out = Outcome::new();
         for t in targets.iter().filter(|t| snap.asks(t, pos)) {
-            match self
-                .call::<_, Option<lsp::GotoDefinitionResponse>>(
+            let r = loading::while_loading(&t.server, cancel, loading::LOADING_WAIT, goto_is_empty, || {
+                self.call::<_, Option<lsp::GotoDefinitionResponse>>(
                     t,
                     method,
                     snap.pos_params(t, pos),
                     cancel,
                     DEFAULT_TIMEOUT,
                 )
-                .await
-            {
+            })
+            .await;
+            match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, pos, locs).await;

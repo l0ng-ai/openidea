@@ -1,5 +1,5 @@
 /**
- * Find in the Run console output: every occurrence in every line, with IDEA's
+ * Find in console output (Run, Debug): every occurrence in every line, with IDEA's
  * Match Case / Words / Regex options. Matches carry the line's stable id so the
  * bar can keep the current match while output keeps arriving.
  */
@@ -17,7 +17,7 @@ export const DEFAULT_FIND_OPTIONS: FindOptions = {
 };
 
 export interface ConsoleMatch {
-  /** Index into the model's current lines. */
+  /** Index into the console's current lines. */
   line: number;
   /** Stable line id (survives trimming of older lines). */
   lineId: number;

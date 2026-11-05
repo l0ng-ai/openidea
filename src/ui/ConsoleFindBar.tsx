@@ -1,11 +1,12 @@
-/** ⌘F in the Run console: the IDEA find bar (Match Case / Words / Regex, n/m, previous/next). */
+/** ⌘F in a console (Run, Debug): the IDEA find bar (Match Case / Words / Regex, n/m, previous/next). */
 import { type KeyboardEvent, type RefObject } from "react";
 import clsx from "clsx";
-import { IconButton, SearchField } from "@/ui";
+import { IconButton } from "./Button";
+import { SearchField } from "./Input";
 import { formatBinding, hasPrimaryModifier } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
-import type { FindOptions } from "./find";
-import styles from "./Run.module.css";
+import type { FindOptions } from "./consoleFind";
+import styles from "./ConsoleFindBar.module.css";
 
 export interface ConsoleFindBarProps {
   query: string;
@@ -55,6 +56,8 @@ export function ConsoleFindBar({
       e.stopPropagation();
       onClose();
     } else if (e.key === "Enter") {
+      // Enter on a button (Match Case, Close, …) must activate it, not jump to the next match.
+      if ((e.target as Element | null)?.closest?.("button")) return;
       e.preventDefault();
       if (e.shiftKey) onPrevious();
       else onNext();
@@ -81,7 +84,7 @@ export function ConsoleFindBar({
       className={styles.find}
       role="search"
       aria-label={tx("Find in console")}
-      data-run-find=""
+      data-console-find=""
       onKeyDown={onKeyDown}
     >
       <SearchField

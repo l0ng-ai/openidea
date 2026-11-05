@@ -821,6 +821,25 @@ task default: :build
 }
 
 #[test]
+fn ruby_minitest_projects_get_a_test_runner() {
+    let dir = project(&[("Gemfile", "source 'https://rubygems.org'\n"), ("lib/a.rb", ""), ("test/a_test.rb", "")]);
+    let c = detect(dir.path());
+    let m = find(&c, "minitest");
+    assert!(m.is_test);
+    assert_eq!(m.kind, "ruby");
+    assert_eq!(
+        (m.command.as_str(), &m.args[..4]),
+        ("bundle", &["exec", "ruby", "-Ilib", "-Itest"].map(String::from)[..])
+    );
+    assert_eq!(m.args.last().map(String::as_str), Some("test"));
+    // A `test` Rake task or RSpec already runs the tests.
+    let dir = project(&[("Rakefile", "task :test\n"), ("test/a_test.rb", "")]);
+    assert!(!ids(&detect(dir.path())).contains(&"minitest"));
+    let dir = project(&[("Gemfile", "gem 'rspec'\n"), ("test/a_test.rb", "")]);
+    assert!(!ids(&detect(dir.path())).contains(&"minitest"));
+}
+
+#[test]
 fn ruby_without_bundler_runs_bare_tools() {
     let dir = project(&[("Rakefile", "task :test\n")]);
     let c = detect(dir.path());
