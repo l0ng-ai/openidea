@@ -134,8 +134,20 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
     // The docker CLI needs `HOME` (contexts, credentials); the container gets only `env`.
     extras.include_system_env = true;
     // `docker stop` signals the container's process (the CLI may not forward a signal).
-    extras.stop_command = Some(format!("docker stop {}", run.name));
+    extras.stop_command = Some(format!("{} stop {}", shell_word(run.docker), run.name));
     Ok(out)
+}
+
+/// `word` for this machine's shell (the stop command runs there): the docker CLI found
+/// outside `PATH` (Docker.app's bundle) may contain spaces.
+fn shell_word(word: &str) -> String {
+    if !word.contains(|c: char| c.is_whitespace() || "'\"$`\\&;|<>()*?#~".contains(c)) || word.is_empty() {
+        word.to_owned()
+    } else if cfg!(windows) {
+        format!("\"{word}\"")
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }
 
 /// The project's folder in the container of a Compose `service`, from the JSON of
@@ -255,7 +267,7 @@ mod tests {
         assert_eq!(out.cwd.as_deref(), Some(Path::new("/work/proj")));
         assert_eq!(out.extras.target, None);
         assert!(out.extras.env_files.is_empty() && out.extras.include_system_env);
-        assert_eq!(out.extras.stop_command.as_deref(), Some("docker stop openidea-app-1"));
+        assert_eq!(out.extras.stop_command.as_deref(), Some("/usr/local/bin/docker stop openidea-app-1"));
         assert_eq!(out.kind, "python", "test and output parsers still apply");
 
         let mut c = config("npm run dev", &[]);
@@ -324,5 +336,12 @@ mod tests {
     fn names_and_default_folder() {
         assert_eq!(container_name("workspace:a/b:Run app", "k3x"), "openidea-workspace-a-b-Run-app-k3x");
         assert_eq!(default_container_root(Path::new("/work/my proj")), "/workspaces/my-proj");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_quotes_the_docker_cli_for_the_shell() {
+        assert_eq!(shell_word("/usr/local/bin/docker"), "/usr/local/bin/docker");
+        assert_eq!(shell_word("/Volumes/My Apps/docker"), "'/Volumes/My Apps/docker'");
     }
 }

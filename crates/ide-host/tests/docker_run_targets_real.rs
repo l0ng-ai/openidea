@@ -147,7 +147,7 @@ async fn runs_in_docker_and_compose_containers() {
     assert_ne!(containers("label=openidea.run=sleep"), "", "{}", out.lock());
     ops::run::stop(&host, "main", id).unwrap();
     let out = finished(&out, 30).await;
-    assert!(out.contains("docker stop openidea-sleep-"), "{out}");
+    assert!(out.contains(" stop openidea-sleep-"), "{out}");
     for _ in 0..100 {
         if containers("label=openidea.run=sleep").is_empty() {
             break;
