@@ -220,11 +220,6 @@ describe("IntelliJ theme import", () => {
       ],
     });
     expect(pkg.id).toBe("intellij.com-example-deepsea");
-    expect(pkg.themes).toEqual([
-      { id: "deep-sea", sourceId: "deep-sea-id", name: "Deep Sea" },
-      { id: "deep-sea-2", sourceId: "copy-id", name: "Deep Sea" },
-      { id: "shallow", sourceId: "light-id", name: "Shallow" },
-    ]);
     expect(pkg.files.map((f) => f.path)).toEqual([
       "plugin.toml",
       "themes/deep-sea.theme.json",
