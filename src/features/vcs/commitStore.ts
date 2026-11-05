@@ -18,6 +18,8 @@ interface CommitState {
   groupByStaging: boolean;
   /** Whether the Git window's Local Changes tab previews the selection's diff. */
   diffPreview: boolean;
+  /** Whether the Commit tool window previews the selection's diff beside the changes (#1599). */
+  commitDiffPreview: boolean;
   /** User overrides of the inclusion checkboxes (absolute path → state). */
   checks: Map<string, CheckState>;
   /** Changed blocks left out of the commit (absolute path → `hunkKeys`) of `hunks` files. */
@@ -48,6 +50,7 @@ export const useCommit = create<CommitState>(() => ({
   groupByDir: readBool("openidea.vcs.groupByDir", false),
   groupByStaging: readBool("openidea.vcs.groupByStaging", false),
   diffPreview: readBool("openidea.vcs.diffPreview", true),
+  commitDiffPreview: readBool("openidea.vcs.commitDiffPreview", false),
   checks: new Map(),
   excludedHunks: new Map(),
   selection: [],
@@ -90,6 +93,15 @@ export function setDiffPreview(v: boolean) {
   useCommit.setState({ diffPreview: v });
   try {
     localStorage.setItem("openidea.vcs.diffPreview", String(v));
+  } catch {
+    // ignore
+  }
+}
+
+export function setCommitDiffPreview(v: boolean) {
+  useCommit.setState({ commitDiffPreview: v });
+  try {
+    localStorage.setItem("openidea.vcs.commitDiffPreview", String(v));
   } catch {
     // ignore
   }

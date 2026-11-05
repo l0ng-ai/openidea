@@ -55,6 +55,7 @@ import { moveToChangelist } from "./changelistsUi";
 import {
   messageHistory,
   setAmend,
+  setCommitDiffPreview,
   setDiffPreview,
   setGroupByDir,
   setGroupByStaging,
@@ -357,18 +358,43 @@ export function useIncludedCount(): number {
   return useMemo(() => planCommit(status, checks).included.length, [status, checks]);
 }
 
-/** The Commit tool window's Commit tab: changes with inclusion checkboxes above the message. */
+/**
+ * The Commit tool window's Commit tab: changes with inclusion checkboxes above the
+ * message, with an optional embedded preview of the selected file's diff beside them
+ * (issue #1599).
+ */
 function ChangesPanel() {
   const included = useIncludedCount();
+  const preview = useCommit((s) => s.commitDiffPreview);
+  const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const hasChanges = useVcs((s) => s.status.length > 0);
   return (
-    <SplitGroup orientation="vertical" className={styles.split}>
+    <SplitGroup orientation="horizontal" className={styles.split}>
       <SplitPanel defaultSize="62%" minSize="20%">
-        <ChangesTree mode="commit" />
+        <SplitGroup orientation="vertical" className={styles.split}>
+          <SplitPanel defaultSize="62%" minSize="20%">
+            <ChangesTree mode="commit" />
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel defaultSize="38%" minSize="120px">
+            <CommitPanel included={included} />
+          </SplitPanel>
+        </SplitGroup>
       </SplitPanel>
-      <SplitHandle />
-      <SplitPanel defaultSize="38%" minSize="120px">
-        <CommitPanel included={included} />
-      </SplitPanel>
+      {preview && (
+        <>
+          <SplitHandle />
+          <SplitPanel defaultSize="38%" minSize="120px">
+            {path ? (
+              <DiffEditor input={diffInput(workingDiffData(path))} />
+            ) : (
+              <EmptyState>
+                <T>{hasChanges ? "Select a file to preview its changes" : "No changes to preview"}</T>
+              </EmptyState>
+            )}
+          </SplitPanel>
+        </>
+      )}
     </SplitGroup>
   );
 }
@@ -415,6 +441,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const groupByDir = useCommit((s) => s.groupByDir);
   const groupByStaging = useCommit((s) => s.groupByStaging);
   const diffPreview = useCommit((s) => s.diffPreview);
+  const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
   const checkboxes = mode !== "local";
@@ -511,6 +538,16 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             ])
           }
         />
+        {/* WebStorm's Preview Diff: an embedded diff of the selection beside the changes (#1599). */}
+        {mode === "commit" && (
+          <IconButton
+            icon="editor-preview"
+            title="Preview Diff"
+            size="small"
+            pressed={commitDiffPreview}
+            onClick={() => setCommitDiffPreview(!commitDiffPreview)}
+          />
+        )}
         <span className={styles.sep} />
         {mode !== "dialog" && (
           <IconButton icon="locate" title="Select Opened File" size="small" onClick={selectOpened} />
