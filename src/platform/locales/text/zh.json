@@ -6296,5 +6296,8 @@
   "Connect a device over USB, or start an emulator. Logcat uses the Android SDK's adb.": "通过 USB 连接设备，或启动模拟器。Logcat 使用 Android SDK 的 adb。",
   "No lines match the filter": "没有符合过滤条件的日志行",
   "Streaming": "正在接收",
-  "Idle": "空闲"
+  "Idle": "空闲",
+  "Composer dependencies are not installed": "未安装 Composer 依赖",
+  "Installed Composer packages differ from composer.lock": "已安装的 Composer 包与 composer.lock 不一致",
+  "Composer Install": "安装 Composer 依赖"
 }

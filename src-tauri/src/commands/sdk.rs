@@ -42,6 +42,17 @@ pub async fn sdk_php_language_level(
     ide_host::ops::sdk::sdk_php_language_level(&state.host, window.label(), path).await
 }
 
+/// The Composer project `path` belongs to, when its dependencies need `composer install`.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_php_composer_install(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<Option<ide_host::ops::sdk::ComposerInstallState>> {
+    ide_host::ops::sdk::sdk_php_composer_install(&state.host, window.label(), path).await
+}
+
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
 #[tauri::command]
