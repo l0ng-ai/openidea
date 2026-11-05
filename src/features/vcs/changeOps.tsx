@@ -153,7 +153,8 @@ async function partialCommitFiles(paths: readonly string[]): Promise<{ files: Pa
 }
 
 /** Delete… on unversioned files in the Changes view, as in IDEA: they move to the Trash. */
-export async function deleteUnversioned(paths: readonly string[]) {
+/** Delete… in the Changes view: moves the files to the Trash (a tracked file then shows as deleted). */
+export async function deleteFiles(paths: readonly string[]) {
   if (!paths.length) return;
   const question = paths.length === 1 ? tx`Delete '${baseName(paths[0]!)}'?` : tx`Delete ${paths.length} items?`;
   const ok = await confirmDialog({
