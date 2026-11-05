@@ -141,3 +141,19 @@ async fn workspace_cmake_before_launch_tasks_resolve_in_the_member() {
         assert!(configs.iter().any(|c| c.id == task.target && c.cwd == build.cwd));
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gradle_init_scripts_are_written_by_the_host_that_runs_the_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(tmp.path());
+    let text = "allprojects { }\n".to_string();
+    let path =
+        ops::run::run_gradle_init_script(&host, "main", "openidea-gradle-tests".into(), text.clone()).await.unwrap();
+    assert!(path.contains("openidea-gradle-tests-"), "{path}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    let again = ops::run::run_gradle_init_script(&host, "main", "openidea-gradle-tests".into(), text).await.unwrap();
+    assert_eq!(again, path);
+    // A name is not a path.
+    let escaped = ops::run::run_gradle_init_script(&host, "main", "../escape".into(), String::new()).await;
+    assert!(escaped.is_err(), "{escaped:?}");
+}

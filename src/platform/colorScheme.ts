@@ -113,6 +113,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
+  syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
   syn("constant", "Identifiers › Constant", [LD], "constant"),
   syn("field", "Identifiers › Instance field", [LD], "property"),
   { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },

@@ -640,6 +640,21 @@ impl views::Host for StoreData {
         let title = clip(title, crate::runtime::MAX_TITLE);
         Ok(self.host.open_terminal(client.as_deref(), title, &program, args, cwd.as_deref()).map_err(to_wit))
     }
+
+    fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let Some(root) = self.invocation.workspace_root.clone() else {
+            return Ok(Err(wit::Error::Invalid("no project is open in this window".into())));
+        };
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_location(client.as_deref(), &real, line, column).map_err(to_wit))
+    }
 }
 
 impl settings::Host for StoreData {

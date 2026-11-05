@@ -155,6 +155,9 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let (root, settings) = settings_for(host, &project, &config)?;
     let root = &root;
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
+    // Maven re-applies too: a config listed before a settings change (daemon toggle,
+    // Maven home) keeps the launcher that was current then; re-resolving at launch is
+    // what makes the setting take effect without reopening the project.
     let mut config = config;
     if config.kind == "maven" {
         ide_sdk::apply::prepare_maven_run(&mut config, root, &settings);

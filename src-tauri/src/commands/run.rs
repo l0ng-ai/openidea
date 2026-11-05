@@ -189,6 +189,18 @@ pub async fn run_gradle_jvm_args_script(
     ide_host::ops::run::run_gradle_jvm_args_script(&state.host, window.label(), jvm_args).await
 }
 
+/// Writes one of the IDE's Gradle init scripts where the build runs; returns its path.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_gradle_init_script(
+    window: Window,
+    state: State<'_, AppState>,
+    name: String,
+    text: String,
+) -> IdeResult<String> {
+    ide_host::ops::run::run_gradle_init_script(&state.host, window.label(), name, text).await
+}
+
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 /// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
 #[tauri::command]

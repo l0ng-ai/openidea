@@ -125,23 +125,23 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                        | Code needed   |
-| --------------- | -------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                              | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                    | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                      | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                          | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                           | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                    | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?` | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                  | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                        | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                         | no            |
-| `views`         | `id`, `title`, `icon?`, `location` (`left`, `right`, `bottom`), `web?` (see _Web views_)           | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`        | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use           | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu     | no            |
+| Point           | Declaration                                                                                                                       | Code needed   |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                               | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                             | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                   | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                     | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?`                                | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name, or an SVG of the package), `location` (`left`, `right`, `bottom`), `web?` (see _Web views_) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
@@ -313,6 +313,7 @@ then run `openidea-plugin check`.
 | `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
 | `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
+| `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
 
 `run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`

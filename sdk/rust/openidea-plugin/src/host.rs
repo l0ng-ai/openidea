@@ -245,6 +245,10 @@ mod imp {
         wit::views::open_terminal(title, program, args).map_err(error)
     }
 
+    pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
+        wit::views::open_location(path, line, column).map_err(error)
+    }
+
     pub fn setting(key: &str) -> Option<String> {
         wit::settings::get(key)
     }
@@ -385,6 +389,10 @@ pub fn post_view_message(view: &str, message: &str) -> Result<(), Error> {
 /// interactive sessions (`kubectl exec -it …`).
 pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
     imp::open_terminal(title, program, args)
+}
+
+pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
+    imp::open_location(path, line, column)
 }
 
 /// One of the plugin's settings (`[contributes.settings]`) as JSON: the

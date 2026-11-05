@@ -112,6 +112,28 @@ fn indexes_files_and_symbols_honouring_excludes() {
 }
 
 #[test]
+fn counts_file_extensions_most_common_first() {
+    let fx = Fixture::new(&[
+        ("src/a.rs", "fn a() {}\n"),
+        ("src/b.RS", "fn b() {}\n"),
+        ("src/lib.rs", "fn c() {}\n"),
+        ("Cargo.toml", "[package]\n"),
+        ("README.md", "# r\n"),
+        ("docs/guide.md", "# g\n"),
+        (".gitignore", "target\n"),
+        ("Makefile", "all:\n"),
+        ("target/debug/gen.rs", "fn generated() {}\n"),
+    ]);
+    let idx = fx.open();
+    let counts: Vec<(String, u32)> = idx.file_extensions().into_iter().map(|c| (c.extension, c.files)).collect();
+    assert_eq!(
+        counts,
+        [("rs".into(), 3), ("md".into(), 2), ("toml".into(), 1)],
+        "case-folded, excluded folders and extension-less files left out"
+    );
+}
+
+#[test]
 fn file_ranking_is_idea_like() {
     let fx = sample();
     let idx = fx.open();
@@ -291,6 +313,56 @@ fn binary_and_huge_files_are_listed_without_symbols() {
     assert_eq!(files(&idx, "logo"), vec!["img/logo.rs"]);
     assert_eq!(files(&idx, "huge"), vec!["big/huge.rs"]);
     assert_eq!(idx.status().symbols, 0);
+}
+
+#[test]
+fn go_to_file_finds_ignored_files_but_not_their_symbols() {
+    let fx = Fixture::new(&[
+        (".gitignore", ".env\n*.local.ts\ndist/\n"),
+        (".env", "SECRET=1\n"),
+        ("src/app.ts", "export function app() {}\n"),
+        ("src/config.local.ts", "export function localOnly() {}\n"),
+        ("dist/bundle.js", "function bundled() {}\n"),
+    ]);
+    let idx = fx.open();
+    assert_eq!(files(&idx, ".env"), vec![".env"], "the reported case: a git-ignored root file");
+    assert_eq!(files(&idx, "config.local"), vec!["src/config.local.ts"]);
+    assert!(files(&idx, "bundle").is_empty(), "ignored directories stay out");
+    assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty(), "ignored files are listed by name only");
+    assert_eq!(symbols(&idx, "app", SymbolFilter::All), vec!["app"]);
+
+    // Watcher updates keep the distinction.
+    let fresh = fx.write("src/fresh.local.ts", "export function freshLocal() {}\n");
+    let bundled = fx.write("dist/more.js", "function more() {}\n");
+    idx.update(&[fresh, bundled], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "fresh.local"), vec!["src/fresh.local.ts"]);
+    assert!(symbols(&idx, "freshLocal", SymbolFilter::All).is_empty());
+    assert!(files(&idx, "more.js").is_empty());
+
+    // Nested ignore files apply to watcher updates as they do to the scan.
+    fx.write("pkg/.gitignore", "gen.ts\n");
+    let generated = fx.write("pkg/gen.ts", "export function generatedThing() {}\n");
+    let kept = fx.write("pkg/kept.ts", "export function keptThing() {}\n");
+    idx.update(&[generated, kept], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "pkg/gen"), vec!["pkg/gen.ts"]);
+    assert!(symbols(&idx, "generatedThing", SymbolFilter::All).is_empty());
+    assert_eq!(symbols(&idx, "keptThing", SymbolFilter::All), vec!["keptThing"]);
+    drop(idx);
+
+    // No longer ignored: the next scan parses it although its mtime is unchanged.
+    std::fs::write(fx.root.join(".gitignore"), ".env\ndist/\n").unwrap();
+    let idx = fx.open();
+    assert_eq!(symbols(&idx, "localOnly", SymbolFilter::All), vec!["localOnly"]);
+    assert_eq!(files(&idx, ".env"), vec![".env"]);
+    drop(idx);
+
+    // Ignored again: its symbols are dropped.
+    std::fs::write(fx.root.join(".gitignore"), "*.local.ts\n").unwrap();
+    let idx = fx.open();
+    assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty());
+    assert_eq!(files(&idx, "bundle"), vec!["dist/bundle.js"]);
 }
 
 #[test]

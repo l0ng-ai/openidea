@@ -34,6 +34,8 @@ pub struct Project {
     pub lsp: Arc<LspManager>,
     /// Git repositories: the one containing the project root and those nested below it.
     pub repos: Arc<RwLock<Repos>>,
+    /// Explicitly opened external logs remain read-only and outside project indexing.
+    pub(crate) external_log_repos: RwLock<Vec<Arc<Repo>>>,
     /// Incrementally maintained syntax trees of the open documents.
     pub syntax: Arc<SyntaxCache>,
     /// Tree-sitter structure queries (LSP fallback) over `syntax`.
@@ -207,6 +209,7 @@ impl Host {
                         cfg.launch_error = Some(e);
                         None
                     });
+                    ide_sdk::apply::configure_java_compiler(cfg, &data_dir, &effective.inspections);
                     ide_sdk::java::configure_jdtls(
                         cfg,
                         server_root,
@@ -221,6 +224,8 @@ impl Host {
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
+                // After the overrides: the PHP version they may set decides the storage.
+                ide_sdk::php::configure_intelephense_storage(cfg, &data_dir);
                 if cfg.name == "jdtls" {
                     let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
                     ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
@@ -305,12 +310,16 @@ impl Host {
                 sink.clone(),
                 Box::new(move |batch| {
                     let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
-                    index.update(&changed, &batch.removed);
+                    let (ignored, ignored_gone) = ignored_changes(batch);
+                    index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
+                    if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+                        lsp.reconfigure_soon();
+                    }
                     // Atomic saves by external tools surface as `created`.
-                    documents.on_disk_changed(&changed);
+                    documents.on_disk_changed(&[&changed[..], &ignored].concat());
                     // A framework's root marker (`angular.json`) created or deleted: its
                     // templates gain or lose their mode. Markers in `node_modules` only
                     // count here when the folder isn't excluded (it is by default).
@@ -414,7 +423,16 @@ impl Host {
         let content_watchers = extra_roots
             .iter()
             .filter_map(|r| {
-                let w = content_root_watcher(r, &excludes, &sink, &index, &documents, &history, Some(&kotlin_bridge))?;
+                let w = content_root_watcher(
+                    r,
+                    &excludes,
+                    &sink,
+                    &index,
+                    &documents,
+                    &history,
+                    &lsp,
+                    Some(&kotlin_bridge),
+                )?;
                 Some((r.clone(), w))
             })
             .collect();
@@ -447,6 +465,7 @@ impl Host {
             index,
             lsp,
             repos,
+            external_log_repos: RwLock::default(),
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots,
@@ -580,6 +599,7 @@ impl Host {
             index,
             lsp,
             repos: Arc::default(),
+            external_log_repos: RwLock::default(),
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots: Arc::default(),
@@ -677,7 +697,14 @@ fn scan_repositories(
     build_cache: &Path,
 ) {
     let ignored = settings.effective().ignored_names();
-    let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
+    let skip = |p: &Path| {
+        p.file_name().is_some_and(|n| {
+            let name = n.to_string_lossy();
+            ignored.is_ignored_name(&name)
+                || (ide_workspace::unity::GENERATED_DIRS.contains(&name.as_ref())
+                    && p.parent().is_some_and(ide_workspace::unity::is_project))
+        })
+    };
     let mut roots = vec![root.to_path_buf()];
     roots.extend(content_roots(&settings.effective(), root, build_cache));
     match Repos::discover_roots(&roots, &skip) {
@@ -722,6 +749,51 @@ impl Project {
                 None => Err(IdeError::unavailable("project is not a git repository")),
             },
         }
+    }
+
+    pub fn open_external_log(&self, path: &Path) -> IdeResult<PathBuf> {
+        let root = dunce::canonicalize(path)?;
+        let repo = Repo::discover(&root)?.ok_or_else(|| IdeError::unavailable("folder is not a Git worktree"))?;
+        let root = repo.root().to_path_buf();
+        repo.set_execution_allowed(false);
+        let mut external = self.external_log_repos.write();
+        if !external.iter().any(|r| r.root() == root) {
+            external.push(Arc::new(repo));
+        }
+        Ok(root)
+    }
+
+    /// Log read operations may also use an explicitly opened external worktree.
+    /// Mutations continue to use `with_repo_at` and cannot reach these repositories.
+    pub fn with_log_repo_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
+        if let Some(path) = at
+            && self.repos().at_root(path).is_none()
+        {
+            let repo = self
+                .external_log_repos
+                .read()
+                .iter()
+                .find(|r| r.root() == path)
+                .cloned()
+                .ok_or_else(|| IdeError::unavailable("external Git log is not open"))?;
+            return f(&repo);
+        }
+        self.with_repo_at(at, f)
+    }
+
+    pub fn with_log_repo_of<T>(&self, path: &Path, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
+        if self.repos().for_path(path).is_some() {
+            return self.with_repo_of(path, f);
+        }
+        let repo = self
+            .external_log_repos
+            .read()
+            .iter()
+            .filter(|r| path.starts_with(r.root()))
+            .max_by_key(|r| r.root().components().count())
+            .cloned()
+            .ok_or_else(|| IdeError::unavailable("path is not in an open Git log"))?;
+        f(&repo)
     }
 
     /// Runs `f` with the repository `path` (a file or folder) belongs to.
@@ -829,7 +901,8 @@ impl Project {
 
     /// Project files of `q.languages` under `q.root` containing `q.word` as a whole
     /// word (unsaved buffers included; excluded roots, ignored names and
-    /// `.gitignore`d files skipped): the files a references search opens on its server.
+    /// `.gitignore`d folders skipped, while `.gitignore`d files elsewhere count, as
+    /// in IDEA's project scope): the files a references search opens on its server.
     pub fn reference_candidates(
         &self,
         q: &ide_lsp::CandidateQuery,
@@ -907,6 +980,7 @@ impl Project {
                 &self.index,
                 &self.documents,
                 &self.history,
+                &self.lsp,
                 self.kotlin_bridge.as_ref(),
             ) {
                 watchers.push((r, w));
@@ -938,7 +1012,7 @@ impl Project {
             return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
         }
-        let bytes = self.with_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
+        let bytes = self.with_log_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
         Ok(ide_vfs::detect_encoding(&bytes, fallback))
     }
 
@@ -961,6 +1035,11 @@ const HISTORY_BATCH_LIMIT: usize = 500;
 
 /// Local History for changes made outside the IDE (other tools, VCS, deletions).
 /// Contents equal to the last snapshot (e.g. the IDE's own saves) are skipped.
+/// The batch's ignored files (`.env`), split into those still on disk and those removed.
+fn ignored_changes(batch: &ide_vfs::FsBatch) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    batch.ignored.iter().cloned().partition(|p| p.symlink_metadata().is_ok())
+}
+
 fn record_external_changes(history: &LocalHistory, changed: &[PathBuf], removed: &[PathBuf]) {
     for path in changed.iter().take(HISTORY_BATCH_LIMIT) {
         if let Err(e) = history.record_file(path, "External change", false) {
@@ -1028,6 +1107,7 @@ impl Project {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn content_root_watcher(
     dir: &Path,
     excludes: &[String],
@@ -1035,26 +1115,40 @@ fn content_root_watcher(
     index: &Arc<ProjectIndex>,
     documents: &Arc<Documents>,
     history: &Arc<LocalHistory>,
+    lsp: &Arc<LspManager>,
     kotlin_bridge: Option<&Arc<crate::kotlin_bridge::KotlinBridge>>,
 ) -> Option<Watcher> {
     let kotlin_bridge = kotlin_bridge.cloned();
-    let (index, documents, history) = (index.clone(), documents.clone(), history.clone());
+    let (index, documents, history, lsp) = (index.clone(), documents.clone(), history.clone(), lsp.clone());
+    let root = dir.to_path_buf();
     Watcher::start(
         dir,
         excludes.to_vec(),
         sink.clone(),
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
-            index.update(&changed, &batch.removed);
+            let (ignored, ignored_gone) = ignored_changes(batch);
+            index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
+            // A workspace member's PHP language level follows its own composer.json.
+            if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+                lsp.reconfigure_soon();
+            }
             if let Some(bridge) = &kotlin_bridge {
                 bridge.files_changed(changed.iter().chain(&batch.removed));
             }
-            documents.on_disk_changed(&changed);
+            documents.on_disk_changed(&[&changed[..], &ignored].concat());
             record_external_changes(&history, &changed, &batch.removed);
         }),
     )
     .map_err(|e| tracing::warn!("content root watcher {}: {e}", dir.display()))
     .ok()
+}
+
+/// Whether the `composer.json` of `root` is among `paths`: the PHP language level follows it
+/// (`ide_sdk::php`).
+fn composer_changed<'a>(root: &Path, mut paths: impl Iterator<Item = &'a PathBuf>) -> bool {
+    let composer = root.join("composer.json");
+    paths.any(|p| *p == composer)
 }
 
 /// Where agent tasks create their worktrees: next to the project, `<parent>/<name>.worktrees`,
@@ -1471,5 +1565,23 @@ mod agent_worktree_tests {
         let project = Path::new("/work").join("acme-api");
         assert_eq!(agent_worktrees_dir(&project, fallback), Path::new("/work").join("acme-api.worktrees"));
         assert_eq!(agent_worktrees_dir(Path::new("/"), fallback), fallback());
+    }
+}
+
+#[cfg(test)]
+mod composer_tests {
+    use super::composer_changed;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn only_the_roots_own_composer_json_counts() {
+        let root = Path::new("/work/app");
+        let changed = |paths: &[&str]| {
+            let paths: Vec<PathBuf> = paths.iter().map(|p| root.join(p)).collect();
+            composer_changed(root, paths.iter())
+        };
+        assert!(changed(&["src/a.php", "composer.json"]));
+        assert!(!changed(&["composer.lock", "vendor/acme/lib/composer.json", "packages/b/composer.json"]));
+        assert!(!changed(&[]));
     }
 }

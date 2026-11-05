@@ -94,6 +94,31 @@ describe("scanJvmTargets (Java)", () => {
       [16, "test", "a.b.OrderTest$Fixture", "inner", false],
     ]);
   });
+
+  it("treats the public void methods of a TestNG class-level @Test as tests", () => {
+    const src = [
+      "package a.b;", // 0
+      "import org.testng.annotations.*;",
+      '@Test(groups = "unit")',
+      "public class PriceTest {", // 3
+      "  @BeforeMethod public void setUp() {}",
+      "  public void rounds() {}", // 5
+      '  @Test(dataProvider = "rows")',
+      "  public void parses(String row) {}", // 7
+      "  @DataProvider public Object[][] rows() { return null; }",
+      '  @DataProvider(name = "more") public void notATest() {}',
+      "  void packagePrivate() {}",
+      "  private void util() {}",
+      "  public static void shared() {}",
+      "  public int value() { return 1; }",
+      "}",
+    ].join("\n");
+    expect(pick(src, "src/test/java/a/b/PriceTest.java")).toEqual([
+      [3, "suite", "a.b.PriceTest", null, false],
+      [5, "test", "a.b.PriceTest", "rounds", false],
+      [7, "test", "a.b.PriceTest", "parses", false],
+    ]);
+  });
 });
 
 describe("scanJvmTargets (Kotlin)", () => {
@@ -365,6 +390,24 @@ describe("JUnit XML reports", () => {
       type: "location",
       path: ["a.B$Inner", "bad"],
       location: { path: "a/B.java", line: 42, resolve: "name", className: "a.B$Inner" },
+    });
+  });
+
+  it("locate Kotlin tests with spaces in their names, behind a class loader prefix", () => {
+    const events = testReportEvents([
+      {
+        className: "a.LibraryTest",
+        name: "cannot lend twice",
+        status: "failed",
+        durationMs: null,
+        message: null,
+        output: "AssertionFailedError\n\tat app//a.LibraryTest.cannot lend twice(LibraryTest.kt:43)",
+      },
+    ]);
+    expect(events).toContainEqual({
+      type: "location",
+      path: ["a.LibraryTest", "cannot lend twice"],
+      location: { path: "a/LibraryTest.kt", line: 43, resolve: "name", className: "a.LibraryTest" },
     });
   });
 });

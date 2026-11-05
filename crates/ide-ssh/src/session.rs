@@ -267,19 +267,29 @@ impl Session {
                 }),
             )
             .await?;
+        let failed = |code: Option<u32>| {
+            let err = String::from_utf8_lossy(&stderr.lock()).trim().to_owned();
+            io(format!("cannot write {remote} on {} ({code:?}): {err}", self.label))
+        };
+        // A command that exits early (no gzip, a folder it cannot write) stops reading: a
+        // write would wait for channel window forever, so each one races the exit.
+        let mut exit = std::pin::pin!(process.wait());
         let mut sent = 0;
         for chunk in packed.chunks(256 * 1024) {
-            process.write(chunk).await?;
+            tokio::select! {
+                written = process.write(chunk) => written?,
+                code = &mut exit => return Err(failed(code)),
+            }
             sent += chunk.len();
             progress(sent as f64 / packed.len().max(1) as f64);
         }
-        process.eof().await?;
-        match process.wait().await {
+        tokio::select! {
+            closed = process.eof() => closed?,
+            code = &mut exit => return Err(failed(code)),
+        }
+        match exit.await {
             Some(0) => Ok(()),
-            code => {
-                let err = String::from_utf8_lossy(&stderr.lock()).trim().to_owned();
-                Err(io(format!("cannot write {remote} on {} ({code:?}): {err}", self.label)))
-            }
+            code => Err(failed(code)),
         }
     }
 

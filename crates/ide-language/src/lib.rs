@@ -155,6 +155,11 @@ pub struct LanguageServerConfig {
     /// Register source files with tsserver when no project configuration exists.
     #[serde(default)]
     pub tsserver_project: bool,
+    /// Re-sends the open documents (unchanged) once `workspace/configuration` is answered:
+    /// the server (Intelephense) applies some settings, such as the PHP version, only when
+    /// it parses a document.
+    #[serde(default)]
+    pub resync_on_configuration: bool,
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,

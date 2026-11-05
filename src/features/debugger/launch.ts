@@ -58,14 +58,19 @@ function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig 
   };
 }
 
+const PYTHON_NAME = /^python[\d.]*(\.exe)?$/;
+
 function pythonFor(rc: RunConfig, cwd: string): string {
   const cmd = rc.command;
   const name = cmd.split("/").pop() ?? cmd;
-  if (/^python[\d.]*(\.exe)?$/.test(name)) return resolveCommand(cmd, cwd);
+  if (PYTHON_NAME.test(name)) return resolveCommand(cmd, cwd);
   // A venv tool such as `.venv/bin/pytest`: use the interpreter next to it.
   if (cmd.includes("/")) return resolveCommand(cmd.slice(0, cmd.lastIndexOf("/") + 1) + "python", cwd);
   return "python3";
 }
+
+/** Project managers whose `run` executes in the project's environment (`uv run python …`). */
+const PYTHON_RUNNERS = new Set(["uv", "poetry", "pdm", "pipenv", "hatch", "rye"]);
 
 function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "debugpy", cwd);
@@ -78,19 +83,29 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     redirectOutput: true,
   };
   if (dbg.python.gevent) extra.gevent = true;
-  const name = rc.command.split("/").pop() ?? rc.command;
-  const isPython = /^python[\d.]*(\.exe)?$/.test(name);
-  if (!isPython) {
+  const name = (rc.command.split("/").pop() ?? rc.command).replace(/\.exe$/, "");
+  let args = rc.args;
+  let tool: string | null = PYTHON_NAME.test(name) ? null : name;
+  if (PYTHON_RUNNERS.has(name) && args[0] === "run" && args[1]) {
+    // The debuggee runs through the manager (`uv run python <debugpy> …`) to get the project's
+    // environment; the adapter and its launcher need a plain interpreter.
+    const python = PYTHON_NAME.test(args[1]) ? args[1] : "python";
+    extra.python = [resolveCommand(rc.command, cwd), "run", python];
+    extra.debugLauncherPython = "python3";
+    tool = PYTHON_NAME.test(args[1]) ? null : args[1];
+    args = args.slice(2);
+  }
+  if (tool) {
     // A console script (`pytest`, `uvicorn`, …): run it as a module.
-    extra.module = name.replace(/\.exe$/, "");
-    out.args = [...rc.args];
-  } else if (rc.args[0] === "-m" && rc.args[1]) {
-    extra.module = rc.args[1];
-    out.args = rc.args.slice(2);
-  } else if (rc.args[0]) {
-    out.program = join(cwd, rc.args[0]);
-    out.args = rc.args.slice(1);
-    if (rc.args[0].endsWith("manage.py")) extra.django = true;
+    extra.module = tool;
+    out.args = [...args];
+  } else if (args[0] === "-m" && args[1]) {
+    extra.module = args[1];
+    out.args = args.slice(2);
+  } else if (args[0]) {
+    out.program = join(cwd, args[0]);
+    out.args = args.slice(1);
+    if (args[0].endsWith("manage.py")) extra.django = true;
   }
   out.extraJson = JSON.stringify(extra);
   return out;

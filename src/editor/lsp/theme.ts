@@ -361,6 +361,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-parameter": { color: "var(--syn-param, var(--syn-variable))" },
   ".cm-sem-self": { color: "var(--syn-self, var(--syn-keyword))" },
   ".cm-sem-keyword": { color: "var(--syn-keyword)", fontWeight: "var(--syn-keyword-bold, inherit)" },
+  // Before the builtin rule: library globals (`print`, `string`) keep the predefined colour.
+  ".cm-sem-global:not(.cm-sem-function)": { color: "var(--syn-global, inherit)" },
   ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
   ".cm-sem-python-static": { fontStyle: "var(--syn-python-static-italic, normal)" },

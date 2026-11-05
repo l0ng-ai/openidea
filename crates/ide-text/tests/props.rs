@@ -176,7 +176,7 @@ proptest! {
         let set = doc.replace_all(&b);
         prop_assert_eq!(doc.text(), b.clone());
         prop_assert_eq!(naive_apply(&a, &set), b.clone());
-        prop_assert!(set.changes.len() <= 1);
+        prop_assert!(set.changes.windows(2).all(|w| w[0].to < w[1].from));
         prop_assert_eq!(set.changes.is_empty(), a == b);
     }
 

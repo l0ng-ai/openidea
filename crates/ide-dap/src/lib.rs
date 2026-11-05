@@ -589,11 +589,12 @@ impl DebugManager {
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
-        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy).
+        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy),
+        // or with the launcher's when the debuggee runs through a manager (`uv run python`).
         if config.adapter == "debugpy" {
-            let python = match arguments.get("python") {
-                Some(Value::String(p)) => Some(p.clone()),
-                Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_owned),
+            let python = match (arguments.get("debugLauncherPython"), arguments.get("python")) {
+                (Some(Value::String(p)), _) | (_, Some(Value::String(p))) => Some(p.clone()),
+                (_, Some(Value::Array(a))) => a.first().and_then(Value::as_str).map(str::to_owned),
                 _ => None,
             };
             if let Some(python) = python {
@@ -651,8 +652,19 @@ impl DebugManager {
         {
             arguments["project"] = json!(real);
         }
-        if config.adapter == "codelldb" && arguments.get("sourceLanguages").is_none() {
-            arguments["sourceLanguages"] = json!(["rust"]);
+        if config.adapter == "codelldb" {
+            if arguments.get("sourceLanguages").is_none() {
+                arguments["sourceLanguages"] = json!(["rust"]);
+            }
+            // The Debug Console and Evaluate Expression take expressions, as with every other
+            // debugger; LLDB commands still run with a leading backtick.
+            match arguments.get_mut("_adapterSettings") {
+                None => arguments["_adapterSettings"] = json!({"consoleMode": "evaluate"}),
+                Some(Value::Object(settings)) => {
+                    settings.entry("consoleMode").or_insert_with(|| json!("evaluate"));
+                }
+                Some(_) => {}
+            }
         }
         let port = debug_server.map(|s| s.port);
         self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, port).await

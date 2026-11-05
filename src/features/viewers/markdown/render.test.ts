@@ -1,5 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { joinPath, previewLineAtOffset, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
+import {
+  frontMatter,
+  joinPath,
+  previewLineAtOffset,
+  previewOffsetForLine,
+  renderMarkdown,
+  resolveLink,
+  slugify,
+} from "./render";
+
+describe("front matter", () => {
+  const skill =
+    "---\nname: review\ndescription: Reviews a diff: bugs first\ntools:\n  - Read\n  - Grep\nmeta:\n  owner: team\n---\n\n# Review\n\nBody\n";
+
+  it("shows every top-level field above the body, nested values as written", () => {
+    expect(frontMatter(skill)).toEqual({
+      fields: [
+        ["name", "review"],
+        ["description", "Reviews a diff: bugs first"],
+        ["tools", "  - Read\n  - Grep"],
+        ["meta", "  owner: team"],
+      ],
+      lines: 9,
+    });
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(skill);
+    const blocks = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")];
+    expect(blocks.map((b) => [b.dataset.line, b.firstElementChild?.tagName])).toEqual([
+      ["0", "TABLE"],
+      ["10", "H1"],
+      ["12", "P"],
+    ]);
+    const rows = [...root.querySelectorAll("table[data-front-matter] tr")].map((r) => [
+      r.querySelector("th")?.textContent,
+      r.querySelector("td")?.textContent,
+    ]);
+    expect(rows[1]).toEqual(["description", "Reviews a diff: bugs first"]);
+    expect(root.querySelector("td pre")?.textContent).toBe("- Read\n- Grep");
+  });
+
+  it("leaves a document without front matter, or a thematic break, alone", () => {
+    expect(frontMatter("# Title\n---\nx: y\n---\n")).toBeNull();
+    expect(frontMatter("---\nJust a paragraph between rules.\n---\n")).toBeNull();
+    expect(frontMatter("---\n---\n")).toBeNull();
+  });
+});
 
 describe("markdown preview rendering", () => {
   it("tags blocks with their source line", () => {
@@ -28,6 +73,32 @@ describe("markdown preview rendering", () => {
     expect(img.getAttribute("src")).toBeNull();
     expect(img.dataset.src).toBe("img/a.png");
     expect(root.querySelector("a")?.getAttribute("href")).toBeNull();
+  });
+
+  it.each([
+    "<style>body{outline:7px solid red}</style>",
+    '<form action="https://example.com/x"><button>go</button></form>',
+    '<div style="position:fixed">x</div>',
+    '<link rel="stylesheet" href="https://example.com/x.css">',
+    '<meta http-equiv="refresh" content="0;url=https://example.com">',
+    '<base href="https://example.com/">',
+    '<iframe src="https://example.com"></iframe>',
+    '<button formaction="https://example.com/x">go</button>',
+  ])("keeps raw markup from reaching the page: %s", (raw) => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(`text\n\n${raw}\n`);
+    expect(root.querySelector("style, form, link, meta, base, iframe, [style], [formaction]")).toBeNull();
+    expect(root.textContent).not.toContain("outline");
+  });
+
+  it("keeps the raw HTML READMEs rely on", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(
+      '<div align="center"><img src="a.png" width="20"></div>\n\n<details><summary>More</summary>x</details>\n\n- [x] done\n',
+    );
+    expect(root.querySelector("div[align='center'] img")?.getAttribute("width")).toBe("20");
+    expect(root.querySelector("details summary")).not.toBeNull();
+    expect(root.querySelector("input[type='checkbox']")).not.toBeNull();
   });
 
   it("dedupes heading anchors", () => {
