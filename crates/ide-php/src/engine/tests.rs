@@ -334,3 +334,26 @@ fn expression_type_at_a_position() {
     assert_eq!(engine.type_at(doc, Pos::new(1, 3)), None);
     assert_eq!(engine.type_at(DocId::next(), Pos::new(0, 0)), None);
 }
+
+#[test]
+fn generic_types_with_the_bundled_stubs() {
+    use crate::types::Type;
+    let f = Fixture::new();
+    f.write(
+        "src/list.php",
+        "<?php\nnamespace App;\nuse ArrayIterator, IteratorAggregate;\n/**\n * @template T\n * @implements IteratorAggregate<int, T>\n */\nclass Items implements IteratorAggregate {\n  /** @param list<T> $items */\n  public function __construct(private array $items = []) {}\n  /** @return ArrayIterator<int, T> */\n  public function getIterator(): ArrayIterator { return new ArrayIterator($this->items); }\n}\nclass Book {}\n",
+    );
+    let main = f.write("src/main.php", "<?php\n");
+    let engine = f.open();
+
+    let doc = DocId::next();
+    let text = "<?php\nnamespace App;\n$items = new Items([new Book()]);\nforeach ($items as $book) {}\nforeach ($items->getIterator() as $it) {}\n";
+    engine.document_opened(doc, &main, 1, text);
+    let book = Some(Type::named(r"App\Book"));
+    // Inferred from the constructor.
+    assert_eq!(engine.type_at(doc, Pos::new(2, 2)), Some(Type::generic(r"App\Items", vec![Type::named(r"App\Book")])));
+    // `foreach` over `IteratorAggregate<int, T>` (stub interfaces), and over
+    // the stubs' `ArrayIterator<int, T>`.
+    assert_eq!(engine.type_at(doc, Pos::new(3, 22)), book);
+    assert_eq!(engine.type_at(doc, Pos::new(4, 37)), book);
+}

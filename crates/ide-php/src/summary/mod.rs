@@ -48,7 +48,7 @@ use crate::syntax::ParsedFile;
 use crate::types::LazyType;
 
 /// Bump whenever a type in this module changes shape.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

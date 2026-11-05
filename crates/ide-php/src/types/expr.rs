@@ -35,14 +35,15 @@ use std::rc::Rc;
 
 use mago_span::HasSpan;
 use mago_syntax::cst::{
-    Access, AnonymousClass, ArrayElement, ArrowFunction, Assignment, Call, Class, ClassLikeConstantSelector,
-    ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function, FunctionLikeParameterList, Interface,
-    MagicConstant, MatchArm, Method, PartialApplication, PartialArgument, PartialArgumentList, Program, Return, Trait,
-    Variable, Yield,
+    Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, Assignment, Call, Class,
+    ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function,
+    FunctionLikeParameterList, Interface, MagicConstant, MatchArm, Method, PartialApplication, PartialArgument,
+    PartialArgumentList, Program, Return, Trait, Variable, Yield,
 };
 use mago_syntax::walker::Walker;
 
 use super::ops::{Op, literal_type, op_type, unary_type};
+use super::resolve::{CallArg, declared_params};
 use super::{Context, LazyType, Relative, Resolver, Shape, ShapeField, ShapeKey, Signature, SignatureParam, Type};
 use crate::names::{FileNames, NameKind, NameScope, Resolution};
 use crate::summary::{ClassLike, DocBlock, FileSummary, FunctionDecl, Param, type_hint};
@@ -244,6 +245,13 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Expression::MagicConstant(_) => Type::string(),
             Expression::Instantiation(instantiation) => match self.class_ref(instantiation.class, frames) {
                 Type::Named { fqn, .. } if fqn.eq_ignore_ascii_case("Closure") => Type::Closure(None),
+                Type::Named { fqn, args } if args.is_empty() => {
+                    let args = || match &instantiation.argument_list {
+                        Some(list) => self.call_args(list, frames),
+                        None => Vec::new(),
+                    };
+                    self.resolver.instantiate(&fqn, &args)
+                }
                 ty @ (Type::Named { .. } | Type::Relative(_)) => ty,
                 _ => Type::Object,
             },
@@ -308,6 +316,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 Type::List { value, .. } => (Type::int_range(Some(0), None), (**value).clone()),
                 Type::Shape(shape) => (shape.key_type(), shape.value_type()),
                 Type::Null | Type::Void | Type::Never => continue,
+                Type::Named { .. } if let Some(args) = self.resolver.iteration_args(member) => args,
                 Type::Named { .. } | Type::Relative(_) | Type::Intersection(_) => {
                     // An `Iterator`, else an `IteratorAggregate`'s iterator.
                     let mut receiver = member.clone();
@@ -620,10 +629,11 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 Expression::Identifier(identifier) => {
                     let name = String::from_utf8_lossy(identifier.value());
                     let resolved = self.scope(identifier.span().start.offset).resolve(NameKind::Function, &name);
+                    let args = || self.call_args(&call.argument_list, frames);
                     resolved
                         .resolution
                         .candidates()
-                        .find_map(|fqn| self.resolver.function_return(fqn))
+                        .find_map(|fqn| self.resolver.function_call(fqn, &args))
                         .unwrap_or(Type::Mixed)
                 }
                 callee => {
@@ -634,14 +644,16 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Call::Method(call) => match &call.method {
                 ClassLikeMemberSelector::Identifier(name) => {
                     let receiver = self.expr(call.object, frames);
-                    self.resolver.method_return(&receiver, &lossy(name.value), &context)
+                    let args = || self.call_args(&call.argument_list, frames);
+                    self.resolver.method_call(&receiver, &lossy(name.value), &args, &context)
                 }
                 _ => Type::Mixed,
             },
             Call::NullSafeMethod(call) => match &call.method {
                 ClassLikeMemberSelector::Identifier(name) => {
                     let receiver = self.expr(call.object, frames);
-                    let ty = self.resolver.method_return(&receiver.without_null(), &lossy(name.value), &context);
+                    let args = || self.call_args(&call.argument_list, frames);
+                    let ty = self.resolver.method_call(&receiver.without_null(), &lossy(name.value), &args, &context);
                     if receiver.is_nullable() { ty.nullable() } else { ty }
                 }
                 _ => Type::Mixed,
@@ -649,11 +661,29 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Call::StaticMethod(call) => match &call.method {
                 ClassLikeMemberSelector::Identifier(name) => {
                     let class = self.class_ref(call.class, frames);
-                    self.resolver.method_return(&class, &lossy(name.value), &context)
+                    let args = || self.call_args(&call.argument_list, frames);
+                    self.resolver.method_call(&class, &lossy(name.value), &args, &context)
                 }
                 _ => Type::Mixed,
             },
         }
+    }
+
+    /// The arguments of a call, typed.
+    fn call_args(&self, list: &'a ArgumentList<'a>, frames: &[Frame<'a>]) -> Vec<CallArg> {
+        list.arguments
+            .iter()
+            .map(|argument| match argument {
+                Argument::Positional(argument) => {
+                    CallArg { name: None, ty: self.expr(argument.value, frames), spread: argument.ellipsis.is_some() }
+                }
+                Argument::Named(argument) => CallArg {
+                    name: Some(lossy(argument.name.value)),
+                    ty: self.expr(argument.value, frames),
+                    spread: false,
+                },
+            })
+            .collect()
     }
 
     /// What calling a value of type `callable` returns: a closure's or
@@ -711,7 +741,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         let function = self.resolver.declarations().function(fqn)?;
         let doc = function.doc.as_deref();
         let templates: Vec<&str> = doc.iter().flat_map(|doc| doc.local_type_names()).collect();
-        Some(Signature { params: signature_params(&function.params, doc, &templates), return_type: Some(return_type) })
+        Some(Signature { params: declared_params(&function.params, doc, &templates), return_type: Some(return_type) })
     }
 
     fn method_signature(
@@ -724,25 +754,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         let name = lossy(name.value);
         let context = self.context(frames);
         let return_type = self.resolver.method_return(receiver, &name, &context);
-        let model = self.resolver.class_models(receiver, &context).into_iter().next()?;
-        let method = model.method(&name)?;
-        let params = match method.declared() {
-            Some(declared) => {
-                let doc = declared.doc.as_deref();
-                let mut templates = class_templates(&method.declaring);
-                templates.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
-                let params = signature_params(&declared.params, doc, &templates);
-                let method_context = Context::in_class(&method.self_class);
-                params
-                    .into_iter()
-                    .map(|param| SignatureParam {
-                        ty: self.resolver.resolve(&LazyType::Known(param.ty.clone()), &method_context),
-                        ..param
-                    })
-                    .collect()
-            }
-            None => Vec::new(),
-        };
+        let params = self.resolver.method_params_on(receiver, &name, &context)?;
         Some(Signature { params, return_type: Some(return_type) })
     }
 
@@ -806,25 +818,6 @@ fn class_templates(class: &ClassLike) -> Vec<&str> {
     class.doc.iter().flat_map(|doc| doc.local_type_names()).collect()
 }
 
-/// The parameters of a declared function-like as a signature: `@param`
-/// types first, then native hints.
-fn signature_params(params: &[Param], doc: Option<&DocBlock>, templates: &[&str]) -> Vec<SignatureParam> {
-    params
-        .iter()
-        .map(|param| SignatureParam {
-            ty: match (doc.and_then(|doc| doc.param_type(&param.name)), &param.type_hint) {
-                (Some(ty), _) => Type::from_doc(ty, templates),
-                (None, Some(hint)) => Type::from_hint(hint),
-                (None, None) => Type::Mixed,
-            },
-            name: Some(param.name.clone()),
-            by_ref: param.by_ref,
-            optional: param.default.is_some(),
-            variadic: param.variadic,
-        })
-        .collect()
-}
-
 /// `(...)`: the only argument is the variadic placeholder.
 fn is_first_class_callable(arguments: &PartialArgumentList<'_>) -> bool {
     let mut arguments = arguments.arguments.iter();
@@ -846,7 +839,7 @@ fn shape_key(key: &Type) -> Option<ShapeKey> {
 }
 
 /// The values of a spread (`...$x`) or of what `foreach` iterates.
-fn iterable_value(ty: &Type) -> Type {
+pub(crate) fn iterable_value(ty: &Type) -> Type {
     Type::union(ty.members().iter().map(|member| match member {
         Type::Array { value, .. } | Type::List { value, .. } | Type::Iterable { value, .. } => (**value).clone(),
         Type::Shape(shape) => shape.value_type(),

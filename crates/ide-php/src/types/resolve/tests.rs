@@ -178,7 +178,9 @@ fn declared_types_win_over_inference() {
     let r = Resolver::new(&decls, &cache, 1);
     let cx = Context::default();
     assert_eq!(r.property_type(&named("App\\Box"), "names", &cx), Type::list_of(Type::string()));
-    assert_eq!(r.method_return(&named("App\\Box"), "get", &cx), Type::Template("T".into()));
+    // A raw `Box` leaves `T` to its fallback; `Box<int>` binds it.
+    assert_eq!(r.method_return(&named("App\\Box"), "get", &cx), Type::Mixed);
+    assert_eq!(r.method_return(&Type::generic("App\\Box", vec![Type::Int]), "get", &cx), Type::Int);
     assert_eq!(r.method_return(&named("App\\Crate"), "copy", &cx), named("App\\Crate"));
     assert_eq!(r.method_return(&named("App\\Crate"), "hinted", &cx), named("App\\Box"));
     assert_eq!(r.function_return("App\\label"), Some(Type::String(crate::types::StringKind::NonEmpty)));

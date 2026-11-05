@@ -297,7 +297,16 @@ impl Extractor<'_> {
         };
         for member in members {
             match member {
-                ClassLikeMember::TraitUse(trait_use) => class.trait_uses.push(self.trait_use(trait_use)),
+                ClassLikeMember::TraitUse(trait_use) => {
+                    class.trait_uses.push(self.trait_use(trait_use));
+                    // `/** @use Foo<Bar> */ use Foo;`: kept with the class's
+                    // own `@use` tags.
+                    if let Some(use_doc) = self.doc_at(trait_use.span().start.offset, &names)
+                        && !use_doc.uses.is_empty()
+                    {
+                        class.doc.get_or_insert_with(Default::default).uses.extend(use_doc.uses);
+                    }
+                }
                 ClassLikeMember::Constant(constant) => self.class_constant(constant, &names, &mut class.constants),
                 ClassLikeMember::Property(property) => self.property(property, &names, &mut class.properties),
                 ClassLikeMember::EnumCase(case) => class.cases.push(self.enum_case(case, &names)),

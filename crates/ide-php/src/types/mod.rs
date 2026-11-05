@@ -54,7 +54,7 @@ pub use expr::{Defined, ExprTypes, Flow, Frame, VarState, type_at};
 pub use lazy::LazyType;
 pub use model::ClassModel;
 pub use parse::{TypeParseError, parse_doc_type};
-pub use resolve::{Context, Declarations, Resolver, SummarySet, TypeCache};
+pub use resolve::{CallArg, Context, Declarations, Resolver, SummarySet, TemplateParam, TypeCache};
 pub use subtype::{Hierarchy, NoHierarchy};
 
 /// A PHP type.
@@ -118,6 +118,12 @@ pub enum Type {
     },
     /// `self`, `static`, `parent` or `$this`, completed in context.
     Relative(Relative),
+    /// `static<A, B>` / `self<A, B>` in PHPDoc: the class in context with
+    /// other generic arguments (Laravel's `@return static<TKey, TMapValue>`).
+    GenericRelative {
+        relative: Relative,
+        args: Vec<Type>,
+    },
     /// A template parameter in scope (`@template T`).
     Template(String),
     /// `Foo::BAR` in PHPDoc: an enum case or a class constant's value.
@@ -320,6 +326,15 @@ impl Type {
         Self::Named { fqn: fqn.trim_start_matches('\\').to_owned(), args }
     }
 
+    /// `self`/`static` with generic arguments; without any it is the plain
+    /// [`Type::Relative`] (and `parent`/`$this` never take any).
+    pub fn relative_with(relative: Relative, args: Vec<Self>) -> Self {
+        match relative {
+            Relative::Self_ | Relative::Static if !args.is_empty() => Self::GenericRelative { relative, args },
+            _ => Self::Relative(relative),
+        }
+    }
+
     /// `int<min, max>`, normalised: unbounded on both sides is `int`, a
     /// one-value range is that literal.
     pub fn int_range(min: Option<i64>, max: Option<i64>) -> Self {
@@ -461,6 +476,9 @@ impl Type {
             })),
             Self::Named { fqn, args } => {
                 Self::Named { fqn: fqn.clone(), args: args.iter().map(|arg| arg.map(replace)).collect() }
+            }
+            Self::GenericRelative { relative, args } => {
+                Self::GenericRelative { relative: *relative, args: args.iter().map(|arg| arg.map(replace)).collect() }
             }
             Self::Callable(Some(signature)) => Self::Callable(Some(Box::new(signature.map(replace)))),
             Self::Closure(Some(signature)) => Self::Closure(Some(Box::new(signature.map(replace)))),

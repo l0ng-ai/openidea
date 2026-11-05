@@ -74,6 +74,11 @@ impl Display for Type {
                 Ok(())
             }
             Self::Relative(relative) => f.write_str(relative.as_str()),
+            Self::GenericRelative { relative, args } => {
+                write!(f, "{}<", relative.as_str())?;
+                list(f, args)?;
+                f.write_char('>')
+            }
             Self::Template(name) => f.write_str(name),
             Self::ClassConstant { class, name } => write!(f, "{class}::{name}"),
             Self::Callable(signature) => callable(f, "callable", signature.as_deref()),
@@ -126,6 +131,7 @@ fn is_simple(ty: &Type) -> bool {
         Type::Union(_) | Type::Intersection(_) | Type::Callable(Some(_)) | Type::Closure(Some(_)) => false,
         Type::Relative(Relative::This) => false,
         Type::Named { args, .. } => args.is_empty(),
+        Type::GenericRelative { .. } => false,
         Type::Mixed | Type::Null | Type::Never | Type::Void => false,
         _ => true,
     }

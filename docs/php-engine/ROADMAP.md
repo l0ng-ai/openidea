@@ -230,7 +230,7 @@ The design:
 
   Tests: snippet tables, including loops and branches.
 
-- [ ] Phase 2.6: Generics
+- [x] Phase 2.6: Generics
       Support one level of generics (no nesting needed):
   - `@template` on classes and functions, with bounds and defaults
   - `@extends`, `@implements` and `@use` binding

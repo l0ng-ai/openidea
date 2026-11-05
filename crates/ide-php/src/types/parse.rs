@@ -152,8 +152,8 @@ impl Converter<'_> {
                 let args = self.generics(ty.parameters.as_ref());
                 match &ty.kind {
                     ReferenceKind::Identifier(identifier) => self.reference(&lossy(identifier.value), args),
-                    ReferenceKind::Self_(_) => Type::Relative(Relative::Self_),
-                    ReferenceKind::Static(_) => Type::Relative(Relative::Static),
+                    ReferenceKind::Self_(_) => Type::relative_with(Relative::Self_, args),
+                    ReferenceKind::Static(_) => Type::relative_with(Relative::Static, args),
                     ReferenceKind::Parent(_) => Type::Relative(Relative::Parent),
                 }
             }

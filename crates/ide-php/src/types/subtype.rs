@@ -22,6 +22,12 @@ pub trait Hierarchy {
     /// directly or not. Names are fully qualified without the leading `\`
     /// and compared case-insensitively.
     fn is_subclass(&self, sub: &str, sup: &str) -> bool;
+
+    /// The generic arguments `sub<sub_args>` passes to its ancestor `sup`
+    /// (through `@extends`/`@implements`/`@use`); `None` when unknown.
+    fn supertype_args(&self, _sub: &str, _sub_args: &[Type], _sup: &str) -> Option<Vec<Type>> {
+        None
+    }
 }
 
 /// No class knowledge: a class is only a subclass of itself.
@@ -44,6 +50,13 @@ impl Type {
 fn sub(a: &Type, b: &Type, h: &dyn Hierarchy) -> bool {
     if a == b {
         return true;
+    }
+    // `static<…>` is a `static` for subtyping.
+    if let Type::GenericRelative { relative, .. } = a {
+        return sub(&Type::Relative(*relative), b, h);
+    }
+    if let Type::GenericRelative { relative, .. } = b {
+        return sub(a, &Type::Relative(*relative), h);
     }
     match (a, b) {
         (_, Type::Mixed) | (Type::Never, _) => true,
@@ -110,16 +123,24 @@ fn atomic(a: &Type, b: &Type, h: &dyn Hierarchy) -> bool {
                 || [Type::Bool, Type::Int, Type::Float, Type::string()].iter().any(|scalar| sub(a, scalar, h))
         }
         Type::Object => {
-            matches!(a, Type::Named { .. } | Type::Relative(_) | Type::Closure(_) | Type::Object)
+            matches!(
+                a,
+                Type::Named { .. } | Type::Relative(_) | Type::Closure(_) | Type::Object | Type::GenericRelative { .. }
+            )
         }
         Type::Named { fqn, args } => match a {
             Type::Named { fqn: sub_fqn, args: sub_args } => {
+                let covariant = |inner: &[Type]| {
+                    inner.len() != args.len() || inner.iter().zip(args).all(|(inner, outer)| sub(inner, outer, h))
+                };
                 h.is_subclass(sub_fqn, fqn)
                     && (args.is_empty()
-                        || sub_args.is_empty()
-                        || !sub_fqn.eq_ignore_ascii_case(fqn)
-                        || (args.len() == sub_args.len()
-                            && sub_args.iter().zip(args).all(|(inner, outer)| sub(inner, outer, h))))
+                        || if sub_fqn.eq_ignore_ascii_case(fqn) {
+                            sub_args.is_empty() || (sub_args.len() == args.len() && covariant(sub_args))
+                        } else {
+                            // The arguments the subclass passes up, when known.
+                            h.supertype_args(sub_fqn, sub_args, fqn).is_none_or(|passed| covariant(&passed))
+                        })
             }
             Type::Closure(_) => args.is_empty() && fqn.eq_ignore_ascii_case("Closure"),
             _ => false,
@@ -186,6 +207,8 @@ fn atomic(a: &Type, b: &Type, h: &dyn Hierarchy) -> bool {
         Type::Void | Type::Null | Type::LiteralBool(_) | Type::LiteralInt(_) => false,
         Type::LiteralFloat(_) | Type::LiteralString(_) | Type::Resource | Type::Template(_) => false,
         Type::ClassConstant { .. } | Type::Never | Type::Mixed | Type::Union(_) | Type::Intersection(_) => false,
+        // Handled in `sub`.
+        Type::GenericRelative { .. } => false,
     }
 }
 
