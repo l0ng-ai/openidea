@@ -37,7 +37,7 @@ const maven = {
   ],
   projects: [],
 } as unknown as MavenModel;
-const model: BuildModel = { maven, gradle: null };
+const model: BuildModel = { maven, gradle: [] };
 
 /** The `-P` entries each sync was started with. */
 const syncedProfiles = () => mocks.sync.mock.calls.map((c) => c[3] as string[]);

@@ -251,6 +251,11 @@
   cursor: text;
 }
 
+/* Find matches in the console output. */
+.findMatch {
+  border-radius: 2px;
+}
+
 /* Soft-Wrap off: long lines scroll horizontally. */
 .noWrap {
   white-space: pre;

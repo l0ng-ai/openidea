@@ -16,6 +16,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   };
 });
 
+const { usePlatform } = await import("@/platform/platformInfo");
 const { parseJavaArgs, joinJavaArgs } = await import("@/platform/javaLaunch");
 const { parseArgs } = await import("./configs");
 const { jdwpLaunch } = await import("./javaDebug");
@@ -245,5 +246,36 @@ describe("Maven / Gradle: VM options of the forked JVM", () => {
     expect(scripts).toEqual([]);
     const remote = withParams(cfg({ kind: "gradle", target: "ssh-1" }), { tasks: "bootRun", vmOptions: "-Xmx1g" });
     await expect(gradle().prepareLaunch!(remote)).rejects.toThrow(/run targets/);
+  });
+});
+
+describe("build wrapper per execution host", () => {
+  const wrapperCommands = () =>
+    (["gradle", "maven"] as const).map((t) => typeFor(t)!.commandLine({ wrapper: "true", tasks: "test" })!.command);
+  const WINDOWS = ["gradlew.bat", "mvnw.cmd"];
+  const UNIX = ["./gradlew", "./mvnw"];
+
+  beforeEach(() => registerBuiltinTypes());
+  afterEach(async () => {
+    (await import("@/platform/remote")).disableRemote();
+    usePlatform.setState({ os: "macos" });
+  });
+
+  it("follows the desktop OS in a local window", () => {
+    usePlatform.setState({ os: "windows" });
+    expect(wrapperCommands()).toEqual(WINDOWS);
+    usePlatform.setState({ os: "linux" });
+    expect(wrapperCommands()).toEqual(UNIX);
+  });
+
+  it.each([
+    { desktop: "windows", host: "linux", target: { kind: "wsl", distro: "Ubuntu" }, expected: UNIX },
+    { desktop: "windows", host: "macos", target: { kind: "ssh", config: "box" }, expected: UNIX },
+    { desktop: "macos", host: "windows", target: { kind: "ssh", config: "win" }, expected: WINDOWS },
+  ] as const)("follows the $host server of a remote window opened from $desktop", async (c) => {
+    usePlatform.setState({ os: c.desktop });
+    const { enableRemote } = await import("@/platform/remote");
+    enableRemote({ target: c.target, root: "/app", host: "h", os: c.host, commands: [] });
+    expect(wrapperCommands()).toEqual(c.expected);
   });
 });

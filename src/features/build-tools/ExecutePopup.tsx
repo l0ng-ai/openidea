@@ -8,7 +8,7 @@ import { useMemo, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { BuildTool } from "@/platform/ipc";
 import { HighlightedText, Input, List, Popup, Select, listNavigate, T } from "@/ui";
-import { goalCompletions, taskCompletions, type Completion } from "./model";
+import { goalCompletions, gradleProjectForKey, gradleProjectKey, taskCompletions, type Completion } from "./model";
 import { executeBuildLine } from "./runAnything";
 import { readHistory, useBuild } from "./store";
 import styles from "./BuildTools.module.css";
@@ -32,7 +32,13 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
     () =>
       tool === "maven"
         ? (maven?.projects ?? []).map((p) => ({ value: p.pom, label: p.displayName, detail: p.dir || "." }))
-        : (gradle?.projects ?? []).map((p) => ({ value: p.path, label: p.name, detail: p.path })),
+        : (gradle ?? []).flatMap((build) =>
+            build.projects.map((p) => ({
+              value: gradleProjectKey(build, p),
+              label: p.name,
+              detail: `${build.dir || "."} ${p.path}`,
+            })),
+          ),
     [tool, maven, gradle],
   );
   const [project, setProject] = useState<string | null>(() =>
@@ -44,7 +50,8 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
       const p = maven?.projects.find((x) => x.pom === project);
       return goalCompletions(line, p?.plugins ?? [], history).slice(0, 200);
     }
-    return gradle ? taskCompletions(line, gradle, history).slice(0, 200) : [];
+    const selected = gradleProjectForKey(gradle ?? [], project);
+    return selected ? taskCompletions(line, selected.build, history).slice(0, 200) : [];
   }, [tool, maven, gradle, project, line, history]);
 
   const close = () => useBuild.setState({ executeOpen: null });

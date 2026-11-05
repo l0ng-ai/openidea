@@ -1,0 +1,9 @@
+{
+  "Cannot copy reference": "Cannot copy reference",
+  "Connect through:": "Connect through:",
+  "Connect through": "Connect through",
+  "WSL distribution:": "WSL distribution:",
+  "WSL distribution": "WSL distribution",
+  "Project runs on {label}": "Project runs on {label}",
+  "Forwarding ports is not supported in a WSL project yet": "Forwarding ports is not supported in a WSL project yet"
+}

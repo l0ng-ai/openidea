@@ -204,7 +204,7 @@ pub fn explode(war: &Path, destination: &Path, resources_only: bool) -> IdeResul
 }
 
 /// Updates the exploded artifact deployment from the module's own class output directories and
-/// its web resources (`src/main/webapp`), file by file and only what changed, instead of
+/// its web resources ([`web_sources`]), file by file and only what changed, instead of
 /// rebuilding and re-exploding the WAR. `module` and `class_paths` are absolute.
 /// `Ok(false)`: not possible this way (not deployed from the artifact yet, the module's output
 /// isn't on the classpath, or a module it depends on was compiled since the last update, whose
@@ -232,9 +232,10 @@ pub fn sync_outputs(base: &Path, module: &Path, class_paths: &[PathBuf], resourc
     for dir in own {
         sync_tree(dir, dir, &classes, Path::new("WEB-INF/classes"), resources_only, &mut current)?;
     }
-    let webapp = module.join("src/main/webapp");
-    if webapp.is_dir() {
-        sync_tree(&webapp, &webapp, &dest, Path::new(""), resources_only, &mut current)?;
+    for (dir, target) in web_sources(module) {
+        if dir.is_dir() {
+            sync_tree(&dir, &dir, &dest.join(&target), &target, resources_only, &mut current)?;
+        }
     }
     for rel in previous.iter().filter(|p| !current.contains(*p)) {
         let path = dest.join(rel);
@@ -244,6 +245,59 @@ pub fn sync_outputs(base: &Path, module: &Path, class_paths: &[PathBuf], resourc
     }
     fs::write(manifest, serde_json::to_vec(&current).map_err(invalid)?)?;
     Ok(true)
+}
+
+/// The folders whose files the WAR puts at its root (or under the second path): the web app
+/// folder (`src/main/webapp`, maven-war-plugin's `warSourceDirectory`, Gradle's
+/// `webAppDirName` / `webAppDirectory`), then maven-war-plugin's `webResources`.
+pub fn web_sources(module: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let rel = |dir: &str| {
+        let dir = ["${project.basedir}/", "${basedir}/"].iter().find_map(|p| dir.strip_prefix(p)).unwrap_or(dir);
+        module.join(dir.trim())
+    };
+    if let Ok(pom) = fs::read_to_string(module.join("pom.xml"))
+        && let Some(war) = war_plugin(&pom)
+    {
+        let mut out = vec![(rel(tag(war, "warSourceDirectory").unwrap_or("src/main/webapp")), PathBuf::new())];
+        let mut rest = tag_block(war, "webResources").unwrap_or_default();
+        while let Some(start) = rest.find("<resource>") {
+            let end = rest[start..].find("</resource>").map_or(rest.len(), |e| start + e);
+            let resource = &rest[start..end];
+            if let Some(dir) = tag(resource, "directory") {
+                out.push((rel(dir), PathBuf::from(tag(resource, "targetPath").unwrap_or_default())));
+            }
+            rest = &rest[end..];
+        }
+        return out;
+    }
+    let gradle = ["build.gradle", "build.gradle.kts"].iter().find_map(|f| fs::read_to_string(module.join(f)).ok());
+    let web_app_dir = gradle.as_deref().and_then(|text| {
+        text.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .find(|l| l.contains("webAppDirName") || l.contains("webAppDirectory"))
+            .and_then(|l| l.split(['"', '\'']).nth(1).map(str::to_owned))
+    });
+    vec![(rel(web_app_dir.as_deref().unwrap_or("src/main/webapp")), PathBuf::new())]
+}
+
+/// The `<plugin>` element of maven-war-plugin in `pom`, if it is configured there.
+fn war_plugin(pom: &str) -> Option<&str> {
+    let at = pom.find("<artifactId>maven-war-plugin</artifactId>")?;
+    let start = pom[..at].rfind("<plugin>")?;
+    let end = pom[at..].find("</plugin>").map_or(pom.len(), |e| at + e);
+    Some(&pom[start..end])
+}
+
+/// The text of the first `<name>` element in `xml`.
+fn tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    tag_block(xml, name).map(str::trim).filter(|t| !t.is_empty())
+}
+
+fn tag_block<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = xml.find(&open)? + open.len();
+    let end = start + xml[start..].find(&format!("</{name}>"))?;
+    Some(&xml[start..end])
 }
 
 fn modified_since(dir: &Path, since: std::time::SystemTime) -> bool {
@@ -574,6 +628,83 @@ mod tests {
         fs::File::create(dep.join("Core.class")).unwrap().set_modified(later).unwrap();
         assert!(!sync_outputs(&base, &module, &paths, false).unwrap());
     }
+    #[test]
+    fn web_sources_follow_the_war_plugin_and_gradle_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = tmp.path();
+        let rel = |sources: Vec<(PathBuf, PathBuf)>| -> Vec<(String, String)> {
+            sources
+                .into_iter()
+                .map(|(d, t)| {
+                    let d = d.strip_prefix(module).unwrap().to_string_lossy().replace('\\', "/");
+                    (d, t.to_string_lossy().into_owned())
+                })
+                .collect()
+        };
+        assert_eq!(rel(web_sources(module)), [("src/main/webapp".to_owned(), String::new())]);
+
+        // An Eclipse-style layout: the JSPs come in through webResources.
+        fs::write(
+            module.join("pom.xml"),
+            r#"<project><build><plugins>
+              <plugin><artifactId>maven-compiler-plugin</artifactId></plugin>
+              <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-war-plugin</artifactId>
+                <configuration>
+                  <warSourceDirectory>${basedir}/web</warSourceDirectory>
+                  <webResources>
+                    <resource><directory>WebContent</directory><includes><include>**/*</include></includes></resource>
+                    <resource><directory>extra</directory><targetPath>static</targetPath></resource>
+                  </webResources>
+                </configuration>
+              </plugin>
+            </plugins></build></project>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            rel(web_sources(module)),
+            [
+                ("web".to_owned(), String::new()),
+                ("WebContent".to_owned(), String::new()),
+                ("extra".to_owned(), "static".to_owned())
+            ]
+        );
+
+        fs::remove_file(module.join("pom.xml")).unwrap();
+        fs::write(
+            module.join("build.gradle"),
+            "plugins { id 'war' }\n// webAppDirName = 'old'\nwebAppDirName = 'WebContent'\n",
+        )
+        .unwrap();
+        assert_eq!(rel(web_sources(module)), [("WebContent".to_owned(), String::new())]);
+    }
+
+    #[test]
+    fn updates_web_resources_outside_src_main_webapp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (base, module) = (root.join("base"), root.join("web"));
+        let (dest, out) = (base.join("deployment"), module.join("target/classes"));
+        for dir in [dest.join("WEB-INF/classes"), out.clone(), module.join("WebContent/jsp")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(
+            module.join("pom.xml"),
+            "<project><plugin><artifactId>maven-war-plugin</artifactId><configuration><webResources>\
+             <resource><directory>WebContent</directory></resource></webResources></configuration></plugin></project>",
+        )
+        .unwrap();
+        fs::write(dest.join("index.jsp"), "old").unwrap();
+        fs::write(module.join("WebContent/jsp/list.jsp"), "new").unwrap();
+        fs::write(base.join("artifact-path.txt"), "web.war").unwrap();
+
+        assert!(sync_outputs(&base, &module, std::slice::from_ref(&out), true).unwrap());
+        assert_eq!(fs::read_to_string(dest.join("jsp/list.jsp")).unwrap(), "new");
+        // Files the WAR brought that no source here maps to stay.
+        assert_eq!(fs::read_to_string(dest.join("index.jsp")).unwrap(), "old");
+    }
+
     #[test]
     fn deployment_errors_identify_the_checked_path() {
         let tmp = tempfile::tempdir().unwrap();

@@ -1,0 +1,158 @@
+package openidea:plugin@1.1.0;
+
+/// Declarative views: tool windows declared
+/// under `[[contributes.views]]` and custom editors under
+/// `[[contributes.customEditors]]`. The plugin describes what to show; the
+/// IDE renders it with its own components (theme, keyboard, accessibility)
+/// and sends the user's actions back as `view-event`s. Nothing of the plugin
+/// runs in the WebView, except a `html` body, which is shown in a sandboxed
+/// frame that can only exchange messages with the plugin.
+interface view-types {
+    use types.{extension};
+
+    record button {
+        id: string,
+        label: string,
+        /// An IDE icon name (`refresh`, `add`, `remove`, `run`, …).
+        icon: option<string>,
+        enabled: bool,
+    }
+
+    /// A tree node; `parent` is the key of an earlier item (none: a root).
+    record tree-item {
+        key: string,
+        parent: option<string>,
+        label: string,
+        icon: option<string>,
+        /// Grey text after the label.
+        detail: option<string>,
+        /// Shows an expander even before its children are known
+        /// (`expand` asks for them).
+        expandable: bool,
+        expanded: bool,
+    }
+
+    record list-item {
+        key: string,
+        label: string,
+        icon: option<string>,
+        detail: option<string>,
+    }
+
+    variant field-value {
+        text(string),
+        multiline(string),
+        checkbox(bool),
+        /// The options and the chosen one.
+        choice(tuple<list<string>, string>),
+        /// A field type added after 1.0 (an IDE that doesn't know it leaves it out).
+        other(extension),
+    }
+
+    record field {
+        key: string,
+        label: string,
+        value: field-value,
+    }
+
+    /// Rows `first-row`..`first-row + len(rows)` of `total-rows`: the IDE
+    /// asks for the rows it shows (`viewport`), so large tables stay cheap.
+    record table {
+        columns: list<string>,
+        total-rows: u32,
+        first-row: u32,
+        rows: list<list<string>>,
+        editable: bool,
+    }
+
+    variant body {
+        /// A centred message (empty state, errors).
+        message(string),
+        tree(list<tree-item>),
+        %list(list<list-item>),
+        form(list<field>),
+        table(table),
+        /// HTML shown in a sandboxed frame: no scripts from elsewhere, no
+        /// network, no IDE API. Its script talks to the plugin with
+        /// `openidea.postMessage(text)` / `openidea.onMessage(fn)`.
+        html(string),
+        /// A body added after 1.0; an IDE that doesn't know it says it needs updating.
+        other(extension),
+    }
+
+    record view {
+        toolbar: list<button>,
+        body: body,
+        /// A line below the body (counts, last refresh…).
+        status: option<string>,
+    }
+
+    /// The table rows the IDE shows.
+    record viewport {
+        first-row: u32,
+        rows: u32,
+    }
+
+    record cell-edit {
+        row: u32,
+        column: u32,
+        value: string,
+    }
+
+    variant view-event {
+        /// A toolbar button.
+        button(string),
+        /// Double click / Enter on a tree or list item.
+        activate(string),
+        select(string),
+        expand(string),
+        collapse(string),
+        /// A form field changed: key and new value (`true`/`false` for checkboxes).
+        field(tuple<string, string>),
+        cell(cell-edit),
+        /// Insert an empty row before this one (the row count: append).
+        insert-row(u32),
+        delete-rows(list<u32>),
+        /// From the `html` body's script.
+        message(string),
+        /// An event added after 1.0, from a body or field added after 1.0.
+        other(extension),
+    }
+}
+
+/// What a plugin's code can ask of its views.
+interface views {
+    use types.{error};
+
+    /// The view (or every custom editor of that id) shows outdated content:
+    /// the IDE renders it again.
+    refresh: func(view: string);
+    /// Sends a message to the script of a view's `html` body.
+    post-message: func(view: string, message: string) -> result<_, error>;
+    /// Opens a terminal tab in the window the call came from, running
+    /// `program` (pinned by a `process:<program>` grant) with `args` in the
+    /// project root: long-running output (logs) and interactive sessions.
+    open-terminal: func(title: string, program: string, args: list<string>) -> result<_, error>;
+    /// Opens `path` (project-relative or absolute, inside the project) in an
+    /// editor of the window the call came from, the caret at `line` and
+    /// `column` (0-based; UTF-16 column): a view's links to code.
+    open-location: func(path: string, line: u32, column: u32) -> result<_, error>;
+}
+
+/// The plugin's own settings (`[contributes.settings]`), as the user set them
+/// (project over global) or the schema's default.
+interface settings {
+    /// The value of `key` as JSON (`true`, `3`, `"text"`), none if unknown.
+    get: func(key: string) -> option<string>;
+}
+
+/// Optional export (world `plugin-views`): content of declared views and
+/// custom editors. For a custom editor, `ctx.editor()` is its document.
+interface view-provider {
+    use view-types.{view, viewport, view-event};
+    use invocation.{invocation};
+    use types.{error};
+
+    render: func(view: string, viewport: option<viewport>, ctx: borrow<invocation>) -> result<view, error>;
+    handle: func(view: string, event: view-event, ctx: borrow<invocation>) -> result<_, error>;
+}

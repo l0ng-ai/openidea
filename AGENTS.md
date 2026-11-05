@@ -51,7 +51,8 @@ Visual style: dark, low-contrast greys, one cool accent
 
 Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
 (`Closes #<n>` when it resolves an issue), reproduce first, keep the diff focused, short plain description, and a
-**How it was verified** section with commands run, results and (for UI) before/after screenshots.
+**How it was verified** section with commands run, results and, when the change alters what users
+see, before/after screenshots (not for UI removed along with a feature, copy-only or non-visual changes).
 Unclear product decisions → `needs-decision` and stop.
 
 ## Skills
@@ -121,8 +122,8 @@ Several worktrees can be developed and run side by side.
   default MCP session belongs to this worktree.
 - Keep each worktree's Cargo output directory separate; do not point `CARGO_TARGET_DIR` or
   `target` symlinks at a shared directory.
-- Each worktree's first build is cold (around 5 minutes) and its Cargo output takes
-  15–30 GB. Avoid running several heavy builds on one machine at the same time.
+- Each worktree's first build is cold (several minutes) and `cargo build` output takes
+  around 9 GB; tests, clippy and incremental builds add more. Avoid running several heavy builds on one machine at the same time.
 - Stop only processes started for the current worktree/session. Never use broad
   process-name kills such as `pkill openidea`.
 - When done: stop that worktree's app and dev session, delete its build output, then

@@ -1,0 +1,92 @@
+package openidea:plugin@1.1.0;
+
+interface workspace {
+    use types.{error};
+
+    /// A project open in the IDE.
+    resource project {
+        /// Absolute path of the project root. Requires `project.read`.
+        root: func() -> result<string, error>;
+        /// Reads a UTF-8 text file inside the project (absolute, or relative
+        /// to the root); paths leaving the root are refused. Unsaved editor
+        /// contents win over the disk. Requires `project.read`.
+        read-file: func(path: string) -> result<string, error>;
+        /// Project files whose root-relative path matches `glob` (`**/*Mapper.xml`),
+        /// at most `limit`, as absolute paths. Ignored and excluded files are
+        /// skipped. Requires `project.read`.
+        find-files: func(glob: string, limit: u32) -> result<list<string>, error>;
+    }
+
+    /// Projects open in any window. Requires `project.read`.
+    projects: func() -> result<list<project>, error>;
+}
+
+interface editor {
+    use types.{error, range, text-edit};
+
+    record document {
+        /// Grows with every change; edits name the version they were made for.
+        version: u64,
+        text: string,
+    }
+
+    /// A file open in an editor.
+    resource text-editor {
+        /// Absolute path of the file.
+        path: func() -> string;
+        /// Language id (`rust`, `solidity`, …).
+        language: func() -> string;
+        /// Current version and text. Requires `editor.read`.
+        document: func() -> result<document, error>;
+        /// Selections when the command was invoked (a cursor is an empty
+        /// range). Requires `editor.read`.
+        selections: func() -> result<list<range>, error>;
+        /// Applies `edits` as one undoable change, only if the document is
+        /// still at `version` (else `stale`, and nothing changes). Ranges are
+        /// in that version and must not overlap. Returns the new version.
+        /// Requires `editor.write`.
+        apply-edits: func(version: u64, edits: list<text-edit>) -> result<u64, error>;
+    }
+}
+
+/// Where a command or event comes from.
+interface invocation {
+    use workspace.{project};
+    use editor.{text-editor};
+
+    resource invocation {
+        /// The window's project.
+        project: func() -> option<project>;
+        /// The window's focused editor.
+        editor: func() -> option<text-editor>;
+    }
+}
+
+/// Git, for the repository containing a project.
+interface vcs {
+    use types.{error};
+    use workspace.{project};
+
+    record repository-status {
+        /// Absolute path of the working tree root.
+        root: string,
+        /// `none` when HEAD is detached.
+        branch: option<string>,
+        commit: option<string>,
+        upstream: option<string>,
+        ahead: u32,
+        behind: u32,
+        /// Merge / rebase / cherry-pick in progress.
+        operation: option<string>,
+        /// Files with staged or unstaged changes.
+        changed-files: u32,
+    }
+
+    /// `none` when the project is not in a repository. Requires `vcs.read`.
+    status: func(project: borrow<project>) -> result<option<repository-status>, error>;
+    /// Configured remotes (`name`, fetch `url`), in order. Requires `vcs.read`.
+    remotes: func(project: borrow<project>) -> result<list<tuple<string, string>>, error>;
+    /// Fetches all remotes (pruning deleted branches). Requires `vcs.write`.
+    /// Long-running: call it inside a task.
+    fetch: func(project: borrow<project>) -> result<_, error>;
+}

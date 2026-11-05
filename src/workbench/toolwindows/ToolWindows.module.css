@@ -159,9 +159,9 @@
 /* Stripes */
 .stripe {
   /* --stripe-drag: the width under the pointer while the stripe edge is dragged. */
-  --stripe-button: var(--stripe-drag, 32px);
-  /* Outer padding: icons only sit centred between equal margins. */
-  --stripe-pad: var(--island-gap);
+  --stripe-button: var(--stripe-drag, var(--stripe-icon-button));
+  /* Outer padding: narrower than the island gap so the side frame stays close to the status bar's height, as in IDEA. */
+  --stripe-pad: 4px;
   width: calc(var(--stripe-button) + var(--stripe-pad) + var(--island-gap));
   container-type: inline-size;
   flex: none;
@@ -237,8 +237,8 @@
 .stripeButton {
   position: relative;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: var(--stripe-icon-button);
+  height: var(--stripe-icon-button);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -364,7 +364,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 600;
   color: var(--fg-strong);
 }
 .titlePlain {

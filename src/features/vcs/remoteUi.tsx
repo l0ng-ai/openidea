@@ -149,6 +149,9 @@ interface PushNode {
   children?: PushNode[];
 }
 
+// A long outgoing list scrolls inside the dialog instead of growing it to the screen (IDEA: 800×450 centre panel).
+const PUSH_DIALOG_MAX_HEIGHT = 720;
+
 function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const roots = useVcs((s) => s.roots);
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
@@ -228,6 +231,8 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       title="Push Commits"
       onClose={onClose}
       width={repos?.some((r) => r.commits.length) ? 860 : 620}
+      maxHeight={PUSH_DIALOG_MAX_HEIGHT}
+      className={styles.pushDialog}
       resizable="both"
       footerStart={
         <>
@@ -441,6 +446,8 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
       title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
       onClose={onClose}
       width={commits?.length ? 860 : 620}
+      maxHeight={PUSH_DIALOG_MAX_HEIGHT}
+      className={styles.pushDialog}
       resizable="both"
       footerStart={
         <>

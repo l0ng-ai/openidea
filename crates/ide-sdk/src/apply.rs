@@ -5,7 +5,7 @@ use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path};
 use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
-use ide_core::settings::{LanguageServerSettings, Settings};
+use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
 use ide_core::version_managers::Tool;
 use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
@@ -429,6 +429,36 @@ pub fn configure_maven_import(
     }
 }
 
+/// Explicit Gradle links constrain discovery and isolate JDT's persisted import state.
+pub fn configure_gradle_import(
+    cfg: &mut LanguageServerConfig,
+    linked: Option<&[String]>,
+    build_files: Option<&[String]>,
+) {
+    let Some(linked) = linked.filter(|_| cfg.name == "jdtls") else { return };
+    merge_init_options(
+        cfg,
+        json!({
+            "settings": {"java": {"import": {"gradle": {"enabled": !linked.is_empty()}}}},
+            "projectConfigurations": build_files.unwrap_or_default()
+        }),
+    );
+    if let Some(settings) = &mut cfg.settings {
+        merge(settings, json!({"java": {"import": {"gradle": {"enabled": !linked.is_empty()}}}}));
+    }
+    if let Some(index) = cfg.args.iter().position(|arg| arg == "-data")
+        && let Some(workspace) = cfg.args.get_mut(index + 1)
+    {
+        let mut hash = 0xcbf29ce484222325u64;
+        for dir in linked {
+            for byte in dir.bytes().chain([0]) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        }
+        *workspace = format!("{workspace}-gradle-{hash:016x}");
+    }
+}
+
 pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
@@ -442,15 +472,41 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     }
 }
 
+/// Editor › Inspections › Java: "Serializable class without 'serialVersionUID'" (off by default,
+/// as in IntelliJ IDEA). ECJ reports it, so it is a compiler option rather than a filter.
+pub const SERIAL_VERSION_INSPECTION: &str = "java:missing-serial-version";
+
+/// ECJ's level for a missing `serialVersionUID`, from the inspection profile in effect.
+fn missing_serial_version(inspections: &InspectionSettings) -> Option<&'static str> {
+    let o = inspections.active().get(SERIAL_VERSION_INSPECTION)?;
+    if o.enabled != Some(true) {
+        return None;
+    }
+    Some(match o.severity {
+        Some(InspectionLevel::Error) => "error",
+        None | Some(InspectionLevel::Warning) => "warning",
+        Some(_) => "info",
+    })
+}
+
 /// Workspace compiler defaults; Eclipse project preferences still take precedence.
-pub(crate) fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path) {
-    let file = data_dir.join("lsp/jdtls/compiler-defaults.prefs");
+/// Each variant has its own file, so changing an inspection restarts the server with it.
+pub fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path, inspections: &InspectionSettings) {
     const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
 org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
+    let serial = missing_serial_version(inspections);
+    let (name, content) = match serial {
+        None => ("compiler-defaults.prefs".to_owned(), DEFAULTS.to_owned()),
+        Some(level) => (
+            format!("compiler-defaults-serial-{level}.prefs"),
+            format!("{DEFAULTS}org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"),
+        ),
+    };
+    let file = data_dir.join("lsp/jdtls").join(name);
     let write = || -> ide_core::IdeResult<()> {
         std::fs::create_dir_all(file.parent().expect("compiler preferences directory"))?;
-        if std::fs::read_to_string(&file).ok().as_deref() != Some(DEFAULTS) {
-            ide_vfs::write_atomic(&file, DEFAULTS.as_bytes())?;
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(content.as_str()) {
+            ide_vfs::write_atomic(&file, content.as_bytes())?;
         }
         Ok(())
     };
@@ -1096,12 +1152,49 @@ mod java_compiler_tests {
     }
 
     #[test]
+    fn serial_version_inspection_sets_the_compiler_option() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = |inspections: &InspectionSettings| {
+            let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+            configure_java_compiler(&mut cfg, tmp.path(), inspections);
+            options(&cfg).pointer("/settings/java/settings/url").unwrap().as_str().unwrap().to_owned()
+        };
+        let set = |o: ide_core::settings::InspectionOverride| {
+            let mut s = InspectionSettings::default();
+            s.default.insert(SERIAL_VERSION_INSPECTION.into(), o);
+            s
+        };
+        let off = url(&InspectionSettings::default());
+        assert!(!std::fs::read_to_string(&off).unwrap().contains("missingSerialVersion"));
+        let on = url(&set(ide_core::settings::InspectionOverride { enabled: Some(true), ..Default::default() }));
+        assert_ne!(on, off, "a new file, so the server restarts with it");
+        assert!(std::fs::read_to_string(&on).unwrap().ends_with("compiler.problem.missingSerialVersion=warning\n"));
+        let error = url(&set(ide_core::settings::InspectionOverride {
+            enabled: Some(true),
+            severity: Some(InspectionLevel::Error),
+            ..Default::default()
+        }));
+        assert!(std::fs::read_to_string(error).unwrap().ends_with("missingSerialVersion=error\n"));
+        let weak = url(&set(ide_core::settings::InspectionOverride {
+            enabled: Some(true),
+            severity: Some(InspectionLevel::WeakWarning),
+            ..Default::default()
+        }));
+        assert!(std::fs::read_to_string(weak).unwrap().ends_with("missingSerialVersion=info\n"));
+        let severity_only = url(&set(ide_core::settings::InspectionOverride {
+            severity: Some(InspectionLevel::Error),
+            ..Default::default()
+        }));
+        assert_eq!(severity_only, off, "off by default");
+    }
+
+    #[test]
     fn compiler_defaults_live_in_the_cache_and_preserve_other_options() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache with spaces 测试");
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         merge_init_options(&mut cfg, json!({"settings": {"java": {"format": {"tabSize": 4}}}}));
-        configure_java_compiler(&mut cfg, &cache);
+        configure_java_compiler(&mut cfg, &cache, &InspectionSettings::default());
         let options = options(&cfg);
         let path = PathBuf::from(options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap());
         assert!(path.starts_with(&cache));
@@ -1112,7 +1205,7 @@ mod java_compiler_tests {
         }
         assert_eq!(options.pointer("/settings/java/format/tabSize"), Some(&json!(4)));
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        configure_java_compiler(&mut cfg, &cache);
+        configure_java_compiler(&mut cfg, &cache, &InspectionSettings::default());
         assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), modified);
         assert_eq!(self::options(&cfg), options);
     }
@@ -1122,7 +1215,7 @@ mod java_compiler_tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         merge_init_options(&mut cfg, json!({"settings": {"java": {"settings": {"url": "own.prefs"}}}}));
-        configure_java_compiler(&mut cfg, tmp.path());
+        configure_java_compiler(&mut cfg, tmp.path(), &InspectionSettings::default());
         assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("own.prefs")));
 
         for settings in [
@@ -1154,6 +1247,25 @@ mod java_compiler_tests {
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn explicit_gradle_links_scope_jdt_import_and_unlink_all_disables_gradle() {
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+        let files = ["file:///p/a/settings.gradle".to_owned(), "file:///p/maven/pom.xml".to_owned()];
+        configure_gradle_import(&mut cfg, Some(&["a".into()]), Some(&files));
+        let options = serde_json::to_value(&cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(files));
+        assert_eq!(options.pointer("/settings/java/import/gradle/enabled"), Some(&json!(true)));
+        assert!(cfg.args[1].starts_with("/cache/jdtls-gradle-"));
+        let linked_cache = cfg.args[1].clone();
+        cfg.args[1] = "/cache/jdtls".into();
+        configure_gradle_import(&mut cfg, Some(&[]), Some(&files[1..]));
+        let options = serde_json::to_value(&cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(&files[1..]));
+        assert_eq!(options.pointer("/settings/java/import/gradle/enabled"), Some(&json!(false)));
+        assert_ne!(linked_cache, cfg.args[1]);
+    }
 
     #[test]
     fn import_excludes_unlinked_modules_and_changes_persistent_workspace() {

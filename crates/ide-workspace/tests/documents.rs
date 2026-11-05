@@ -345,6 +345,28 @@ fn backend_edits_emit_patches() {
 }
 
 #[test]
+fn external_change_in_two_places_patches_each() {
+    let f = fixture();
+    let path = f.root.join("two.txt");
+    let old: String = (0..400).map(|i| format!("line {i}\n")).collect();
+    fs::write(&path, &old).unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let new = old.replace("line 20\n", "line 20x\n").replace("line 299\n", "line 299x\n");
+    fs::write(&path, &new).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+
+    assert_eq!(f.docs.snapshot(id).unwrap().text, new);
+    let events = f.events.lock();
+    let changes = events.iter().find_map(|e| match e {
+        IdeEvent::DocPatched { changes, .. } => Some(changes),
+        _ => None,
+    });
+    assert_eq!(changes.map(Vec::len), Some(2));
+}
+
+#[test]
 fn external_changes() {
     let f = fixture();
     let path = f.root.join("ext.txt");

@@ -239,8 +239,8 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
       <envs><env name="VITE_API" value="http://localhost:8000" /></envs>
       <method v="2" />
     </configuration>
-    <configuration name="Main" type="Application" factoryName="Application">
-      <option name="MAIN_CLASS_NAME" value="shop.Main" />
+    <configuration name="Main" type="JUnit" factoryName="JUnit">
+      <option name="MAIN_CLASS_NAME" value="shop.MainTest" />
       <method v="2" />
     </configuration>"#
         )),
@@ -272,7 +272,7 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     assert_eq!(get(&r, "Custom").args, s(&["-m", "pytest", "tests/a.py", "--maxfail=2"]));
 
     assert_eq!(reason(&r, "Unittests in tests"), &SkipReason::UnsupportedType { type_: "tests (Unittests)".into() });
-    assert_eq!(reason(&r, "Main"), &SkipReason::UnsupportedType { type_: "Application".into() });
+    assert_eq!(reason(&r, "Main"), &SkipReason::UnsupportedType { type_: "JUnit".into() });
 
     let dev = get(&r, "dev");
     assert_eq!((dev.kind.as_str(), dev.command.as_str()), ("npm", "pnpm"));
@@ -526,14 +526,11 @@ fn sources_are_offered_when_their_files_exist() {
         ),
     );
     assert!(available(dir.path()).is_empty());
-    write(dir.path(), ".idea/workspace.xml", &workspace(r#"<configuration name="App" type="Application" />"#));
+    write(dir.path(), ".idea/workspace.xml", &workspace(r#"<configuration name="App" type="JUnit" />"#));
     assert_eq!(available(dir.path()), [RunImportSource::Jetbrains]);
     write(dir.path(), ".vscode/launch.json", "{}");
     assert_eq!(available(dir.path()), [RunImportSource::Vscode, RunImportSource::Jetbrains]);
-    assert_eq!(
-        reason(&import_from(dir.path(), &[]), "App"),
-        &SkipReason::UnsupportedType { type_: "Application".into() }
-    );
+    assert_eq!(reason(&import_from(dir.path(), &[]), "App"), &SkipReason::UnsupportedType { type_: "JUnit".into() });
 }
 
 #[test]
@@ -701,4 +698,92 @@ fn flags_defaults_inherited_variables_and_nested_django_tests() {
     let tests = get(&r, "Backend tests");
     assert_eq!((tests.kind.as_str(), tests.is_test), ("python", true));
     assert_eq!(tests.args[..3], s(&["backend/manage.py", "test", "orders"]));
+}
+
+#[test]
+fn java_applications_and_spring_boot_keep_their_module() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    write(&root, "pom.xml", "<project><artifactId>shop</artifactId><packaging>pom</packaging></project>");
+    write(
+        &root,
+        "example-service/pom.xml",
+        "<project><parent><artifactId>shop</artifactId></parent><artifactId>example-service</artifactId></project>",
+    );
+    // IDEA names a Maven module after its artifactId, which needn't be its folder.
+    write(
+        &root,
+        "services/api/pom.xml",
+        "<project><parent><artifactId>shop</artifactId></parent><artifactId>api-service</artifactId></project>",
+    );
+    write(
+        &root,
+        ".idea/workspace.xml",
+        &workspace(
+            r#"    <configuration name="ExampleApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="example-service" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.ExampleApplication" />
+      <option name="ACTIVE_PROFILES" value="dev,local" />
+      <option name="VM_PARAMETERS" value="-Xmx512m -Dfile.encoding=UTF-8" />
+      <option name="PROGRAM_PARAMETERS" value="--server.port=8081" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/example-service" />
+      <option name="HIDE_BANNER" value="true" />
+      <envs>
+        <env name="TZ" value="UTC" />
+      </envs>
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="Api" type="Application" factoryName="Application">
+      <option name="MAIN_CLASS_NAME" value="com.example.api.Main" />
+      <module name="api-service" />
+      <option name="ALTERNATIVE_JRE_PATH_ENABLED" value="true" />
+      <option name="ALTERNATIVE_JRE_PATH" value="17" />
+      <method v="2" />
+    </configuration>
+    <configuration name="Gone" type="Application" factoryName="Application">
+      <option name="MAIN_CLASS_NAME" value="Gone" />
+      <module name="removed-module" />
+    </configuration>
+    <configuration name="NoMain" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="example-service" />
+    </configuration>"#,
+        ),
+    );
+
+    let r = import_from(&root, &[]);
+
+    let boot = get(&r, "ExampleApplication");
+    assert_eq!(boot.kind, "spring-boot");
+    assert_eq!(boot.command, "java");
+    assert_eq!(
+        boot.args,
+        s(&[
+            "-Xmx512m",
+            "-Dfile.encoding=UTF-8",
+            "-cp",
+            "${classpath}",
+            "com.example.ExampleApplication",
+            "--spring.profiles.active=dev,local",
+            "--server.port=8081",
+        ])
+    );
+    assert_eq!(boot.extras.module.as_deref(), Some("example-service"));
+    assert_eq!(cwd(boot), Some(PathBuf::from("example-service")));
+    assert_eq!(boot.env.get("TZ").map(String::as_str), Some("UTC"));
+    assert_eq!(boot.debug_adapter.as_deref(), Some("java-debug"));
+    assert_eq!(ignored(&r, "ExampleApplication"), ["before launch", "hide banner"]);
+
+    let api = get(&r, "Api");
+    assert_eq!(api.kind, "application");
+    assert_eq!(api.args, s(&["-cp", "${classpath}", "com.example.api.Main"]));
+    assert_eq!(api.extras.module.as_deref(), Some("services/api"));
+    assert_eq!(ignored(&r, "Api"), ["JRE"]);
+
+    // A module that isn't here any more: the form finds it by the main class.
+    assert_eq!(get(&r, "Gone").extras.module, None);
+    assert_eq!(ignored(&r, "Gone"), ["module removed-module"]);
+
+    assert_eq!(reason(&r, "NoMain"), &SkipReason::NothingToRun);
 }

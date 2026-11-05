@@ -218,7 +218,12 @@ export function currentThemeChoice(): ThemeChoiceId {
     : resolveThemeChoice(useProject.getState().settings?.appearance as AppearanceLike | undefined, prefersLight());
 }
 
+/** A previewed theme is not the next start-up's (`rememberStartupTheme`). */
+let previewing = false;
+
 export async function setTheme(next: ThemeSetting) {
+  // A theme chosen while previewed is the next start-up's.
+  previewing = false;
   useThemeOverride.setState({ theme: next });
   if (!isTauri()) return;
   try {
@@ -232,9 +237,6 @@ export async function setTheme(next: ThemeSetting) {
     /* keep the session override */
   }
 }
-
-/** A previewed theme is not the next start-up's (`rememberStartupTheme`). */
-let previewing = false;
 
 /**
  * Shows `id` in this window without selecting it (Quick Switch's instant

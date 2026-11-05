@@ -9,17 +9,19 @@ import { tags as t, type Tag } from "@lezer/highlight";
 function token(
   tag: Tag | Tag[],
   name: string,
-  defaults: { italic?: string; bold?: string; effect?: string } = {},
+  defaults: { italic?: string; bold?: string; effect?: string; color?: string } = {},
 ): TagStyle {
+  const variable = (suffix: string, fallback: string) =>
+    `var(--syn-${name}${suffix}, ${defaults.color ? `var(--syn-${defaults.color}${suffix}, ${fallback})` : fallback})`;
   return {
     tag,
-    color: `var(--syn-${name})`,
-    fontStyle: `var(--syn-${name}-italic, ${defaults.italic ?? "inherit"})`,
-    fontWeight: `var(--syn-${name}-bold, ${defaults.bold ?? "inherit"})`,
-    backgroundColor: `var(--syn-${name}-bg, transparent)`,
-    textDecoration: `var(--syn-${name}-effect, ${defaults.effect ?? "none"})`,
+    color: defaults.color ? variable("", "inherit") : `var(--syn-${name})`,
+    fontStyle: variable("-italic", defaults.italic ?? "inherit"),
+    fontWeight: variable("-bold", defaults.bold ?? "inherit"),
+    backgroundColor: variable("-bg", "transparent"),
+    textDecoration: variable("-effect", defaults.effect ?? "none"),
     // WebKit takes a decoration with a style or colour only through the prefixed property.
-    WebkitTextDecoration: `var(--syn-${name}-effect, ${defaults.effect ?? "none"})`,
+    WebkitTextDecoration: variable("-effect", defaults.effect ?? "none"),
   };
 }
 
@@ -71,10 +73,12 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token(t.special(t.brace), "decorator"),
   token([t.tagName, t.angleBracket], "tag"),
   token([t.punctuation, t.bracket, t.separator, t.operator, t.derefOperator], "punct"),
+  token(t.bracket, "bracket", { color: "punct" }),
+  token(t.separator, "separator", { color: "punct" }),
   token(t.invalid, "invalid"),
   // Markup (Markdown, docs)
   token(t.heading, "markup-heading", { bold: "var(--fw-code-bold, 700)" }),
-  token(t.processingInstruction, "keyword"),
+  token(t.processingInstruction, "processing-instruction", { color: "keyword" }),
   { tag: t.emphasis, fontStyle: "italic" },
   { tag: t.strong, fontWeight: "var(--fw-code-bold, 700)" },
   { tag: t.strikethrough, textDecoration: "line-through" },

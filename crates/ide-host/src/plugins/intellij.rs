@@ -422,7 +422,8 @@ struct IdeDir {
     plugins: PathBuf,
 }
 
-/// The settings folders of JetBrains IDEs and Android Studio (2020.1 and later), newest first.
+/// The settings folders of JetBrains IDEs and Android Studio (2020.1 and later), newest first, one
+/// per product: its newest version's (an upgrade leaves the older ones behind).
 fn ide_dirs(layout: Layout, home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Vec<IdeDir> {
     let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
     let (config_root, data_root) = match layout {
@@ -462,6 +463,8 @@ fn ide_dirs(layout: Layout, home: &Path, env: impl Fn(&str) -> Option<OsString>)
         }
     }
     out.sort_by(|a, b| b.version.cmp(&a.version).then_with(|| a.label.cmp(&b.label)));
+    let mut products = std::collections::HashSet::new();
+    out.retain(|ide| products.insert(ide.product.clone()));
     out
 }
 
@@ -784,6 +787,13 @@ mod tests {
         };
         let mac = mk(home.join("Library/Application Support/JetBrains/IntelliJIdea2025.2"));
         mk(home.join("Library/Application Support/JetBrains/Toolbox"));
+        // An upgrade leaves the older version's folder behind: only the newest of a product counts.
+        mk(home.join("Library/Application Support/JetBrains/IntelliJIdea2024.3"));
+        mk(home.join("Library/Application Support/JetBrains/IntelliJIdea2025.10"));
+        let dirs = ide_dirs(Layout::Mac, home, |_| None);
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].label, "IntelliJ IDEA 2025.10");
+        std::fs::remove_dir(home.join("Library/Application Support/JetBrains/IntelliJIdea2025.10")).unwrap();
         let dirs = ide_dirs(Layout::Mac, home, |_| None);
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0].label, "IntelliJ IDEA 2025.2");

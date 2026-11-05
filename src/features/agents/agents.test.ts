@@ -3,6 +3,7 @@ import type { AgentConfigOption, AgentEntry, AgentStatus, AgentTask } from "@/bi
 import {
   applyCompletion,
   atEdgeLine,
+  bypassDefaults,
   canSend,
   completionAt,
   isPathQuery,
@@ -157,11 +158,31 @@ describe("agent composer", () => {
     const config = [option("fast", ["on"], null), option("mode", ["ask", "code"], "code"), option("model", ["m"], "m")];
     expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode"]);
     expect(nextValue(config[1]!)).toBe("ask");
+    const permissions = option("allow_all", ["off", "on"], "off");
+    permissions.category = "permissions";
+    expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id]);
     const approvals = { ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"), category: "approval" };
-    expect(mainOptions([...config, approvals]).map((o) => o.id)).toEqual(["model", "mode", approvals.id]);
+    expect(mainOptions([...config, permissions, approvals]).map((o) => o.id)).toEqual([
+      "model",
+      "mode",
+      permissions.id,
+      approvals.id,
+    ]);
     expect(
-      ["default", "acceptEdits", "plan", "auto", "bypassPermissions", "auto_edit", "read-only", "x"].map(modeIcon),
-    ).toEqual(["lock", "edit", "todo", "run", "unlock", "edit", "eye", "lock"]);
+      [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "bypassPermissions",
+        "auto_edit",
+        "read-only",
+        "x",
+        "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+      ].map(modeIcon),
+    ).toEqual(["lock", "edit", "todo", "run", "unlock", "edit", "eye", "lock", "run", "run"]);
+    expect(bypassDefaults([...config, permissions])).toEqual({ allow_all: "on" });
     expect(usageLabel({ used: 24_000, size: 200_000 })).toEqual({
       short: "12%",
       detail: "24k / 200k tokens",

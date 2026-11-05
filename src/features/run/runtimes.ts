@@ -5,6 +5,7 @@
  * Rust come from SDK discovery and everything else resolves at launch.
  */
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isWindows } from "./jvmTypes";
 import type { LocatedTool, ToolEnv } from "./producers";
 
 const TTL = 60_000;
@@ -15,7 +16,6 @@ interface Entry {
 }
 
 const cache = new Map<string, Entry>();
-const isWindows = typeof navigator !== "undefined" && /Win/i.test(navigator.platform || navigator.userAgent);
 let compileDir: string | null = null;
 let locateUnavailable = false;
 
@@ -115,7 +115,7 @@ export async function toolEnv(
   return {
     tool: (n) => tools.get(n),
     compileDir: compileDir ?? "/tmp/openidea-run",
-    windows: isWindows,
+    windows: isWindows(),
     python: py,
     ...markers,
   };

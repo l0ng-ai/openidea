@@ -23,11 +23,12 @@ import {
 import { WindowControls } from "./WindowControls";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
-import { keymapItems, themeItems, VIEW_MODE_ITEMS } from "./quickSwitch";
+import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
 import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
 import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
+import { windowDragRegion } from "./window-drag";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -146,13 +147,18 @@ export function customizeToolbarItems(
   ];
 }
 
-/** IDEA's main toolbar gear: Run Anything, Settings, Plugins, quick switches, toolbar customization, updates. */
+/**
+ * IDEA's main toolbar gear: Run Anything, Settings, Plugins, quick switches, toolbar customization, updates.
+ * With `preview`, a theme under the pointer shows as in Quick Switch.
+ */
 export function gearMenuItems(
   themeId: string,
   keymapId: string,
   customKeymaps: string[],
   customize: MenuItem[] = [{ kind: "action", action: "toolbar.customize", label: "Customize Toolbar…" }],
+  preview?: ThemePreview,
 ): MenuItem[] {
+  const restore = preview && (() => preview.restore());
   return [
     { kind: "action", action: "runAnything.show" },
     { kind: "separator" },
@@ -162,20 +168,25 @@ export function gearMenuItems(
     {
       id: "gear.theme",
       label: "Theme",
-      submenu: [...themeItems(themeId), { kind: "separator" }, { kind: "action", action: "settings.appearance" }],
+      submenu: [
+        ...themeItems(themeId, preview),
+        { kind: "separator" },
+        { kind: "action", action: "settings.appearance" },
+      ],
     },
     {
       id: "gear.keymap",
       label: "Keymap",
+      onActive: restore,
       submenu: [
         ...keymapItems(keymapId, customKeymaps),
         { kind: "separator" },
         { kind: "action", action: "settings.keymap", label: "Configure Keymap…" },
       ],
     },
-    { id: "gear.viewMode", label: "View Mode", submenu: VIEW_MODE_ITEMS },
+    { id: "gear.viewMode", label: "View Mode", onActive: restore, submenu: VIEW_MODE_ITEMS },
     { kind: "separator" },
-    { id: "gear.customizeToolbar", label: "Customize Main Toolbar", submenu: customize },
+    { id: "gear.customizeToolbar", label: "Customize Main Toolbar", onActive: restore, submenu: customize },
     { kind: "separator" },
     { kind: "action", action: "app.checkForUpdates" },
   ];
@@ -204,12 +215,20 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
   const preset = useKeymap((s) => s.preset);
   const customs = settings?.customKeymaps;
   useContributedThemes((s) => s.themes);
+  // One preview per opening: a theme shown from it goes away with the menu unless chosen.
+  const preview = useMemo(() => (open ? themePreview() : undefined), [open]);
   const items = gearMenuItems(
     currentThemeChoice(),
     typeof settings?.keymap === "string" ? settings.keymap : preset,
     customs && typeof customs === "object" ? Object.keys(customs) : [],
     customize,
+    preview,
   );
+  const close = () => {
+    setOpen(false);
+    // A chosen theme runs right after the menu closes: let it choose first.
+    queueMicrotask(() => preview?.end());
+  };
   return (
     <>
       <IconButton
@@ -220,15 +239,9 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
         className={styles.tool}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? close() : setOpen(true))}
       />
-      <Menu
-        open={open}
-        onClose={() => setOpen(false)}
-        anchor={ref}
-        items={items}
-        aria-label="IDE and Project Settings"
-      />
+      <Menu open={open} onClose={close} anchor={ref} items={items} aria-label="IDE and Project Settings" />
     </>
   );
 }
@@ -287,11 +300,11 @@ export function TitleBar({
   // main menu (Windows, Linux) it stays, or nothing would lead back out of the mode.
   if (bare)
     return (
-      <header ref={setBar} className={className} data-tauri-drag-region data-titlebar="bare">
+      <header ref={setBar} className={className} {...windowDragRegion} data-titlebar="bare">
         {frameless && (
           <>
             <MainMenu />
-            <div className={styles.drag} data-tauri-drag-region />
+            <div className={styles.drag} {...windowDragRegion} />
             <WindowControls />
           </>
         )}
@@ -303,7 +316,7 @@ export function TitleBar({
     <header
       ref={setBar}
       className={clsx(className, minimal && styles.minimal, dialog && styles.dialogBar)}
-      data-tauri-drag-region
+      {...windowDragRegion}
       onContextMenu={(e) => {
         if (!toolbar || e.defaultPrevented) return;
         e.preventDefault();
@@ -312,12 +325,12 @@ export function TitleBar({
     >
       {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
-        <span className={styles.windowTitle} data-tauri-drag-region>
+        <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} data-tauri-drag-region />
+      <div className={styles.drag} {...windowDragRegion} />
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}

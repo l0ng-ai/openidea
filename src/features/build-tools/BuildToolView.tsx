@@ -21,6 +21,7 @@ import {
 import {
   gradleChildren,
   gradleRoots,
+  gradleProjectKey,
   gradleTaskConfig,
   isRunnable,
   mavenChildren,
@@ -56,7 +57,7 @@ export function GradleView() {
 /** The run configuration a runnable node (or several of one project) starts. */
 export function nodeConfig(
   nodes: readonly BuildNode[],
-  model: { maven?: MavenModel | null; gradle?: GradleModel | null },
+  model: { maven?: MavenModel | null; gradle?: readonly GradleModel[] },
 ) {
   const settings = useBuild.getState().settings;
   const first = nodes[0];
@@ -71,13 +72,17 @@ export function nodeConfig(
     const goals = same.map((n) => (n.kind === "phase" ? n.phase : `${n.plugin.prefix}:${n.goal}`));
     return mavenGoalConfig(first.project, goals, model.maven, settings.maven);
   }
-  if (first.kind === "task" && model.gradle) {
+  if (first.kind === "task") {
+    const build = model.gradle?.find((g) => g.dir === first.build.dir);
+    const project = build?.projects.find((p) => p.path === first.project.path);
+    if (!build || !project) return null;
     const same = nodes.filter(
-      (n): n is Extract<BuildNode, { kind: "task" }> => n.kind === "task" && n.project.path === first.project.path,
+      (n): n is Extract<BuildNode, { kind: "task" }> =>
+        n.kind === "task" && n.build.dir === first.build.dir && n.project.path === first.project.path,
     );
     return gradleTaskConfig(
-      model.gradle,
-      first.project,
+      build,
+      project,
       same.map((n) => n.task.name),
       settings.gradle,
     );
@@ -89,8 +94,9 @@ export function nodeConfig(
 function childrenOf(
   tool: BuildTool,
   maven: MavenModel | null,
-  gradle: GradleModel | null,
+  gradle: readonly GradleModel[],
   configs: readonly RunConfig[],
+  root: string,
 ) {
   const cache = new Map<string, BuildNode[] | undefined>();
   return (n: BuildNode) => {
@@ -101,7 +107,7 @@ function childrenOf(
           ? mavenChildren(n, maven, configs)
           : undefined
         : gradle
-          ? gradleChildren(n, gradle, configs)
+          ? gradleChildren(n, gradle, configs, root)
           : undefined;
     cache.set(n.key, kids);
     return kids;
@@ -110,7 +116,8 @@ function childrenOf(
 
 /** Maven `pom` / Gradle project path of the project a node belongs to. */
 function nodeProject(n: BuildNode): string | undefined {
-  if ("project" in n) return "pom" in n.project ? n.project.pom : n.project.path;
+  if ("project" in n)
+    return "pom" in n.project ? n.project.pom : "build" in n ? gradleProjectKey(n.build, n.project) : undefined;
   return undefined;
 }
 
@@ -118,9 +125,8 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
   const syncing = useBuild((s) => !!s.syncing[tool]);
   const settings = useBuild((s) => s.settings);
   const model = useBuild((s) => s.model);
-  const runnable = selection.filter(isRunnable);
+  const config = model && nodeConfig(selection.filter(isRunnable), model);
   const runSelected = () => {
-    const config = model && nodeConfig(runnable, model);
     if (config) runConfig(config, "run");
   };
   const maven = tool === "maven";
@@ -131,14 +137,14 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
       ) : (
         <IconButton icon="refresh" size="small" iconSize={16} action={`${tool}.reload`} />
       )}
-      {maven && <IconButton icon="plus" size="small" iconSize={16} action="maven.addProjects" />}
+      <IconButton icon="plus" size="small" iconSize={16} action={maven ? "maven.addProjects" : "gradle.linkProjects"} />
       <span className={styles.sep} />
       <IconButton
         icon="run"
         size="small"
         iconSize={16}
         title={maven ? "Run Maven Build" : "Run Gradle Task"}
-        disabled={!runnable.length}
+        disabled={!config}
         onClick={runSelected}
       />
       <IconButton
@@ -181,7 +187,8 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
 
 function Banner({ tool }: { tool: BuildTool }) {
   const sync = useBuild((s) => s.syncing[tool]);
-  const info = useBuild((s) => (tool === "maven" ? s.model?.maven : s.model?.gradle));
+  const model = useBuild((s) => s.model);
+  const infos = tool === "maven" ? (model?.maven ? [model.maven] : []) : (model?.gradle ?? []);
   if (sync)
     return (
       <div className={styles.banner} role="status">
@@ -190,7 +197,10 @@ function Banner({ tool }: { tool: BuildTool }) {
         {sync.fraction != null && <span className={styles.bannerPct}>{Math.round(sync.fraction * 100)}%</span>}
       </div>
     );
-  if (!info) return null;
+  return infos.map((info) => <BuildBanner key={"dir" in info ? info.dir : "maven"} info={info} tool={tool} />);
+}
+
+function BuildBanner({ info, tool }: { info: MavenModel | GradleModel; tool: BuildTool }) {
   if (info.stale)
     return (
       <div className={styles.banner}>
@@ -198,7 +208,7 @@ function Banner({ tool }: { tool: BuildTool }) {
         <span className={styles.bannerText}>
           <T>Build files changed since the last reload</T>
         </span>
-        <Button size="small" variant="ghost" onClick={() => void syncTool(tool)}>
+        <Button size="small" variant="ghost" onClick={() => void syncTool(tool, "dir" in info ? info.dir : null)}>
           {tool === "maven" ? "Load Maven Changes" : "Load Gradle Changes"}
         </Button>
       </div>
@@ -260,15 +270,18 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
   const root = useProject((s) => s.project?.root ?? "");
   const [selection, setSelection] = useState<BuildNode[]>([]);
   const maven = model?.maven ?? null;
-  const gradle = model?.gradle ?? null;
+  const gradle = model?.gradle;
 
   const roots = useMemo(
-    () => (tool === "maven" ? (maven ? mavenRoots(maven) : []) : gradle ? gradleRoots(gradle) : []),
+    () => (tool === "maven" ? (maven ? mavenRoots(maven) : []) : gradleRoots(gradle ?? [])),
     [tool, maven, gradle],
   );
-  const getChildren = useMemo(() => childrenOf(tool, maven, gradle, configs), [tool, maven, gradle, configs]);
+  const getChildren = useMemo(
+    () => childrenOf(tool, maven, gradle ?? [], configs, root),
+    [tool, maven, gradle, configs, root],
+  );
 
-  const hasModel = tool === "maven" ? !!maven : !!gradle;
+  const hasModel = tool === "maven" ? !!maven : !!gradle?.length;
   useEffect(() => {
     if (model && hasModel && useBuild.getState().expanded[tool].size === 0)
       setExpanded(tool, initialExpanded(tool, model));
@@ -331,12 +344,22 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
         items.push({
           label: tx`Open ${file.split("/").pop()}`,
           icon: "file-gradle",
-          run: () => void editorService().openFile(`${root}/${file}`),
+          run: () => void editorService().openFile(/^(?:[A-Za-z]:[\\/]|\/)/.test(file) ? file : `${root}/${file}`),
         });
+      if (node.project.path === ":")
+        items.push({ kind: "action", action: "gradle.unlinkProjects", arg: { buildDir: node.build.dir } });
       items.push(
-        { kind: "action", action: "gradle.reload", label: "Reload All Gradle Projects" },
-        { kind: "action", action: "gradle.executeTask" },
-        { kind: "action", action: "gradle.analyzeDependencies", arg: { gradlePath: node.project.path } },
+        { kind: "action", action: "gradle.reload", label: "Reload Gradle Project", arg: { buildDir: node.build.dir } },
+        {
+          kind: "action",
+          action: "gradle.executeTask",
+          arg: { projectKey: gradleProjectKey(node.build, node.project) },
+        },
+        {
+          kind: "action",
+          action: "gradle.analyzeDependencies",
+          arg: { buildDir: node.build.dir, gradlePath: node.project.path },
+        },
       );
     }
     if (node.kind === "dependency") {

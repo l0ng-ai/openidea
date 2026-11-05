@@ -344,6 +344,69 @@ describe("single-file producers (scratches)", () => {
     expect(p.config!.args.at(-1)).toBe("demo.Hi");
   });
 
+  it("Java: a main class after another top-level class compiles with javac, then runs with java -cp", () => {
+    const src =
+      "class Parent {\n  void show() {}\n}\n\npublic class Test {\n" +
+      "  public static void main(String[] args) {\n    new Parent().show();\n  }\n}\n";
+    const input = { path: `${ROOT}/src/Test.java`, root: ROOT, configs: [], content: src };
+    const out = "/tmp/openidea-run/Test-[a-z0-9]+-classes";
+    for (const p of [produceFile(input, ALL), produceContext(input, ALL), produceContext({ ...input, line: 6 }, ALL)]) {
+      expect(p!.config).toMatchObject({
+        id: "context:file:src/Test.java",
+        name: "Test.java",
+        kind: "java-file",
+        args: [],
+        cwd: null,
+        debugAdapter: "java-debug",
+      });
+      expect(p!.config!.command).toMatch(
+        new RegExp(`^mkdir -p (${out}) && /bin/javac -g -d \\1 src/Test\\.java && /bin/java -cp \\1 Test$`),
+      );
+    }
+    // The source launcher runs the first top-level class: a main there keeps `java Test.java`.
+    expect(
+      run(scratch("Test.java", "public class Test {\n  public static void main(String[] a) {}\n}\nclass B {}")),
+    ).toEqual({ name: "Test.java", command: "/bin/java", args: ["Test.java"], cwd: SCRATCH });
+    // Java 25 compact source file: no class, `java Hi.java` as before.
+    expect(run(scratch("Hi.java", "void main() {\n  IO.println(1);\n}\nclass Helper {}\n"))).toMatchObject({
+      command: "/bin/java",
+      args: ["Hi.java"],
+    });
+  });
+
+  it("Java: the gutter runs the main class it marks, nested ones and those of a JDK on Windows too", () => {
+    const src = [
+      "package demo;",
+      "class First {",
+      "  public static void main(String[] args) {}",
+      "  static class Inner {",
+      "    public static void main(String[] args) {}",
+      "  }",
+      "}",
+      "public class Second {",
+      "  public static void main(String[] args) {}",
+      "}",
+    ].join("\n");
+    const at = (line?: number) => produceContext(scratch("Second.java", src, line), ALL)!;
+    // The file and the first class: the source launcher.
+    for (const p of [at(), at(2)]) expect(p.config).toMatchObject({ command: "/bin/java", args: ["Second.java"] });
+    const second = at(8);
+    expect(second).toMatchObject({ name: "Second", scope: "element" });
+    expect(second.config).toMatchObject({ id: `context:file:${SCRATCH}/Second.java#demo.Second`, name: "Second" });
+    expect(second.config!.command).toMatch(/ && \/bin\/java -cp \S+ demo\.Second$/);
+    expect(at(4).config!.command).toMatch(/ && \/bin\/java -cp \S+ 'demo\.First\$Inner'$/);
+    const jdk = "C:\\Program Files\\Java\\jdk-21\\bin\\java.exe";
+    const win: ToolEnv = {
+      tool: (n) => (n === "java" ? { path: jdk, version: null } : null),
+      compileDir: "C:/Users/me/AppData/Local/openidea/run",
+      windows: true,
+    };
+    const p = produceContext(scratch("Second.java", src, 8), win)!;
+    expect(p.config!.command).toMatch(
+      /^\(if not exist (C:\\Users\\me\\AppData\\Local\\openidea\\run\\Second-[a-z0-9]+-classes) mkdir \1\) && "C:\\Program Files\\Java\\jdk-21\\bin\\javac\.exe" -g -d \1 Second\.java && "C:\\Program Files\\Java\\jdk-21\\bin\\java\.exe" -cp \1 demo\.Second$/,
+    );
+  });
+
   it("Java: a main in a Gradle module outside the project runs on the module's classpath", () => {
     // `includeFlat 'billing'`: the module folder is a sibling of the project folder.
     const svc = "/work/billing/modules/core";
@@ -362,7 +425,7 @@ describe("single-file producers (scratches)", () => {
     });
     expect(produceContext(input(), ALL)!.config!.kind).toBe("java-file");
     const p = produceContext(input(["/work/billing", svc]), ALL)!;
-    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: null });
     expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
   });
 
@@ -424,7 +487,8 @@ describe("single-file producers (scratches)", () => {
             kind: "spring-boot",
             name: "DromaraApplication",
             command: "java",
-            cwd: module,
+            module,
+            cwd: null,
           });
           expect(p!.config!.args).toEqual(["-cp", "${classpath}", "org.dromara.DromaraApplication"]);
         }
@@ -440,7 +504,7 @@ describe("single-file producers (scratches)", () => {
     it("Kotlin and test classes use the build that contains them", () => {
       const kt = "package demo\n\nfun main() {\n  println(1)\n}\n";
       const p = produceContext(at("backend/app/src/main/kotlin/demo/App.kt", nested("gradle", "backend"), kt, 3), ALL)!;
-      expect(p.config).toMatchObject({ kind: "application", cwd: "backend/app" });
+      expect(p.config).toMatchObject({ kind: "application", module: "backend/app", cwd: null });
       expect(p.config!.args.at(-1)).toBe("demo.AppKt");
       const test = "package demo;\nclass AppTest {\n  @Test\n  void works() {\n  }\n}\n";
       const t = produceContext(

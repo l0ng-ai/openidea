@@ -49,7 +49,6 @@ import {
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
 import { nextSpeedMatch } from "./logSearch";
-import { LogIndexStatus } from "./logIndex";
 import { presentLogGraph } from "./logPresentation";
 import {
   closeLogTab,
@@ -328,7 +327,6 @@ export function LogView() {
       <SplitPanel id="commits" defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
-          <LogIndexStatus repositories={repo} />
           <CommitList />
         </div>
       </SplitPanel>
@@ -1091,6 +1089,8 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
         toggle("Date", o, "showDate"),
         toggle("Hash", o, "showHash"),
         toggle("Signature", o, "showSignature"),
+        { kind: "separator" },
+        toggle("Column Headers", o, "showColumnHeaders"),
       ],
     },
     { kind: "separator" },
@@ -1263,16 +1263,20 @@ function CommitList() {
       ),
     [all, heads, headCommit],
   );
+  const keep = useMemo(
+    () =>
+      opts.collapseLinear || fragments.collapsed.size
+        ? new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])
+        : null,
+    [opts.collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
+  );
   const {
     commits,
     rows,
     linear,
     collapsed,
     graph: displayedGraph,
-  } = useMemo(
-    () => presentLogGraph(all, opts, fragments, new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])),
-    [all, opts, fragments, headKeys, selection, bookmarks],
-  );
+  } = useMemo(() => presentLogGraph(all, opts, fragments, keep ?? new Set()), [all, opts, fragments, keep]);
   const { edges: highlighted, nodes: highlightedNodes } = useMemo(() => {
     const empty = { edges: new Set<string>(), nodes: new Set<string>() };
     if (!hoverColor) return empty;
@@ -1321,8 +1325,9 @@ function CommitList() {
   const onlyCurrent = filterBranches.length > 0 && filterBranches.every((b) => b === "HEAD" || b === currentBranch);
   const onBranch = useMemo(() => {
     if (!opts.highlightCurrentBranch || onlyCurrent) return null;
-    const reach = new Set<string>();
-    for (const head of headKeys) for (const id of reachableFrom(all.map(graphCommit), head)) reach.add(id);
+    const reach = all.some((c) => c.onCurrentBranch == null)
+      ? reachableFrom(all.map(graphCommit), headKeys)
+      : new Set<string>();
     for (const c of all) {
       if (c.onCurrentBranch === true) reach.add(commitKey(c));
       else if (c.onCurrentBranch === false) reach.delete(commitKey(c));
@@ -1604,15 +1609,17 @@ function CommitList() {
           );
         }}
       >
-        <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
-          {opts.showRepository && useVcs.getState().roots.length > 1 && (
-            <span className={styles.colRepository}>{tx("Repository")}</span>
-          )}
-          <span className={styles.colSubject}>{tx("Commit")}</span>
-          {columns.map((column) => (
-            <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
-          ))}
-        </div>
+        {opts.showColumnHeaders && (
+          <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+            {opts.showRepository && useVcs.getState().roots.length > 1 && (
+              <span className={styles.colRepository}>{tx("Repository")}</span>
+            )}
+            <span className={styles.colSubject}>{tx("Commit")}</span>
+            {columns.map((column) => (
+              <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
+            ))}
+          </div>
+        )}
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}
@@ -1956,10 +1963,9 @@ function x(lane: number) {
   return LANE / 2 + lane * LANE;
 }
 
+/** Straight, also across lanes (IDEA's diagonal edges). */
 function seg(fromX: number, fromY: number, toX: number, toY: number) {
-  if (fromX === toX) return `M${fromX} ${fromY}L${toX} ${toY}`;
-  const mid = (fromY + toY) / 2;
-  return `M${fromX} ${fromY}C${fromX} ${mid} ${toX} ${mid} ${toX} ${toY}`;
+  return `M${fromX} ${fromY}L${toX} ${toY}`;
 }
 
 export function GraphCell({
@@ -2008,9 +2014,11 @@ export function GraphCell({
       if (canNavigate) onNavigate?.(s.targetRow!, target);
       else if (canFragment) onFragment?.(target!, !!s.dashed, s.source);
     };
+    const fromX = x(s.fromX ?? s.from);
+    const toX = x(s.toX ?? s.to);
     const path =
-      seg(x(s.from), up ? 0 : cy, x(s.to), up ? cy : ROW) +
-      (s.arrow ? arrowHead(x(up ? s.from : s.to), up ? 0 : ROW, up ? -1 : 1) : "");
+      seg(fromX, up ? 0 : cy, toX, up ? cy : ROW) +
+      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : ROW, up ? -1 : 1) : "");
     return (
       <g
         key={`${up ? "u" : "d"}${i}`}
@@ -2033,9 +2041,9 @@ export function GraphCell({
       >
         <title>{label}</title>
         <rect
-          x={Math.min(x(s.from), x(s.to)) - 5}
+          x={Math.min(fromX, toX) - 5}
           y={up ? 0 : cy}
-          width={Math.max(10, Math.abs(x(s.from) - x(s.to)) + 10)}
+          width={Math.max(10, Math.abs(fromX - toX) + 10)}
           height={cy}
           fill="transparent"
           pointerEvents="none"

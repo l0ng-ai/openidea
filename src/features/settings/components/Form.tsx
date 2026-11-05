@@ -171,16 +171,18 @@ export interface SelectProps<V extends string> {
   options: readonly SelectOption<V>[];
   onChange: (value: V) => void;
   disabled?: boolean;
+  onPreview?: (value: V | null) => void;
   "aria-label"?: string;
 }
 
-export function Select<V extends string>({ value, options, onChange, disabled, ...aria }: SelectProps<V>) {
+export function Select<V extends string>({ value, options, onChange, disabled, onPreview, ...aria }: SelectProps<V>) {
   return (
     <UiSelect<V>
       value={value}
       options={options}
       onChange={onChange}
       disabled={disabled}
+      onPreview={onPreview}
       className={styles.select}
       aria-label={aria["aria-label"]}
     />
