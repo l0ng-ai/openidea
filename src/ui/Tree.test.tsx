@@ -309,26 +309,47 @@ describe("siblingPositions", () => {
 
 describe("Tree horizontal scrolling", () => {
   const spacer = (tree: HTMLElement) => tree.querySelector<HTMLElement>("[data-content-width]");
+  // Widths are measured on the next animation frame.
+  const frame = () => act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
 
   it("is off unless asked for", () => {
     const { tree } = setup();
     expect(spacer(tree)).toBeNull();
   });
 
-  it("remeasures mounted rows with the same key, including narrower content", () => {
+  it("remeasures mounted rows with the same key, including narrower content", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(640);
     try {
       const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      await frame();
       expect(spacer(tree)?.style.width).toBe("640px");
       width.mockReturnValue(100);
       key("ArrowDown");
+      await frame();
       expect(spacer(tree)?.style.width).toBe("100px");
     } finally {
       width.mockRestore();
     }
   });
 
-  it("removes widths belonging to collapsed descendants", () => {
+  it("measures once per frame however many times it renders", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(640);
+    try {
+      const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      await frame();
+      width.mockClear();
+      key("ArrowDown");
+      key("ArrowDown");
+      key("ArrowDown");
+      expect(width).not.toHaveBeenCalled();
+      await frame();
+      expect(width).toHaveBeenCalledTimes(tree.querySelectorAll("[data-row]").length);
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("removes widths belonging to collapsed descendants", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
       this: HTMLElement,
     ) {
@@ -336,16 +357,18 @@ describe("Tree horizontal scrolling", () => {
     });
     try {
       const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      await frame();
       expect(spacer(tree)?.style.width).toBe("640px");
       key("Home");
       key("ArrowLeft");
+      await frame();
       expect(spacer(tree)?.style.width).toBe("100px");
     } finally {
       width.mockRestore();
     }
   });
 
-  it("measures without the viewport minimum and restores it before returning", () => {
+  it("measures without the viewport minimum and restores it before returning", async () => {
     const minimums: string[] = [];
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
       this: HTMLElement,
@@ -355,6 +378,7 @@ describe("Tree horizontal scrolling", () => {
     });
     try {
       const { tree } = setup({ horizontalScroll: true });
+      await frame();
       expect(spacer(tree)?.style.width).toBe("100px");
       expect(minimums.length).toBeGreaterThan(0);
       expect(minimums.every((value) => parseFloat(value) === 0)).toBe(true);
