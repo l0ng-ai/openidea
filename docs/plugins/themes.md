@@ -132,12 +132,13 @@ and credit the original authors in `authors` and `description`.
 
 ### From IntelliJ IDEA (automatic)
 
-To use a theme you already have in IntelliJ, open **Settings › Plugins**, gear
+To use a theme you already have in a JetBrains IDE, open **Settings › Plugins**, gear
 menu:
 
-- **Import Theme from IntelliJ IDE…** lists the theme plugins installed in the
-  JetBrains IDEs (and Android Studio) on this computer, one row per plugin, the
-  plugin of the theme each IDE uses first. It reads their settings folders: `~/Library/Application Support/JetBrains`
+- **Import Theme from JetBrains IDE…** lists the theme plugins installed in the
+  JetBrains IDEs (and Android Studio) on this computer, one row per plugin of
+  each IDE, the plugins of the themes the IDEs use first. It reads the settings
+  folder of each IDE's newest version: `~/Library/Application Support/JetBrains`
   (macOS), `%APPDATA%\JetBrains` (Windows), `~/.config/JetBrains` and
   `~/.local/share/JetBrains` (Linux).
 - **Import IntelliJ Theme from File…** takes a theme plugin downloaded from the

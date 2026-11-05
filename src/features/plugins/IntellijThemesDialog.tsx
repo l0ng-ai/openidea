@@ -1,9 +1,9 @@
 /**
- * Import Theme from IntelliJ IDE: the theme plugins installed in the JetBrains
- * IDEs on this machine, one row per plugin, the plugin of the theme in use
- * first. Importing installs the plugin with all its themes, as installing it in
- * IntelliJ does (`importIntellijTheme`); which theme to use stays a choice in
- * Settings › Appearance. A file can be chosen instead.
+ * Import Theme from JetBrains IDE: the theme plugins installed in the JetBrains
+ * IDEs (and Android Studio) on this machine, one row per plugin of each IDE, the
+ * plugins of the themes in use first. Importing installs the plugin with all its
+ * themes, as installing it in the IDE does (`importIntellijTheme`); which theme
+ * to use stays a choice in Settings › Appearance. A file can be chosen instead.
  */
 import { useEffect, useState } from "react";
 import type { InstalledIntellijTheme } from "@/bindings";
@@ -66,7 +66,7 @@ function IntellijThemesDialog() {
   return (
     <Dialog
       open
-      title="Import Theme from IntelliJ IDE"
+      title="Import Theme from JetBrains IDE"
       width={640}
       onClose={closeInstalledIntellijThemes}
       buttons={[

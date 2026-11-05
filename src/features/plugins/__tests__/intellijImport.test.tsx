@@ -158,7 +158,7 @@ describe("IntelliJ theme import", () => {
   });
 });
 
-describe("Import Theme from IntelliJ IDE", () => {
+describe("Import Theme from JetBrains IDE", () => {
   it("lists one row per theme plugin, the one in use first, and imports the chosen plugin", async () => {
     const user = userEvent.setup();
     const onImported = vi.fn();

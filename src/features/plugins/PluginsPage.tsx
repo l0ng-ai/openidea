@@ -569,7 +569,7 @@ function gearMenu(plugins: readonly PluginInfo[], updates: number, actions: Gear
     ...(actions.canImport
       ? [
           { kind: "separator" as const },
-          { label: "Import Theme from IntelliJ IDE…", run: actions.importInstalledIntellij },
+          { label: "Import Theme from JetBrains IDE…", run: actions.importInstalledIntellij },
           { label: "Import IntelliJ Theme from File…", run: actions.importIntellijFile },
         ]
       : []),
