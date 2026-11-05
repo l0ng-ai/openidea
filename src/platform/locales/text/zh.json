@@ -6309,7 +6309,7 @@
   "Only daemons on this machine can mount the project.": "只有本机上的守护进程才能挂载项目。",
   "Relative to the project; empty uses the project's default file.": "相对于项目；留空则使用项目的默认文件。",
   "Service": "服务",
-  "Project folder in container": "容器中的项目文件夹",
+  "Container folder": "容器文件夹",
   "Empty: where the service mounts the project.": "留空：使用服务挂载项目的位置。",
   "The project is mounted here; paths and the working directory are mapped into it.": "项目挂载在此处；路径和工作目录会映射到其中。",
   "Published ports": "发布的端口",

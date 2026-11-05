@@ -375,7 +375,7 @@ function ContainerFields({ target, update }: { target: RunTargetValid; update: (
         />
       )}
       <Row
-        label="Project folder in container"
+        label="Container folder"
         className={styles.alignedRow}
         hint={
           compose
@@ -385,7 +385,7 @@ function ContainerFields({ target, update }: { target: RunTargetValid; update: (
       >
         <Input
           mono
-          aria-label="Project folder in container"
+          aria-label="Container folder"
           className={styles.wide}
           value={target.containerRoot}
           placeholder={compose ? "" : `/workspaces/${projectName}`}
@@ -586,7 +586,7 @@ export const RUN_TARGET_PAGES: PageSpec[] = [
               "Image",
               "Compose files",
               "Service",
-              "Project folder in container",
+              "Container folder",
               "Published ports",
               "Run options",
             ],
