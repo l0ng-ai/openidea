@@ -13,6 +13,7 @@ use crate::types::{
 };
 use crate::wit_host::{bindings, providers_bindings, syntax_bindings, views_bindings};
 use ide_core::CancellationToken;
+use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
 use std::path::Path;
@@ -935,12 +936,7 @@ fn location_from_wit(l: wit_types::Location) -> Location {
 }
 
 fn doc_to_wit(d: &ProviderDocument) -> wit_prov::Document {
-    wit_prov::Document {
-        path: d.path.to_string_lossy().into_owned(),
-        language: d.language.clone(),
-        version: d.version,
-        text: d.text.clone(),
-    }
+    wit_prov::Document { path: to_ipc(&d.path), language: d.language.clone(), version: d.version, text: d.text.clone() }
 }
 
 /// Resets the budgets for the next call: fuel, deadline, cancellation.
@@ -1012,7 +1008,7 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
             .edits
             .iter()
             .map(|(path, edits)| wit_prov::FileEdit {
-                path: path.to_string_lossy().into_owned(),
+                path: to_ipc(path),
                 edits: edits
                     .iter()
                     .map(|e| wit_types::TextEdit { range: range_to_wit(e.range), text: e.new_text.clone() })
@@ -1130,6 +1126,27 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn provider_and_resolved_action_paths_match_ipc_events() {
+        for (path, expected) in [
+            (r"C:\project\Example.java", "C:/project/Example.java"),
+            (r"\\?\C:\project\Example.java", "C:/project/Example.java"),
+            (r"\\server\share\Example.java", "//server/share/Example.java"),
+        ] {
+            let doc = ProviderDocument { path: path.into(), ..Default::default() };
+            assert_eq!(doc_to_wit(&doc).path, expected);
+            let action = CodeAction {
+                title: "Fix".into(),
+                kind: None,
+                preferred: false,
+                edits: vec![(path.into(), Vec::new())],
+                data: None,
+            };
+            assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
+        }
+    }
 
     fn ext(kind: &str) -> wit_types::Extension {
         wit_types::Extension { kind: kind.into(), data: "{}".into() }

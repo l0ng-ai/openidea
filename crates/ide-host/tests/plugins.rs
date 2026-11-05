@@ -6,6 +6,7 @@
 //! `plugins/build.sh <dir>` after changing their source or `wit/`.
 
 use ide_core::error::ErrorKind;
+use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
 use ide_plugin::{EditorContext, HostError, Invocation, Limits};
 use parking_lot::Mutex;
@@ -214,7 +215,7 @@ fn fixture(limits: Limits) -> Fixture {
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::write(project.join("src/notes.txt"), "one two three\nfour five\n").unwrap();
     std::fs::write(tmp.path().join("secret.txt"), "top secret").unwrap();
-    let project = project.canonicalize().unwrap();
+    let project = dunce::canonicalize(project).unwrap();
     let events: Events = Arc::default();
     let sink = {
         let events = events.clone();
@@ -359,7 +360,7 @@ fn read_file_is_confined_to_the_project() {
     let inv = Invocation { client: None, workspace_root: None, editor: None };
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
-    assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), f.project.to_string_lossy());
+    assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
 }
 
@@ -1740,7 +1741,7 @@ fn official_checkstyle_checks_on_save() {
     let java = f.project.join("src/A.java");
     std::fs::write(&java, "class A {\n\tint x;\n}\n").unwrap();
     let saved = |f: &Fixture| {
-        f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(java.to_string_lossy().into_owned())]);
+        f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(to_ipc(&java))]);
         f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
     };
     saved(&f);
@@ -1793,7 +1794,7 @@ fn official_license_header_reports_fixes_and_scans() {
         f.workspace.diagnostics.lock().get(&("openidea.license-header".into(), path.to_path_buf())).cloned()
     };
 
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(a.to_string_lossy().into_owned())]);
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(to_ipc(&a))]);
     f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(20)));
     let d = diagnostics(&a).expect("published on open");
@@ -1818,7 +1819,7 @@ fn official_license_header_reports_fixes_and_scans() {
     f.host.run_command("openidea.license-header", "scan", None, f.inv()).unwrap();
     assert_eq!(diagnostics(&b).map(|d| d.len()), Some(1), "found by the scan");
     std::fs::write(&a, "// Copyright (c) 2026 X\nfn a() {}\n").unwrap();
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(a.to_string_lossy().into_owned())]);
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(to_ipc(&a))]);
     f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(20)));
     assert_eq!(diagnostics(&a).map(|d| d.len()), Some(0), "cleared once the header is there");

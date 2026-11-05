@@ -5,6 +5,7 @@
 use crate::runtime::{StoreData, clip};
 use crate::sandbox;
 use crate::types::{EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, net_host};
+use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -310,7 +311,8 @@ impl workspace::HostProject for StoreData {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
         }
-        Ok(Ok(self.table.get(&this)?.root.to_string_lossy().into_owned()))
+        // Paths reach plugins in IPC form (`/` on Windows), as the UI's event paths do, so they compare as text.
+        Ok(Ok(to_ipc(&self.table.get(&this)?.root)))
     }
 
     fn read_file(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<String> {
@@ -346,7 +348,7 @@ impl editor::Host for StoreData {}
 
 impl editor::HostTextEditor for StoreData {
     fn path(&mut self, this: Resource<EditorRes>) -> wasmtime::Result<String> {
-        Ok(self.table.get(&this)?.ctx.path.to_string_lossy().into_owned())
+        Ok(to_ipc(&self.table.get(&this)?.ctx.path))
     }
 
     fn language(&mut self, this: Resource<EditorRes>) -> wasmtime::Result<String> {
