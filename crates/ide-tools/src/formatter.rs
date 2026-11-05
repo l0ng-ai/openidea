@@ -29,6 +29,24 @@ pub fn display_name(tool: &str) -> &str {
     crate::registry::find(tool).map_or(tool, |t| t.display)
 }
 
+/// A project's PHP-CS-Fixer: its committed configuration and `vendor/bin/php-cs-fixer`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhpCsFixer {
+    pub config: PathBuf,
+    pub bin: PathBuf,
+}
+
+/// PHP-CS-Fixer for `file`: the nearest folder above it with `.php-cs-fixer.php` (which wins, as
+/// PHP-CS-Fixer documents) or `.php-cs-fixer.dist.php`, and the nearest `vendor/bin/php-cs-fixer`.
+/// `None` without both: Reformat Code keeps the language server.
+pub fn php_cs_fixer(file: &Path) -> Option<PhpCsFixer> {
+    let config = file.parent()?.ancestors().find_map(|dir| {
+        [".php-cs-fixer.php", ".php-cs-fixer.dist.php"].iter().map(|name| dir.join(name)).find(|p| p.is_file())
+    })?;
+    let bin = find_up(file, &Path::new("vendor").join("bin").join("php-cs-fixer"))?;
+    Some(PhpCsFixer { config, bin })
+}
+
 fn package_bin(package: &Path, tool: &str) -> IdeResult<PathBuf> {
     let name = display_name(tool);
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(package.join("package.json"))?)
@@ -157,6 +175,33 @@ pub fn arguments(
         }
     }
     args
+}
+
+impl Tools {
+    /// `php vendor/bin/php-cs-fixer fix` of `target` with the project's configuration, from the
+    /// configuration's folder; `php` is the interpreter chosen in the settings, else the one on `PATH`.
+    pub fn php_cs_fixer_command(&self, php: Option<&Path>, fixer: &PhpCsFixer, target: &Path) -> IdeResult<Command> {
+        let php = match php {
+            Some(php) => php.to_path_buf(),
+            None => self.which("php").ok_or_else(|| IdeError::unavailable("PHP-CS-Fixer: PHP is not installed"))?,
+        };
+        let mut cmd = self.command(php);
+        cmd.arg(&fixer.bin)
+            .args(["fix", "--config"])
+            .arg(&fixer.config)
+            .args(["--using-cache=no", "--no-interaction", "--show-progress=none"])
+            .arg(target);
+        if let Some(dir) = fixer.config.parent() {
+            cmd.current_dir(dir);
+        }
+        Ok(cmd)
+    }
+}
+
+/// Runs a [`Tools::php_cs_fixer_command`], which rewrites its target file in place.
+pub fn run_php_cs_fixer(mut command: Command, cancel: &CancellationToken) -> IdeResult<String> {
+    crate::process::run_input(&mut command, "", Duration::from_secs(30), cancel)
+        .map_err(|e| IdeError::invalid(format!("PHP-CS-Fixer: {}", e.message.trim())))
 }
 
 pub fn run(tool: &str, mut command: Command, text: &str, cancel: &CancellationToken) -> IdeResult<String> {

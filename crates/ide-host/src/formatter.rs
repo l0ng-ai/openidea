@@ -92,6 +92,33 @@ fn format_range(text: &ide_text::Document, range: Range) -> formatter::FormatRan
     }
 }
 
+/// The edits PHP-CS-Fixer makes to the unsaved text: it fixes a temporary copy with the file's
+/// name (from stdin it doesn't fix anything), so the file on disk stays as it is.
+fn php_cs_fixer_edits(
+    tools: &Tools,
+    php: Option<&Path>,
+    fixer: &formatter::PhpCsFixer,
+    path: &Path,
+    unsaved: &str,
+) -> IdeResult<Vec<TextEdit>> {
+    let name = path.file_name().ok_or_else(|| IdeError::invalid("PHP-CS-Fixer: file has no name"))?;
+    let dir = tempfile::tempdir()?;
+    let copy = dir.path().join(name);
+    std::fs::write(&copy, unsaved)?;
+    formatter::run_php_cs_fixer(tools.php_cs_fixer_command(php, fixer, &copy)?, &Default::default())?;
+    let formatted = std::fs::read_to_string(&copy)?;
+    let text = ide_text::Document::new(unsaved);
+    Ok(text
+        .diff(&formatted)
+        .changes
+        .into_iter()
+        .map(|c| TextEdit {
+            range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+            new_text: c.insert,
+        })
+        .collect())
+}
+
 pub async fn format(
     host: &Host,
     window: &str,
@@ -103,6 +130,34 @@ pub async fn format(
     let snap = project.documents.snapshot(doc)?;
     let settings = project.settings.effective();
     let language = project.languages.get(&snap.language);
+    // A committed PHP-CS-Fixer configuration takes over Reformat Code for `.php` files.
+    if options.tool.is_none()
+        && snap.path.extension().is_some_and(|e| e == "php")
+        && let Some(fixer) = formatter::php_cs_fixer(&snap.path)
+    {
+        if options.on_save && !settings.editor.format_on_save {
+            return Ok(Vec::new());
+        }
+        host.require_trust(window)?;
+        if snap.read_only {
+            return Err(IdeError::invalid("The file is read-only"));
+        }
+        let php = ide_sdk::apply::setting_path(&project.root, &settings.languages.php.interpreter);
+        let tools = Tools::new(&host.local_data_dir);
+        let edits = tokio::task::spawn_blocking(move || {
+            php_cs_fixer_edits(&tools, php.as_deref(), &fixer, &snap.path, &snap.text)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))??;
+        if range.is_some() {
+            project.sink.emit(IdeEvent::Notify {
+                level: NotifyLevel::Info,
+                title: "PHP-CS-Fixer".into(),
+                body: Some("PHP-CS-Fixer does not support selection formatting; formatted the whole file".into()),
+            });
+        }
+        return Ok(edits);
+    }
     let mut selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
     if let Some(tool) = selected
         && options.tool.is_none()
@@ -271,6 +326,59 @@ mod tests {
         assert_eq!(tool(Some(Oxfmt), "typescript", &file, &settings).unwrap(), Some(Oxfmt));
         let rust = tool(Some(Oxfmt), "rust", &dir.path().join("main.rs"), &settings).unwrap_err();
         assert_eq!(rust.message, "oxfmt cannot format Rust files");
+    }
+
+    #[test]
+    fn php_cs_fixer_needs_a_config_and_the_project_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/Http")).unwrap();
+        let file = root.join("src/Http/Kernel.php");
+        assert_eq!(formatter::php_cs_fixer(&file), None);
+        std::fs::write(root.join(".php-cs-fixer.dist.php"), "<?php").unwrap();
+        assert_eq!(formatter::php_cs_fixer(&file), None, "no vendor/bin/php-cs-fixer");
+        std::fs::create_dir_all(root.join("vendor/bin")).unwrap();
+        std::fs::write(root.join("vendor/bin/php-cs-fixer"), "").unwrap();
+        let found = formatter::php_cs_fixer(&file).unwrap();
+        assert_eq!(found.config, root.join(".php-cs-fixer.dist.php"));
+        assert_eq!(found.bin, root.join("vendor/bin/php-cs-fixer"));
+        std::fs::write(root.join(".php-cs-fixer.php"), "<?php").unwrap();
+        assert_eq!(formatter::php_cs_fixer(&file).unwrap().config, root.join(".php-cs-fixer.php"));
+        std::fs::write(root.join("src/.php-cs-fixer.dist.php"), "<?php").unwrap();
+        assert_eq!(formatter::php_cs_fixer(&file).unwrap().config, root.join("src/.php-cs-fixer.dist.php"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn php_cs_fixer_fixes_a_copy_of_the_unsaved_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let fixer = formatter::PhpCsFixer { config: root.join(".php-cs-fixer.dist.php"), bin: root.join("fixer") };
+        std::fs::write(&fixer.config, "<?php").unwrap();
+        let php = root.join("php");
+        // Stands in for `php vendor/bin/php-cs-fixer fix … <file>`: rewrites the last argument.
+        std::fs::write(
+            &php,
+            "#!/bin/sh\nfor last; do :; done\ncase \"$last\" in */Kernel.php) ;; *) exit 3 ;; esac\n\
+             [ \"$2\" = fix ] || exit 4\nsed 's/  echo/    echo/' \"$last\" > \"$last.new\" && mv \"$last.new\" \"$last\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&php, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file = root.join("src/Kernel.php");
+        let tools = Tools::new(&root.join("tools"));
+        let edits = php_cs_fixer_edits(&tools, Some(&php), &fixer, &file, "<?php\n  echo 1;\n").unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "  ");
+        assert!(!file.exists(), "the file on disk is left alone");
+
+        std::fs::write(&php, "#!/bin/sh\necho 'Configuration file is invalid' >&2\nexit 16\n").unwrap();
+        let err = php_cs_fixer_edits(&tools, Some(&php), &fixer, &file, "<?php\n").unwrap_err();
+        assert!(
+            err.message.starts_with("PHP-CS-Fixer: ") && err.message.contains("Configuration file is invalid"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
