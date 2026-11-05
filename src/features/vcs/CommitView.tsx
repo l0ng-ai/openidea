@@ -224,8 +224,15 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
   ];
 }
 
+/** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
+export function deletableUnversioned(nodes: ChangeNode[]): string[] {
+  const files = filesOf(nodes);
+  return files.length && files.every((f) => f.unstaged === "untracked") ? files.map((f) => f.path) : [];
+}
+
 export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   const files = filesOf(nodes);
+  const deletable = deletableUnversioned(nodes);
   const paths = files.map((f) => f.path);
   const first = nodes.find((n) => n.type === "file");
   const untracked = files.filter((f) => f.unstaged === "untracked");
@@ -248,9 +255,8 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
     ...(untracked.length
       ? [
           { kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) },
-          // Only when every selected file is unversioned: versioned ones are rolled back, not deleted.
-          ...(untracked.length === files.length
-            ? [{ label: "Delete…", icon: "trash", run: () => void deleteUnversioned(untracked.map((f) => f.path)) }]
+          ...(deletable.length
+            ? [{ label: "Delete…", icon: "trash", shortcut: "⌫", run: () => void deleteUnversioned(deletable) }]
             : []),
         ]
       : []),
@@ -518,11 +524,17 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             e.stopPropagation();
             toggle(selectedNodes());
           } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
-            const group = selectedNodes().find((x) => x.type === "group" && x.changelist);
+            const nodes = selectedNodes();
+            const group = nodes.find((x) => x.type === "group" && x.changelist);
+            const deletable = group ? [] : deletableUnversioned(nodes);
             if (group?.changelist) {
               e.preventDefault();
               e.stopPropagation();
               void executeAction("vcs.changelist.delete", group.changelist);
+            } else if (deletable.length) {
+              e.preventDefault();
+              e.stopPropagation();
+              void deleteUnversioned(deletable);
             }
           } else if (e.key === "F4") {
             const n = selectedNodes().find((x) => x.type === "file");
