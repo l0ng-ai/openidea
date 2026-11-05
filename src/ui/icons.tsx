@@ -351,6 +351,7 @@ const ICONS = {
   profile: "run/profile",
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
+  "toolwindow-logcat": "openidea/fileTypes/log",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",
   "gutter-run-passed": "gutter/runSuccess",
