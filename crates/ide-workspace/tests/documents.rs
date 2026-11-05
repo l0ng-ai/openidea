@@ -381,6 +381,31 @@ fn external_changes() {
     f.docs.on_disk_changed(&[f.root.join("other.txt")]);
 }
 
+/// An external write that keeps the byte length and the mtime (timestamp-preserving
+/// tools, coarse-granularity filesystems) leaves the `(mtime, length)` stamp equal:
+/// the OS event is still authoritative, so a clean document reloads.
+#[test]
+fn external_change_preserving_length_and_mtime_reloads_a_clean_document() {
+    let f = fixture();
+    let path = f.root.join("stamp.txt");
+    fs::write(&path, "first").unwrap(); // 5 bytes
+    let id = f.docs.open(&path).unwrap().id;
+    let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+
+    fs::write(&path, "other").unwrap(); // 5 bytes, different content
+    fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let snap = f.docs.snapshot(id).unwrap();
+    assert_eq!(snap.text, "other");
+    assert!(!snap.dirty);
+
+    // The reload recorded the new stamp: repeating the same event changes nothing.
+    let before = f.events.lock().len();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.events.lock().len(), before);
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "other");
+}
+
 #[test]
 fn encodings_and_read_only() {
     let f = fixture();

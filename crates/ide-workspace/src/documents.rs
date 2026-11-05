@@ -862,17 +862,18 @@ impl Documents {
                     .then(|| st.path.clone())
             })
             .collect();
-        self.reload_from_disk(&paths, force_clean);
+        self.reload_from_disk(&paths, force_clean, true);
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
     /// silently; dirty ones are left alone and reported via `IdeEvent::Notify`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
-        self.reload_from_disk(paths, false);
+        self.reload_from_disk(paths, false, false);
     }
 
-    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool) {
+    /// `dedup`: blind scans skip files whose `(mtime, length)` stamp still matches.
+    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool, dedup: bool) {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
@@ -881,7 +882,22 @@ impl Documents {
                 }
                 let Ok(meta) = std::fs::metadata(&st.path) else { return Ok(()) };
                 let mtime = ide_vfs::mtime_ms(&meta);
-                if mtime == st.disk_mtime && meta.len() == st.disk_len && (!force_clean || st.dirty) {
+                let unchanged = mtime == st.disk_mtime && meta.len() == st.disk_len;
+                // Blind scans trust the stamp. OS events are authoritative, but they also
+                // echo our own saves: a clean document whose stamp matches is re-checked by
+                // bytes — an external write that preserved both length and mtime differs
+                // from what saving this buffer would write, our own save's echo does not.
+                // Native-to-ascii properties documents and dirty documents keep the stamp
+                // dedup: the former's disk bytes legitimately differ from the buffer text,
+                // the latter warn once per disk state.
+                if unchanged
+                    && (dedup
+                        || st.dirty
+                        || st.native_to_ascii
+                        || ide_vfs::encode(&st.doc.text_for_save(), &st.encoding, st.has_bom)
+                            .map(|bytes| bytes == std::fs::read(&st.path).unwrap_or_default())
+                            .unwrap_or(true))
+                {
                     return Ok(());
                 }
                 if st.dirty {
