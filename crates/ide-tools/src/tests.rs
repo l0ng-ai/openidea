@@ -37,6 +37,12 @@ impl Env {
         fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         archive::make_executable(&p).unwrap();
     }
+
+    #[cfg(windows)]
+    fn script(&self, dir: &Path, name: &str, body: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join(format!("{name}.cmd")), format!("@echo off\r\n{body}\r\n")).unwrap();
+    }
 }
 
 fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
@@ -698,6 +704,34 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     }
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();
     assert!(!env.root.join("rust-analyzer").exists());
+}
+
+/// Windows has `python.exe` and `py`, not `python3.exe`; the `WindowsApps` aliases only count
+/// when the Store's Python behind them runs.
+#[test]
+fn windows_python_skips_store_aliases_that_do_not_run() {
+    let env = Env::new();
+    let aliases = env.sys.parent().unwrap().join("Microsoft").join("WindowsApps");
+    env.script(&aliases, "python", "exit 9009");
+    env.script(&aliases, "python3", "exit 9009");
+    env.script(&env.sys, "py", "echo Python 3.12.0");
+    let windows = Platform { os: Os::Windows, arch: platform::Arch::X64 };
+    let found = || {
+        let dirs = std::env::join_paths([aliases.clone(), env.sys.clone()]).unwrap();
+        Tools::with_paths(env.root.clone(), dirs, windows).python().map(|python| {
+            let dir = python.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+            format!("{dir}/{}", python.file_stem().unwrap().to_string_lossy())
+        })
+    };
+    assert_eq!(found().as_deref(), Some("sysbin/py"));
+    fs::remove_file(env.sys.join(if cfg!(windows) { "py.cmd" } else { "py" })).unwrap();
+    assert_eq!(found(), None, "only broken aliases are available");
+    env.script(&env.sys, "python3", "echo Python 3.12.0");
+    assert_eq!(found().as_deref(), Some("sysbin/python3"), "python3 is the final fallback");
+    env.script(&env.sys, "python", "echo Python 3.12.0");
+    assert_eq!(found().as_deref(), Some("sysbin/python"), "a broken alias must not hide a later interpreter");
+    env.script(&aliases, "python", "echo Python 3.13.0");
+    assert_eq!(found().as_deref(), Some("WindowsApps/python"), "the Store's Python runs");
 }
 
 #[cfg(unix)]

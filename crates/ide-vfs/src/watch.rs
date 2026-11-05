@@ -404,6 +404,9 @@ fn merge(prev: Option<Change>, next: Change) -> Change {
     match (prev, next) {
         (None, n) => n,
         (Some(Vcs), _) | (_, Vcs) => Vcs,
+        // FSEvents reports a deleted file's history as create, remove, then modify: a
+        // modify can't bring back a path that went away, only a create can.
+        (Some(Transient), Modified) => Transient,
         (Some(Created | Transient), Modified | Created) => Created,
         (Some(Created | Transient), Removed) => Transient,
         (Some(Removed), Created | Modified) => Modified,
@@ -630,7 +633,7 @@ impl EventFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{CreateKind, DataChange, RemoveKind};
+    use notify::event::{CreateKind, DataChange, MetadataKind, RemoveKind};
 
     fn ev(kind: EventKind, paths: Vec<PathBuf>) -> Event {
         Event { kind, paths, attrs: Default::default() }
@@ -786,6 +789,24 @@ mod tests {
         assert_eq!(batch.modified, vec![root.join("kept.txt")]);
         assert_eq!(batch.removed, vec![root.join("from.txt"), root.join("gone.txt"), root.join("old.txt")]);
         assert_eq!(batch.ignored, vec![root.join("debug.log")], "ignored files are reported apart");
+    }
+
+    /// What FSEvents delivers when a file is deleted: its coalesced history flags as
+    /// create, remove, then modify events, all for a path that no longer exists.
+    #[test]
+    fn fsevents_deletion_with_history_flags_is_a_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let filter = EventFilter::new(root.clone(), &[]);
+        let gone = root.join("src/Fresh.java");
+        let batch = filter.batch(&[
+            ev(EventKind::Create(CreateKind::File), vec![gone.clone()]),
+            ev(EventKind::Remove(RemoveKind::File), vec![gone.clone()]),
+            ev(EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)), vec![gone.clone()]),
+            ev(EventKind::Modify(ModifyKind::Data(DataChange::Content)), vec![gone.clone()]),
+        ]);
+        assert_eq!(batch.removed, vec![gone]);
+        assert!(batch.created.is_empty() && batch.modified.is_empty());
     }
 
     #[test]

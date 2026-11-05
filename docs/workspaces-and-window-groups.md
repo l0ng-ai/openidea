@@ -22,7 +22,15 @@ Paths in an existing manifest may be relative to the workspace directory. New an
 
 Linked folders appear as roots in Project view and participate in indexing, Find in Files, Git repository discovery and language-server root selection. Detected and saved run configurations have project-qualified names and use their member's working directory and launch settings. Build Project combines the linked projects' build plans; Compile File targets its owning project. Workspace editor/settings state belongs to its own directory. Each member retains its repository and project configuration.
 
-The specialized Maven/Gradle tool-window model still describes the workspace directory itself; it does not yet aggregate independent member models. Workspace creation and management currently target local folders.
+The specialized Maven/Gradle tool-window model still describes the workspace directory itself; it does not yet aggregate independent member models. Workspace creation and management currently target local folders. To link independent Gradle builds in one Gradle tree, open their parent folder as an ordinary project instead of creating a Workspace manifest, then use **Link Gradle Projects…** in the Gradle toolbar or Find Action.
+
+## Linked Gradle builds in a project
+
+In an ordinary project window, **Link Gradle Projects…** accepts one or more `settings.gradle`, `settings.gradle.kts`, `build.gradle`, or `build.gradle.kts` files. Each linked build has its own root in the Gradle tool window. Its tasks, dependencies, wrapper, working directory and sync cache stay separate, even when another build has the same `:app` project or task names. Included builds remain under the build that includes them.
+
+Right-click a build root for **Reload Gradle Project** or **Unlink Gradle Project**. Unlinking only removes the IDE connection; it does not delete files or saved run configurations. The Link button remains available after the last build is unlinked. Linked builds may live outside the opened folder.
+
+Links are saved in project settings as `languages.java.gradle.linkedProjects`. Until links are configured, existing automatic discovery is unchanged. An explicit empty list means that no Gradle builds are linked. Opening the project again restores its links. A folder first opened by an older version may need one fresh sync because independent builds now have separate caches.
 
 ## Window group
 

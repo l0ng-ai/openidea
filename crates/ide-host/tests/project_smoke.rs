@@ -223,7 +223,8 @@ async fn kotlin_gradle() {
     .await;
     let p = open("kotlin-gradle").await;
     let model = ops::build::build_model(&p.host, WINDOW).await.unwrap();
-    let gradle = model.gradle.expect("a Gradle model");
+    assert_eq!(model.gradle.len(), 1, "one independent Gradle build");
+    let gradle = &model.gradle[0];
     assert_eq!(gradle.projects.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["openidea-fixture-library"]);
 }
 
@@ -231,8 +232,9 @@ async fn kotlin_gradle() {
 async fn sync(fixture: &str, tool: ide_build::BuildTool) -> ide_build::BuildModel {
     let p = open(fixture).await;
     let progress = ops::Channel::new(|_: ide_build::SyncProgress| {});
-    let model =
-        ops::build::build_sync(&p.host, WINDOW, tool, ide_core::RequestId(1), false, vec![], progress).await.unwrap();
+    let model = ops::build::build_sync(&p.host, WINDOW, tool, ide_core::RequestId(1), false, vec![], None, progress)
+        .await
+        .unwrap();
     // The cached sync is what the next open shows.
     let reloaded = ops::build::build_model(&p.host, WINDOW).await.unwrap();
     assert_eq!(reloaded, model);
@@ -253,7 +255,9 @@ async fn maven_sync() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "project smoke: needs Gradle and a JDK"]
 async fn gradle_sync() {
-    let gradle = sync("kotlin-gradle", ide_build::BuildTool::Gradle).await.gradle.unwrap();
+    let model = sync("kotlin-gradle", ide_build::BuildTool::Gradle).await;
+    assert_eq!(model.gradle.len(), 1, "one independent Gradle build");
+    let gradle = &model.gradle[0];
     assert_eq!(gradle.sync_error, None);
     assert!(gradle.synced_at.is_some());
     let tasks: Vec<&str> = gradle.projects[0].tasks.iter().map(|t| t.name.as_str()).collect();

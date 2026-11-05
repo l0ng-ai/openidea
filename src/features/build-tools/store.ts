@@ -27,7 +27,7 @@ import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { profilesList, type GradleRunOptions, type MavenRunOptions } from "./model";
+import { gradleRoots, profilesList, type GradleRunOptions, type MavenRunOptions } from "./model";
 
 export interface BuildSettings {
   maven: MavenRunOptions;
@@ -58,7 +58,7 @@ interface BuildState {
   expanded: Record<BuildTool, Set<string>>;
   /** Execute Goal / Task popup. */
   executeOpen: BuildTool | null;
-  /** Project selected in each tree (Maven `pom`, Gradle path): where Execute Goal runs. */
+  /** Project selected in each tree (Maven `pom`, Gradle build/project key): where commands run. */
   current: Partial<Record<BuildTool, string>>;
 }
 
@@ -198,9 +198,6 @@ export function changedOutsideIde(paths: readonly string[], now = Date.now()): b
   return external;
 }
 
-/** Root whose never-synced Gradle build was imported on open (once per open). */
-let autoImported: string | null = null;
-
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
   const root = useProject.getState().project?.root ?? null;
@@ -230,26 +227,39 @@ export async function loadModel(): Promise<void> {
       const maven = model.maven;
       if (maven?.stale && maven.syncedAt !== null && !useBuild.getState().syncing.maven) void syncTool("maven");
     }
-    // Like IDEA, a Gradle build is imported when first opened; later changes wait for Reload.
-    if (model.gradle && model.gradle.syncedAt === null && autoImported !== root) {
-      autoImported = root;
-      void syncTool("gradle");
-    }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });
   }
 }
 
 const UNLINKED_PROJECTS = "languages.java.maven.unlinkedProjects";
+const LINKED_PROJECTS = "languages.java.maven.linkedProjects";
 
-async function setLinked(root: string, pom: string, linked: boolean) {
+/**
+ * Adds `poms` to Maven (back from unlinked, or as independent top-level projects when no
+ * reactor lists them), or removes them (a linked one is dropped, a discovered one unlinked).
+ */
+async function setLinked(root: string, poms: string[], linked: boolean) {
   if (useProject.getState().project?.root !== root) return;
   const settings = await commands.settingsGet();
   if (useProject.getState().project?.root !== root) return;
-  const previous = settings.languages.java?.maven?.unlinkedProjects ?? [];
-  const next = linked ? previous.filter((p) => p !== pom) : [...new Set([...previous, pom])];
-  if (JSON.stringify(next) === JSON.stringify(previous)) return;
-  await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(next)));
+  const maven = settings.languages.java?.maven;
+  const unlinkedBefore = maven?.unlinkedProjects ?? [];
+  const linkedBefore = maven?.linkedProjects ?? [];
+  const known = new Set(useBuild.getState().model?.maven?.projects.map((p) => p.pom));
+  let unlinked = unlinkedBefore;
+  let extra = linkedBefore;
+  for (const pom of poms) {
+    if (linked && unlinked.includes(pom)) unlinked = unlinked.filter((p) => p !== pom);
+    else if (linked) {
+      if (!known.has(pom) && !extra.includes(pom)) extra = [...extra, pom];
+    } else if (extra.includes(pom)) extra = extra.filter((p) => p !== pom);
+    else if (!unlinked.includes(pom)) unlinked = [...unlinked, pom];
+  }
+  if (unlinked === unlinkedBefore && extra === linkedBefore) return;
+  if (unlinked !== unlinkedBefore)
+    await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(unlinked)));
+  if (extra !== linkedBefore) await call(commands.settingsSet("project", LINKED_PROJECTS, JSON.stringify(extra)));
   await loadModel();
 }
 
@@ -268,7 +278,19 @@ export async function unlinkProjects(pom: string | null) {
   )
     return;
   cancelSync("maven");
-  await setLinked(root, pom, false);
+  await setLinked(root, [pom], false);
+}
+
+/** Project-relative `pom.xml` paths of `picked` inside `root`; others are skipped. */
+function projectPoms(root: string, picked: readonly string[]): string[] {
+  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
+  return picked.flatMap((p) => {
+    const path = p.replace(/\\/g, "/");
+    if (!path.startsWith(`${base}/`)) return [];
+    const pom = path.slice(base.length + 1);
+    const parts = pom.split("/");
+    return parts.some((part) => part === ".." || part === ".") || parts.pop() !== "pom.xml" ? [] : [pom];
+  });
 }
 
 export async function addProjects() {
@@ -278,43 +300,104 @@ export async function addProjects() {
   const picked = await open({
     title: tx`Add Maven Projects`,
     directory: false,
-    multiple: false,
+    multiple: true,
     defaultPath: root,
     filters: [{ name: "pom.xml", extensions: ["xml"] }],
   });
-  if (typeof picked !== "string") return;
-  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
-  const path = picked.replace(/\\/g, "/");
-  if (!path.startsWith(`${base}/`)) return;
-  const pom = path.slice(base.length + 1);
-  if (pom.split("/").some((part) => part === ".." || part === ".") || pom.split("/").pop() !== "pom.xml") return;
-  await setLinked(root, pom, true);
+  const poms = projectPoms(root, typeof picked === "string" ? [picked] : (picked ?? []));
+  if (poms.length) await setLinked(root, poms, true);
+}
+
+/** Links independent Gradle builds without changing their files or build scripts. */
+export async function linkGradleProjects() {
+  const gen = generation;
+  const root = useProject.getState().project?.root;
+  if (
+    !root ||
+    useProject.getState().project?.workspace ||
+    useProject.getState().project?.trusted === false ||
+    !isTauri()
+  )
+    return;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    title: tx`Link Gradle Projects`,
+    directory: false,
+    multiple: true,
+    defaultPath: root,
+    filters: [{ name: "Gradle build files", extensions: ["gradle", "kts"] }],
+  });
+  const paths = typeof picked === "string" ? [picked] : picked;
+  if (!paths?.length || useProject.getState().project?.root !== root || gen !== generation) return;
+  const model = await call(commands.gradleLinkProjects(paths));
+  if (useProject.getState().project?.root !== root || gen !== generation) return;
+  const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);
+  if (useProject.getState().project?.root === root && gen === generation)
+    useBuild.setState((s) => ({
+      model,
+      configs,
+      expanded: {
+        ...s.expanded,
+        gradle: new Set([...s.expanded.gradle, ...initialExpanded("gradle", model)]),
+      },
+    }));
+}
+
+export async function unlinkGradleProjects(buildDir: string | null) {
+  const expectedGeneration = generation;
+  const { root, model } = useBuild.getState();
+  const build = model?.gradle?.find((g) => g.dir === buildDir);
+  if (
+    !root ||
+    useProject.getState().project?.workspace ||
+    !build ||
+    !(await confirm({
+      title: "Unlink Gradle project?",
+      message:
+        "Remove this build from Gradle? Files will remain in the Project view; link its build file again to restore it.",
+      ok: "Unlink",
+    }))
+  )
+    return;
+  if (useProject.getState().project?.root !== root || expectedGeneration !== generation) return;
+  const gen = ++generation;
+  queuedSyncs.delete("gradle");
+  cancelSync("gradle");
+  const next = await call(commands.gradleUnlinkProjects([build.dir]));
+  if (useProject.getState().project?.root !== root || gen !== generation) return;
+  const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);
+  if (useProject.getState().project?.root !== root || gen !== generation) return;
+  useBuild.setState({ model: next, configs, current: { ...useBuild.getState().current, gradle: undefined } });
+  return true;
 }
 
 /** Tree keys expanded on first show: the top-level projects. */
 export function initialExpanded(tool: BuildTool, model: BuildModel): Set<string> {
   if (tool === "maven")
     return new Set(model.maven?.projects.filter((p) => !p.aggregated).map((p) => `mvn:${p.pom}`) ?? []);
-  return new Set(model.gradle ? ["gradle::"] : []);
+  return new Set(gradleRoots(model.gradle ?? []).map((n) => n.key));
 }
 
 const TITLES: Record<BuildTool, string> = { maven: "Syncing Maven projects", gradle: "Syncing Gradle projects" };
 
 /** Tools to sync again once their running sync ends: its options changed meanwhile. */
-const queuedSyncs = new Set<BuildTool>();
+const queuedSyncs = new Map<BuildTool, Set<string | null>>();
 
 /** Syncs `tool` now, or right after the sync in progress (which used the previous options). */
-export function requestSync(tool: BuildTool) {
-  if (useBuild.getState().syncing[tool]) queuedSyncs.add(tool);
-  else void syncTool(tool);
+export function requestSync(tool: BuildTool, buildDir: string | null = null) {
+  if (useBuild.getState().syncing[tool]) {
+    const queued = queuedSyncs.get(tool) ?? new Set<string | null>();
+    queued.add(buildDir);
+    queuedSyncs.set(tool, queued);
+  } else void syncTool(tool, buildDir);
 }
 
-/** Reloads all projects of `tool` from the build tool itself (effective POM, dependency tree, task list). */
-export async function syncTool(tool: BuildTool): Promise<void> {
+/** Reloads the build tool model; `buildDir` limits a Gradle reload to one linked build. */
+export async function syncTool(tool: BuildTool, buildDir: string | null = null): Promise<void> {
   const state = useBuild.getState();
   const gen = generation;
   const root = state.root;
-  if (!root || !isTauri() || state.syncing[tool]) return;
+  if (!root || useProject.getState().project?.trusted === false || !isTauri() || state.syncing[tool]) return;
   const request = nextRequestId();
   const taskId = `build-sync:${tool}`;
   const cancel = () => void commands.cancelRequest(request);
@@ -331,11 +414,18 @@ export async function syncTool(tool: BuildTool): Promise<void> {
   const profiles = tool === "maven" && model?.maven ? profilesList(model.maven.profiles, settings.maven.profiles) : [];
   const offline = tool === "maven" ? settings.maven.offline : settings.gradle.offline;
   try {
-    const next = await call(commands.buildSync(tool, request, offline, profiles, channel));
+    const next = await call(commands.buildSync(tool, request, offline, profiles, buildDir, channel));
     if (useBuild.getState().root !== root || gen !== generation) return;
     const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);
+    if (useBuild.getState().root !== root || gen !== generation) return;
     useBuild.setState({ model: next, configs });
-    const error = tool === "maven" ? next.maven?.syncError : next.gradle?.syncError;
+    const error =
+      tool === "maven"
+        ? next.maven?.syncError
+        : (next.gradle ?? [])
+            .map((g) => g.syncError)
+            .filter(Boolean)
+            .join("\n");
     if (error)
       notifications().notify({
         group: "run",
@@ -355,13 +445,22 @@ export async function syncTool(tool: BuildTool): Promise<void> {
         key: `build-sync-${tool}`,
       });
   } finally {
-    if (useBuild.getState().syncing[tool]?.request === request) setSync(undefined);
-    upsertTask({ id: taskId, title: TITLES[tool], message: null, fraction: 1, done: true });
-    if (queuedSyncs.delete(tool) && gen === generation) void syncTool(tool);
+    if (useBuild.getState().syncing[tool]?.request === request) {
+      setSync(undefined);
+      upsertTask({ id: taskId, title: TITLES[tool], message: null, fraction: 1, done: true });
+      const queued = queuedSyncs.get(tool);
+      const next = queued?.values().next();
+      if (next && !next.done && useBuild.getState().root === root) {
+        queued!.delete(next.value);
+        if (!queued!.size) queuedSyncs.delete(tool);
+        void syncTool(tool, next.value);
+      }
+    }
   }
 }
 
 export function cancelSync(tool: BuildTool) {
+  queuedSyncs.delete(tool);
   const s = useBuild.getState().syncing[tool];
   if (!s) return;
   const taskId = `build-sync:${tool}`;
@@ -419,8 +518,8 @@ export function setCurrentProject(tool: BuildTool, id: string | undefined) {
 export const ANALYZER_KIND = "maven.dependencyAnalyzer";
 
 /**
- * Module the Dependency Analyzer shows: a Maven `pom` (project-relative) or `gradle:<path>`
- * (`gradle::app`) for a Gradle project; `null` = the first one.
+ * Module the Dependency Analyzer shows: a Maven `pom` or a Gradle build/project key;
+ * `null` = the first one.
  */
 export const useAnalyzer = create<{ module: string | null }>(() => ({ module: null }));
 

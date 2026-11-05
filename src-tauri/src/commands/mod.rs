@@ -45,6 +45,7 @@ pub mod tools;
 pub mod vcs;
 pub mod web;
 pub mod window;
+pub mod window_drag;
 pub mod window_group;
 pub mod workspace;
 
@@ -353,6 +354,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_tomcat_update,
         run::run_test_reports,
         build::build_model,
+        build::gradle_link_projects,
+        build::gradle_unlink_projects,
         build::build_sync,
         build::gradle_dependencies,
         build::gradle_published_catalog,
@@ -404,6 +407,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_cycle,
         window::window_toggle_fullscreen,
         window::window_set_titlebar_height,
+        window_drag::window_start_drag,
         window::window_take_launch,
         window::window_close_context,
         window::window_open_projects,

@@ -18,6 +18,7 @@ import { goGenerateConfig } from "./goGenerate";
 import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
@@ -543,6 +544,44 @@ function compiled(
   return { name, scope, config, debug: { build: buildConfig, config: binary } };
 }
 
+/**
+ * A single Java file. The source launcher (`java Hi.java`, JEP 330) runs the file's first
+ * top-level type, so another main class (declared after it, nested, or picked in the gutter)
+ * is compiled with the JDK's `javac` into a class directory and run with `java -cp`.
+ */
+function javaFile(input: ContextInput, env: ToolEnv, s: FileSite, mainClass?: string): Produced {
+  const tools = toolsFor("java");
+  const java = pick(env, tools);
+  if (!java) return { name: s.file, scope: "file", missing: missing("java", s.file, tools) };
+  const source: Produced = {
+    name: s.file,
+    scope: "file",
+    config: fileConfig(s, "java-file", java.command, [s.arg], "java-debug"),
+  };
+  if (input.content === undefined) return source;
+  const first = firstTopLevelType(input.content);
+  const mains = scanJvmTargets(input.content, s.idPath, false)
+    .filter((t) => t.kind === "main")
+    .map((t) => t.className);
+  const stem = stemOf(s.file);
+  const fileMain =
+    mains.find((c) => c === first) ?? mains.find((c) => c.slice(c.lastIndexOf(".") + 1) === stem) ?? mains[0];
+  const launch = mainClass ?? fileMain;
+  if (!launch || launch === first) return source;
+  const win = !!env.windows;
+  const dir = env.compileDir.replace(/\\/g, "/").replace(/(.)\/+$/, "$1");
+  const out = nativePath(`${dir}/${stem}-${hash(input.path)}-classes`, win);
+  // The `javac` of the JDK that runs the class, so their class file versions match.
+  const javac = java.command.replace(/(^|[\\/])java(\.exe)?$/i, "$1javac$2");
+  const build = `${mkdirLine(out, win)} && ${shellLine([javac, "-g", "-d", out, s.arg], win)}`;
+  const run = shellLine([java.command, "-cp", out, launch], win);
+  const config: RunConfig = {
+    ...fileConfig(s, "java-file", `${build} && ${run}`, [], "java-debug"),
+    ...(launch === fileMain ? {} : { id: `context:file:${s.idPath}#${launch}`, name: simpleClassName(launch) }),
+  };
+  return { name: config.name, scope: "file", config };
+}
+
 function simple(
   lang: ScriptLanguage,
   s: FileSite,
@@ -781,8 +820,7 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       return simple(lang, s, env, "go", () => ["run", s.arg], "delve");
     case "java":
       if (input.content !== undefined && !/\bvoid\s+main\s*\(/.test(input.content)) return null;
-      // JEP 330: `java Hi.java` compiles and runs a single source file.
-      return simple(lang, s, env, "java-file", () => [s.arg], "java-debug");
+      return javaFile(input, env, s);
     case "rust":
       if (!hasRustMain(input.content)) {
         // A standalone file with tests only: run them all.
@@ -903,6 +941,8 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
       const config = applicationConfig({ className: target.className, spring: target.spring }, rel, input.configs);
       return { name: config.name, scope: "element", config };
     }
+    if (target.className && /\.java$/.test(input.path))
+      return { ...javaFile(input, env, s, target.className), scope: "element" };
     const file = produceFile(input, env);
     return file ? { ...file, scope: "element" } : null;
   }

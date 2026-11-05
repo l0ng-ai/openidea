@@ -1,4 +1,9 @@
 {
+  "Link Gradle Projects": "关联 Gradle 项目",
+  "Unlink Gradle Project": "取消关联 Gradle 项目",
+  "Unlink Gradle project?": "取消关联 Gradle 项目？",
+  "Remove this build from Gradle? Files will remain in the Project view; link its build file again to restore it.": "从 Gradle 中移除此构建？文件将保留在项目视图中；重新关联其构建文件即可恢复。",
+  "Gradle build files": "Gradle 构建文件",
   "Unity": "Unity 项目",
   "Show Meta Files": "显示 Meta 文件",
   "Show Generated Files": "显示生成的文件",
@@ -4906,6 +4911,7 @@
   "The registry has no agents for this system": "Registry 中没有适用于此系统的 Agent",
   "{version} available": "{version} 可用",
   "Installing {name} {version}…": "正在安装 {name} {version}…",
+  "Installing {name} in the background…": "正在后台安装 {name}…",
   "Website": "网站",
   "Removing…": "正在移除…",
   "Registry agents": "Registry Agent",
