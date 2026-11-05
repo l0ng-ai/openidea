@@ -62,21 +62,21 @@ const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
   languages: ["python"],
 };
 
-/** `languages.php.languageLevel` values; `""` = Auto (from `composer.json`). */
+/** `languages.php.languageLevel` values, newest first; `""` = Auto (from `composer.json`). */
 export const PHP_LANGUAGE_LEVELS = [
   "",
-  "5.6",
-  "7.0",
-  "7.1",
-  "7.2",
-  "7.3",
-  "7.4",
-  "8.0",
-  "8.1",
-  "8.2",
-  "8.3",
-  "8.4",
   "8.5",
+  "8.4",
+  "8.3",
+  "8.2",
+  "8.1",
+  "8.0",
+  "7.4",
+  "7.3",
+  "7.2",
+  "7.1",
+  "7.0",
+  "5.6",
 ] as const;
 
 export interface LanguagesValid {
