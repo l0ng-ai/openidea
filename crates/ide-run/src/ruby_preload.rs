@@ -50,10 +50,12 @@ mod tests {
 
     #[test]
     fn keeps_existing_settings_and_adds_once() {
-        let mut env = BTreeMap::from([("RUBYLIB".into(), "/a:/b".into()), ("RUBYOPT".into(), "-w".into())]);
+        // Path lists use the platform's separator (`;` on Windows).
+        let list = |dirs: &[&str]| std::env::join_paths(dirs).unwrap().to_string_lossy().into_owned();
+        let mut env = BTreeMap::from([("RUBYLIB".into(), list(&["/a", "/b"])), ("RUBYOPT".into(), "-w".into())]);
         add(&mut env, Path::new("/hook"), "h", false);
         add(&mut env, Path::new("/hook"), "h", false);
-        assert_eq!(env["RUBYLIB"], "/hook:/a:/b");
+        assert_eq!(env["RUBYLIB"], list(&["/hook", "/a", "/b"]));
         assert_eq!(env["RUBYOPT"], "-w -rh");
     }
 }
