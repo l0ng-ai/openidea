@@ -537,9 +537,15 @@ impl Documents {
     pub fn edit(&self, doc: DocId, base_version: u32, changes: ChangeSet) -> IdeResult<u32> {
         self.with_doc(doc, |st| {
             if st.read_only {
+                tracing::warn!("edit rejected: {} is read-only", st.path.display());
                 return Err(read_only_error(&st.path));
             }
-            let (applied, edits) = st.doc.apply_detailed(base_version, &changes)?;
+            let (applied, edits) = st.doc.apply_detailed(base_version, &changes).inspect_err(|e| {
+                // A stale version is routine (the UI rebases); anything else makes the editor drop the edit.
+                if e.kind != ErrorKind::OutOfSync {
+                    tracing::warn!("edit of {} rejected: {e}", st.path.display());
+                }
+            })?;
             self.set_dirty(doc, st, true);
             self.notify_changed(doc, st, &applied, &edits);
             Ok(st.doc.version())

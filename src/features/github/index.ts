@@ -144,8 +144,9 @@ function actions(): Action[] {
       id: "github.changeRepository",
       title: "Change Repository or Account…",
       category: "GitHub",
-      when: CONNECTED,
-      run: () => changeRepository(),
+      when: WHEN,
+      // Not connected yet: the tool window offers the repository selector, or explains how to log in.
+      run: () => (useGhRepository.getState().connection ? changeRepository() : void showPullRequests()),
     },
     {
       // pull.request.select.action

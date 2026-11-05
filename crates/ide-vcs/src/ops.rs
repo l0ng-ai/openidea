@@ -3,7 +3,7 @@
 
 use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
-use crate::{ChangeKind, ChangedFile, MergeSides, RebaseAction, RebaseEntry, Repo, ResetMode};
+use crate::{ChangeKind, ChangedFile, FileLineStats, MergeSides, RebaseAction, RebaseEntry, Repo, ResetMode};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 
 /// The in-progress operation git can continue / abort / skip.
@@ -394,6 +394,44 @@ pub(crate) fn parse_numstat(text: &str) -> Vec<(String, u32, u32)> {
         .collect()
 }
 
+/// Added and deleted lines between two revisions. `paths` limits the diff (pass both names of
+/// a rename); an empty list, or one too long for the command line, diffs every file.
+pub(crate) fn diff_numstat(r: &Repo, from: &str, to: &str, paths: &[String]) -> IdeResult<Vec<FileLineStats>> {
+    check_commits(&[from.to_string(), to.to_string()])?;
+    let mut args = vec!["diff", "--numstat", "-z", "-M", "--no-ext-diff", "--no-textconv", from, to];
+    // Windows command lines are short; past this, the unfiltered diff still contains these paths.
+    let limited = !paths.is_empty() && paths.iter().map(|p| p.len() + 1).sum::<usize>() <= 16_000;
+    if limited {
+        args.push("--");
+        args.extend(paths.iter().filter(|p| !p.is_empty()).map(String::as_str));
+    }
+    let out = run(r.root(), &args, None)?;
+    Ok(parse_numstat_z(&out.stdout_str()))
+}
+
+/// `git diff --numstat -z -M`: `added\tremoved\tpath\0`, or `added\tremoved\0old\0new\0` for a rename.
+/// Binary files (`-`) count as 0.
+pub(crate) fn parse_numstat_z(text: &str) -> Vec<FileLineStats> {
+    let mut parts = text.split('\0').filter(|s| !s.is_empty());
+    let mut out = Vec::new();
+    while let Some(rec) = parts.next() {
+        let mut fields = rec.splitn(3, '\t');
+        let added = fields.next().unwrap_or("0").parse().unwrap_or(0);
+        let removed = fields.next().unwrap_or("0").parse().unwrap_or(0);
+        let (path, old_path) = if let Some(path) = fields.next().filter(|p| !p.is_empty()) {
+            (path.to_owned(), None)
+        } else {
+            let (Some(old), Some(new)) = (parts.next(), parts.next()) else { break };
+            (new.to_owned(), Some(old.to_owned()))
+        };
+        if !path.is_empty() {
+            out.push(FileLineStats { path, old_path, added, removed });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path).then(a.old_path.cmp(&b.old_path)));
+    out
+}
+
 /// Files that differ between two revisions (Update Project's "N files updated").
 pub(crate) fn diff_revisions(r: &Repo, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
     check_commits(&[from.to_string(), to.to_string()])?;
@@ -455,6 +493,19 @@ mod tests {
         assert_eq!(
             got,
             vec![("src/a.rs".to_owned(), 3, 1), ("img.png".to_owned(), 0, 0), ("dir/b c.txt".to_owned(), 0, 7)]
+        );
+    }
+
+    #[test]
+    fn numstat_z_parsing_counts_renames_and_binaries_as_zero() {
+        let text = "1\t0\timg.bin\u{0}2\t1\u{0}file.txt\u{0}renamed.txt\u{0}-\t-\tbin.dat\u{0}";
+        assert_eq!(
+            parse_numstat_z(text),
+            vec![
+                FileLineStats { path: "bin.dat".into(), old_path: None, added: 0, removed: 0 },
+                FileLineStats { path: "img.bin".into(), old_path: None, added: 1, removed: 0 },
+                FileLineStats { path: "renamed.txt".into(), old_path: Some("file.txt".into()), added: 2, removed: 1 },
+            ]
         );
     }
 }

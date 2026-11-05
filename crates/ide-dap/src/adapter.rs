@@ -72,7 +72,13 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install the Kotlin Debug Adapter from Settings > Language Servers",
         ),
-        "debugpy" => cfg("python3", &["-m", "debugpy.adapter"], "stdio", "pip install debugpy"),
+        // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
+        "debugpy" => cfg(
+            if cfg!(windows) { "python" } else { "python3" },
+            &["-m", "debugpy.adapter"],
+            "stdio",
+            "pip install debugpy",
+        ),
         "js-debug" => cfg(
             "js-debug-adapter",
             // Without a host it listens on `localhost`, which may resolve to ::1 only.

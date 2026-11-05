@@ -3,7 +3,7 @@
  * a WHERE filter, and pending cell edits / added / deleted rows submitted
  * together in one transaction. Tables without a primary key are read-only.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   call,
   commands,
@@ -30,7 +30,9 @@ import {
 import { openDialog, sourceById, withConnection } from "./store";
 import type { TableRef } from "./tableInput";
 import styles from "./Database.module.css";
+import { registerTableEditor, tableEditorChanged, type TableEditorHandle } from "./tableEditorFocus";
 import { tx } from "@/platform/i18n";
+import { shortcutLabel } from "@/platform/keymap";
 
 const PAGE_SIZES = ["100", "500", "1000", "5000"];
 
@@ -46,6 +48,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const [nonce, setNonce] = useState(0);
   const [edits, setEdits] = useState<PendingEdits>(emptyEdits);
   const [panel, setPanel] = useState<DataPanel | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [extractor, setExtractor] = useState<ExportFormat>("csv");
   // The ORDER BY field while it's being edited; it shows the sort otherwise.
   const [orderDraft, setOrderDraft] = useState<string | null>(null);
@@ -177,9 +180,19 @@ export function TableEditor({ input }: { input: EditorInput }) {
     });
 
   const dirty = hasEdits(edits);
+  // Submit / Revert actions (⌘↩ / ⌥⌘Z) reach the latest state through the handle.
+  const viewRef = useRef<HTMLDivElement>(null);
+  const handle = useRef<TableEditorHandle>({ dirty: false, submit: () => {}, revert: () => {} }).current;
+  handle.dirty = editable && dirty;
+  handle.submit = () => {
+    if (editable && dirty) void submit();
+  };
+  handle.revert = () => setEdits(emptyEdits());
+  useEffect(() => registerTableEditor(viewRef.current!, handle), [handle]);
+  useEffect(() => tableEditorChanged(handle), [handle, dirty, editable]);
   const orderInvalid = orderDraft !== null && !parseOrderBy(orderDraft, names);
   return (
-    <div className={styles.view}>
+    <div className={styles.view} ref={viewRef} data-db-table-editor="">
       <div className={styles.toolbar}>
         <IconButton icon="refresh" title="Reload Page" onClick={reload} disabled={loading} />
         <div className={styles.pager}>
@@ -254,6 +267,13 @@ export function TableEditor({ input }: { input: EditorInput }) {
           disabled={!editable}
           onClick={() => openDialog({ kind: "import", id: ref.id, schema: ref.schema, table: ref.table })}
         />
+        <IconButton
+          icon="search"
+          title="Search"
+          shortcut={shortcutLabel("find.inFile")}
+          aria-pressed={searchOpen}
+          onClick={() => setSearchOpen(!searchOpen)}
+        />
         <PanelToggle panel={panel} onChange={setPanel} />
       </div>
       <div className={styles.filterBar}>
@@ -322,6 +342,8 @@ export function TableEditor({ input }: { input: EditorInput }) {
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            searchOpen={searchOpen}
+            onSearchOpenChange={setSearchOpen}
             firstRowNumber={offset + 1}
             rowState={(r) => (r >= loaded ? "inserted" : edits.deletes.has(r) ? "deleted" : null)}
             isModified={(r, c) => !!edits.updates.get(r)?.has(names[c]!)}

@@ -60,6 +60,9 @@ struct Session {
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     exited: Arc<AtomicBool>,
+    started: Instant,
+    /// The first input was logged (startup diagnostics, see `spawn`).
+    input_logged: AtomicBool,
 }
 
 type Sessions = Arc<Mutex<HashMap<TerminalId, Arc<Session>>>>;
@@ -92,7 +95,8 @@ impl TerminalManager {
         let size = pty_size(options.cols, options.rows);
         let pair = native_pty_system().openpty(size).map_err(|e| IdeError::internal(format!("openpty failed: {e}")))?;
 
-        let (shell, mut args) = resolve_shell(options.shell.as_deref(), &options.args);
+        let wsl = if cfg!(windows) { wsl_shell(&options) } else { None };
+        let (shell, mut args) = wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args));
         let mut env = terminal_env(&options.env);
         if let Some(msystem) = default_msystem(&shell, &options.env, std::env::var("MSYSTEM").ok().as_deref()) {
             env.insert("MSYSTEM".to_owned(), msystem.to_owned());
@@ -105,7 +109,8 @@ impl TerminalManager {
         }
         let mut cmd = CommandBuilder::new(&shell);
         cmd.args(&args);
-        cmd.cwd(resolve_cwd(&options.cwd));
+        // wsl.exe takes the directory through `--cd`; a UNC share is no valid process cwd.
+        cmd.cwd(if wsl.is_some() { resolve_cwd(Path::new("")) } else { resolve_cwd(&options.cwd) });
         for (k, v) in ide_core::process::host_env_fixes() {
             match v {
                 Some(v) => cmd.env(k, v),
@@ -115,6 +120,7 @@ impl TerminalManager {
         for (k, v) in env {
             cmd.env(k, v);
         }
+        apply_powershell_env(&shell, &mut cmd);
 
         let child = pair
             .slave
@@ -136,25 +142,34 @@ impl TerminalManager {
             writer: Mutex::new(writer),
             killer: Mutex::new(child.clone_killer()),
             exited: exited.clone(),
+            started: Instant::now(),
+            input_logged: AtomicBool::new(false),
         });
         self.sessions.lock().insert(id, session);
 
         let (tx, rx) = mpsc::channel::<Msg>();
         let spawned = spawn_reader(id, reader, tx.clone())
             .and_then(|_| spawn_waiter(id, child, tx))
-            .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink));
+            .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
         if let Err(e) = spawned {
             if let Some(s) = self.sessions.lock().remove(&id) {
                 let _ = s.killer.lock().kill();
             }
             return Err(IdeError::internal(format!("failed to start terminal threads: {e}")));
         }
-        tracing::debug!(%id, shell, pid = ?info.pid, "terminal spawned");
+        // Info level, with the first output and input below: a session that starts but never shows a
+        // prompt can then be told apart in a user's log (no output, or no reply to the shell's query).
+        tracing::info!(%id, shell, pid = ?info.pid, cols = size.cols, rows = size.rows, "terminal spawned");
         Ok(info)
     }
 
     pub fn write(&self, id: TerminalId, data: &str) -> IdeResult<()> {
         let session = self.session(id)?;
+        if !session.input_logged.swap(true, Ordering::Relaxed) {
+            let cursor_report = data.starts_with("\x1b[") && data.ends_with('R');
+            let ms = session.started.elapsed().as_millis();
+            tracing::info!(%id, ms, bytes = data.len(), cursor_report, "terminal first input");
+        }
         let mut w = session.writer.lock();
         w.write_all(data.as_bytes())?;
         w.flush()?;
@@ -387,8 +402,19 @@ fn spawn_pump(
     exited: Arc<AtomicBool>,
     sessions: Sessions,
     sink: SharedSink,
+    started: Instant,
 ) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-term-pump-{}", id.0)).spawn(move || {
+        let first_output = std::cell::Cell::new(true);
+        let on_output = move |text: String| {
+            if first_output.replace(false) {
+                // ConPTY asks for the cursor position (`ESC[6n`) and waits for the answer.
+                let cursor_query = text.contains("\x1b[6n");
+                let ms = started.elapsed().as_millis();
+                tracing::info!(%id, ms, bytes = text.len(), cursor_query, "terminal first output");
+            }
+            on_output(text)
+        };
         let mut decoder = Utf8Decoder::new();
         let mut pending = String::new();
         let mut batch_started: Option<Instant> = None;
@@ -456,6 +482,16 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+/// `wsl.exe` in the distro of a `\\wsl.localhost\...` folder, so its terminal is a Linux
+/// shell and not PowerShell (#925). An explicitly chosen shell or arguments win.
+fn wsl_shell(options: &TerminalOptions) -> Option<(String, Vec<String>)> {
+    if options.shell.as_deref().is_some_and(|s| !s.trim().is_empty()) || !options.args.is_empty() {
+        return None;
+    }
+    let w = ide_core::wsl::parse(&options.cwd)?;
+    Some((ide_core::wsl::EXE.into(), vec!["-d".into(), w.distro, "--cd".into(), w.path]))
+}
+
 fn resolve_cwd(cwd: &Path) -> PathBuf {
     if cwd.is_dir() {
         return cwd.to_path_buf();
@@ -504,7 +540,7 @@ pub fn available_shells() -> Vec<String> {
     }
     #[cfg(windows)]
     {
-        for exe in ["pwsh.exe", "powershell.exe", "cmd.exe", "wsl.exe"] {
+        for exe in ["pwsh.exe", "powershell.exe", "cmd.exe", ide_core::wsl::EXE] {
             if let Some(p) = find_in_path(exe) {
                 add(p);
             }
@@ -596,6 +632,18 @@ fn terminal_env(user: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     }
     env.extend(user.iter().map(|(k, v)| (k.clone(), v.clone())));
     env
+}
+
+/// Older pwsh versions can crash while formatting a localized update banner
+/// (PowerShell/PowerShell#28131). Keep explicit preferences in the final environment.
+fn apply_powershell_env(shell: &str, cmd: &mut CommandBuilder) {
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    if cfg!(windows)
+        && (name.eq_ignore_ascii_case("pwsh") || name.eq_ignore_ascii_case("pwsh.exe"))
+        && cmd.get_env("POWERSHELL_UPDATECHECK").is_none_or(|v| v.is_empty())
+    {
+        cmd.env("POWERSHELL_UPDATECHECK", "Off");
+    }
 }
 
 /// Git Bash's MSYSTEM profile on Windows, when nobody chose one. A bare
@@ -860,6 +908,24 @@ mod tests {
     }
 
     #[test]
+    fn wsl_folder_gets_the_distro_shell_unless_one_is_chosen() {
+        let mut o = sh("true");
+        o.shell = None;
+        o.args = vec![];
+        let (distro, linux_path) = ("Debian-12", "/srv/app");
+        let want = (ide_core::wsl::EXE.to_owned(), vec!["-d".into(), distro.into(), "--cd".into(), linux_path.into()]);
+        for host in ["wsl.localhost", "wsl$"] {
+            o.cwd = PathBuf::from(format!(r"\\{host}\{distro}{}", linux_path.replace('/', r"\"))).into();
+            assert_eq!(wsl_shell(&o), Some(want.clone()), "{host}");
+        }
+        o.shell = Some("pwsh.exe".into());
+        assert_eq!(wsl_shell(&o), None);
+        o.shell = None;
+        o.cwd = PathBuf::from("/tmp").into();
+        assert_eq!(wsl_shell(&o), None);
+    }
+
+    #[test]
     fn shell_resolution() {
         let (shell, args) = resolve_shell(Some("/bin/zsh"), &[]);
         assert_eq!((shell.as_str(), args), ("/bin/zsh", vec!["-l".to_owned()]));
@@ -884,6 +950,56 @@ mod tests {
 #[cfg(test)]
 mod shell_start_on_every_platform {
     use super::*;
+
+    #[test]
+    fn powershell_update_notifications_default_to_off_on_windows() {
+        for shell in ["pwsh", "pwsh.exe", "PWSH.EXE", "C:\\Program Files\\PowerShell\\7\\PwSh.ExE", "C:/pwsh/pwsh.exe"]
+        {
+            for value in [None, Some("")] {
+                let mut cmd = CommandBuilder::new(shell);
+                cmd.env_clear();
+                if let Some(value) = value {
+                    cmd.env("POWERSHELL_UPDATECHECK", value);
+                }
+                apply_powershell_env(shell, &mut cmd);
+                let want = if cfg!(windows) { Some("Off") } else { value };
+                assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), want.map(std::ffi::OsStr::new), "{shell}");
+            }
+        }
+    }
+
+    #[test]
+    fn powershell_update_notification_preferences_are_preserved() {
+        for value in ["Default", "LTS", "Off"] {
+            let mut cmd = CommandBuilder::new("pwsh.exe");
+            cmd.env_clear();
+            cmd.env("POWERSHELL_UPDATECHECK", value);
+            apply_powershell_env("pwsh.exe", &mut cmd);
+            assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), Some(std::ffi::OsStr::new(value)));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_update_notification_preferences_ignore_key_case() {
+        let mut cmd = CommandBuilder::new("pwsh.exe");
+        cmd.env_clear();
+        cmd.env("POWERSHELL_UPDATECHECK", "Off");
+        cmd.env("powershell_updatecheck", "Default");
+        apply_powershell_env("pwsh.exe", &mut cmd);
+        assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), Some(std::ffi::OsStr::new("Default")));
+        assert_eq!(cmd.iter_full_env_as_str().count(), 1);
+    }
+
+    #[test]
+    fn other_shells_keep_their_update_notification_environment() {
+        for shell in ["powershell.exe", "cmd.exe", "wsl.exe", "bash.exe", "C:\\pwsh.exe\\other.exe", "other-pwsh.exe"] {
+            let mut cmd = CommandBuilder::new(shell);
+            cmd.env_clear();
+            apply_powershell_env(shell, &mut cmd);
+            assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), None, "{shell}");
+        }
+    }
 
     #[test]
     fn posix_shells_start_as_login_shells_everywhere() {

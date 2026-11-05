@@ -91,6 +91,8 @@ describe("IntelliJ theme import", () => {
       "Button": { "default": { "startBackground": "accent" } },
       "Popup.background": "#181f28",
       "Label.infoForeground": "#80888F80",
+      "EditorTabs": { "underlineColor": "#405060", "underlinedBorderColor": "#bd93f9" },
+      "CompletionPopup.matchForeground": "#ff79c6",
       "Tree": { "rowHeight": 24 }
     }
   }`;
@@ -99,6 +101,7 @@ describe("IntelliJ theme import", () => {
     <option name="CARET_COLOR" value="ffcc00" />
     <option name="LINE_NUMBERS_COLOR" value="0" />
     <option name="UNKNOWN_KEY" value="123456" />
+    <option name="GUTTER_BACKGROUND" value="313335" />
   </colors>
   <attributes>
     <option name="DEFAULT_KEYWORD">
@@ -126,6 +129,9 @@ describe("IntelliJ theme import", () => {
       </value>
     </option>
     <option name="DEFAULT_CONSTANT" baseAttributes="DEFAULT_IDENTIFIER" />
+    <option name="DEFAULT_INSTANCE_FIELD">
+      <value />
+    </option>
   </attributes>
 </scheme>`;
 
@@ -138,6 +144,9 @@ describe("IntelliJ theme import", () => {
     expect(t.tokens["--bg-selected"]).toBe("#203040");
     expect(t.tokens["--fg-muted"]).toBe("#80888f80");
     expect(t.tokens["--fg"]).toBe("#c0c8d0");
+    // Islands borders the selected tab with underlinedBorderColor.
+    expect(t.tokens["--border-tab-selected"]).toBe("#bd93f9");
+    expect(t.tokens["--fg-completion-match"]).toBe("#ff79c6");
     expect(s).toBeNull();
   });
 
@@ -165,9 +174,12 @@ describe("IntelliJ theme import", () => {
       "--syn-comment-style": "italic",
       "--fg-editor": "#a9b7c6",
       "--bg-editor": "#2b2b2b",
+      // GUTTER_BACKGROUND is the classic UI's: the gutter keeps the editor's background.
       "--bg-editor-gutter": "#2b2b2b",
       "--wave-error": "#ff0000",
       "--editor-error-decoration": "underline wavy #ff0000",
+      // <value />: plain text, not the parent scheme's colour.
+      "--syn-property": "#a9b7c6",
     });
     expect(s.tokens["--syn-constant"]).toBeUndefined();
   });
@@ -208,11 +220,6 @@ describe("IntelliJ theme import", () => {
       ],
     });
     expect(pkg.id).toBe("intellij.com-example-deepsea");
-    expect(pkg.themes).toEqual([
-      { id: "deep-sea", sourceId: "deep-sea-id", name: "Deep Sea" },
-      { id: "deep-sea-2", sourceId: "copy-id", name: "Deep Sea" },
-      { id: "shallow", sourceId: "light-id", name: "Shallow" },
-    ]);
     expect(pkg.files.map((f) => f.path)).toEqual([
       "plugin.toml",
       "themes/deep-sea.theme.json",

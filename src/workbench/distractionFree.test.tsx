@@ -217,7 +217,8 @@ describe("distraction free shell", () => {
     expect(screen.queryByRole("button", { name: "Project" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Search Everywhere" })).toBeNull();
     const bar = document.querySelector("header[data-titlebar='bare']");
-    expect(bar).toHaveAttribute("data-tauri-drag-region");
+    // macOS uses its own drag region attribute (window-drag.ts); jsdom reports the host OS.
+    expect(bar?.hasAttribute("data-tauri-drag-region") || bar?.hasAttribute("data-window-drag-region")).toBe(true);
 
     act(() => setDistractionFree(false));
     expect(screen.getByText("df-demo")).toBeInTheDocument();

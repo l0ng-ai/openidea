@@ -215,7 +215,7 @@ fn builds_nested_in_a_folder_of_repositories() {
     assert_eq!(app.name, "DromaraApplication");
     assert_eq!(app.kind, "spring-boot");
     assert_eq!(cmdline(app), "java -cp ${classpath} org.dromara.DromaraApplication");
-    assert_eq!(app.cwd.as_deref(), Some(Path::new("RuoYi-Vue-Plus/ruoyi-admin")));
+    assert_eq!(app.cwd, None);
     assert_eq!(app.extras.module.as_deref(), Some("RuoYi-Vue-Plus/ruoyi-admin"));
     assert_eq!(app.debug_adapter.as_deref(), Some("java-debug"));
     let package = find(&c, "maven:package:RuoYi-Vue-Plus");
@@ -258,7 +258,7 @@ fn spring_boot_application_of_a_repository_nested_one_or_two_levels_down() {
         let module = format!("{prefix}ruoyi-ai/ruoyi-admin");
         let app = find(&c, &format!("application:{module}:org.ruoyi.RuoYiAIApplication"));
         assert_eq!((app.name.as_str(), app.kind.as_str()), ("RuoYiAIApplication", "spring-boot"), "{prefix}");
-        assert_eq!(app.cwd.as_deref(), Some(Path::new(&module)));
+        assert_eq!((app.cwd.as_deref(), app.extras.module.as_deref()), (None, Some(module.as_str())), "{prefix}");
         assert!(ids(&c).contains(&format!("maven:spring-boot:run:{prefix}ruoyi-ai").as_str()), "{prefix}");
     }
 }
@@ -295,9 +295,9 @@ fn nested_builds_of_every_kind_and_depth() {
     }
     assert!(find(&c, "gradle:test:services/api").is_test);
     let api = find(&c, "application:services/api/app:com.acme.ApiKt");
-    assert_eq!(api.cwd.as_deref(), Some(Path::new("services/api/app")));
+    assert_eq!((api.cwd.as_deref(), api.extras.module.as_deref()), (None, Some("services/api/app")));
     let billing = find(&c, "application:billing:Billing");
-    assert_eq!(billing.cwd.as_deref(), Some(Path::new("billing")));
+    assert_eq!((billing.cwd.as_deref(), billing.extras.module.as_deref()), (None, Some("billing")));
     let builds: Vec<&str> =
         ids(&c).into_iter().filter(|id| id.starts_with("maven:package") || id.starts_with("gradle:build")).collect();
     assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing"]);
@@ -818,6 +818,25 @@ task default: :build
     assert_eq!(cmdline(find(&c, "rspec")), "bundle exec rspec");
     assert!(find(&c, "rspec").is_test);
     assert_eq!(find(&c, "rake:build").extras.folder.as_deref(), Some("Rake"));
+}
+
+#[test]
+fn ruby_minitest_projects_get_a_test_runner() {
+    let dir = project(&[("Gemfile", "source 'https://rubygems.org'\n"), ("lib/a.rb", ""), ("test/a_test.rb", "")]);
+    let c = detect(dir.path());
+    let m = find(&c, "minitest");
+    assert!(m.is_test);
+    assert_eq!(m.kind, "ruby");
+    assert_eq!(
+        (m.command.as_str(), &m.args[..4]),
+        ("bundle", &["exec", "ruby", "-Ilib", "-Itest"].map(String::from)[..])
+    );
+    assert_eq!(m.args.last().map(String::as_str), Some("test"));
+    // A `test` Rake task or RSpec already runs the tests.
+    let dir = project(&[("Rakefile", "task :test\n"), ("test/a_test.rb", "")]);
+    assert!(!ids(&detect(dir.path())).contains(&"minitest"));
+    let dir = project(&[("Gemfile", "gem 'rspec'\n"), ("test/a_test.rb", "")]);
+    assert!(!ids(&detect(dir.path())).contains(&"minitest"));
 }
 
 #[test]

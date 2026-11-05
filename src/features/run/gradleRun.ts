@@ -135,12 +135,23 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
   const { project, settings } = useProject.getState();
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
   const { model, gradleOffline } = useBuildModel.getState();
-  if (!model?.gradle) return null;
+  if (!model?.gradle?.length) return null;
   const module = config.module ?? (await findJavaModule(config));
   if (module === null) return null;
+  const dir = absolute(project.root, module);
+  // A composite can report a sibling's module; prefer a linked root that contains it.
+  const ownerDepth = (g: GradleModel) => {
+    const root = absolute(project.root, g.dir).replace(/\\/g, "/").replace(/\/+$/, "");
+    const path = dir.replace(/\\/g, "/").replace(/\/+$/, "");
+    return path === root || path.startsWith(`${root}/`) ? root.split("/").length : 0;
+  };
+  const gradle = model.gradle
+    .filter((g) => g.projects.some((p) => absolute(project.root, p.dir) === dir))
+    .sort((a, b) => ownerDepth(b) - ownerDepth(a))[0];
+  if (!gradle) return null;
   const ctx = {
     root: project.root,
-    gradle: model.gradle,
+    gradle,
     script: "",
     offline: gradleOffline,
     configurationCache: false,

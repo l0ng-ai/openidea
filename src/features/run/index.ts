@@ -16,6 +16,7 @@ import {
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
+  registerRunningProcessesProvider,
   registerServiceProvider,
   registerTitleItem,
   registerToolWindow,
@@ -42,6 +43,7 @@ import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
 import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
+import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
@@ -294,6 +296,13 @@ export function activate(): () => void {
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
     registerServiceProvider(runServiceProvider),
+    registerRunningProcessesProvider({
+      id: "run",
+      running: () =>
+        serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions)
+          .filter(liveServiceSession)
+          .map((s) => ({ name: s.config.name })),
+    }),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),

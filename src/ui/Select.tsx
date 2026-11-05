@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { Popup } from "./Popup";
@@ -33,6 +33,8 @@ export interface SelectProps<V extends string = string> {
   renderValue?: (option: SelectOption<V> | undefined) => ReactNode;
   /** Show a search box in the popup (useful for long option lists). */
   searchable?: boolean;
+  /** The option under the pointer or keyboard while the list is open; `null` once it closes. */
+  onPreview?: (value: V | null) => void;
 }
 
 const TYPE_AHEAD_MS = 800;
@@ -59,6 +61,7 @@ export function Select<V extends string = string>({
   className,
   renderValue,
   searchable = false,
+  onPreview,
   ...aria
 }: SelectProps<V>) {
   const tx = useTx();
@@ -111,6 +114,14 @@ export function Select<V extends string = string>({
 
   const activeIndex =
     filtered[active] && !unavailable(filtered[active]!) ? active : filtered.findIndex((o) => !unavailable(o));
+
+  const previewed = open ? (filtered[activeIndex]?.value ?? null) : null;
+  const lastPreview = useRef<V | null>(null);
+  useEffect(() => {
+    if (previewed === lastPreview.current) return;
+    lastPreview.current = previewed;
+    onPreview?.(previewed);
+  }, [previewed, onPreview]);
 
   const openPopup = () => {
     setQuery("");

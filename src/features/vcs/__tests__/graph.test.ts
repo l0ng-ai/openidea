@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGraph } from "../graph";
+import { compactLanes, computeGraph, straightenLaneChanges, type GraphRow } from "../graph";
 
 const c = (id: string, ...parents: string[]) => ({ id, parents });
 
@@ -60,5 +60,107 @@ describe("computeGraph", () => {
     const { rows } = computeGraph([c("t", "x"), c("m2", "b", "x"), c("x", "b"), c("b")]);
     const m2 = rows[1]!;
     expect(m2.down).toContainEqual({ from: m2.lane, to: 0, color: rows[0]!.color });
+  });
+});
+
+describe("straightenLaneChanges", () => {
+  it("draws a lane change as one diagonal across the row boundary, keeping the lanes", () => {
+    // m merges f into main; f branched from a; b sits in lane 0 while lane 1 passes it.
+    const rows = straightenLaneChanges(computeGraph([c("m", "b", "f"), c("f", "a"), c("b", "a"), c("a")]).rows);
+    const [m, f, b, a] = rows;
+    // m → f: leaves m's node towards lane 1 and reaches f's node in a straight line.
+    expect(m!.down[1]).toMatchObject({ from: 0, to: 1, toX: 0.5 });
+    expect(f!.up.find((s) => s.from === 1)).toMatchObject({ from: 1, to: 1, fromX: 0.5 });
+    // Lane 1 converging into a: the vertical line of b's row meets it halfway.
+    expect(a!.up[1]).toMatchObject({ from: 1, to: 0, fromX: 0.5 });
+    expect(b!.down.find((s) => s.from === 1)).toMatchObject({ from: 1, to: 1, toX: 0.5 });
+    // Straight lines stay where they are.
+    expect(m!.down[0]!.toX).toBeUndefined();
+    expect(a!.up[0]!.fromX).toBeUndefined();
+  });
+
+  it("leaves a lane that another line also ends in, and arrows, as they are", () => {
+    const rows = straightenLaneChanges([
+      {
+        lane: 0,
+        color: 0,
+        up: [],
+        down: [
+          { from: 0, to: 1, color: 0 },
+          { from: 1, to: 1, color: 1 },
+        ],
+        width: 2,
+      },
+      {
+        lane: 1,
+        color: 1,
+        up: [{ from: 1, to: 1, color: 1 }],
+        down: [{ from: 1, to: 2, color: 1, arrow: "down" }],
+        width: 3,
+      },
+      { lane: 2, color: 1, up: [{ from: 2, to: 2, color: 1 }], down: [], width: 3 },
+    ]);
+    expect(rows[0]!.down[0]!.toX).toBeUndefined();
+    expect(rows[1]!.up[0]!.fromX).toBeUndefined();
+    expect(rows[1]!.down[0]!.toX).toBeUndefined();
+    expect(rows[2]!.up[0]!.fromX).toBeUndefined();
+  });
+});
+
+describe("compactLanes", () => {
+  const row = (lane: number, up: [number, number][], down: [number, number][], width = 9): GraphRow => ({
+    lane,
+    color: 0,
+    up: up.map(([from, to]) => ({ from, to, color: 0 })),
+    down: down.map(([from, to]) => ({ from, to, color: 0 })),
+    width,
+  });
+
+  it("packs the lanes of each row side by side, in their order", () => {
+    // Lanes 2 and 7 (branch layout leaves the slots between them empty); 7 merges into 2.
+    const rows = compactLanes([
+      row(
+        7,
+        [],
+        [
+          [2, 2],
+          [7, 7],
+        ],
+      ),
+      row(
+        2,
+        [
+          [2, 2],
+          [7, 2],
+        ],
+        [[2, 2]],
+      ),
+      row(2, [[2, 2]], []),
+    ]);
+    expect(rows.map((r) => r.lane)).toEqual([1, 0, 0]);
+    expect(rows.map((r) => r.width)).toEqual([2, 2, 1]);
+    expect(rows[0]!.down.map((s) => [s.from, s.to])).toEqual([
+      [0, 0],
+      [1, 1],
+    ]);
+    expect(rows[1]!.up.map((s) => [s.from, s.to])).toEqual([
+      [0, 0],
+      [1, 0],
+    ]);
+  });
+
+  it("keeps lines joined across rows when a lane is freed in between", () => {
+    const laid = computeGraph([
+      { id: "a", parents: ["c"], refs: ["a"] },
+      { id: "b", parents: ["c"], refs: ["b"] },
+      { id: "x", parents: ["c"], refs: ["x"] },
+      { id: "c", parents: [], refs: ["main"] },
+    ]).rows;
+    const rows = compactLanes(laid);
+    for (let r = 0; r + 1 < rows.length; r++) {
+      const below = new Set(rows[r]!.down.map((s) => s.to));
+      expect(new Set(rows[r + 1]!.up.map((s) => s.from))).toEqual(below);
+      expect(Math.max(...below)).toBe(below.size - 1);
+    }
   });
 });

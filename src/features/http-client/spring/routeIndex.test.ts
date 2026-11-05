@@ -61,6 +61,23 @@ describe("the Spring endpoint provider", () => {
     expect(scanSources).toHaveBeenCalledTimes(2);
   });
 
+  it("matches sources by path segments, whatever separator the host used", async () => {
+    scanSources.mockResolvedValue({
+      status: "ok",
+      data: [
+        { ...source(), path: "D:\\work\\demo\\src\\DeepLinkController.java" },
+        { ...source("other"), path: "D:/work/demo2/DeepLinkController.java" },
+      ],
+    });
+    expect(await routeIndex("D:/work/demo")).toMatchObject([
+      {
+        methodName: "searchMenus",
+        path: "D:/work/demo/src/DeepLinkController.java",
+        rel: "src/DeepLinkController.java",
+      },
+    ]);
+  });
+
   it.each(["created", "modified", "removed"] as const)("invalidates on %s mapping sources", async (kind) => {
     scanSources.mockResolvedValue({ status: "ok", data: [source()] });
     dispose = registerSpringEndpointProvider();

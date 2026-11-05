@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildPresentation, isModuleFolder, moduleFolderIcon } from "./projectPresentation";
 import type { BuildModel } from "./ipc";
 
-const model = (partial: unknown) => ({ maven: null, gradle: null, ...(partial as object) }) as BuildModel;
+const model = (partial: unknown) => ({ maven: null, gradle: [], ...(partial as object) }) as BuildModel;
 describe("build presentation context", () => {
   it.each(["maven", "gradle"] as const)("uses distinct %s root and nested module glyphs", (tool) => {
     const modules = new Map([
@@ -45,12 +45,14 @@ describe("build presentation context", () => {
   it("includes Gradle root and nested project directories", () => {
     const context = buildPresentation(
       model({
-        gradle: {
-          projects: [
-            { dir: "", tasks: [] },
-            { dir: "lib/core", tasks: [] },
-          ],
-        },
+        gradle: [
+          {
+            projects: [
+              { dir: "", tasks: [] },
+              { dir: "lib/core", tasks: [] },
+            ],
+          },
+        ],
       }),
     );
     expect([...context.modules]).toEqual([
@@ -67,9 +69,27 @@ describe("build presentation context", () => {
         }),
       ).spring,
     ).toBe(true);
-    expect(buildPresentation(model({ gradle: { projects: [{ dir: "", tasks: [{ name: "bootRun" }] }] } })).spring).toBe(
-      true,
-    );
+    expect(
+      buildPresentation(model({ gradle: [{ projects: [{ dir: "", tasks: [{ name: "bootRun" }] }] }] })).spring,
+    ).toBe(true);
   });
   it("keeps plain folders plain", () => expect(buildPresentation(model({})).modules.size).toBe(0));
+});
+
+it("includes modules and Spring tasks from every independently linked Gradle build", () => {
+  const context = buildPresentation(
+    model({
+      gradle: [
+        {
+          projects: [
+            { dir: "first", tasks: [] },
+            { dir: "first/app", tasks: [] },
+          ],
+        },
+        { projects: [{ dir: "second", tasks: [{ name: "bootRun" }] }] },
+      ],
+    }),
+  );
+  expect([...context.modules.keys()]).toEqual(["first", "first/app", "second"]);
+  expect(context.spring).toBe(true);
 });

@@ -124,12 +124,12 @@ function editorAction(
   return { id, title, category, when: EDITOR_WHEN, run: withEditor(run), ...extra };
 }
 
-/** Whether saving a `language` file formats it: Format on save, or Run on save of Prettier or oxfmt. */
+/** Whether saving a `language` file formats it: Format on save, or Run on save of an external formatter. */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
-  const { prettier, oxfmt } = validateLanguages(settings?.languages);
+  const { prettier, oxfmt, ruff } = validateLanguages(settings?.languages);
   return (
     !!settings?.editor?.formatOnSave ||
-    [prettier, oxfmt].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
+    [prettier, oxfmt, ruff].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
   );
 }
 
@@ -205,6 +205,13 @@ export function registerLspActions(): () => void {
       "Code",
       (v) => formatDocument(v, { explicit: true, tool: "oxfmt" }),
       { keywords: ["format", "oxfmt", "oxc"] },
+    ),
+    editorAction(
+      "code.reformatWithRuff",
+      "Reformat with Ruff",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "ruff" }),
+      { keywords: ["format", "ruff", "python"] },
     ),
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),

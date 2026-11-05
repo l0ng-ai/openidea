@@ -1,6 +1,6 @@
 import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
-import { call, commands, type RecentProject } from "@/platform/ipc";
+import { call, commands, type RecentProject, type RecentProjectGroup } from "@/platform/ipc";
 import { parseRemoteLocation } from "@/platform/remote";
 import {
   HighlightedText,
@@ -13,9 +13,22 @@ import {
   showContextMenu,
   type MenuItem,
 } from "@/ui";
+import { promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { projectColorVars, projectInitials } from "@/workbench/projectColor";
-import { filterRecent, openRecent, removeRecent, useRecent, type RecentMatch } from "./recent";
+import {
+  createGroup,
+  filterRecent,
+  groupNameError,
+  groupOf,
+  moveToGroup,
+  openRecent,
+  removeGroup,
+  removeRecent,
+  renameGroup,
+  useRecent,
+  type RecentMatch,
+} from "./recent";
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -38,6 +51,63 @@ export function ProjectBadge({ name, className }: { name: string; className?: st
   );
 }
 
+/** New Project Group…: asks for a name; with `path`, that project moves into the new group. */
+export async function askNewGroup(path?: string) {
+  const name = await promptInput({
+    title: "New Project Group",
+    label: "Group name:",
+    okLabel: "Create",
+    validate: (v) => groupNameError(v),
+  });
+  if (name !== null) await createGroup(name, path);
+}
+
+/** Move to Group: the other groups, a new one, or out of its group. */
+function moveToGroupMenu(project: RecentProject): MenuItem {
+  const groups = useRecent.getState().groups;
+  const current = groupOf(project.path, groups)?.name ?? null;
+  const others = groups.filter((g) => g.name !== current);
+  const submenu: MenuItem[] = [
+    ...others.map((g): MenuItem => ({
+      label: g.name,
+      verbatim: true,
+      run: () => void moveToGroup(project.path, g.name),
+    })),
+    ...(others.length ? [{ kind: "separator" } as const] : []),
+    { label: "New Group…", run: () => void askNewGroup(project.path) },
+    ...(current
+      ? [{ label: tx`Remove from '${current}'`, verbatim: true, run: () => void moveToGroup(project.path, null) }]
+      : []),
+  ];
+  return { label: "Move to Group", icon: "folder", submenu };
+}
+
+/** A project group's actions. */
+export function groupMenu(group: RecentProjectGroup): MenuItem[] {
+  return [
+    {
+      label: "Rename Group…",
+      icon: "edit",
+      run: () =>
+        void promptInput({
+          title: "Rename Project Group",
+          label: "Group name:",
+          initial: group.name,
+          okLabel: "Rename",
+          validate: (v) => groupNameError(v, group.name),
+        }).then((name) => (name === null ? undefined : renameGroup(group.name, name))),
+    },
+    { label: "New Project Group…", icon: "plus", run: () => void askNewGroup() },
+    { kind: "separator" },
+    {
+      label: "Remove Group",
+      icon: "close",
+      danger: true,
+      run: () => void removeGroup(group.name),
+    },
+  ];
+}
+
 export function recentMenu(project: RecentProject, onOpened?: () => void): MenuItem[] {
   // A remote project has no local folder.
   const remote = parseRemoteLocation(project.path);
@@ -54,7 +124,7 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
           label: "Open in New Window",
           icon: "folder-open",
           run: () =>
-            void call(commands.windowOpenRemote(remote.sshConfig, remote.path, true))
+            void call(commands.windowOpenRemote(remote.target, remote.path, true))
               .then(() => onOpened?.())
               .catch(() => undefined),
         }
@@ -73,6 +143,8 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
       run: () => void navigator.clipboard?.writeText(project.path).catch(() => undefined),
     },
     { kind: "separator" },
+    // Groups hold local projects (remote ones live in this window's own list).
+    ...(remote ? [] : [moveToGroupMenu(project), { kind: "separator" } as const]),
     {
       id: "remove",
       label: "Remove from Recent Projects…",

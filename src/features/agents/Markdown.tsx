@@ -17,7 +17,21 @@ import styles from "./Session.module.css";
 
 const marked = new Marked({ gfm: true, breaks: true });
 
+/** Rendered messages by text, least recently used first: reopening a conversation renders it again. */
+const rendered = new Map<string, string>();
+const RENDERED_MAX = 500;
+
 export function markdownHtml(text: string): string {
+  let html = rendered.get(text);
+  if (html === undefined) {
+    html = renderHtml(text);
+    if (rendered.size >= RENDERED_MAX) rendered.delete(rendered.keys().next().value!);
+  } else rendered.delete(text);
+  rendered.set(text, html);
+  return html;
+}
+
+function renderHtml(text: string): string {
   const html = marked.parse(text, { async: false }) as string;
   // Replies can quote repository content. Styles would reach the whole IDE, and the click
   // handlers below trust `data-copy` / `data-path`, which only `enhance` may set.

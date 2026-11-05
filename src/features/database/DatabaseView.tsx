@@ -432,6 +432,11 @@ export function DatabaseView() {
                   </span>
                 )}
                 <span className={labelClass}>{label(n)}</span>
+                {n.kind === "source" && n.source.global && (
+                  <span className={styles.treeDetail} title={tx("Available in all projects")}>
+                    {tx("global")}
+                  </span>
+                )}
                 {d && (
                   <span
                     className={

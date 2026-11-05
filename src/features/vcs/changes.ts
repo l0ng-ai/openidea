@@ -382,6 +382,20 @@ export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<st
 }
 
 /**
+ * Inclusion overrides kept after a commit (same shape for `checks` and `excludedHunks`):
+ * the committed changes start over, since they either left the tree or only some of
+ * their blocks went in. The changes the user left out keep their override, so they stay
+ * excluded instead of falling back to "included" in the next commit.
+ */
+export function remainingOverrides<T>(
+  overrides: ReadonlyMap<string, T>,
+  committed: readonly FileStatus[],
+): Map<string, T> {
+  const done = new Set(committed.map((f) => stripSlash(f.path)));
+  return new Map([...overrides].filter(([path]) => !done.has(stripSlash(path))));
+}
+
+/**
  * Toggling the checkbox of one changed block (`key`, one of `all`) in the diff: the file's
  * new inclusion and excluded blocks. All blocks back in → `all`; none left → `none`.
  */

@@ -4,7 +4,7 @@ import type { FileStatus, PartialCommitFile, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { commitRepos, groupOf, planCommit, renamedFromPath } from "./changes";
+import { commitRepos, groupOf, planCommit, remainingOverrides, renamedFromPath } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { runCommitChecks } from "./commitChecks";
 import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
@@ -114,7 +114,14 @@ export async function commitChanges(): Promise<string | undefined> {
   if (id !== undefined) {
     rememberMessage(message);
     forgetAmendDraft();
-    useCommit.setState({ amend: false, checks: new Map(), excludedHunks: new Map(), checkProblems: [] });
+    // What the user left out of this commit stays left out; only the committed changes start over.
+    const { checks: userChecks, excludedHunks } = useCommit.getState();
+    useCommit.setState({
+      amend: false,
+      checks: remainingOverrides(userChecks, plan.included),
+      excludedHunks: remainingOverrides(excludedHunks, plan.included),
+      checkProblems: [],
+    });
     keepMessageAfterCommit(message, workflowSettings().vcs.commit.clearInitialMessage);
   }
   return id;

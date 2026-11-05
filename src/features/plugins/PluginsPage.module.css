@@ -407,37 +407,30 @@
   padding: 8px 10px;
   color: var(--fg-muted);
 }
-.intellijTheme {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.intellijTheme > .muted {
-  flex-shrink: 0;
-  font-size: var(--fs-small);
-}
 .intellijPlugin {
   display: flex;
   flex: 1;
-  align-items: center;
-  gap: 8px;
-  align-self: stretch;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
   min-width: 0;
 }
-/* A line above each plugin but the first, as in IDEA's Theme list. */
-.intellijPluginNext {
-  border-top: 1px solid var(--border);
+.intellijPluginHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
-.intellijPluginName {
+.intellijPluginThemes {
   overflow: hidden;
-  color: var(--fg-secondary);
-  font-weight: 600;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .intellijPluginIde {
   flex-shrink: 0;
   margin-left: auto;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }

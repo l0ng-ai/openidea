@@ -5,8 +5,9 @@ use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path};
 use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
-use ide_core::settings::{LanguageServerSettings, Settings};
+use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
 use ide_core::version_managers::Tool;
+use ide_core::{IdeError, IdeResult};
 use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
 use serde_json::{Value, json};
@@ -26,6 +27,39 @@ pub fn setting_path(root: &Path, s: &str) -> Option<PathBuf> {
         None => PathBuf::from(s),
     };
     Some(if p.is_absolute() { p } else { root.join(p) })
+}
+
+fn toml_has_table(file: &Path, table: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else { return false };
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else { return false };
+    table.split('.').try_fold(&value, |value, key| value.get(key)).is_some_and(toml::Value::is_table)
+}
+
+/// The Ruff configuration file selected by `languages.ruff.configurationDirectory`.
+/// A file can be chosen directly; a directory resolves `ruff.toml`, `.ruff.toml`,
+/// then a `pyproject.toml` containing `[tool.ruff]`.
+pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<PathBuf>> {
+    let Some(path) = setting_path(root, configured) else { return Ok(None) };
+    if path.is_file() {
+        return Ok(Some(path));
+    }
+    if !path.is_dir() {
+        return Err(IdeError::invalid(format!("Ruff configuration path does not exist: {}", path.display())));
+    }
+    for name in ["ruff.toml", ".ruff.toml"] {
+        let file = path.join(name);
+        if file.is_file() {
+            return Ok(Some(file));
+        }
+    }
+    let pyproject = path.join("pyproject.toml");
+    if toml_has_table(&pyproject, "tool.ruff") {
+        return Ok(Some(pyproject));
+    }
+    Err(IdeError::invalid(format!(
+        "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {}",
+        path.display()
+    )))
 }
 
 /// The project interpreter: the configured one, else a project virtualenv
@@ -429,6 +463,36 @@ pub fn configure_maven_import(
     }
 }
 
+/// Explicit Gradle links constrain discovery and isolate JDT's persisted import state.
+pub fn configure_gradle_import(
+    cfg: &mut LanguageServerConfig,
+    linked: Option<&[String]>,
+    build_files: Option<&[String]>,
+) {
+    let Some(linked) = linked.filter(|_| cfg.name == "jdtls") else { return };
+    merge_init_options(
+        cfg,
+        json!({
+            "settings": {"java": {"import": {"gradle": {"enabled": !linked.is_empty()}}}},
+            "projectConfigurations": build_files.unwrap_or_default()
+        }),
+    );
+    if let Some(settings) = &mut cfg.settings {
+        merge(settings, json!({"java": {"import": {"gradle": {"enabled": !linked.is_empty()}}}}));
+    }
+    if let Some(index) = cfg.args.iter().position(|arg| arg == "-data")
+        && let Some(workspace) = cfg.args.get_mut(index + 1)
+    {
+        let mut hash = 0xcbf29ce484222325u64;
+        for dir in linked {
+            for byte in dir.bytes().chain([0]) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        }
+        *workspace = format!("{workspace}-gradle-{hash:016x}");
+    }
+}
+
 pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
@@ -442,15 +506,41 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     }
 }
 
+/// Editor › Inspections › Java: "Serializable class without 'serialVersionUID'" (off by default,
+/// as in IntelliJ IDEA). ECJ reports it, so it is a compiler option rather than a filter.
+pub const SERIAL_VERSION_INSPECTION: &str = "java:missing-serial-version";
+
+/// ECJ's level for a missing `serialVersionUID`, from the inspection profile in effect.
+fn missing_serial_version(inspections: &InspectionSettings) -> Option<&'static str> {
+    let o = inspections.active().get(SERIAL_VERSION_INSPECTION)?;
+    if o.enabled != Some(true) {
+        return None;
+    }
+    Some(match o.severity {
+        Some(InspectionLevel::Error) => "error",
+        None | Some(InspectionLevel::Warning) => "warning",
+        Some(_) => "info",
+    })
+}
+
 /// Workspace compiler defaults; Eclipse project preferences still take precedence.
-pub(crate) fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path) {
-    let file = data_dir.join("lsp/jdtls/compiler-defaults.prefs");
+/// Each variant has its own file, so changing an inspection restarts the server with it.
+pub fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path, inspections: &InspectionSettings) {
     const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
 org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
+    let serial = missing_serial_version(inspections);
+    let (name, content) = match serial {
+        None => ("compiler-defaults.prefs".to_owned(), DEFAULTS.to_owned()),
+        Some(level) => (
+            format!("compiler-defaults-serial-{level}.prefs"),
+            format!("{DEFAULTS}org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"),
+        ),
+    };
+    let file = data_dir.join("lsp/jdtls").join(name);
     let write = || -> ide_core::IdeResult<()> {
         std::fs::create_dir_all(file.parent().expect("compiler preferences directory"))?;
-        if std::fs::read_to_string(&file).ok().as_deref() != Some(DEFAULTS) {
-            ide_vfs::write_atomic(&file, DEFAULTS.as_bytes())?;
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(content.as_str()) {
+            ide_vfs::write_atomic(&file, content.as_bytes())?;
         }
         Ok(())
     };
@@ -516,6 +606,18 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 cfg.env.insert("VIRTUAL_ENV".into(), venv.to_string_lossy().into_owned());
                 path_dirs.push(venv.join(bin_dir()));
             }
+        }
+    }
+
+    if name == "ruff" {
+        match ruff_configuration(root, &s.languages.ruff.configuration_directory) {
+            Ok(Some(path)) => {
+                let mut settings = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
+                settings["configuration"] = json!(path.to_string_lossy());
+                cfg.settings = Some(settings);
+            }
+            Ok(None) => {}
+            Err(e) => cfg.launch_error = Some(e.message),
         }
     }
 
@@ -635,6 +737,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         path_dirs.push(dir);
     }
 
+    // Gems install to the Ruby's bindir, which is not always on `PATH` (Homebrew).
+    if name == "ruby-lsp"
+        && let Some(ruby) = ruby_interpreter(root, s)
+    {
+        path_dirs.extend(crate::ruby::gem_bin_dirs(&ruby, server_root));
+    }
+
     if !path_dirs.is_empty() {
         let dirs: Vec<&Path> = path_dirs.iter().map(PathBuf::as_path).collect();
         cfg.env.insert("PATH".into(), path_with(&dirs));
@@ -654,6 +763,11 @@ pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Se
     for (name, ls) in &s.language_servers {
         if ls.enabled && ls.languages.iter().any(|l| l == language) && !out.iter().any(|c| &c.name == name) {
             out.push(custom_server(name, ls));
+        }
+    }
+    if non_empty(&s.languages.ruff.configuration_directory).is_some() {
+        for cfg in out.iter_mut().filter(|cfg| cfg.name == "ruff") {
+            cfg.require_root_marker = false;
         }
     }
     out
@@ -1096,12 +1210,49 @@ mod java_compiler_tests {
     }
 
     #[test]
+    fn serial_version_inspection_sets_the_compiler_option() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = |inspections: &InspectionSettings| {
+            let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+            configure_java_compiler(&mut cfg, tmp.path(), inspections);
+            options(&cfg).pointer("/settings/java/settings/url").unwrap().as_str().unwrap().to_owned()
+        };
+        let set = |o: ide_core::settings::InspectionOverride| {
+            let mut s = InspectionSettings::default();
+            s.default.insert(SERIAL_VERSION_INSPECTION.into(), o);
+            s
+        };
+        let off = url(&InspectionSettings::default());
+        assert!(!std::fs::read_to_string(&off).unwrap().contains("missingSerialVersion"));
+        let on = url(&set(ide_core::settings::InspectionOverride { enabled: Some(true), ..Default::default() }));
+        assert_ne!(on, off, "a new file, so the server restarts with it");
+        assert!(std::fs::read_to_string(&on).unwrap().ends_with("compiler.problem.missingSerialVersion=warning\n"));
+        let error = url(&set(ide_core::settings::InspectionOverride {
+            enabled: Some(true),
+            severity: Some(InspectionLevel::Error),
+            ..Default::default()
+        }));
+        assert!(std::fs::read_to_string(error).unwrap().ends_with("missingSerialVersion=error\n"));
+        let weak = url(&set(ide_core::settings::InspectionOverride {
+            enabled: Some(true),
+            severity: Some(InspectionLevel::WeakWarning),
+            ..Default::default()
+        }));
+        assert!(std::fs::read_to_string(weak).unwrap().ends_with("missingSerialVersion=info\n"));
+        let severity_only = url(&set(ide_core::settings::InspectionOverride {
+            severity: Some(InspectionLevel::Error),
+            ..Default::default()
+        }));
+        assert_eq!(severity_only, off, "off by default");
+    }
+
+    #[test]
     fn compiler_defaults_live_in_the_cache_and_preserve_other_options() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache with spaces 测试");
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         merge_init_options(&mut cfg, json!({"settings": {"java": {"format": {"tabSize": 4}}}}));
-        configure_java_compiler(&mut cfg, &cache);
+        configure_java_compiler(&mut cfg, &cache, &InspectionSettings::default());
         let options = options(&cfg);
         let path = PathBuf::from(options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap());
         assert!(path.starts_with(&cache));
@@ -1112,7 +1263,7 @@ mod java_compiler_tests {
         }
         assert_eq!(options.pointer("/settings/java/format/tabSize"), Some(&json!(4)));
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        configure_java_compiler(&mut cfg, &cache);
+        configure_java_compiler(&mut cfg, &cache, &InspectionSettings::default());
         assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), modified);
         assert_eq!(self::options(&cfg), options);
     }
@@ -1122,7 +1273,7 @@ mod java_compiler_tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         merge_init_options(&mut cfg, json!({"settings": {"java": {"settings": {"url": "own.prefs"}}}}));
-        configure_java_compiler(&mut cfg, tmp.path());
+        configure_java_compiler(&mut cfg, tmp.path(), &InspectionSettings::default());
         assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("own.prefs")));
 
         for settings in [
@@ -1156,6 +1307,25 @@ mod maven_linkage_tests {
     use super::*;
 
     #[test]
+    fn explicit_gradle_links_scope_jdt_import_and_unlink_all_disables_gradle() {
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+        let files = ["file:///p/a/settings.gradle".to_owned(), "file:///p/maven/pom.xml".to_owned()];
+        configure_gradle_import(&mut cfg, Some(&["a".into()]), Some(&files));
+        let options = serde_json::to_value(&cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(files));
+        assert_eq!(options.pointer("/settings/java/import/gradle/enabled"), Some(&json!(true)));
+        assert!(cfg.args[1].starts_with("/cache/jdtls-gradle-"));
+        let linked_cache = cfg.args[1].clone();
+        cfg.args[1] = "/cache/jdtls".into();
+        configure_gradle_import(&mut cfg, Some(&[]), Some(&files[1..]));
+        let options = serde_json::to_value(&cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(&files[1..]));
+        assert_eq!(options.pointer("/settings/java/import/gradle/enabled"), Some(&json!(false)));
+        assert_ne!(linked_cache, cfg.args[1]);
+    }
+
+    #[test]
     fn import_excludes_unlinked_modules_and_changes_persistent_workspace() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("a/child")).unwrap();
@@ -1187,5 +1357,31 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         configure_maven_import(&mut cfg, tmp.path(), &[], Some(&files));
         assert!(serde_json::to_value(cfg.initialization_options).unwrap().get("projectConfigurations").is_none());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod ruby_lsp_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn ruby_lsp_is_found_in_the_rubys_gem_bindir_when_that_is_off_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bindir = tmp.path().join("gems/bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        // Homebrew's Ruby: `Gem.bindir` is not on `PATH`.
+        let ruby = tmp.path().join("ruby");
+        std::fs::write(&ruby, format!("#!/bin/sh\necho '{}'\necho '/nonexistent/user/bin'\n", bindir.display()))
+            .unwrap();
+        std::fs::set_permissions(&ruby, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut s = Settings::default();
+        s.languages.ruby.interpreter = ruby.to_string_lossy().into_owned();
+        let mut cfg = custom_server("ruby-lsp", &LanguageServerSettings::default());
+        configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+        let path = cfg.env.get("PATH").expect("PATH set");
+        let dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
+        assert!(dirs.contains(&bindir), "{dirs:?}");
+        assert!(!dirs.iter().any(|d| d.starts_with("/nonexistent")), "{dirs:?}");
     }
 }
