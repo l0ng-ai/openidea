@@ -1295,11 +1295,7 @@ function SessionComposer({
         toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
         actions={
           <>
-            {busy && (
-              <Button size="small" icon="stop" onClick={() => void cancelTask(task.id)}>
-                Stop
-              </Button>
-            )}
+            {busy && <IconButton icon="stop" title="Stop" size="small" onClick={() => void cancelTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}

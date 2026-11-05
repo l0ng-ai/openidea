@@ -807,7 +807,7 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     case "r":
       return simple(lang, s, env, "r", () => [s.arg]);
     case "dart":
-      return simple(lang, s, env, "dart", () => ["run", s.arg]);
+      return simple(lang, s, env, "dart", () => ["run", s.arg], "dart");
     case "scala":
       return simple(lang, s, env, "scala-cli", () => ["run", s.arg]);
     case "kotlin":
