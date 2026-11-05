@@ -184,7 +184,7 @@ The design:
 
 ## Plan 2: Types
 
-- [ ] Phase 2.1: Type model
+- [x] Phase 2.1: Type model
       Add `ide_php::types::Type`:
   - scalars and literals, `array`, lists and shapes, `iterable`
   - objects with generic arguments, `static`, `self`, `$this`

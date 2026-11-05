@@ -36,6 +36,9 @@
 //!   documents overriding the disk.
 //! - [`navigate`]: document symbols, fuzzy workspace symbols and goto
 //!   definition of class-like, function and constant names.
+//! - [`types`]: the type model ([`types::Type`]): parsing from native hints
+//!   and PHPDoc, display in PHP syntax, unions and intersections, and
+//!   subtyping against a class [`types::Hierarchy`].
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
@@ -48,6 +51,7 @@ pub mod project;
 pub mod stubs;
 pub mod summary;
 pub mod syntax;
+pub mod types;
 
 /// Re-exports of the pinned Mago crates, so later phases and the examples use
 /// exactly the versions this crate was built against.
