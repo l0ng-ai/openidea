@@ -7,7 +7,12 @@ import { consoleExtension, executeInView } from "./console";
 import { unsafeStatement } from "./sql/unsafe";
 import { executeConsole, type ConfirmUnsafe } from "./store";
 
-vi.mock("./store", async (original) => ({ ...(await original<typeof import("./store")>()), executeConsole: vi.fn() }));
+// No backend here: the console bar's data source read would fail and log an error.
+vi.mock("./store", async (original) => ({
+  ...(await original<typeof import("./store")>()),
+  executeConsole: vi.fn(),
+  loadSources: vi.fn(async () => {}),
+}));
 
 const DOC = "select 1;\nDELETE FROM t_digital_tachometer_file WHERE 1=1;";
 const FROM = DOC.indexOf("DELETE");
@@ -68,6 +73,19 @@ describe("unsafe query warning", () => {
     await second.done;
     expect(second.answer()).toBe(true);
     expect(banner(view)).toBeNull();
+  });
+
+  it("cancels the run when the console is edited while it asks", async () => {
+    const view = open("/p/edited.sql");
+    const pending = run(view, "/p/edited.sql");
+    await flush();
+    expect(banner(view)).not.toBeNull();
+    // Narrowing the condition must not run the statement read before the edit.
+    view.dispatch({ changes: { from: TO, insert: " AND id = 5" } });
+    await pending.done;
+    expect(pending.answer()).toBe(false);
+    expect(banner(view)).toBeNull();
+    expect(view.dom.querySelector(".cm-openidea-db-warning")).toBeNull();
   });
 
   it("stops asking in that console after Execute and Suppress", async () => {

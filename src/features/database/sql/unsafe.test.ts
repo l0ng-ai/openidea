@@ -147,6 +147,102 @@ describe("unsafeStatement", () => {
       expect(check(text), text).toBeNull();
   });
 
+  it("evaluates IS TRUE / DISTINCT FROM, <=>, N'…' and casts that keep the value", () => {
+    for (const where of [
+      "TRUE IS TRUE",
+      "1 = 1 IS NOT FALSE",
+      "FALSE IS NOT TRUE",
+      "1 <=> 1",
+      "NULL <=> NULL",
+      "NULL IS NOT DISTINCT FROM NULL",
+      "1 IS DISTINCT FROM 2",
+      "N'a' = N'a'",
+      "1::int = 1",
+      "-1::int = -1",
+      "'a'::text = 'a'",
+      "CAST(1 AS bigint) = 1",
+      "1.5 = 1.5",
+      "1 = 1.0",
+    ])
+      expect(check(`delete from t where ${where}`), where).toMatchObject({ reason: "always-true" });
+  });
+
+  it("leaves NULL, lossy casts and inexact numbers alone", () => {
+    for (const where of [
+      "NOT NULL",
+      "NOT (NULL)",
+      "NULL IS UNKNOWN",
+      "1 <=> NULL",
+      "id <=> id",
+      "1 IS DISTINCT FROM 1",
+      "1.5::int = 2",
+      "'1'::int = 1",
+      "'ab'::varchar(1) = 'a'",
+      "CAST('1' AS int) = 1",
+      "E'a\\nb' = 'a'",
+      "9007199254740993 = 9007199254740992",
+      "0.1 + 0.2 <> 0.3",
+      "0x1 = 1",
+    ])
+      expect(check(`delete from t where ${where}`), where).toBeNull();
+  });
+
+  it("finds a statement inside parentheses, EXPLAIN ANALYZE and a WITH clause's queries", () => {
+    expect(check("(DELETE FROM t)")).toMatchObject({ kind: "delete", reason: "no-where" });
+    expect(check("EXPLAIN ANALYZE DELETE FROM t")).toMatchObject({ kind: "delete", reason: "no-where" });
+    expect(check("explain analyze verbose update t set a = 1 where 1 = 1")).toMatchObject({ reason: "always-true" });
+    expect(check("EXPLAIN (ANALYZE, BUFFERS) UPDATE t SET a = 1")).toMatchObject({ kind: "update" });
+    const cte = "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d";
+    const u = check(cte)!;
+    expect(u).toMatchObject({ kind: "delete", reason: "no-where" });
+    expect(cte.slice(u.from, u.to)).toBe("DELETE FROM t RETURNING *");
+    expect(check("with x as (select 1), d as materialized (update t set a = 1) select 1")).toMatchObject({
+      kind: "update",
+    });
+    for (const text of [
+      "EXPLAIN DELETE FROM t",
+      "EXPLAIN (ANALYZE false) DELETE FROM t",
+      "EXPLAIN (FORMAT JSON) DELETE FROM t",
+      "WITH d AS (DELETE FROM t WHERE id = 1 RETURNING *) SELECT * FROM d",
+      "WITH x(a) AS (SELECT 1) SELECT * FROM x",
+      "(SELECT 1)",
+    ])
+      expect(check(text), text).toBeNull();
+  });
+
+  it("flags a MERGE whose ON is always true", () => {
+    const merge = "MERGE INTO t USING u ON 1=1 WHEN MATCHED THEN DELETE";
+    const u = check(merge)!;
+    expect(u).toMatchObject({ kind: "merge-delete", reason: "always-true" });
+    expect(merge.slice(u.from, u.to)).toBe("1=1");
+    expect(
+      check(
+        "merge into t using u on (1 = 1) when matched then update set a = u.a when not matched then insert values (1)",
+      ),
+    ).toMatchObject({ kind: "merge-update" });
+    expect(check("MERGE t USING u ON TRUE WHEN MATCHED AND 1 = 1 THEN DELETE")).toMatchObject({ kind: "merge-delete" });
+    for (const text of [
+      "MERGE INTO t USING u ON t.id = u.id WHEN MATCHED THEN DELETE",
+      "MERGE INTO t USING u ON 1=1 WHEN MATCHED AND t.x = 1 THEN DELETE",
+      "MERGE INTO t USING u ON 1=1 WHEN NOT MATCHED THEN INSERT VALUES (1)",
+      "MERGE INTO t USING u ON 1=1 WHEN MATCHED THEN DO NOTHING",
+    ])
+      expect(check(text), text).toBeNull();
+  });
+
+  it("flags ALTER TABLE forms that drop partitions or history", () => {
+    expect(check("ALTER TABLE t DROP PARTITION p0, p1")).toMatchObject({ kind: "alter", reason: "drops-partition" });
+    expect(check("alter table t truncate partition p0")).toMatchObject({ reason: "clears-partition" });
+    expect(check("ALTER TABLE t DROP SYSTEM VERSIONING")).toMatchObject({ reason: "drops-history" });
+    for (const text of [
+      "ALTER TABLE t ALTER COLUMN c DROP STORED",
+      "ALTER TABLE t DROP PERIOD FOR p",
+      "ALTER TABLE t DROP UNIQUE (c)",
+      "ALTER TABLE t ALTER COLUMN c DROP IDENTITY IF EXISTS",
+    ])
+      expect(check(text), text).toBeNull();
+  });
+
   it("reads past a WITH clause and comments", () => {
     expect(check("WITH x AS (SELECT 1) DELETE FROM t")).toMatchObject({ kind: "delete", reason: "no-where" });
     expect(check("with x as (select id from u where true) delete from t where id in (select id from x)")).toBeNull();
@@ -173,6 +269,12 @@ describe("unsafeMessage", () => {
     );
     expect(unsafeMessage({ kind: "drop", reason: "drops-database", from: 0, to: 0 })).toBe(
       "Unsafe query: 'Drop' statement deletes the database with all its data",
+    );
+    expect(unsafeMessage({ kind: "merge-delete", reason: "always-true", from: 0, to: 0 })).toBe(
+      "Unsafe query: 'Merge' statement deletes all rows in the table because 'on' condition is always true",
+    );
+    expect(unsafeMessage({ kind: "alter", reason: "drops-partition", from: 0, to: 0 })).toBe(
+      "Unsafe query: 'Alter' statement drops a partition with all its data",
     );
   });
 });

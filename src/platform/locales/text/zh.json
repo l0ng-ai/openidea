@@ -6212,5 +6212,10 @@
   "Unsafe query: 'Drop' statement deletes the database with all its data": "不安全的查询：'Drop' 语句会删除该数据库及其所有数据",
   "Unsafe query: 'Drop' statement deletes the schema with all its objects": "不安全的查询：'Drop' 语句会删除该模式及其所有对象",
   "Unsafe query: 'Alter' statement drops a column with all its data": "不安全的查询：'Alter' 语句会删除一列及其所有数据",
+  "Unsafe query: 'Alter' statement drops a partition with all its data": "不安全的查询：'Alter' 语句会删除一个分区及其所有数据",
+  "Unsafe query: 'Alter' statement clears all data in a partition": "不安全的查询：'Alter' 语句会清除一个分区中的所有数据",
+  "Unsafe query: 'Alter' statement deletes the history of all rows": "不安全的查询：'Alter' 语句会删除所有行的历史记录",
+  "Unsafe query: 'Merge' statement deletes all rows in the table because 'on' condition is always true": "不安全的查询：'on' 条件始终为真，'Merge' 语句会删除表中的所有行",
+  "Unsafe query: 'Merge' statement updates all rows in the table because 'on' condition is always true": "不安全的查询：'on' 条件始终为真，'Merge' 语句会更新表中的所有行",
   "Execute and Suppress": "执行并不再提示"
 }

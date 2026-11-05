@@ -57,8 +57,34 @@ export function bindParams(
   let out = "";
   let at = 0;
   for (const p of params) {
-    out += text.slice(at, p.from) + (values[p.name]?.trim() || "NULL");
+    out += text.slice(at, p.from) + boundValue(p, values);
     at = p.to;
   }
   return out + text.slice(at);
+}
+
+const boundValue = (p: SqlParam, values: Readonly<Record<string, string>>) => values[p.name]?.trim() || "NULL";
+
+/**
+ * The range `from..to` of `bindParams`' output in the text it bound, for
+ * marking it in the editor; `null` when it overlaps a bound value.
+ */
+export function unbindRange(
+  params: readonly SqlParam[],
+  values: Readonly<Record<string, string>>,
+  from: number,
+  to: number,
+): { from: number; to: number } | null {
+  /** Bound offset minus unbound offset, past the parameters seen so far. */
+  let shift = 0;
+  let start: number | undefined;
+  for (const p of params) {
+    const boundFrom = p.from + shift;
+    const boundTo = boundFrom + boundValue(p, values).length;
+    if (from < boundTo && to > boundFrom) return null;
+    if (start === undefined && from <= boundFrom) start = from - shift;
+    if (to <= boundFrom) return { from: start!, to: to - shift };
+    shift = boundTo - p.to;
+  }
+  return { from: start ?? from - shift, to: to - shift };
 }

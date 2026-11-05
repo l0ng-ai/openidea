@@ -101,8 +101,9 @@ const runField = StateField.define<RunState>({
     for (const e of tr.effects) if (e.is(setRun)) value = { ...e.value, unsafe: value.unsafe };
     for (const e of tr.effects) if (e.is(setUnsafe)) value = { ...value, unsafe: e.value };
     if (!tr.docChanged) return value;
-    const u = value.unsafe;
-    if (u) value = { ...value, unsafe: { ...u, from: tr.changes.mapPos(u.from), to: tr.changes.mapPos(u.to) } };
+    // Any edit while the unsafe-query banner waits cancels that run (`cancelUnsafeOnEdit`): the
+    // statement it would run was read before the edit, and marks would land on shifted lines.
+    if (value.unsafe) value = { ...value, unsafe: null };
     // Editing a statement drops its mark.
     const marks: RunMark[] = [];
     for (const m of value.marks) {
@@ -259,6 +260,11 @@ function unsafeBanner(message: string) {
   };
 }
 
+/** Editing the console while the unsafe-query banner waits cancels the run (`runField` hides the banner). */
+const cancelUnsafeOnEdit = EditorView.updateListener.of((u) => {
+  if (u.docChanged) unsafeAnswers.get(u.view)?.("cancel");
+});
+
 /** Shows the unsafe-query banner for `statement` and waits for the answer (true: run it). */
 function confirmUnsafe(view: EditorView, path: string): ConfirmUnsafe {
   return (statement, unsafe) => {
@@ -268,7 +274,7 @@ function confirmUnsafe(view: EditorView, path: string): ConfirmUnsafe {
       unsafeAnswers.set(view, (choice) => {
         unsafeAnswers.delete(view);
         if (choice === "suppress") unsafeSuppressed.add(path);
-        if (view.state.field(runField, false)) view.dispatch({ effects: setUnsafe.of(null) });
+        if (view.state.field(runField, false)?.unsafe) view.dispatch({ effects: setUnsafe.of(null) });
         resolve(choice !== "cancel");
       });
       const len = view.state.doc.length;
@@ -621,6 +627,7 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     consolePath.of(ctx.path),
     runField,
     runGutter,
+    cancelUnsafeOnEdit,
     showPanel.of(consolePanel(ctx.path)),
     EditorState.languageData.of(() => [
       { openideaCompletion: completionSource(ctx.path), [TEMPLATE_CONTEXT_KEY]: templateContextsAt(ctx.path) },
