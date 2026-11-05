@@ -24,6 +24,17 @@ pub fn sdk_python_effective(window: Window, state: State<'_, AppState>) -> IdeRe
     ide_host::ops::sdk::sdk_python_effective(&state.host, window.label())
 }
 
+/// The PHP language level of the project `path` belongs to: the effective one and Auto's.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_php_language_level(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<ide_host::ops::sdk::PhpLanguageLevels> {
+    ide_host::ops::sdk::sdk_php_language_level(&state.host, window.label(), path).await
+}
+
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
 #[tauri::command]
@@ -39,17 +50,19 @@ pub async fn sdk_project_libraries(
 #[tauri::command]
 #[specta::specta]
 pub async fn sdk_locate_tools(
+    window: Window,
     state: State<'_, AppState>,
     names: Vec<String>,
     near: Option<PathBuf>,
 ) -> IdeResult<LocatedTools> {
-    ide_host::ops::sdk::sdk_locate_tools(&state.host, "", names, near).await
+    ide_host::ops::sdk::sdk_locate_tools(&state.host, window.label(), names, near).await
 }
 
 /// `base -m venv location`; output lines stream through `on_output`.
 #[tauri::command]
 #[specta::specta]
 pub async fn sdk_python_create_venv(
+    window: Window,
     state: State<'_, AppState>,
     base: PathBuf,
     location: PathBuf,
@@ -58,7 +71,7 @@ pub async fn sdk_python_create_venv(
 ) -> IdeResult<Sdk> {
     ide_host::ops::sdk::sdk_python_create_venv(
         &state.host,
-        "",
+        window.label(),
         base,
         location,
         request,
@@ -70,17 +83,20 @@ pub async fn sdk_python_create_venv(
 #[tauri::command]
 #[specta::specta]
 pub async fn sdk_python_packages(
+    window: Window,
     state: State<'_, AppState>,
     python: PathBuf,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
-    ide_host::ops::sdk::sdk_python_packages(&state.host, "", python, request).await
+    ide_host::ops::sdk::sdk_python_packages(&state.host, window.label(), python, request).await
 }
 
 /// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn sdk_python_pip(
+    window: Window,
     state: State<'_, AppState>,
     python: PathBuf,
     requirement: String,
@@ -91,7 +107,7 @@ pub async fn sdk_python_pip(
 ) -> IdeResult<()> {
     ide_host::ops::sdk::sdk_python_pip(
         &state.host,
-        "",
+        window.label(),
         python,
         requirement,
         uninstall,

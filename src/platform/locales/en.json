@@ -49,6 +49,7 @@
   "app.lightEdit.openProject": "Open as Project",
   "app.lightEdit.openProjectTooltip": "Open {folder} as a project",
   "app.log.failed": "Cannot show the log",
+  "app.project.opening": "Opening {name}…",
   "app.title.default": "OpenIDEA",
   "app.unsaved.body": "{count, plural, one {# file has} other {# files have}} unsaved changes in {project}. Save before closing?",
   "app.unsaved.discard": "Don't Save",
@@ -241,6 +242,8 @@
   "menu.refactor.extractVariable": "Introduce Variable…",
   "menu.refactor.inline": "Inline…",
   "menu.refactor.move": "Move…",
+  "menu.refactor.pullMembersUp": "Pull Members Up…",
+  "menu.refactor.pushMembersDown": "Push Members Down…",
   "menu.refactor.rename": "Rename…",
   "menu.refactor.safeDelete": "Safe Delete…",
   "menu.refactor.thisMenu": "Refactor This…",
@@ -337,6 +340,7 @@
   "menu.vcs.addToVcs": "Add to VCS",
   "menu.vcs.compareWithBranch": "Compare with Branch or Revision…",
   "menu.vcs.showHistory": "Show History",
+  "menu.vcs.showHistoryForSelection": "Show History for Selection",
   "menu.build": "Build",
   "menu.build.buildProject": "Build Project",
   "menu.build.buildModule": "Build Module",
@@ -446,5 +450,7 @@
   "menu.editor.contextInfo": "Context Info",
   "run.services.configurationCount": "{count} configurations",
   "search.bookmarks.count": "{count, plural, one {# bookmark} other {# bookmarks}}",
+  "search.find.matches": "{matches, plural, one {# match} other {# matches}} in {files, plural, one {# file} other {# files}}",
+  "search.find.matchesIncomplete": "{matches, plural, one {#+ match} other {#+ matches}} in {files, plural, one {#+ file} other {#+ files}}",
   "settings.zoom.hint": "Change with {zoomIn} or {zoomOut}. Set to 100% with {reset}"
 }

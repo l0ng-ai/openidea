@@ -37,7 +37,9 @@ import {
   Tree,
   acquirePopup,
   fileIconName,
+  useFileIconRevision,
   folderIconName,
+  themedFolderIconName,
   showContextMenu,
   SymbolBadge,
   type DragSession,
@@ -58,7 +60,6 @@ import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
-import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
   cancelEditing,
   checkEditingName,
@@ -75,6 +76,7 @@ import {
   paste,
   refreshOsClipboard,
   targetFolder,
+  undoLastFileOperation,
 } from "./operations";
 import { isInside, nameOf, parentOf, splitExtension, tildify } from "./paths";
 import {
@@ -109,7 +111,7 @@ export function showNewPopup(): boolean {
   const lead = treeHandle.current?.leadKey();
   const row = lead ? document.querySelector<HTMLElement>(`[data-project-key="${CSS.escape(lead)}"]`) : null;
   const rect = (
-    row ?? document.querySelector<HTMLElement>('[role="tree"][aria-label="Project"]')
+    row ?? document.querySelector<HTMLElement>('[data-project-view] [role="tree"]')
   )?.getBoundingClientRect();
   if (!rect) return false;
   openNewPopup({ x: rect.left + 24, y: rect.bottom }, newMenuItems(targetFolder()));
@@ -125,6 +127,8 @@ function iconFor(
   root: string | null,
   build: BuildPresentation,
   detected: readonly RootFolder[],
+  expanded: boolean,
+  holdsOpen: boolean,
 ): string {
   if (node.placeholder) return node.placeholder === "dir" ? "folder" : "file";
   if (node.icon) return node.icon;
@@ -132,11 +136,13 @@ function iconFor(
     const kind = folderKind(node, roots, root, build, detected);
     if (kind !== "plain") return folderIconName(kind);
     const rel = root ? (node.path === root ? "" : relativePath(root, node.path)) : null;
-    const module = rel === null ? null : moduleFolderIcon(rel, node.root, build.modules);
+    // Modules outside the project are keyed by their absolute folder.
+    const key = rel !== null && build.modules.has(rel) ? rel : node.path;
+    const module = root ? moduleFolderIcon(key, node.root, build.modules) : null;
     if (module) return module;
-    return node.root ? "module" : "folder";
+    return node.root ? "module" : (themedFolderIconName(node.label, expanded, holdsOpen, node.path) ?? "folder");
   }
-  return fileIconName(node.label);
+  return fileIconName(node.label, node.path);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +259,9 @@ interface RowProps {
   onPointerDown: (node: ProjectNode, e: ReactPointerEvent) => void;
 }
 
+const holdsOpenFile = (dir: string, files: readonly string[]) =>
+  files.some((f) => f.length > dir.length && f.startsWith(dir) && (f[dir.length] === "/" || f[dir.length] === "\\"));
+
 const Row = memo(function Row({
   node,
   matches,
@@ -265,15 +274,19 @@ const Row = memo(function Row({
   onDoubleClick,
   onPointerDown,
 }: RowProps) {
+  // Memoised: redraw this row itself when the file icon theme changes.
+  useFileIconRevision();
   const deco = useFileDecoration(node.path);
   const roots = useEffectiveRoots();
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
+  const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
+  const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
   const icon =
     node.dir || node.placeholder || node.icon
-      ? iconFor(node, roots, root, build, detected)
+      ? iconFor(node, roots, root, build, detected, expanded, holdsOpen)
       : presentationIcon(node.path, file, roots, root, build.spring);
   const moduleFolder =
     node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
@@ -394,6 +407,8 @@ function folderAt(container: HTMLElement | null, x: number, y: number): { key: s
 
 export function ProjectView() {
   const txTemplate = useTxTemplate();
+  // Rows compute their file icons while rendering: redraw when the icon theme changes.
+  useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
   const expanded = useProjectTree((s) => s.expanded);
@@ -411,6 +426,7 @@ export function ProjectView() {
 
   const info = useMemo(() => visibleInfo(model, expanded), [model, expanded]);
   const mode = useProjectTree((s) => s.mode);
+  const unity = useProjectTree((s) => s.unity);
   const outlines = useProjectTree((s) => s.outlines);
   const showMembers = options.showMembers;
 
@@ -579,6 +595,11 @@ export function ProjectView() {
     // Files (not folders) can also be dropped on an editor to open them there.
     let files: DragSession | null = null;
     const move = (ev: PointerEvent) => {
+      // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
+      if (!(ev.buttons & 1)) {
+        if (!active) cleanup();
+        return;
+      }
       if (!active) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
@@ -624,6 +645,7 @@ export function ProjectView() {
     const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
       setDropTarget(null);
@@ -631,6 +653,7 @@ export function ProjectView() {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cleanup);
     window.addEventListener("keydown", key, true);
   }, []);
 
@@ -688,8 +711,7 @@ export function ProjectView() {
         openMoveDialog();
         break;
       case "Meta+Z":
-        if (lastFileRefactoring()) void undoFileRefactoring();
-        else handled = false;
+        handled = undoLastFileOperation();
         break;
       case "Meta+C":
         copySelection(false);
@@ -734,7 +756,7 @@ export function ProjectView() {
           editing={editing}
           cut={cutPaths.has(node.path)}
           dropTarget={dropTarget === node.key}
-          detail={node.root && !node.icon ? tildify(node.path, home) : (node.detail ?? null)}
+          detail={node.detail ?? (node.root && !node.icon ? tildify(node.path, home) : null)}
           onEditDone={focusTree}
           onClick={onRowClick}
           onDoubleClick={onRowDoubleClick}
@@ -750,6 +772,7 @@ export function ProjectView() {
     <div
       ref={containerRef}
       className={styles.view}
+      data-project-view=""
       {...OWNS_FILE_DROP}
       onKeyDown={onKeyDown}
       // The native Edit menu may take ⌘C/⌘X/⌘V before the keymap sees them; it then sends DOM clipboard events.
@@ -759,6 +782,11 @@ export function ProjectView() {
       onFocus={(e) => setContext("projectViewFocus", (e.target as HTMLElement).getAttribute("role") === "tree")}
       onBlur={() => setContext("projectViewFocus", false)}
     >
+      {mode === "unity" && unity && !unity.projects.length && (
+        <div className={styles.unityNotice} role="status">
+          {tx`C# project files are missing. In Unity, select an external script editor in Preferences > External Tools, then regenerate project files.`}
+        </div>
+      )}
       {!model.roots.length && (
         <div className={styles.empty}>
           {txTemplate(`Nothing to show in ${VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "this view"}`)}

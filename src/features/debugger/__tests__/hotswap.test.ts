@@ -29,6 +29,7 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
 
 import type { DebugCapabilities, DebugSessionId } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
+import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { hotSwapMessage, onHotCodeReplace, reloadChangedClasses } from "../hotswap";
 import { publishContext, useDebug, type DebugSession } from "../state";
 
@@ -107,7 +108,17 @@ describe("HotSwap", () => {
   it("words results like IDEA", () => {
     expect(hotSwapMessage(0, []).title).toBe("Loaded classes are up to date. Nothing to reload.");
     expect(hotSwapMessage(1, []).title).toBe("1 class reloaded");
+    expect(hotSwapMessage(3, []).title).toBe("3 classes reloaded");
     expect(hotSwapMessage(3, ["boom"])).toMatchObject({ level: "error", body: "boom" });
+  });
+
+  it("translates the reload count with the sentence", async () => {
+    await setLocale("zh");
+    try {
+      expect(hotSwapMessage(3, []).title).toBe("已重新加载 3 个类");
+    } finally {
+      _resetI18nForTests();
+    }
   });
 
   it("offers a reload when java-debug reports a finished build", () => {

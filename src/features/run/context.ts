@@ -5,6 +5,7 @@
  */
 import type { RunConfig } from "@/platform/ipc";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
 import { isWindows } from "./jvmTypes";
 
@@ -19,6 +20,8 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
     /^test_.*\.py$|_test\.py$/.test(name) ||
     (django && name === "tests.py") ||
     /_test\.go$/.test(name) ||
+    /Test\.php$/.test(name) ||
+    /_(spec|test)\.rb$/.test(name) ||
     /(Test|Tests|Spec|IT)\.(kt|java|scala|groovy)$/.test(name) ||
     (/(^|\/)tests\/[^/]+\.rs$/.test(relPath) && name !== "mod.rs")
   )
@@ -27,7 +30,7 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
   if (/\.go$/.test(name) && content !== undefined && /^\s*package\s+main\b/m.test(content)) return "main";
   if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
     return "main";
-  if (/\.(py|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
+  if (/\.(py|rb|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
   if (windows && /\.(bat|cmd)$/i.test(name)) return "script";
   return null;
 }
@@ -39,6 +42,9 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 function testKinds(relPath: string): string[] {
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
+  if (/\.php$/.test(relPath)) return ["phpunit"];
+  if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake"];
+  if (/_test\.rb$/.test(relPath)) return ["rake", "rspec"];
   if (/\.go$/.test(relPath)) return ["go"];
   if (/\.rs$/.test(relPath)) return ["cargo"];
   if (/\.(kt|java|scala|groovy)$/.test(relPath)) return ["gradle", "maven"];
@@ -136,7 +142,9 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
 export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[] {
   const kinds = testKinds(relPath);
   // Configurations produced from a test or file are results of narrowing, never bases for it.
-  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"));
+  const candidates = configs
+    .filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"))
+    .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
   if (best.length) return best;
   const fallback = candidates[0] ?? implicitPytest(relPath, configs);
@@ -162,7 +170,16 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
       return derived(base, relPath, { args: [...base.args, file] });
     case "pytest":
     case "python":
+    case "rspec":
       return derived(base, relPath, { args: [...base.args, file] });
+    case "phpunit":
+      return derived(base, relPath, { args: phpunitArgs(base.args, { target: file }) });
+    case "rake": {
+      // `rake test` (minitest) takes the file as TEST=; `rake spec` as SPEC=.
+      const task = base.args.at(-1) ?? "";
+      const key = /(^|:)spec$/.test(task) ? "SPEC" : /(^|:)test$/.test(task) ? "TEST" : null;
+      return key ? derived(base, relPath, { args: [...base.args, `${key}=${file}`] }) : base;
+    }
     case "django-test": {
       const tests = djangoTestsOf(base, [djangoLabel(file)]);
       return tests ? derived(base, relPath, tests) : null;
@@ -219,7 +236,48 @@ function mainConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null 
   return null;
 }
 
-function scriptConfigFor(relPath: string, configs: RunConfig[], windows = isWindows()): RunConfig | null {
+/** `from .models import …`, `from . import x`: the file is a module of a package. */
+const RELATIVE_IMPORT = /^[ \t]*from[ \t]+\.+[\w.]*[ \t]+import\b/m;
+const IDENTIFIER = /^[A-Za-z_]\w*$/;
+
+/**
+ * A module that imports relatively runs as `python -m <package>.<module>` from the folder its top
+ * package sits in (the last `src` of its path, else the Python project's folder): run as a script,
+ * its relative imports fail. `null` for other files.
+ */
+export function pythonModuleRun(
+  relPath: string,
+  content: string | undefined,
+  configs: RunConfig[],
+): { cwd: string; module: string } | null {
+  if (!content || !RELATIVE_IMPORT.test(content)) return null;
+  const project = closest(
+    configs.filter((c) => c.kind === "python" || c.kind === "pytest"),
+    relPath,
+  )?.cwd?.replace(/^\.\/?|\/+$/g, "");
+  const segs = relPath.replace(/\.py$/, "").split("/");
+  const first = project && relPath.startsWith(`${project}/`) ? project.split("/").length : 0;
+  const src = segs.lastIndexOf("src", segs.length - 2);
+  const start = src >= first ? src + 1 : first;
+  const parts = segs.slice(start);
+  // Only a module inside a package can import relatively.
+  if (parts.length < 2 || !parts.every((p) => IDENTIFIER.test(p))) return null;
+  if (parts.at(-1) === "__main__" || parts.at(-1) === "__init__") parts.pop();
+  return { cwd: segs.slice(0, start).join("/"), module: parts.join(".") };
+}
+
+/** A command relative to the project root (`.venv/bin/python`), from `cwd` inside it. */
+function fromSubfolder(command: string, cwd: string): string {
+  if (!cwd || !command.includes("/") || command.startsWith("/") || /^[A-Za-z]:/.test(command)) return command;
+  return "../".repeat(cwd.split("/").length) + command;
+}
+
+function scriptConfigFor(
+  relPath: string,
+  configs: RunConfig[],
+  windows = isWindows(),
+  content?: string,
+): RunConfig | null {
   const base: RunConfig = {
     id: `context:file:${relPath}`,
     name: relPath.split("/").pop() ?? relPath,
@@ -234,10 +292,18 @@ function scriptConfigFor(relPath: string, configs: RunConfig[], windows = isWind
   };
   if (relPath.endsWith(".py")) {
     // Reuse the project's interpreter (venv / uv / poetry) when detected.
-    const py = projectPython(configs);
-    if (py)
-      return { ...base, kind: "python", command: py.command, args: [...py.prefix, relPath], debugAdapter: "debugpy" };
-    return { ...base, kind: "python", command: "python3", args: [relPath], debugAdapter: "debugpy" };
+    const py = projectPython(configs) ?? { command: "python3", prefix: [] };
+    const module = pythonModuleRun(relPath, content, configs);
+    if (module)
+      return {
+        ...base,
+        kind: "python",
+        command: fromSubfolder(py.command, module.cwd),
+        args: [...py.prefix, "-m", module.module],
+        cwd: module.cwd || null,
+        debugAdapter: "debugpy",
+      };
+    return { ...base, kind: "python", command: py.command, args: [...py.prefix, relPath], debugAdapter: "debugpy" };
   }
   if (/\.[cm]?js$/.test(relPath)) return { ...base, command: "node", args: [relPath], debugAdapter: "js-debug" };
   if (/\.ts$/.test(relPath)) return { ...base, command: "npx", args: ["tsx", relPath], debugAdapter: "js-debug" };
@@ -261,7 +327,7 @@ export function contextConfig(
 ): RunConfig | null {
   const role = fileRole(relPath, content, windows, hasDjangoTests(configs));
   if (role === "test") return testConfigFor(relPath, configs);
-  if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs, windows);
-  if (role === "script") return scriptConfigFor(relPath, configs, windows);
+  if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs, windows, content);
+  if (role === "script") return scriptConfigFor(relPath, configs, windows, content);
   return null;
 }

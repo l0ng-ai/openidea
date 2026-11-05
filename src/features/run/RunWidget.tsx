@@ -144,7 +144,7 @@ export function RunWidget() {
             className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
             title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
             shortcut={shortcutLabel("run.stop")}
-            onClick={() => void executeAction("run.stop")}
+            onClick={() => void executeAction("run.stop", "widget")}
           />
         )}
         <IconButton

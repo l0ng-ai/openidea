@@ -11,6 +11,7 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   DEFAULT_IDENTIFIER: "identifier",
   DEFAULT_LOCAL_VARIABLE: "identifier",
   DEFAULT_PARAMETER: "parameter",
+  DEFAULT_GLOBAL_VARIABLE: "globalVariable",
   DEFAULT_CONSTANT: "constant",
   DEFAULT_INSTANCE_FIELD: "field",
   DEFAULT_STATIC_FIELD: "constant",

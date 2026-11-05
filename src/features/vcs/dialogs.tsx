@@ -43,6 +43,8 @@ export interface PromptOptions {
   mono?: boolean;
   /** Returns an error message, or null when valid. */
   validate?: (value: string) => string | null;
+  /** Show the prefilled value's problem (e.g. the branch exists) before it is edited. */
+  validateInitial?: boolean;
   /** Optional checkbox below the field. */
   checkbox?: { label: string; initial: boolean };
 }
@@ -70,7 +72,7 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
   const { title, label, initial = "", placeholder, okLabel = "OK", mono, validate, checkbox, onDone } = props;
   const [value, setValue] = useState(initial);
   const [checked, setChecked] = useState(checkbox?.initial ?? false);
-  const [touched, setTouched] = useState(false);
+  const [touched, setTouched] = useState(!!props.validateInitial && initial !== "");
   const error = validate ? validate(value) : value.trim() ? null : "Value must not be empty";
   const submit = () => {
     setTouched(true);
@@ -94,7 +96,11 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
           submit();
         }}
       >
-        {label && <label className={styles.fieldLabel}>{label}</label>}
+        {label && (
+          <label className={styles.fieldLabel}>
+            <T>{label}</T>
+          </label>
+        )}
         <Input
           data-autofocus
           aria-label={label ?? title}
@@ -216,7 +222,9 @@ function ChooseManyDialog(props: ChooseManyOptions & { onDone: (r: string[] | nu
         </div>
         {customLabel && (
           <>
-            <label className={styles.fieldLabel}>{customLabel}</label>
+            <label className={styles.fieldLabel}>
+              <T>{customLabel}</T>
+            </label>
             <Input aria-label={customLabel} value={custom} onChange={(e) => setCustom(e.target.value)} />
           </>
         )}

@@ -237,6 +237,32 @@ fn redact_auth(message: &str, token: Option<&str>) -> String {
     }
 }
 
+/// Whether `curl` checks certificate revocation with Schannel and takes
+/// `--ssl-revoke-best-effort` (7.70+). Schannel fails the whole download with
+/// CRYPT_E_REVOCATION_OFFLINE when the CRL/OCSP servers are unreachable (corporate
+/// proxies, firewalls); best effort skips only that check, and still rejects
+/// certificates that are actually revoked.
+fn revoke_best_effort(curl: &Path) -> bool {
+    static CHECKED: parking_lot::Mutex<Vec<(std::path::PathBuf, bool)>> = parking_lot::Mutex::new(Vec::new());
+    if let Some((_, ok)) = CHECKED.lock().iter().find(|(path, _)| path == curl) {
+        return *ok;
+    }
+    let mut cmd = Command::new(curl);
+    cmd.arg("--version");
+    let ok = run_quiet(cmd, Duration::from_secs(5))
+        .is_some_and(|(success, out)| success && curl_takes_revoke_best_effort(&out));
+    CHECKED.lock().push((curl.to_path_buf(), ok));
+    ok
+}
+
+/// Reads `curl --version`: `curl 8.9.1 (Windows) libcurl/8.9.1 Schannel …`.
+fn curl_takes_revoke_best_effort(version: &str) -> bool {
+    let Some(first) = version.lines().find(|l| l.starts_with("curl ")) else { return false };
+    let mut parts = first.split_whitespace().nth(1).unwrap_or("").split('.').map(|n| n.parse::<u32>().ok());
+    let (Some(Some(major)), Some(Some(minor))) = (parts.next(), parts.next()) else { return false };
+    (major, minor) >= (7, 70) && first.split_whitespace().any(|w| w.eq_ignore_ascii_case("schannel"))
+}
+
 /// HTTP via the system `curl` (shipped with macOS, Windows 10+ and every
 /// mainstream Linux), so the IDE carries no TLS stack of its own.
 pub struct Http {
@@ -244,6 +270,7 @@ pub struct Http {
     gh: Option<std::path::PathBuf>,
     explicit_github_token: Option<String>,
     https_only: bool,
+    revoke_best_effort: bool,
 }
 
 impl Http {
@@ -252,7 +279,8 @@ impl Http {
             .map_err(|_| IdeError::unavailable("`curl` is required to download tools"))?;
         let gh = which::which_in("gh", Some(search_path), ".").ok();
         let explicit_github_token = environment_github_token(|key| std::env::var(key).ok());
-        Ok(Self { curl, gh, explicit_github_token, https_only: false })
+        let revoke_best_effort = cfg!(windows) && revoke_best_effort(&curl);
+        Ok(Self { curl, gh, explicit_github_token, https_only: false, revoke_best_effort })
     }
 
     /// Refuses every protocol but HTTPS, redirects included.
@@ -289,6 +317,9 @@ impl Http {
         cmd.args(ide_core::proxy_settings::proxy().curl_args(url));
         if self.https_only {
             cmd.args(["--proto", "=https", "--proto-redir", "=https"]);
+        }
+        if self.revoke_best_effort {
+            cmd.arg("--ssl-revoke-best-effort");
         }
         cmd.stdin(Stdio::null());
         if token.is_some() {
@@ -564,13 +595,34 @@ mod tests {
         assert!(lines.contains(&"one".to_string()) && lines.contains(&"two".to_string()), "{lines:?}");
     }
 
+    #[test]
+    fn revoke_best_effort_needs_schannel_curl_7_70() {
+        let schannel = "curl 8.9.1 (Windows) libcurl/8.9.1 Schannel zlib/1.3 WinIDN\nRelease-Date: 2024-07-31\n";
+        assert!(curl_takes_revoke_best_effort(schannel));
+        assert!(curl_takes_revoke_best_effort("curl 7.70.0 (x86_64-pc-win32) libcurl/7.70.0 Schannel\n"));
+        // Windows 10 1803 shipped 7.55, which rejects the unknown option.
+        assert!(!curl_takes_revoke_best_effort("curl 7.55.1 (Windows) libcurl/7.55.1 WinSSL\n"));
+        // OpenSSL never checks revocation this way; Schannel in parentheses is not the active backend.
+        assert!(!curl_takes_revoke_best_effort(
+            "curl 8.10.1 (x86_64-w64-mingw32) libcurl/8.10.1 OpenSSL/3.2.3 (Schannel)\n"
+        ));
+        assert!(!curl_takes_revoke_best_effort("WARNING: this libcurl is Debug-enabled\n"));
+        assert!(curl_takes_revoke_best_effort(&format!("WARNING: this libcurl is Debug-enabled\n\n{schannel}")));
+    }
+
     #[cfg(unix)]
     #[test]
     fn absent_build_is_empty_but_http_failures_are_not() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let curl = tmp.path().join("curl");
-        let http = Http { curl: curl.clone(), gh: None, explicit_github_token: None, https_only: false };
+        let http = Http {
+            curl: curl.clone(),
+            gh: None,
+            explicit_github_token: None,
+            https_only: false,
+            revoke_best_effort: false,
+        };
         for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
         {
             std::fs::write(&curl, format!("#!/bin/sh\nprintf 'payload\\n{code:03}'\nexit {exit}\n")).unwrap();
@@ -714,8 +766,16 @@ mod github_auth_tests {
                 let dir = tempfile::tempdir().unwrap();
                 let curl = dir.path().join("curl");
                 let gh = dir.path().join("gh");
-                let fixture =
-                    Self { dir, http: Http { curl, gh: Some(gh), explicit_github_token: None, https_only: false } };
+                let fixture = Self {
+                    dir,
+                    http: Http {
+                        curl,
+                        gh: Some(gh),
+                        explicit_github_token: None,
+                        https_only: false,
+                        revoke_best_effort: false,
+                    },
+                };
                 fixture.script(
                     "gh",
                     &format!(

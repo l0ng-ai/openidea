@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGraph } from "../graph";
+import { computeGraph, straightenLaneChanges } from "../graph";
 
 const c = (id: string, ...parents: string[]) => ({ id, parents });
 
@@ -60,5 +60,49 @@ describe("computeGraph", () => {
     const { rows } = computeGraph([c("t", "x"), c("m2", "b", "x"), c("x", "b"), c("b")]);
     const m2 = rows[1]!;
     expect(m2.down).toContainEqual({ from: m2.lane, to: 0, color: rows[0]!.color });
+  });
+});
+
+describe("straightenLaneChanges", () => {
+  it("draws a lane change as one diagonal across the row boundary, keeping the lanes", () => {
+    // m merges f into main; f branched from a; b sits in lane 0 while lane 1 passes it.
+    const rows = straightenLaneChanges(computeGraph([c("m", "b", "f"), c("f", "a"), c("b", "a"), c("a")]).rows);
+    const [m, f, b, a] = rows;
+    // m → f: leaves m's node towards lane 1 and reaches f's node in a straight line.
+    expect(m!.down[1]).toMatchObject({ from: 0, to: 1, toX: 0.5 });
+    expect(f!.up.find((s) => s.from === 1)).toMatchObject({ from: 1, to: 1, fromX: 0.5 });
+    // Lane 1 converging into a: the vertical line of b's row meets it halfway.
+    expect(a!.up[1]).toMatchObject({ from: 1, to: 0, fromX: 0.5 });
+    expect(b!.down.find((s) => s.from === 1)).toMatchObject({ from: 1, to: 1, toX: 0.5 });
+    // Straight lines stay where they are.
+    expect(m!.down[0]!.toX).toBeUndefined();
+    expect(a!.up[0]!.fromX).toBeUndefined();
+  });
+
+  it("leaves a lane that another line also ends in, and arrows, as they are", () => {
+    const rows = straightenLaneChanges([
+      {
+        lane: 0,
+        color: 0,
+        up: [],
+        down: [
+          { from: 0, to: 1, color: 0 },
+          { from: 1, to: 1, color: 1 },
+        ],
+        width: 2,
+      },
+      {
+        lane: 1,
+        color: 1,
+        up: [{ from: 1, to: 1, color: 1 }],
+        down: [{ from: 1, to: 2, color: 1, arrow: "down" }],
+        width: 3,
+      },
+      { lane: 2, color: 1, up: [{ from: 2, to: 2, color: 1 }], down: [], width: 3 },
+    ]);
+    expect(rows[0]!.down[0]!.toX).toBeUndefined();
+    expect(rows[1]!.up[0]!.fromX).toBeUndefined();
+    expect(rows[1]!.down[0]!.toX).toBeUndefined();
+    expect(rows[2]!.up[0]!.fromX).toBeUndefined();
   });
 });

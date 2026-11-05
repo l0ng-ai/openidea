@@ -1,6 +1,6 @@
 //! The IDE backend without a UI toolkit: open projects per window, terminals,
 //! processes, settings and the remote services. The desktop shell (`src-tauri`)
-//! wraps one [`Host`] and adds windows, menus and plugins; `openidea-server`
+//! wraps one [`Host`] and adds windows and menus; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod data_dirs;
@@ -10,6 +10,7 @@ mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;
 pub mod ops;
+pub mod plugins;
 mod project;
 mod proxy;
 mod requests;
@@ -24,7 +25,7 @@ use ide_language::{LanguageRegistry, Syntax};
 use ide_run::ProcessManager;
 use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -73,11 +74,14 @@ pub struct Host {
     pub environment: environment::Environment,
     /// The HTTP proxy's saved password (see `proxy.rs`).
     proxy_password: ide_ssh::secrets::SecretFile,
+    /// The proxy password when it could not be saved (no credential store).
+    proxy_session_password: Mutex<Option<String>>,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
     /// One project per window, keyed by window label.
     projects: RwLock<HashMap<String, Arc<Project>>>,
+    pub(crate) external_logs: RwLock<HashMap<String, Vec<Arc<ide_vcs::Repo>>>>,
     requests: requests::Requests,
     project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
 }
@@ -101,6 +105,7 @@ impl Host {
         let host = Self {
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
+            proxy_session_password: Mutex::default(),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
@@ -121,6 +126,7 @@ impl Host {
             owner,
             runtime,
             projects: RwLock::default(),
+            external_logs: RwLock::default(),
             requests: Default::default(),
             project_requests: RwLock::default(),
         };
@@ -131,6 +137,17 @@ impl Host {
     /// The tree-sitter grammars (blocks only if start-up warm-up is still running).
     pub fn syntax(&self) -> Arc<Syntax> {
         self.syntax.get_or_init(|| Arc::new(Syntax::new())).clone()
+    }
+
+    /// Plugin languages or the servers they may start changed (they are part
+    /// of [`Self::languages`] and every project's fork): open documents are
+    /// detected again and language servers follow their new configuration.
+    pub fn plugin_languages_changed(&self) {
+        for project in self.projects() {
+            project.documents.redetect_languages();
+            let lsp = project.lsp.clone();
+            self.runtime.spawn(async move { lsp.reconfigure().await });
+        }
     }
 
     /// Every open project (all windows).
@@ -166,6 +183,10 @@ impl Host {
     }
 
     pub fn close_project(&self, window: &str) {
+        self.external_logs.write().remove(self.owner_window(window));
+        for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+            self.cancel_request(request);
+        }
         let project = self.projects.write().remove(window);
         if let Some(project) = project {
             if !project.light {
@@ -181,9 +202,6 @@ impl Host {
             // asked for, its runs, its shells and its debug sessions — and the language
             // servers finish shutting down before the window is gone, as IDEA closes a
             // project's processes.
-            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
-                self.cancel_request(request);
-            }
             self.processes.kill_project(&project.root);
             self.terminals.kill_key(self.owner_window(window));
             self.shutdown_project_workers_blocking(
@@ -299,11 +317,17 @@ impl Host {
     }
 
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {
-        let token = self.begin_request(id);
-        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
+        let token = self.begin_project_read_request(window, id);
         if self.project(window).is_ok_and(|p| !p.is_trusted()) {
             token.cancel();
         }
+        token
+    }
+
+    /// Read-only work remains cancellable/disposed with its window in restricted projects.
+    pub fn begin_project_read_request(&self, window: &str, id: RequestId) -> CancellationToken {
+        let token = self.begin_request(id);
+        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
         token
     }
 

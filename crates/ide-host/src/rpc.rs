@@ -9,7 +9,10 @@
 //! * server → client notification `event` `{ window, event }` (an `IdeEvent`
 //!   for that window, or every window when `window` is null);
 //! * server → client notification `channel` `{ id, data }`: one value of a
-//!   streaming argument.
+//!   streaming argument;
+//! * server → client notification `plugin` `{ window, event }` and request
+//!   `plugin_secret` `{ plugin, name }` → `string | null`: code plugins of the
+//!   remote project (`plugins::remote_host`).
 
 use crate::Host;
 use crate::ops::{self, Emit};
@@ -178,14 +181,14 @@ impl Dispatcher {
             Ok(())
         })
         .add("cancel_task", |c| async move { Ok(ide_core::task::cancel(c.arg::<TaskId>("id")?)) })
-        .add("fs_read_dir", |c| async move { ops::fs::read_dir(&c.host, &c.window, c.arg("path")?) })
+        .add("fs_read_dir", |c| async move { ops::fs::read_dir(&c.host, &c.window, c.arg("path")?).await })
         .add("fs_entry_kind", |c| async move { ops::fs::entry_kind(&c.host, c.arg("path")?).await })
         .add("fs_create_file", |c| async move { ops::fs::create_file(&c.host, &c.window, c.arg("path")?) })
         .add("fs_create_file_bytes", |c| async move {
             ops::fs::create_file_bytes(&c.host, c.arg("path")?, c.arg("data")?).await
         })
         .add("fs_create_dir", |c| async move { ide_vfs::create_dir(&c.arg::<PathBuf>("path")?) })
-        .add("fs_rename", |c| async move { ide_vfs::rename(&c.arg::<PathBuf>("from")?, &c.arg::<PathBuf>("to")?) })
+        .add("fs_rename", |c| async move { ops::fs::rename(&c.host, c.arg("from")?, c.arg("to")?).await })
         .add("fs_set_writable", |c| async move {
             ops::fs::set_writable(&c.host, &c.window, c.arg("path")?, c.arg("writable")?)
         })
@@ -254,6 +257,8 @@ impl Dispatcher {
                 &c.arg::<Option<Vec<String>>>("removedDetectedIds")?.unwrap_or_default(),
             )
         })
+        .add("run_without_derived", |c| async move { ops::run::without_derived(&c.host, &c.window, c.arg("configs")?) })
+        .add("run_apply_settings", |c| async move { ops::run::apply_settings(&c.host, &c.window, c.arg("configs")?) })
         .add("run_system_env", |_| async move { Ok(ide_run::system_env()) })
         .add("run_start", |c| async move {
             let on_output = c.channel("onOutput")?;

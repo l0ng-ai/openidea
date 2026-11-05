@@ -59,6 +59,31 @@ pub struct Settings {
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
     pub cmake: CMakeSettings,
+    /// Tools › Agents › Chat.
+    pub agents: AgentSettings,
+    /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
+    #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
+    pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
+}
+
+/// What the meters in an agent task's header show.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSettings {
+    /// Context window use.
+    pub show_context_usage: bool,
+    /// Time the agent spent on the task.
+    pub show_work_time: bool,
+    /// The account's usage-limit windows (Claude's 5-hour and weekly limits).
+    pub show_usage_limits: bool,
+    /// What the session has cost so far, as the agent reports it.
+    pub show_cost: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
+    }
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -132,6 +157,16 @@ pub struct LanguageServerSettings {
     pub languages: Vec<String>,
     /// Files marking a workspace root for a server defined here (`pyproject.toml`).
     pub root_markers: Vec<String>,
+    /// Replaces the definition's `features`: what the server is used for
+    /// (`code-action`, `hover`, …); an empty list means everything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub features: Option<Vec<String>>,
+    /// Replaces the definition's `code-action-kinds` (`refactor`); an empty
+    /// list keeps every kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub code_action_kinds: Option<Vec<String>>,
 }
 
 impl Default for LanguageServerSettings {
@@ -145,6 +180,8 @@ impl Default for LanguageServerSettings {
             settings: None,
             languages: Vec::new(),
             root_markers: Vec::new(),
+            features: None,
+            code_action_kinds: None,
         }
     }
 }
@@ -192,6 +229,8 @@ impl Default for Settings {
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
+            agents: AgentSettings::default(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -300,7 +339,8 @@ impl Default for NotificationGroupSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
-    /// `dark` | `light` | `system` | `dark-hc` (high-contrast dark)
+    /// A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
+    /// "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
     pub theme: String,
     pub accent: String,
     pub ui_font_size: f32,
@@ -309,6 +349,9 @@ pub struct AppearanceSettings {
     pub sync_with_os: bool,
     pub preferred_light_theme: String,
     pub preferred_dark_theme: String,
+    /// A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons.
+    pub file_icon_theme: String,
+    pub file_icon_theme_options: BTreeMap<String, FileIconThemeOptions>,
     /// IDE zoom in percent (50–300).
     pub zoom: u32,
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
@@ -346,6 +389,24 @@ pub struct AppearanceSettings {
 /// (registered later) keep their default place.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
+pub struct FileIconThemeOptions {
+    pub groups: BTreeMap<String, bool>,
+    pub choices: BTreeMap<String, String>,
+    pub hide_files: bool,
+    pub hide_folders: bool,
+    pub hollow_folders: bool,
+    pub hide_ui_icons: bool,
+    pub hide_psi_icons: bool,
+    pub monochrome: Option<String>,
+    pub saturation: Option<u8>,
+    pub opacity: Option<u8>,
+    pub icon_size: Option<u8>,
+    pub row_height: Option<u8>,
+    pub accent: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
 pub struct MainToolbarSettings {
     pub left: Vec<String>,
     pub right: Vec<String>,
@@ -363,6 +424,8 @@ impl Default for AppearanceSettings {
             sync_with_os: false,
             preferred_light_theme: "light".into(),
             preferred_dark_theme: "dark".into(),
+            file_icon_theme: String::new(),
+            file_icon_theme_options: BTreeMap::new(),
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
@@ -543,25 +606,65 @@ impl Default for FileSettings {
 pub struct LanguagesSettings {
     pub python: PythonSettings,
     pub node: NodeSettings,
+    pub php: PhpSettings,
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
-    pub prettier: PrettierSettings,
+    pub prettier: ExternalFormatterSettings,
+    pub oxfmt: ExternalFormatterSettings,
     pub java: JavaSettings,
+    pub ruby: RubySettings,
+    pub markdown: MarkdownSettings,
 }
 
+/// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MarkdownSettings {
+    /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
+    pub preview_font_size: Option<u32>,
+}
+
+impl LanguagesSettings {
+    pub fn formatter(&self, tool: ExternalFormatter) -> &ExternalFormatterSettings {
+        match tool {
+            ExternalFormatter::Prettier => &self.prettier,
+            ExternalFormatter::Oxfmt => &self.oxfmt,
+        }
+    }
+}
+
+/// A formatter that runs outside the language servers, with its own settings group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ExternalFormatter {
+    Prettier,
+    Oxfmt,
+}
+
+impl ExternalFormatter {
+    /// The name of the tool in the tool registry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Prettier => "prettier",
+            Self::Oxfmt => "oxfmt",
+        }
+    }
+}
+
+/// An external formatter (Prettier, oxfmt) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
-pub struct PrettierSettings {
+pub struct ExternalFormatterSettings {
     /// Empty path: project node_modules, managed installation, then PATH.
     pub path: String,
     pub languages: Vec<String>,
-    /// Prefer Prettier even when a language server offers formatting.
+    /// Prefer this formatter even when a language server offers formatting.
     pub prefer: bool,
     pub run_on_save: bool,
 }
 
-impl Default for PrettierSettings {
+impl Default for ExternalFormatterSettings {
     fn default() -> Self {
         Self {
             path: String::new(),
@@ -603,6 +706,29 @@ impl Default for PythonSettings {
     fn default() -> Self {
         Self { interpreter: String::new(), activate_virtualenv: true }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PhpSettings {
+    /// `php` CLI executable; empty = the one on `PATH`.
+    pub interpreter: String,
+    /// PHP version the language server checks the code against (`7.4`); empty = from
+    /// `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
+    pub language_level: String,
+    /// Folders outside the project whose code the language server indexes too (a platform a
+    /// module extends); absolute, `~/`, or relative to the project.
+    pub include_paths: Vec<String>,
+    /// Intelephense stub sets loaded on top of its defaults and the `ext-*` entries of
+    /// `composer.json` (`wordpress`).
+    pub stubs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RubySettings {
+    /// Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH).
+    pub interpreter: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -709,6 +835,19 @@ pub struct GradleSettings {
     pub home: String,
     /// Empty = Gradle's default user home.
     pub user_home: String,
+    /// IDEA's "Build and run using": who builds and launches an Application main.
+    pub run_using: GradleRunUsing,
+}
+
+/// IDEA's "Build and run using" for Gradle builds; IDEA defaults to Gradle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GradleRunUsing {
+    /// A `JavaExec` task on the source set's runtime classpath (`gradleRun.gradle`).
+    #[default]
+    Gradle,
+    /// The Java language server's classpath, launched by OpenIDEA.
+    Ide,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -731,6 +870,12 @@ pub struct MavenSettings {
     pub user_settings: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
+    /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
+    /// its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
+    pub daemon: bool,
+    /// Maven Daemon home (or its `mvnd` executable); empty = `$MVND_HOME`, else
+    /// `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
+    pub mvnd_home: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -822,6 +967,36 @@ mod tests {
     }
 
     #[test]
+    fn file_icon_theme_options_default_empty_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"fileIconTheme":"p/t"}}"#).unwrap();
+        assert!(old.appearance.file_icon_theme_options.is_empty());
+        let json = serde_json::json!({"appearance":{"fileIconThemeOptions":{"p/t":{
+            "groups":{"tests":true},"choices":{"arrows":"plusminus"},"hideFiles":true,"hideFolders":false,"hollowFolders":true,"hideUiIcons":true,"hidePsiIcons":false,
+            "monochrome":"#546e7a","saturation":5,"opacity":80,"iconSize":20,"rowHeight":30,"accent":"#009688"}}}});
+        let settings: Settings = serde_json::from_value(json.clone()).unwrap();
+        let options = &settings.appearance.file_icon_theme_options["p/t"];
+        assert!(options.hide_files && options.hollow_folders && !options.hide_folders);
+        assert!(options.hide_ui_icons && !options.hide_psi_icons);
+        assert!(options.groups["tests"]);
+        assert_eq!(options.choices["arrows"], "plusminus");
+        assert_eq!(
+            (options.saturation, options.opacity, options.icon_size, options.row_height),
+            (Some(5), Some(80), Some(20), Some(30))
+        );
+        assert_eq!(options.monochrome.as_deref(), Some("#546e7a"));
+        assert_eq!(options.accent.as_deref(), Some("#009688"));
+        let value = serde_json::to_value(&settings).unwrap();
+        let restored: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(restored, settings);
+        let plain = serde_json::to_value(FileIconThemeOptions::default()).unwrap();
+        assert_eq!(plain["hideFiles"], false);
+        assert_eq!(plain["hideUiIcons"], false);
+        assert_eq!(plain["hidePsiIcons"], false);
+        assert_eq!(plain["monochrome"], serde_json::Value::Null);
+        assert_eq!(plain["groups"], serde_json::json!({}));
+    }
+
+    #[test]
     fn ui_font_fallback_defaults_empty_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"useCustomFont":true}}"#).unwrap();
         assert!(old.appearance.ui_font_fallback.is_empty());
@@ -848,6 +1023,20 @@ mod tests {
             let restored: Settings = serde_json::from_value(json).unwrap();
             assert_eq!(restored.appearance.show_tool_window_badges, enabled);
         }
+    }
+
+    #[test]
+    fn agent_meters_default_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        assert!(old.agents.show_cost);
+        assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
+        assert!(!Settings::default().agents.show_cost);
+        let mut settings = Settings::default();
+        settings.agents.show_usage_limits = false;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["agents"]["showUsageLimits"], false);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.agents, settings.agents);
     }
 
     #[test]
@@ -918,6 +1107,17 @@ mod maven_linkage_tests {
         assert!(encoded.contains("unlinkedProjects"));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
+
+    #[test]
+    fn daemon_settings_round_trip() {
+        // Old settings files predate the daemon fields; `serde(default)` keeps them loadable.
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(!old.daemon && old.mvnd_home.is_empty());
+        let settings = MavenSettings { daemon: true, mvnd_home: "/opt/mvnd".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains("\"daemon\":true") && encoded.contains("mvndHome"));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
 }
 
 #[cfg(test)]
@@ -935,6 +1135,7 @@ mod gradle_settings_tests {
                 distribution,
                 home: "/gradle".into(),
                 user_home: "/cache/gradle".into(),
+                run_using: GradleRunUsing::Ide,
             };
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);

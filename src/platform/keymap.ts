@@ -11,7 +11,7 @@
  * optionally with modifiers (`Alt+Button4`); they are single strokes.
  */
 import { create } from "zustand";
-import { getAction, isActionKeyEnabled, executeAction } from "./actions";
+import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
 import { getContext } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
@@ -70,9 +70,11 @@ interface KeymapState {
   preset: string;
   /** User overrides: action id → bindings (empty array removes defaults). */
   overrides: Keymap;
+  /** Extensions' default bindings (plugins), below the preset. */
+  extensions: Keymap;
 }
 
-export const useKeymap = create<KeymapState>(() => ({ preset: defaultPreset(), overrides: {} }));
+export const useKeymap = create<KeymapState>(() => ({ preset: defaultPreset(), overrides: {}, extensions: {} }));
 
 const MOUSE_KEY_RE = /^Button(\d+)$/i;
 
@@ -189,15 +191,59 @@ export function suspendKeyboardDispatch(): () => void {
 }
 
 export function bindingsFor(actionId: string): string[] {
-  const { preset, overrides } = useKeymap.getState();
-  return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? [];
+  const { preset, overrides, extensions } = useKeymap.getState();
+  return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? usableExtensionBindings(extensions)[actionId] ?? [];
 }
 
 /** Every (binding, actionId) pair of the effective keymap. */
 export function effectiveBindings(): Array<[string, string]> {
-  const { preset, overrides } = useKeymap.getState();
-  const merged: Keymap = { ...PRESETS[preset], ...overrides };
+  const { preset, overrides, extensions } = useKeymap.getState();
+  const merged: Keymap = { ...usableExtensionBindings(extensions), ...PRESETS[preset], ...overrides };
   return Object.entries(merged).flatMap(([id, keys]) => keys.map((k) => [normalizeBinding(k), id] as [string, string]));
+}
+
+let extensionCache: { source: Keymap; preset: string; overrides: Keymap; usable: Keymap } | null = null;
+
+/**
+ * Plugin default bindings that stay: those of actions the preset and the
+ * user leave unbound, on keystrokes nothing else uses (the IDE's own
+ * shortcuts always win).
+ */
+function usableExtensionBindings(extensions: Keymap | undefined = {}): Keymap {
+  const { preset, overrides } = useKeymap.getState();
+  if (
+    extensionCache?.source === extensions &&
+    extensionCache.preset === preset &&
+    extensionCache.overrides === overrides
+  )
+    return extensionCache.usable;
+  const builtIn: Keymap = { ...PRESETS[preset], ...overrides };
+  const taken = new Set(Object.values(builtIn).flatMap((keys) => keys.map(normalizeBinding)));
+  const usable: Keymap = {};
+  for (const [id, keys] of Object.entries(extensions)) {
+    if (id in builtIn) continue;
+    const free = keys.filter((k) => !taken.has(normalizeBinding(k)));
+    for (const k of free) taken.add(normalizeBinding(k));
+    if (free.length) usable[id] = free;
+  }
+  extensionCache = { source: extensions, preset, overrides, usable };
+  return usable;
+}
+
+/**
+ * Default bindings contributed by an extension (a plugin's `keymaps`), below
+ * the preset and the user's: dropped when the keystroke is already taken.
+ * Returns a disposer.
+ */
+export function registerExtensionBindings(actionId: string, bindings: string[]): () => void {
+  const valid = bindings.filter(isValidBinding);
+  useKeymap.setState((s) => ({ extensions: { ...(s.extensions ?? {}), [actionId]: valid } }));
+  return () =>
+    useKeymap.setState((s) => {
+      if (s.extensions?.[actionId] !== valid) return s;
+      const { [actionId]: _, ...rest } = s.extensions ?? {};
+      return { extensions: rest };
+    });
 }
 
 const MOD_ORDER = MODIFIERS;
@@ -402,7 +448,7 @@ export function isAltGrTyping(
 function runIfEnabled(id: string): boolean {
   const action = getAction(id);
   if (!action || !isActionKeyEnabled(action)) return false;
-  void executeAction(id);
+  void executeActionFrom("keyboard", id);
   return true;
 }
 
@@ -477,7 +523,7 @@ export function installKeyboardDispatcher(
       e.preventDefault();
       e.stopPropagation();
       tap.keyUsed = true;
-      void executeAction(id);
+      void executeActionFrom("keyboard", id);
       return true;
     }
     return false;
@@ -526,7 +572,7 @@ export function installKeyboardDispatcher(
         e.preventDefault();
         e.stopPropagation();
         reset();
-        void executeAction(id);
+        void executeActionFrom("keyboard", id);
         return;
       }
     }

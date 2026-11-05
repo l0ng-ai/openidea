@@ -2,6 +2,7 @@ export * from "./icons";
 export * from "./Button";
 export * from "./FloatingToolbar";
 export * from "./Kbd";
+export * from "./Mnemonic";
 export * from "./Tooltip";
 export * from "./Input";
 export * from "./Checkbox";
@@ -11,10 +12,12 @@ export {
   FILES_DRAG,
   dragRequiresAlt,
   dragSession,
+  dropZoneAt,
   registerDropTarget,
   setDragRequiresAlt,
   startPointerDrag,
   type DragSession,
+  type DropEdge,
 } from "./pointerDrag";
 export * from "./Tree";
 export * from "./List";

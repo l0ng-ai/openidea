@@ -23,7 +23,13 @@ import * as api from "../api/requests";
 import type { GHLabel, GHPullRequestRequestedReviewer, GHUser } from "../api/types";
 import { isTeam } from "../data/model";
 import { createPullRequest } from "../data/operations";
-import { loadPullRequestTemplate, requireConnection, sameRepository, useGhRepository } from "../data/repository";
+import {
+  connectedRemotes,
+  connectedRoot,
+  loadPullRequestTemplate,
+  requireConnection,
+  sameRepository,
+} from "../data/repository";
 import type { GHRemote } from "../data/repository";
 import { refreshCurrentBranchPullRequest } from "../reviewMode/state";
 import { openPullRequest } from "../toolwindow/open";
@@ -121,18 +127,18 @@ let changesSeq = 0;
 
 /** The repository's root, which the preview's repository-relative paths are relative to. */
 function repoRoot(): string | null {
-  return useVcs.getState().roots[0] ?? useProject.getState().project?.root ?? null;
+  return connectedRoot() ?? useVcs.getState().roots[0] ?? useProject.getState().project?.root ?? null;
 }
 
 const ok = <T>(value: T): Loadable<T> => ({ state: "ok", value });
 const failed = (e: unknown): Loadable<never> => ({ state: "error", error: errorMessage(e) });
 
-const remoteNames = () => useGhRepository.getState().remotes.map((r) => r.remote);
+const remoteNames = () => connectedRemotes().map((r) => r.remote);
 
 /** The connected repository's GitHub remote (the base). */
 function baseRemote(): GHRemote {
   const { coordinates } = requireConnection();
-  const remotes = useGhRepository.getState().remotes;
+  const remotes = connectedRemotes();
   return remotes.find((r) => sameRepository(r, coordinates)) ?? { ...coordinates, remote: "origin", url: "" };
 }
 
@@ -143,13 +149,13 @@ export async function initCreate(): Promise<void> {
   try {
     const { repository } = requireConnection();
     const [branches, info] = await Promise.all([
-      call(commands.vcsBranches(null)),
-      call(commands.vcsBranchInfo(null)).catch(() => null),
+      call(commands.vcsBranches(connectedRoot())),
+      call(commands.vcsBranchInfo(connectedRoot())).catch(() => null),
     ]);
     if (e !== generation) return;
     const direction = defaultDirection({
       baseRepo: baseRemote(),
-      remotes: useGhRepository.getState().remotes,
+      remotes: connectedRemotes(),
       branches,
       currentBranch: info?.head ?? null,
       defaultBranch: repository.defaultBranchRef?.name,
@@ -190,7 +196,7 @@ export function setHead(repo: GHRemote, branch: HeadBranch) {
 
 /** The Refresh of a failed check: reads the branches again and checks them. */
 export async function refreshBranchesState(): Promise<void> {
-  const branches = await call(commands.vcsBranches(null)).catch(() => null);
+  const branches = await call(commands.vcsBranches(connectedRoot())).catch(() => null);
   if (branches) useCreatePr.setState({ branches });
   reloadBranchesState();
 }
@@ -201,7 +207,7 @@ const tip = (branches: readonly Branch[], name: string) => branches.find((b) => 
 export async function onRepositoryChanged(): Promise<void> {
   const s = useCreatePr.getState();
   if (!s.ready || !s.direction) return;
-  const branches = await call(commands.vcsBranches(null)).catch(() => null);
+  const branches = await call(commands.vcsBranches(connectedRoot())).catch(() => null);
   if (!branches) return;
   const { baseBranch, headBranch } = useCreatePr.getState().direction ?? {};
   const before = useCreatePr.getState().branches;
@@ -245,7 +251,7 @@ function reloadBranchesState() {
     : Promise.resolve(null);
   existing.catch(() => undefined);
   const commits = call(
-    commands.vcsLog(null, {
+    commands.vcsLog(connectedRoot(), {
       branch: null,
       path: null,
       author: null,
@@ -320,14 +326,14 @@ async function loadChanges() {
     let changes: CreateChange[];
     const commit = s.selectedCommit ? list.find((c) => c.id === s.selectedCommit) : null;
     if (commit) {
-      const files = await call(commands.vcsCommitFiles(null, commit.id));
+      const files = await call(commands.vcsCommitFiles(connectedRoot(), commit.id));
       changes = files.map((f) => ({ ...f, diff: commitFileDiffData({ ...commit, repo: root }, f) }));
     } else {
       const head = list[0]!.id;
       const baseName = remoteBranchFullName(d.baseBranch);
-      const mergeBase = await call(commands.vcsMergeBase(null, baseName, head));
+      const mergeBase = await call(commands.vcsMergeBase(connectedRoot(), baseName, head));
       if (!mergeBase) throw new Error(tx`Unrelated branches ${baseName} ${headBranchName(d.headBranch)}`);
-      const files = await call(commands.vcsDiffRevisions(null, mergeBase, head));
+      const files = await call(commands.vcsDiffRevisions(connectedRoot(), mergeBase, head));
       const baseSide = { rev: mergeBase, label: `${d.baseBranch.name} (${mergeBase.slice(0, 8)})` };
       const headSide = { rev: head, label: `${headBranchName(d.headBranch)} (${head.slice(0, 8)})` };
       changes = files.map((f) => ({ ...f, diff: rangeDiffData(f, root, baseSide, headSide) }));
@@ -384,7 +390,7 @@ async function pushHead(head: Extract<HeadBranch, { kind: "local" }>, headRepo: 
         remote: target.remote,
       },
       `${head.name} → ${remoteBranchFullName(target)}`,
-      [null],
+      [connectedRoot()],
     );
     if (!pushed) {
       const error = lastRemoteFailure();
@@ -392,7 +398,7 @@ async function pushHead(head: Extract<HeadBranch, { kind: "local" }>, headRepo: 
       if (!error) return null;
       throw new Error(tx`Push failed: ${error}`);
     }
-    const after = await call(commands.vcsBranches(null)).catch(() => null);
+    const after = await call(commands.vcsBranches(connectedRoot())).catch(() => null);
     if (after) useCreatePr.setState({ branches: after });
   }
   return target.name;

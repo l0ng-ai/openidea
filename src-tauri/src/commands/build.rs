@@ -43,6 +43,33 @@ pub async fn build_sync(
     .await
 }
 
+/// The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer).
+#[tauri::command]
+#[specta::specta]
+pub async fn gradle_dependencies(
+    window: Window,
+    state: State<'_, AppState>,
+    gradle_path: String,
+    configuration: String,
+    offline: bool,
+    request: RequestId,
+) -> IdeResult<Vec<ide_build::GradleDependency>> {
+    ide_host::ops::build::gradle_dependencies(&state.host, window.label(), gradle_path, configuration, offline, request)
+        .await
+}
+
+/// The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
+/// build has downloaded it.
+#[tauri::command]
+#[specta::specta]
+pub async fn gradle_published_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    coordinates: String,
+) -> IdeResult<Option<ide_core::IpcPath>> {
+    ide_host::ops::build::gradle_published_catalog(&state.host, window.label(), coordinates).await
+}
+
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.
 #[tauri::command]
 #[specta::specta]

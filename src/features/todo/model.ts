@@ -71,10 +71,20 @@ export function buildTodoQuery(s: TodoSettings, scope: SearchScope = { kind: "pr
   };
 }
 
-const COMMENT_MARKER = /(\/\/|\/\*|^\s*\*|#|--|<!--|;|%|\{-|\(\*|"""|''')/;
+// Comment openers that count anywhere on the line, at its start or after whitespace: // /* <!-- # -- {- (*.
+// The whitespace rule drops `//` in URLs, `#` in strings, `f(*)` and `a * b`. Left over without knowing
+// the language: `"x # y"` in a string and a prefix `--y`.
+// `*` `;` `%` `"""` `'''` are code characters too, so they count only at the line start (LINE_START_MARKER).
+// IDEA's default pattern matches a TODO anywhere inside a comment, so the keyword need not lead it.
+const INLINE_MARKER = /(?:^|\s)(?:\/\/|\/\*|<!--|#|--|\{-|\(\*)/;
+const LINE_START_MARKER = /^\s*(?:\*|;|%|"""|''')/;
+// A long line the backend truncated (ide-search line.rs, `textOffset > 0`) doesn't start at the real line
+// start, so neither rule can apply: any marker counts, a false positive rather than a missed TODO.
+const LENIENT_MARKER = /(\/\/|\/\*|<!--|#|--|\{-|\(\*|\*|;|%|"""|''')/;
 
-export function looksLikeComment(prefix: string): boolean {
-  return COMMENT_MARKER.test(prefix);
+export function looksLikeComment(prefix: string, truncated = false): boolean {
+  if (truncated) return LENIENT_MARKER.test(prefix);
+  return INLINE_MARKER.test(prefix) || LINE_START_MARKER.test(prefix);
 }
 
 function cleanText(text: string): string {
@@ -96,7 +106,7 @@ export function itemsFromMatches(fm: FileMatches, s: TodoSettings): TodoItem[] {
       const matched = lm.text.slice(start, end);
       const p = patternFor(s, matched);
       if (!p) continue;
-      if (s.commentsOnly && !looksLikeComment(lm.text.slice(0, start))) continue;
+      if (s.commentsOnly && !looksLikeComment(lm.text.slice(0, start), lm.textOffset > 0)) continue;
       out.push({
         path: fm.path,
         line: lm.line,
@@ -125,7 +135,7 @@ export function scanText(path: string, text: string, s: TodoSettings): TodoItem[
     }
     const p = patternFor(s, m[0]);
     if (!p) continue;
-    if (s.commentsOnly && !looksLikeComment(text.slice(lineStart, idx))) continue;
+    if (s.commentsOnly && !looksLikeComment(text.slice(lineStart, idx), false)) continue;
     out.push({ path, line, col: idx - lineStart, keyword: p.keyword.trim(), text: cleanText(m[0]) });
   }
   return out;

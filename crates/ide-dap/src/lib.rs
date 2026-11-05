@@ -212,6 +212,19 @@ pub struct Variable {
     pub evaluate_name: Option<String>,
 }
 
+/// A completion the adapter offers for an expression (DAP `completions`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugCompletion {
+    pub label: String,
+    /// What to insert, when it differs from `label`.
+    pub text: Option<String>,
+    /// DAP item type: `method`, `field`, `variable`, `class`, `keyword`, …
+    pub kind: Option<String>,
+    pub detail: Option<String>,
+    pub sort_text: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum StepKind {
@@ -576,11 +589,12 @@ impl DebugManager {
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
-        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy).
+        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy),
+        // or with the launcher's when the debuggee runs through a manager (`uv run python`).
         if config.adapter == "debugpy" {
-            let python = match arguments.get("python") {
-                Some(Value::String(p)) => Some(p.clone()),
-                Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_owned),
+            let python = match (arguments.get("debugLauncherPython"), arguments.get("python")) {
+                (Some(Value::String(p)), _) | (_, Some(Value::String(p))) => Some(p.clone()),
+                (_, Some(Value::Array(a))) => a.first().and_then(Value::as_str).map(str::to_owned),
                 _ => None,
             };
             if let Some(python) = python {
@@ -638,8 +652,19 @@ impl DebugManager {
         {
             arguments["project"] = json!(real);
         }
-        if config.adapter == "codelldb" && arguments.get("sourceLanguages").is_none() {
-            arguments["sourceLanguages"] = json!(["rust"]);
+        if config.adapter == "codelldb" {
+            if arguments.get("sourceLanguages").is_none() {
+                arguments["sourceLanguages"] = json!(["rust"]);
+            }
+            // The Debug Console and Evaluate Expression take expressions, as with every other
+            // debugger; LLDB commands still run with a leading backtick.
+            match arguments.get_mut("_adapterSettings") {
+                None => arguments["_adapterSettings"] = json!({"consoleMode": "evaluate"}),
+                Some(Value::Object(settings)) => {
+                    settings.entry("consoleMode").or_insert_with(|| json!("evaluate"));
+                }
+                Some(_) => {}
+            }
         }
         let port = debug_server.map(|s| s.port);
         self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, port).await
@@ -1155,6 +1180,47 @@ impl DebugManager {
             variables_reference: body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
             evaluate_name: Some(expression),
         })
+    }
+
+    /// Completions for `text` at `line` / `column` (0-based, UTF-16) in the frame's scope; none
+    /// when the adapter doesn't offer them.
+    pub async fn completions(
+        &self,
+        s: DebugSessionId,
+        frame_id: Option<i64>,
+        text: String,
+        line: u32,
+        column: u32,
+    ) -> IdeResult<Vec<DebugCompletion>> {
+        let session = self.session(s)?;
+        if !session.supports("supportsCompletionsRequest") {
+            return Ok(Vec::new());
+        }
+        let mut args = json!({ "text": text, "line": line + 1, "column": column + 1 });
+        if let Some(f) = frame_id {
+            args["frameId"] = f.into();
+        }
+        let body = session.conn.request_timeout("completions", args, REQUEST_TIMEOUT).await?;
+        let text =
+            |v: &Value, key: &str| v.get(key).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned);
+        Ok(body
+            .get("targets")
+            .and_then(Value::as_array)
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter_map(|t| {
+                        Some(DebugCompletion {
+                            label: text(t, "label")?,
+                            text: text(t, "text"),
+                            kind: text(t, "type"),
+                            detail: text(t, "detail"),
+                            sort_text: text(t, "sortText"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
