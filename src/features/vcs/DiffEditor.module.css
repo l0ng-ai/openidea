@@ -135,6 +135,9 @@
 }
 .host :global(.cm-mergeViewEditor) {
   min-width: 0;
+  /* Clips like the library's `hidden` without becoming a scroll container, so the aligned view's
+     overview lane sticks to the MergeView's viewport (cm/lanes.ts `overviewLaneIn`). */
+  overflow: clip;
 }
 .host :global(.cm-merge-revert) {
   width: 22px;
