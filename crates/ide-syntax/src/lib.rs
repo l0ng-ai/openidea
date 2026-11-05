@@ -24,6 +24,7 @@ mod kinds;
 mod lines;
 mod locals;
 mod nodes;
+mod psi;
 mod types;
 
 #[cfg(test)]
@@ -31,6 +32,7 @@ mod tests;
 
 pub use jvm::{JvmPresentation, JvmTypeKind, jvm_type_header};
 pub use types::*;
+pub use psi::*;
 
 use ide_core::{CancellationToken, DocId, IdeError, LanguageId, Pos, Range};
 use ide_language::{ParsedTree, SyntaxCache, TreeError};
