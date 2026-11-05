@@ -1,4 +1,4 @@
-//! SDK for OpenIDEA plugins written in Rust (plugin API 1.0).
+//! SDK for OpenIDEA plugins written in Rust (plugin API 1.2).
 //!
 //! ```ignore
 //! use openidea_plugin::{Error, Invocation, Plugin, register_plugin};
@@ -23,7 +23,7 @@
 //! ```
 //!
 //! On `wasm32-wasip2` the [`host`] functions and handles call the IDE through
-//! the `openidea:plugin@1.0.0` WIT world. On any other target they call the
+//! the `openidea:plugin@1.2.0` WIT world. On any other target they call the
 //! [`mock`] host, so plugin logic is tested with plain `cargo test`:
 //!
 //! ```ignore
@@ -41,6 +41,7 @@
 
 pub mod host;
 pub mod indexing;
+pub mod mcp;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mock;
 pub mod providers;
@@ -115,6 +116,26 @@ pub mod views_bindings {
     });
 }
 
+/// The `mcp-provider` world: only the `mcp-tools` export, merged with
+/// `plugin` (world `plugin-mcp`).
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod mcp_bindings {
+    wit_bindgen::generate!({
+        world: "mcp-provider",
+        path: "wit",
+        pub_export_macro: true,
+        export_macro_name: "__export_mcp_world",
+        default_bindings_module: "openidea_plugin::mcp_bindings",
+        with: {
+            "openidea:plugin/types@1.2.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.2.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.2.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.2.0": crate::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub mod indexing_bindings {
@@ -150,11 +171,14 @@ pub trait Plugin: 'static {
     fn handle_events(&mut self, _events: &[Event], _ctx: &Invocation) {}
 }
 
-/// Exports `T` (a [`Plugin`] + `Default`) as the plugin's component. With
-/// `syntax`, `T` is also a [`syntax::SyntaxProvider`] for its languages.
+/// Exports `T` (a [`Plugin`] + `Default`) as the plugin's component. Name
+/// what else `T` provides, in any order: `syntax` ([`syntax::SyntaxProvider`]
+/// for its languages), `providers` ([`providers::Providers`]), `views`
+/// ([`views::Views`]), `indexing` ([`indexing::DocumentIndexer`]), `mcp`
+/// ([`mcp::McpTools`]): `register_plugin!(T, views, mcp)`.
 #[macro_export]
 macro_rules! register_plugin {
-    ($plugin:ty) => {
+    ($plugin:ty $(, $feature:ident)* $(,)?) => {
         // Natively (tests) nothing is exported; keep the type "used".
         #[cfg(not(target_arch = "wasm32"))]
         const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
@@ -162,106 +186,83 @@ macro_rules! register_plugin {
         const _: () = {
             struct __OpenideaComponent;
             $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
-    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
-        };
-    };
-    ($plugin:ty, providers) => {
-        #[cfg(not(target_arch = "wasm32"))]
-        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
-        #[cfg(target_arch = "wasm32")]
-        const _: () = {
-            struct __OpenideaComponent;
-            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
-            $crate::__providers_exports!($plugin, __OpenideaComponent);
-    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
-        };
-    };
-    ($plugin:ty, indexing) => {
-        #[cfg(not(target_arch = "wasm32"))]
-        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
-        #[cfg(target_arch = "wasm32")]
-        const _: () = {
-            struct __OpenideaComponent;
-            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
-            $crate::__indexing_exports!($plugin, __OpenideaComponent);
-    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
-        };
-    };
-    ($plugin:ty, providers, indexing) => {
-        #[cfg(not(target_arch = "wasm32"))]
-        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
-        #[cfg(target_arch = "wasm32")]
-        const _: () = {
-            struct __OpenideaComponent;
-            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
-            $crate::__providers_exports!($plugin, __OpenideaComponent);
-            $crate::__indexing_exports!($plugin, __OpenideaComponent);
-    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
-        };
-    };
-    ($plugin:ty, views) => {
-        #[cfg(not(target_arch = "wasm32"))]
-        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
-        #[cfg(target_arch = "wasm32")]
-        const _: () = {
-            struct __OpenideaComponent;
-            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
-            $crate::__views_exports!($plugin, __OpenideaComponent);
-    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
-        };
-    };
-    ($plugin:ty, providers, views) => {
-        #[cfg(not(target_arch = "wasm32"))]
-        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
-        #[cfg(target_arch = "wasm32")]
-        const _: () = {
-            struct __OpenideaComponent;
-            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
-            $crate::__providers_exports!($plugin, __OpenideaComponent);
-            $crate::__views_exports!($plugin, __OpenideaComponent);
-    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
-        };
-    };
-    ($plugin:ty, syntax) => {
-        #[cfg(not(target_arch = "wasm32"))]
-        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
-        #[cfg(target_arch = "wasm32")]
-        const _: () = {
-            struct __OpenideaComponent;
-            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
-
-            impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for __OpenideaComponent {
-                fn highlights(
-                    language: ::std::string::String,
-                    text: ::std::string::String,
-                ) -> ::std::vec::Vec<$crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Token>
-                {
-                    $crate::__rt::highlights::<$plugin>(&language, &text)
-                }
-
-                fn outline(
-                    language: ::std::string::String,
-                    text: ::std::string::String,
-                ) -> ::std::vec::Vec<$crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Symbol>
-                {
-                    $crate::__rt::outline::<$plugin>(&language, &text)
-                }
-
-                fn folding(
-                    language: ::std::string::String,
-                    text: ::std::string::String,
-                ) -> ::std::vec::Vec<$crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Fold>
-                {
-                    $crate::__rt::folding::<$plugin>(&language, &text)
-                }
-            }
-
-    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
-    $crate::syntax_bindings::__export_syntax_world!(__OpenideaComponent with_types_in $crate::syntax_bindings);
+            $($crate::__feature_exports!($feature, $plugin, __OpenideaComponent);)*
+            $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
         };
     };
 }
 
+/// One optional export of `register_plugin!`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __feature_exports {
+    (syntax, $plugin:ty, $component:ident) => {
+        $crate::__syntax_exports!($plugin, $component);
+    };
+    (providers, $plugin:ty, $component:ident) => {
+        $crate::__providers_exports!($plugin, $component);
+    };
+    (views, $plugin:ty, $component:ident) => {
+        $crate::__views_exports!($plugin, $component);
+    };
+    (indexing, $plugin:ty, $component:ident) => {
+        $crate::__indexing_exports!($plugin, $component);
+    };
+    (mcp, $plugin:ty, $component:ident) => {
+        $crate::__mcp_exports!($plugin, $component);
+    };
+}
+
+/// `register_plugin!(T, syntax)`: `T` is also a [`syntax::SyntaxProvider`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __syntax_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
+            fn highlights(
+                language: ::std::string::String,
+                text: ::std::string::String,
+            ) -> ::std::vec::Vec<$crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Token> {
+                $crate::__rt::highlights::<$plugin>(&language, &text)
+            }
+
+            fn outline(
+                language: ::std::string::String,
+                text: ::std::string::String,
+            ) -> ::std::vec::Vec<$crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Symbol> {
+                $crate::__rt::outline::<$plugin>(&language, &text)
+            }
+
+            fn folding(
+                language: ::std::string::String,
+                text: ::std::string::String,
+            ) -> ::std::vec::Vec<$crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Fold> {
+                $crate::__rt::folding::<$plugin>(&language, &text)
+            }
+        }
+
+        $crate::syntax_bindings::__export_syntax_world!($component with_types_in $crate::syntax_bindings);
+    };
+}
+
+/// `register_plugin!(T, mcp)`: `T` is also a [`mcp::McpTools`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __mcp_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::mcp_bindings::exports::openidea::plugin::mcp_tools::Guest for $component {
+            fn call(
+                name: ::std::string::String,
+                arguments: ::std::string::String,
+                ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
+            ) -> ::core::result::Result<::std::string::String, $crate::bindings::openidea::plugin::types::Error> {
+                $crate::__rt::call_mcp_tool::<$plugin>(&name, &arguments, ctx)
+            }
+        }
+
+        $crate::mcp_bindings::__export_mcp_world!($component with_types_in $crate::mcp_bindings);
+    };
+}
 /// `register_plugin!(T, providers)`: `T` is also a [`providers::Providers`].
 #[doc(hidden)]
 #[macro_export]
@@ -600,6 +601,17 @@ pub mod __rt {
             aliases: e.aliases.into_iter().map(|a| w::Alias { prefix: a.prefix, target: a.target }).collect(),
             markers: e.markers.into_iter().map(anchor).collect(),
         }
+    }
+
+    // ---- MCP tools ----
+
+    pub fn call_mcp_tool<T: Plugin + crate::mcp::McpTools + Default>(
+        name: &str,
+        arguments: &str,
+        ctx: &b::invocation::Invocation,
+    ) -> Result<String, b::types::Error> {
+        let ctx = Invocation::__new(ctx);
+        with::<T, _>(|p| p.call_tool(name, arguments, &ctx)).map_err(error_out)
     }
 
     // ---- views ----

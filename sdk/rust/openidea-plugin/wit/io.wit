@@ -94,3 +94,25 @@ interface process {
     /// a task for anything slow.
     run: func(program: string, args: list<string>, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
 }
+
+/// Terminal tabs running programs granted with `process:<program>`.
+interface terminal {
+    use types.{error};
+
+    record options {
+        /// The tab's title.
+        title: string,
+        program: string,
+        args: list<string>,
+        /// Added to the terminal's environment (`NAME`, value).
+        env: list<tuple<string, string>>,
+        /// A directory inside the project (absolute or project-relative);
+        /// none: the project root.
+        cwd: option<string>,
+    }
+
+    /// Opens a terminal tab in the window the call came from, running the
+    /// approved file of `process:<program>` (like `views.open-terminal`), with
+    /// `env` and in `cwd`: interactive sessions, output that keeps coming.
+    open: func(options: options) -> result<_, error>;
+}

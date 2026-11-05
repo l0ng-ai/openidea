@@ -90,6 +90,9 @@ impl PluginWorkspace for TestWorkspace {
     fn project_of(&self, _window: &str) -> Option<PathBuf> {
         Some(self.root.clone())
     }
+    fn window_of(&self, root: &Path) -> Option<String> {
+        (root == self.root).then(|| "main".to_owned())
+    }
     fn publish_diagnostics(
         &self,
         source: &str,
@@ -2609,4 +2612,177 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
+}
+
+/// A minimal HTTP/1.1 POST of `body` to the MCP server at `port`: the reply's JSON.
+fn mcp_post(port: u16, token: &str, project: &Path, body: &serde_json::Value) -> serde_json::Value {
+    use std::io::{Read, Write};
+    let body = body.to_string();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nX-OpenIDEA-Project: {}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        project.display(),
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    stream.read_to_string(&mut out).unwrap();
+    let (head, body) = out.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{out}");
+    serde_json::from_str(body).unwrap()
+}
+
+/// An agent's request reaches a plugin's MCP tool through the IDE's server:
+/// listed for the project, run in the plugin's instance with that project and
+/// its window's focused editor, failures reported as failed calls.
+#[test]
+fn mcp_tools_answer_agents_over_http() {
+    use serde_json::json;
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("mcp-tools"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    assert!(info.capabilities.iter().any(|c| c.id == "mcp" && c.granted));
+    let editor = f.workspace.open("src/notes.txt", &[(1, 2, 1, 4)]);
+    let project = f.project.clone();
+    let host = Arc::new(f.host);
+    host.set_focused_editor("main", Some(editor.clone()));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = ide_mcp::McpServer::start(host.mcp_registry(), None, runtime.handle()).unwrap();
+    let rpc = |method: &str, params: serde_json::Value| {
+        let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        mcp_post(server.port(), server.token(), &project.join("src"), &request)
+    };
+
+    let list = rpc("tools/list", json!({}));
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["where_am_i", "fail"], "{list}");
+    assert_eq!(tools[0]["inputSchema"]["properties"]["note"]["type"], "string");
+    assert_eq!(tools[0]["annotations"], json!({ "readOnlyHint": true, "destructiveHint": false }));
+    assert_eq!(tools[1]["annotations"]["destructiveHint"], true);
+    assert_eq!(host.info_of("mcp-tools").unwrap().status, PluginStatus::Inactive, "listing runs no code");
+
+    let call = rpc("tools/call", json!({ "name": "where_am_i", "arguments": { "note": "hi" } }));
+    let expected =
+        format!("project={} editor={}:1:2 calls=1 args={{\"note\":\"hi\"}}", to_ipc(&project), to_ipc(&editor.path));
+    assert_eq!(call["result"], json!({ "content": [{ "type": "text", "text": expected }], "isError": false }));
+    assert_eq!(host.info_of("mcp-tools").unwrap().status, PluginStatus::Active, "activated by the call");
+
+    let failed = rpc("tools/call", json!({ "name": "fail" }));
+    assert_eq!(failed["result"]["isError"], true, "{failed}");
+    assert!(failed["result"]["content"][0]["text"].as_str().unwrap().contains("asked to fail"), "{failed}");
+    assert_eq!(rpc("tools/call", json!({ "name": "nope" }))["error"]["code"], -32602);
+
+    // Folders that are not open; a disabled plugin's tools are gone.
+    let elsewhere = mcp_post(
+        server.port(),
+        server.token(),
+        &project.parent().unwrap().join("elsewhere"),
+        &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+    );
+    assert!(elsewhere["error"]["message"].as_str().unwrap().contains("isn't open in OpenIDEA"), "{elsewhere}");
+    host.set_enabled("mcp-tools", false).unwrap();
+    assert_eq!(rpc("tools/list", json!({}))["result"]["tools"], json!([]));
+}
+
+/// `mcp.endpoint` names the running server, and `terminal.open` starts the
+/// pinned program with environment variables in a project directory.
+#[cfg(unix)]
+#[test]
+fn plugins_launch_agents_with_the_mcp_endpoint() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits::default());
+    let bin = f.plugins_dir.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("agent"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(bin.join("agent"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = bin.clone();
+    f.host.set_program_path(Arc::new(move || Some(path.clone().into_os_string())));
+    let info = f.install(&sample("mcp-tools"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    let err = f.run("mcp-tools", "launch", None).unwrap_err();
+    assert!(err.contains("MCP server is not running"), "{err}");
+
+    let exe = PathBuf::from("/Applications/OpenIDEA.app/Contents/MacOS/openidea");
+    f.host.set_mcp_server(Some(McpServerInfo { port: 4321, token: "tok".into(), exe: exe.clone() }));
+    f.take_events();
+    let stdio = f.run("mcp-tools", "launch", None).unwrap().unwrap();
+    assert_eq!(stdio, format!("{} --mcp-stdio --project {}", exe.display(), f.project.display()));
+    let opened = f.take_events().into_iter().find_map(|(client, e)| match e {
+        PluginEvent::OpenTerminal { title, program, args, env, cwd, .. } => {
+            Some((client, title, program, args, env, cwd))
+        }
+        _ => None,
+    });
+    let (client, title, program, args, env, cwd) = opened.expect("a terminal");
+    assert_eq!((client.as_deref(), title.as_str()), (Some("main"), "Agent"));
+    assert_eq!(program.0, bin.join("agent").canonicalize().unwrap());
+    assert_eq!(args, ["--mcp-url".to_owned(), ide_mcp::endpoint_url(4321, &f.project)]);
+    assert_eq!(env, [("OPENIDEA_MCP_TOKEN".to_owned(), "tok".to_owned())]);
+    assert_eq!(cwd.0, f.project.join("src"));
+
+    // Variables that change what the approved program loads are refused.
+    for name in ["LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "A=B", ""] {
+        let err = f.run("mcp-tools", "launch", Some(name)).unwrap_err();
+        assert!(err.contains("not an environment variable a plugin may set"), "{name}: {err}");
+    }
+}
+
+/// `[[contributes.mcpTools]]` is validated with the rest of the manifest.
+#[test]
+fn mcp_tool_declarations_are_validated() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let variant = |name: &str, edit: &dyn Fn(&Path)| {
+        let dir = tmp.path().join(name);
+        copy_dir(&sample("mcp-tools"), &dir);
+        edit(&dir);
+        f.host.install_from_dir(&dir, &Consent::all()).map(|_| ()).map_err(|e| e.message)
+    };
+    let manifest = |dir: &Path, from: &str, to: &str| {
+        let text = std::fs::read_to_string(dir.join("plugin.toml")).unwrap();
+        assert!(text.contains(from), "{from}");
+        std::fs::write(dir.join("plugin.toml"), text.replacen(from, to, 1)).unwrap();
+    };
+    // (variant, how its package is changed, what the refusal says)
+    type Case<'a> = (&'a str, &'a dyn Fn(&Path), &'a str);
+    let cases: [Case<'_>; 5] = [
+        ("name", &|d| manifest(d, "name = \"fail\"", "name = \"Fail-Now\""), "[a-z][a-z0-9_]"),
+        ("twice", &|d| manifest(d, "name = \"fail\"", "name = \"where_am_i\""), "declared twice"),
+        ("schema", &|d| std::fs::write(d.join("mcp/empty.json"), "[1, 2]").unwrap(), "JSON Schema of an object"),
+        ("missing", &|d| std::fs::remove_file(d.join("mcp/empty.json")).unwrap(), "no such file"),
+        ("json", &|d| std::fs::write(d.join("mcp/empty.json"), "{").unwrap(), "empty.json"),
+    ];
+    for (name, edit, expected) in cases {
+        let err = variant(name, edit).unwrap_err();
+        assert!(err.contains(expected), "{name}: {err}");
+    }
+    assert_eq!(variant("ok", &|_| {}), Ok(()));
+}
+
+/// Without `mcp` a plugin's tools are not served and `mcp.endpoint` is denied.
+#[test]
+fn mcp_tools_and_endpoint_need_the_grant() {
+    let f = fixture(Limits::default());
+    let dir = f._tmp.path().join("mcp-optional");
+    copy_dir(&sample("mcp-tools"), &dir);
+    let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap().replacen(
+        "required = [\"mcp\", \"project.read\"]\noptional = [",
+        "required = [\"project.read\"]\noptional = [\"mcp\", ",
+        1,
+    );
+    std::fs::write(dir.join("plugin.toml"), manifest).unwrap();
+    f.install(&dir);
+    f.host.set_mcp_server(Some(McpServerInfo { port: 1, token: "t".into(), exe: "/bin/openidea".into() }));
+    assert!(f.host.call_mcp_tool(&f.project, "where_am_i", "{}").is_ok());
+
+    let info = f.host.set_capability("mcp-tools", "mcp", false).unwrap();
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    let refused = f.host.call_mcp_tool(&f.project, "where_am_i", "{}").unwrap_err();
+    assert!(matches!(refused, ide_mcp::ToolCallError::UnknownTool(_)), "{refused:?}");
+    let err = f.run("mcp-tools", "launch", None).unwrap_err();
+    assert!(err.contains("permission mcp was not granted"), "{err}");
 }

@@ -25,6 +25,8 @@ world plugin {
     import process;
     import views;
     import settings;
+    import terminal;
+    import mcp;
 
     export lifecycle;
     export commands;
@@ -56,6 +58,12 @@ world plugin-indexing {
     export document-indexer;
 }
 
+/// A plugin with MCP tools (`[[contributes.mcpTools]]`).
+world plugin-mcp {
+    include plugin;
+    export mcp-tools;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -75,4 +83,9 @@ world views-provider {
 /// Only the `document-indexer` export, generated next to `plugin` like `syntax`.
 world indexing {
     export document-indexer;
+}
+
+/// Only the `mcp-tools` export, generated next to `plugin` like `syntax`.
+world mcp-provider {
+    export mcp-tools;
 }

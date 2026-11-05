@@ -292,6 +292,27 @@ pub struct ProcessOutput {
     pub stderr: String,
 }
 
+/// Where agents reach a project's MCP tools (WIT `mcp.endpoint`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpEndpoint {
+    pub url: String,
+    pub token: String,
+    /// The stdio bridge: executable and arguments.
+    pub stdio_command: Vec<String>,
+}
+
+/// A terminal tab to open (WIT `terminal.options`, `views.open-terminal`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalRequest {
+    pub title: String,
+    pub program: String,
+    pub args: Vec<String>,
+    /// Added to the terminal's environment.
+    pub env: Vec<(String, String)>,
+    /// A directory inside the project (resolved), or `None`: the plugin's data directory.
+    pub cwd: Option<PathBuf>,
+}
+
 /// Where `net:` requests may go: the URL's host when it is `https`, or
 /// `http` to the loopback interface.
 pub fn net_host(url: &str) -> Result<String, String> {

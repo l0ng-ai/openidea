@@ -1,0 +1,39 @@
+package openidea:plugin@1.2.0;
+
+/// Optional export (world `plugin-mcp`): the tools the plugin declares under
+/// `[[contributes.mcpTools]]`, called by AI agents outside the IDE through
+/// the IDE's MCP server. Requires `mcp`.
+interface mcp-tools {
+    use types.{error};
+    use invocation.{invocation};
+
+    /// Runs tool `name`. `arguments` is the JSON object the client sent (not
+    /// checked against the declared schema: the plugin checks it). `ctx` is
+    /// the project the client asked for and that window's focused editor.
+    /// Returns the tool's text result; an `error` is reported to the client
+    /// as a failed tool call.
+    call: func(name: string, arguments: string, ctx: borrow<invocation>) -> result<string, error>;
+}
+
+/// The IDE's MCP server, for plugins that connect agents to it. Requires `mcp`.
+interface mcp {
+    use types.{error};
+    use workspace.{project};
+
+    record endpoint-info {
+        /// `http://127.0.0.1:<port>/mcp?project=<root>`: Streamable HTTP, for
+        /// this run of the IDE only.
+        url: string,
+        /// Bearer token of `url` (`Authorization: Bearer <token>`); changes
+        /// with every run of the IDE.
+        token: string,
+        /// A command (the IDE's executable and its arguments) that serves the
+        /// same tools over stdio while the IDE runs, without a token: for
+        /// configurations that outlive this run.
+        stdio-command: list<string>,
+    }
+
+    /// Where agents reach the tools for `project`. Fails when the user turned
+    /// the server off or it isn't available (remote projects).
+    endpoint: func(project: borrow<project>) -> result<endpoint-info, error>;
+}

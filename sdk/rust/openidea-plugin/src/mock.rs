@@ -79,14 +79,18 @@ struct State {
     terminals: Vec<MockTerminal>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
+    mcp_stopped: bool,
 }
 
 /// A terminal the plugin opened.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MockTerminal {
     pub title: String,
     pub program: String,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    /// As given (`None`: the project root).
+    pub cwd: Option<String>,
 }
 
 thread_local! {
@@ -255,6 +259,12 @@ impl MockHost {
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
+    }
+
+    /// The user turns the MCP server off: [`crate::host::Project::mcp_endpoint`] fails.
+    /// While on, it answers port 4000 and token `mock-token`.
+    pub fn stop_mcp_server(&self) {
+        self.state.borrow_mut().mcp_stopped = true;
     }
 
     /// The value of one of the plugin's settings, as JSON (`true`, `"text"`).
@@ -648,8 +658,57 @@ pub mod current {
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
         with(|s| {
             require(s, &format!("process:{program}"))?;
-            s.terminals.push(MockTerminal { title: title.into(), program: program.into(), args: args.to_vec() });
+            s.terminals.push(MockTerminal {
+                title: title.into(),
+                program: program.into(),
+                args: args.to_vec(),
+                ..MockTerminal::default()
+            });
             Ok(())
+        })
+    }
+
+    pub fn open_terminal_with(o: &TerminalOptions) -> Result<(), Error> {
+        with(|s| {
+            require(s, &format!("process:{}", o.program))?;
+            if s.root.is_none() && o.cwd.is_some() {
+                return Err(Error::Invalid("no project is open in this window".into()));
+            }
+            if let Some((name, _)) = o.env.iter().find(|(k, _)| k.is_empty() || k.contains(['=', '\0'])) {
+                return Err(Error::Invalid(format!("{name:?}: not an environment variable a plugin may set")));
+            }
+            s.terminals.push(MockTerminal {
+                title: o.title.clone(),
+                program: o.program.clone(),
+                args: o.args.clone(),
+                env: o.env.clone(),
+                cwd: o.cwd.clone(),
+            });
+            Ok(())
+        })
+    }
+
+    pub fn mcp_endpoint(p: &ProjectRes) -> Result<McpEndpoint, Error> {
+        with(|s| {
+            require(s, "mcp")?;
+            if s.mcp_stopped {
+                return Err(Error::Failed("the MCP server is not running".into()));
+            }
+            let query: String = p
+                .root
+                .bytes()
+                .map(|b| match b {
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                        (b as char).to_string()
+                    }
+                    _ => format!("%{b:02X}"),
+                })
+                .collect();
+            Ok(McpEndpoint {
+                url: format!("http://127.0.0.1:4000/mcp?project={query}"),
+                token: "mock-token".into(),
+                stdio_command: ["openidea", "--mcp-stdio", "--project", &p.root].map(str::to_owned).to_vec(),
+            })
         })
     }
 
@@ -747,6 +806,29 @@ mod tests {
             assert!(task.is_cancelled());
         }
         assert!(mock.tasks()[0].ended);
+    }
+
+    #[test]
+    fn terminals_with_environment_and_the_mcp_endpoint() {
+        let mock = MockHost::install().with_capabilities(&["process:agent"]);
+        let project = mock.invocation().project().unwrap();
+        assert_eq!(project.mcp_endpoint(), Err(Error::Denied("mcp".into())));
+        let mock = MockHost::install().with_capabilities(&["process:agent", "mcp"]);
+        let project = mock.invocation().project().unwrap();
+        let endpoint = project.mcp_endpoint().unwrap();
+        assert_eq!(endpoint.url, "http://127.0.0.1:4000/mcp?project=/project");
+        assert_eq!(endpoint.stdio_command, ["openidea", "--mcp-stdio", "--project", "/project"]);
+        let options = TerminalOptions::new("Agent", "agent").args(["--x"]).env("TOKEN", &endpoint.token).cwd("src");
+        host::open_terminal_with(&options).unwrap();
+        let t = &mock.terminals()[0];
+        assert_eq!((t.args.as_slice(), t.cwd.as_deref()), (["--x".to_owned()].as_slice(), Some("src")));
+        assert_eq!(t.env, [("TOKEN".to_owned(), "mock-token".to_owned())]);
+        assert_eq!(
+            host::open_terminal_with(&TerminalOptions::new("x", "other")),
+            Err(Error::Denied("process:other".into()))
+        );
+        mock.stop_mcp_server();
+        assert!(matches!(project.mcp_endpoint(), Err(Error::Failed(_))));
     }
 
     #[test]

@@ -34,7 +34,7 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, indexer, jobs, language-toy, mcp-tools, misbehave
 ```
 
 The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.2.0`, world
@@ -144,6 +144,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
 | `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
 | `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
+| `mcpTools`      | `name`, `description`, `input-schema` (JSON Schema file of an object), `read-only?`, `destructive?` (see _MCP tools_)             | yes           |
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
@@ -194,20 +195,21 @@ installing (or when a new version asks for more). Low-risk capabilities are
 listed; high-risk ones are called out as equivalent to running code on the
 machine. Users can revoke optional capabilities in Settings › Plugins.
 
-| Capability          | Risk   | Unlocks today                                                                       |
-| ------------------- | ------ | ----------------------------------------------------------------------------------- |
-| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics` |
-| `editor.read`       | low    | `TextEditor::document`, `selections`                                                |
-| `editor.write`      | medium | `TextEditor::apply_edits`                                                           |
-| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`      |
-| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only)                                        |
-| `storage`           | low    | `host::storage` (1 MiB per plugin)                                                  |
-| `events`            | low    | file opened/saved, editor focused, repository changed events                        |
-| `events.input`      | medium | `action-performed` events (which actions you run, and how)                          |
-| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                      |
-| `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                        |
-| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                       |
-| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views           |
+| Capability          | Risk   | Unlocks today                                                                                       |
+| ------------------- | ------ | --------------------------------------------------------------------------------------------------- |
+| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics`                 |
+| `editor.read`       | low    | `TextEditor::document`, `selections`                                                                |
+| `editor.write`      | medium | `TextEditor::apply_edits`                                                                           |
+| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`                      |
+| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only)                                                        |
+| `storage`           | low    | `host::storage` (1 MiB per plugin)                                                                  |
+| `events`            | low    | file opened/saved, editor focused, repository changed events                                        |
+| `events.input`      | medium | `action-performed` events (which actions you run, and how)                                          |
+| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                      |
+| `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                                        |
+| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                                       |
+| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                           |
+| `mcp`               | high   | its `mcpTools` for AI agents outside the IDE (with its other capabilities), `Project::mcp_endpoint` |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -301,7 +303,8 @@ commands, languages, themes and log lines.
 
 Any language with component-model tooling works (`componentize-py`,
 `jco componentize`, TinyGo): the only contract is the `plugin` world in
-[`wit/`](../wit/) (`plugin-syntax` adds the syntax provider). Build it yourself,
+[`wit/`](../wit/) (`plugin-syntax`, `plugin-providers`, `plugin-views`,
+`plugin-indexing` and `plugin-mcp` add the optional exports). Build it yourself,
 then run `openidea-plugin check`.
 
 ### The API
@@ -331,6 +334,9 @@ then run `openidea-plugin check`.
 | `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
 | `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
+| `host::open_terminal_with(&TerminalOptions)`                             | `terminal.open`                  | The same with environment variables (`env`) and a directory inside the project (`cwd`, default its root). Names that change what the program loads (`LD_*`, `DYLD_*`) are refused.                                   |
+| `Project::mcp_endpoint()` → `{url, token, stdio_command}`                | `mcp.endpoint`                   | Where agents reach the project's MCP tools: URL and token of this run, and a command for persisted configurations. Needs `mcp`; fails while the server is off.                                                       |
+| `McpTools::call_tool(name, arguments, ctx)`                              | export `mcp-tools.call`          | See _MCP tools_.                                                                                                                                                                                                     |
 | `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
 
@@ -393,6 +399,44 @@ handlers short where you can; a provider call queued behind a long one is
 dropped at 50 ms like a slow one. Inline completion is exempt from the 50 ms (it may
 need the network) but is cancelled as soon as the user types on: check
 `Task::is_cancelled` or just let the host interrupt the call.
+
+### MCP tools
+
+OpenIDEA runs an MCP server (Settings › Tools › MCP Server, on by default):
+AI agents outside the IDE — Claude Code, Codex, any MCP client — call the
+tools plugins declare, for a project open in the IDE.
+
+```toml
+[capabilities]
+required = ["mcp", "project.read"]
+
+[[contributes.mcpTools]]
+name = "word_count"                    # [a-z][a-z0-9_]{0,63}, unique across plugins
+description = "Counts the words of a project file"
+input-schema = "mcp/word_count.json"   # a JSON Schema with "type": "object"
+read-only = true                       # annotations.readOnlyHint (default false)
+destructive = false                    # annotations.destructiveHint (default false)
+```
+
+Then `register_plugin!(MyPlugin, mcp)` (with others: `register_plugin!(MyPlugin,
+views, mcp)`) and implement `openidea_plugin::mcp::McpTools`: `call_tool(name,
+arguments, ctx)` gets the JSON object the agent sent, as text — check it, it is
+not validated against the schema — and returns the result's text; an error is
+a failed tool call. `ctx.project()` is the project the agent named,
+`ctx.editor()` the focused editor of its window. Tools run in the plugin's
+instance under the command budget, with its capabilities; the user grants
+`mcp` knowing that. Only plugins granted `mcp` and trusted projects are
+served; a later plugin's tool with a name already taken is left out (with a
+warning in the log). Calls are logged with the plugin and tool.
+
+The server listens on `127.0.0.1` (MCP Streamable HTTP, endpoint `/mcp`,
+`Authorization: Bearer <token>`); the agent names the project with the
+`X-OpenIDEA-Project` header or `?project=<path>` (any folder inside it).
+`Project::mcp_endpoint()` gives the URL and this run's token, for an agent the
+plugin starts — pass the token in its environment with
+`host::open_terminal_with` — and `stdio_command`, the IDE's executable with
+`--mcp-stdio --project <root>`, for configurations that persist: it relays
+stdio to the running IDE and holds no token.
 
 ### Network and secrets
 

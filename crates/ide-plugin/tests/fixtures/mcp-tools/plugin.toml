@@ -1,0 +1,31 @@
+# Test fixture: MCP tools the IDE's MCP server serves, and a command that
+# launches an "agent" in a terminal with the server's endpoint in its
+# environment (`mcp.endpoint`, `terminal.open`).
+id = "mcp-tools"
+name = "MCP Tools"
+version = "0.1.0"
+description = "Test fixture: MCP tools and an agent launcher."
+authors = ["OpenIDEA contributors"]
+engines.openidea = "^1.2"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+required = ["mcp", "project.read"]
+optional = ["editor.read", "process:agent"]
+
+[[contributes.commands]]
+id = "launch"
+title = "MCP Tools: Launch Agent"
+category = "MCP Tools"
+
+[[contributes.mcpTools]]
+name = "where_am_i"
+description = "The project and focused editor the call runs in, and its arguments."
+input-schema = "mcp/where_am_i.json"
+read-only = true
+
+[[contributes.mcpTools]]
+name = "fail"
+description = "Always fails."
+input-schema = "mcp/empty.json"
+destructive = true

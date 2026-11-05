@@ -1,0 +1,21 @@
+[package]
+name = "openidea-plugin-mcp-tools"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Test fixture for the plugin host: built by `plugins/build.sh <this dir>`, checked in as dist/plugin.wasm.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openidea-plugin = { path = "../../../../../sdk/rust/openidea-plugin" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

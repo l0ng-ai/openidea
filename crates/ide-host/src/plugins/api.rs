@@ -7,8 +7,8 @@ use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
-    EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel, ProcessOutput, RepositoryStatus,
-    StatusItem,
+    EventKind, HostApi, HostError, HttpRequest, HttpResponse, McpEndpoint, NotificationLevel, ProcessOutput,
+    RepositoryStatus, StatusItem, TerminalRequest,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -47,6 +47,10 @@ pub trait PluginWorkspace: Send + Sync {
     /// Shows `items` as producer `source`'s diagnostics of `path` (replacing earlier ones).
     fn publish_diagnostics(&self, source: &str, path: &Path, items: Vec<ide_core::Diagnostic>)
     -> Result<(), HostError>;
+    /// The window showing the project at `root` (MCP tool calls run in its context).
+    fn window_of(&self, _root: &Path) -> Option<String> {
+        None
+    }
     /// The user's values of `plugin`'s settings: the project's at `root`
     /// (over global), or global.
     fn plugin_settings(&self, _plugin: &str, _root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
@@ -165,6 +169,8 @@ pub(super) struct Shared {
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
     /// Validated UI declarations (settings schemas, declared views).
     pub ui: Arc<ide_extension::UiStore>,
+    /// The IDE's MCP server, while it runs (`mcp.endpoint`).
+    pub mcp: RwLock<Option<super::McpServerInfo>>,
 }
 
 impl Shared {
@@ -186,6 +192,7 @@ impl Shared {
             status: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
+            mcp: RwLock::new(None),
         })
     }
 
@@ -683,26 +690,28 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
-    fn open_terminal(
-        &self,
-        client: Option<&str>,
-        title: String,
-        program: &str,
-        args: Vec<String>,
-        cwd: Option<&Path>,
-    ) -> Result<(), HostError> {
-        let binary = self.approved_program(program)?;
-        let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
+    fn open_terminal(&self, client: Option<&str>, request: TerminalRequest) -> Result<(), HostError> {
+        let binary = self.approved_program(&request.program)?;
+        let cwd = request.cwd.unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
         let event = PluginEvent::OpenTerminal {
             plugin_id: self.id().to_owned(),
-            title,
+            title: request.title,
             program: binary.into(),
-            args,
+            args: request.args,
+            env: request.env,
             cwd: cwd.into(),
         };
         self.shared.sink.emit(client, event);
         Ok(())
+    }
+
+    fn mcp_endpoint(&self, root: &Path) -> Result<McpEndpoint, HostError> {
+        let server = self.shared.mcp.read().clone();
+        let server = server.ok_or_else(|| {
+            HostError::Failed("the MCP server is not running: it serves local projects while turned on in Settings › Tools › MCP Server".into())
+        })?;
+        Ok(server.endpoint(root))
     }
 
     fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError> {
@@ -786,6 +795,10 @@ impl PluginWorkspace for HostWorkspace {
 
     fn project_of(&self, window: &str) -> Option<PathBuf> {
         self.0.upgrade()?.project(window).ok().map(|p| p.root.clone())
+    }
+
+    fn window_of(&self, root: &Path) -> Option<String> {
+        self.0.upgrade()?.window_of(root)
     }
 
     fn publish_diagnostics(

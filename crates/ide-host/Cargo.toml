@@ -44,6 +44,7 @@ ide-agent.workspace = true
 ide-notebook.workspace = true
 ide-extension.workspace = true
 ide-plugin.workspace = true
+ide-mcp.workspace = true
 ide-tools = { path = "../ide-tools" }
 ide-docker = { path = "../ide-docker" }
 semver = "1"

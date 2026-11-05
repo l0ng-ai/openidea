@@ -192,6 +192,9 @@ pub enum PluginEvent {
         title: String,
         program: ide_core::IpcPath,
         args: Vec<String>,
+        /// Added to the terminal's environment (`terminal.open`).
+        #[serde(default)]
+        env: Vec<(String, String)>,
         cwd: ide_core::IpcPath,
     },
     #[serde(rename_all = "camelCase")]

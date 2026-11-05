@@ -6,7 +6,7 @@ use crate::types::*;
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    //! Calls through the `openidea:plugin@1.0.0` world.
+    //! Calls through the `openidea:plugin@1.2.0` world.
     use crate::bindings::openidea::plugin as wit;
     use crate::types::*;
 
@@ -261,6 +261,23 @@ mod imp {
         wit::views::open_location(path, line, column).map_err(error)
     }
 
+    pub fn open_terminal_with(o: &TerminalOptions) -> Result<(), Error> {
+        let options = wit::terminal::Options {
+            title: o.title.clone(),
+            program: o.program.clone(),
+            args: o.args.clone(),
+            env: o.env.clone(),
+            cwd: o.cwd.clone(),
+        };
+        wit::terminal::open(&options).map_err(error)
+    }
+
+    pub fn mcp_endpoint(p: &ProjectRes) -> Result<McpEndpoint, Error> {
+        wit::mcp::endpoint(p)
+            .map(|e| McpEndpoint { url: e.url, token: e.token, stdio_command: e.stdio_command })
+            .map_err(error)
+    }
+
     pub fn setting(key: &str) -> Option<String> {
         wit::settings::get(key)
     }
@@ -371,6 +388,14 @@ impl Project {
     pub fn run_process(&self, program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
         imp::run_process(program, args, Some(&self.inner), stdin)
     }
+
+    /// Where AI agents reach this project's MCP tools (the plugins'
+    /// `[[contributes.mcpTools]]`): a URL and token for this run of the IDE,
+    /// and a stdio command for configurations that persist. Needs `mcp`;
+    /// fails while the user has the server turned off.
+    pub fn mcp_endpoint(&self) -> Result<McpEndpoint, Error> {
+        imp::mcp_endpoint(&self.inner)
+    }
 }
 
 /// Replaces the plugin's diagnostics for `path` (absolute, in an open
@@ -410,6 +435,18 @@ pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), 
 
 pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
     imp::open_location(path, line, column)
+}
+
+/// Opens a terminal tab in the invoking window running the approved
+/// `process:<program>`, like [`open_terminal`], with environment variables
+/// and a working directory inside the project:
+///
+/// ```ignore
+/// let endpoint = project.mcp_endpoint()?;
+/// host::open_terminal_with(&TerminalOptions::new("Agent", "agent").arg("--mcp").env("AGENT_TOKEN", &endpoint.token))?;
+/// ```
+pub fn open_terminal_with(options: &TerminalOptions) -> Result<(), Error> {
+    imp::open_terminal_with(options)
 }
 
 /// One of the plugin's settings (`[contributes.settings]`) as JSON: the

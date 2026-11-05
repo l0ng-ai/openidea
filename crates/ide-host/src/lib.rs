@@ -174,6 +174,11 @@ impl Host {
             .ok_or_else(|| IdeError::not_found("no project is open in this window"))
     }
 
+    /// The window whose project is `root`.
+    pub fn window_of(&self, root: &std::path::Path) -> Option<String> {
+        self.projects.read().iter().find(|(_, p)| p.root == root).map(|(window, _)| window.clone())
+    }
+
     pub fn require_trust(&self, window: &str) -> IdeResult<()> {
         self.project(window)?.require_trust()
     }

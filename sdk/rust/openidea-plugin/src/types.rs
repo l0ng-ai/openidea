@@ -349,6 +349,57 @@ pub struct ProcessOutput {
     pub stderr: String,
 }
 
+/// Where agents reach a project's MCP tools (see [`crate::host::Project::mcp_endpoint`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpEndpoint {
+    /// `http://127.0.0.1:<port>/mcp?project=<root>`, for this run of the IDE.
+    pub url: String,
+    /// The bearer token of `url`; changes with every run of the IDE.
+    pub token: String,
+    /// The IDE's executable and arguments serving the same tools over stdio
+    /// while the IDE runs, without a token: for configurations that persist.
+    pub stdio_command: Vec<String>,
+}
+
+/// A terminal tab to open with [`crate::host::open_terminal_with`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalOptions {
+    pub title: String,
+    /// Needs `process:<program>`.
+    pub program: String,
+    pub args: Vec<String>,
+    /// Added to the terminal's environment.
+    pub env: Vec<(String, String)>,
+    /// A directory inside the project (absolute or project-relative); `None`: the project root.
+    pub cwd: Option<String>,
+}
+
+impl TerminalOptions {
+    pub fn new(title: &str, program: &str) -> Self {
+        Self { title: title.into(), program: program.into(), ..Self::default() }
+    }
+
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    pub fn args<I: IntoIterator<Item = S>, S: Into<String>>(mut self, args: I) -> Self {
+        self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn env(mut self, name: &str, value: &str) -> Self {
+        self.env.push((name.into(), value.into()));
+        self
+    }
+
+    pub fn cwd(mut self, dir: &str) -> Self {
+        self.cwd = Some(dir.into());
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

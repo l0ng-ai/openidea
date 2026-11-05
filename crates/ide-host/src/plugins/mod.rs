@@ -24,6 +24,7 @@ pub mod index_ops;
 mod install;
 pub mod intellij;
 mod market;
+mod mcp;
 pub mod navigation;
 mod points;
 mod providers;
@@ -42,6 +43,7 @@ pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
     read_url as read_market_url, resolve as resolve_market_href,
 };
+pub use mcp::{McpServerInfo, POINT_ID as MCP_TOOLS};
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub use providers::{ProviderKind, set_editor_providers};
 pub(crate) use providers::{editor_plugin_host, editor_providers as editor_providers_for};
@@ -311,6 +313,10 @@ pub struct PluginHost {
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
+    /// `[[contributes.mcpTools]]` of enabled plugins.
+    mcp_tools: Arc<mcp::McpTools>,
+    /// Window → its focused text editor, as the UI last reported it (for MCP tool calls).
+    focused_editors: Mutex<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -373,7 +379,9 @@ impl PluginHost {
         let languages = PluginLanguages::new();
         let run_detectors: Arc<run_detectors::RunDetectors> = Arc::default();
         let providers: Arc<providers::Providers> = Arc::default();
-        register_builtin_points(&registry, &ui, &languages, &run_detectors, &providers).map_err(IdeError::internal)?;
+        let mcp_tools: Arc<mcp::McpTools> = Arc::default();
+        register_builtin_points(&registry, &ui, &languages, &run_detectors, &providers, &mcp_tools)
+            .map_err(IdeError::internal)?;
         let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
         let policy_pins = pins.clone();
         languages.set_process_policy(Arc::new(move |plugin, cap| {
@@ -400,6 +408,8 @@ impl PluginHost {
             run_detectors,
             providers,
             navigation: Mutex::default(),
+            mcp_tools,
+            focused_editors: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),

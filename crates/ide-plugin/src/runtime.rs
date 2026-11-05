@@ -1,17 +1,17 @@
-//! Wasmtime glue for the `openidea:plugin@1.0.0` world (`wit/`): one shared
+//! Wasmtime glue for the `openidea:plugin@1.2.0` world (`wit/`): one shared
 //! engine, one `Store` per plugin. Everything a call may do outside the
 //! sandbox goes through [`HostApi`], implemented by the host; the imports
 //! themselves are in `wit_host`.
 
 use crate::types::{CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument};
 use crate::types::{
-    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput,
-    RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
+    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, McpEndpoint, NotificationLevel, ProcessOutput,
+    RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, TerminalRequest, WorkbenchEvent,
 };
 use crate::types::{
     FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
-use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
+use crate::wit_host::{bindings, indexing_bindings, mcp_bindings, providers_bindings, syntax_bindings, views_bindings};
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -28,6 +28,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
+use mcp_bindings::exports::openidea::plugin::mcp_tools as wit_mcp;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
@@ -110,18 +111,16 @@ pub trait HostApi: Send + Sync {
     /// A message for the script of the `html` body of `view`.
     fn post_view_message(&self, view: &str, message: String) -> Result<(), HostError>;
     /// Opens a terminal in `client`'s window running the approved file of
-    /// `process:<program>` in `cwd`.
-    fn open_terminal(
-        &self,
-        client: Option<&str>,
-        title: String,
-        program: &str,
-        args: Vec<String>,
-        cwd: Option<&Path>,
-    ) -> Result<(), HostError>;
+    /// `process:<program>`.
+    fn open_terminal(&self, client: Option<&str>, request: TerminalRequest) -> Result<(), HostError>;
     fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError>;
     /// A setting of the plugin as JSON (project over global over the schema default).
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String>;
+    /// Where agents reach the MCP tools of the project at `root`.
+    fn mcp_endpoint(&self, root: &Path) -> Result<McpEndpoint, HostError> {
+        let _ = root;
+        Err(HostError::Failed("the IDE's MCP server is not available here".into()))
+    }
 }
 
 /// Shared compilation engine plus an epoch ticker thread for wall-clock limits.
@@ -487,6 +486,7 @@ struct Exports {
     providers: Option<wit_prov::Guest>,
     indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
+    mcp: Option<wit_mcp::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -565,6 +565,7 @@ impl Runtime {
         let index_indices = wit_index::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
+        let mcp_indices = wit_mcp::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -583,9 +584,13 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let mcp = match mcp_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer },
+            exports: Exports { plugin, syntax, providers, views, indexer, mcp },
             limits: setup.limits,
             version: setup.version,
         })
@@ -895,6 +900,27 @@ impl Runtime {
         result.map_err(|e| CallError::Guest(e.into()))
     }
 
+    /// The component exports `mcp-tools`.
+    pub fn has_mcp_tools(&self) -> bool {
+        self.exports.mcp.is_some()
+    }
+
+    /// Runs MCP tool `name` with `arguments` (a JSON object) for the project
+    /// in `invocation`, under the command budget.
+    pub fn call_mcp_tool(&mut self, name: &str, arguments: &str, invocation: Invocation) -> Result<String, CallError> {
+        if self.exports.mcp.is_none() {
+            return Err(CallError::missing_export("mcp-tools"));
+        }
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let tools = e.mcp.as_ref().expect("checked");
+            let r = tools.call_call(&mut *store, name, arguments, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        result.map(|text| clip(text, MAX_TOOL_RESULT)).map_err(|e| CallError::Guest(e.into()))
+    }
+
     /// Delivers a batch of events (from the window in `invocation`).
     pub fn handle_events(&mut self, events: Vec<WorkbenchEvent>, invocation: Invocation) -> Result<(), CallError> {
         let events: Vec<wit_events::Event> = events.into_iter().take(MAX_BATCH).map(event_to_wit).collect();
@@ -960,6 +986,9 @@ impl Runtime {
         }
     }
 }
+
+/// Largest text an MCP tool returns (the rest is dropped).
+const MAX_TOOL_RESULT: usize = 8 << 20;
 
 /// Most items one provider call may return (more are dropped).
 const MAX_PROVIDER_ITEMS: usize = 10_000;

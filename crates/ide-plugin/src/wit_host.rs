@@ -1,10 +1,12 @@
-//! The host side of the `openidea:plugin@1.0.0` world: bindings, resource
+//! The host side of the `openidea:plugin@1.2.0` world: bindings, resource
 //! types and the implementation of every import. Capabilities are checked
 //! here; a missing one returns `error::denied` (the plugin can degrade).
 
 use crate::runtime::{StoreData, clip};
 use crate::sandbox;
-use crate::types::{EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, net_host};
+use crate::types::{
+    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, TerminalRequest, net_host,
+};
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use std::path::{Path, PathBuf};
@@ -48,6 +50,8 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/terminal": super::bindings::openidea::plugin::terminal,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
         },
     });
 }
@@ -75,6 +79,8 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/terminal": super::bindings::openidea::plugin::terminal,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
         },
     });
 }
@@ -102,13 +108,44 @@ pub(crate) mod views_bindings {
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/terminal": super::bindings::openidea::plugin::terminal,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+        },
+    });
+}
+
+/// The optional `mcp-tools` export.
+pub(crate) mod mcp_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-mcp",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/terminal": super::bindings::openidea::plugin::terminal,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
         },
     });
 }
 
 use bindings::openidea::plugin::{
-    diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks, types as wit, ui,
-    vcs, views, workspace,
+    diagnostics, editor, events, invocation, log, mcp, net, process, secrets, settings, storage, tasks, terminal,
+    types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -657,16 +694,8 @@ impl views::Host for StoreData {
     }
 
     fn open_terminal(&mut self, title: String, program: String, args: Vec<String>) -> Fallible<()> {
-        if let Err(e) = self.require(Capability::Process(program.clone())) {
-            return Ok(Err(e));
-        }
-        if args.len() > 256 || args.iter().any(|a| a.len() > 4096) {
-            return Ok(Err(wit::Error::Invalid("too many or too long arguments".into())));
-        }
-        let cwd = self.invocation.workspace_root.clone();
-        let client = self.invocation.client.clone();
-        let title = clip(title, crate::runtime::MAX_TITLE);
-        Ok(self.host.open_terminal(client.as_deref(), title, &program, args, cwd.as_deref()).map_err(to_wit))
+        let request = TerminalRequest { title, program, args, env: Vec::new(), cwd: None };
+        Ok(self.open_terminal_tab(request, None))
     }
 
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
@@ -689,6 +718,76 @@ impl settings::Host for StoreData {
     fn get(&mut self, key: String) -> wasmtime::Result<Option<String>> {
         let root = self.invocation.workspace_root.clone();
         Ok(self.host.setting(root.as_deref(), &clip(key, 128)))
+    }
+}
+
+impl StoreData {
+    /// `terminal.open` and `views.open-terminal`: `cwd` is inside the
+    /// invoking window's project (its root when `None`).
+    fn open_terminal_tab(&mut self, mut request: TerminalRequest, cwd: Option<String>) -> Result<(), wit::Error> {
+        self.require(Capability::Process(request.program.clone()))?;
+        if request.args.len() > 256 || request.args.iter().any(|a| a.len() > 4096) {
+            return Err(wit::Error::Invalid("too many or too long arguments".into()));
+        }
+        if request.env.len() > MAX_ENV || request.env.iter().any(|(k, v)| k.len() + v.len() > 32 << 10) {
+            return Err(wit::Error::Invalid(format!("at most {MAX_ENV} environment variables of 32 KiB")));
+        }
+        if let Some((name, _)) = request.env.iter().find(|(k, _)| !env_name_allowed(k)) {
+            return Err(wit::Error::Invalid(format!("{name:?}: not an environment variable a plugin may set")));
+        }
+        let root = self.invocation.workspace_root.clone();
+        request.cwd = match (cwd, &root) {
+            (Some(dir), Some(root)) => match sandbox::resolve_in_root(root, &dir) {
+                Ok(real) if real.is_dir() => Some(real),
+                Ok(_) => return Err(wit::Error::Invalid(format!("{dir}: not a directory"))),
+                Err(e) => return Err(wit::Error::Invalid(e)),
+            },
+            (Some(_), None) => return Err(wit::Error::Invalid("no project is open in this window".into())),
+            (None, root) => root.clone(),
+        };
+        request.title = clip(request.title, crate::runtime::MAX_TITLE);
+        let client = self.invocation.client.clone();
+        self.host.open_terminal(client.as_deref(), request).map_err(to_wit)
+    }
+}
+
+/// Most environment variables a plugin's terminal gets.
+const MAX_ENV: usize = 64;
+
+/// A name a plugin may set in a terminal's environment: a portable name, and
+/// not one that changes which code the approved program loads.
+fn env_name_allowed(name: &str) -> bool {
+    let portable = name.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && name.len() <= 128;
+    let upper = name.to_ascii_uppercase();
+    portable && !upper.starts_with("LD_") && !upper.starts_with("DYLD_")
+}
+
+impl terminal::Host for StoreData {
+    fn open(&mut self, options: terminal::Options) -> Fallible<()> {
+        let request = TerminalRequest {
+            title: options.title,
+            program: options.program,
+            args: options.args,
+            env: options.env,
+            cwd: None,
+        };
+        Ok(self.open_terminal_tab(request, options.cwd))
+    }
+}
+
+impl mcp::Host for StoreData {
+    fn endpoint(&mut self, project: Resource<ProjectRes>) -> Fallible<mcp::EndpointInfo> {
+        if let Err(e) = self.require(Capability::Mcp) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .mcp_endpoint(&root)
+            .map(|e| mcp::EndpointInfo { url: e.url, token: e.token, stdio_command: e.stdio_command })
+            .map_err(to_wit))
     }
 }
 

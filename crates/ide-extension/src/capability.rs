@@ -30,6 +30,9 @@ pub enum Capability {
     InputEvents,
     /// The system clipboard, from the plugin's web views.
     Clipboard,
+    /// AI agents outside the IDE call the plugin's MCP tools, which run with
+    /// its other capabilities.
+    Mcp,
     /// HTTP(S) to one host (`*.example.com` matches subdomains).
     Net(String),
     /// Run one external program. Full code execution: never fine-grained.
@@ -57,7 +60,7 @@ impl Capability {
             Self::EditorWrite | Self::VcsWrite | Self::Net(_) | Self::Secrets | Self::InputEvents | Self::Clipboard => {
                 Risk::Medium
             }
-            Self::Process(_) | Self::FsRead(_) => Risk::High,
+            Self::Process(_) | Self::FsRead(_) | Self::Mcp => Risk::High,
         }
     }
 
@@ -82,6 +85,7 @@ impl Capability {
             Self::Clipboard => {
                 "Copy to the clipboard from its commands, and read and write it from its web views".into()
             }
+            Self::Mcp => "Let AI agents outside the IDE call its tools, with its other permissions".into(),
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
@@ -123,6 +127,7 @@ impl fmt::Display for Capability {
             Self::Events => f.write_str("events"),
             Self::InputEvents => f.write_str("events.input"),
             Self::Clipboard => f.write_str("clipboard"),
+            Self::Mcp => f.write_str("mcp"),
             Self::Net(h) => write!(f, "net:{h}"),
             Self::Process(b) => write!(f, "process:{b}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
@@ -178,6 +183,7 @@ impl FromStr for Capability {
             "events" => Self::Events,
             "events.input" => Self::InputEvents,
             "clipboard" => Self::Clipboard,
+            "mcp" => Self::Mcp,
             _ => return Err(format!("unknown capability {s:?}")),
         })
     }
@@ -229,6 +235,7 @@ mod tests {
             "secrets",
             "events",
             "events.input",
+            "mcp",
             "net:crates.io",
             "net:*.github.com",
             "process:cargo",
@@ -260,6 +267,7 @@ mod tests {
         assert_eq!("clipboard".parse::<Capability>().unwrap(), Capability::Clipboard);
         assert_eq!(Capability::Clipboard.risk(), Risk::Medium);
         assert_eq!(Capability::Process("cargo".into()).risk(), Risk::High);
+        assert_eq!(Capability::Mcp.risk(), Risk::High);
         assert!(Capability::Storage.auto_migrates() && !Capability::EditorWrite.auto_migrates());
     }
 

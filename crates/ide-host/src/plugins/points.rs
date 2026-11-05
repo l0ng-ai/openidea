@@ -50,6 +50,7 @@ pub fn register_builtin_points(
     languages: &Arc<PluginLanguages>,
     run_detectors: &Arc<super::run_detectors::RunDetectors>,
     providers: &Arc<super::providers::Providers>,
+    mcp_tools: &Arc<super::mcp::McpTools>,
 ) -> Result<(), String> {
     registry.register(Arc::new(UiPoint::new(COMMANDS, ui.clone(), command)))?;
     registry.register(Arc::new(super::theme::ThemesPoint::new(ui.clone())))?;
@@ -58,6 +59,7 @@ pub fn register_builtin_points(
     registry.register(Arc::new(super::run_detectors::RunDetectorsPoint::new(run_detectors.clone())))?;
     registry.register(Arc::new(super::navigation::IndexersPoint))?;
     registry.register(Arc::new(super::providers::ProvidersPoint::new(providers.clone())))?;
+    registry.register(Arc::new(super::mcp::McpToolsPoint::new(mcp_tools.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::providers::SECRETS_POINT, ui.clone(), super::providers::secret)))?;
     use super::ui_points as p;
     registry.register(Arc::new(UiPoint::new(p::MENUS, ui.clone(), p::menu)))?;
