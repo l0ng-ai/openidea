@@ -17,6 +17,7 @@ pub mod java_runtime;
 pub mod jsonc;
 pub mod output_encoding;
 pub mod process;
+pub mod psi;
 pub mod project_dir;
 pub mod proxy_settings;
 pub mod remote_settings;
