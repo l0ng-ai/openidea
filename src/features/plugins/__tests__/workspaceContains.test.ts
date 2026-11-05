@@ -1,6 +1,30 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getContext, setContext } from "@/platform/context";
-import { affectsWorkspaceContains, refreshWorkspaceContains, workspaceContainsKeys } from "../workspaceContains";
+import { useProject } from "@/platform/project";
+import { usePlugins } from "../store";
+import {
+  affectsWorkspaceContains,
+  refreshWorkspaceContains,
+  startWorkspaceContains,
+  workspaceContainsKeys,
+} from "../workspaceContains";
+
+const ipc = vi.hoisted(() => ({
+  handlers: {} as Record<string, (e: unknown) => void>,
+  files: {} as Record<string, string[]>,
+  readDir: vi.fn(),
+}));
+vi.mock("@/platform/ipc", () => ({
+  call: (p: unknown) => p,
+  isTauri: () => true,
+  commands: { fsReadDir: (dir: string) => ipc.readDir(dir) },
+  onIdeEvent: (name: string, handler: (e: unknown) => void) => {
+    ipc.handlers[name] = handler;
+    return () => {
+      delete ipc.handlers[name];
+    };
+  },
+}));
 
 describe("workspaceContains", () => {
   it("collects keys from when clauses", () => {
@@ -112,5 +136,71 @@ describe("workspaceContains", () => {
     releaseOld([]);
     await first;
     expect(getContext()[key]).toBe(true);
+  });
+});
+
+describe("startWorkspaceContains", () => {
+  const key = "workspaceContains:.devcontainer/devcontainer.json";
+  const setProject = (root: string) => useProject.setState({ project: { root, workspace: null } as never });
+  const keyIs = (value: boolean) => vi.waitFor(() => expect(getContext()[key]).toBe(value));
+  const emit = (name: string, event: unknown) => {
+    const handler = ipc.handlers[name];
+    if (!handler) {
+      throw new Error(`no handler for ${name}`);
+    }
+    handler(event);
+  };
+  let stop: () => void;
+
+  beforeEach(() => {
+    ipc.files = { "/p": ["src"], "/q": [".devcontainer"], "/q/.devcontainer": ["devcontainer.json"] };
+    ipc.readDir.mockReset();
+    ipc.readDir.mockImplementation(async (dir: string) => (ipc.files[dir] ?? []).map((name) => ({ name })));
+    usePlugins.setState({ ui: [{ pluginId: "x", point: "menus", key: "k", decl: { when: key } }] as never });
+    setProject("/p");
+    setContext(key, undefined);
+    stop = startWorkspaceContains();
+  });
+
+  afterEach(() => stop());
+
+  it("re-evaluates when the file is created and deleted", async () => {
+    await keyIs(false);
+    ipc.files["/p"] = [".devcontainer"];
+    ipc.files["/p/.devcontainer"] = ["devcontainer.json"];
+    emit("fsChanged", { created: ["/p/.devcontainer"], modified: [], removed: [] });
+    await keyIs(true);
+
+    ipc.files["/p/.devcontainer"] = [];
+    emit("fsChanged", { created: [], modified: [], removed: ["/p/.devcontainer/devcontainer.json"] });
+    await keyIs(false);
+  });
+
+  it("re-evaluates when the project changes", async () => {
+    await keyIs(false);
+    setProject("/q");
+    await keyIs(true);
+  });
+
+  it.each([["/p/.devcontainer"], ["/p"]])("re-evaluates when ignored folder %s changes", async (dir) => {
+    await keyIs(false);
+    ipc.files["/p/.devcontainer"] = ["devcontainer.json"];
+    emit("excludedDirsChanged", { dirs: [dir] });
+    await keyIs(true);
+  });
+
+  it("ignores unrelated changes", async () => {
+    await keyIs(false);
+    ipc.readDir.mockClear();
+    emit("fsChanged", { created: ["/p/src/a.ts"], modified: [], removed: [] });
+    emit("excludedDirsChanged", { dirs: ["/p/node_modules"] });
+    expect(ipc.readDir).not.toHaveBeenCalled();
+  });
+
+  it("stops listening when disposed", async () => {
+    await keyIs(false);
+    stop();
+    expect(ipc.handlers.fsChanged).toBeUndefined();
+    expect(ipc.handlers.excludedDirsChanged).toBeUndefined();
   });
 });
