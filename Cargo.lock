@@ -4488,6 +4488,7 @@ dependencies = [
 name = "ide-php"
 version = "0.1.36"
 dependencies = [
+ "blake3",
  "dunce",
  "ide-core",
  "ide-language",
@@ -4502,11 +4503,14 @@ dependencies = [
  "mago-syntax",
  "mago-syntax-core",
  "postcard",
+ "rayon",
+ "redb",
  "self_cell",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

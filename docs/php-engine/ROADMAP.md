@@ -133,7 +133,7 @@ The design:
 
   Store them as unresolved type expressions in the summary. Tests: golden summaries.
 
-- [ ] Phase 1.5: Persistent indexes
+- [x] Phase 1.5: Persistent indexes
       Add `ide_php::index`:
   - redb tables (FQN → decl id, lower-case short name → FQNs, class → direct subclasses, namespace → children) and summaries keyed by content hash, stored under the project cache directory with a schema stamp.
   - The first build runs in parallel with rayon and can be cancelled. Later changes only re-index changed or removed files.

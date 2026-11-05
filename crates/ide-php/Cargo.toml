@@ -10,6 +10,10 @@ ide-core.workspace = true
 self_cell.workspace = true
 serde.workspace = true
 postcard.workspace = true
+redb.workspace = true
+rayon.workspace = true
+blake3.workspace = true
+tracing.workspace = true
 # Mago (MIT OR Apache-2.0) parses PHP. Pinned exactly: its AST API changes
 # between minor releases, and every phase builds on it.
 mago-allocator = "=1.59.0"

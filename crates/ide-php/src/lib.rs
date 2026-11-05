@@ -20,9 +20,13 @@
 //! - [`summary`]: per-file declaration summaries ([`summary::FileSummary`]):
 //!   class-likes with their members and signatures, functions and constants,
 //!   serialized with postcard.
+//! - [`index`]: the persistent redb indexes ([`index::PhpIndex`]): summaries
+//!   by content hash, FQN, short name, direct subclasses and namespace
+//!   children, built in parallel and updated incrementally.
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
+pub mod index;
 pub mod names;
 pub mod probe;
 pub mod summary;
