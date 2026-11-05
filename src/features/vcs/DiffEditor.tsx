@@ -217,7 +217,10 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   /** Text of the sides that are not live documents. */
   const [statics, setStatics] = useState<{ a: string | null; b: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [opts, setOptsState] = useState<DiffViewOptions>(loadDiffOptions);
+  const [opts, setOptsState] = useState<DiffViewOptions>(() => {
+    const saved = loadDiffOptions();
+    return data.mode ? { ...saved, mode: data.mode } : saved;
+  });
   const [lang, setLang] = useState<Extension | null>(null);
   const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);

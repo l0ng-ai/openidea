@@ -105,6 +105,7 @@ pub trait HostApi: Send + Sync {
         args: Vec<String>,
         cwd: Option<&Path>,
     ) -> Result<(), HostError>;
+    fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError>;
     /// A setting of the plugin as JSON (project over global over the schema default).
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String>;
 }
@@ -467,7 +468,6 @@ const MAX_SYNTAX_ITEMS: usize = 200_000;
 const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
-    use crate::types::ActionSource as S;
     match e {
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
@@ -477,14 +477,7 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,
             title: a.title,
-            source: match a.source {
-                S::Keyboard => wit_events::ActionSource::Keyboard,
-                S::Menu => wit_events::ActionSource::Menu,
-                S::Toolbar => wit_events::ActionSource::Toolbar,
-                S::ContextMenu => wit_events::ActionSource::ContextMenu,
-                S::Search => wit_events::ActionSource::Search,
-                S::Other => wit_events::ActionSource::Other,
-            },
+            source: a.source.name().to_owned(),
             shortcut: a.shortcut,
         }),
     }
@@ -670,9 +663,17 @@ impl Runtime {
                 detail: i.detail.map(|d| clip(d, MAX_TITLE)),
                 kind: i.kind.map(|k| clip(k, 32)),
                 insert_text: clip(i.insert_text, 64 << 10),
+                snippet: i.snippet,
                 replace: i.replace.map(range_from_wit),
                 sort_text: i.sort_text.map(|t| clip(t, 64)),
+                filter_text: i.filter_text.map(|t| clip(t, MAX_TITLE)),
                 documentation: i.documentation.map(|d| clip(d, 16 << 10)),
+                additional_edits: i
+                    .additional_edits
+                    .into_iter()
+                    .take(MAX_ADDITIONAL_EDITS)
+                    .map(edit_from_wit)
+                    .collect(),
             })
             .collect())
     }
@@ -699,27 +700,20 @@ impl Runtime {
     ) -> Result<Vec<CodeAction>, CallError> {
         let d = doc_to_wit(doc);
         let actions = self.provider_call(timeout, |p, s| p.call_code_actions(s, &d, range_to_wit(selection)))?;
-        Ok(actions
-            .into_iter()
-            .take(MAX_PROVIDER_ITEMS)
-            .map(|a| CodeAction {
-                title: clip(a.title, MAX_TITLE),
-                kind: a.kind.map(|k| clip(k, 64)),
-                preferred: a.preferred,
-                edits: a
-                    .edits
-                    .into_iter()
-                    .map(|f| {
-                        let edits = f
-                            .edits
-                            .into_iter()
-                            .map(|e| ide_core::TextEdit { range: range_from_wit(e.range), new_text: e.text })
-                            .collect();
-                        (std::path::PathBuf::from(f.path), edits)
-                    })
-                    .collect(),
-            })
-            .collect())
+        Ok(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(code_action_from_wit).collect())
+    }
+
+    /// The edits of an action `provide_code_actions` returned with `data`.
+    pub fn resolve_code_action(
+        &mut self,
+        doc: &ProviderDocument,
+        action: &CodeAction,
+        timeout: Duration,
+    ) -> Result<CodeAction, CallError> {
+        let d = doc_to_wit(doc);
+        let a = code_action_to_wit(action);
+        let resolved = self.provider_call(timeout, |p, s| p.call_resolve_code_action(s, &d, &a))?;
+        resolved.map(code_action_from_wit).map_err(|e| CallError::Guest(e.into()))
     }
 
     pub fn provide_definition(
@@ -968,6 +962,47 @@ const MAX_VIEW_ITEMS: usize = 20_000;
 const MAX_CELL: usize = 64 << 10;
 const MAX_HTML: usize = 4 << 20;
 
+/// Most additional edits of a completion item.
+const MAX_ADDITIONAL_EDITS: usize = 100;
+
+fn edit_from_wit(e: wit_types::TextEdit) -> ide_core::TextEdit {
+    ide_core::TextEdit { range: range_from_wit(e.range), new_text: e.text }
+}
+
+fn code_action_from_wit(a: wit_prov::CodeAction) -> CodeAction {
+    CodeAction {
+        title: clip(a.title, MAX_TITLE),
+        kind: a.kind.map(|k| clip(k, 64)),
+        preferred: a.preferred,
+        edits: a
+            .edits
+            .into_iter()
+            .map(|f| (std::path::PathBuf::from(f.path), f.edits.into_iter().map(edit_from_wit).collect()))
+            .collect(),
+        data: a.data.map(|d| clip(d, 64 << 10)),
+    }
+}
+
+fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
+    wit_prov::CodeAction {
+        title: a.title.clone(),
+        kind: a.kind.clone(),
+        preferred: a.preferred,
+        edits: a
+            .edits
+            .iter()
+            .map(|(path, edits)| wit_prov::FileEdit {
+                path: path.to_string_lossy().into_owned(),
+                edits: edits
+                    .iter()
+                    .map(|e| wit_types::TextEdit { range: range_to_wit(e.range), text: e.new_text.clone() })
+                    .collect(),
+            })
+            .collect(),
+        data: a.data.clone(),
+    }
+}
+
 fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
     s.map(|s| clip(s, max))
 }
@@ -975,6 +1010,9 @@ fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
 fn view_from_wit(v: wit_vt::View) -> View {
     let body = match v.body {
         wit_vt::Body::Message(m) => ViewBody::Message(clip(m, 16 << 10)),
+        wit_vt::Body::Other(e) => {
+            ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64)))
+        }
         wit_vt::Body::Tree(items) => ViewBody::Tree(
             items
                 .into_iter()
@@ -1006,10 +1044,8 @@ fn view_from_wit(v: wit_vt::View) -> View {
             fields
                 .into_iter()
                 .take(MAX_VIEW_ITEMS)
-                .map(|f| ViewField {
-                    key: clip(f.key, 128),
-                    label: clip(f.label, MAX_TITLE),
-                    value: match f.value {
+                .filter_map(|f| {
+                    let value = match f.value {
                         wit_vt::FieldValue::Text(t) => FieldValue::Text(clip(t, MAX_CELL)),
                         wit_vt::FieldValue::Multiline(t) => FieldValue::Multiline(clip(t, 1 << 20)),
                         wit_vt::FieldValue::Checkbox(b) => FieldValue::Checkbox(b),
@@ -1017,7 +1053,10 @@ fn view_from_wit(v: wit_vt::View) -> View {
                             options: options.into_iter().take(1000).map(|o| clip(o, MAX_TITLE)).collect(),
                             selected: clip(selected, MAX_TITLE),
                         },
-                    },
+                        // A field type of a newer API: left out.
+                        wit_vt::FieldValue::Other(_) => return None,
+                    };
+                    Some(ViewField { key: clip(f.key, 128), label: clip(f.label, MAX_TITLE), value })
                 })
                 .collect(),
         ),
@@ -1065,5 +1104,28 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
         ViewEvent::InsertRow { before } => W::InsertRow(before),
         ViewEvent::DeleteRows { rows } => W::DeleteRows(rows),
         ViewEvent::Message { text } => W::Message(text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ext(kind: &str) -> wit_types::Extension {
+        wit_types::Extension { kind: kind.into(), data: "{}".into() }
+    }
+
+    #[test]
+    fn bodies_and_fields_of_a_newer_api_degrade() {
+        let view = |body| wit_vt::View { toolbar: Vec::new(), body, status: None };
+        let shown = view_from_wit(view(wit_vt::Body::Other(ext("markdown"))));
+        assert_eq!(shown.body, ViewBody::Message("This view needs a newer version of OpenIDEA (markdown).".into()));
+        let field = |key: &str, value| wit_vt::Field { key: key.into(), label: key.into(), value };
+        let form = view_from_wit(view(wit_vt::Body::Form(vec![
+            field("color", wit_vt::FieldValue::Other(ext("color"))),
+            field("name", wit_vt::FieldValue::Text("n".into())),
+        ])));
+        let ViewBody::Form(fields) = form.body else { panic!("a form") };
+        assert_eq!(fields.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), ["name"], "unknown fields are left out");
     }
 }

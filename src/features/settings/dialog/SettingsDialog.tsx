@@ -17,6 +17,7 @@ import {
   Icon,
   IconButton,
   SearchField,
+  Spinner,
   Tree,
   type DialogButton,
   type TreeHandle,
@@ -220,7 +221,7 @@ function SettingsDialogInner() {
 /** Page tree + current page; reads the shared settings staging store. */
 export function SettingsLayout() {
   const pages = useSettingsPages((s) => s.pages);
-  const { pageId, query, staged, stagedSecrets, stagedExternal, saving } = useSettingsDialog();
+  const { pageId, query, staged, stagedSecrets, stagedExternal, saving, pagesLoading } = useSettingsDialog();
   const treeRef = useRef<TreeHandle>(null);
 
   const tree = useMemo(() => buildPageTree(pages.values()), [pages]);
@@ -264,6 +265,16 @@ export function SettingsLayout() {
       if (first) selectPage(first);
     }
   };
+
+  if (pagesLoading) {
+    return (
+      <div className={styles.layout}>
+        <div className={styles.loading}>
+          <Spinner size={16} /> <T>Loading…</T>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.layout}>

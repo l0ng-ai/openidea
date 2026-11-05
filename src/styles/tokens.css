@@ -116,6 +116,7 @@ html {
   --syn-number: #2aacb8;
   --syn-punct: #bcbec4;
   --syn-variable: #bcbec4;
+  --syn-global: var(--syn-variable);
   --syn-param: #bcbec4;
   --syn-property: #c77dbb;
   --syn-constant: #c77dbb;
@@ -229,7 +230,8 @@ html {
 
   /* metrics (theme JSON at 100%) */
   --h-titlebar: 40px;
-  --h-stripe-button: 48px;
+  /* tool window stripe button, icons only */
+  --stripe-icon-button: 28px;
   --h-header: 40px;
   --h-tabbar: 38px;
   --h-tab: 28px;
@@ -494,6 +496,7 @@ html {
   --syn-number: #1750eb;
   --syn-punct: #080808;
   --syn-variable: #080808;
+  --syn-global: var(--syn-variable);
   --syn-param: #080808;
   --syn-property: #871094;
   --syn-constant: #871094;
@@ -748,6 +751,7 @@ html {
   --syn-number: #4fd0dc;
   --syn-punct: #e3e4e8;
   --syn-variable: #e3e4e8;
+  --syn-global: var(--syn-variable);
   --syn-param: #e3e4e8;
   --syn-property: #e0a0d6;
   --syn-constant: #e0a0d6;
@@ -1087,6 +1091,7 @@ html {
   --syn-number: var(--palette-number);
   --syn-punct: var(--palette-fg);
   --syn-variable: var(--palette-variable);
+  --syn-global: var(--syn-variable);
   --syn-param: var(--palette-fg);
   --syn-property: var(--palette-property);
   --syn-constant: var(--palette-number);
@@ -1159,8 +1164,8 @@ html {
   --palette-fg: #657b83;
   --palette-muted: #657b83;
   --palette-border: #eee8d5;
-  --palette-hover: #eee8d5;
-  --palette-selection: #eee8d5;
+  --palette-hover: #e4ddc8;
+  --palette-selection: #c2d3d4;
   --palette-line: #eee8d5;
   --palette-accent: #268bd2;
   --palette-on-accent: #002b36;
@@ -1191,6 +1196,9 @@ html {
   --syn-markup-code: #2aa198;
   --syn-tag: #268bd2;
   --syn-escape: #dc322f;
+  /* Selection and hover differ from the panel and popup surfaces; the editor keeps Solarized's own selection. */
+  --bg-editor-selection: #eee8d5;
+  --bg-editor-selection-inactive: #eee8d5;
 }
 
 :root[data-color-theme="solarized-dark"] {
@@ -1208,8 +1216,8 @@ html {
   --palette-fg: #839496;
   --palette-muted: #839496;
   --palette-border: #073642;
-  --palette-hover: #073642;
-  --palette-selection: #073642;
+  --palette-hover: #0b4053;
+  --palette-selection: #10506d;
   --palette-line: #073642;
   --palette-accent: #268bd2;
   --palette-on-accent: #002b36;
@@ -1240,6 +1248,9 @@ html {
   --syn-markup-code: #2aa198;
   --syn-tag: #268bd2;
   --syn-escape: #dc322f;
+  /* Selection and hover differ from the panel and popup surfaces; the editor keeps Solarized's own selection. */
+  --bg-editor-selection: #073642;
+  --bg-editor-selection-inactive: #073642;
 }
 
 :root[data-color-theme="one-light"] {
@@ -1341,7 +1352,7 @@ html {
   --h-row: 20px;
   --h-list-row: 20px;
   --h-statusbar: 24px;
-  --h-stripe-button: 40px;
+  --stripe-icon-button: 24px;
   --h-field: 24px;
   --h-button: 24px;
 }

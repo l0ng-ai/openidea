@@ -38,9 +38,10 @@ import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { openImport } from "./importConfigs";
 import { registerGoActions } from "./goActions";
 import { invalidateGoModules } from "./goModules";
+import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { recordRun, runServiceProvider } from "./services";
+import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
@@ -299,6 +300,15 @@ export function activate(): () => void {
     listenForApplicationDeactivation(),
     trackRecentConfigurations(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
+    // A removed workspace member (or a closed project) takes its sessions,
+    // temporary configurations and Services groups with it.
+    // Only while the same project stays open: closing it tears its runs down separately.
+    useProject.subscribe((s, prev) => {
+      if (!s.project || s.project.root !== prev.project?.root) return;
+      const before = prev.project.workspace?.projects ?? [];
+      const after = s.project.workspace?.projects ?? [];
+      for (const root of before) if (!after.includes(root)) void cleanupRemovedProject(root);
+    }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
     registerMenuGroup({
@@ -565,6 +575,7 @@ export function activate(): () => void {
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
       if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
+      if (paths.some((p) => p.endsWith("/__init__.py"))) invalidatePythonPackages();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
     }),
     onIdeEvent("runExited", (e) => {

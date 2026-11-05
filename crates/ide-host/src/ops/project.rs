@@ -17,6 +17,8 @@ pub struct ProjectInfo {
     pub settings: Settings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<ide_workspace::workspace::Workspace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unity: Option<ide_workspace::unity::UnityProjectInfo>,
 }
 
 pub fn info(project: &Project) -> ProjectInfo {
@@ -33,6 +35,7 @@ pub fn info(project: &Project) -> ProjectInfo {
         settings,
         root: project.root.clone().into(),
         workspace: ide_workspace::workspace::Workspace::load(&project.root).ok().flatten(),
+        unity: ide_workspace::unity::detect(&project.root),
     }
 }
 
@@ -172,7 +175,12 @@ pub fn set_settings(
         host.apply_proxy();
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    let code_style = key == "editor" || key == "editor.codeStyle" || key.starts_with("editor.codeStyle.");
+    // So do inspections that are compiler options (`ide-sdk` `configure_java_compiler`).
+    let code_style = key == "editor"
+        || key == "editor.codeStyle"
+        || key.starts_with("editor.codeStyle.")
+        || key == "inspections"
+        || key.starts_with("inspections.");
     let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
@@ -188,7 +196,8 @@ pub fn set_settings(
     }
     let roots_changed = key == "projectStructure"
         || key.starts_with("projectStructure.")
-        || "languages.java.maven.unlinkedProjects".starts_with(key);
+        || "languages.java.maven.unlinkedProjects".starts_with(key)
+        || "languages.java.gradle.linkedProjects".starts_with(key);
     // Content roots and excludes (files.exclude, ignored names, excluded folders) reach the
     // index and the watchers without reopening the project (the rescan runs in the background).
     if roots_changed || key == "files" || key.starts_with("files.") {

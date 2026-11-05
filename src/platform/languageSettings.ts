@@ -55,11 +55,33 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   runOnSave: false,
 };
 
+/** `languages.php.languageLevel` values; `""` = Auto (from `composer.json`). */
+export const PHP_LANGUAGE_LEVELS = [
+  "",
+  "5.6",
+  "7.0",
+  "7.1",
+  "7.2",
+  "7.3",
+  "7.4",
+  "8.0",
+  "8.1",
+  "8.2",
+  "8.3",
+  "8.4",
+  "8.5",
+] as const;
+
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   ruby: { interpreter: string };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
-  php: { interpreter: string };
+  php: {
+    interpreter: string;
+    languageLevel: (typeof PHP_LANGUAGE_LEVELS)[number];
+    includePaths: string[];
+    stubs: string[];
+  };
   rust: {
     toolchain: string;
     stdlib: string;
@@ -81,6 +103,7 @@ export interface LanguagesValid {
     jdtlsJdk: string;
     jdtlsVmArgs: string;
     gradle: {
+      linkedProjects: string[] | null;
       jvm: string;
       distribution: "wrapper" | "local";
       home: string;
@@ -88,7 +111,14 @@ export interface LanguagesValid {
       /** IDEA's "Build and run using": Gradle (`JavaExec`) or the IDE (the language server's classpath). */
       runUsing: "gradle" | "ide";
     };
-    maven: { home: string; userSettings: string; localRepository: string; unlinkedProjects: string[] };
+    maven: {
+      home: string;
+      userSettings: string;
+      localRepository: string;
+      unlinkedProjects: string[];
+      daemon: boolean;
+      mvndHome: string;
+    };
   };
   /** Preview font size in px; `null` follows the editor font size. */
   markdown: { previewFontSize: number | null };
@@ -121,7 +151,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   ruby: { interpreter: "" },
   node: { interpreter: "", packageManager: "" },
-  php: { interpreter: "" },
+  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [] },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
@@ -131,8 +161,8 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     jdk: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
-    gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
-    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
+    gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
+    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [], daemon: false, mvndHome: "" },
   },
   markdown: { previewFontSize: null },
 };
@@ -167,6 +197,11 @@ export function normalizeFolder(path: string): string {
 /** A stored preview font size within IDEA's 8..72, or `null` (follow the editor font). */
 const previewSize = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? Math.min(72, Math.max(8, Math.round(v))) : null;
+/** Non-empty trimmed strings, without duplicates. */
+const strings = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? [...new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim()))].filter((x) => x)
+    : [];
 const folders = (v: unknown): string[] =>
   Array.isArray(v)
     ? [
@@ -222,7 +257,12 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
     },
-    php: { interpreter: text(php.interpreter, d.php.interpreter) },
+    php: {
+      interpreter: text(php.interpreter, d.php.interpreter),
+      languageLevel: oneOf(php.languageLevel, PHP_LANGUAGE_LEVELS, d.php.languageLevel),
+      includePaths: strings(php.includePaths),
+      stubs: strings(php.stubs),
+    },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),
       stdlib: text(rust.stdlib, d.rust.stdlib),
@@ -253,6 +293,9 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
       gradle: {
+        linkedProjects: Array.isArray(gradle.linkedProjects)
+          ? gradle.linkedProjects.filter((p): p is string => typeof p === "string")
+          : null,
         jvm: text(gradle.jvm, d.java.gradle.jvm),
         distribution: oneOf(gradle.distribution, ["wrapper", "local"] as const, d.java.gradle.distribution),
         home: text(gradle.home, d.java.gradle.home),
@@ -264,6 +307,8 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
+        daemon: bool(maven.daemon, d.java.maven.daemon),
+        mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },

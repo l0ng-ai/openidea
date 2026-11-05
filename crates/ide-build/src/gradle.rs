@@ -435,6 +435,15 @@ pub fn external_roots<'a>(root: &Path, dirs: impl IntoIterator<Item = &'a str>) 
 
 pub fn load(root: &Path) -> Option<GradleModel> {
     let dir = build_dir(root)?;
+    load_build(root, dir.strip_prefix(root).unwrap_or(&dir))
+}
+
+/// Loads exactly this build, without searching its child folders.
+pub fn load_build(root: &Path, dir: &Path) -> Option<GradleModel> {
+    let dir = root.join(dir);
+    if !SETTINGS_FILES.iter().chain(BUILD_FILES).any(|name| dir.join(name).is_file()) {
+        return None;
+    }
     let settings = read_first(&dir, SETTINGS_FILES).map(|(_, t)| parse_settings(&t)).unwrap_or_default();
     let root_name =
         settings.name.unwrap_or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
@@ -453,6 +462,56 @@ pub fn load(root: &Path) -> Option<GradleModel> {
         .filter_map(|f| std::fs::read_to_string(root.join(f)).ok())
         .find_map(|t| script_java_version(&strip_comments(&t)));
     Some(GradleModel { dir: rel(root, &dir), projects, java_version, command: wrapper(&dir), ..GradleModel::default() })
+}
+
+/// Validates user-selected build folders and stores a stable, deduplicated identity.
+pub fn normalize_linked_projects(root: &Path, dirs: &[String]) -> ide_core::IdeResult<Vec<String>> {
+    let root = dunce::canonicalize(root)?;
+    let mut out = Vec::new();
+    for dir in dirs {
+        let path = dunce::canonicalize(root.join(dir))?;
+        if !path.is_dir() || !SETTINGS_FILES.iter().chain(BUILD_FILES).any(|name| path.join(name).is_file()) {
+            return Err(ide_core::IdeError::invalid(format!("No Gradle build in {}", path.display())));
+        }
+        let dir = rel(&root, &path);
+        if !out.contains(&dir) {
+            out.push(dir);
+        }
+    }
+    Ok(out)
+}
+
+/// Linked build identities without reading their scripts (also used by index hot paths).
+pub(crate) fn linked_dirs(root: &Path, settings: &ide_core::settings::GradleSettings) -> Vec<String> {
+    match &settings.linked_projects {
+        None => build_dir(root).map(|dir| rel(root, &dir)).into_iter().collect(),
+        Some(dirs) => {
+            let mut out = Vec::new();
+            for dir in dirs {
+                if let Ok(dirs) = normalize_linked_projects(root, std::slice::from_ref(dir)) {
+                    for dir in dirs {
+                        if !out.contains(&dir) {
+                            out.push(dir);
+                        }
+                    }
+                }
+            }
+            out
+        }
+    }
+}
+
+pub fn load_linked(root: &Path, settings: &ide_core::settings::GradleSettings) -> Vec<GradleModel> {
+    linked_dirs(root, settings).iter().filter_map(|dir| load_build(root, Path::new(dir))).collect()
+}
+
+/// A build's task paths are local to it, so sync caches must be local to its identity too.
+pub fn cache_dir(cache: &Path, build_dir: &str) -> PathBuf {
+    if build_dir.is_empty() {
+        return cache.to_path_buf();
+    }
+    let hash = build_dir.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    cache.join("gradle").join(format!("{hash:016x}"))
 }
 
 /// `JavaLanguageVersion.of(21)` / `sourceCompatibility = JavaVersion.VERSION_17` in a build script.
@@ -616,6 +675,41 @@ pub(crate) fn has_war_plugin(script: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_linkage_preserves_default_discovery_and_can_unlink_every_build() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for dir in ["a", "b"] {
+            std::fs::create_dir(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("settings.gradle"), format!("rootProject.name = '{dir}'")).unwrap();
+        }
+        assert_eq!(super::load_linked(root, &Default::default())[0].dir, "a");
+        let mut settings = ide_core::settings::GradleSettings {
+            linked_projects: Some(vec!["b".into(), "./b".into(), "a".into()]),
+            ..Default::default()
+        };
+        let models = super::load_linked(root, &settings);
+        assert_eq!(models.iter().map(|g| g.dir.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        settings.linked_projects = Some(vec![]);
+        assert!(super::load_linked(root, &settings).is_empty());
+        assert!(super::normalize_linked_projects(root, &["missing".into()]).is_err());
+        assert!(super::normalize_linked_projects(root, &["".into()]).is_err());
+        assert!(super::load_build(root, root).is_none(), "exact loading never picks a child");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_directories_deduplicate_symlinks_and_keep_external_builds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let external = temp.path().join("external");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("build.gradle"), "").unwrap();
+        std::os::unix::fs::symlink(&external, root.join("alias")).unwrap();
+        let dirs = super::normalize_linked_projects(&root, &["alias".into(), "../external".into()]).unwrap();
+        assert_eq!(dirs, [external.canonicalize().unwrap().to_string_lossy().to_string()]);
+    }
     #[test]
     fn script_dependencies_read_string_and_map_notations() {
         let script = r#"

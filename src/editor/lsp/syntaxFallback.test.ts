@@ -82,15 +82,12 @@ const local = (over: Partial<Extract<Locals, { status: "local" }>["symbol"]> = {
 });
 
 const views: EditorView[] = [];
-function editor(doc: string, language = "typescript", anchor = 0) {
+function editor(doc: string, language = "typescript", anchor = 0, path = "/p/a.ts") {
   const view = new EditorView({
     state: EditorState.create({
       doc,
       selection: { anchor },
-      extensions: [
-        lspDoc.of({ doc: 7, path: "/p/a.ts", language, uiMode: null, readOnly: false }),
-        navigationExtension(),
-      ],
+      extensions: [lspDoc.of({ doc: 7, path, language, uiMode: null, readOnly: false }), navigationExtension()],
     }),
     parent: document.body,
   });
@@ -669,4 +666,17 @@ describe("modifier-hover navigation recovery", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("bar");
   });
+});
+
+describe("same-document fragment navigation", () => {
+  it.each(["definition", "declaration"] as const)(
+    "follows Markdown HTML anchors through %s without a server",
+    async (kind) => {
+      const source = '[artist::order](#Artist-order)\n\n<a id="Artist-order"></a>';
+      const view = editor(source, "markdown", source.indexOf("#Artist"), "/p/notes.md");
+      await gotoTargets(view, kind);
+      expect(view.state.selection.main.head).toBe(source.indexOf("id="));
+      expect(openFile).not.toHaveBeenCalled();
+    },
+  );
 });

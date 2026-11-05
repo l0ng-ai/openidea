@@ -16,8 +16,12 @@
 //! projects) and folders linked with `openidea-plugin link` (`links.json`).
 
 mod api;
+mod icon_extensions;
+mod icon_patterns;
+mod icon_settings;
 mod icons;
 mod install;
+pub mod intellij;
 mod market;
 mod points;
 mod providers;
@@ -32,7 +36,10 @@ pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
-pub use market::{INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX};
+pub use market::{
+    INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
+    read_url as read_market_url, resolve as resolve_market_href,
+};
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub(crate) use providers::editor_providers as editor_providers_for;
 pub use providers::{ProviderKind, set_editor_providers};
@@ -238,12 +245,16 @@ pub struct Consent {
     /// Optional capabilities the user accepted (`net:crates.io`, …). Required
     /// ones are implied by consenting at all.
     pub optional: Vec<String>,
+    /// The user accepted a package signed by another key than the installed
+    /// copy ([`InstallPreview::signer_changed`]).
+    #[serde(default)]
+    pub signer_change: bool,
 }
 
 impl Consent {
     /// Accept everything the plugin asks for (tests, trusted official plugins).
     pub fn all() -> Self {
-        Self { optional: vec!["*".into()] }
+        Self { optional: vec!["*".into()], signer_change: true }
     }
 
     fn accepts(&self, cap: &Capability) -> bool {
@@ -270,6 +281,14 @@ pub struct InstallPreview {
     pub unsigned: bool,
     /// The verified publisher.
     pub publisher: Option<String>,
+    /// Replaces an installed copy signed with another key, which didn't
+    /// endorse this package's (or this one is unsigned): the user confirms it
+    /// ([`Consent::signer_change`]).
+    pub signer_changed: bool,
+    /// Something to confirm: a first install, an unsigned package, another
+    /// signer, or capabilities the installed version wasn't granted or
+    /// refused. Without, an update installs with the grants it has.
+    pub needs_consent: bool,
 }
 
 type ProjectPolicy = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
@@ -316,6 +335,10 @@ pub struct PluginHost {
     pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
     /// The last marketplace index read: trust root for signatures, revocations.
     market: RwLock<Option<ide_extension::package::Index>>,
+    /// The official publisher's keys the index is pinned to (none: as listed).
+    official_keys: RwLock<Vec<String>>,
+    /// `id@version` of the updates last announced.
+    announced_updates: Mutex<Vec<String>>,
     /// The marketplace used while the user has set none (the app's official one).
     default_market_url: RwLock<Option<String>>,
     /// Updates not confirmed yet (the new version hasn't started once): what
@@ -354,9 +377,12 @@ impl PluginHost {
             policy_pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
         }));
         let shared = api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone());
-        let market = RwLock::new(Self::load_market_index(&plugins_dir));
+        let official_keys = market::built_in_official_keys();
+        let market = RwLock::new(Self::load_market_index(&plugins_dir, &official_keys));
         let host = Self {
             market,
+            official_keys: RwLock::new(official_keys),
+            announced_updates: Mutex::default(),
             default_market_url: RwLock::new(None),
             updates: Mutex::default(),
             project_policy: RwLock::new(Arc::new(|_| false)),
@@ -699,14 +725,27 @@ impl PluginHost {
         }
         let publisher = self.verified_publisher(src);
         let m = &pkg.manifest;
+        let replaces = self.plugins.read().get(&m.id).map(|p| p.manifest().version.clone());
+        // An update shows what the installed version was granted.
+        let grant = replaces
+            .as_ref()
+            .and_then(|_| self.ledger.lock().get(&Subject::Installed(m.id.clone())).cloned())
+            .filter(|g| g.confirmed);
+        let granted = |c: &Capability| grant.as_ref().is_some_and(|g| g.has(c));
         let mut capabilities: Vec<CapabilityInfo> =
-            m.capabilities.all().map(|c| CapabilityInfo::new(c, m.capabilities.is_optional(c), false)).collect();
+            m.capabilities.all().map(|c| CapabilityInfo::new(c, m.capabilities.is_optional(c), granted(c))).collect();
         for extra in &set.capabilities {
             if !m.declares(extra) {
-                capabilities.push(CapabilityInfo::new(extra, true, false));
+                capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
         capabilities.sort_by(|a, b| b.risk.cmp(&a.risk).then(a.id.cmp(&b.id)));
+        let signer_changed = self.signer_changed(&m.id, src);
+        let answered = |c: &CapabilityInfo| {
+            c.granted || (c.optional && grant.as_ref().is_some_and(|g| g.declined.contains(&c.id)))
+        };
+        let needs_consent =
+            grant.is_none() || publisher.is_none() || signer_changed || !capabilities.iter().all(answered);
         Ok(InstallPreview {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -717,9 +756,11 @@ impl PluginHost {
             capabilities,
             contributions: counts(m),
             warnings: set.warnings.clone(),
-            replaces: self.plugins.read().get(&m.id).map(|p| p.manifest().version.clone()),
+            replaces,
             unsigned: publisher.is_none(),
             publisher,
+            signer_changed,
+            needs_consent,
         })
     }
 
@@ -741,6 +782,11 @@ impl PluginHost {
         // A signature that doesn't hold is worse than none.
         if let Some(problem) = self.signature_problem(src) {
             return Err(IdeError::invalid(format!("refusing {id}: {problem}")));
+        }
+        if !consent.signer_change && self.signer_changed(&id, src) {
+            return Err(IdeError::invalid(format!(
+                "refusing {id}: it is signed by another key than the installed version; confirm the change of signer"
+            )));
         }
         let version = pkg.manifest.version.clone();
         if let Some(r) = self.market.read().as_ref().and_then(|i| i.revocation(&id, &version)) {
@@ -2207,6 +2253,7 @@ fn placeholder_manifest(dir: &Path) -> Manifest {
         homepage: None,
         license: None,
         change_notes: None,
+        declared_categories: Vec::new(),
         engine: ide_extension::ENGINE_VERSION.into(),
         legacy: false,
         wasm: None,

@@ -440,20 +440,11 @@ impl vcs::Host for StoreData {
     }
 }
 
-fn kind_from_wit(k: events::EventKind) -> EventKind {
-    match k {
-        events::EventKind::FileOpened => EventKind::FileOpened,
-        events::EventKind::FileSaved => EventKind::FileSaved,
-        events::EventKind::EditorFocused => EventKind::EditorFocused,
-        events::EventKind::ActionPerformed => EventKind::ActionPerformed,
-        events::EventKind::VcsChanged => EventKind::VcsChanged,
-        events::EventKind::Scheduled => EventKind::Scheduled,
-    }
-}
-
 impl events::Host for StoreData {
-    fn subscribe(&mut self, kind: events::EventKind) -> Fallible<()> {
-        let kind = kind_from_wit(kind);
+    fn subscribe(&mut self, kind: String) -> Fallible<()> {
+        let Some(kind) = EventKind::parse(&kind) else {
+            return Ok(Err(wit::Error::Invalid(format!("no event kind {kind:?} in this OpenIDEA"))));
+        };
         if let Some(cap) = kind.capability()
             && let Err(e) = self.require(cap)
         {
@@ -463,8 +454,10 @@ impl events::Host for StoreData {
         Ok(Ok(()))
     }
 
-    fn unsubscribe(&mut self, kind: events::EventKind) -> wasmtime::Result<()> {
-        self.host.subscribe(kind_from_wit(kind), false);
+    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
+        if let Some(kind) = EventKind::parse(&kind) {
+            self.host.subscribe(kind, false);
+        }
         Ok(())
     }
 }
@@ -542,10 +535,10 @@ impl diagnostics::Host for StoreData {
                     diagnostics::Severity::Hint => ide_core::Severity::Hint,
                 },
                 message: clip(d.message, 4096),
-                source: Some(source.clone()),
+                source: Some(d.source.map_or_else(|| source.clone(), |s| clip(s, 128))),
                 code: d.code.map(|c| clip(c, 128)),
-                unnecessary: false,
-                deprecated: false,
+                unnecessary: d.tags.iter().any(|t| t == "unnecessary"),
+                deprecated: d.tags.iter().any(|t| t == "deprecated"),
                 server: Some(source.clone()),
             })
             .collect();
@@ -646,6 +639,21 @@ impl views::Host for StoreData {
         let client = self.invocation.client.clone();
         let title = clip(title, crate::runtime::MAX_TITLE);
         Ok(self.host.open_terminal(client.as_deref(), title, &program, args, cwd.as_deref()).map_err(to_wit))
+    }
+
+    fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let Some(root) = self.invocation.workspace_root.clone() else {
+            return Ok(Err(wit::Error::Invalid("no project is open in this window".into())));
+        };
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_location(client.as_deref(), &real, line, column).map_err(to_wit))
     }
 }
 

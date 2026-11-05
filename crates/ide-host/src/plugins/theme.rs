@@ -134,7 +134,7 @@ impl ExtensionPoint for ThemesPoint {
 
 /// Blanks out `//` and `/* */` comments outside strings, keeping newlines so
 /// parse errors still point at the right line.
-fn strip_json_comments(src: &str) -> String {
+pub(super) fn strip_json_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
     let (mut in_str, mut escaped) = (false, false);

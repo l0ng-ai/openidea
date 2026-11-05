@@ -17,11 +17,32 @@ pub async fn build_model(window: Window, state: State<'_, AppState>) -> IdeResul
     ide_host::ops::build::build_model(&state.host, window.label()).await
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn gradle_link_projects(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> IdeResult<BuildModel> {
+    ide_host::ops::build::gradle_link_projects(&state.host, window.label(), paths).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn gradle_unlink_projects(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> IdeResult<BuildModel> {
+    ide_host::ops::build::gradle_unlink_projects(&state.host, window.label(), paths).await
+}
+
 /// Runs Maven (`help:effective-pom dependency:tree`) or Gradle (`tasks --all`) in the
 /// background, reporting progress on `on_progress`; cancellable with `cancel_request(request)`.
 /// Returns the refreshed model; a failed build is reported in its `syncError`.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn build_sync(
     window: Window,
     state: State<'_, AppState>,
@@ -29,6 +50,7 @@ pub async fn build_sync(
     request: RequestId,
     offline: bool,
     profiles: Vec<String>,
+    build_dir: Option<String>,
     on_progress: Channel<SyncProgress>,
 ) -> IdeResult<BuildModel> {
     ide_host::ops::build::build_sync(
@@ -38,7 +60,32 @@ pub async fn build_sync(
         request,
         offline,
         profiles,
+        build_dir,
         crate::commands::sender(on_progress),
+    )
+    .await
+}
+
+/// The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer).
+#[tauri::command]
+#[specta::specta]
+pub async fn gradle_dependencies(
+    window: Window,
+    state: State<'_, AppState>,
+    gradle_path: String,
+    configuration: String,
+    offline: bool,
+    request: RequestId,
+    build_dir: Option<String>,
+) -> IdeResult<Vec<ide_build::GradleDependency>> {
+    ide_host::ops::build::gradle_dependencies(
+        &state.host,
+        window.label(),
+        gradle_path,
+        configuration,
+        offline,
+        request,
+        build_dir,
     )
     .await
 }

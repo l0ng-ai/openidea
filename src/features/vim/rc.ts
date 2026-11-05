@@ -228,6 +228,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   Inline: "refactor.inline",
   Move: "refactor.move",
   SafeDelete: "refactor.safeDelete",
+  MembersPullUp: "refactor.pullMembersUp",
+  MemberPushDown: "refactor.pushMembersDown",
   Run: "run.run",
   Debug: "run.debug",
   RunClass: "run.runContext",

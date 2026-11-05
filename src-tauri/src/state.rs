@@ -131,7 +131,7 @@ impl AppState {
 
     /// The window that owns what `window` starts: a settings window's parent, else `window`.
     pub fn owner_window(window: &str) -> &str {
-        crate::windows::settings_parent(window).unwrap_or(window)
+        crate::windows::auxiliary_parent(window).unwrap_or(window)
     }
 
     /// Opens `root` in `window` and records it in the recent projects.
@@ -154,9 +154,11 @@ impl AppState {
         self.host.open_light(window, file)
     }
 
+    /// Called on the event-loop thread (window destruction, the `close_project`
+    /// command), so it must not wait for the project's workers to shut down.
     pub fn close_project(&self, window: &str) {
         self.remote_dev.disconnect(window);
-        self.host.close_project(window);
+        self.host.close_project_detached(window);
     }
 }
 

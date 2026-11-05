@@ -126,7 +126,7 @@ export function presentationIcon(
     (spring || role === "resources" || role === "testResources")
   )
     return "spring-config";
-  if (!info?.kind) return fileIconName(name);
+  if (!info?.kind) return fileIconName(name, path);
   if (info.springBoot) return "spring-boot";
   if (/(Tests?|[a-z\d]IT)\.(java|kt)$/.test(name) || role === "test") return "jvm-test";
   const kind: Record<NonNullable<JvmPresentation["kind"]>, IconName> = {

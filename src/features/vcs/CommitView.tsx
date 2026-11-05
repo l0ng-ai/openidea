@@ -47,7 +47,7 @@ import {
   toggledCheck,
   type ChangeNode,
 } from "./changes";
-import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
+import { applyStash, commitChanges, deleteUnversioned, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
@@ -224,7 +224,7 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
   ];
 }
 
-function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
+export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   const files = filesOf(nodes);
   const paths = files.map((f) => f.path);
   const first = nodes.find((n) => n.type === "file");
@@ -246,7 +246,13 @@ function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   items.push(
     { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
     ...(untracked.length
-      ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
+      ? [
+          { kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) },
+          // Only when every selected file is unversioned: versioned ones are rolled back, not deleted.
+          ...(untracked.length === files.length
+            ? [{ label: "Delete…", icon: "trash", run: () => void deleteUnversioned(untracked.map((f) => f.path)) }]
+            : []),
+        ]
       : []),
     ...(toIgnore.length
       ? [

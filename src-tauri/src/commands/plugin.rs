@@ -6,9 +6,10 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult};
 use ide_extension::ActivationEvent;
+use ide_host::plugins::intellij::{self, InstalledIntellijTheme, IntellijThemeSource};
 use ide_host::plugins::{
-    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PluginEditor, PluginEvent,
-    PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
+    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginEditor,
+    PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
 };
 use ide_plugin::{Invocation, Limits};
 use parking_lot::Mutex;
@@ -472,7 +473,7 @@ pub async fn plugin_web_read_file(path: PathBuf) -> IdeResult<String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
-/// The marketplace's plugins: read again when `refresh`, else the last index read.
+/// The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_market(
@@ -480,7 +481,7 @@ pub async fn plugin_market(
     refresh: bool,
 ) -> IdeResult<Vec<ide_host::plugins::MarketPlugin>> {
     let host = state.plugins.clone();
-    blocking(move || if refresh { host.refresh_market() } else { Ok(host.market_plugins()) }).await
+    blocking(move || host.market_listing(refresh)).await
 }
 
 #[tauri::command]
@@ -510,6 +511,32 @@ pub async fn plugin_market_download(state: State<'_, AppState>, id: String) -> I
 pub async fn plugin_unpack_package(state: State<'_, AppState>, path: PathBuf) -> IdeResult<PathBuf> {
     let host = state.plugins.clone();
     blocking(move || host.unpack_package(&path)).await
+}
+
+/// Reads an IntelliJ theme plugin (`.jar`, Marketplace `.zip`, plugin folder) or `.theme.json` to import.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_read_intellij_theme(path: PathBuf) -> IdeResult<IntellijThemeSource> {
+    blocking(move || intellij::read_source(&path)).await
+}
+
+/// Theme plugins installed in the JetBrains IDEs of this user, the ones in use first.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_installed_intellij_themes() -> IdeResult<Vec<InstalledIntellijTheme>> {
+    blocking(|| Ok(intellij::installed_themes())).await
+}
+
+/// Writes a package the UI generated (an imported theme); returns the folder for the install page.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_stage_package(
+    state: State<'_, AppState>,
+    name: String,
+    files: Vec<PackageFile>,
+) -> IdeResult<PathBuf> {
+    let host = state.plugins.clone();
+    blocking(move || host.stage_package(&name, &files)).await
 }
 
 /// Goes back to the version the last update of `id` replaced.

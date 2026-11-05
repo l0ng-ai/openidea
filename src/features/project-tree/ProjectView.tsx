@@ -128,6 +128,7 @@ function iconFor(
   build: BuildPresentation,
   detected: readonly RootFolder[],
   expanded: boolean,
+  holdsOpen: boolean,
 ): string {
   if (node.placeholder) return node.placeholder === "dir" ? "folder" : "file";
   if (node.icon) return node.icon;
@@ -139,9 +140,9 @@ function iconFor(
     const key = rel !== null && build.modules.has(rel) ? rel : node.path;
     const module = root ? moduleFolderIcon(key, node.root, build.modules) : null;
     if (module) return module;
-    return node.root ? "module" : (themedFolderIconName(node.label, expanded) ?? "folder");
+    return node.root ? "module" : (themedFolderIconName(node.label, expanded, holdsOpen, node.path) ?? "folder");
   }
-  return fileIconName(node.label);
+  return fileIconName(node.label, node.path);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +259,9 @@ interface RowProps {
   onPointerDown: (node: ProjectNode, e: ReactPointerEvent) => void;
 }
 
+const holdsOpenFile = (dir: string, files: readonly string[]) =>
+  files.some((f) => f.length > dir.length && f.startsWith(dir) && (f[dir.length] === "/" || f[dir.length] === "\\"));
+
 const Row = memo(function Row({
   node,
   matches,
@@ -279,9 +283,10 @@ const Row = memo(function Row({
   const build = useProjectPresentation();
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
+  const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
   const icon =
     node.dir || node.placeholder || node.icon
-      ? iconFor(node, roots, root, build, detected, expanded)
+      ? iconFor(node, roots, root, build, detected, expanded, holdsOpen)
       : presentationIcon(node.path, file, roots, root, build.spring);
   const moduleFolder =
     node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
@@ -421,6 +426,7 @@ export function ProjectView() {
 
   const info = useMemo(() => visibleInfo(model, expanded), [model, expanded]);
   const mode = useProjectTree((s) => s.mode);
+  const unity = useProjectTree((s) => s.unity);
   const outlines = useProjectTree((s) => s.outlines);
   const showMembers = options.showMembers;
 
@@ -750,7 +756,7 @@ export function ProjectView() {
           editing={editing}
           cut={cutPaths.has(node.path)}
           dropTarget={dropTarget === node.key}
-          detail={node.root && !node.icon ? tildify(node.path, home) : (node.detail ?? null)}
+          detail={node.detail ?? (node.root && !node.icon ? tildify(node.path, home) : null)}
           onEditDone={focusTree}
           onClick={onRowClick}
           onDoubleClick={onRowDoubleClick}
@@ -776,6 +782,11 @@ export function ProjectView() {
       onFocus={(e) => setContext("projectViewFocus", (e.target as HTMLElement).getAttribute("role") === "tree")}
       onBlur={() => setContext("projectViewFocus", false)}
     >
+      {mode === "unity" && unity && !unity.projects.length && (
+        <div className={styles.unityNotice} role="status">
+          {tx`C# project files are missing. In Unity, select an external script editor in Preferences > External Tools, then regenerate project files.`}
+        </div>
+      )}
       {!model.roots.length && (
         <div className={styles.empty}>
           {txTemplate(`Nothing to show in ${VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "this view"}`)}

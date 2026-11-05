@@ -292,6 +292,21 @@ impl PluginHost {
         .collect()
     }
 
+    /// The edits of an action `plugin_id` returned with `data`, now that the
+    /// user picked it: a call with the command budget, not the edit path's.
+    pub fn resolve_code_action(
+        &self,
+        plugin_id: &str,
+        doc: &ProviderDocument,
+        action: CodeAction,
+    ) -> ide_core::IdeResult<CodeAction> {
+        let d = Arc::new(doc.clone());
+        let timeout = self.limits.timeout;
+        self.code_call(plugin_id, ide_plugin::Invocation::default(), "resolving the code action", move |rt, _| {
+            rt.resolve_code_action(&d, &action, timeout)
+        })
+    }
+
     pub fn provide_definition(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<Location> {
         let d = Arc::new(doc.clone());
         self.edit_calls(ProviderKind::Definition, &doc.language, move |rt, timeout| {

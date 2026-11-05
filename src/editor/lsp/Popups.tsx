@@ -488,7 +488,7 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
     <Popup open anchor={popup.anchor} onClose={closePopup} aria-label="Definition" className={styles.defPopup}>
       <div className={styles.defFrame} tabIndex={-1} data-autofocus onKeyDown={onKeyDown}>
         <div className={styles.defHeader}>
-          <Icon name={fileIconName(basename(location.path))} size={14} />
+          <Icon name={fileIconName(basename(location.path), location.path)} size={14} />
           {many ? (
             <Select
               variant="ghost"
@@ -579,7 +579,7 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
         <ul className={styles.previewList} aria-label={tx("Changes")}>
           {summary.entries.map((e) => (
             <li key={e.path} className={styles.previewRow}>
-              <Icon name={fileIconName(basename(e.path))} size={14} className={styles.itemIcon} />
+              <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
               <span className={styles.previewName}>{basename(e.path)}</span>
               <span className={styles.previewPath}>{relativePath(root, e.path)}</span>
               <span className={styles.spacer} />

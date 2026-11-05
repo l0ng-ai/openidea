@@ -143,6 +143,27 @@
   padding: 0 14px 6px;
   color: var(--fg-subtle);
 }
+.pushGrouping {
+  margin-left: auto;
+}
+.pushCommitDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 96px;
+  margin: 0 14px 8px;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.pushCommitMessage {
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .todoList {
   margin: 8px 0 0;
   padding-left: 18px;
@@ -280,6 +301,64 @@
   background: var(--bg-list-selected);
 }
 
+.comparisonDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+.comparisonDialog .comparison {
+  flex: 1 1 auto;
+}
+.comparisonWindow {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-dialog, var(--bg-elev));
+  color: var(--fg);
+}
+/* Linux: frameless X11 windows have no shadow, so mark the edge in CSS (like the Settings window). */
+.comparisonWindowEdge {
+  position: relative;
+}
+.comparisonWindowEdge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--border-window);
+}
+.comparisonWindowLoading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-muted);
+}
+.comparisonWindowBody {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.comparisonWindowBody[hidden] {
+  display: none;
+}
+.comparisonWindowBody > .comparisonWindow {
+  flex: 1;
+}
+.comparisonWindowBody > .comparison {
+  flex: 1 1 auto;
+}
+.comparisonWindowFooter {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: 12px;
+  padding: 12px 16px;
+}
 .comparison {
   display: flex;
   height: min(520px, 65vh);

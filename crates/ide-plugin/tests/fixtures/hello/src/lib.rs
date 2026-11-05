@@ -1,5 +1,5 @@
 //! Sample OpenIDEA plugin, written with the `openidea-plugin` SDK.
-//! Build with `openidea-plugin build plugins/hello` (see plugins/README.md).
+//! Build with `openidea-plugin build crates/ide-plugin/tests/fixtures/hello` (see plugins/README.md).
 
 use openidea_plugin::views::{Body, Button, TreeItem, View, ViewEvent, Viewport, Views};
 use openidea_plugin::{Context, Error, Invocation, LogLevel, NotificationLevel, Plugin, host, register_plugin};
