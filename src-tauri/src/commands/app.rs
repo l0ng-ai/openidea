@@ -85,10 +85,8 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
     let info = project_info(&project);
     let _ = window.set_title(&info.name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
-    let grouped = window.state::<crate::windows::WindowsState>().groups.lock().group(window.label()).is_some();
-    if grouped {
-        crate::window_groups::persist(window.app_handle()).await?;
-    }
+    // Every project window is part of the session reopened at the next start.
+    crate::window_groups::persist(window.app_handle()).await?;
     Ok(info)
 }
 
