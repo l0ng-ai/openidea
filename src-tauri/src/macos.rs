@@ -7,7 +7,7 @@ use objc2::{
     rc::Retained,
     runtime::{AnyClass, AnyObject, Imp, ProtocolObject, Sel},
 };
-use objc2_app_kit::{NSWindow, NSWindowUserTabbingPreference};
+use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior, NSWindowUserTabbingPreference};
 use objc2_foundation::{NSNotificationCenter, NSObjectProtocol, NSRect};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
@@ -46,9 +46,10 @@ pub fn new_project_tab_target(app: &AppHandle, launch: &Launch) -> IdeResult<Opt
         let host = app.state::<crate::state::AppState>();
         host.project(w.label()).is_ok_and(|p| !p.light) || host.remote_dev.get(w.label()).is_some()
     });
-    // A project-tab group is fullscreen through simple fullscreen, which the native flag misses.
-    let fullscreen =
-        active.as_ref().is_some_and(|w| w.is_fullscreen().unwrap_or(false) || is_simple_fullscreen(w.label()));
+    // A member shown in its group's fullscreen Space is not in native fullscreen itself.
+    let fullscreen = active
+        .as_ref()
+        .is_some_and(|w| w.is_fullscreen().unwrap_or(false) || crate::window_groups::in_fullscreen(app, w.label()));
     let light_edit = launch.project.is_none() && launch.remote.is_none();
     Ok(should_group_new_project(tabbing_preference(app)?, fullscreen, active.is_some(), light_edit)
         .then_some(active)
@@ -103,103 +104,182 @@ pub fn transfer_fullscreen(from: &WebviewWindow, to: &WebviewWindow) -> tauri::R
     })
 }
 
-/// Windows in simple fullscreen. Grouped project windows take turns in one Space; simple
-/// fullscreen covers the screen without a Space of its own, so switching projects is a plain
-/// show/hide instead of leaving one fullscreen Space and entering another.
-static SIMPLE_FULLSCREEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-pub fn is_simple_fullscreen(label: &str) -> bool {
-    SIMPLE_FULLSCREEN.lock().unwrap().iter().any(|l| l == label)
+/// Runs `then` on the main thread once `window` has left native fullscreen.
+pub fn after_fullscreen_exit(window: &WebviewWindow, then: impl FnOnce() + Send + 'static) -> tauri::Result<()> {
+    let label = window.label().to_owned();
+    window.with_webview(move |webview| unsafe {
+        let native = &*webview.ns_window().cast::<NSWindow>();
+        forget_fullscreen(&label);
+        let then = std::cell::Cell::new(Some(then));
+        let key = label.clone();
+        let block = block2::RcBlock::new(move |_| {
+            forget_fullscreen(&key);
+            if let Some(then) = then.take() {
+                then();
+            }
+        });
+        let observer = NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(objc2_app_kit::NSWindowDidExitFullScreenNotification),
+            Some(native),
+            None,
+            &block,
+        );
+        FULLSCREEN_TRANSFERS.with_borrow_mut(|observers| observers.insert(label, FullscreenObserver(observer)));
+    })
 }
 
-pub fn set_simple_fullscreen(window: &WebviewWindow, on: bool) -> tauri::Result<()> {
-    if !on {
-        // Before the window goes back to its own frame.
-        let target = window.clone();
-        window.run_on_main_thread(move || keep_window_buttons(&target, false))?;
-    }
-    window.set_simple_fullscreen(on)?;
-    let any = {
-        let mut labels = SIMPLE_FULLSCREEN.lock().unwrap();
-        labels.retain(|l| l != window.label());
-        if on {
-            labels.push(window.label().to_owned());
+/// Enters native fullscreen and makes it stick: while another window's fullscreen Space is
+/// closing (just after that window closed), AppKit ignores the request or abandons the transition.
+pub fn enter_fullscreen(window: &WebviewWindow) {
+    const SETTLE: std::time::Duration = std::time::Duration::from_millis(700);
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut held = false;
+        for _ in 0..8 {
+            if is_native_fullscreen(&window) {
+                if held {
+                    return;
+                }
+                held = true;
+            } else {
+                held = false;
+                let _ = native_toggle_fullscreen(&window);
+            }
+            tokio::time::sleep(SETTLE).await;
         }
-        !labels.is_empty()
-    };
-    let target = window.clone();
-    window.run_on_main_thread(move || {
-        present(any);
-        if on {
-            keep_window_buttons(&target, true);
+    });
+}
+
+fn is_native_fullscreen(window: &WebviewWindow) -> bool {
+    let window = window.clone();
+    on_main(&window.clone(), move || {
+        window.ns_window().is_ok_and(|pointer| {
+            unsafe { &*pointer.cast::<NSWindow>() }.styleMask().contains(objc2_app_kit::NSWindowStyleMask::FullScreen)
+        })
+    })
+    .unwrap_or(false)
+}
+
+/// Enters or leaves native fullscreen without the group routing of `toggle_fullscreen` below.
+pub fn native_toggle_fullscreen(window: &WebviewWindow) -> tauri::Result<()> {
+    window.with_webview(|webview| unsafe {
+        let this = webview.ns_window().cast::<AnyObject>();
+        match NATIVE_TOGGLE_FULLSCREEN.get() {
+            Some(native) => native(this, objc2::sel!(toggleFullScreen:), std::ptr::null_mut()),
+            None => (*this.cast::<NSWindow>()).toggleFullScreen(None),
         }
     })
 }
 
-/// A window in simple fullscreen: its `NSWindow` and the minimum size restored when it leaves.
+/// Group windows in native fullscreen whose Space their group shares. The group's other members
+/// are shown over the anchor inside that Space, so switching projects is a plain show/hide that
+/// never leaves the Space, and there is no `NSWindowTabGroup` with a second tab bar.
+static ANCHORS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn is_anchor(label: &str) -> bool {
+    ANCHORS.lock().unwrap().iter().any(|l| l == label)
+}
+
+pub fn set_anchor(label: &str, on: bool) {
+    let mut anchors = ANCHORS.lock().unwrap();
+    anchors.retain(|l| l != label);
+    if on {
+        anchors.push(label.to_owned());
+    }
+}
+
+/// A group member shown in its anchor's fullscreen Space: its `NSWindow`, and what it had before.
 struct Covering {
     native: usize,
+    frame: NSRect,
     min_size: objc2_foundation::NSSize,
+    behavior: NSWindowCollectionBehavior,
 }
 
 thread_local! {
     static COVERING: std::cell::RefCell<std::collections::HashMap<String, Covering>> = std::cell::RefCell::default();
 }
 
-/// Simple fullscreen drops the title bar and resizing; ours is transparent over the web toolbar,
-/// so keep it and its buttons, the green one (enabled only for a resizable window) leading back
-/// out of fullscreen. A minimum size of the whole screen keeps the edges from being dragged.
-/// A titled window is kept below the menu bar or camera housing; see `constrain_frame_rect`.
-fn keep_window_buttons(window: &WebviewWindow, on: bool) {
-    use objc2_app_kit::NSWindowStyleMask;
-    let Ok(pointer) = window.ns_window() else { return };
-    let native = unsafe { &*pointer.cast::<NSWindow>() };
-    let label = window.label().to_owned();
-    if !on {
-        if let Some(covering) = COVERING.with_borrow_mut(|windows| windows.remove(&label)) {
-            native.setMinSize(covering.min_size);
-        }
-        return;
+fn on_main<T: Send + 'static>(window: &WebviewWindow, f: impl FnOnce() -> T + Send + 'static) -> IdeResult<T> {
+    if MainThreadMarker::new().is_some() {
+        return Ok(f());
     }
-    let Some(screen) = native.screen() else { return };
-    let frame = screen.frame();
-    COVERING.with_borrow_mut(|windows| {
-        windows.entry(label).or_insert_with(|| Covering { native: pointer as usize, min_size: native.minSize() });
-    });
-    native.setMinSize(frame.size);
-    native.setStyleMask(native.styleMask() | NSWindowStyleMask::Titled | NSWindowStyleMask::Resizable);
-    native.setFrame_display(frame, true);
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(f());
+        })
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    rx.recv().map_err(|e| IdeError::internal(e.to_string()))
 }
 
-/// Forgets a closed window; true when it was in simple fullscreen.
-pub fn forget_simple_fullscreen(app: &AppHandle, label: &str) -> bool {
-    let (was, any) = {
-        let mut labels = SIMPLE_FULLSCREEN.lock().unwrap();
-        let before = labels.len();
-        labels.retain(|l| l != label);
-        (labels.len() != before, !labels.is_empty())
-    };
-    if was {
-        let label = label.to_owned();
-        let _ = app.run_on_main_thread(move || {
-            COVERING.with_borrow_mut(|windows| windows.remove(&label));
-            present(any);
+/// Lets `window` be shown in `anchor`'s fullscreen Space, at the anchor's frame. Its window
+/// buttons are hidden like the anchor's; the anchor's title bar is revealed at the top edge.
+pub fn join_space(window: &WebviewWindow, anchor: &WebviewWindow) -> IdeResult<()> {
+    let (window, anchor) = (window.clone(), anchor.clone());
+    on_main(&window.clone(), move || {
+        let (Ok(pointer), Ok(anchor)) = (window.ns_window(), anchor.ns_window()) else { return };
+        let native = unsafe { &*pointer.cast::<NSWindow>() };
+        let frame = unsafe { &*anchor.cast::<NSWindow>() }.frame();
+        COVERING.with_borrow_mut(|windows| {
+            windows.entry(window.label().to_owned()).or_insert_with(|| Covering {
+                native: pointer as usize,
+                frame: native.frame(),
+                min_size: native.minSize(),
+                behavior: native.collectionBehavior(),
+            });
         });
-    }
+        native.setCollectionBehavior(
+            native.collectionBehavior()
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::MoveToActiveSpace,
+        );
+        native.setMinSize(frame.size);
+        set_buttons_hidden(native, true);
+        native.setFrame_display(frame, true);
+    })
+}
+
+/// Takes `window` out of its anchor's Space, back to the frame it had before joining.
+pub fn leave_space(window: &WebviewWindow) -> IdeResult<()> {
+    let window = window.clone();
+    on_main(&window.clone(), move || {
+        let Some(covering) = COVERING.with_borrow_mut(|windows| windows.remove(window.label())) else { return };
+        let Ok(pointer) = window.ns_window() else { return };
+        let native = unsafe { &*pointer.cast::<NSWindow>() };
+        native.setCollectionBehavior(covering.behavior);
+        native.setMinSize(covering.min_size);
+        set_buttons_hidden(native, false);
+        native.setFrame_display(covering.frame, true);
+    })
+}
+
+pub fn is_on_active_space(window: &WebviewWindow) -> bool {
+    let window = window.clone();
+    on_main(&window.clone(), move || {
+        window.ns_window().is_ok_and(|pointer| unsafe { &*pointer.cast::<NSWindow>() }.isOnActiveSpace())
+    })
+    .unwrap_or(true)
+}
+
+/// Forgets a closed window's part in a fullscreen group; true when it was the anchor.
+pub fn forget_group_fullscreen(app: &AppHandle, label: &str) -> bool {
+    let was = is_anchor(label);
+    set_anchor(label, false);
+    let label = label.to_owned();
+    let _ = app.run_on_main_thread(move || {
+        COVERING.with_borrow_mut(|windows| windows.remove(&label));
+    });
     was
 }
 
-/// Each window restores the presentation options it found on entering, which is wrong once
-/// fullscreen has passed between windows; derive them from the windows in fullscreen instead.
-fn present(fullscreen: bool) {
-    use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions};
-    let Some(mtm) = MainThreadMarker::new() else { return };
-    let options = if fullscreen {
-        NSApplicationPresentationOptions::AutoHideDock | NSApplicationPresentationOptions::AutoHideMenuBar
-    } else {
-        NSApplicationPresentationOptions::Default
-    };
-    NSApplication::sharedApplication(mtm).setPresentationOptions(options);
+fn set_buttons_hidden(native: &NSWindow, hidden: bool) {
+    use objc2_app_kit::NSWindowButton;
+    for kind in [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton] {
+        if let Some(button) = native.standardWindowButton(kind) {
+            button.setHidden(hidden);
+        }
+    }
 }
 
 type ToggleFullScreen = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
@@ -208,7 +288,7 @@ static NATIVE_TOGGLE_FULLSCREEN: std::sync::OnceLock<ToggleFullScreen> = std::sy
 static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
 /// The green window button, the Globe-F shortcut and the system's Enter Full Screen item all
-/// send `toggleFullScreen:`; a grouped window answers it with simple fullscreen instead.
+/// send `toggleFullScreen:`; a grouped window answers it for its whole group.
 pub fn intercept_toggle_fullscreen(window: &WebviewWindow) {
     let _ = APP.set(window.app_handle().clone());
     let _ = window.with_webview(|webview| unsafe {
@@ -238,9 +318,9 @@ type ConstrainFrameRect = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, NSRec
 
 static NATIVE_CONSTRAIN_FRAME_RECT: std::sync::OnceLock<ConstrainFrameRect> = std::sync::OnceLock::new();
 
-/// AppKit keeps a titled window's top edge below the menu bar, and on a notched display below the
-/// camera housing, whenever the window is placed, shown or resized. A window in simple fullscreen
-/// is titled for its buttons but must still cover the whole screen.
+/// AppKit fits a titled window into the desktop's visible area (below the menu bar and camera
+/// housing, above the Dock) whenever it is placed, shown or resized; a member shown in its
+/// anchor's fullscreen Space must keep the anchor's frame instead.
 unsafe extern "C-unwind" fn constrain_frame_rect(
     this: *mut AnyObject,
     selector: Sel,
@@ -257,7 +337,7 @@ unsafe extern "C-unwind" fn constrain_frame_rect(
 }
 
 unsafe extern "C-unwind" fn toggle_fullscreen(this: *mut AnyObject, selector: Sel, sender: *mut AnyObject) {
-    if let Some(window) = APP.get().and_then(|app| simple_fullscreen_window(app, this)) {
+    if let Some(window) = APP.get().and_then(|app| grouped_window(app, this)) {
         if let Err(error) = crate::window_groups::toggle_fullscreen(&window) {
             tracing::warn!(message = error.message, "cannot toggle fullscreen");
         }
@@ -268,17 +348,16 @@ unsafe extern "C-unwind" fn toggle_fullscreen(this: *mut AnyObject, selector: Se
     }
 }
 
-/// `native` as a grouped project window (or one still in simple fullscreen) that is not in
-/// native fullscreen; one in native fullscreen leaves it the usual way.
-fn simple_fullscreen_window(app: &AppHandle, native: *mut AnyObject) -> Option<WebviewWindow> {
+/// `native` as a grouped project window whose fullscreen is its group's: not in native
+/// fullscreen, or the group's anchor. Another member in native fullscreen (restored that way)
+/// leaves it the usual way.
+fn grouped_window(app: &AppHandle, native: *mut AnyObject) -> Option<WebviewWindow> {
     let mask: objc2_app_kit::NSWindowStyleMask = unsafe { objc2::msg_send![native, styleMask] };
-    if mask.contains(objc2_app_kit::NSWindowStyleMask::FullScreen) {
-        return None;
-    }
     let window = app
         .webview_windows()
         .into_values()
         .find(|w| w.ns_window().is_ok_and(|pointer| pointer.cast::<AnyObject>() == native))?;
     let grouped = app.state::<WindowsState>().groups.lock().group(window.label()).is_some();
-    (grouped || is_simple_fullscreen(window.label())).then_some(window)
+    let own_fullscreen = mask.contains(objc2_app_kit::NSWindowStyleMask::FullScreen) && !is_anchor(window.label());
+    (grouped && !own_fullscreen).then_some(window)
 }
