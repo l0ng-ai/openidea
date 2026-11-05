@@ -3484,12 +3484,14 @@ export type ExtensionCount = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt";
+export type ExternalFormatter = "prettier" | "oxfmt" | "ruff";
 
-/**  An external formatter (Prettier, oxfmt) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules, managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH. */
 	path?: string,
+	/**  Ruff only: directory containing its configuration, or a configuration file. */
+	configurationDirectory?: string,
 	languages?: string[],
 	/**  Prefer this formatter even when a language server offers formatting. */
 	prefer?: boolean,
@@ -4798,6 +4800,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
+	ruff?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
