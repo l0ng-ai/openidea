@@ -5,7 +5,7 @@ use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path};
 use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
-use ide_core::settings::{LanguageServerSettings, Settings};
+use ide_core::settings::{LanguageServerSettings, PhpEngineKind, Settings};
 use ide_core::version_managers::Tool;
 use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
@@ -649,10 +649,17 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
 /// The servers `language` uses after Settings › Language Servers: the
 /// definition's ones that aren't disabled, then the ones defined in settings for it.
 pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Settings) -> Vec<LanguageServerConfig> {
-    let enabled = |name: &str| s.language_servers.get(name).is_none_or(|ls| ls.enabled);
+    // The native engine (Settings › PHP › Engine) replaces the PHP servers of
+    // `languages/php.toml`; servers the user adds in Settings › Language Servers stay.
+    let replaced = language == "php" && s.languages.php.engine == PhpEngineKind::Native;
+    let enabled = |name: &str| !replaced && s.language_servers.get(name).is_none_or(|ls| ls.enabled);
     let mut out: Vec<LanguageServerConfig> = defined.iter().filter(|c| enabled(&c.name)).cloned().collect();
     for (name, ls) in &s.language_servers {
-        if ls.enabled && ls.languages.iter().any(|l| l == language) && !out.iter().any(|c| &c.name == name) {
+        if ls.enabled
+            && ls.languages.iter().any(|l| l == language)
+            && !out.iter().any(|c| &c.name == name)
+            && !(replaced && defined.iter().any(|c| &c.name == name))
+        {
             out.push(custom_server(name, ls));
         }
     }

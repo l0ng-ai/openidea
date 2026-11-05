@@ -740,6 +740,11 @@ impl Documents {
         self.with_doc(doc, |st| Ok(st.doc.version()))
     }
 
+    /// Language of an open document, without copying its text.
+    pub fn language(&self, doc: DocId) -> IdeResult<LanguageId> {
+        self.with_doc(doc, |st| Ok(st.language.clone()))
+    }
+
     /// Ids of all open documents.
     pub fn open_documents(&self) -> Vec<DocId> {
         self.registry.lock().docs.keys().copied().collect()

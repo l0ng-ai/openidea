@@ -1522,3 +1522,25 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
         assert_eq!(next[1].args, ["-Dmaven.repo.local=/m3/repo", "-s", "/mine.xml", "test"]);
     }
 }
+
+#[test]
+fn the_native_php_engine_replaces_the_php_language_servers() {
+    use crate::apply::language_servers;
+    use ide_core::settings::{LanguageServerSettings, PhpEngineKind};
+
+    let defined = [server("intelephense"), server("phpactor")];
+    let names = |v: Vec<LanguageServerConfig>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
+    let mut s = Settings::default();
+    assert_eq!(names(language_servers("php", &defined, &s)), ["intelephense", "phpactor"], "Intelephense by default");
+
+    s.languages.php.engine = PhpEngineKind::Native;
+    // Settings for a defined server don't bring it back; a server the user added stays.
+    s.language_servers
+        .insert("intelephense".into(), LanguageServerSettings { languages: vec!["php".into()], ..Default::default() });
+    s.language_servers.insert(
+        "psalm".into(),
+        LanguageServerSettings { command: "psalm".into(), languages: vec!["php".into()], ..Default::default() },
+    );
+    assert_eq!(names(language_servers("php", &defined, &s)), ["psalm"]);
+    assert_eq!(names(language_servers("rust", &[server("rust-analyzer")], &s)), ["rust-analyzer"]);
+}

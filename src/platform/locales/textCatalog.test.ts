@@ -141,6 +141,7 @@ const UNTRANSLATED = new Set<string>([
   "Gradle",
   "GraphQL",
   "Greenplum",
+  "Intelephense",
   "Java",
   "java-debug (Java)",
   "kotlin-debug-adapter (Kotlin)",

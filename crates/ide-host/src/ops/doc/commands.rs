@@ -51,7 +51,12 @@ pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: L
 /// re-parse); large documents get no syntax structure.
 pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<OutlineItem>> {
     let project = host.project(window)?;
-    let lsp = project.lsp.document_symbols(doc).await.ok().flatten();
+    let lsp = match crate::language_service::ask(&project, doc, move |s| s.document_symbols(doc)).await {
+        Some(result) => result,
+        None => project.lsp.document_symbols(doc).await,
+    }
+    .ok()
+    .flatten();
     blocking(move || {
         let snap = match project.documents.text_snapshot(doc) {
             Ok(snap) => snap,

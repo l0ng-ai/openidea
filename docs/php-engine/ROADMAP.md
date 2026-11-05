@@ -166,7 +166,7 @@ The design:
 
   Tests: an ide-host test that opens a temporary PHP project and waits until it's ready.
 
-- [ ] Phase 1.9: LanguageService dispatch
+- [x] Phase 1.9: LanguageService dispatch
   1. In `ide-host`, define a `LanguageService` trait whose methods match the `LspManager` feature methods used by `ops/lsp.rs`, with default "not handled" implementations.
   2. In `ops/lsp.rs`, call the service registered for a document's language first, and fall back to LSP when it doesn't handle the request.
   3. Add `PhpSettings.engine: PhpEngineKind { Intelephense, Native }`, default Intelephense, with a settings row (text in `en` and `zh`).

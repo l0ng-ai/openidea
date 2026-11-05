@@ -117,7 +117,13 @@ const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
   level ? { value: level, label: level } : { value: "", label: "Auto", detail: "from composer.json" },
 );
 
+const PHP_ENGINE_OPTIONS: SelectOption[] = [
+  { value: "intelephense", label: "Intelephense", detail: "language server" },
+  { value: "native", label: "Built-in", detail: "experimental" },
+];
+
 export function PhpPage() {
+  const [engine, setEngine] = useSetting<string>("languages.php.engine");
   const [interpreter] = useSetting<string>("languages.php.interpreter");
   const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
   const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
@@ -127,6 +133,17 @@ export function PhpPage() {
   return (
     <div className={styles.page}>
       <Section>
+        <Row
+          label="Code insight engine"
+          hint="Which engine answers completion, navigation and inspections in PHP files: the Intelephense language server, or the engine built into OpenIDEA, which indexes the project itself. With the built-in engine Intelephense is not started."
+        >
+          <Select
+            value={engine || "intelephense"}
+            options={PHP_ENGINE_OPTIONS}
+            onChange={setEngine}
+            aria-label="Code insight engine"
+          />
+        </Row>
         <Row
           label="PHP language level"
           hint="The PHP version Intelephense checks the code against: newer syntax and functions are reported. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."

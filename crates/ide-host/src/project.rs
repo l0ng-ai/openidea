@@ -57,6 +57,8 @@ pub struct Project {
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     /// The native PHP engine, while Settings › PHP › Engine is `Native`.
     pub php: Arc<crate::php::PhpEngineSlot>,
+    /// In-process language services, asked before the language servers (`ops/lsp.rs`).
+    pub services: Arc<crate::language_service::LanguageServices>,
     pub(crate) watcher: Watcher,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
@@ -294,6 +296,8 @@ impl Host {
             documents.clone(),
         ));
         documents.add_observer(Arc::new(crate::php::PhpObserver(php.clone())));
+        let services = Arc::new(crate::language_service::LanguageServices::default());
+        services.register(LanguageId::new("php"), Arc::new(crate::php::PhpService(php.clone())));
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
@@ -491,6 +495,7 @@ impl Host {
             notebooks,
             kotlin_bridge: Some(kotlin_bridge),
             php,
+            services,
             watcher,
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
@@ -635,6 +640,7 @@ impl Host {
             notebooks,
             kotlin_bridge: None,
             php,
+            services: Arc::default(),
             watcher,
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),

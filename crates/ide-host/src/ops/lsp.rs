@@ -1,6 +1,7 @@
 use super::doc::blocking;
 use crate::Host;
 use crate::apply_workspace_edit as apply_edit;
+use crate::language_service::{ask, ask_all};
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
@@ -38,9 +39,16 @@ pub async fn lsp_completion(
     pos: Pos,
     trigger: Option<String>,
 ) -> IdeResult<CompletionList> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = lsp.completion(doc, pos, trigger.clone(), cancel).await;
+    let native = {
+        let (trigger, cancel) = (trigger.clone(), cancel.clone());
+        ask(&project, doc, move |s| s.completion(doc, pos, trigger.as_deref(), &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.completion(doc, pos, trigger.clone(), cancel).await,
+    };
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
@@ -152,9 +160,16 @@ pub async fn lsp_inline_completion(
     pos: Pos,
     automatic: bool,
 ) -> IdeResult<Vec<InlineCompletionItem>> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = lsp.inline_completion(doc, pos, automatic, cancel.clone()).await;
+    let native = {
+        let cancel = cancel.clone();
+        ask(&project, doc, move |s| s.inline_completion(doc, pos, automatic, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.inline_completion(doc, pos, automatic, cancel.clone()).await,
+    };
     // Plugins: cancelled (cooperatively) when the editor cancels the request.
     let plugin = match plugin_providers(host, window, doc, ProviderKind::InlineCompletion) {
         Some((plugins, d)) if !matches!(&result, Ok(items) if !items.is_empty()) => {
@@ -182,7 +197,15 @@ pub async fn lsp_resolve_completion(
     doc: DocId,
     item: CompletionItem,
 ) -> IdeResult<CompletionItem> {
-    host.project(window)?.lsp.resolve_completion(doc, item).await
+    let project = host.project(window)?;
+    let native = {
+        let item = item.clone();
+        ask(&project, doc, move |s| s.resolve_completion(doc, &item)).await
+    };
+    match native {
+        Some(result) => result,
+        None => project.lsp.resolve_completion(doc, item).await,
+    }
 }
 
 pub async fn lsp_hover(
@@ -192,19 +215,34 @@ pub async fn lsp_hover(
     doc: DocId,
     pos: Pos,
 ) -> IdeResult<Option<Hover>> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = lsp.hover(doc, pos, cancel).await;
+    let native = {
+        let cancel = cancel.clone();
+        ask(&project, doc, move |s| s.hover(doc, pos, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.hover(doc, pos, cancel).await,
+    };
     host.end_request(request);
     result
 }
 
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
-    host.project(window)?.lsp.signature_help(doc, pos).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.signature_help(doc, pos)).await {
+        Some(result) => result,
+        None => project.lsp.signature_help(doc, pos).await,
+    }
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
-    let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
+    let project = host.project(window)?;
+    let result = match ask(&project, doc, move |s| s.goto(doc, pos, kind)).await {
+        Some(result) => result,
+        None => project.lsp.goto(doc, pos, kind).await,
+    };
     if kind != GotoKind::Definition {
         return result;
     }
@@ -250,9 +288,16 @@ pub async fn lsp_implementations(
     doc: DocId,
     positions: Vec<Pos>,
 ) -> IdeResult<Vec<Vec<Location>>> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = lsp.implementations(doc, &positions, cancel).await;
+    let native = {
+        let (positions, cancel) = (positions.clone(), cancel.clone());
+        ask(&project, doc, move |s| s.implementations(doc, &positions, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.implementations(doc, &positions, cancel).await,
+    };
     host.end_request(request);
     result
 }
@@ -284,15 +329,26 @@ pub async fn lsp_references(
     include_declaration: bool,
     project_wide: bool,
 ) -> IdeResult<References> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = lsp.references(doc, pos, include_declaration, project_wide, cancel).await;
+    let native = {
+        let cancel = cancel.clone();
+        ask(&project, doc, move |s| s.references(doc, pos, include_declaration, project_wide, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.references(doc, pos, include_declaration, project_wide, cancel).await,
+    };
     host.end_request(request);
     result
 }
 
 pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Vec<Highlight>> {
-    host.project(window)?.lsp.document_highlights(doc, pos).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.document_highlights(doc, pos)).await {
+        Some(result) => result,
+        None => project.lsp.document_highlights(doc, pos).await,
+    }
 }
 
 pub async fn lsp_workspace_symbols(
@@ -301,11 +357,38 @@ pub async fn lsp_workspace_symbols(
     request: RequestId,
     query: String,
 ) -> IdeResult<Vec<WorkspaceSymbol>> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = lsp.workspace_symbols(&query, cancel).await;
+    // Not tied to a language: the services' symbols join the language servers'.
+    let native = {
+        let (query, cancel) = (query.clone(), cancel.clone());
+        ask_all(&project, move |s| s.workspace_symbols(&query, &cancel)).await
+    };
+    let result = project.lsp.workspace_symbols(&query, cancel).await;
     host.end_request(request);
-    result
+    merge_symbols(native, result)
+}
+
+/// The services' symbols, then the language servers' (an error only when every answer failed).
+fn merge_symbols(
+    native: Vec<IdeResult<Vec<WorkspaceSymbol>>>,
+    lsp: IdeResult<Vec<WorkspaceSymbol>>,
+) -> IdeResult<Vec<WorkspaceSymbol>> {
+    if native.is_empty() {
+        return lsp;
+    }
+    let mut out = Vec::new();
+    let mut error = None;
+    for answer in native.into_iter().chain([lsp]) {
+        match answer {
+            Ok(symbols) => out.extend(symbols),
+            Err(e) => error = error.or(Some(e)),
+        }
+    }
+    match error {
+        Some(e) if out.is_empty() => Err(e),
+        _ => Ok(out),
+    }
 }
 
 pub async fn lsp_code_actions(
@@ -318,7 +401,14 @@ pub async fn lsp_code_actions(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let result = project.lsp.code_actions(doc, range, only.clone()).await;
+    let native = {
+        let only = only.clone();
+        ask(&project, doc, move |s| s.code_actions(doc, range, &only)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.code_actions(doc, range, only.clone()).await,
+    };
     let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
         Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
         None => Vec::new(),
@@ -401,7 +491,14 @@ pub async fn lsp_code_action_query(
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
     let cancel = host.begin_request(request);
-    let result = project.lsp.code_action_query(doc, range, only, cancel).await;
+    let native = {
+        let (only, cancel) = (only.clone(), cancel.clone());
+        ask(&project, doc, move |s| s.code_action_query(doc, range, &only, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.code_action_query(doc, range, only, cancel).await,
+    };
     host.end_request(request);
     let mut result = result?;
     result.actions = prepare_actions(project, doc, version, result.actions).await?;
@@ -466,7 +563,11 @@ async fn is_client_follow_up(
 }
 
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
-    host.project(window)?.lsp.prepare_rename(doc, pos).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.prepare_rename(doc, pos)).await {
+        Some(result) => result,
+        None => project.lsp.prepare_rename(doc, pos).await,
+    }
 }
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
@@ -532,7 +633,14 @@ pub async fn lsp_rename(
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
     let cancel = host.begin_request(request);
-    let result = project.lsp.rename(doc, pos, new_name, cancel).await;
+    let native = {
+        let (new_name, cancel) = (new_name.clone(), cancel.clone());
+        ask(&project, doc, move |s| s.rename(doc, pos, &new_name, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.rename(doc, pos, new_name, cancel).await,
+    };
     host.end_request(request);
     let mut renamed = result?;
     blocking(move || {
@@ -559,20 +667,36 @@ pub async fn lsp_format(
 }
 
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
-    host.project(window)?.lsp.inlay_hints(doc, range).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.inlay_hints(doc, range)).await {
+        Some(result) => result,
+        None => project.lsp.inlay_hints(doc, range).await,
+    }
 }
 
 pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<SemanticTokens>> {
-    host.project(window)?.lsp.semantic_tokens(doc).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.semantic_tokens(doc)).await {
+        Some(result) => result,
+        None => project.lsp.semantic_tokens(doc).await,
+    }
 }
 
 pub async fn lsp_code_lens(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<CodeLens>> {
-    host.project(window)?.lsp.code_lens(doc).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.code_lens(doc)).await {
+        Some(result) => result,
+        None => project.lsp.code_lens(doc).await,
+    }
 }
 
 /// Links in a document (`href`s, Markdown links, `#include`s…) from its language servers.
 pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<DocumentLink>> {
-    host.project(window)?.lsp.document_links(doc).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.document_links(doc)).await {
+        Some(result) => result,
+        None => project.lsp.document_links(doc).await,
+    }
 }
 
 pub async fn lsp_call_hierarchy(
@@ -583,9 +707,16 @@ pub async fn lsp_call_hierarchy(
     pos: Pos,
     direction: HierarchyDirection,
 ) -> IdeResult<CallHierarchy> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = lsp.call_hierarchy(doc, pos, direction, cancel).await;
+    let native = {
+        let cancel = cancel.clone();
+        ask(&project, doc, move |s| s.call_hierarchy(doc, pos, direction, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.call_hierarchy(doc, pos, direction, cancel).await,
+    };
     host.end_request(request);
     result
 }
@@ -597,7 +728,11 @@ pub async fn lsp_type_hierarchy(
     pos: Pos,
     direction: HierarchyDirection,
 ) -> IdeResult<Vec<HierarchyItem>> {
-    host.project(window)?.lsp.type_hierarchy(doc, pos, direction).await
+    let project = host.project(window)?;
+    match ask(&project, doc, move |s| s.type_hierarchy(doc, pos, direction)).await {
+        Some(result) => result,
+        None => project.lsp.type_hierarchy(doc, pos, direction).await,
+    }
 }
 
 pub fn lsp_servers(host: &Host, window: &str) -> IdeResult<Vec<ServerInfo>> {

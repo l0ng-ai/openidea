@@ -161,6 +161,16 @@ impl DocumentObserver for PhpObserver {
     }
 }
 
+/// The engine as the PHP [`LanguageService`](crate::language_service::LanguageService):
+/// registered for `php` in every project, it answers only while the engine
+/// runs (Settings › PHP › Engine is `Native`); otherwise requests go to
+/// Intelephense. The requests it answers natively are added feature by feature.
+pub(crate) struct PhpService(
+    #[expect(dead_code, reason = "read once requests are answered (phase 1.10)")] pub(crate) Arc<PhpEngineSlot>,
+);
+
+impl crate::language_service::LanguageService for PhpService {}
+
 /// Merges the `IndexState` events of several producers (the project index,
 /// the PHP engine) into one: indexing while any of them is, with the counts
 /// of those indexing (of the first producer once none is).
