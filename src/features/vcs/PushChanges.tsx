@@ -1,18 +1,28 @@
 /**
  * Push dialog: the files changed by the outgoing commits (the selected commit's, or all of
  * them), with the selected file's diff beside the tree. The diff stays inside the dialog,
- * which is modal.
+ * which is modal. A single commit also shows its message, author and time.
  */
 import { useEffect, useMemo, useState } from "react";
 import type { ChangedFile, Commit, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { Button, Spinner, T } from "@/ui";
+import { Button, IconButton, Spinner, T } from "@/ui";
 import { ComparisonTree } from "./ComparisonTree";
 import { buildFileTree } from "./fileTree";
-import { toLogChanges, type LogChange } from "./logChanges";
-import { KIND_COLOR, fileCount } from "./model";
+import { flatFileNodes, toLogChanges, type LogChange } from "./logChanges";
+import { KIND_COLOR, dirName, fileCount } from "./model";
 import styles from "./common.module.css";
+
+const GROUP_KEY = "openidea.vcs.push.groupByDirectory";
+
+function readGroupByDirectory(): boolean {
+  try {
+    return localStorage.getItem(GROUP_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
 
 /** Identifies what `PushChanges` shows; render it with this `key` so a new selection starts afresh. */
 export const pushChangesKey = (repo: string | null, commits: readonly Commit[]) =>
@@ -34,6 +44,7 @@ export function PushChanges({
   const [changes, setChanges] = useState<LogChange[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [current, setCurrent] = useState<LogChange | null>(null);
+  const [byDirectory, setByDirectory] = useState(readGroupByDirectory);
 
   useEffect(() => {
     if (!commits.length) return;
@@ -50,7 +61,18 @@ export function PushChanges({
     };
   }, [repo, commits]);
 
-  const tree = useMemo(() => (changes ? buildFileTree(changes, (f) => f.path) : []), [changes]);
+  const tree = useMemo(
+    () => (!changes ? [] : byDirectory ? buildFileTree(changes, (f) => f.path) : flatFileNodes(changes, (f) => f.path)),
+    [changes, byDirectory],
+  );
+  const toggleGrouping = () => {
+    setByDirectory(!byDirectory);
+    try {
+      localStorage.setItem(GROUP_KEY, String(!byDirectory));
+    } catch {
+      /* kept for this dialog only */
+    }
+  };
   const count = commits.length;
   if (!count) return null;
   return (
@@ -65,7 +87,16 @@ export function PushChanges({
             <T>Show All Commits</T>
           </Button>
         )}
+        <IconButton
+          icon="folder"
+          size="small"
+          title={tx("Group by Directory")}
+          pressed={byDirectory}
+          onClick={toggleGrouping}
+          className={styles.pushGrouping}
+        />
       </div>
+      {count === 1 && <PushCommitDetails commit={commits[0]!} />}
       {error ? (
         <div className={styles.error}>{error}</div>
       ) : !changes ? (
@@ -80,9 +111,31 @@ export function PushChanges({
           diffFor={(c) => c.diff}
           getColor={(c) => KIND_COLOR[c.kind === "untracked" ? "added" : c.kind]}
           ariaLabel="Changed files"
-          renderDetails={(n) => (n.file ? null : <span className={styles.fileDir}>{n.count}</span>)}
+          renderDetails={(n) =>
+            n.file ? (
+              byDirectory ? null : (
+                <span className={styles.fileDir}>{dirName(n.file.path)}</span>
+              )
+            ) : (
+              <span className={styles.fileDir}>{n.count}</span>
+            )
+          }
         />
       )}
     </div>
+  );
+}
+
+/** The selected commit's full message, revision, author and time. */
+function PushCommitDetails({ commit }: { commit: Commit }) {
+  const date = commit.timeMs ? new Date(commit.timeMs).toLocaleString() : null;
+  return (
+    <section className={styles.pushCommitDetails} aria-label={tx("Commit details")}>
+      <div className={styles.pushCommitMessage}>{commit.message.trimEnd() || commit.summary}</div>
+      <div className={styles.fileDir}>
+        {commit.shortId} {commit.author} &lt;{commit.email}&gt;
+        {date ? " " + tx`on ${date}` : ""}
+      </div>
+    </section>
   );
 }
