@@ -203,7 +203,7 @@ The design:
 
   Tests: chains across files, cycles that end, and the cache being dropped on edit.
 
-- [ ] Phase 2.3: Class model
+- [x] Phase 2.3: Class model
       Combine each class's members from its parents, interfaces and traits:
   - follow the rules for trait conflicts (`insteadof`/`as`), visibility and overriding
   - include magic `@property`/`@method` and `@mixin`

@@ -46,7 +46,7 @@ use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
 use crate::stubs::{BundledStubs, StubFilter, StubSet};
 use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl};
 use crate::syntax::{ParseCache, ParsedFile};
-use crate::types::{Declarations, Resolver, TypeCache};
+use crate::types::{ClassModel, Declarations, Resolver, TypeCache};
 
 /// The name the engine reports itself under in `IdeEvent::LanguageServer`.
 pub const SERVER_NAME: &str = "PHP (native)";
@@ -412,6 +412,12 @@ impl PhpEngine {
     /// engine's type cache for the current modification count.
     pub fn resolver(&self) -> Resolver<'_> {
         Resolver::new(self, &self.shared.types, self.modification_count())
+    }
+
+    /// The model of class-like `fqn` (all its members, inherited ones
+    /// included), cached for the current modification count.
+    pub fn class_model(&self, fqn: &str) -> Option<std::sync::Arc<ClassModel>> {
+        self.resolver().class_model(fqn)
     }
 
     /// How many declaration types are cached for the current modification

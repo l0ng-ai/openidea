@@ -22,6 +22,11 @@
 //! [`Hierarchy`]. [`Type::union`] and [`Type::intersection`] build
 //! simplified compound types.
 //!
+//! [`model::ClassModel`] combines a class-like's own and inherited members
+//! (traits with `insteadof`/`as`, parents, interfaces, enum built-ins,
+//! `@method`/`@property`, `@mixin`); the [`Resolver`] builds and caches
+//! them and is itself a [`Hierarchy`].
+//!
 //! Written in-house rather than reusing Mago's `codex` types: those are tied
 //! to Mago's own codebase metadata and interner (and `mago-codex` would pull
 //! in the analyzer's dependencies), whereas this engine resolves types lazily
@@ -36,6 +41,7 @@
 
 mod display;
 mod lazy;
+pub mod model;
 mod parse;
 pub mod resolve;
 mod subtype;
@@ -43,6 +49,7 @@ mod subtype;
 use serde::{Deserialize, Serialize};
 
 pub use lazy::LazyType;
+pub use model::ClassModel;
 pub use parse::{TypeParseError, parse_doc_type};
 pub use resolve::{Context, Declarations, Resolver, SummarySet, TypeCache};
 pub use subtype::{Hierarchy, NoHierarchy};

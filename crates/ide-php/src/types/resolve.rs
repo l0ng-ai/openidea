@@ -30,25 +30,29 @@
 //!   moved (a document edit, a watcher batch) starts from an empty cache.
 //!   Results that depended on a cycle still being resolved are not cached.
 //!
-//! Members are found by walking the class, the traits it uses, its parents
-//! and its interfaces, with real members before `@method`/`@property` ones.
-//! Trait conflict rules, visibility and generics are not applied here (the
-//! class model and generics phases do that).
+//! Members are looked up in the class's [`ClassModel`] (built by
+//! [`Resolver::class_model`], cached alongside the types): own members, then
+//! traits with their `insteadof`/`as` rules, enum built-ins, parents and
+//! interfaces, then `@method`/`@property`, then `@mixin` classes. Generics
+//! are not bound here (phase 2.6).
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::{LazyType, Relative, Type};
+use super::model::{self, ClassModel, EnumMethod, EnumProperty, MethodSource, PropertySource};
+use super::{Hierarchy, LazyType, Relative, Type};
 use crate::names::{NameKind, fqn_eq};
-use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl};
+use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, TypeHint};
 
 /// How many lazy steps one resolve follows before giving up with `mixed`.
 pub const MAX_DEPTH: usize = 32;
 
-/// Classes visited at most when looking a member up through a hierarchy.
-const MAX_CLASSES: usize = 64;
+/// Class models built at most at once (nested through parents, interfaces,
+/// traits and mixins) before the next one is treated as unknown.
+const MAX_MODEL_DEPTH: usize = 64;
 
 /// Where declarations come from.
 pub trait Declarations {
@@ -119,6 +123,20 @@ pub struct TypeCache {
 struct CacheState {
     generation: u64,
     entries: HashMap<Key, Option<Type>>,
+    /// Class models by lower-case FQN; `None` for unknown class-likes.
+    models: HashMap<String, Option<Arc<ClassModel>>>,
+}
+
+impl CacheState {
+    /// The state for `generation`, emptied when the counter moved on.
+    fn at(&mut self, generation: u64) -> &mut Self {
+        if self.generation != generation {
+            self.entries.clear();
+            self.models.clear();
+            self.generation = generation;
+        }
+        self
+    }
 }
 
 impl TypeCache {
@@ -145,12 +163,19 @@ impl TypeCache {
     }
 
     fn insert(&self, generation: u64, key: Key, value: Option<Type>) {
-        let mut state = self.state.lock();
+        self.state.lock().at(generation).entries.insert(key, value);
+    }
+
+    fn model(&self, generation: u64, key: &str) -> Option<Option<Arc<ClassModel>>> {
+        let state = self.state.lock();
         if state.generation != generation {
-            state.entries.clear();
-            state.generation = generation;
+            return None;
         }
-        state.entries.insert(key, value);
+        state.models.get(key).cloned()
+    }
+
+    fn insert_model(&self, generation: u64, key: String, value: Option<Arc<ClassModel>>) {
+        self.state.lock().at(generation).models.insert(key, value);
     }
 }
 
@@ -181,22 +206,22 @@ pub struct Resolver<'a> {
     /// Declarations a cycle was cut at (or [`Key::Depth`]), not yet
     /// finished resolving.
     cuts: RefCell<Vec<Key>>,
-}
-
-/// A member found in a hierarchy: the class `self` means for it (the class
-/// using a trait for a trait's member), the declaring class-like, and what
-/// the lookup picked.
-struct Found<T> {
-    self_class: String,
-    declaring: ClassLike,
-    item: T,
+    /// Class models being built (lower-case FQNs).
+    building: RefCell<Vec<String>>,
 }
 
 impl<'a> Resolver<'a> {
     /// A resolver over `decls`, caching in `cache` for modification counter
     /// value `generation`.
     pub fn new(decls: &'a dyn Declarations, cache: &'a TypeCache, generation: u64) -> Self {
-        Self { decls, cache, generation, stack: RefCell::new(Vec::new()), cuts: RefCell::new(Vec::new()) }
+        Self {
+            decls,
+            cache,
+            generation,
+            stack: RefCell::new(Vec::new()),
+            cuts: RefCell::new(Vec::new()),
+            building: RefCell::new(Vec::new()),
+        }
     }
 
     /// The type a lazy type stands for, `self`/`parent` (and `static`/
@@ -233,6 +258,73 @@ impl<'a> Resolver<'a> {
     pub fn class_constant_type(&self, class: &Type, name: &str, context: &Context) -> Type {
         let ty = self.on_members(class, context, &mut |class, this| self.class_constant_at(class, name, this, 0));
         self.bind(&ty, context)
+    }
+
+    /// The model of class-like `fqn`: all its members, inherited ones
+    /// included. `None` when it doesn't exist.
+    pub fn class_model(&self, fqn: &str) -> Option<Arc<ClassModel>> {
+        let fqn = fqn.trim_start_matches('\\');
+        let key = fqn.to_ascii_lowercase();
+        if let Some(hit) = self.cache.model(self.generation, &key) {
+            return hit;
+        }
+        {
+            let building = self.building.borrow();
+            if building.contains(&key) || building.len() >= MAX_MODEL_DEPTH {
+                // A cycle in the hierarchy: this path contributes nothing.
+                return None;
+            }
+        }
+        let built = self.decls.class_like(fqn).map(|class| {
+            self.building.borrow_mut().push(key.clone());
+            let built = model::build(class, &mut |name| self.class_model(name));
+            self.building.borrow_mut().pop();
+            Arc::new(built)
+        });
+        self.cache.insert_model(self.generation, key, built.clone());
+        built
+    }
+
+    /// The models of the classes among the members of `ty`, with `self`,
+    /// `parent`, `static` and `$this` taken from `context`.
+    pub fn class_models(&self, ty: &Type, context: &Context) -> Vec<Arc<ClassModel>> {
+        let mut out = Vec::new();
+        for ty in ty.members() {
+            self.collect_models(ty, context, &mut out);
+        }
+        out
+    }
+
+    fn collect_models(&self, ty: &Type, context: &Context, out: &mut Vec<Arc<ClassModel>>) {
+        let mut push = |fqn: Option<&str>| {
+            if let Some(model) = fqn.and_then(|fqn| self.class_model(fqn))
+                && !out.iter().any(|known| Arc::ptr_eq(known, &model))
+            {
+                out.push(model);
+            }
+        };
+        match ty {
+            Type::Named { fqn, .. } => push(Some(fqn)),
+            Type::Closure(_) => push(Some("Closure")),
+            Type::Relative(Relative::Self_) => push(context.self_class.as_deref()),
+            Type::Relative(Relative::Parent) => {
+                push(context.self_class.as_deref().and_then(|class| self.parent_of(class)).as_deref())
+            }
+            Type::Relative(Relative::Static | Relative::This) => match &context.static_type {
+                Some(static_type) => {
+                    for ty in static_type.members() {
+                        self.collect_models(ty, &Context::default(), out);
+                    }
+                }
+                None => push(context.self_class.as_deref()),
+            },
+            Type::Intersection(members) => {
+                for ty in members {
+                    self.collect_models(ty, context, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     // ------------------------------------------------------------ lazy types
@@ -384,26 +476,32 @@ impl<'a> Resolver<'a> {
     fn method_at(&self, class: &str, name: &str, this: &Type, depth: usize) -> Option<Type> {
         let key = Key::Method(class.to_ascii_lowercase(), name.to_ascii_lowercase());
         let ty = self.cached(key, || {
-            if let Some(found) = self.find(class, &mut |c: &ClassLike| c.method(name).cloned()) {
-                let method = &found.item;
-                let doc = method.doc.as_deref();
-                let templates = templates(&found.declaring, doc.into_iter().flat_map(|doc| doc.local_type_names()));
-                let ty = match (doc.and_then(|doc| doc.return_type.as_ref()), &method.return_type) {
+            let model = self.class_model(class)?;
+            let method = model.method(name)?;
+            let context = Context::in_class(&method.self_class);
+            let ty = if let Some(declared) = method.declared() {
+                let doc = declared.doc.as_deref();
+                let templates = templates(&method.declaring, doc.into_iter().flat_map(|doc| doc.local_type_names()));
+                match (doc.and_then(|doc| doc.return_type.as_ref()), &declared.return_type) {
                     (Some(ty), _) => Type::from_doc(ty, &templates),
                     (None, Some(hint)) => Type::from_hint(hint),
-                    (None, None) => match &method.inferred_return {
-                        Some(lazy) => self.lazy(lazy, &Context::in_class(&found.self_class), depth).widen(),
+                    (None, None) => match &declared.inferred_return {
+                        Some(lazy) => self.lazy(lazy, &context, depth).widen(),
                         None => Type::Mixed,
                     },
-                };
-                return Some(self.bind(&ty, &Context::in_class(&found.self_class)));
-            }
-            let found = self.find(class, &mut |c: &ClassLike| {
-                c.doc.as_ref()?.methods.iter().find(|method| method.name.eq_ignore_ascii_case(name)).cloned()
-            })?;
-            let templates = templates(&found.declaring, found.item.templates.iter().map(|t| t.name.as_str()));
-            let ty = found.item.return_type.as_ref().map_or(Type::Mixed, |ty| Type::from_doc(ty, &templates));
-            Some(self.bind(&ty, &Context::in_class(&found.self_class)))
+                }
+            } else if let Some(magic) = method.magic() {
+                let templates = templates(&method.declaring, magic.templates.iter().map(|t| t.name.as_str()));
+                magic.return_type.as_ref().map_or(Type::Mixed, |ty| Type::from_doc(ty, &templates))
+            } else {
+                match method.source {
+                    MethodSource::Enum(EnumMethod::Cases) => Type::list_of(Type::Relative(Relative::Static)),
+                    MethodSource::Enum(EnumMethod::From) => Type::Relative(Relative::Static),
+                    MethodSource::Enum(EnumMethod::TryFrom) => Type::Relative(Relative::Static).nullable(),
+                    _ => Type::Mixed,
+                }
+            };
+            Some(self.bind_member(&ty, &context, method.mixin.as_deref()))
         })?;
         Some(bind_static(&ty, this))
     }
@@ -412,25 +510,33 @@ impl<'a> Resolver<'a> {
         let name = name.trim_start_matches('$');
         let key = Key::Property(class.to_ascii_lowercase(), name.to_owned());
         let ty = self.cached(key, || {
-            if let Some(found) = self.find(class, &mut |c: &ClassLike| c.property(name).cloned()) {
-                let property = &found.item;
-                let templates = templates(&found.declaring, []);
-                let ty = match (property.doc.as_ref().and_then(|doc| doc.var_type(name)), &property.type_hint) {
+            let model = self.class_model(class)?;
+            let property = model.property(name)?;
+            let context = Context::in_class(&property.self_class);
+            let templates = templates(&property.declaring, []);
+            let ty = if let Some(declared) = property.declared() {
+                match (declared.doc.as_ref().and_then(|doc| doc.var_type(name)), &declared.type_hint) {
                     (Some(ty), _) => Type::from_doc(ty, &templates),
                     (None, Some(hint)) => Type::from_hint(hint),
-                    (None, None) => match &property.default_type {
-                        Some(lazy) => self.lazy(lazy, &Context::in_class(&found.self_class), depth).widen(),
+                    (None, None) => match &declared.default_type {
+                        Some(lazy) => self.lazy(lazy, &context, depth).widen(),
                         None => Type::Mixed,
                     },
-                };
-                return Some(self.bind(&ty, &Context::in_class(&found.self_class)));
-            }
-            let found = self.find(class, &mut |c: &ClassLike| {
-                c.doc.as_ref()?.properties.iter().find(|property| property.name == name).cloned()
-            })?;
-            let templates = templates(&found.declaring, []);
-            let ty = found.item.ty.as_ref().map_or(Type::Mixed, |ty| Type::from_doc(ty, &templates));
-            Some(self.bind(&ty, &Context::in_class(&found.self_class)))
+                }
+            } else if let Some(magic) = property.magic() {
+                magic.ty.as_ref().map_or(Type::Mixed, |ty| Type::from_doc(ty, &templates))
+            } else {
+                match property.source {
+                    PropertySource::Enum(EnumProperty::Name) => Type::string(),
+                    PropertySource::Enum(EnumProperty::Value) => match &property.declaring.backing_type {
+                        Some(TypeHint::Builtin(int)) if int == "int" => Type::Int,
+                        Some(TypeHint::Builtin(string)) if string == "string" => Type::string(),
+                        _ => Type::union([Type::Int, Type::string()]),
+                    },
+                    _ => Type::Mixed,
+                }
+            };
+            Some(self.bind_member(&ty, &context, property.mixin.as_deref()))
         })?;
         Some(bind_static(&ty, this))
     }
@@ -438,66 +544,41 @@ impl<'a> Resolver<'a> {
     fn class_constant_at(&self, class: &str, name: &str, this: &Type, depth: usize) -> Option<Type> {
         let key = Key::ClassConstant(class.to_ascii_lowercase(), name.to_owned());
         let ty = self.cached(key, || {
-            if let Some(found) =
-                self.find(class, &mut |c: &ClassLike| c.cases.iter().any(|case| case.name == name).then_some(()))
-            {
-                return Some(Type::named(&found.declaring.fqn));
+            let model = self.class_model(class)?;
+            let constant = model.constant(name)?;
+            if constant.case().is_some() {
+                return Some(Type::named(&constant.declaring.fqn));
             }
-            let found = self.find(class, &mut |c: &ClassLike| c.constant(name).cloned())?;
-            let constant = &found.item;
-            let templates = templates(&found.declaring, []);
-            let ty = match (constant.doc.as_ref().and_then(|doc| doc.var_type(name)), &constant.type_hint) {
+            let declared = constant.declared()?;
+            let context = Context::in_class(&constant.self_class);
+            let templates = templates(&constant.declaring, []);
+            let ty = match (declared.doc.as_ref().and_then(|doc| doc.var_type(name)), &declared.type_hint) {
                 (Some(ty), _) => Type::from_doc(ty, &templates),
                 (None, Some(hint)) => Type::from_hint(hint),
-                (None, None) => match &constant.value_type {
-                    Some(lazy) => self.lazy(lazy, &Context::in_class(&found.self_class), depth),
+                (None, None) => match &declared.value_type {
+                    Some(lazy) => self.lazy(lazy, &context, depth),
                     None => Type::Mixed,
                 },
             };
-            Some(self.bind(&ty, &Context::in_class(&found.self_class)))
+            Some(self.bind(&ty, &context))
         })?;
         Some(bind_static(&ty, this))
     }
 
+    /// A member's type completed in its class: `self`/`parent` bound, and
+    /// `static`/`$this` bound to the mixin class for a `@mixin` member.
+    fn bind_member(&self, ty: &Type, context: &Context, mixin: Option<&str>) -> Type {
+        let ty = self.bind(ty, context);
+        match mixin {
+            Some(mixin) => bind_static(&ty, &Type::named(mixin)),
+            None => ty,
+        }
+    }
+
     // ------------------------------------------------------------ hierarchy
 
-    /// Looks a member up on `class`, then the traits it uses, its parents and
-    /// its interfaces, depth first.
-    fn find<T>(&self, class: &str, pick: &mut dyn FnMut(&ClassLike) -> Option<T>) -> Option<Found<T>> {
-        let mut visited = HashSet::new();
-        self.find_in(class, None, &mut visited, pick)
-    }
-
-    fn find_in<T>(
-        &self,
-        fqn: &str,
-        using: Option<&str>,
-        visited: &mut HashSet<String>,
-        pick: &mut dyn FnMut(&ClassLike) -> Option<T>,
-    ) -> Option<Found<T>> {
-        if visited.len() >= MAX_CLASSES || !visited.insert(fqn.trim_start_matches('\\').to_ascii_lowercase()) {
-            return None;
-        }
-        let class = self.decls.class_like(fqn)?;
-        let self_class = using.unwrap_or(&class.fqn).to_owned();
-        if let Some(item) = pick(&class) {
-            return Some(Found { self_class, declaring: class, item });
-        }
-        for name in class.trait_uses.iter().flat_map(|trait_use| &trait_use.traits) {
-            if let Some(found) = self.find_in(name, Some(&self_class), visited, pick) {
-                return Some(found);
-            }
-        }
-        for name in class.extends.iter().chain(&class.implements) {
-            if let Some(found) = self.find_in(name, None, visited, pick) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
     fn parent_of(&self, class: &str) -> Option<String> {
-        self.decls.class_like(class)?.extends.into_iter().next()
+        self.class_model(class)?.parents.first().cloned()
     }
 
     /// Binds `self` and `parent` to the context's class, and `static` and
@@ -519,6 +600,13 @@ impl<'a> Resolver<'a> {
             Type::Relative(Relative::Static | Relative::This) => context.static_type.clone(),
             _ => None,
         })
+    }
+}
+
+/// Subclass checks through the class models.
+impl Hierarchy for Resolver<'_> {
+    fn is_subclass(&self, sub: &str, sup: &str) -> bool {
+        fqn_eq(NameKind::ClassLike, sub, sup) || self.class_model(sub).is_some_and(|model| model.is_subclass_of(sup))
     }
 }
 
