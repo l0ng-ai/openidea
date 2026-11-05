@@ -28,6 +28,11 @@ impl SecretStore {
         Self { path, project: root.to_string_lossy().into_owned() }
     }
 
+    /// The same file, keyed by `scope` instead (global data sources: the app data directory).
+    pub fn scoped(&self, scope: &Path) -> Self {
+        Self::new(self.path.clone(), scope)
+    }
+
     pub fn get(&self, key: &str) -> Option<String> {
         let _g = LOCK.lock();
         self.read().remove(&self.project)?.remove(key)
