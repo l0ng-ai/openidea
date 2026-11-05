@@ -37,6 +37,7 @@ These rules are for the sessions that work through `docs/php-engine/ROADMAP.md`.
 
 - Never run a command in the background, and never use Monitor, ScheduleWakeup or sub-agents to wait for one. A headless session ends as soon as you stop replying, and nothing ever wakes it up again, so the phase is lost. Run every build and test in the foreground with a long timeout (up to 600000 ms). If a test run would take longer than that, run narrower parts one after another.
 - Never end your reply before the commit is made, or before the phase is blocked and that commit is made.
+- Never pass `-j`/`--jobs` to cargo, and never override `CARGO_BUILD_JOBS` or `CARGO_INCREMENTAL`. The loop sets them so builds fit in memory and on disk; more parallel linkers have run the machine out of memory, and the incremental cache has filled the disk.
 - Never weaken, skip or delete an existing test to make things pass.
   - Never add `#[ignore]` to hide a failure. Tests that need installed tools or corpora are ignored by design and say so.
 - Never push. Never switch branches. Never rewrite history (`reset --hard`, `rebase`, `commit --amend` on earlier phases).
@@ -74,4 +75,5 @@ Install these once per machine, then run `scripts/php-tools-check.sh`. It exits 
 
   Run tests with `cargo nextest run -p ide-php`. `cargo test` still works.
 
+- **cargo-sweep** (optional): `cargo install cargo-sweep --locked`. The loop uses it after each phase to delete stale build output from `target/`; without it, `target/` keeps growing.
 - **Corpora:** `scripts/php-corpus.sh` needs only git. It shallow-clones laravel/framework, symfony/symfony and WordPress/WordPress at the tags pinned in the script into `${PHP_CORPUS_DIR:-../php-corpus}` and skips any that are already there. `--check` only verifies them. To move to a new tag, change the script and delete that corpus directory.

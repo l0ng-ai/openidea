@@ -20,6 +20,17 @@ export FORCE_COLOR=1
 # Each rustc/link.exe can take 2+ GB; unlimited parallel jobs ran the machine out of memory.
 # Sessions inherit this, so their own cargo runs are limited too.
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
+# The incremental cache grew to 35 GB under target/ and filled the disk. Sessions inherit this.
+export CARGO_INCREMENTAL=0
+# After each phase, drop build output not used for a day, then the oldest until target/ is
+# under SWEEP_MAX. Needs cargo-sweep (cargo install cargo-sweep --locked); skipped if missing.
+SWEEP_MAX=${SWEEP_MAX:-60GB}
+sweep() {
+    command -v cargo-sweep >/dev/null || return 0
+    cargo sweep --time 1 >/dev/null 2>&1
+    cargo sweep --maxsize "$SWEEP_MAX" >/dev/null 2>&1
+    say "swept target/: $(du -sh target 2>/dev/null | cut -f1)"
+}
 
 PROMPT='Follow docs/php-engine/RULES.md. Open docs/php-engine/ROADMAP.md, find the FIRST phase marked "- [ ]", and complete it end-to-end: read the design section and the code the phase names first, implement, write tests, run fmt + clippy + the required tests, fix everything until green, tick the checkbox, append to docs/php-engine/PROGRESS.md, and make ONE commit. Run every command in the foreground (never in the background, never wait for notifications): this session ends the moment you stop replying. Then stop. Do not start the next phase.'
 
@@ -118,6 +129,7 @@ for ((i = 1; i <= MAX_ITER; i++)); do
         say "only known failures (docs/php-engine/known-failures.txt)"
     fi
     say "tests green: $(progress)"
+    sweep
 done
 say "reached MAX_ITER=$MAX_ITER"
 exit 1
