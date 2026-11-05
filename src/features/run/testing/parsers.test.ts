@@ -471,6 +471,24 @@ org.opentest4j.AssertionFailedError: expected: <3> but was: <2>
     expect(r.get("com.acme.UserTest")?.own).toBe("passed");
     expect(r.summary).toMatchObject({ passed: 2, failed: 1 });
   });
+
+  it("locates a TestNG failure in the test, past TestNG's own frames", () => {
+    const r = results(
+      jvmParser(),
+      `[INFO] Running com.acme.PriceTest
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.2 s <<< FAILURE! -- in com.acme.PriceTest
+[ERROR] com.acme.PriceTest.rounds -- Time elapsed: 0.01 s <<< FAILURE!
+java.lang.AssertionError: expected [3] but found [2]
+	at org.testng.Assert.fail(Assert.java:111)
+	at org.testng.Assert.assertEquals(Assert.java:1080)
+	at com.acme.PriceTest.rounds(PriceTest.java:12)
+`,
+    );
+    expect(leaf(r, "com.acme.PriceTest", "rounds")?.location).toMatchObject({
+      path: "com/acme/PriceTest.java",
+      line: 12,
+    });
+  });
 });
 
 describe("parser selection", () => {
