@@ -48,7 +48,7 @@ import {
   toggledCheck,
   type ChangeNode,
 } from "./changes";
-import { applyStash, commitChanges, deleteUnversioned, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
+import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
@@ -226,14 +226,16 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
 }
 
 /** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
-export function deletableUnversioned(nodes: ChangeNode[]): string[] {
+/** The selected files that still exist in the working tree (Delete… removes them from disk). */
+export function deletableFiles(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);
-  return files.length && files.every((f) => f.unstaged === "untracked") ? files.map((f) => f.path) : [];
+  const onDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
+  return files.length && files.every(onDisk) ? files.map((f) => f.path) : [];
 }
 
 export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   const files = filesOf(nodes);
-  const deletable = deletableUnversioned(nodes);
+  const deletable = deletableFiles(nodes);
   const paths = files.map((f) => f.path);
   const first = nodes.find((n) => n.type === "file");
   const untracked = files.filter((f) => f.unstaged === "untracked");
@@ -254,18 +256,16 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
   items.push(
     { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
     ...(untracked.length
+      ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
+      : []),
+    ...(deletable.length
       ? [
-          { kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) },
-          ...(deletable.length
-            ? [
-                {
-                  label: "Delete…",
-                  icon: "trash",
-                  shortcut: formatBinding(isMacHost() ? "Backspace" : "Delete"),
-                  run: () => void deleteUnversioned(deletable),
-                },
-              ]
-            : []),
+          {
+            label: "Delete…",
+            icon: "trash",
+            shortcut: formatBinding(isMacHost() ? "Backspace" : "Delete"),
+            run: () => void deleteFiles(deletable),
+          },
         ]
       : []),
     ...(toIgnore.length
@@ -534,7 +534,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
             const nodes = selectedNodes();
             const group = nodes.find((x) => x.type === "group" && x.changelist);
-            const deletable = group ? [] : deletableUnversioned(nodes);
+            const deletable = group ? [] : deletableFiles(nodes);
             if (group?.changelist) {
               e.preventDefault();
               e.stopPropagation();
@@ -542,7 +542,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             } else if (deletable.length) {
               e.preventDefault();
               e.stopPropagation();
-              void deleteUnversioned(deletable);
+              void deleteFiles(deletable);
             }
           } else if (e.key === "F4") {
             const n = selectedNodes().find((x) => x.type === "file");
