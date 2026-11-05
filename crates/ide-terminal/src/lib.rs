@@ -95,6 +95,12 @@ impl TerminalManager {
         let wsl = if cfg!(windows) { wsl_shell(&options) } else { None };
         let (shell, mut args) = wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args));
         let mut env = terminal_env(&options.env);
+        if let Some(msystem) = default_msystem(&shell, &options.env, std::env::var("MSYSTEM").ok().as_deref()) {
+            env.insert("MSYSTEM".to_owned(), msystem.to_owned());
+        }
+        if default_chere_invoking(&shell, &options.env, std::env::var("CHERE_INVOKING").ok().as_deref()) {
+            env.insert("CHERE_INVOKING".to_owned(), "1".to_owned());
+        }
         if options.shell_integration {
             integration::apply(&shell_title(&shell), &mut args, &mut env);
         }
@@ -525,7 +531,9 @@ pub fn available_shells() -> Vec<String> {
 }
 
 /// Picks the shell binary and its arguments. A default (or explicitly chosen but
-/// argument-less) POSIX shell is started as a login shell, like Terminal.app/IDEA.
+/// argument-less) POSIX shell is started as a login shell, like Terminal.app,
+/// the Git Bash shortcut and IDEA: login start-up is what loads the completions
+/// and prompts users expect (`/etc/profile`, Git for Windows' git-completion).
 pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
     let shell = shell.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(default_shell);
     if !args.is_empty() {
@@ -533,7 +541,7 @@ pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<Strin
     }
     let login =
         matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
-    let args = if login && cfg!(unix) { vec!["-l".to_owned()] } else { Vec::new() };
+    let args = if login { vec!["-l".to_owned()] } else { Vec::new() };
     (shell, args)
 }
 
@@ -600,6 +608,37 @@ fn terminal_env(user: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     }
     env.extend(user.iter().map(|(k, v)| (k.clone(), v.clone())));
     env
+}
+
+/// Git Bash's MSYSTEM profile on Windows, when nobody chose one. A bare
+/// `bash.exe` would run with the `MSYS` default, whose PATH leaves `git` and
+/// the mingw64 tools out unless `<Git>\cmd` happens to be inherited — the Git
+/// Bash shortcut instead sets `MSYSTEM=MINGW64`, and that is the environment
+/// users expect from a "git bash" terminal (needed for git's Tab completion).
+/// `None` for other shells and on Unix, or when the user or the launching
+/// process already set `MSYSTEM`.
+fn default_msystem(shell: &str, user: &BTreeMap<String, String>, inherited: Option<&str>) -> Option<&'static str> {
+    if !cfg!(windows) || !matches!(shell_title(shell).as_str(), "bash" | "sh") {
+        return None;
+    }
+    let set = |v: Option<&str>| v.is_some_and(|v| !v.is_empty());
+    if set(user.get("MSYSTEM").map(String::as_str)) || set(inherited) {
+        return None;
+    }
+    Some("MINGW64")
+}
+
+/// MSYS2 login shells `cd "$HOME"` in `/etc/profile` unless `CHERE_INVOKING`
+/// is set, so without it a login `bash` / `sh` project terminal (MSYS2's
+/// `bash.exe`, Git for Windows included) would open in the home directory
+/// instead of the project. `false` for other shells and on Unix, or when the
+/// user or the launching process already set it.
+fn default_chere_invoking(shell: &str, user: &BTreeMap<String, String>, inherited: Option<&str>) -> bool {
+    if !cfg!(windows) || !matches!(shell_title(shell).as_str(), "bash" | "sh") {
+        return false;
+    }
+    let set = |v: Option<&str>| v.is_some_and(|v| !v.is_empty());
+    !set(user.get("CHERE_INVOKING").map(String::as_str)) && !set(inherited)
 }
 
 #[cfg(all(test, unix))]
@@ -866,5 +905,53 @@ mod tests {
         let env = terminal_env(&BTreeMap::from([("TERM".into(), "dumb".into())]));
         assert_eq!(env["TERM"], "dumb");
         assert_eq!(env["COLORTERM"], "truecolor");
+    }
+}
+
+/// `resolve_shell` / `default_msystem` / `default_chere_invoking` behave the
+/// same on every platform, so their Windows side (Git Bash login start-up,
+/// MSYSTEM, CHERE_INVOKING) is tested everywhere.
+#[cfg(test)]
+mod shell_start_on_every_platform {
+    use super::*;
+
+    #[test]
+    fn posix_shells_start_as_login_shells_everywhere() {
+        let (shell, args) = resolve_shell(Some("C:\\Program Files\\Git\\bin\\bash.exe"), &[]);
+        assert_eq!((shell.as_str(), args), ("C:\\Program Files\\Git\\bin\\bash.exe", vec!["-l".to_owned()]));
+        let (_, args) = resolve_shell(Some("D:\\msys64\\usr\\bin\\sh.exe"), &[]);
+        assert_eq!(args, vec!["-l".to_owned()]);
+        // Non-POSIX shells keep their plain start.
+        for shell in ["pwsh.exe", "C:\\Windows\\system32\\cmd.exe", "wsl.exe"] {
+            assert!(resolve_shell(Some(shell), &[]).1.is_empty(), "{shell} must start without arguments");
+        }
+    }
+
+    #[test]
+    fn windows_bash_defaults_to_the_mingw64_profile() {
+        let none: BTreeMap<String, String> = BTreeMap::new();
+        let chose = BTreeMap::from([("MSYSTEM".into(), "MSYS".into())]);
+        assert_eq!(default_msystem("pwsh.exe", &none, None), None);
+        assert_eq!(default_msystem("C:\\Windows\\system32\\cmd.exe", &none, None), None);
+        // An MSYSTEM the user (terminal env) or the launching process set wins.
+        assert_eq!(default_msystem("bash.exe", &chose, None), None);
+        assert_eq!(default_msystem("bash.exe", &none, Some("UCRT64")), None);
+        // On Unix there is no MSYSTEM concept: never defaulted.
+        let (inherited, want) = if cfg!(windows) { (None, Some("MINGW64")) } else { (Some("MSYS"), None) };
+        assert_eq!(default_msystem("bash.exe", &none, inherited), want);
+    }
+
+    #[test]
+    fn windows_bash_login_starts_in_the_working_directory() {
+        let none: BTreeMap<String, String> = BTreeMap::new();
+        let chose = BTreeMap::from([("CHERE_INVOKING".into(), "0".into())]);
+        assert!(!default_chere_invoking("pwsh.exe", &none, None));
+        assert!(!default_chere_invoking("C:\\Windows\\system32\\cmd.exe", &none, None));
+        // A CHERE_INVOKING the user (terminal env) or the launching process set wins.
+        assert!(!default_chere_invoking("bash.exe", &chose, None));
+        assert!(!default_chere_invoking("bash.exe", &none, Some("0")));
+        // On Unix there is no MSYS2 login cd: never defaulted.
+        let (inherited, want) = if cfg!(windows) { (None, true) } else { (Some("1"), false) };
+        assert_eq!(default_chere_invoking("bash.exe", &none, inherited), want);
     }
 }

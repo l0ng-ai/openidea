@@ -1,0 +1,60 @@
+name: PR check
+on:
+  # pull_request_target so the check can label PRs from forks. It never checks out
+  # or runs PR code: it only reads the PR title and description.
+  pull_request_target:
+    types: [opened, edited, reopened, ready_for_review]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    if: github.event.pull_request.user.type != 'Bot' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const LABEL = 'needs-info';
+            const MARKER = '<!-- pr-check -->';
+            const body = (pr.body || '').replace(/<!--[\s\S]*?-->/g, '');
+            const problems = [];
+
+            const verified = body.match(/^##+\s*How it was verified\s*$([\s\S]*?)(?=^##+\s|(?![\s\S]))/im);
+            if (!verified || !verified[1].trim()) {
+              problems.push('Fill in **How it was verified**: the commands you ran and their results. UI changes need before/after screenshots.');
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = pr.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(MARKER));
+            const labeled = pr.labels.some(l => l.name === LABEL);
+
+            if (problems.length) {
+              const text = `${MARKER}\nThanks for the PR. Before review, please update the description (see [CONTRIBUTING.md](https://github.com/${owner}/${repo}/blob/main/CONTRIBUTING.md)):\n\n${problems.map(p => `- ${p}`).join('\n')}\n\nThis check reruns when you edit the description.`;
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: text });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number, body: text });
+              }
+              if (!labeled) {
+                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL] });
+              }
+              return;
+            }
+
+            // Only undo what this check did: the label is cleared only when our comment exists.
+            if (existing) {
+              await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+              if (labeled) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name: LABEL }).catch(() => {});
+              }
+            }

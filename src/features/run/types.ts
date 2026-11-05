@@ -13,6 +13,7 @@ import {
   gradleForkedJvm,
   isWindows,
   mavenForkedJvm,
+  ROOT_MODULE,
   springBootType,
   type ForkedJvm,
 } from "./jvmTypes";
@@ -25,6 +26,7 @@ import { goBuildType, goTestType } from "./goTypes";
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
+import { phpunitType } from "./phpunitTypes";
 
 export const COMPOUND = "compound";
 
@@ -55,12 +57,20 @@ const shell: RunConfigTypeContribution = {
         { value: "command", label: "Command line" },
       ],
     },
-    { key: "path", label: "Script path", mono: true, required: true, visible: (p) => p.mode === "file" },
+    {
+      key: "path",
+      label: "Script path",
+      mono: true,
+      required: true,
+      browse: "file",
+      visible: (p) => p.mode === "file",
+    },
     { key: "options", label: "Script options", mono: true, visible: (p) => p.mode === "file" },
     {
       key: "interpreter",
       label: "Interpreter path",
       mono: true,
+      browse: "file",
       placeholder: "Run the script directly",
       visible: (p) => p.mode === "file",
     },
@@ -115,7 +125,14 @@ const program: RunConfigTypeContribution = {
   icon: "file-binary",
   description: "Run an executable with arguments",
   fields: [
-    { key: "program", label: "Executable", mono: true, required: true, placeholder: "Path or command on PATH" },
+    {
+      key: "program",
+      label: "Executable",
+      mono: true,
+      required: true,
+      browse: "file",
+      placeholder: "Path or command on PATH",
+    },
     { key: "arguments", label: "Program arguments", mono: true },
   ],
   commandLine: (p) => ({ command: p.program ?? "", args: parseArgs(p.arguments ?? "") }),
@@ -138,7 +155,13 @@ const godot: RunConfigTypeContribution = {
   ownsWorkingDirectory: true,
   debugAdapter: "godot",
   fields: [
-    { key: "projectDir", label: "Project directory", mono: true, placeholder: "Project root (holds project.godot)" },
+    {
+      key: "projectDir",
+      label: "Project directory",
+      mono: true,
+      browse: "directory",
+      placeholder: "Project root (holds project.godot)",
+    },
     {
       key: "scene",
       label: "Scene",
@@ -187,7 +210,13 @@ const npm: RunConfigTypeContribution = {
   defaults: { packageManager: "npm", command: "run" },
   ownsWorkingDirectory: true,
   fields: [
-    { key: "packageDir", label: "package.json directory", mono: true, placeholder: "Project root" },
+    {
+      key: "packageDir",
+      label: "package.json directory",
+      mono: true,
+      browse: "directory",
+      placeholder: "Project root",
+    },
     { key: "command", label: "Command", control: "select", options: NPM_COMMANDS.map((v) => ({ value: v, label: v })) },
     {
       key: "script",
@@ -203,6 +232,14 @@ const npm: RunConfigTypeContribution = {
       label: "Package manager",
       control: "select",
       options: PACKAGE_MANAGERS.map((v) => ({ value: v, label: v })),
+    },
+    {
+      key: "nodeInterpreter",
+      label: "Node interpreter",
+      mono: true,
+      browse: "file",
+      placeholder: "Project default",
+      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.",
     },
   ],
   commandLine(p) {
@@ -248,7 +285,7 @@ function buildToolType(
     defaults: wrapper.byDefault ? { wrapper: "true" } : {},
     ownsWorkingDirectory: true,
     fields: [
-      { key: "projectDir", label: tx`${label} project`, mono: true, placeholder: "Project root" },
+      { key: "projectDir", label: tx`${label} project`, mono: true, browse: "directory", placeholder: "Project root" },
       {
         key: "tasks",
         label: tasks.label,
@@ -404,6 +441,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   rakeType,
   rspecType,
   djangoTestType,
+  phpunitType,
   dotnetProjectType,
   dotnetTestType,
   goBuildType,
@@ -457,7 +495,10 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet" && config.beforeLaunch === undefined
       ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
       : {}),
-    ...(config.kind === "dotnet-test" || config.kind === "django-test" || config.kind === "rspec"
+    ...(config.kind === "dotnet-test" ||
+    config.kind === "django-test" ||
+    config.kind === "phpunit" ||
+    config.kind === "rspec"
       ? { isTest: true }
       : {}),
     params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
@@ -465,9 +506,12 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(params.goKind ? { isTest: params.goKind === "test" } : {}),
     command: line.command,
     args: line.args,
-    ...(isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass
-      ? { module: undefined }
-      : {}),
+    // "Use classpath of module": the chosen module; else it is found again for another main class.
+    ...(isJvmApplication(config) && params.module
+      ? { module: params.module === ROOT_MODULE ? "" : params.module }
+      : isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass
+        ? { module: undefined }
+        : {}),
     ...(type?.ownsWorkingDirectory ? { cwd: line.cwd ?? null } : {}),
     ...(line.stop ? { stopCommand: line.stop } : {}),
   };

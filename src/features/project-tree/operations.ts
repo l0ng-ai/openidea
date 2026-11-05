@@ -8,10 +8,10 @@ import { executeAction, getAction } from "@/platform/actions";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
-import { runFileRefactoring } from "./fileRefactor";
+import { lastFileRefactoring, nextFileOperation, runFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
-import { isCancelled } from "@/platform/ipc";
+import { call, commands, isCancelled } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   isInside,
@@ -39,17 +39,14 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
-import { isRemoteWindow } from "@/platform/remote";
+import { hostOs, isRemoteWindow } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
 const mutable = (n: ProjectNode) => !n.root && !n.placeholder && !n.readOnly;
 
 const get = () => useProjectTree.getState();
-
-const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-const isWindows = /Win/i.test(ua);
-/** macOS and Windows file systems are case-insensitive by default. */
-const caseInsensitive = /Mac|Win/i.test(ua);
+const caseInsensitiveOs = (os: string) => os === "windows" || os === "macos";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -84,8 +81,22 @@ export function leadNode(): ProjectNode | null {
 
 /** Selected paths without entries nested in other selected folders. */
 export function topLevelPaths(nodes: ProjectNode[] = selectedNodes()): string[] {
-  const paths = nodes.map((n) => n.path);
+  const paths = assetPaths(nodes.map((n) => n.path));
   return paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+}
+
+/** A visible sidecar is already included by the backend asset operation. */
+function assetPaths(paths: string[]): string[] {
+  const { root, unity } = get();
+  if (!root || !unity) return paths;
+  return paths.filter(
+    (p) => !(isInside(p, joinPath(root, "Assets")) && p.endsWith(".meta") && paths.includes(p.slice(0, -5))),
+  );
+}
+
+function isUnityAssetFolder(path: string): boolean {
+  const { root, unity } = get();
+  return !!(root && unity && isSameOrInside(path, joinPath(root, "Assets")));
 }
 
 /** Folder that receives new / pasted items: the selected folder or the selected file's parent. */
@@ -222,6 +233,9 @@ export function cancelEditing() {
 export function checkEditingName(name: string) {
   const { editing } = get();
   if (!editing) return { error: null };
+  const os = hostOs();
+  const isWindows = os === "windows";
+  const caseInsensitive = caseInsensitiveOs(os);
   if (editing.kind === "new" && editing.pkg) {
     const { segments, error } = packageSegments(name, editing.pkg);
     if (!segments) return { error };
@@ -266,7 +280,7 @@ export async function commitEditing(name: string): Promise<boolean> {
           // An existing intermediate package keeps its own `__init__.py`.
           await fs.createFile(joinPath(dir, "__init__.py")).catch(() => {});
     } catch (e) {
-      fail(editing.nodeKind === "file" ? "Cannot create file" : "Cannot create folder", e);
+      fail(editing.nodeKind === "file" ? tx("Cannot create file") : tx("Cannot create folder"), e);
       return true;
     }
     await refreshAfterCreate(editing.parent, path);
@@ -294,8 +308,14 @@ async function refreshAfterCreate(parent: string, path: string) {
 // ---------------------------------------------------------------------------
 // Delete
 
-function describe(paths: string[]): string {
-  return paths.length === 1 ? `'${nameOf(paths[0]!)}'` : `${paths.length} items`;
+/** The Delete dialog's question, e.g. "Delete 'src' and its contents?". */
+function deleteQuestion(paths: string[], folders: boolean): string {
+  if (paths.length === 1) {
+    const name = nameOf(paths[0]!);
+    return folders ? tx`Delete '${name}' and its contents?` : tx`Delete '${name}'?`;
+  }
+  const count = paths.length;
+  return folders ? tx`Delete ${count} items (including folder contents)?` : tx`Delete ${count} items?`;
 }
 
 /** Visible rows in display order (roots, then children of expanded folders). */
@@ -441,9 +461,9 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
     message: createElement(
       Fragment,
       null,
-      `Delete ${describe(paths)}${folders ? (paths.length === 1 ? " and its contents" : " (including folder contents)") : ""}?`,
+      deleteQuestion(paths, folders > 0),
       createElement("br"),
-      "Items are moved to the Trash.",
+      tx("Items are moved to the Trash."),
     ),
   });
   if (!answer) return;
@@ -459,18 +479,78 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   const fs = projectFs(root);
   const parents = new Set<string>();
   const errors: string[] = [];
+  const deleted: string[] = [];
   for (const p of paths) {
     try {
       await fs.delete(p);
       parents.add(parentOf(p));
+      deleted.push(p);
     } catch (e) {
       errors.push(`${nameOf(p)}: ${errorMessage(e)}`);
     }
+  }
+  if (deleted.length) {
+    const dirs = new Set(nodes.filter((n) => n.dir).map((n) => n.path));
+    lastDelete = { paths: deleted, dirs: deleted.filter((p) => dirs.has(p)), seq: nextFileOperation() };
   }
   if (errors.length)
     notifications().notify({ level: "error", title: "Some items could not be deleted", body: errors.join("\n") });
   await Promise.all([...parents].map((d) => loadDir(d, true)));
   if (next) revealPath(next, refocus);
+}
+
+/** The last Delete in the Project view; Undo brings its files back from Local History. */
+let lastDelete: { paths: string[]; dirs: string[]; seq: number } | null = null;
+
+/** Undo in the Project view: reverts the latest delete or move / rename; false when there is none. */
+export function undoLastFileOperation(): boolean {
+  const move = lastFileRefactoring();
+  if (lastDelete && (!move || lastDelete.seq > move.seq)) {
+    void undoDelete();
+    return true;
+  }
+  if (!move) return false;
+  void undoFileRefactoring();
+  return true;
+}
+
+/** Restores the deleted files (and folders) from their last Local History snapshots. */
+export async function undoDelete(): Promise<boolean> {
+  const op = lastDelete;
+  const { root } = get();
+  if (!op || !root) return false;
+  lastDelete = null;
+  const fs = projectFs(root);
+  const failed: string[] = [];
+  const parents = new Set<string>();
+  for (const p of op.paths) {
+    try {
+      const history = await call(commands.historyListDir(p));
+      const gone = new Set(history.deleted);
+      const latest = new Map<string, string>();
+      for (const e of history.entries)
+        if (e.kind === "snapshot" && e.id && gone.has(e.path) && !latest.has(e.path)) latest.set(e.path, e.id);
+      const dir = op.dirs.includes(p);
+      if (!latest.size && !dir) throw new Error("no Local History snapshot");
+      if (dir) await fs.createDir(p);
+      for (const [path, id] of latest) await call(commands.historyRestore(path, id));
+      parents.add(parentOf(p));
+    } catch {
+      failed.push(nameOf(p));
+    }
+  }
+  await Promise.all([...parents].map((d) => loadDir(d, true)));
+  const restored = op.paths.find((p) => !failed.includes(nameOf(p)));
+  if (restored) revealPath(restored, true);
+  const names = failed.join(", ");
+  if (failed.length)
+    notifications().notify({
+      level: "warning",
+      title: "Some items could not be restored",
+      body: tx`Not in Local History: ${names}. They are in the Trash.`,
+      key: "project.undoDelete",
+    });
+  return !failed.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,7 +612,7 @@ export async function paste(target = targetFolder()) {
     external = files;
   } catch (e) {
     if (!get().clipboard?.paths.length) {
-      fail("Cannot access the clipboard", e);
+      fail(tx("Cannot access the clipboard"), e);
       return;
     }
   }
@@ -565,6 +645,7 @@ async function pasteFromOsClipboard(paths: string[], target: string) {
 /** The same files, as the clipboard keeps them (`/`-separated, any order). */
 function sameFiles(files: string[], paths: string[] | undefined): boolean {
   if (!paths || files.length !== paths.length) return false;
+  const caseInsensitive = caseInsensitiveOs(usePlatform.getState().os);
   const key = (list: string[]) =>
     list
       .map((p) => (caseInsensitive ? p.toLowerCase() : p))
@@ -601,13 +682,16 @@ export async function transfer(
   name?: string,
   source: "project" | "local" = "project",
 ): Promise<string | boolean> {
+  paths = assetPaths(paths);
   if (mode === "move") return moveInto(paths, target);
   const { root } = get();
   if (!root) return false;
   const fs = projectFs(root);
   await loadDir(target);
+  const caseInsensitive = caseInsensitiveOs(hostOs());
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
-  const isTaken = (n: string) => taken.has(caseInsensitive ? n.toLowerCase() : n);
+  const hasName = (n: string) => taken.has(caseInsensitive ? n.toLowerCase() : n);
+  const isTaken = (n: string) => hasName(n) || (isUnityAssetFolder(target) && hasName(`${n}.meta`));
   const touched = new Set<string>([target]);
   const errors: string[] = [];
   let first: string | null = null;
@@ -660,7 +744,9 @@ export async function transfer(
  * the options last used in the Move dialog). Refuses to overwrite.
  */
 async function moveInto(paths: string[], target: string): Promise<boolean> {
+  paths = assetPaths(paths);
   await loadDir(target);
+  const caseInsensitive = caseInsensitiveOs(hostOs());
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
   const errors: string[] = [];
   const moves: { from: string; to: string }[] = [];
@@ -731,7 +817,7 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
   try {
     await navigator.clipboard.writeText(text);
   } catch (e) {
-    fail("Cannot access the clipboard", e);
+    fail(tx("Cannot access the clipboard"), e);
   }
 }
 

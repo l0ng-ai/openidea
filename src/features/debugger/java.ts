@@ -7,6 +7,7 @@
 import { executeAction } from "@/platform/actions";
 import { call, commands, IpcError, nextRequestId, type LaunchConfig, type RunConfig } from "@/platform/ipc";
 import {
+  consoleVmArgs,
   formatCompileErrors,
   isJvmApplication,
   joinJavaArgs,
@@ -117,7 +118,7 @@ export async function javaLaunchConfig(
         classPaths,
         modulePaths: info.modulePaths,
         javaExec: resolved.command,
-        vmArguments: parsed.vmArgs,
+        vmArguments: [...consoleVmArgs(rc), ...parsed.vmArgs],
         programArgs: parsed.programArgs,
       }),
     };
@@ -139,7 +140,7 @@ export async function javaLaunchConfig(
       classPaths,
       modulePaths: info.modulePaths,
       javaExec: resolved.command === "java" ? undefined : resolved.command,
-      vmArgs: joinJavaArgs(parsed.vmArgs),
+      vmArgs: joinJavaArgs([...consoleVmArgs(rc), ...parsed.vmArgs]),
       args: joinJavaArgs(parsed.programArgs),
       // java-debug spawns the JVM itself: it must shorten a classpath too long for the OS the same way Run does.
       shortenCommandLine: info.shortenCommandLine ?? "none",

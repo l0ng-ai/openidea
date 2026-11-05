@@ -55,6 +55,31 @@ afterEach(() => {
 });
 
 describe("remote client settings", () => {
+  it.each([
+    { gradle: { dir: "app", projects: [] }, expected: [{ dir: "app", projects: [] }] },
+    {
+      gradle: [
+        { dir: "one", projects: [] },
+        { dir: "two", projects: [] },
+      ],
+      expected: [
+        { dir: "one", projects: [] },
+        { dir: "two", projects: [] },
+      ],
+    },
+    { gradle: null, expected: null },
+  ])("accepts the released and current remote Gradle build models: $gradle", async ({ gradle, expected }) => {
+    enableRemote({
+      target: { kind: "wsl", distro: "Ubuntu" },
+      root: "/remote",
+      host: "Ubuntu",
+      os: "linux",
+      commands: ["build_model"],
+    });
+    invoke.mockResolvedValue(JSON.stringify({ gradle, maven: null }));
+    expect(await call(commands.buildModel())).toEqual({ gradle: expected, maven: null });
+  });
+
   it("ends remote routing before a successful local open is published, even at the same path", async () => {
     invoke.mockResolvedValueOnce({ root: "/remote", settings: local });
     await call(commands.openProject("/remote"));

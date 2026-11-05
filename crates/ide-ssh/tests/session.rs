@@ -218,6 +218,21 @@ async fn password_authentication_and_forwarding() {
 }
 
 #[tokio::test]
+async fn forwarding_keeps_the_port_number_when_it_is_free() {
+    let env = env().await;
+    let target = env.target(SshAuth::Password);
+    let session = Arc::new(env.connect_trusted(&target, Some("secret")).await.ok().unwrap());
+    let free = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    let tunnel = Tunnel::listen_on(session.clone(), Some(free), "127.0.0.1", env.echo_port).await.unwrap();
+    assert_eq!(tunnel.port(), free);
+    round_trip(&tunnel).await;
+    // Taken here: another free port.
+    let other = Tunnel::listen_on(session, Some(free), "127.0.0.1", env.echo_port).await.unwrap();
+    assert_ne!(other.port(), free);
+    round_trip(&other).await;
+}
+
+#[tokio::test]
 async fn key_pair_authentication_with_and_without_passphrase() {
     let env = env().await;
     let target = SshTarget { key_file: fixture("client").to_string_lossy().into(), ..env.target(SshAuth::KeyPair) };
@@ -253,4 +268,27 @@ async fn runs_commands_and_streams_processes() {
         .unwrap();
     assert_eq!(process.wait().await, Some(3));
     assert_eq!(*seen.lock(), ("ran: python3 main.py".to_owned(), "oops".to_owned()));
+}
+
+#[tokio::test]
+async fn upload_reports_a_command_that_stops_reading() {
+    let env = env().await;
+    let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();
+    // Incompressible and larger than the channel window: the command exits (status 3, `oops`)
+    // without reading it, as when the host has no gzip or the folder is not writable.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let data: Vec<u8> = (0..8 << 20)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect();
+    let put = session.put("/home/dev/.openidea/server/openidea-server", &data);
+    let err = tokio::time::timeout(std::time::Duration::from_secs(20), put)
+        .await
+        .expect("the upload must end when the command exits")
+        .unwrap_err();
+    assert!(err.message.contains("oops"), "{}", err.message);
 }

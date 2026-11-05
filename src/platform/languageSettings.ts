@@ -25,10 +25,63 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
+/** An external formatter (Prettier, oxfmt) and the languages it formats. */
+interface ExternalFormatterValid {
+  path: string;
+  languages: string[];
+  prefer: boolean;
+  runOnSave: boolean;
+}
+
+const DEFAULT_FORMATTER: ExternalFormatterValid = {
+  path: "",
+  languages: [
+    "markdown",
+    "yaml",
+    "css",
+    "scss",
+    "less",
+    "html",
+    "graphql",
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact",
+    "json",
+    "jsonc",
+    "vue",
+  ],
+  prefer: false,
+  runOnSave: false,
+};
+
+/** `languages.php.languageLevel` values; `""` = Auto (from `composer.json`). */
+export const PHP_LANGUAGE_LEVELS = [
+  "",
+  "5.6",
+  "7.0",
+  "7.1",
+  "7.2",
+  "7.3",
+  "7.4",
+  "8.0",
+  "8.1",
+  "8.2",
+  "8.3",
+  "8.4",
+  "8.5",
+] as const;
+
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   ruby: { interpreter: string };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
+  php: {
+    interpreter: string;
+    languageLevel: (typeof PHP_LANGUAGE_LEVELS)[number];
+    includePaths: string[];
+    stubs: string[];
+  };
   rust: {
     toolchain: string;
     stdlib: string;
@@ -43,14 +96,33 @@ export interface LanguagesValid {
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
   typescript: { version: string };
-  prettier: { path: string; languages: string[]; prefer: boolean; runOnSave: boolean };
+  prettier: ExternalFormatterValid;
+  oxfmt: ExternalFormatterValid;
   java: {
     jdk: string;
     jdtlsJdk: string;
     jdtlsVmArgs: string;
-    gradle: { jvm: string; distribution: "wrapper" | "local"; home: string; userHome: string };
-    maven: { home: string; userSettings: string; localRepository: string; unlinkedProjects: string[] };
+    gradle: {
+      linkedProjects: string[] | null;
+      jvm: string;
+      distribution: "wrapper" | "local";
+      home: string;
+      userHome: string;
+      /** IDEA's "Build and run using": Gradle (`JavaExec`) or the IDE (the language server's classpath). */
+      runUsing: "gradle" | "ide";
+    };
+    maven: {
+      home: string;
+      userSettings: string;
+      localRepository: string;
+      unlinkedProjects: string[];
+      linkedProjects: string[];
+      daemon: boolean;
+      mvndHome: string;
+    };
   };
+  /** Preview font size in px; `null` follows the editor font size. */
+  markdown: { previewFontSize: number | null };
 }
 
 export interface ProjectStructureValid {
@@ -80,37 +152,28 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   ruby: { interpreter: "" },
   node: { interpreter: "", packageManager: "" },
+  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [] },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
-  prettier: {
-    path: "",
-    languages: [
-      "markdown",
-      "yaml",
-      "css",
-      "scss",
-      "less",
-      "html",
-      "graphql",
-      "javascript",
-      "javascriptreact",
-      "typescript",
-      "typescriptreact",
-      "json",
-      "jsonc",
-      "vue",
-    ],
-    prefer: false,
-    runOnSave: false,
-  },
+  prettier: DEFAULT_FORMATTER,
+  oxfmt: DEFAULT_FORMATTER,
   java: {
     jdk: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
-    gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "" },
-    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
+    gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
+    maven: {
+      home: "",
+      userSettings: "",
+      localRepository: "",
+      unlinkedProjects: [],
+      linkedProjects: [],
+      daemon: false,
+      mvndHome: "",
+    },
   },
+  markdown: { previewFontSize: null },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -140,6 +203,14 @@ export function normalizeFolder(path: string): string {
     .replace(/^\/+|\/+$/g, "");
 }
 
+/** A stored preview font size within IDEA's 8..72, or `null` (follow the editor font). */
+const previewSize = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? Math.min(72, Math.max(8, Math.round(v))) : null;
+/** Non-empty trimmed strings, without duplicates. */
+const strings = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? [...new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim()))].filter((x) => x)
+    : [];
 const folders = (v: unknown): string[] =>
   Array.isArray(v)
     ? [
@@ -156,21 +227,35 @@ const folders = (v: unknown): string[] =>
 const folderKey = (stored: string) => (stored === "." ? "" : stored);
 const storedFolder = (rel: string) => normalizeFolder(rel) || ".";
 
+function validateFormatter(raw: unknown): ExternalFormatterValid {
+  const d = DEFAULT_FORMATTER;
+  const f = obj(raw);
+  return {
+    path: text(f.path, d.path),
+    languages: Array.isArray(f.languages)
+      ? [...new Set(f.languages.filter((v): v is string => typeof v === "string"))]
+      : d.languages,
+    prefer: bool(f.prefer, d.prefer),
+    runOnSave: bool(f.runOnSave, d.runOnSave),
+  };
+}
+
 export function validateLanguages(raw: unknown): LanguagesValid {
   const d = DEFAULT_LANGUAGES;
   const l = obj(raw);
   const py = obj(l.python);
   const ruby = obj(l.ruby);
   const node = obj(l.node);
+  const php = obj(l.php);
   const rust = obj(l.rust);
   const go = obj(l.go);
   const tags = obj(go.buildTags);
   const modules = obj(go.modules);
   const ts = obj(l.typescript);
-  const prettier = obj(l.prettier);
   const java = obj(l.java);
   const maven = obj(java.maven);
   const gradle = obj(java.gradle);
+  const markdown = obj(l.markdown);
   return {
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
@@ -180,6 +265,12 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     node: {
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
+    },
+    php: {
+      interpreter: text(php.interpreter, d.php.interpreter),
+      languageLevel: oneOf(php.languageLevel, PHP_LANGUAGE_LEVELS, d.php.languageLevel),
+      includePaths: strings(php.includePaths),
+      stubs: strings(php.stubs),
     },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),
@@ -204,32 +295,53 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       },
     },
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
-    prettier: {
-      path: text(prettier.path, d.prettier.path),
-      languages: Array.isArray(prettier.languages)
-        ? [...new Set(prettier.languages.filter((v): v is string => typeof v === "string"))]
-        : d.prettier.languages,
-      prefer: bool(prettier.prefer, d.prettier.prefer),
-      runOnSave: bool(prettier.runOnSave, d.prettier.runOnSave),
-    },
+    prettier: validateFormatter(l.prettier),
+    oxfmt: validateFormatter(l.oxfmt),
     java: {
       jdk: text(java.jdk, d.java.jdk),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
       gradle: {
+        linkedProjects: Array.isArray(gradle.linkedProjects)
+          ? gradle.linkedProjects.filter((p): p is string => typeof p === "string")
+          : null,
         jvm: text(gradle.jvm, d.java.gradle.jvm),
         distribution: oneOf(gradle.distribution, ["wrapper", "local"] as const, d.java.gradle.distribution),
         home: text(gradle.home, d.java.gradle.home),
         userHome: text(gradle.userHome, d.java.gradle.userHome),
+        runUsing: oneOf(gradle.runUsing, ["gradle", "ide"] as const, d.java.gradle.runUsing),
       },
       maven: {
         home: text(maven.home, d.java.maven.home),
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
+        linkedProjects: folders(maven.linkedProjects),
+        daemon: bool(maven.daemon, d.java.maven.daemon),
+        mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
       },
     },
+    markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
   };
+}
+
+/**
+ * Markdown preview (and notebook Markdown cell) font size in px: Languages &
+ * Frameworks › Markdown, else the editor font size, as IDEA defaults it.
+ */
+export function markdownPreviewFontSize(settings: unknown): number {
+  const s = obj(settings);
+  const editorSize = obj(s.editor).fontSize;
+  return (
+    previewSize(obj(obj(s.languages).markdown).previewFontSize) ??
+    // 13: the editor's default font size.
+    (typeof editorSize === "number" && editorSize > 0 ? editorSize : 13)
+  );
+}
+
+/** Reactive `markdownPreviewFontSize` of the open project. */
+export function useMarkdownPreviewFontSize(): number {
+  return useProject((s) => markdownPreviewFontSize(s.settings));
 }
 
 export function validateProjectStructure(raw: unknown): ProjectStructureValid {

@@ -15,8 +15,11 @@ import {
   nextValue,
   recall,
   toPrompt,
+  mergeMatches,
   retryParts,
   usageLabel,
+  limitLabel,
+  costLabel,
   workTime,
 } from "./composerModel";
 import {
@@ -65,6 +68,27 @@ const option = (category: string, values: string[], current: string | null): Age
   via: "option",
 });
 
+describe("mergeMatches", () => {
+  it("ranks folders among files by score, files first on a tie", () => {
+    const merged = mergeMatches(
+      [
+        { path: "/p/src/agents.ts", relPath: "src/agents.ts", score: 50 },
+        { path: "/p/x.ts", relPath: "x.ts", score: 10 },
+      ],
+      [
+        { path: "/p/src/agents", relPath: "src/agents/", score: 50 },
+        { path: "/p/docs", relPath: "docs/", score: 70 },
+      ],
+      3,
+    );
+    expect(merged).toEqual([
+      { path: "/p/docs", rel: "docs", dir: true, score: 70 },
+      { path: "/p/src/agents.ts", rel: "src/agents.ts", dir: false, score: 50 },
+      { path: "/p/src/agents", rel: "src/agents", dir: true, score: 50 },
+    ]);
+  });
+});
+
 describe("agent composer", () => {
   it("completes @files anywhere and /commands as the first word", () => {
     expect(completionAt("fix @src/le", 11)).toEqual({ kind: "file", query: "src/le", from: 4, to: 11 });
@@ -109,6 +133,11 @@ describe("agent composer", () => {
     });
     expect(prompt).toEqual({ text: "look at @src/a.rs:3-5 and @b.rs", files: ["/w/src/a.rs", "/w/b.rs"], images: [] });
     expect(mentionOf("a.rs", { from: 3, to: 3 })).toBe("@a.rs:3");
+    // A folder counts while `@src/` is left as typed, not once a file inside it was picked.
+    const folder = { path: "/w/src", rel: "src/" };
+    expect(toPrompt({ text: "explain @src/ please", files: [folder], images: [] }).files).toEqual(["/w/src"]);
+    expect(toPrompt({ text: "explain @src/", files: [folder], images: [] }).files).toEqual(["/w/src"]);
+    expect(toPrompt({ text: "explain @src/a.rs", files: [folder], images: [] }).files).toEqual([]);
     expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
   });
 
@@ -149,6 +178,28 @@ describe("agent composer", () => {
 describe("usage meters", () => {
   it("formats token counts", () => {
     expect(usageLabel({ used: 83_100, size: 1_000_000 }).detail).toBe("83.1k / 1M tokens");
+  });
+
+  it("names usage-limit windows and says when they reset", () => {
+    const hour = 3_600_000;
+    expect(limitLabel({ window: "five_hour", usedPercent: 19.4, resetsMs: 2 * hour + 51 * 60_000 }, 0)).toEqual({
+      short: "5h 19%",
+      percent: 19,
+      detail: "5-hour limit: 19% used, resets in 2h 51m",
+    });
+    expect(limitLabel({ window: "seven_day", usedPercent: 120, resetsMs: 5 * 24 * hour + 3 * hour }, 0).detail).toBe(
+      "Weekly limit: 100% used, resets in 5d 3h",
+    );
+    expect(limitLabel({ window: "spend_limit", usedPercent: 7, resetsMs: null }, 0)).toEqual({
+      short: "spend_limit 7%",
+      percent: 7,
+      detail: "spend_limit: 7% used",
+    });
+  });
+
+  it("formats the session cost", () => {
+    expect(costLabel({ amount: 0.4231, currency: "USD" })).toBe("$0.42");
+    expect(costLabel({ amount: 1.5, currency: "credits" })).toBe("1.50 credits");
   });
 
   it("adds up the time spent on turns", () => {

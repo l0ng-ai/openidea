@@ -31,6 +31,8 @@ struct MockState {
     errors: Mutex<HashMap<String, (i64, String)>>,
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
+    /// Holds the handling of notifications of this method until the gate opens.
+    held: Mutex<Option<(String, Arc<Gate>)>>,
     peer: Mutex<Option<Peer>>,
 }
 
@@ -74,6 +76,12 @@ struct MockHandler(Arc<MockState>);
 impl Handler for MockHandler {
     fn on_notification(&self, method: &str, params: Value) {
         let s = &self.0;
+        let held = s.held.lock().clone();
+        if let Some((m, gate)) = held
+            && m == method
+        {
+            gate.hold();
+        }
         // Held throughout: a test that sees the effect (a document, the peer gone) also sees the record.
         let mut log = s.notifications.lock();
         let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
@@ -225,9 +233,13 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         install_hint: Some(format!("install {name}")),
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
+        pinned: None,
     }
 }
 
@@ -266,6 +278,7 @@ fn harness_configured(
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: servers
             .iter()
@@ -399,6 +412,107 @@ async fn linked_projects_initialize_separate_language_server_roots() {
     actual.sort();
     expected.sort();
     assert_eq!(actual, expected);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_changed_on_disk_reach_the_servers_of_their_language() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("a.mk"), h.root.join("old.mk"));
+    // Other languages and files outside the server's root are left out.
+    let other = h.root.join("notes.txt");
+    let outside = tempfile::tempdir().unwrap().path().join("far.mk");
+    h.mgr.watched_files_changed(
+        &[created.clone(), other],
+        &[modified.clone(), outside],
+        std::slice::from_ref(&removed),
+        &[h.root.join(".venv/lib/site-packages")],
+    );
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([
+            { "uri": uri_of(&created), "type": 1 },
+            { "uri": uri_of(&modified), "type": 2 },
+            { "uri": uri_of(&removed), "type": 3 },
+        ])
+    );
+    // Nothing of its languages: no notification.
+    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// A server that registers file watchers hears of what they match, inside excluded folders
+/// too (`uv add` into `.venv`, `go get` rewriting `go.mod`); folders outside the project
+/// that relative patterns name are reported for watching; unregistered, it falls back to
+/// its languages' files.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_file_watchers_choose_the_changes_a_server_hears_of() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let roots = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
+    {
+        let roots = roots.clone();
+        h.mgr.set_file_watch_roots_hook(Box::new(move |r| roots.lock().push(r)));
+    }
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let outside = tempfile::tempdir().unwrap();
+    let outside = dunce::canonicalize(outside.path()).unwrap();
+    let external = outside.join("venv/lib/site-packages");
+    s.peer()
+        .request::<_, Value>(
+            "client/registerCapability",
+            json!({ "registrations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [
+                { "globPattern": "**/*.{mk,mod}" },
+                { "globPattern": "**/pyrightconfig.json", "kind": 2 },
+                { "globPattern": "**/site-packages/**" },
+                { "globPattern": { "baseUri": uri_of(&external), "pattern": "**" } },
+                { "globPattern": { "baseUri": uri_of(&h.root.join("sub")), "pattern": "**" } },
+            ] } }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![external.clone()]), "only folders outside the project");
+
+    let sp = h.root.join(".venv/lib/python3.14/site-packages");
+    let notified = || s.notified("workspace/didChangeWatchedFiles");
+    h.mgr.watched_files_changed(
+        &[h.root.join("go.mod"), h.root.join("notes.txt"), h.root.join("pyrightconfig.json")],
+        &[h.root.join("pyrightconfig.json"), external.join("idna/core.py")],
+        &[h.root.join("old.mk")],
+        &[sp.join("idna"), h.root.join("node_modules/x")],
+    );
+    eventually(|| !notified().is_empty()).await;
+    assert_eq!(
+        notified()[0]["changes"],
+        json!([
+            { "uri": uri_of(&h.root.join("go.mod")), "type": 1 },
+            { "uri": uri_of(&h.root.join("pyrightconfig.json")), "type": 2 },
+            { "uri": uri_of(&external.join("idna/core.py")), "type": 2 },
+            { "uri": uri_of(&h.root.join("old.mk")), "type": 3 },
+            { "uri": uri_of(&sp.join("idna")), "type": 1 },
+        ])
+    );
+
+    s.peer()
+        .request::<_, Value>(
+            "client/unregisterCapability",
+            json!({ "unregisterations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles" }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![]));
+    h.mgr.watched_files_changed(&[h.root.join("go.mod"), h.root.join("b.mk")], &[], &[], &[sp.join("idna")]);
+    eventually(|| notified().len() == 2).await;
+    assert_eq!(notified()[1]["changes"], json!([{ "uri": uri_of(&h.root.join("b.mk")), "type": 1 }]));
     h.mgr.shutdown_all().await;
 }
 
@@ -663,6 +777,113 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
 }
 
+/// The diagnostics shown last for `path` by `source`, as their messages.
+fn shown(h: &Harness, path: &Path, source: &str) -> Option<Vec<String>> {
+    h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Diagnostics { path: p, source: s, items } if **p == *path && s == source => {
+            Some(items.iter().map(|d| d.message.clone()).collect())
+        }
+        _ => None,
+    })
+}
+
+/// Reports a "bad" diagnostic per line containing `bad`, as `textDocument/diagnostic`; answers
+/// `unchanged` when the text is what `previousResultId` was computed from.
+fn pull_responder() -> Responder {
+    Arc::new(|s: &MockState, method: &str, params: &Value| {
+        if method != "textDocument/diagnostic" {
+            return None;
+        }
+        let text = s.docs.lock().get(params["textDocument"]["uri"].as_str()?).cloned()?;
+        let id = format!("{}", text.len() * 31 + text.matches("bad").count());
+        if params["previousResultId"].as_str() == Some(id.as_str()) {
+            return Some(json!({ "kind": "unchanged", "resultId": id }));
+        }
+        let items: Vec<Value> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains("bad"))
+            .map(|(i, _)| {
+                json!({ "range": {"start":{"line":i,"character":0},"end":{"line":i,"character":3}},
+                        "severity": 1, "message": "bad" })
+            })
+            .collect();
+        Some(json!({ "kind": "full", "resultId": id, "items": items }))
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pulled_diagnostics_follow_edits_and_join_pushed_ones() {
+    let mut pull_caps = incremental_caps();
+    pull_caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness(&[("mock", pull_caps), ("push", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    *s.responder.lock() = Some(pull_responder());
+    let (doc, path) = h.open("a.mk", "ok\nbad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("push", ServerStatus::Ready).await;
+    assert!(s.requested("initialize")[0]["capabilities"]["textDocument"]["diagnostic"].is_object());
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["bad".into()])).await;
+    assert!(h.launcher.state("push").requested("textDocument/diagnostic").is_empty(), "it pulls from providers only");
+
+    // What the server still pushes (rust-analyzer: `cargo check`) shows next to what was pulled.
+    let pushed = json!({ "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":2}},
+                         "severity": 2, "message": "pushed" });
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": [pushed] }))
+        .unwrap();
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into(), "bad".into()])).await;
+
+    // Edits are pulled again once typing pauses.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), "bad\n")], &|| unreachable!());
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into(), "bad".into(), "bad".into()])).await;
+    // Pulled diagnostics are code actions' context like pushed ones.
+    let _ = h.mgr.code_actions(doc, rng(2, 1, 2, 1), vec![]).await;
+    let ctx = &s.requested("textDocument/codeAction")[0]["context"]["diagnostics"];
+    assert_eq!(ctx.as_array().unwrap().iter().map(|d| d["message"].as_str().unwrap()).collect::<Vec<_>>(), ["bad"]);
+
+    // Saving unchanged text asks with the last result id; `unchanged` keeps what is shown.
+    let pulls = s.requested("textDocument/diagnostic").len();
+    h.mgr.did_save(doc, "bad\nok\nbad\n");
+    eventually(|| s.requested("textDocument/diagnostic").len() > pulls).await;
+    let last = s.requested("textDocument/diagnostic").last().cloned().unwrap();
+    assert!(last["previousResultId"].is_string());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(shown(&h, &path, "mock"), Some(vec!["pushed".into(), "bad".into(), "bad".into()]));
+
+    // Closing drops what was pulled; the pushed diagnostics stay the server's to clear.
+    h.mgr.did_close(doc);
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into()])).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_pull_is_retried_and_a_refresh_pulls_again() {
+    let mut caps = incremental_caps();
+    caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness(&[("mock", caps)]);
+    let s = h.launcher.state("mock");
+    *s.responder.lock() = Some(pull_responder());
+    // Busy indexing: the server cancels and asks to be asked again.
+    s.errors.lock().insert("textDocument/diagnostic".into(), (-32802, "indexing".into()));
+    let (_doc, path) = h.open("a.mk", "bad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.requested("textDocument/diagnostic").len() >= 2).await;
+    assert_eq!(shown(&h, &path, "mock"), None);
+    s.errors.lock().clear();
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["bad".into()])).await;
+
+    // `workspace/diagnostic/refresh` (e.g. after a project reload) pulls open files again.
+    *s.responder.lock() = Some(Arc::new(|_: &MockState, method: &str, _: &Value| {
+        (method == "textDocument/diagnostic").then(|| {
+            json!({ "kind": "full", "items": [
+            { "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":3}}, "message": "reloaded" } ] })
+        })
+    }));
+    let refreshed: Value = s.peer().request("workspace/diagnostic/refresh", Value::Null, None).await.unwrap();
+    assert_eq!(refreshed, Value::Null);
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["reloaded".into()])).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn apply_edit_hook_and_server_requests() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -786,6 +1007,30 @@ async fn progress_tasks_and_busy_status() {
     assert_eq!(tasks[0], ("Indexing".into(), None, Some(0.0), false));
     assert_eq!(tasks[1], ("Indexing".into(), Some("3/10".into()), Some(0.3), false));
     assert!(tasks[2].3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn progress_titled_with_an_executable_path_shows_the_program_name() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let title = "/Users/thomas/Library/Application Support/mbx/bin/cargo check";
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "begin", "title": title } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "report", "message": "tauri_plugin (lib)" } }))
+        .unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "end" } })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { done: true, .. }))).await;
+    let titles: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Task { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, ["cargo check"; 3]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -980,6 +1225,54 @@ async fn preparation_refreshes_config_and_survives_unchanged_settings() {
     h.wait_status("mock", ServerStatus::Ready).await;
     assert_eq!(started.load(Ordering::SeqCst), 1);
     assert_eq!(h.launcher.state("mock").launches.load(Ordering::SeqCst), 1);
+}
+
+/// Intelephense applies the PHP version only to documents it parses after reading its
+/// configuration: once that is answered, servers that opt in get their open documents again.
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
+    let h = harness_configured("mock", "mk", &[("mock", incremental_caps()), ("extra", incremental_caps())], |cfg| {
+        cfg.resync_on_configuration = cfg.name == "mock"
+    });
+    let (doc, path) = h.open("a.mk", "enum A {}");
+    let uri = uri_of(&path);
+    let (s, extra) = (h.launcher.state("mock"), h.launcher.state("extra"));
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("extra", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().contains_key(&uri) && extra.docs.lock().contains_key(&uri)).await;
+    h.mgr.did_change(doc, 2, &[change(rng(0, 9, 0, 9), "\n")], &|| unreachable!());
+    eventually(|| s.notified("textDocument/didChange").len() == 1).await;
+
+    let items = |section: &str| json!({ "items": [{ "section": section }] });
+    let options = json!([{ "flag": true, "nested": { "deep": 1 } }]);
+    let answer: Value = extra.peer().request("workspace/configuration", items("extra"), None).await.unwrap();
+    assert_eq!(answer, options);
+    // The mock handles what arrives in order, answers included: a re-sync sent before the
+    // answer would hold it back here.
+    let gate = Arc::new(Gate::default());
+    *s.held.lock() = Some(("textDocument/didChange".into(), gate.clone()));
+    let peer = s.peer();
+    let request = peer.request::<_, Value>("workspace/configuration", items("mock"), None);
+    let answer = tokio::time::timeout(Duration::from_secs(10), request).await.expect("re-sync sent before the answer");
+    assert_eq!(answer.unwrap(), options);
+    eventually(|| gate.entered()).await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 1);
+    gate.open();
+    eventually(|| s.notified("textDocument/didChange").len() == 2).await;
+    assert_eq!(
+        s.notified("textDocument/didChange")[1],
+        json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": "enum A {}\n" }] })
+    );
+    assert_eq!(s.docs.lock()[&uri], "enum A {}\n");
+
+    // A notification sent after both answers reaches the servers after anything they triggered.
+    h.mgr.did_save(doc, "enum A {}\n");
+    eventually(|| extra.notified("textDocument/didSave").len() == 1 && s.notified("textDocument/didSave").len() == 1)
+        .await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
+    let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1201,6 +1494,105 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn open_java_files_are_checked_again_after_a_project_update() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, a) = h.open("A.java", "class A {}");
+    let (_, b) = h.open("B.java", "class B {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let refreshed = || {
+        let mut uris: Vec<Value> = state
+            .requested("workspace/executeCommand")
+            .iter()
+            .filter(|p| p["command"] == "java.project.refreshDiagnostics")
+            .map(|p| {
+                assert_eq!(p["arguments"][1], "thisFile");
+                p["arguments"][0].clone()
+            })
+            .collect();
+        uris.sort_by_key(|u| u.to_string());
+        uris
+    };
+    // Other status messages leave the documents alone.
+    state
+        .peer()
+        .notify("language/status", json!({ "type": "Message", "message": "Updating project configurations..." }))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(refreshed().is_empty());
+
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    let mut expected = vec![json!(uri_of(&a)), json!(uri_of(&b))];
+    expected.sort_by_key(|u| u.to_string());
+    eventually(|| refreshed() == expected).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
+    use std::io::Write;
+    let jar = |path: &Path, entries: &[(&str, &str)]| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, text) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    };
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path().join("org/springframework/boot/spring-boot/3.5.16");
+    let source = "package org.springframework.boot\n\ninline fun <reified T : Any> runApplication(vararg args: String) =\n    SpringApplication.run(T::class.java, *args)\n";
+    jar(
+        &dir.join("spring-boot-3.5.16.jar"),
+        &[("org/springframework/boot/SpringApplicationExtensionsKt.class", "\u{0}")],
+    );
+    jar(
+        &dir.join("spring-boot-3.5.16-sources.jar"),
+        &[("org/springframework/boot/SpringApplicationExtensions.kt", source)],
+    );
+    let other = repo.path().join("acme/lib/1.0/lib-1.0.jar");
+    jar(&other, &[("acme/Thing.class", "\u{0}")]);
+    let jar_uri = |jar: &Path, entry: &str| format!("jar://{}!/{entry}", uri_of(jar).trim_start_matches("file://"));
+    let r = |l: u32, c0: u32, c1: u32| json!({"start":{"line":l,"character":c0},"end":{"line":l,"character":c1}});
+
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["decompile"] });
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", caps)], &[]);
+    let (doc, _) = h.open("Main.kt", "fun main(args: Array<String>) {\n    runApplication<App>(*args)\n}\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let s = h.launcher.state("kotlin-lsp");
+
+    // A class with a cached sources jar: navigation lands on the declaration in its source.
+    let class =
+        jar_uri(&dir.join("spring-boot-3.5.16.jar"), "org/springframework/boot/SpringApplicationExtensionsKt.class");
+    s.respond("textDocument/definition", json!({ "uri": class, "range": r(7, 43, 57) }));
+    let defs = h.mgr.goto(doc, Pos::new(1, 8), GotoKind::Definition).await.unwrap();
+    let sources =
+        jar_uri(&dir.join("spring-boot-3.5.16-sources.jar"), "org/springframework/boot/SpringApplicationExtensions.kt");
+    assert_eq!(
+        defs,
+        vec![ide_core::Location { path: sources.clone().into(), range: rng(2, 29, 2, 43), uri: Some(sources.clone()) }]
+    );
+    let vd = h.mgr.virtual_document(&sources).await.unwrap();
+    assert_eq!((vd.text.as_str(), vd.title.as_str(), vd.decompiled), (source, "SpringApplicationExtensions.kt", false));
+    assert_eq!(vd.language_id.as_str(), "kotlin");
+    // The class URI itself (from usages, say) shows the same source.
+    assert_eq!(h.mgr.virtual_document(&class).await.unwrap().text, source);
+    assert!(s.requested("workspace/executeCommand").is_empty(), "no server round trip for cached sources");
+
+    // No sources jar: the server's `decompile` command.
+    let thing = jar_uri(&other, "acme/Thing.class");
+    s.respond("textDocument/definition", json!({ "uri": thing, "range": r(0, 6, 11) }));
+    let defs = h.mgr.goto(doc, Pos::new(1, 8), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].uri.as_deref(), Some(thing.as_str()), "kept as the server returned it");
+    s.respond("workspace/executeCommand", json!({ "code": "package acme\n\nclass Thing", "language": "kotlin" }));
+    let vd = h.mgr.virtual_document(&thing).await.unwrap();
+    assert_eq!(vd.text, "package acme\n\nclass Thing");
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0], json!({ "command": "decompile", "arguments": [thing] }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
@@ -1364,13 +1756,20 @@ async fn navigation_rename_format_and_decorations() {
 
     assert!(h.mgr.can_format(doc).await.unwrap());
     s.respond("textDocument/formatting", json!([{ "range": r(0,10,0,11), "newText": "\n}" }]));
-    let edits =
-        h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
+    let edits = h
+        .mgr
+        .format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None })
+        .await
+        .unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
     assert!(
         h.mgr
-            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+            .format(
+                doc,
+                Some(rng(0, 0, 1, 0)),
+                FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None }
+            )
             .await
             .is_err()
     );
@@ -1616,6 +2015,64 @@ async fn code_action_query_without_listed_kinds() {
     let q = h.mgr.code_action_query(doc, rng(0, 0, 0, 0), vec![], ide_core::CancellationToken::new()).await.unwrap();
     assert!(q.actions.is_empty());
     assert_eq!(q.advertised_kinds, None, "`codeActionProvider` without `codeActionKinds` may return any kind");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn features_limit_what_a_server_is_used_for() {
+    // A refactoring-only server listed first, announcing everything the main one does.
+    let h = harness_configured("mock", "mk", &[("rope", incremental_caps()), ("main", incremental_caps())], |cfg| {
+        if cfg.name == "rope" {
+            cfg.features = vec!["code-action".into()];
+            cfg.code_action_kinds = vec!["refactor".into()];
+        }
+    });
+    let (doc, path) = h.open("a.mk", "let x = 1;\n");
+    for name in ["rope", "main"] {
+        h.wait_status(name, ServerStatus::Ready).await;
+    }
+    let (rope, main) = (h.launcher.state("rope"), h.launcher.state("main"));
+    for s in [&rope, &main] {
+        s.respond("textDocument/hover", json!({ "contents": "x" }));
+        s.respond("textDocument/formatting", json!([]));
+    }
+
+    h.mgr.hover(doc, Pos::new(0, 4), Default::default()).await.unwrap();
+    assert_eq!(main.requested("textDocument/hover").len(), 1);
+    h.mgr
+        .format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None })
+        .await
+        .unwrap();
+    assert_eq!(main.requested("textDocument/formatting").len(), 1);
+    assert!(rope.requested("textDocument/hover").is_empty() && rope.requested("textDocument/formatting").is_empty());
+
+    rope.respond(
+        "textDocument/codeAction",
+        json!([
+            { "title": "Organize imports", "kind": "source.organizeImports" },
+            { "title": "Extract variable", "kind": "refactor.extract.variable" },
+            { "title": "Run", "command": "mock.run" }
+        ]),
+    );
+    main.respond("textDocument/codeAction", json!([{ "title": "Fix", "kind": "quickfix" }]));
+    let q = h.mgr.code_action_query(doc, rng(0, 8, 0, 9), vec![], ide_core::CancellationToken::new()).await.unwrap();
+    let mut titles: Vec<&str> = q.actions.iter().map(|a| a.title.as_str()).collect();
+    titles.sort();
+    assert_eq!(titles, ["Extract variable", "Fix"], "rope's other kinds and bare commands are dropped");
+
+    let diag =
+        json!([{ "range": {"start":{"line":0,"character":4},"end":{"line":0,"character":5}}, "message": "unused" }]);
+    rope.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": diag }))
+        .unwrap();
+    main.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": diag }))
+        .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { source, .. } if source == "main"))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { source, .. } if source == "rope")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1877,6 +2334,41 @@ async fn will_and_did_rename_files_honour_filters() {
         s.requested("initialize")[0]["capabilities"]["workspace"]["fileOperations"],
         json!({ "dynamicRegistration": true, "willRename": true, "didRename": true })
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn will_rename_files_asks_tsserver_when_the_server_has_no_file_operations() {
+    // vtsls: no `willRename` filters, but tsserver's `getEditsForFileRename` through its command.
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["typescript.tsserverRequest"] });
+    let h = harness_configured("typescript", "ts", &[("vtsls", caps)], |cfg| cfg.tsserver_project = true);
+    let money = h.root.join("money.ts");
+    let index = h.root.join("index.ts");
+    std::fs::write(&money, "export const one = 1;\n").unwrap();
+    std::fs::write(&index, "import { one } from \"./money\";\n").unwrap();
+    let s = h.launcher.state("vtsls");
+    *s.responder.lock() = Some(Arc::new(move |_, method, p| {
+        (method == "workspace/executeCommand" && p["arguments"][0] == "getEditsForFileRename").then(|| {
+            json!({ "success": true, "body": [{ "fileName": p["arguments"][1]["oldFilePath"].as_str().unwrap().replace("money.ts", "index.ts"),
+                "textChanges": [{ "start": { "line": 1, "offset": 22 }, "end": { "line": 1, "offset": 29 }, "newText": "./lib/money" }] }] })
+        })
+    }));
+    let to = h.root.join("lib/money.ts");
+    let result =
+        h.mgr.will_rename_files(&[(money.clone(), to.clone())], ide_core::CancellationToken::new()).await.unwrap();
+    assert_eq!(result.servers, vec!["vtsls".to_owned()]);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    match &result.edit.files[..] {
+        [FileEdit::Edit { path, edits, version: None }] => {
+            assert_eq!(path, &index);
+            assert_eq!(edits[0].range, rng(0, 21, 0, 28));
+            assert_eq!(edits[0].new_text, "./lib/money");
+        }
+        other => panic!("unexpected edit {other:?}"),
+    }
+    let asked = s.requested("workspace/executeCommand");
+    let asked = asked.iter().find(|r| r["arguments"][0] == "getEditsForFileRename").unwrap();
+    assert_eq!(asked["arguments"][1], json!({ "oldFilePath": money, "newFilePath": to }));
 }
 
 // ------------------------------------------------------------------ inspect code
@@ -3035,7 +3527,171 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
             "start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 6}
         }}),
     );
-    let result = h.mgr.goto(doc, Pos::new(0, 2), GotoKind::Definition).await.unwrap();
+    let result = h.mgr.goto(doc, Pos::new(0, 12), GotoKind::Definition).await.unwrap();
     assert_eq!(result.len(), 1);
+    assert_eq!(s.requested("workspace/executeCommand").len(), 1);
     assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
+
+/// The configuration command indexes the whole project, so Go to Definition (and
+/// every Ctrl+hover probe) consults it only inside a key argument; ordinary Java
+/// symbols in a Spring file go straight to JDT.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_definition_consults_configuration_only_inside_key_arguments() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let text = "class A {\n  @Value(\"${app.port}\") int port;\n  String a() { return env.getProperty(Keys.HOST) + x.getValue(); }\n}\n";
+    let (doc, path) = h.open("A.java", text);
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.respond("workspace/executeCommand", json!({"locations": [], "keys": [], "roots": []}));
+    s.respond(
+        "textDocument/definition",
+        json!({"uri": uri_of(&path), "range": {
+            "start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}
+        }}),
+    );
+    // Field type, field name, method name, the lookup's receiver and name, another call.
+    for pos in [Pos::new(1, 24), Pos::new(1, 28), Pos::new(2, 9), Pos::new(2, 22), Pos::new(2, 28), Pos::new(2, 53)] {
+        assert_eq!(h.mgr.goto(doc, pos, GotoKind::Definition).await.unwrap().len(), 1, "{pos:?}");
+    }
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    assert_eq!(s.requested("textDocument/definition").len(), 6);
+    // Inside a placeholder and a constant lookup key: configuration first, JDT as fallback.
+    for pos in [Pos::new(1, 13), Pos::new(2, 41)] {
+        h.mgr.goto(doc, pos, GotoKind::Definition).await.unwrap();
+    }
+    assert_eq!(s.requested("workspace/executeCommand").len(), 2);
+}
+
+/// JDT LS aborts its Maven import on Windows when the project holds a file with a
+/// reserved device name (`nul` left by `2>nul`); the error names those files there
+/// and stays silent elsewhere, where such names are ordinary files.
+#[tokio::test(flavor = "multi_thread")]
+async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    // A file named `nul` cannot be created through the Win32 namespace; on Windows use the verbatim path.
+    let nul = if cfg!(windows) && !h.root.to_string_lossy().starts_with(r"\\?\") {
+        PathBuf::from(format!(r"\\?\{}", h.root.join("nul").display()))
+    } else {
+        h.root.join("nul")
+    };
+    std::fs::write(&nul, "54 bytes").unwrap();
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let failure = "Initialization failed | java.lang.IllegalArgumentException: Path must include project and resource name: /demo | at UnifiedTree.createChildNodeFromFileSystem(UnifiedTree.java:320)";
+    for _ in 0..2 {
+        s.peer().notify("window/logMessage", json!({ "type": 1, "message": failure })).unwrap();
+    }
+    s.peer().notify("window/showMessage", json!({ "type": 2, "message": "after" })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == "after")))
+        .await;
+    // The scan runs off the RPC thread; give it time to report.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let failures: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Notify { title, body: Some(b), .. } if title == "Java project import failed" => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+    if cfg!(windows) {
+        assert_eq!(failures.len(), 1, "reported once: {failures:?}");
+        assert!(failures[0].contains("nul"), "{failures:?}");
+    } else {
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+    let _ = std::fs::remove_file(&nul);
+}
+
+/// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_hierarchy_refactorings_use_the_extension_commands() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] =
+        json!({"commands": ["openidea.java.hierarchy.members", "openidea.java.hierarchy.refactor"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    *s.responder.lock() = Some(Arc::new(|_, method, params| {
+        if method != "workspace/executeCommand" {
+            return None;
+        }
+        let args = params["arguments"].as_array().unwrap();
+        let uri = args[0].clone();
+        Some(match (params["command"].as_str().unwrap(), args[1].as_u64().unwrap()) {
+            (_, 9) => json!({"refused": "Type has no super types."}),
+            ("openidea.java.hierarchy.members", _) => json!({
+                "className": "Dog",
+                "targets": [{"id": "=p/src<{Animal.java[Animal", "name": "Animal", "qualifiedName": "Animal", "interface": false}],
+                "members": [{"id": "=p/src<{Dog.java[Dog~bark", "label": "bark() : String", "kind": "method", "selected": true, "abstractable": true}],
+            }),
+            _ => json!({
+                "problems": [{"severity": "warning", "message": "The visibility of field 'tail' will be changed to package."}],
+                "edit": {"changes": {uri.as_str().unwrap(): [
+                    {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "newText": "class"}
+                ]}},
+            }),
+        })
+    }));
+    let text =
+        format!("class Dog extends Animal {{ String bark() {{ return \"\"; }} }}{}class Lonely {{}}", "\n".repeat(9));
+    let (doc, path) = h.open("Dog.java", &text);
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let info =
+        h.mgr.hierarchy_members(doc, Pos::new(0, 35), HierarchyRefactoring::PullUp, Default::default()).await.unwrap();
+    assert_eq!(info.class_name, "Dog");
+    assert_eq!(info.targets[0].name, "Animal");
+    assert!(info.members[0].selected && info.members[0].abstractable);
+    assert_eq!(info.members[0].kind, HierarchyMemberKind::Method);
+    let sent = s.requested("workspace/executeCommand");
+    assert_eq!(sent[0]["arguments"], json!([uri_of(&path), 0, 35, "pullUp"]));
+
+    let choices = vec![HierarchyChoice { id: info.members[0].id.clone(), make_abstract: true }];
+    let done = h
+        .mgr
+        .hierarchy_refactor(
+            doc,
+            Pos::new(0, 35),
+            HierarchyRefactoring::PushDown,
+            Some(info.targets[0].id.clone()),
+            choices,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.problems[0].severity, ProblemSeverity::Warning);
+    let edit = done.edit.unwrap();
+    assert!(matches!(&edit.files[..], [FileEdit::Edit { path: p, edits, .. }] if p == &path && edits.len() == 1));
+    let sent = s.requested("workspace/executeCommand");
+    assert_eq!(
+        sent[1]["arguments"],
+        json!([uri_of(&path), 0, 35, "pushDown", "=p/src<{Animal.java[Animal",
+            [{"id": "=p/src<{Dog.java[Dog~bark", "abstract": true}]])
+    );
+
+    let refused = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = refused.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert_eq!(e.message, "Type has no super types.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_refactorings_name_the_servers_without_them() {
+    let h = harness(&[("plain", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "class A {}");
+    h.wait_status("plain", ServerStatus::Ready).await;
+    let e = h
+        .mgr
+        .hierarchy_members(doc, Pos::new(0, 6), HierarchyRefactoring::PullUp, Default::default())
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
+    assert_eq!(e.message, "plain doesn't support Pull Members Up");
 }

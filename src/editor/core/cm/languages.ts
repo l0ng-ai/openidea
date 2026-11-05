@@ -5,6 +5,7 @@
  * and indentation fall back to the backend definition when the mode lacks them.
  */
 import { EditorState, Prec, type Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   LRLanguage,
   LanguageDescription,
@@ -21,8 +22,10 @@ import { _languageMode } from "@/editor/api";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
+let infosBackend: DocBackend | null = null;
 
 export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, LanguageInfo>> {
+  infosBackend = backend;
   return (infosPromise ??= backend
     .languages()
     .then((list) => (infos = new Map(list.map((l) => [l.id, l]))))
@@ -35,6 +38,15 @@ export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, Lang
 
 export function languageInfo(id: string): LanguageInfo | undefined {
   return infos?.get(id);
+}
+
+/**
+ * The language list changed (a plugin added or removed languages): fetch it
+ * again. Open documents follow through their `docLanguage` events.
+ */
+export function refreshLanguageInfos(): Promise<unknown> {
+  infosPromise = null;
+  return infosBackend ? loadLanguageInfos(infosBackend) : Promise.resolve();
 }
 
 /** Test hook. */
@@ -102,6 +114,7 @@ const OWN_MODES = [
     extensions: ["erb", "rhtml"],
     load: () => import("./erb").then((m) => m.erb()),
   }),
+  LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
 ];
 
 const BATCH_KEYWORDS = new Set([
@@ -222,14 +235,24 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
 // @lezer/javascript styles `.` as a deref operator, but not `?.`.
 const JS_TAGS: Parameters<typeof styleTags>[0] = { "?.": t.derefOperator };
 
+// @lezer/java tags annotations as plain identifiers.
+export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
+  "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
+};
+
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
   TypeScript: JS_TAGS,
   JSX: JS_TAGS,
   TSX: JS_TAGS,
-  // @lezer/java tags annotations as plain identifiers.
-  Java: { "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation },
+  Java: JAVA_TAGS,
+  PHP: {
+    "; ,": t.separator,
+    "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,
+    "MethodDeclaration/Name FunctionDefinition/Name": t.function(t.definition(t.variableName)),
+    "PropertyDeclaration/VariableDeclarator/VariableName": t.definition(t.propertyName),
+  },
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,
@@ -239,8 +262,14 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
-  if (!extra || !(support.language instanceof LRLanguage)) return support;
-  const patched = new LanguageSupport(support.language.configure({ props: [styleTags(extra)] }), support.support);
+  const language =
+    extra && support.language instanceof LRLanguage
+      ? support.language.configure({ props: [styleTags(extra)] })
+      : support.language;
+  const patched = new LanguageSupport(language, [
+    support.support,
+    EditorView.editorAttributes.of({ "data-language": desc.name }),
+  ]);
   // `loadedSupport` reads `desc.support` synchronously; keep it on the patched instance.
   (desc as { support: LanguageSupport | undefined }).support = patched;
   return patched;

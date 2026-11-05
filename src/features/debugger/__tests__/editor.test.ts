@@ -86,6 +86,8 @@ describe("breakpoint look", () => {
     expect(lookOf(b, { verified: true } as never, false, true)).toBe("verified");
     expect(lookOf(b, { verified: false } as never, false, true)).toBe("unverified");
     expect(lookOf({ ...b, enabled: false }, { verified: true } as never, false, true)).toBe("disabled");
+    expect(lookOf(b, { verified: true } as never, true, true)).toBe("muted");
+    expect(lookOf({ ...b, enabled: false }, undefined, true, false)).toBe("disabled");
   });
 });
 

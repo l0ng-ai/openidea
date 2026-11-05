@@ -2,8 +2,8 @@ use crate::state::AppState;
 use ide_core::settings::Settings;
 use ide_core::{EventSink, IdeError, IdeResult, RequestId, TaskId};
 use ide_language::LanguageInfo;
-use ide_workspace::RecentProject;
 use ide_workspace::settings::SettingsScope;
+use ide_workspace::{RecentProject, RecentProjectGroup};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
@@ -15,6 +15,8 @@ pub struct AppInfo {
     pub version: String,
     pub platform: String,
     pub config_dir: ide_core::IpcPath,
+    /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
+    pub wayland: bool,
 }
 
 pub use ide_host::ops::project::ProjectInfo;
@@ -27,6 +29,10 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
         config_dir: state.config_dir.clone().into(),
+        #[cfg(target_os = "linux")]
+        wayland: crate::linux_window_state::is_wayland(),
+        #[cfg(not(target_os = "linux"))]
+        wayland: false,
     }
 }
 
@@ -43,6 +49,24 @@ pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeRe
     state.recent.remove(&path)
 }
 
+/// The welcome screen's project groups.
+#[tauri::command]
+#[specta::specta]
+pub fn recent_project_groups(state: State<'_, AppState>) -> Vec<RecentProjectGroup> {
+    state.recent.groups()
+}
+
+/// Replaces the project groups; returns them as saved (names trimmed and unique, each
+/// project in one group, only recent projects).
+#[tauri::command]
+#[specta::specta]
+pub fn set_recent_project_groups(
+    state: State<'_, AppState>,
+    groups: Vec<RecentProjectGroup>,
+) -> IdeResult<Vec<RecentProjectGroup>> {
+    state.recent.set_groups(groups)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInfo> {
@@ -51,7 +75,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
     let label = window.label().to_owned();
     // Replacing this window's project (the UI skips reopening the same one).
     if app.state::<AppState>().project(&label).is_ok() {
-        crate::windows::close_settings_window(&app, &label);
+        crate::windows::close_auxiliary_windows(&app, &label);
     }
     let project = tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_project(&label, &path))
         .await
@@ -74,7 +98,7 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
     if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
-        crate::windows::close_settings_window(&app, &label);
+        crate::windows::close_auxiliary_windows(&app, &label);
         crate::window_groups::detach(&app, &label)?;
         crate::window_groups::persist(&app).await?;
     }
@@ -107,7 +131,7 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
 #[tauri::command]
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
-    crate::windows::close_settings_window(window.app_handle(), window.label());
+    crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
     state.close_project(window.label());
     let app = window.app_handle().clone();
@@ -120,14 +144,8 @@ pub fn close_project(window: Window, state: State<'_, AppState>) {
 #[specta::specta]
 pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
     state.note_ipc();
-    let mut out: Vec<LanguageInfo> = state.languages.all().iter().map(LanguageInfo::from).collect();
-    // Plugin-contributed languages; built-in definitions win on id clashes.
-    for lang in state.plugins.languages() {
-        if !out.iter().any(|l| l.id == lang.id) {
-            out.push(LanguageInfo::from(&lang));
-        }
-    }
-    out
+    // Includes plugin languages (built-in definitions win on id clashes).
+    state.languages.all().iter().map(LanguageInfo::from).collect()
 }
 
 /// Effective settings for the window's project, or global settings without one.

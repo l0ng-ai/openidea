@@ -14,6 +14,9 @@ fn bench(c: &mut Criterion) {
     for q in ["ordcon", "src/user", "PaymentService", "zzzz", "a"] {
         g.bench_function(format!("find_files/{q}"), |b| b.iter(|| black_box(index.find_files(q, 50).len())));
     }
+    for q in ["util", "src/ui", "a"] {
+        g.bench_function(format!("find_dirs/{q}"), |b| b.iter(|| black_box(index.find_dirs(q, 50).len())));
+    }
     for q in ["OCo", "invoiceRepo", "renderView", "q"] {
         g.bench_function(format!("find_symbols/{q}"), |b| {
             b.iter(|| black_box(index.find_symbols(q, SymbolFilter::All, 50).len()))

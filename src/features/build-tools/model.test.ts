@@ -5,6 +5,8 @@ import {
   goalCompletions,
   gradleChildren,
   gradleRoots,
+  gradleRunConfigs,
+  gradleProjectKey,
   gradleTaskConfig,
   isRunnable,
   mavenChildren,
@@ -210,11 +212,25 @@ describe("Maven runs", () => {
     });
     expect(root.cwd).toBeNull();
     expect(root.isTest).toBe(false);
-    // Settings › Maven options go before the goals.
-    const configured = { ...core, options: ["-s", "/m2/settings.xml"] };
+    const configured = {
+      ...core,
+      command: "//?/UNC/server/share/maven/bin/mvn.cmd",
+      options: ["-s", "/old/settings.xml", "-Dmaven.repo.local=/old/repository"],
+    };
+    const goal = mavenGoalConfig(configured, ["test"], maven, {
+      offline: false,
+      skipTests: true,
+      profiles: {},
+    });
+    expect(goal.command).toBe("mvn");
+    expect(goal.args).toEqual(["test", "-DskipTests"]);
     expect(
-      mavenGoalConfig(configured, ["test"], maven, { offline: false, skipTests: true, profiles: {} }).args,
-    ).toEqual(["-s", "/m2/settings.xml", "test", "-DskipTests"]);
+      mavenGoalConfig(configured, ["-s", "/own/settings.xml", "test"], maven, {
+        offline: false,
+        skipTests: false,
+        profiles: {},
+      }).args,
+    ).toEqual(["-s", "/own/settings.xml", "test"]);
   });
 
   it("parses typed command lines", () => {
@@ -270,10 +286,10 @@ describe("Gradle tree and runs", () => {
     syncError: null,
   };
   const kids = (n: BuildNode) =>
-    gradleChildren(n, gradle, [runConfig({ id: "g", name: "app [run]", kind: "gradle" })]) ?? [];
+    gradleChildren(n, [gradle], [runConfig({ id: "g", name: "app [run]", kind: "gradle" })]) ?? [];
 
   it("nests subprojects and groups tasks, other last", () => {
-    const roots = gradleRoots(gradle);
+    const roots = gradleRoots([gradle]);
     expect(labels(roots)).toEqual(["gradle-demo"]);
     expect(labels(kids(roots[0]!))).toEqual(["Tasks", "Run Configurations", "app", "core"]);
     const app = kids(roots[0]!)[2]!;
@@ -299,6 +315,65 @@ describe("Gradle tree and runs", () => {
       ":lib:jar",
       "--info",
     ]);
+  });
+
+  it("keeps identical project paths and tasks of independent builds distinct", () => {
+    const builds = ["first", "second"].map((dir) => ({
+      ...gradle,
+      dir,
+      command: `/p/${dir}/gradlew`,
+      env: { JAVA_HOME: `/${dir}/jdk` },
+      projects: gradle.projects.map((p) => ({ ...p, dir: `${dir}/${p.dir}`.replace(/\/$/, "") })),
+    }));
+    const roots = gradleRoots(builds);
+    expect(new Set(roots.map((n) => n.key)).size).toBe(2);
+    const tasks = roots.map((r) => {
+      const app = gradleChildren(r, builds, [])!.find((n) => n.kind === "gradleProject" && n.project.path === ":app")!;
+      const folder = gradleChildren(app, builds, [])![0]!;
+      const group = gradleChildren(folder, builds, [])!.find(
+        (n) => n.kind === "taskGroup" && n.group === "verification",
+      )!;
+      return gradleChildren(group, builds, [])![0]!;
+    });
+    expect(tasks[0]!.key).not.toBe(tasks[1]!.key);
+    const runs = builds.map((b) => gradleTaskConfig(b, b.projects[1]!, ["test"], { offline: true }));
+    expect(runs[0]!.id).not.toBe(runs[1]!.id);
+    expect(runs[1]).toMatchObject({
+      command: "/p/second/gradlew",
+      cwd: "second",
+      env: { JAVA_HOME: "/second/jdk" },
+      args: [":app:test", "--offline"],
+    });
+    expect(gradleProjectKey(builds[1]!, builds[1]!.projects[1]!)).toBe('gradle:["second",":app"]');
+  });
+
+  it("shows run configurations only under their owning linked build", () => {
+    const nested = {
+      ...gradle,
+      dir: "nested",
+      projects: gradle.projects.map((p) => ({ ...p, dir: `nested/${p.dir}` })),
+    };
+    const configs = [
+      runConfig({ id: "root", kind: "gradle", cwd: "app" }),
+      runConfig({ id: "nested", kind: "gradle", cwd: "nested/app" }),
+      runConfig({ id: "absolute", kind: "gradle", cwd: "/p/nested/app" }),
+      runConfig({ id: "other", kind: "maven", cwd: "nested" }),
+    ];
+    expect(gradleRunConfigs(gradle, [gradle, nested], configs, "/p").map((c) => c.id)).toEqual(["root"]);
+    expect(gradleRunConfigs(nested, [gradle, nested], configs, "/p").map((c) => c.id)).toEqual(["nested", "absolute"]);
+  });
+
+  it("places a saved run under its directly linked root instead of a longer sibling composite", () => {
+    const composite = {
+      ...gradle,
+      dir: "very-long-composite",
+      projects: [{ ...gradle.projects[1]!, path: ":b:app", dir: "b/app", build: ":b" }],
+    };
+    const direct = { ...gradle, dir: "b", projects: [{ ...gradle.projects[1]!, dir: "b/app" }] };
+    const saved = runConfig({ id: "saved", kind: "gradle", cwd: "b/app" });
+    const builds = [composite, direct];
+    expect(gradleRunConfigs(composite, builds, [saved], "/p")).toEqual([]);
+    expect(gradleRunConfigs(direct, builds, [saved], "/p")).toEqual([saved]);
   });
 
   it("completes task names and paths", () => {

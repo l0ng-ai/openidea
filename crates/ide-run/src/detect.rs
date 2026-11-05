@@ -33,12 +33,14 @@ pub(crate) fn detect_with_profiles(
     detect_maven(root, excluded_poms, &mut out);
     detect_go(root, &mut out);
     detect_python(root, &mut out);
+    detect_php(root, &mut out);
     detect_ruby(root, &mut out);
     cmake::detect(root, profiles, &mut out);
     dotnet::detect(root, &mut out);
     detect_make(root, &mut out);
     detect_just(root, &mut out);
     detect_godot(root, &mut out);
+    crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
     out.retain(|c| seen.insert(c.id.clone()));
@@ -149,7 +151,7 @@ fn relative(root: &Path, dir: &Path) -> PathBuf {
 
 // ---------------------------------------------------------------- node
 
-fn package_manager(root: &Path, pkg: &Json) -> &'static str {
+pub(crate) fn package_manager(root: &Path, pkg: &Json) -> &'static str {
     if let Some(pm) = pkg.get("packageManager").and_then(Json::as_str) {
         match pm.split('@').next().unwrap_or_default() {
             "pnpm" => return "pnpm",
@@ -170,7 +172,7 @@ fn package_manager(root: &Path, pkg: &Json) -> &'static str {
     }
 }
 
-fn is_test_script(name: &str) -> bool {
+pub(crate) fn is_test_script(name: &str) -> bool {
     matches!(name, "test" | "vitest" | "jest") || name.starts_with("test:")
 }
 
@@ -562,9 +564,8 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
                 Some(m) => format!("application:{m}:{class}"),
                 None => format!("application:{class}"),
             };
-            let mut app = config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class])
-                .in_dir(module_rel.as_ref().map(PathBuf::from))
-                .debug("java-debug");
+            let mut app =
+                config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class]).debug("java-debug");
             app.extras.module = Some(module_rel.clone().unwrap_or_default());
             out.push(app);
         }
@@ -822,6 +823,19 @@ impl PyEnv {
     }
 }
 
+/// The interpreter an imported debugger configuration runs with, as `(command, leading args)`:
+/// a project virtualenv's `python` (what the debugger launches directly), else the detected
+/// environment's (`uv run python`, `python3`). The command is relative to the root.
+pub(crate) fn project_python(root: &Path) -> (String, Vec<String>) {
+    for venv in [".venv", "venv"] {
+        let rel = format!("{venv}/{}/{}", PyEnv::bin_dir(), PyEnv::python_exe());
+        if root.join(&rel).is_file() {
+            return (rel, Vec::new());
+        }
+    }
+    PyEnv::detect(root).python()
+}
+
 fn py_config(
     id: String,
     name: String,
@@ -903,6 +917,63 @@ fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
             )
             .test(),
         );
+    }
+}
+
+// ---------------------------------------------------------------- php
+
+/// Composer script names that are lifecycle events Composer fires itself, not commands to run.
+fn is_composer_event(name: &str) -> bool {
+    name.starts_with("pre-") || name.starts_with("post-") || name == "command"
+}
+
+/// The PHPUnit entry point: the project's `vendor/bin/phpunit`, else a global `phpunit`.
+fn phpunit_command(root: &Path) -> String {
+    let bin = if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" };
+    if root.join(bin).is_file() { bin.to_owned() } else { "phpunit".to_owned() }
+}
+
+/// Composer projects (`composer.json`) and PHPUnit suites (`phpunit.xml`, `phpunit.xml.dist`).
+fn detect_php(root: &Path, out: &mut Vec<RunConfig>) {
+    let composer = read_json(&root.join("composer.json"));
+    let phpunit_xml = first_existing(root, &["phpunit.xml", "phpunit.xml.dist", "phpunit.dist.xml"]);
+    if composer.is_none() && phpunit_xml.is_none() {
+        return;
+    }
+    let requires = |name: &str| {
+        composer.as_ref().is_some_and(|c| {
+            ["require", "require-dev"]
+                .iter()
+                .any(|k| c.get(k).and_then(Json::as_object).is_some_and(|m| m.contains_key(name)))
+        })
+    };
+    if root.join("artisan").is_file() {
+        out.push(config("php:artisan-serve", "artisan serve", "php", "php", &["artisan", "serve"]).debug("php-debug"));
+    }
+    let scripts = composer.as_ref().and_then(|c| c.get("scripts")).and_then(Json::as_object);
+    for name in scripts.into_iter().flat_map(|m| m.keys()) {
+        if is_composer_event(name) {
+            continue;
+        }
+        let c = config(
+            format!("composer:{name}"),
+            format!("composer {name}"),
+            "composer",
+            "composer",
+            &["run-script", name],
+        );
+        out.push(if name == "test" { c.test() } else { c });
+    }
+    if phpunit_xml.is_some() || requires("phpunit/phpunit") || root.join("vendor/bin/phpunit").is_file() {
+        let mut c = config("phpunit", "PHPUnit", "phpunit", &phpunit_command(root), &[]).test().debug("php-debug");
+        // A configuration file with a non-default name must be passed explicitly.
+        let named = phpunit_xml.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
+        if let Some(file) = named.filter(|f| f == "phpunit.dist.xml") {
+            c.args = vec!["--configuration".into(), file];
+        }
+        // First test configuration is the default for context runs; PHPUnit beats a generic `composer test`.
+        let at = out.iter().position(|o| o.is_test).unwrap_or(out.len());
+        out.insert(at, c);
     }
 }
 

@@ -2,16 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   canPaste,
+  checkEditingName,
   copySelection,
   importExternal,
   paste,
   refreshOsClipboard,
   selectionAfterDelete,
   transfer,
+  topLevelPaths,
 } from "./operations";
 import { IpcError } from "@/platform/ipc";
 import { closeFileRefactorDialog, pendingFileRefactorDialog } from "./FileRefactorDialogs";
 import { useRemote } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
 import { provideNotificationService } from "@/workbench/contributions";
 import { MemoryFs, setProjectFsForTests } from "./fs";
 import { initProjectTree, loadDir, setClipboard, setSelection, useProjectTree } from "./store";
@@ -19,6 +22,30 @@ import { setOsClipboardForTests } from "./clipboard";
 
 let fs: MemoryFs;
 const notify = vi.fn();
+
+describe("file names follow the execution host", () => {
+  const platform = usePlatform.getState();
+  afterEach(() => {
+    usePlatform.setState(platform);
+    useRemote.setState({ session: null });
+    setProjectFsForTests(null);
+    initProjectTree(null);
+  });
+
+  it.each(["linux", "windows", "macos"])("validates names on a %s host from a Windows desktop", async (os) => {
+    usePlatform.setState({ os: "windows" });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "host" }, root: "/p", host: "host", os, commands: [] },
+    });
+    fs = new MemoryFs({ "/p/readme.txt": "" }, "/p");
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "p");
+    await loadDir("/p");
+    useProjectTree.setState({ editing: { kind: "new", parent: "/p", nodeKind: "file" } });
+    expect(checkEditingName("con").error !== null).toBe(os === "windows");
+    expect(checkEditingName("README.txt").error !== null).toBe(os !== "linux");
+  });
+});
 
 const node = (path: string, dir = false): ProjectNode => ({
   key: path,
@@ -47,6 +74,50 @@ describe("selectionAfterDelete", () => {
 
   it("returns null when nothing visible was deleted", () => {
     expect(selectionAfterDelete(rows, ["/elsewhere"])).toBeNull();
+  });
+});
+
+describe("Unity asset selections", () => {
+  beforeEach(async () => {
+    fs = new MemoryFs(
+      {
+        "/p/Assets/Player.cs": "code",
+        "/p/Assets/Player.cs.meta": "metadata",
+        "/p/Assets/Player copy.cs.meta": "orphan",
+      },
+      "/p",
+    );
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "Game", null, { editorVersion: "6000.0.1f1", projects: [], solutions: [] });
+    provideNotificationService({ notify });
+    notify.mockClear();
+    await loadDir("/p/Assets");
+  });
+
+  afterEach(() => {
+    setProjectFsForTests(null);
+    initProjectTree(null);
+  });
+
+  it("treats an asset and its selected metadata as one operation", () => {
+    expect(topLevelPaths([node("/p/Assets/Player.cs"), node("/p/Assets/Player.cs.meta")])).toEqual([
+      "/p/Assets/Player.cs",
+    ]);
+    expect(
+      topLevelPaths([
+        node("/p/Assets/Group", true),
+        node("/p/Assets/Group.meta"),
+        node("/p/Assets/Group/Inner.cs.meta"),
+      ]),
+    ).toEqual(["/p/Assets/Group"]);
+    expect(topLevelPaths([node("/p/Assets/Player.cs.meta")])).toEqual(["/p/Assets/Player.cs.meta"]);
+  });
+
+  it("skips orphan metadata names when choosing a duplicate asset name", async () => {
+    const copy = vi.spyOn(fs, "copy");
+    await transfer(["/p/Assets/Player.cs", "/p/Assets/Player.cs.meta"], "/p/Assets", "copy");
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(copy).toHaveBeenCalledWith("/p/Assets/Player.cs", "/p/Assets/Player copy 2.cs");
   });
 });
 

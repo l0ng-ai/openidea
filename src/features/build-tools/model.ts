@@ -67,10 +67,10 @@ export type BuildNode =
   | { kind: "dependency"; key: string; dependency: MavenDependency }
   | { kind: "runConfigs"; key: string; configs: RunConfig[] }
   | { kind: "runConfig"; key: string; config: RunConfig }
-  | { kind: "gradleProject"; key: string; project: GradleProject }
-  | { kind: "tasks"; key: string; project: GradleProject }
-  | { kind: "taskGroup"; key: string; project: GradleProject; group: string; tasks: GradleTask[] }
-  | { kind: "task"; key: string; project: GradleProject; task: GradleTask };
+  | { kind: "gradleProject"; key: string; build: GradleModel; project: GradleProject }
+  | { kind: "tasks"; key: string; build: GradleModel; project: GradleProject }
+  | { kind: "taskGroup"; key: string; build: GradleModel; project: GradleProject; group: string; tasks: GradleTask[] }
+  | { kind: "task"; key: string; build: GradleModel; project: GradleProject; task: GradleTask };
 
 /** Options applied to every Maven run (toolbar toggles, Profiles checkboxes). */
 export interface MavenRunOptions {
@@ -133,9 +133,28 @@ export function mavenRunConfigs(project: MavenProject, configs: readonly RunConf
   return configs.filter((c) => c.kind === "maven" && normalizeDir(c.cwd) === project.dir);
 }
 
-/** Run configurations of a Gradle build: every `gradle` config. */
-export function gradleRunConfigs(configs: readonly RunConfig[]): RunConfig[] {
-  return configs.filter((c) => c.kind === "gradle");
+/** Run configurations under this build, with nested independent builds owning their own runs. */
+export function gradleRunConfigs(
+  model: GradleModel,
+  models: readonly GradleModel[],
+  configs: readonly RunConfig[],
+  root: string,
+): RunConfig[] {
+  const absolute = (path: string) =>
+    /^(?:[A-Za-z]:[\\/]|\/)/.test(path) ? normalizeDir(path) : normalizeDir(`${root}/${path}`);
+  return configs.filter((c) => {
+    if (c.kind !== "gradle") return false;
+    const cwd = absolute(c.cwd ?? "");
+    const contains = (dir: string) => cwd === dir || cwd.startsWith(`${dir}/`);
+    const ownerDepth = (build: GradleModel) => {
+      const dir = absolute(build.dir);
+      return contains(dir) ? dir.split("/").length : 0;
+    };
+    const owners = models
+      .filter((build) => [build.dir, ...build.projects.map((p) => p.dir)].some((dir) => contains(absolute(dir))))
+      .sort((a, b) => ownerDepth(b) - ownerDepth(a));
+    return owners[0]?.dir === model.dir;
+  });
 }
 
 function normalizeDir(cwd: string | null | undefined): string {
@@ -230,9 +249,26 @@ export function gradleTaskGroups(project: GradleProject): Array<{ group: string;
     .map(([group, tasks]) => ({ group, tasks: [...tasks].sort((a, b) => a.name.localeCompare(b.name)) }));
 }
 
-export function gradleRoots(model: GradleModel): BuildNode[] {
-  const root = model.projects.find((p) => p.path === ":") ?? model.projects[0];
-  return root ? [{ kind: "gradleProject", key: `gradle:${root.path}`, project: root }] : [];
+/** Identity of a project within one independently linked build. */
+export const gradleProjectKey = (build: Pick<GradleModel, "dir">, project: Pick<GradleProject, "path">) =>
+  `gradle:${JSON.stringify([build.dir, project.path])}`;
+
+export function gradleProjectForKey(models: readonly GradleModel[], key: string | null | undefined) {
+  for (const build of models) {
+    const project = build.projects.find((p) => gradleProjectKey(build, p) === key);
+    if (project) return { build, project };
+  }
+  if (key != null) return null;
+  const build = models[0];
+  const project = build?.projects[0];
+  return build && project ? { build, project } : null;
+}
+
+export function gradleRoots(models: readonly GradleModel[]): BuildNode[] {
+  return models.flatMap((build) => {
+    const root = build.projects.find((p) => p.path === ":") ?? build.projects[0];
+    return root ? [{ kind: "gradleProject" as const, key: gradleProjectKey(build, root), build, project: root }] : [];
+  });
 }
 
 /** Direct subprojects of `path` (`:a` and `:b` under `:`, `:a:x` under `:a`). */
@@ -248,31 +284,39 @@ export function gradleSubprojects(model: GradleModel, path: string): GradleProje
 
 export function gradleChildren(
   node: BuildNode,
-  model: GradleModel,
+  models: readonly GradleModel[],
   configs: readonly RunConfig[],
+  root = "",
 ): BuildNode[] | undefined {
   switch (node.kind) {
     case "gradleProject": {
       const p = node.project;
-      const out: BuildNode[] = [{ kind: "tasks", key: `${node.key}:tasks`, project: p }];
+      const out: BuildNode[] = [{ kind: "tasks", key: `${node.key}:tasks`, build: node.build, project: p }];
       if (p.path === ":") {
-        const runs = gradleRunConfigs(configs);
+        const runs = gradleRunConfigs(node.build, models, configs, root);
         if (runs.length) out.push({ kind: "runConfigs", key: `${node.key}:runs`, configs: runs });
       }
-      for (const sub of gradleSubprojects(model, p.path))
-        out.push({ kind: "gradleProject", key: `gradle:${sub.path}`, project: sub });
+      for (const sub of gradleSubprojects(node.build, p.path))
+        out.push({ kind: "gradleProject", key: gradleProjectKey(node.build, sub), build: node.build, project: sub });
       return out;
     }
     case "tasks":
       return gradleTaskGroups(node.project).map(({ group, tasks }) => ({
         kind: "taskGroup",
         key: `${node.key}:${group}`,
+        build: node.build,
         project: node.project,
         group,
         tasks,
       }));
     case "taskGroup":
-      return node.tasks.map((task) => ({ kind: "task", key: `${node.key}:${task.name}`, project: node.project, task }));
+      return node.tasks.map((task) => ({
+        kind: "task",
+        key: `${node.key}:${task.name}`,
+        build: node.build,
+        project: node.project,
+        task,
+      }));
     case "runConfigs":
       return node.configs.map((config) => ({ kind: "runConfig", key: `${node.key}:${config.id}`, config }));
     default:
@@ -426,12 +470,12 @@ export function mavenGoalConfig(
   model: Pick<MavenModel, "profiles">,
   options: MavenRunOptions,
 ): RunConfig {
-  const args = [...project.options, ...mavenArgs(goals, model, options)];
+  const args = mavenArgs(goals, model, options);
   return {
     id: `maven:goal:${project.pom}:${goals.join(" ")}`,
     name: mavenConfigName(project, goals),
     kind: "maven",
-    command: project.command,
+    command: /(?:^|[/\\])mvnw(?:\.cmd|\.bat)?$/i.test(project.command) ? project.command : "mvn",
     args,
     cwd: project.dir || null,
     env: { ...project.env },
@@ -456,7 +500,7 @@ export function gradleTaskConfig(
   if (options.offline && !args.includes("--offline")) args.push("--offline");
   const names = tasks.filter((t) => !t.startsWith("-"));
   return {
-    id: `gradle:task:${project.path}:${tasks.join(" ")}`,
+    id: `gradle:task:${JSON.stringify([model.dir, project.path])}:${tasks.join(" ")}`,
     name: `${project.name} [${names.join(",")}]`,
     kind: "gradle",
     command: model.command,

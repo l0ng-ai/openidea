@@ -57,7 +57,12 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
   const onChannel = new Channel<ChannelFrame>();
   onChannel.onmessage = (frame) => channels.get(frame.id)?.onmessage(JSON.parse(frame.data));
   const result = await invokeLocal<string>("remote_invoke", { cmd, args: json, onChannel }, options);
-  return JSON.parse(result);
+  const value = JSON.parse(result);
+  // Released servers predating independent Gradle builds return a single build.
+  if (cmd === "build_model" && value?.gradle && !Array.isArray(value.gradle)) {
+    value.gradle = [value.gradle];
+  }
+  return value;
 }
 
 /**

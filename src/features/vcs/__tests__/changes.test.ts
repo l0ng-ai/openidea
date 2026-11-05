@@ -7,7 +7,9 @@ import {
   ignoreTargets,
   initialCheck,
   hunkIncluded,
+  groupFileNodes,
   planCommit,
+  stagingSide,
   toggledHunk,
   type CheckState,
   type ChangeNode,
@@ -34,6 +36,45 @@ const status = [
 
 const shape = (nodes: ChangeNode[], depth = 0): string[] =>
   nodes.flatMap((n) => [`${"  ".repeat(depth)}${n.label}`, ...shape(n.children ?? [], depth + 1)]);
+
+describe("buildChangeTree by staging state", () => {
+  const tree = buildChangeTree(status, "/r", false, undefined, [], true);
+  const names = (g: string) => (tree.find((n) => n.group === g)?.children ?? []).map((n) => n.label);
+
+  it("splits Changes into Staged and Unstaged, keeping the other groups", () => {
+    expect(tree.map((n) => n.label)).toEqual([
+      "Merge Conflicts",
+      "Staged Changes",
+      "Unstaged Changes",
+      "Unversioned Files",
+    ]);
+  });
+
+  it("lists a partially staged file under both groups", () => {
+    expect(names("staged")).toEqual(["AppTest.kt", "Partial.kt", "README.md"]);
+    expect(names("unstaged")).toEqual(["App.kt", "Partial.kt"]);
+  });
+
+  it("compares a partially staged file on the side of its group only", () => {
+    const partial = status[1]!;
+    expect(stagingSide("staged", partial)).toBe("staged");
+    expect(stagingSide("unstaged", partial)).toBe("unstaged");
+    expect(stagingSide("staged", status[3]!)).toBeNull();
+    expect(stagingSide("changes", partial)).toBeNull();
+  });
+
+  it("chains the diff through the files of the clicked group", () => {
+    const node = tree.find((n) => n.group === "unstaged")!.children![1]!;
+    expect(groupFileNodes(tree, node).map((n) => n.key)).toEqual([
+      "unstaged:/r/src/main/kotlin/App.kt",
+      "unstaged:/r/src/main/kotlin/Partial.kt",
+    ]);
+  });
+
+  it("is off by default", () => {
+    expect(buildChangeTree(status, "/r", false).some((n) => n.group === "staged")).toBe(false);
+  });
+});
 
 describe("buildChangeTree", () => {
   it("groups conflicts, changes and unversioned files (flat)", () => {

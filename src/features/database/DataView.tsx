@@ -4,22 +4,27 @@
  * client-side sorting when the caller does not sort on the server, and the
  * Record / Value / Aggregates side panel following the selection.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import clsx from "clsx";
-import { Button, Checkbox, Icon, IconButton, Input, Popup, Select, Tabs, T, type MenuItem } from "@/ui";
+import { Button, Checkbox, Icon, IconButton, Input, Popup, SearchField, Select, Tabs, T, type MenuItem } from "@/ui";
 import { EXPORT_FORMATS, exportData, type ExportData, type ExportFormat } from "./export";
 import { Grid, type GridColumn, type GridProps, type GridRange } from "./Grid";
 import type { Cell } from "./model";
 import {
   aggregates,
+  cellMatcher,
   distinctValues,
+  findCells,
   formatNumber,
+  rowMatches,
   toggleFilterValue,
   visibleRows,
   type LocalFilter,
   type LocalSort,
+  type SearchOptions,
 } from "./resultView";
 import { openDialog } from "./store";
+import { hasLineBreak } from "./cellPreview";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -82,7 +87,21 @@ export interface DataViewProps extends Pick<
   /** The side panel shown (`null`: hidden). */
   panel: DataPanel | null;
   onPanelChange: (panel: DataPanel | null) => void;
+  /** The search bar is shown (the toolbar's search button, ⌘F in the grid). */
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
   "aria-label"?: string;
+}
+
+const NO_SEARCH: SearchOptions = { caseSensitive: false, wholeWord: false, regex: false };
+
+interface SearchState {
+  query: string;
+  options: SearchOptions;
+  /** Show only the rows with a match (IDEA's Filter rows). */
+  filterRows: boolean;
+  /** Index of the current match. */
+  current: number;
 }
 
 export function DataView(props: DataViewProps) {
@@ -101,15 +120,49 @@ export function DataView(props: DataViewProps) {
 
   const local = !props.onSort;
   // Display row → loaded row; `null` keeps the identity (no filter, no local sort).
-  const order = useMemo(
+  const shaped = useMemo(
     () =>
       filter.size || (local && localSort)
         ? visibleRows(rowCount, value, filter, local ? localSort : null, fixedRows)
         : null,
     [rowCount, value, filter, local, localSort, fixedRows],
   );
+
+  // Search covers the loaded rows only (the page shown).
+  const { searchOpen = false, onSearchOpenChange } = props;
+  const [search, setSearch] = useState<SearchState>({ query: "", options: NO_SEARCH, filterRows: false, current: 0 });
+  const searchInput = useRef<HTMLInputElement>(null);
+  const matcher = useMemo(
+    () => (searchOpen ? cellMatcher(search.query, search.options) : null),
+    [searchOpen, search.query, search.options],
+  );
+  const test = typeof matcher === "function" ? matcher : null;
+  const order = useMemo(() => {
+    if (!test || !search.filterRows) return shaped;
+    const base = shaped ?? Array.from({ length: rowCount }, (_, i) => i);
+    return base.filter((r) => rowMatches(r, columns.length, value, test));
+  }, [shaped, test, search.filterRows, rowCount, columns.length, value]);
   const at = (r: number) => (order ? order[r]! : r);
   const shown = order ? order.length : rowCount;
+  const matches = useMemo(
+    () => (test ? findCells(order ?? Array.from({ length: rowCount }, (_, i) => i), columns.length, value, test) : []),
+    [test, order, rowCount, columns.length, value],
+  );
+  const matchSet = useMemo(() => new Set(matches.map((m) => `${m.row}:${m.col}`)), [matches]);
+  const currentMatch = matches.length ? matches[Math.min(search.current, matches.length - 1)]! : null;
+  const step = (by: number) =>
+    matches.length &&
+    setSearch((s) => ({
+      ...s,
+      current: (Math.min(s.current, matches.length - 1) + by + matches.length) % matches.length,
+    }));
+  const openSearch = () => {
+    onSearchOpenChange?.(true);
+    requestAnimationFrame(() => {
+      searchInput.current?.focus();
+      searchInput.current?.select();
+    });
+  };
 
   const onSort = local
     ? (column: string) => {
@@ -128,32 +181,50 @@ export function DataView(props: DataViewProps) {
 
   return (
     <div className={styles.dataView}>
-      <div className={clsx(styles.fill, styles.gridHost)}>
-        <Grid
-          aria-label={props["aria-label"]}
-          columns={columns}
-          rowCount={shown}
-          value={(r, c) => value(at(r), c)}
-          rowState={props.rowState && ((r) => props.rowState!(at(r)))}
-          isModified={props.isModified && ((r, c) => props.isModified!(at(r), c))}
-          editable={props.editable}
-          onEdit={props.onEdit && ((r, c, v) => props.onEdit!(at(r), c, v))}
-          sort={sort}
-          onSort={onSort}
-          rowMenu={props.rowMenu && ((rows) => props.rowMenu!(rows.map(at)))}
-          rowNumber={(r) => (props.firstRowNumber ?? 1) + at(r)}
-          onSelectionChange={setRange}
-          onFilter={(col, anchor) => setFilterAt({ col, anchor })}
-          filtered={(col) => filter.has(col)}
-        />
-        {filter.size > 0 && (
-          <div className={styles.filterPill} role="status">
-            {tx`${shown} of ${rowCount} rows`}
-            <button type="button" className={styles.filterPillClear} onClick={() => setFilter(new Map())}>
-              <T>Clear local filter</T>
-            </button>
-          </div>
+      <div className={styles.dataMain}>
+        {searchOpen && (
+          <GridSearchBar
+            inputRef={searchInput}
+            search={search}
+            onChange={(p) => setSearch((s) => ({ ...s, ...p, current: 0 }))}
+            count={matches.length}
+            active={currentMatch ? Math.min(search.current, matches.length - 1) : -1}
+            invalid={matcher === "invalid"}
+            onNext={() => step(1)}
+            onPrevious={() => step(-1)}
+            onClose={() => onSearchOpenChange?.(false)}
+          />
         )}
+        <div className={clsx(styles.fill, styles.gridHost)}>
+          <Grid
+            isMatch={test ? (r, c) => matchSet.has(`${r}:${c}`) : undefined}
+            currentMatch={currentMatch}
+            onFind={onSearchOpenChange && openSearch}
+            aria-label={props["aria-label"]}
+            columns={columns}
+            rowCount={shown}
+            value={(r, c) => value(at(r), c)}
+            rowState={props.rowState && ((r) => props.rowState!(at(r)))}
+            isModified={props.isModified && ((r, c) => props.isModified!(at(r), c))}
+            editable={props.editable}
+            onEdit={props.onEdit && ((r, c, v) => props.onEdit!(at(r), c, v))}
+            sort={sort}
+            onSort={onSort}
+            rowMenu={props.rowMenu && ((rows) => props.rowMenu!(rows.map(at)))}
+            rowNumber={(r) => (props.firstRowNumber ?? 1) + at(r)}
+            onSelectionChange={setRange}
+            onFilter={(col, anchor) => setFilterAt({ col, anchor })}
+            filtered={(col) => filter.has(col)}
+          />
+          {filter.size > 0 && (
+            <div className={styles.filterPill} role="status">
+              {tx`${shown} of ${rowCount} rows`}
+              <button type="button" className={styles.filterPillClear} onClick={() => setFilter(new Map())}>
+                <T>Clear local filter</T>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {filterAt && (
         <FilterPopup
@@ -184,6 +255,109 @@ export function DataView(props: DataViewProps) {
           onEdit={(r, c, v) => props.onEdit?.(at(r), c, v)}
         />
       )}
+    </div>
+  );
+}
+
+/** IDEA's search bar above the grid: Match Case / Words / Regex, n/m, previous / next, Filter rows. */
+function GridSearchBar(props: {
+  inputRef: RefObject<HTMLInputElement | null>;
+  search: SearchState;
+  onChange: (patch: Partial<Omit<SearchState, "current">>) => void;
+  count: number;
+  /** Zero-based current match; -1 when there is none. */
+  active: number;
+  invalid: boolean;
+  onNext: () => void;
+  onPrevious: () => void;
+  onClose: () => void;
+}) {
+  const { search, count, invalid, active, inputRef, onChange, onNext, onPrevious, onClose } = props;
+  const none = !!search.query && !invalid && count === 0;
+  const toggle = (key: keyof SearchOptions) =>
+    onChange({ options: { ...search.options, [key]: !search.options[key] } });
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    } else if (e.key === "Enter" || e.key === "F3") {
+      e.preventDefault();
+      if (e.shiftKey) onPrevious();
+      else onNext();
+    } else if (e.altKey && !e.metaKey && !e.ctrlKey) {
+      const key =
+        e.code === "KeyC" ? "caseSensitive" : e.code === "KeyW" ? "wholeWord" : e.code === "KeyX" ? "regex" : null;
+      if (key) {
+        e.preventDefault();
+        toggle(key);
+      }
+    }
+  };
+  return (
+    <div className={styles.gridSearch} role="search" aria-label={tx("Search in results")} onKeyDown={onKeyDown}>
+      <SearchField
+        ref={inputRef}
+        autoFocus
+        className={styles.gridSearchField}
+        value={search.query}
+        onChange={(query) => onChange({ query })}
+        placeholder="Search in results"
+        aria-label="Search in results"
+        invalid={invalid || none}
+        toggles={[
+          {
+            id: "case",
+            icon: "case",
+            title: "Match Case",
+            shortcut: "⌥C",
+            pressed: search.options.caseSensitive,
+            onToggle: () => toggle("caseSensitive"),
+          },
+          {
+            id: "word",
+            icon: "word",
+            title: "Words",
+            shortcut: "⌥W",
+            pressed: search.options.wholeWord,
+            onToggle: () => toggle("wholeWord"),
+          },
+          {
+            id: "regex",
+            icon: "regex",
+            title: "Regex",
+            shortcut: "⌥X",
+            pressed: search.options.regex,
+            onToggle: () => toggle("regex"),
+          },
+        ]}
+      />
+      <span className={clsx(styles.gridSearchCount, (invalid || none) && styles.gridSearchNone)} aria-live="polite">
+        {invalid ? tx("Bad regex") : !search.query ? "" : count === 0 ? tx("0 results") : `${active + 1}/${count}`}
+      </span>
+      <IconButton
+        icon="arrow-up"
+        title="Previous Occurrence"
+        shortcut="⇧↵"
+        size="small"
+        disabled={count === 0}
+        onClick={onPrevious}
+      />
+      <IconButton
+        icon="arrow-down"
+        title="Next Occurrence"
+        shortcut="↵"
+        size="small"
+        disabled={count === 0}
+        onClick={onNext}
+      />
+      <Checkbox
+        checked={search.filterRows}
+        onChange={(filterRows) => onChange({ filterRows })}
+        label={tx("Filter rows")}
+      />
+      <span className={styles.spacer} />
+      <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={onClose} />
     </div>
   );
 }
@@ -346,17 +520,30 @@ function RecordField(props: { column: GridColumn; cell: Cell; editable: boolean;
         {c.name}
         {c.type && c.type !== "NULL" && <span className={styles.treeType}>{c.type}</span>}
       </span>
-      <Input
-        mono
-        value={text}
-        readOnly={!props.editable}
-        placeholder={props.cell === null ? "<null>" : undefined}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit();
-        }}
-      />
+      {hasLineBreak(props.cell ?? "") ? (
+        // A single-line field would drop the line breaks on the first edit.
+        <textarea
+          className={styles.recordText}
+          rows={Math.min(8, (props.cell ?? "").split(/\r\n|\r|\n/).length)}
+          value={text}
+          readOnly={!props.editable}
+          spellCheck={false}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={commit}
+        />
+      ) : (
+        <Input
+          mono
+          value={text}
+          readOnly={!props.editable}
+          placeholder={props.cell === null ? "<null>" : undefined}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+          }}
+        />
+      )}
     </label>
   );
 }

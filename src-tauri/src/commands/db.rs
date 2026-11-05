@@ -1,29 +1,25 @@
+//! IPC commands of `ide_host::ops::db` (the shared implementation).
+
 use crate::state::AppState;
-use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
+use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
-use ide_db::{
-    CompletionModel, DataSource, DbObjectKind, DbRowEdit, HistoryEntry, PlanNode, QueryResult, SchemaObjects, SortKey,
-    TableDetails, TableInfo, TablePage,
-};
-use serde::{Deserialize, Serialize};
-use specta::Type;
+use ide_db::{DataSource, DbObjectKind, DbRowEdit, SortKey};
+#[allow(unused_imports)]
+pub use ide_host::ops::db::*;
 use tauri::{State, Window};
 
 #[tauri::command]
 #[specta::specta]
 pub fn db_sources(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<DataSource>> {
-    state.project(window.label())?.db.sources()
+    ide_host::ops::db::sources(&state.host, window.label())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_save_sources(window: Window, state: State<'_, AppState>, sources: Vec<DataSource>) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.save_sources(sources).await
+    ide_host::ops::db::save_sources(&state.host, window.label(), sources).await
 }
 
-/// Remembers the password of data source `id` for the session, and in the OS
-/// saved passwords when `save` (`None` forgets it).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_set_password(
@@ -33,11 +29,9 @@ pub async fn db_set_password(
     password: Option<String>,
     save: bool,
 ) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.set_password(&id, password, save).await
+    ide_host::ops::db::set_password(&state.host, window.label(), &id, password, save).await
 }
 
-/// Test Connection: connects with unsaved settings and returns the server version.
 #[tauri::command]
 #[specta::specta]
 pub async fn db_test(
@@ -47,11 +41,9 @@ pub async fn db_test(
     password: Option<String>,
     ssh_secret: Option<String>,
 ) -> IdeResult<String> {
-    let db = state.project(window.label())?.db.clone();
-    db.test(&source, password, ssh_secret).await
+    ide_host::ops::db::test(&state.host, window.label(), source, password, ssh_secret).await
 }
 
-/// Remembers the SSH password / key passphrase of a data source (see `db_set_password`).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_set_ssh_secret(
@@ -61,35 +53,27 @@ pub async fn db_set_ssh_secret(
     secret: Option<String>,
     save: bool,
 ) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.set_ssh_secret(&id, secret, save).await
+    ide_host::ops::db::set_ssh_secret(&state.host, window.label(), &id, secret, save).await
 }
 
-/// Trusts the SSH host key that made the last connection of `id` fail with
-/// "Unknown SSH host key" (records it in `~/.ssh/known_hosts`).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_trust_ssh_host(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.trust_ssh_host(&id).await
+    ide_host::ops::db::trust_ssh_host(&state.host, window.label(), &id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn db_connected(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<String>> {
-    Ok(state.project(window.label())?.db.connected())
+    ide_host::ops::db::connected(&state.host, window.label())
 }
 
-/// Connects (fails with `permissionDenied` when the password is missing or wrong).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_connect(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.pool(&id).await.map(|_| ())
+    ide_host::ops::db::connect(&state.host, window.label(), &id).await
 }
 
-/// Switches a data source between auto-commit and manual commit (leaving
-/// manual mode rolls back what was not committed).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_set_manual_commit(
@@ -98,12 +82,9 @@ pub async fn db_set_manual_commit(
     id: String,
     manual: bool,
 ) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.set_manual_commit(&id, manual).await;
-    Ok(())
+    ide_host::ops::db::set_manual_commit(&state.host, window.label(), &id, manual).await
 }
 
-/// Commits or rolls back the open transaction of a manual-commit data source.
 #[tauri::command]
 #[specta::specta]
 pub async fn db_finish_transaction(
@@ -112,31 +93,25 @@ pub async fn db_finish_transaction(
     id: String,
     commit: bool,
 ) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.finish_transaction(&id, commit).await
+    ide_host::ops::db::finish_transaction(&state.host, window.label(), &id, commit).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_disconnect(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.disconnect(&id).await;
-    Ok(())
+    ide_host::ops::db::disconnect(&state.host, window.label(), &id).await
 }
 
-/// Databases of the server of data source `id` (PostgreSQL); connect to one as `<id>:<database>`.
 #[tauri::command]
 #[specta::specta]
 pub async fn db_databases(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<ide_db::Databases> {
-    let db = state.project(window.label())?.db.clone();
-    db.databases(&id).await
+    ide_host::ops::db::databases(&state.host, window.label(), &id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_schemas(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<String>> {
-    let db = state.project(window.label())?.db.clone();
-    db.schemas(&id).await
+    ide_host::ops::db::schemas(&state.host, window.label(), &id).await
 }
 
 #[tauri::command]
@@ -146,9 +121,8 @@ pub async fn db_tables(
     state: State<'_, AppState>,
     id: String,
     schema: String,
-) -> IdeResult<Vec<TableInfo>> {
-    let db = state.project(window.label())?.db.clone();
-    db.tables(&id, &schema).await
+) -> IdeResult<Vec<ide_db::TableInfo>> {
+    ide_host::ops::db::tables(&state.host, window.label(), &id, &schema).await
 }
 
 #[tauri::command]
@@ -159,12 +133,10 @@ pub async fn db_table_details(
     id: String,
     schema: String,
     table: String,
-) -> IdeResult<TableDetails> {
-    let db = state.project(window.label())?.db.clone();
-    db.table_details(&id, &schema, &table).await
+) -> IdeResult<ide_db::TableDetails> {
+    ide_host::ops::db::table_details(&state.host, window.label(), &id, &schema, &table).await
 }
 
-/// The DDL of table or view `table` (Go to DDL, Generate DDL).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_ddl(
@@ -174,11 +146,9 @@ pub async fn db_ddl(
     schema: String,
     table: String,
 ) -> IdeResult<String> {
-    let db = state.project(window.label())?.db.clone();
-    db.ddl(&id, &schema, &table).await
+    ide_host::ops::db::ddl(&state.host, window.label(), &id, &schema, &table).await
 }
 
-/// The routines and sequences of `schema` (the tree's `routines` / `sequences`).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_schema_objects(
@@ -186,12 +156,10 @@ pub async fn db_schema_objects(
     state: State<'_, AppState>,
     id: String,
     schema: String,
-) -> IdeResult<SchemaObjects> {
-    let db = state.project(window.label())?.db.clone();
-    db.schema_objects(&id, &schema).await
+) -> IdeResult<ide_db::SchemaObjects> {
+    ide_host::ops::db::schema_objects(&state.host, window.label(), &id, &schema).await
 }
 
-/// The definition of a routine, trigger or sequence (Go to DDL, Quick Documentation).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_object_ddl(
@@ -202,11 +170,9 @@ pub async fn db_object_ddl(
     kind: DbObjectKind,
     name: String,
 ) -> IdeResult<String> {
-    let db = state.project(window.label())?.db.clone();
-    db.object_ddl(&id, &schema, kind, &name).await
+    ide_host::ops::db::object_ddl(&state.host, window.label(), &id, &schema, kind, &name).await
 }
 
-/// Explain Plan: the execution plan of `statement` on `id`, without running it.
 #[tauri::command]
 #[specta::specta]
 pub async fn db_explain(
@@ -215,23 +181,20 @@ pub async fn db_explain(
     request: RequestId,
     id: String,
     statement: String,
-) -> IdeResult<Vec<PlanNode>> {
-    let db = state.project(window.label())?.db.clone();
-    let cancel = state.begin_request(request);
-    let result = db.explain(&id, &statement, &cancel).await;
-    state.end_request(request);
-    result
+) -> IdeResult<Vec<ide_db::PlanNode>> {
+    ide_host::ops::db::explain(&state.host, window.label(), request, &id, &statement).await
 }
 
-/// The statements data source `id` ran, newest first (Browse Query History).
 #[tauri::command]
 #[specta::specta]
-pub async fn db_history(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<HistoryEntry>> {
-    let db = state.project(window.label())?.db.clone();
-    db.history(&id).await
+pub async fn db_history(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<Vec<ide_db::HistoryEntry>> {
+    ide_host::ops::db::history(&state.host, window.label(), &id).await
 }
 
-/// Removes statements from the query history of `id` (`None`: all of them).
 #[tauri::command]
 #[specta::specta]
 pub async fn db_remove_history(
@@ -240,11 +203,12 @@ pub async fn db_remove_history(
     id: String,
     texts: Option<Vec<String>>,
 ) -> IdeResult<()> {
-    let db = state.project(window.label())?.db.clone();
-    db.remove_history(&id, texts).await
+    ide_host::ops::db::remove_history(&state.host, window.label(), &id, texts).await
 }
 
-/// Writes exported result data (CSV, JSON, SQL…) to `path`.
+/// Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
+/// desktop shell: the path comes from a local save dialog, and a remote
+/// window exports through its local fs commands instead.
 #[tauri::command]
 #[specta::specta]
 pub async fn db_export_file(path: std::path::PathBuf, text: String) -> IdeResult<()> {
@@ -255,24 +219,16 @@ pub async fn db_export_file(path: std::path::PathBuf, text: String) -> IdeResult
     .await
 }
 
-/// Tables, columns and foreign keys for SQL completion.
 #[tauri::command]
 #[specta::specta]
-pub async fn db_completion(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<CompletionModel> {
-    let db = state.project(window.label())?.db.clone();
-    db.completion(&id).await
+pub async fn db_completion(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<ide_db::CompletionModel> {
+    ide_host::ops::db::completion(&state.host, window.label(), &id).await
 }
 
-#[derive(Clone, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-#[serde(rename = "DbStatementOutcome")]
-pub struct StatementOutcome {
-    pub statement: SqlStatement,
-    pub result: Option<QueryResult>,
-    pub error: Option<String>,
-}
-
-/// Statements a console runs: the selection's (`from < to`) or the one at the caret (`from`).
 #[tauri::command]
 #[specta::specta]
 pub fn db_statements(
@@ -283,16 +239,9 @@ pub fn db_statements(
     from: u32,
     to: u32,
 ) -> IdeResult<Vec<SqlStatement>> {
-    let driver = state.project(window.label())?.db.source(&id)?.driver;
-    Ok(if from < to {
-        ide_db::split::statements_in(&text, from, to, driver)
-    } else {
-        ide_db::split::statement_at(&text, from, driver).into_iter().collect()
-    })
+    ide_host::ops::db::statements(&state.host, window.label(), &id, &text, from, to)
 }
 
-/// Runs `statements` in order on data source `id`, stopping at the first
-/// error. Cancel with `cancel_request(request)`.
 #[tauri::command]
 #[specta::specta]
 pub async fn db_execute(
@@ -301,31 +250,10 @@ pub async fn db_execute(
     request: RequestId,
     id: String,
     statements: Vec<SqlStatement>,
+    skip: u32,
     max_rows: u32,
 ) -> IdeResult<Vec<StatementOutcome>> {
-    let db = state.project(window.label())?.db.clone();
-    let cancel = state.begin_request(request);
-    let mut out = Vec::new();
-    for statement in statements {
-        match db.execute(&id, &statement.text, max_rows.max(1) as usize, &cancel).await {
-            Ok(result) => out.push(StatementOutcome { statement, result: Some(result), error: None }),
-            Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled => {
-                state.end_request(request);
-                return Err(e);
-            }
-            Err(e) if e.kind == ide_core::error::ErrorKind::PermissionDenied && out.is_empty() => {
-                // Not connected for lack of a password: the UI asks and retries.
-                state.end_request(request);
-                return Err(e);
-            }
-            Err(e) => {
-                out.push(StatementOutcome { statement, result: None, error: Some(e.message) });
-                break;
-            }
-        }
-    }
-    state.end_request(request);
-    Ok(out)
+    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, skip, max_rows).await
 }
 
 #[tauri::command]
@@ -342,17 +270,22 @@ pub async fn db_table_page(
     sort: Vec<SortKey>,
     offset: u32,
     limit: u32,
-) -> IdeResult<TablePage> {
-    let db = state.project(window.label())?.db.clone();
-    let cancel = state.begin_request(request);
-    let result = db
-        .table_page(&id, &schema, &table, filter.as_deref(), &sort, offset.into(), limit.max(1).into(), &cancel)
-        .await;
-    state.end_request(request);
-    result
+) -> IdeResult<ide_db::TablePage> {
+    ide_host::ops::db::table_page(
+        &state.host,
+        window.label(),
+        request,
+        &id,
+        &schema,
+        &table,
+        filter,
+        sort,
+        offset,
+        limit,
+    )
+    .await
 }
 
-/// Submits the table editor's changes in one transaction; returns the rows changed.
 #[tauri::command]
 #[specta::specta]
 pub async fn db_apply_edits(
@@ -363,32 +296,11 @@ pub async fn db_apply_edits(
     table: String,
     edits: Vec<DbRowEdit>,
 ) -> IdeResult<f64> {
-    let db = state.project(window.label())?.db.clone();
-    Ok(db.apply_edits(&id, &schema, &table, &edits).await? as f64)
+    ide_host::ops::db::apply_edits(&state.host, window.label(), &id, &schema, &table, edits).await
 }
 
-/// The query console file of data source `id` (`<appData>/consoles/db/<id>/console.sql`), created on first use.
 #[tauri::command]
 #[specta::specta]
 pub fn db_console_path(state: State<'_, AppState>, id: String) -> IdeResult<IpcPath> {
-    let (source, database) = ide_db::split_target(&id);
-    if source.is_empty() || !source.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(IdeError::invalid("invalid data source id"));
-    }
-    // One console per database: `<id>` for the default one, `<id>.<database>` for the others.
-    let name = match database {
-        Some(db) => {
-            let safe: String =
-                db.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-            format!("{source}.{safe}")
-        }
-        None => source.to_owned(),
-    };
-    let dir = state.data_dir.join("consoles").join("db").join(&name);
-    std::fs::create_dir_all(&dir)?;
-    let file = dir.join("console.sql");
-    if !file.exists() {
-        std::fs::write(&file, "")?;
-    }
-    Ok(file.into())
+    ide_host::ops::db::console_path(&state.host, &id)
 }

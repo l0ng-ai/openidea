@@ -22,6 +22,47 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({ theme: "system" }).syncWithOs).toBe(true);
   });
 
+  it("keeps valid file icon theme options and drops or clamps the rest", () => {
+    expect(validateAppearanceExtras({}).fileIconThemeOptions).toEqual({});
+    const options = validateAppearanceExtras({
+      fileIconThemeOptions: {
+        "p/t": {
+          groups: { tests: true, bad: "yes" },
+          choices: { arrows: "plus", bad: 1 },
+          hideFiles: true,
+          hollowFolders: "x",
+          hideUiIcons: true,
+          hidePsiIcons: 1,
+          monochrome: "#546E7A",
+          saturation: 50,
+          opacity: 1,
+          iconSize: 20.4,
+          rowHeight: 100,
+          accent: "red",
+        },
+        "not a key": { hideFiles: true },
+        "p/u": 5,
+      },
+    }).fileIconThemeOptions;
+    expect(options).toEqual({
+      "p/t": {
+        groups: { tests: true },
+        choices: { arrows: "plus" },
+        hideFiles: true,
+        hideFolders: false,
+        hollowFolders: false,
+        hideUiIcons: true,
+        hidePsiIcons: false,
+        monochrome: "#546E7A",
+        saturation: 20,
+        opacity: 10,
+        iconSize: 20,
+        rowHeight: 48,
+        accent: null,
+      },
+    });
+  });
+
   it("defaults Show tool window badges to on and honours the stored value", () => {
     expect(validateAppearanceExtras({}).showToolWindowBadges).toBe(true);
     expect(validateAppearanceExtras({ showToolWindowBadges: false }).showToolWindowBadges).toBe(false);

@@ -26,6 +26,7 @@ import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import {
   addWatch,
+  closeSessionTab,
   evaluate,
   selectFrame,
   selectSession,
@@ -37,6 +38,7 @@ import {
 } from "../state";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
+import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./DebugToolWindow.module.css";
@@ -119,6 +121,7 @@ export function DebugTabs() {
     text: s.name,
     icon: "debug",
     italic: s.status === "terminated",
+    closable: true,
     tooltip: statusText(s),
   }));
   return (
@@ -129,6 +132,7 @@ export function DebugTabs() {
       items={items}
       activeId={active != null ? String(active) : null}
       onSelect={(id) => selectSession(+id)}
+      onClose={(id) => void closeSessionTab(+id)}
       panelIdPrefix="openidea-debug"
     />
   );
@@ -378,6 +382,8 @@ function VariablesPane({ session }: { session: DebugSession }) {
   const watches = useDebug((s) => s.watches);
   const stopSeq = useDebug((s) => s.stopSeq);
   const [expression, setExpression] = useState("");
+  const evalField = useRef<HTMLInputElement>(null);
+  const completion = useExpressionCompletion(evalField, expression, setExpression, session);
   const [lastEval, setLastEval] = useState<EvalRow | null>(null);
   const [scopeData, setScopeData] = useState<{ frame: number | null; scopes: Scope[]; locals: Variable[] }>({
     frame: null,
@@ -502,10 +508,16 @@ function VariablesPane({ session }: { session: DebugSession }) {
     <div className={styles.variables}>
       <div className={styles.evalField}>
         <input
+          ref={evalField}
           className={styles.evalInput}
           value={expression}
-          onChange={(e) => setExpression(e.target.value)}
+          onChange={(e) => {
+            setExpression(e.target.value);
+            completion.onInput();
+          }}
+          onBlur={completion.close}
           onKeyDown={(e) => {
+            if (completion.onKeyDown(e)) return;
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
               e.preventDefault();
               addWatch(expression);
@@ -521,6 +533,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
           autoComplete="off"
           disabled={frame == null}
         />
+        {completion.popup}
         <IconButton
           icon="plus"
           title="Add to Watches"

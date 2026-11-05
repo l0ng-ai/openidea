@@ -72,6 +72,24 @@ impl SyntaxHighlightKind {
         Self::Operator,
         Self::Punctuation,
     ];
+
+    /// The kebab-case name plugins use (`doc-comment`, `function-call`, …).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| {
+            let camel = serde_json::to_value(k).ok();
+            let camel = camel.as_ref().and_then(|v| v.as_str()).unwrap_or_default();
+            let mut kebab = String::with_capacity(camel.len() + 2);
+            for c in camel.chars() {
+                if c.is_ascii_uppercase() {
+                    kebab.push('-');
+                    kebab.push(c.to_ascii_lowercase());
+                } else {
+                    kebab.push(c);
+                }
+            }
+            kebab == name
+        })
+    }
 }
 
 /// Highlighted ranges of a whole document, packed like LSP semantic tokens.

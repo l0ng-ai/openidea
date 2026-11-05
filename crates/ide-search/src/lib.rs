@@ -1,7 +1,8 @@
 //! Find / Replace in Files (⌘⇧F / ⌘⇧R).
 //!
-//! Built on ripgrep's engine crates: a parallel `ignore` walk (honouring
-//! `.gitignore` / `.ignore`, skipping hidden files and `.git`) feeding
+//! Built on ripgrep's engine crates: a parallel `ignore` walk (skipping the
+//! folders `.gitignore` / `.ignore` exclude and `.git`, but like IDEA keeping
+//! ignored files elsewhere and hidden files) feeding
 //! `grep-searcher` with a `grep-regex` matcher. Binary files are skipped,
 //! unsaved editor buffers (the overlay) take precedence over disk content,
 //! and all columns are UTF-16.

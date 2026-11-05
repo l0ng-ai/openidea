@@ -34,6 +34,7 @@ import {
   selectLineStart,
 } from "@codemirror/commands";
 import { markdownImages } from "./markdownImages";
+import { selectionMarks } from "./selectionMarks";
 import type { EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
@@ -432,6 +433,7 @@ export const GUTTER_ICON_GROUPS = [
   { id: "bookmarks", gutterClass: "cm-openidea-bookmarks" },
   { id: "inheritors", gutterClass: "cm-openidea-gutter-lineMarkers" },
   { id: "supers", gutterClass: "cm-openidea-gutter-lineMarkers" },
+  { id: "colors", gutterClass: "cm-openidea-gutter-colors" },
 ] as const;
 
 export interface PrefsOptions {
@@ -503,6 +505,7 @@ export function caretExtension(prefs: EditorExtras): Extension {
     // Before drawSelection: its measure request must run before the cursor layer redraws.
     a.smoothCaretMovement ? caretGlide : [],
     drawSelection({ cursorBlinkRate: a.caretBlinking ? Math.max(100, Math.min(5000, a.caretBlinkPeriod)) * 2 : 0 }),
+    selectionMarks,
     classes.length ? EditorView.editorAttributes.of({ class: classes.join(" ") }) : [],
   ];
 }
