@@ -2431,6 +2431,8 @@ export type CoverageReportSpec =
 { kind: "lcov"; runner: string; path: IpcPath; base: IpcPath } | 
 /**  `go test -coverprofile`; import paths under `module` map to `module_dir`. */
 { kind: "goProfile"; path: IpcPath; module: string; moduleDir: IpcPath } | 
+/**  SimpleCov's `.resultset.json`; relative paths resolve against `base`. */
+{ kind: "simpleCov"; path: IpcPath; base: IpcPath } | 
 /**  Every JaCoCo XML report (Maven `target/site/jacoco`, Gradle `build/reports/jacoco`) under `dir`. */
 { kind: "jacoco"; dir: IpcPath } | 
 /**  The tool's raw data is exported to lcov by `argv` first (coverage.py: `… -m coverage lcov -o <lcov>`). */
@@ -5531,6 +5533,12 @@ export type PhpSettings = {
 	 *  `composer.json` (`wordpress`).
 	 */
 	stubs?: string[],
+	/**
+	 *  PHPStan configuration file for checking saved files; empty = the `phpstan.neon`,
+	 *  `phpstan.neon.dist` or `phpstan.dist.neon` PHPStan finds in the project root. Absolute,
+	 *  `~/`, or relative to the project.
+	 */
+	phpstanConfig?: string,
 };
 
 /**  The focused editor when a plugin command is invoked. */

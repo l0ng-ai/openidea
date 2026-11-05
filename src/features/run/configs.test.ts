@@ -15,7 +15,7 @@ import {
 } from "./configs";
 import { contextConfig, fileRole } from "./context";
 import { envFromRows } from "./EnvDialog";
-import { defaultSelection } from "./store";
+import { configRemoved, defaultSelection, rerunConfig, useRun, type RunSession } from "./store";
 
 const cfg = (over: Partial<RunConfig> & { id: string }): RunConfig => ({
   name: over.id,
@@ -342,5 +342,40 @@ describe("context configuration", () => {
     const plain = [cfg({ id: "python:module:app", kind: "python", command: "python3", args: ["-m", "app"] })];
     expect(contextConfig("tools/gen.py", plain)).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
     expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+  });
+});
+
+describe("rerunning a session after its configuration changed (#1497)", () => {
+  const session = (config: RunConfig, baseConfig?: RunConfig): RunSession => ({
+    id: "s",
+    config,
+    baseConfig,
+    runId: null,
+    status: "finished",
+    exitCode: 0,
+    startedAt: 1,
+    endedAt: 2,
+    stdinClosed: true,
+  });
+
+  it("launches the configuration as saved now, or the one it ran with once deleted", () => {
+    const ran = cfg({ id: "app", command: "python", args: ["init.py"] });
+    const edited = { ...ran, args: ["main.py"] };
+    useRun.setState({ configs: [edited] });
+    expect(rerunConfig(session(ran))).toBe(edited);
+    expect(configRemoved("app")).toBe(false);
+    useRun.setState({ configs: [] });
+    expect(rerunConfig(session(ran))).toBe(ran);
+    expect(configRemoved("app")).toBe(true);
+    // A run that was never a listed configuration isn't "removed".
+    expect(configRemoved("build:task")).toBe(false);
+  });
+
+  it("keeps the tests of a derived run (Rerun Failed Tests)", () => {
+    const base = cfg({ id: "tests", isTest: true });
+    const derived = { ...base, args: ["-k", "failing"] };
+    useRun.setState({ configs: [base] });
+    expect(rerunConfig(session(derived, base))).toBe(derived);
+    useRun.setState({ configs: [] });
   });
 });

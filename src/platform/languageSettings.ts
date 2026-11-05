@@ -81,6 +81,7 @@ export interface LanguagesValid {
     languageLevel: (typeof PHP_LANGUAGE_LEVELS)[number];
     includePaths: string[];
     stubs: string[];
+    phpstanConfig: string;
   };
   rust: {
     toolchain: string;
@@ -152,7 +153,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   ruby: { interpreter: "" },
   node: { interpreter: "", packageManager: "" },
-  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [] },
+  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
@@ -271,6 +272,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       languageLevel: oneOf(php.languageLevel, PHP_LANGUAGE_LEVELS, d.php.languageLevel),
       includePaths: strings(php.includePaths),
       stubs: strings(php.stubs),
+      phpstanConfig: text(php.phpstanConfig, d.php.phpstanConfig),
     },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),

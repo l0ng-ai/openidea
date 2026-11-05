@@ -49,6 +49,11 @@ pub enum Method {
     PipTarget { package: &'static str, module: &'static str },
     /// `gem install` into `<tools>/<name>/gems`, launched through `GEM_HOME` wrappers in `bin/`.
     Gem { gem: &'static str },
+    /// `gem install <gem>` into the active Ruby (the project's, installed from a project window),
+    /// launched through that Ruby's own executables. For tools that re-launch themselves under
+    /// Bundler (ruby-lsp), which breaks in a gem home under a path with spaces
+    /// (`~/Library/Application Support`: Bundler `exec`s a lone path string, and Ruby splits it).
+    GemActive { gem: &'static str },
     /// `dotnet tool install --tool-path <tools>/<name>/tool <package>`, launched
     /// through `DOTNET_ROOT` wrappers in `bin/`.
     DotnetTool { package: &'static str },
@@ -64,6 +69,7 @@ impl Method {
             Method::Npm { .. } => "npm",
             Method::Go { .. } => "go install",
             Method::Gem { .. } => "gem",
+            Method::GemActive { .. } => "gem (project Ruby)",
             Method::DotnetTool { .. } => "dotnet tool",
             Method::PipVenv { .. } => "pip (virtualenv)",
             Method::PipUser { .. } => "pip --user",
@@ -940,7 +946,7 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Ruby LSP (Shopify)",
         kind: LanguageServer,
         commands: &["ruby-lsp"],
-        method: Method::Gem { gem: "ruby-lsp" },
+        method: Method::GemActive { gem: "ruby-lsp" },
         fallback: None,
         version: V,
         homepage: "https://shopify.github.io/ruby-lsp",

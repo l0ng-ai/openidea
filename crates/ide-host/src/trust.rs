@@ -109,6 +109,9 @@ impl crate::Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.schedule();
             }
+            if let Some(phpstan) = &project.phpstan {
+                phpstan.interrupt();
+            }
             if !trusted {
                 project.lsp.set_execution_allowed(false);
             }
