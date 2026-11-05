@@ -1127,6 +1127,27 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn provider_and_resolved_action_paths_match_ipc_events() {
+        for (path, expected) in [
+            (r"C:\project\Example.java", "C:/project/Example.java"),
+            (r"\\?\C:\project\Example.java", "C:/project/Example.java"),
+            (r"\\server\share\Example.java", "//server/share/Example.java"),
+        ] {
+            let doc = ProviderDocument { path: path.into(), ..Default::default() };
+            assert_eq!(doc_to_wit(&doc).path, expected);
+            let action = CodeAction {
+                title: "Fix".into(),
+                kind: None,
+                preferred: false,
+                edits: vec![(path.into(), Vec::new())],
+                data: None,
+            };
+            assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
+        }
+    }
+
     fn ext(kind: &str) -> wit_types::Extension {
         wit_types::Extension { kind: kind.into(), data: "{}".into() }
     }

@@ -808,6 +808,19 @@ mod tests {
     }
 
     #[test]
+    fn repository_and_search_paths_match_ipc_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).arg(tmp.path()).status().unwrap().success());
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let file = root.join("src/Example.java");
+        std::fs::write(&file, "class Example {}\n").unwrap();
+        let api = api(&root, Arc::default());
+        assert_eq!(api.find_files(&root, "**/*.java", 8).unwrap(), [to_ipc(&file)]);
+        assert_eq!(api.vcs_status(&root).unwrap().unwrap().root, to_ipc(&root));
+    }
+
+    #[test]
     fn programs_run_only_as_approved() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("lint");
