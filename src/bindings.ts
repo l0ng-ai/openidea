@@ -5296,7 +5296,7 @@ export type NotebookEdit = { type: "setSource"; cell: string; source: string } |
 
 export type NotebookOutputEvent = {
 	id: string,
-	path: string,
+	path: IpcPath,
 	cell: string,
 	msgId: string,
 	kind: string,
@@ -5308,7 +5308,7 @@ export type NotebookOutputEvent = {
 
 export type NotebookSnapshot = {
 	id: string,
-	path: string,
+	path: IpcPath,
 	version: number,
 	dirty: boolean,
 	canUndo: boolean,
