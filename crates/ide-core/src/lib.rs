@@ -4,6 +4,7 @@
 //! feature crates depend on `ide-core` and never on each other's internals.
 //! All IPC-facing types derive `specta::Type`, which generates `src/bindings.ts`.
 
+pub mod generation;
 pub mod editor_settings;
 pub mod error;
 pub mod event;
