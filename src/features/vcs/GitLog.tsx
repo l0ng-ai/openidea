@@ -1956,10 +1956,9 @@ function x(lane: number) {
   return LANE / 2 + lane * LANE;
 }
 
+/** Straight, also across lanes (IDEA's diagonal edges). */
 function seg(fromX: number, fromY: number, toX: number, toY: number) {
-  if (fromX === toX) return `M${fromX} ${fromY}L${toX} ${toY}`;
-  const mid = (fromY + toY) / 2;
-  return `M${fromX} ${fromY}C${fromX} ${mid} ${toX} ${mid} ${toX} ${toY}`;
+  return `M${fromX} ${fromY}L${toX} ${toY}`;
 }
 
 export function GraphCell({
@@ -2008,9 +2007,11 @@ export function GraphCell({
       if (canNavigate) onNavigate?.(s.targetRow!, target);
       else if (canFragment) onFragment?.(target!, !!s.dashed, s.source);
     };
+    const fromX = x(s.fromX ?? s.from);
+    const toX = x(s.toX ?? s.to);
     const path =
-      seg(x(s.from), up ? 0 : cy, x(s.to), up ? cy : ROW) +
-      (s.arrow ? arrowHead(x(up ? s.from : s.to), up ? 0 : ROW, up ? -1 : 1) : "");
+      seg(fromX, up ? 0 : cy, toX, up ? cy : ROW) +
+      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : ROW, up ? -1 : 1) : "");
     return (
       <g
         key={`${up ? "u" : "d"}${i}`}
@@ -2033,9 +2034,9 @@ export function GraphCell({
       >
         <title>{label}</title>
         <rect
-          x={Math.min(x(s.from), x(s.to)) - 5}
+          x={Math.min(fromX, toX) - 5}
           y={up ? 0 : cy}
-          width={Math.max(10, Math.abs(x(s.from) - x(s.to)) + 10)}
+          width={Math.max(10, Math.abs(fromX - toX) + 10)}
           height={cy}
           fill="transparent"
           pointerEvents="none"
