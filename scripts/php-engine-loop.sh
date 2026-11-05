@@ -17,6 +17,9 @@ LOGS=logs/php-engine
 LIVE=$LOGS/live.log
 mkdir -p "$LOGS"
 export FORCE_COLOR=1
+# Each rustc/link.exe can take 2+ GB; unlimited parallel jobs ran the machine out of memory.
+# Sessions inherit this, so their own cargo runs are limited too.
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6}
 
 PROMPT='Follow docs/php-engine/RULES.md. Open docs/php-engine/ROADMAP.md, find the FIRST phase marked "- [ ]", and complete it end-to-end: read the design section and the code the phase names first, implement, write tests, run fmt + clippy + the required tests, fix everything until green, tick the checkbox, append to docs/php-engine/PROGRESS.md, and make ONE commit. Run every command in the foreground (never in the background, never wait for notifications): this session ends the moment you stop replying. Then stop. Do not start the next phase.'
 
@@ -44,6 +47,16 @@ if [[ -f "$LOCK" ]] && kill -0 "$(cat "$LOCK")" 2>/dev/null; then
 fi
 echo $$ >"$LOCK"
 trap 'rm -f "$LOCK"' EXIT
+# On a stop signal take the running session (claude, cargo, linkers) down with the loop,
+# instead of leaving it to finish the phase and start the next check on its own.
+on_signal() {
+    trap '' INT TERM HUP
+    say "loop stopped by a signal"
+    kill -- -$$ 2>/dev/null
+    kill 0 2>/dev/null
+    exit 130
+}
+trap on_signal INT TERM HUP
 
 say "loop started (pid $$): $(progress)"
 stuck=0
