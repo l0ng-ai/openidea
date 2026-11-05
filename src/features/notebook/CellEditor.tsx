@@ -12,6 +12,7 @@ import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
+import { selectionMarks } from "@/editor/core/cm/selectionMarks";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { tx } from "@/platform/i18n";
 import type { NotebookSession } from "./session";
@@ -43,6 +44,7 @@ export function CellEditor({
       syntaxHighlighting(openideaHighlightStyle),
       lineNumbers(),
       drawSelection(),
+      selectionMarks,
       highlightActiveLine(),
       highlightSpecialChars(),
       bracketMatching(),

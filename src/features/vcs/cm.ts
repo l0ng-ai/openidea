@@ -270,9 +270,10 @@ export const viewerTheme = EditorView.theme(
     "&.cm-openidea-ligatures .cm-scroller": { fontVariantLigatures: "normal" },
     ".cm-content": { caretColor: "var(--caret, var(--fg-strong))", WebkitUserSelect: "text", userSelect: "text" },
     ...caretStyles,
-    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-      backgroundColor: "var(--bg-selected-strong)",
-    },
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection, .cm-openidea-selected, &.cm-focused .cm-openidea-selected":
+      {
+        backgroundColor: "var(--bg-selected-strong)",
+      },
     ".cm-activeLine": { backgroundColor: "var(--bg-current-line)" },
     ".cm-gutters": {
       backgroundColor: "var(--bg-app)",
