@@ -1805,6 +1805,37 @@ async fn implementations_per_position() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_implementations_come_from_sources_first() {
+    let caps = json!({
+        "textDocumentSync": 1,
+        "implementationProvider": true,
+        "executeCommandProvider": { "commands": ["openidea.java.implementations"] },
+    });
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, path) = h.open("Repo.java", "interface Repo {}\nclass A implements Repo {}\nclass B {}\nclass C {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let uri = uri_of(&path);
+    let at = move |line: u32| json!([{ "uri": uri, "range": {"start":{"line":line,"character":6},"end":{"line":line,"character":7}} }]);
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
+        // The sources have an implementation of line 0 only.
+        "workspace/executeCommand" => Some(if params["arguments"][1] == 0 { at(1) } else { json!([]) }),
+        "textDocument/implementation" => Some(at(3)),
+        _ => None,
+    }));
+    let found = h.mgr.goto(doc, Pos::new(0, 10), GotoKind::Implementation).await.unwrap();
+    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![1]);
+    assert!(s.requested("textDocument/implementation").is_empty(), "no search through the dependencies");
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.java.implementations");
+    assert_eq!((asked[0]["arguments"][1].clone(), asked[0]["arguments"][2].clone()), (json!(0), json!(10)));
+    // None in the sources: the standard request, with the dependencies.
+    let found = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Implementation).await.unwrap();
+    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![3]);
+    assert_eq!(s.requested("textDocument/implementation").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn navigation_rename_format_and_decorations() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");
