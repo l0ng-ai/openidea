@@ -13,6 +13,7 @@ const INSTALLABLE: Record<string, { tool: string; title: string }> = {
   delve: { tool: "delve", title: "Delve is not installed" },
   codelldb: { tool: "codelldb", title: "CodeLLDB is not installed" },
   "php-debug": { tool: "php-debug", title: "PHP Debug (Xdebug) is not installed" },
+  "bash-debug": { tool: "bash-debug", title: "Bash Debug is not installed" },
 };
 
 export interface MissingAdapter {
