@@ -4544,6 +4544,7 @@ dependencies = [
  "ignore",
  "parking_lot",
  "serde",
+ "serde_json",
  "specta",
  "tempfile",
  "tokio",

@@ -6310,5 +6310,17 @@
   "Composer dependencies are not installed": "未安装 Composer 依赖",
   "Installed Composer packages differ from composer.lock": "已安装的 Composer 包与 composer.lock 不一致",
   "Composer Install": "安装 Composer 依赖",
-  "Input for the program (pause to evaluate)": "程序输入（暂停后可计算）"
+  "Input for the program (pause to evaluate)": "程序输入（暂停后可计算）",
+  "Coverage and profiling are not supported in containers": "容器中不支持覆盖率和性能分析",
+  "'{name}' runs in a container on {where}. Run it, or choose “Local machine” under “Run on”.": "'{name}' 在 {where} 的容器中运行。请直接运行，或在“运行于”中选择“本地计算机”。",
+  "Docker connection": "Docker 连接",
+  "Only daemons on this machine can mount the project.": "只有本机上的守护进程才能挂载项目。",
+  "Relative to the project; empty uses the project's default file.": "相对于项目；留空则使用项目的默认文件。",
+  "Service": "服务",
+  "Container folder": "容器文件夹",
+  "Empty: where the service mounts the project.": "留空：使用服务挂载项目的位置。",
+  "The project is mounted here; paths and the working directory are mapped into it.": "项目挂载在此处；路径和工作目录会映射到其中。",
+  "Published ports": "发布的端口",
+  "Run as the image's user, not the project folder's owner (Linux)": "以镜像的用户运行，而不是项目文件夹的所有者（Linux）",
+  "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine.": "Docker 连接来自“服务”工具窗口。每次运行都会使用一个新容器，运行结束后删除；调试、覆盖率和性能分析仍在本机进行。"
 }
