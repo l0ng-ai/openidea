@@ -49,8 +49,8 @@ import { TomcatSettings } from "./TomcatSettings";
 import styles from "./Run.module.css";
 
 /**
- * Debug adapters with a real launch template (`debugger/launch.ts`, `debugger/java.ts`),
- * verified against small programs. Others (dart, php-debug, …) only got
+ * Debug adapters with a real launch template (`debugger/launch.ts`, `debugger/java.ts`,
+ * `debugger/remote.ts`), verified against small programs. Others (dart, …) only got
  * generic launch arguments and are left out until they have one; a configuration that
  * already names one keeps it.
  */
@@ -63,6 +63,7 @@ const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "delve", label: "Delve (Go)" },
   { id: "codelldb", label: "CodeLLDB (Rust, C, C++)" },
   { id: "lldb-dap", label: "lldb-dap (C, C++, Swift)" },
+  { id: "php-debug", label: "php-debug (PHP)" },
 ];
 
 /** Options "Modify options" adds to the form: value fields (shown once added) and flags (chips). */

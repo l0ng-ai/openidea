@@ -30,5 +30,8 @@
   "{added} line added": "{added} line added",
   "{added} lines added": "{added} lines added",
   "{removed} line deleted": "{removed} line deleted",
-  "{removed} lines deleted": "{removed} lines deleted"
+  "{removed} lines deleted": "{removed} lines deleted",
+  "PHP Remote Debug (Xdebug)": "PHP Remote Debug (Xdebug)",
+  "Listen for Xdebug connections: debug PHP requests served elsewhere (php-fpm, a container)": "Listen for Xdebug connections: debug PHP requests served elsewhere (php-fpm, a container)",
+  "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container": "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container"
 }

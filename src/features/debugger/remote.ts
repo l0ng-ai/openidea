@@ -2,6 +2,7 @@
  * Remote debug run configurations: the debugger attaches to a process started
  * elsewhere (another machine, a container) over host:port, like IDEA's Remote JVM
  * Debug, GoLand's Go Remote, PyCharm's remote debugpy and IDEA's Attach to Node.js.
+ * PHP Remote Debug is the exception: its php-debug listens and Xdebug connects to it.
  * Only Debug applies to them (`debugOnly`); they launch no process.
  */
 import type { LaunchConfig, RunConfig } from "@/platform/ipc";
@@ -13,6 +14,7 @@ export const GO_REMOTE = "go-remote";
 export const PYTHON_REMOTE = "python-remote";
 export const NODE_REMOTE = "node-remote";
 export const GODOT_ATTACH = "godot-attach";
+export const PHP_REMOTE = "php-remote";
 
 type Params = Readonly<Record<string, string>>;
 
@@ -222,6 +224,38 @@ export const nodeRemoteType: RunConfigTypeContribution = {
 };
 
 // ---------------------------------------------------------------------------
+// PHP Remote Debug (Xdebug): php-debug listens, the remote PHP connects to it
+
+/** How to start the remote side, so Xdebug connects back to the listening php-debug. */
+export function xdebugCommand(p: Params): string {
+  return `php -dxdebug.mode=debug -dxdebug.start_with_request=yes -dxdebug.client_port=${portOf(p, 9003)} script.php`;
+}
+
+export const phpRemoteType: RunConfigTypeContribution = {
+  id: PHP_REMOTE,
+  label: "PHP Remote Debug (Xdebug)",
+  icon: "file-php",
+  description: "Listen for Xdebug connections: debug PHP requests served elsewhere (php-fpm, a container)",
+  defaults: { port: "9003" },
+  debugOnly: true,
+  debugAdapter: "php-debug",
+  fields: [
+    portField,
+    {
+      key: "hint",
+      label: "Start the remote side with",
+      control: "output",
+      mono: true,
+      value: xdebugCommand,
+      hint: "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container",
+    },
+    localRootField,
+    remoteRootField("e.g. /var/www/html"),
+  ],
+  commandLine: () => null,
+};
+
+// ---------------------------------------------------------------------------
 // Attach to Godot (the editor's debug adapter, Editor Settings › Network › Debug Adapter)
 
 export const godotAttachType: RunConfigTypeContribution = {
@@ -250,13 +284,14 @@ export const REMOTE_TYPES: readonly RunConfigTypeContribution[] = [
   goRemoteType,
   pythonRemoteType,
   nodeRemoteType,
+  phpRemoteType,
   godotAttachType,
 ];
 
 export const isRemoteConfig = (c: Pick<RunConfig, "kind">) => REMOTE_TYPES.some((t) => t.id === c.kind);
 
 // ---------------------------------------------------------------------------
-// Attach requests
+// Attach / listen requests
 
 function isAbsolute(p: string) {
   return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
@@ -281,11 +316,17 @@ export function serverAddress(host: string, port: number): string {
   return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`;
 }
 
-function attachBase(rc: RunConfig, adapter: string, root: string, extra: Record<string, unknown>): LaunchConfig {
+function requestBase(
+  rc: RunConfig,
+  adapter: string,
+  root: string,
+  request: "attach" | "launch",
+  extra: Record<string, unknown>,
+): LaunchConfig {
   return {
     name: rc.name,
     adapter,
-    request: "attach",
+    request,
     program: null,
     args: [],
     cwd: root,
@@ -295,9 +336,11 @@ function attachBase(rc: RunConfig, adapter: string, root: string, extra: Record<
 }
 
 /**
- * The attach request of a Go / Python / Node.js remote configuration. Delve's headless
+ * The request of a Go / Python / Node.js / PHP remote configuration. Delve's headless
  * server and `debugpy --listen` speak DAP themselves (`debugServer` connects there);
- * js-debug runs here and connects to the inspector.
+ * js-debug runs here and connects to the inspector. PHP Remote Debug is the one
+ * `launch`: php-debug is the side that listens, and each Xdebug connection becomes
+ * a thread, so nothing attaches and no program is named.
  */
 export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | null {
   const p = rc.params ?? {};
@@ -306,26 +349,34 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
   const skip = workflowSettings().debugger.skipLibraryCode;
   switch (rc.kind) {
     case GO_REMOTE:
-      return attachBase(rc, "delve", root, {
+      return requestBase(rc, "delve", root, "attach", {
         debugServer: serverAddress(host, portOf(p, 2345)),
         mode: "remote",
         ...(map ? { substitutePath: [{ from: map.local, to: map.remote }] } : {}),
       });
     case PYTHON_REMOTE:
-      return attachBase(rc, "debugpy", root, {
+      return requestBase(rc, "debugpy", root, "attach", {
         debugServer: serverAddress(host, portOf(p, 5678)),
         justMyCode: skip,
         ...(map ? { pathMappings: [{ localRoot: map.local, remoteRoot: map.remote }] } : {}),
       });
     case GODOT_ATTACH:
-      return attachBase(rc, "godot", root, { debugServer: serverAddress(host, portOf(p, 6006)), project: root });
+      return requestBase(rc, "godot", root, "attach", {
+        debugServer: serverAddress(host, portOf(p, 6006)),
+        project: root,
+      });
     case NODE_REMOTE:
-      return attachBase(rc, "js-debug", root, {
+      return requestBase(rc, "js-debug", root, "attach", {
         type: "pwa-node",
         address: host,
         port: portOf(p, 9229),
         ...(map ? { localRoot: map.local, remoteRoot: map.remote } : {}),
         skipFiles: skip ? ["<node_internals>/**", "**/node_modules/**"] : [],
+      });
+    case PHP_REMOTE:
+      return requestBase(rc, "php-debug", root, "launch", {
+        port: portOf(p, 9003),
+        ...(map ? { pathMappings: { [map.remote]: map.local } } : {}),
       });
     default:
       return null;
