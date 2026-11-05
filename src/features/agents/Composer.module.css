@@ -118,7 +118,14 @@
   text-overflow: ellipsis;
 }
 .chipDetail {
+  display: inline-grid;
   color: var(--fg-subtle);
+}
+.chipDetail > span {
+  grid-area: 1 / 1;
+}
+.chipSizer {
+  visibility: hidden;
 }
 .chipChevron {
   flex: none;

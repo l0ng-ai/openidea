@@ -220,13 +220,23 @@ function ModelEffortPicker({
         onClick={() => setOpen((v) => !v)}
       >
         <span className={styles.chipValue}>{modelName}</span>
-        <span className={styles.chipDetail}>{effortName}</span>
+        {/* Every level's name in one cell, so the button keeps the widest one's width. */}
+        <span className={styles.chipDetail}>
+          {[...new Set([effortName, ...effort.values.map((v) => v.name)])].map((name) => (
+            <span
+              key={name}
+              className={name === effortName ? undefined : styles.chipSizer}
+              aria-hidden={name !== effortName}
+            >
+              {name}
+            </span>
+          ))}
+        </span>
         <Icon name="chevron-down" size={14} className={styles.chipChevron} />
       </button>
       <Popup
         open={open}
         anchor={anchor}
-        placement="top-start"
         onClose={() => setOpen(false)}
         aria-label={tx("Model & effort settings")}
         className={styles.modelEffortPopup}
@@ -330,7 +340,6 @@ function ModePicker({
       <Popup
         open={open}
         anchor={anchor}
-        placement="top-start"
         onClose={() => setOpen(false)}
         aria-label={tx(mode.name)}
         className={styles.modePopup}
