@@ -29,6 +29,8 @@ enum State {
 pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     let mysql = driver == DbDriver::Mysql;
     let clickhouse = driver == DbDriver::Clickhouse;
+    // PL/SQL: `;` inside BEGIN…END / DECLARE…END blocks does not terminate a statement.
+    let plsql = driver == DbDriver::Oracle;
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     // UTF-16 offset of each char index (plus the end).
     let mut u16_at = Vec::with_capacity(chars.len() + 1);
@@ -46,6 +48,10 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     // Whether the current segment has anything but whitespace / comments.
     let mut has_code = false;
     let mut i = 0usize;
+    // PL/SQL block depth (BEGIN / CASE / LOOP open, END closes).
+    let mut depth = 0usize;
+    // Inside a top-level block's declaration section (`DECLARE … BEGIN`).
+    let mut declarations = false;
     let push = |out: &mut Vec<SqlStatement>, s: usize, e: usize, has_code: bool| {
         if !has_code {
             return;
@@ -69,11 +75,12 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
         let next = chars.get(i + 1).map(|c| c.1);
         match state {
             State::Code => match c {
-                ';' => {
+                ';' if depth == 0 && !declarations => {
                     push(&mut out, start, i, has_code);
                     start = i + 1;
                     has_code = false;
                 }
+                ';' => has_code = true,
                 '\'' => {
                     state = State::Single;
                     has_code = true;
@@ -86,15 +93,26 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                     state = State::Backtick;
                     has_code = true;
                 }
+                '/' if next == Some('*') => {
+                    state = State::BlockComment;
+                    i += 1;
+                }
+                '/' if plsql && ends_line(&chars, i) && starts_line(&chars, i) => {
+                    // SQL*Plus block terminator: `/` alone on its line ends the statement.
+                    push(&mut out, start, i, has_code);
+                    while chars.get(i).is_some_and(|&(_, c)| c != '\n') {
+                        i += 1;
+                    }
+                    start = i + 1;
+                    has_code = false;
+                    depth = 0;
+                    declarations = false;
+                }
                 '-' if next == Some('-') => {
                     state = State::LineComment;
                     i += 1;
                 }
                 '#' if mysql => state = State::LineComment,
-                '/' if next == Some('*') => {
-                    state = State::BlockComment;
-                    i += 1;
-                }
                 '$' if driver == DbDriver::Postgres => {
                     // `$tag$ … $tag$` (tag may be empty); `$1` parameters are not quotes.
                     let rest = &text[byte_at(i)..];
@@ -113,6 +131,34 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                         }
                         continue;
                     }
+                }
+                _ if plsql && word_at(&chars, i, "BEGIN") => {
+                    depth += 1;
+                    declarations = false;
+                    has_code = true;
+                }
+                _ if plsql && word_at(&chars, i, "CASE") || plsql && word_at(&chars, i, "LOOP") => {
+                    depth += 1;
+                    has_code = true;
+                }
+                // `DECLARE … BEGIN … END;` is one block: the declarations of a top-level block
+                // end at BEGIN, so their `;` must not split it.
+                _ if plsql && word_at(&chars, i, "DECLARE") => {
+                    if depth == 0 {
+                        declarations = true;
+                    }
+                    has_code = true;
+                }
+                _ if plsql && word_at(&chars, i, "END") => {
+                    // `END IF` closes an IF (which never opened a block); END LOOP / END CASE
+                    // close the block their keyword opened. Other ENDs close a block.
+                    let after = skip_ws(&chars, i + 3);
+                    let closing = ["LOOP", "CASE", "IF"].into_iter().find(|w| word_at(&chars, after, w));
+                    if closing != Some("IF") && depth > 0 {
+                        depth -= 1;
+                    }
+                    i = closing.map_or(i + 3, |w| after + w.len()) - 1;
+                    has_code = true;
                 }
                 c if !c.is_whitespace() => has_code = true,
                 _ => {}
@@ -162,6 +208,30 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     }
     push(&mut out, start, chars.len(), has_code);
     out
+}
+
+/// Whether the characters at `i` are the keyword `word` (identifier bounds respected).
+fn word_at(chars: &[(usize, char)], i: usize, word: &str) -> bool {
+    let (before, after) = (chars[..i].last().map(|&(_, c)| c), chars.get(i).map(|&(_, c)| c));
+    before.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '$')
+        && after.is_some_and(|c| c.is_ascii_alphabetic())
+        && chars[i..].iter().take(word.len()).map(|&(_, c)| c.to_ascii_uppercase()).eq(word.chars())
+        && chars.get(i + word.len()).is_none_or(|&(_, c)| !c.is_alphanumeric() && c != '_' && c != '$')
+}
+
+/// Whether only whitespace follows `i` until the end of its line.
+fn ends_line(chars: &[(usize, char)], i: usize) -> bool {
+    chars[i + 1..].iter().take_while(|&&(_, c)| c != '\n').all(|&(_, c)| c.is_whitespace())
+}
+
+/// Whether only whitespace precedes `i` since the start of its line.
+fn starts_line(chars: &[(usize, char)], i: usize) -> bool {
+    chars[..i].iter().rev().take_while(|&&(_, c)| c != '\n').all(|&(_, c)| c.is_whitespace())
+}
+
+/// The index of the first non-whitespace character at or after `i`.
+fn skip_ws(chars: &[(usize, char)], i: usize) -> usize {
+    chars[i..].iter().position(|&(_, c)| !c.is_whitespace()).map_or(chars.len(), |n| i + n)
 }
 
 /// The statement to run for a caret at `offset` (UTF-16): the one containing
@@ -276,5 +346,30 @@ mod tests {
         let s = statements_in(sql, 3, 21, DbDriver::Sqlite);
         assert_eq!(s.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["select 1", "select 2"]);
         assert_eq!((s[1].from, s[1].to), (13, 21));
+    }
+
+    #[test]
+    fn oracle_keeps_plsql_blocks_as_one_statement() {
+        let block = "begin\n  for r in (select 1 from dual) loop\n    null; -- ;\n  end loop;\nend";
+        assert_eq!(texts(&format!("{block};\nselect 2;"), DbDriver::Oracle), vec![block, "select 2"]);
+        let nested = "declare\n  x number;\nbegin\n  if x = 1 then\n    case when x = 2 then\n      null;\n    end case;\n    begin\n      null;\n    end;\n  end if;\nend";
+        assert_eq!(texts(&format!("{nested};\nselect 3;"), DbDriver::Oracle), vec![nested, "select 3"]);
+        // Plain SQL with CASE is unaffected; END IF does not close a block twice.
+        assert_eq!(
+            texts("select case when a = 1 then 2 end from t; select 2", DbDriver::Oracle),
+            vec!["select case when a = 1 then 2 end from t", "select 2"]
+        );
+    }
+
+    #[test]
+    fn oracle_slash_terminator_and_other_drivers_unaffected() {
+        // `END;` ends the block; a following `/` (SQL*Plus's own terminator) adds nothing.
+        assert_eq!(
+            texts("begin\n  null;\nend;\n/\nselect 2", DbDriver::Oracle),
+            vec!["begin\n  null;\nend", "select 2"]
+        );
+        // A division is not a terminator.
+        assert_eq!(texts("select 1 /\n 2 from dual", DbDriver::Oracle), vec!["select 1 /\n 2 from dual"]);
+        assert_eq!(texts("select 'a;b' from t; select 2", DbDriver::Oracle), vec!["select 'a;b' from t", "select 2"]);
     }
 }

@@ -101,6 +101,10 @@ const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
     names: ["connect_timeout"],
     hint: "Connection settings for SQL Server.",
   },
+  oracle: {
+    names: ["NLS_DATE_FORMAT", "NLS_TIMESTAMP_FORMAT", "NLS_LANGUAGE", "connect_timeout"],
+    hint: "Session parameters set after connecting (ALTER SESSION SET name = value). connect_timeout is in seconds.",
+  },
 };
 
 const blankSsh = (): DbSsh => ({
@@ -121,6 +125,7 @@ const blankOptions = (): DbOptions => ({
   keepAliveSecs: null,
   autoDisconnectSecs: null,
   singleDatabase: false,
+  instantClient: "",
 });
 
 const blankIntrospection = (): DbIntrospection => ({
@@ -381,6 +386,7 @@ export function SourceDialog({
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
   const clickhouse = s.driver === "clickhouse";
+  const oracle = s.driver === "oracle";
   const urlOnly = !sqlite && !!s.urlOnly;
   const parsedUrl = urlOnly ? parseSourceUrl(s.url ?? "") : null;
   const urlValid = !!parsedUrl && parsedUrl.source.driver === s.driver;
@@ -389,9 +395,12 @@ export function SourceDialog({
   const name =
     s.name?.trim() || (sqlite ? fileSourceName(s.file ?? "") : `${database || s.user || "db"}@${host || "localhost"}`);
   const sshOn = !sqlite && !!ssh.enabled;
-  const valid = sqlite
-    ? !!s.file?.trim()
-    : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || sshTunnelReady(ssh, sshConfigs));
+  const valid =
+    (sqlite
+      ? !!s.file?.trim()
+      : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || sshTunnelReady(ssh, sshConfigs))) &&
+    (!oracle || !!s.options?.instantClient?.trim());
+  const instantClientInvalid = oracle && !s.options?.instantClient?.trim();
   const sslOn = (s.ssl ?? "prefer") !== "disable";
 
   /** What is saved / tested: a preset's port when the field was left empty. */
@@ -591,7 +600,12 @@ export function SourceDialog({
               <label className={styles.formLabel} htmlFor="db-database">
                 <T>Database:</T>
               </label>
-              <Input id="db-database" value={s.database ?? ""} onChange={(e) => set({ database: e.target.value })} />
+              <Input
+                id="db-database"
+                value={s.database ?? ""}
+                placeholder={oracle ? "Service name, e.g. ORCLPDB1" : undefined}
+                onChange={(e) => set({ database: e.target.value })}
+              />
             </>
           )}
           <label className={styles.formLabel} htmlFor="db-url">
@@ -650,6 +664,33 @@ export function SourceDialog({
           />
         </>
       )}
+      {oracle && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-default-schema">
+            <T>Current schema:</T>
+          </label>
+          <Input
+            id="db-default-schema"
+            value={options.defaultSchema ?? ""}
+            placeholder="HR (ALTER SESSION SET CURRENT_SCHEMA)"
+            onChange={(e) => setOptions({ defaultSchema: e.target.value })}
+          />
+          <label className={styles.formLabel} htmlFor="db-instant-client">
+            <T>Instant Client:</T>
+          </label>
+          <Input
+            id="db-instant-client"
+            value={options.instantClient ?? ""}
+            invalid={instantClientInvalid}
+            placeholder="/opt/oracle/instantclient_23_5"
+            onChange={(e) => setOptions({ instantClient: e.target.value })}
+          />
+          <span />
+          <span className={styles.formHint}>
+            <T>Directory of Oracle Instant Client 19+ with the basic and sqlplus libraries; needed to connect.</T>
+          </span>
+        </>
+      )}
       {!sqlite && (
         <>
           <label className={styles.formLabel} htmlFor="db-time-zone">
@@ -704,7 +745,9 @@ export function SourceDialog({
               ? "SET max_execution_time = 30;"
               : sqlite
                 ? "PRAGMA foreign_keys = ON;"
-                : "SET SESSION sql_mode = 'ANSI';"
+                : oracle
+                  ? "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';"
+                  : "SET SESSION sql_mode = 'ANSI';"
         }
         onChange={(e) => setOptions({ startupScript: e.target.value })}
       />

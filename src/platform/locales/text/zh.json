@@ -6245,5 +6245,11 @@
   "Connect a device over USB, or start an emulator. Logcat uses the Android SDK's adb.": "通过 USB 连接设备，或启动模拟器。Logcat 使用 Android SDK 的 adb。",
   "No lines match the filter": "没有符合过滤条件的日志行",
   "Streaming": "正在接收",
-  "Idle": "空闲"
+  "Idle": "空闲",
+  "Service name, e.g. ORCLPDB1": "服务名，例如 ORCLPDB1",
+  "Current schema:": "当前模式：",
+  "HR (ALTER SESSION SET CURRENT_SCHEMA)": "HR（ALTER SESSION SET CURRENT_SCHEMA）",
+  "Instant Client:": "Instant Client：",
+  "Directory of Oracle Instant Client 19+ with the basic and sqlplus libraries; needed to connect.": "Oracle Instant Client 19+ 的目录（需包含 basic 与 sqlplus 库）；连接时必需。",
+  "Session parameters set after connecting (ALTER SESSION SET name = value). connect_timeout is in seconds.": "连接后设置的会话参数（ALTER SESSION SET name = value）。connect_timeout 以秒为单位。"
 }

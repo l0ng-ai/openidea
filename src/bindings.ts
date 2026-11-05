@@ -2602,7 +2602,9 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  MySQL and MariaDB. */
 "mysql" | 
 /**  Microsoft SQL Server. */
-"sqlServer" | "clickhouse";
+"sqlServer" | "clickhouse" | 
+/**  Oracle Database (via Oracle Instant Client). */
+"oracle";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -2661,6 +2663,8 @@ export type DbOptions = {
 	autoDisconnectSecs?: number | null,
 	/**  PostgreSQL: show only the configured database, its schemas right under the data source. */
 	singleDatabase?: boolean,
+	/**  Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path). */
+	instantClient?: string,
 };
 
 /**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
