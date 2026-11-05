@@ -365,111 +365,120 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   };
 
   return (
-    <div className={styles.console}>
-      {findOpen && (
-        <ConsoleFindBar
-          query={query}
-          onChange={changeQuery}
-          options={findOptions}
-          onOptionsChange={changeOptions}
-          count={found.matches.length}
-          active={activeIndex}
-          overflow={found.overflow}
-          invalid={found.invalid}
-          inputRef={findInput}
-          onNext={() => goToMatch(1)}
-          onPrevious={() => goToMatch(-1)}
-          onClose={closeFind}
-        />
-      )}
+    <div className={styles.consoleArea}>
       <div
-        ref={scroller}
-        className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
-        onScroll={(e) => {
-          if (programmatic.current) return;
-          const el = e.currentTarget;
-          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-          if (atEnd !== stick.current) setFollow(atEnd);
-        }}
-        onContextMenu={onContextMenu}
-        role="log"
-        onKeyDown={onOutputKeyDown}
-        aria-label={tx("Debug console")}
-        tabIndex={0}
+        className={styles.consoleToolbar}
+        role="toolbar"
+        aria-orientation="vertical"
+        aria-label={tx("Console actions")}
       >
-        {!lines?.length && session.launch?.request === "attach" && (
-          <T>The attached process may not provide standard output to the debugger.</T>
-        )}
-        <div ref={inner} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((item) => {
-            const l = lines?.[item.index];
-            if (!l) return null;
-            return (
-              <span
-                key={item.key}
-                data-index={item.index}
-                ref={virtualizer.measureElement}
-                className={clsx(styles.out, styles[`cat-${l.category}`])}
-                style={{ transform: `translateY(${item.start}px)` }}
-              >
-                {findSegments(l.spans, marksByLine.get(item.index) ?? [], current).map(segmentNode)}
-              </span>
-            );
-          })}
-        </div>
-      </div>
-      <div className={styles.repl}>
-        {interactive && (
-          <>
-            <span className={styles.prompt} aria-hidden>
-              ›
-            </span>
-            <input
-              ref={inputRef}
-              className={styles.evalInput}
-              onFocus={() => setConsoleHistoryBrowser(browseHistory)}
-              onBlur={() => {
-                setConsoleHistoryBrowser(null);
-                completion.close();
-              }}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                completion.onInput();
-              }}
-              onKeyDown={onKeyDown}
-              placeholder={isLive(session) ? "Evaluate in the debug console" : "Session finished"}
-              disabled={!isLive(session)}
-              aria-label={tx("Debug console input")}
-              spellCheck={false}
-              autoComplete="off"
-            />
-            {completion.popup}
-          </>
-        )}
+        <IconButton
+          icon="search"
+          iconSize={14}
+          title="Find…"
+          shortcut={formatBinding(hostBinding("Meta+F"))}
+          pressed={findOpen}
+          onClick={() => (findOpen ? closeFind() : openFind())}
+        />
         <IconButton
           icon="arrow-down"
+          iconSize={14}
           title="Scroll to End"
-          size="small"
-          iconSize={12}
           pressed={follow}
           onClick={() => setFollow((v) => !v)}
         />
         <IconButton
           icon="soft-wrap"
+          iconSize={14}
           title="Soft-Wrap"
-          size="small"
-          iconSize={12}
           pressed={softWrap}
           onClick={() => setWrapOverride(!softWrap)}
         />
-        <IconButton
-          icon="trash"
-          title="Clear Console"
-          size="small"
-          iconSize={12}
-          onClick={() => clearConsole(session.id)}
-        />
+        <IconButton icon="trash" iconSize={14} title="Clear Console" onClick={() => clearConsole(session.id)} />
+      </div>
+      <div className={styles.console}>
+        {findOpen && (
+          <ConsoleFindBar
+            query={query}
+            onChange={changeQuery}
+            options={findOptions}
+            onOptionsChange={changeOptions}
+            count={found.matches.length}
+            active={activeIndex}
+            overflow={found.overflow}
+            invalid={found.invalid}
+            inputRef={findInput}
+            onNext={() => goToMatch(1)}
+            onPrevious={() => goToMatch(-1)}
+            onClose={closeFind}
+          />
+        )}
+        <div
+          ref={scroller}
+          className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
+          onScroll={(e) => {
+            if (programmatic.current) return;
+            const el = e.currentTarget;
+            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+            if (atEnd !== stick.current) setFollow(atEnd);
+          }}
+          onContextMenu={onContextMenu}
+          role="log"
+          onKeyDown={onOutputKeyDown}
+          aria-label={tx("Debug console")}
+          tabIndex={0}
+        >
+          {!lines?.length && session.launch?.request === "attach" && (
+            <T>The attached process may not provide standard output to the debugger.</T>
+          )}
+          <div ref={inner} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((item) => {
+              const l = lines?.[item.index];
+              if (!l) return null;
+              return (
+                <span
+                  key={item.key}
+                  data-index={item.index}
+                  ref={virtualizer.measureElement}
+                  className={clsx(styles.out, styles[`cat-${l.category}`])}
+                  style={{ transform: `translateY(${item.start}px)` }}
+                >
+                  {findSegments(l.spans, marksByLine.get(item.index) ?? [], current).map(segmentNode)}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+        <div className={styles.repl}>
+          {interactive && (
+            <>
+              <span className={styles.prompt} aria-hidden>
+                ›
+              </span>
+              <input
+                ref={inputRef}
+                className={styles.evalInput}
+                onFocus={() => setConsoleHistoryBrowser(browseHistory)}
+                onBlur={() => {
+                  setConsoleHistoryBrowser(null);
+                  completion.close();
+                }}
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  completion.onInput();
+                }}
+                onKeyDown={onKeyDown}
+                placeholder={isLive(session) ? "Evaluate in the debug console" : "Session finished"}
+                disabled={!isLive(session)}
+                aria-label={tx("Debug console input")}
+                spellCheck={false}
+                autoComplete="off"
+              />
+              {completion.popup}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1935,6 +1935,7 @@
   "Run a configuration with coverage to see which lines its tests execute.": "使用覆盖率运行配置，即可查看其测试执行了哪些行。",
   "Run a request from an .http file with the gutter ▶ or ⌘↩.": "使用装订区域中的 ▶ 或 ⌘↩ 运行 .http 文件中的请求。",
   "Run actions": "运行操作",
+  "Console actions": "控制台操作",
   "Run and Debug": "运行和调试",
   "Run code cleanup": "运行代码清理",
   "Run configurations": "运行配置",
