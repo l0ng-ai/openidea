@@ -983,7 +983,8 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
 /** `SELECT COUNT(*)` over a query, for queries that can be a subquery. */
 function countQuery(text: string): string | null {
   if (!/^\s*(\(|select\b|with\b|values\b|table\b)/i.test(text)) return null;
-  return `select count(*) from (${text.trim()}) q`;
+  // `)` on its own line: a trailing line comment (`… from t -- note`) would swallow it.
+  return `select count(*) from (\n${text.trim()}\n) q`;
 }
 
 /** Whether the rows of result tab `tab` can be counted. */
