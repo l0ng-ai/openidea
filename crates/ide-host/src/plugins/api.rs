@@ -2,6 +2,7 @@
 //! Capabilities were checked by the runtime before any of this runs.
 
 use super::{PluginEvent, PluginEventSink};
+use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
@@ -324,6 +325,18 @@ impl HostApi for PluginApi {
             .emit(client, PluginEvent::Notification { plugin_id: self.id().to_owned(), level, title, body });
     }
 
+    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
+        let client = from_window(client, "copy to the clipboard")?;
+        self.shared.sink.emit(Some(client), PluginEvent::CopyToClipboard { plugin_id: self.id().to_owned(), text });
+        Ok(())
+    }
+
+    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
+        let client = from_window(client, "open a URL")?;
+        self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
+    }
+
     fn status_item(&self, id: &str, item: Option<StatusItem>) {
         let key = (self.id().to_owned(), id.to_owned());
         {
@@ -407,7 +420,7 @@ impl HostApi for PluginApi {
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
-            root: repo.root().to_string_lossy().into_owned(),
+            root: to_ipc(repo.root()),
             branch: info.head,
             commit: info.head_commit,
             upstream: info.upstream,
@@ -416,6 +429,12 @@ impl HostApi for PluginApi {
             operation: info.operation,
             changed_files: u32::try_from(changed).unwrap_or(u32::MAX),
         }))
+    }
+
+    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
+        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(Vec::new()) };
+        let remotes = repo.remotes().map_err(failed)?;
+        Ok(remotes.into_iter().map(|r| (r.name, without_credentials(&r.url))).collect())
     }
 
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError> {
@@ -449,7 +468,7 @@ impl HostApi for PluginApi {
             }
             let Ok(rel) = entry.path().strip_prefix(root) else { continue };
             if matcher.is_match(rel) {
-                out.push(entry.path().to_string_lossy().into_owned());
+                out.push(to_ipc(entry.path()));
             }
         }
         out.sort();
@@ -789,6 +808,19 @@ mod tests {
     }
 
     #[test]
+    fn repository_and_search_paths_match_ipc_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).arg(tmp.path()).status().unwrap().success());
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let file = root.join("src/Example.java");
+        std::fs::write(&file, "class Example {}\n").unwrap();
+        let api = api(&root, Arc::default());
+        assert_eq!(api.find_files(&root, "**/*.java", 8).unwrap(), [to_ipc(&file)]);
+        assert_eq!(api.vcs_status(&root).unwrap().unwrap().root, to_ipc(&root));
+    }
+
+    #[test]
     fn programs_run_only_as_approved() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("lint");
@@ -810,5 +842,44 @@ mod tests {
         assert!(
             matches!(api.approved_program("lint"), Err(HostError::Denied(e)) if e.contains("changed since it was approved"))
         );
+    }
+}
+
+/// The window a user action invoked the plugin from: browser tabs and clipboard writes
+/// follow what the user did, never background work (which would reach every window).
+fn from_window<'a>(client: Option<&'a str>, what: &str) -> Result<&'a str, HostError> {
+    client.ok_or_else(|| HostError::Invalid(format!("can only {what} from a command the user invoked")))
+}
+
+/// `url` without the `user:password@` a remote may carry (`https://user:token@host/…`):
+/// `vcs.read` must not hand out credentials. scp-style `git@host:path` has no password.
+fn without_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_owned() };
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+        None => url.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn remote_urls_lose_their_credentials() {
+        for (url, expected) in [
+            ("https://user:ghp_token@github.com/o/r.git", "https://github.com/o/r.git"),
+            ("https://token@gitlab.com/o/r", "https://gitlab.com/o/r"),
+            ("ssh://git@host:2222/o/r.git", "ssh://host:2222/o/r.git"),
+            ("https://github.com/o/r.git", "https://github.com/o/r.git"),
+            ("https://github.com/o/r@v1", "https://github.com/o/r@v1"),
+            ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+            ("/srv/git/r.git", "/srv/git/r.git"),
+        ] {
+            assert_eq!(without_credentials(url), expected, "{url}");
+        }
+        assert!(matches!(from_window(None, "open a URL"), Err(HostError::Invalid(_))));
+        assert_eq!(from_window(Some("main"), "open a URL").unwrap(), "main");
     }
 }

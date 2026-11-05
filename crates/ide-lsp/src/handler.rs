@@ -234,6 +234,11 @@ impl Handler for ClientHandler {
         let Some(mgr) = self.mgr.upgrade() else { return };
         match method {
             "$/progress" => self.progress(&mgr, params),
+            "experimental/serverStatus" => {
+                if let Some(quiescent) = params.get("quiescent").and_then(Value::as_bool) {
+                    self.server.set_loading(mgr.sink(), !quiescent);
+                }
+            }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {

@@ -50,7 +50,8 @@ async function ensureConfigs() {
 export function projectContentRoots(): string[] {
   const own = validateProjectStructure(useProject.getState().settings?.projectStructure).contentRoots;
   // The build model keeps the folders of modules outside the project absolute.
-  const gradle = (useBuildModel.getState().model?.gradle?.projects ?? [])
+  const gradle = (useBuildModel.getState().model?.gradle ?? [])
+    .flatMap((g) => g.projects)
     .map((p) => p.dir)
     .filter((d) => isAbsolute(d));
   return [...new Set([...own, ...gradle])];
@@ -97,7 +98,13 @@ export async function produceResolved(input: ContextInput, dir = false): Promise
   // Project configurations (tests, cargo, gradle…) need no runtime lookup.
   if (named.config && !named.config.id.startsWith("context:file:")) return named;
   const lang = scriptLanguage(input.path, input.content);
-  const env = await toolEnv(neededTools(fresh), input.path, fresh.root, lang === "python" || lang === "shebang");
+  const env = await toolEnv(
+    neededTools(fresh),
+    input.path,
+    fresh.root,
+    lang === "python" || lang === "shebang",
+    lang === "php" || lang === "shebang",
+  );
   return produceContext(fresh, env);
 }
 

@@ -8,8 +8,22 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**  Devices `adb` knows about, online ones first. */
+	androidDevices: () => typedError<AndroidDevice[], IdeError>(__TAURI_INVOKE("android_devices")),
+	/**
+	 *  Follows `serial`'s log until the request is cancelled, in batches of lines.
+	 *  `clear` empties the device's buffers first.
+	 */
+	androidLogcat: (request: RequestId, serial: string, clear: boolean, onLines: Channel<LogcatLine[]>) => typedError<null, IdeError>(__TAURI_INVOKE("android_logcat", { request, serial, clear, onLines })),
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
+	/**  The welcome screen's project groups. */
+	recentProjectGroups: () => __TAURI_INVOKE<RecentProjectGroup[]>("recent_project_groups"),
+	/**
+	 *  Replaces the project groups; returns them as saved (names trimmed and unique, each
+	 *  project in one group, only recent projects).
+	 */
+	setRecentProjectGroups: (groups: RecentProjectGroup[]) => typedError<RecentProjectGroup[], IdeError>(__TAURI_INVOKE("set_recent_project_groups", { groups })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
 	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
@@ -490,7 +504,6 @@ export const commands = {
 	vcsOpenExternalLog: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("vcs_open_external_log", { path })),
 	vcsLogDetails: (repo: string | null, revision: string) => typedError<LogDetails, IdeError>(__TAURI_INVOKE("vcs_log_details", { repo, revision })),
 	vcsLogDetailsBatch: (repo: string | null, revisions: string[], request: RequestId) => typedError<LogDetails[], IdeError>(__TAURI_INVOKE("vcs_log_details_batch", { repo, revisions, request })),
-	vcsLogIndex: (repo: string | null, request: number | null) => typedError<LogIndexProgress, IdeError>(__TAURI_INVOKE("vcs_log_index", { repo, request })),
 	vcsRevisionChildren: (repo: string | null, revision: string, directory: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_children", { repo, revision, directory })),
 	vcsRevisionFiles: (repo: string | null, revision: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_files", { repo, revision })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -499,7 +512,7 @@ export const commands = {
 	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError>(__TAURI_INVOKE("vcs_branches", { repo })),
 	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
-	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
+	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
 	vcsStagePatch: (patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
 	vcsDiscard: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_discard", { paths })),
@@ -572,6 +585,11 @@ export const commands = {
 	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
 	/**  Files that differ between two revisions (the "N files updated" of Update Project). */
 	vcsDiffRevisions: (repo: string | null, from: string, to: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_revisions", { repo, from, to })),
+	/**
+	 *  Added and deleted lines between two revisions (Git Log › lines added and deleted).
+	 *  `paths` limits the diff to those repository-relative paths; empty diffs every file.
+	 */
+	vcsDiffNumstat: (repo: string | null, from: string, to: string, paths: string[]) => typedError<FileLineStats[], IdeError>(__TAURI_INVOKE("vcs_diff_numstat", { repo, from, to, paths })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
 	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
 	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
@@ -672,14 +690,16 @@ export const commands = {
 	runTestReports: (module: string | null, sinceMs: number | null) => typedError<TestCaseReport[], IdeError>(__TAURI_INVOKE("run_test_reports", { module, sinceMs })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
 	buildModel: () => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_model")),
+	gradleLinkProjects: (paths: string[]) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("gradle_link_projects", { paths })),
+	gradleUnlinkProjects: (paths: string[]) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("gradle_unlink_projects", { paths })),
 	/**
 	 *  Runs Maven (`help:effective-pom dependency:tree`) or Gradle (`tasks --all`) in the
 	 *  background, reporting progress on `on_progress`; cancellable with `cancel_request(request)`.
 	 *  Returns the refreshed model; a failed build is reported in its `syncError`.
 	 */
-	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, onProgress })),
+	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], buildDir: string | null, onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, buildDir, onProgress })),
 	/**  The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer). */
-	gradleDependencies: (gradlePath: string, configuration: string, offline: boolean, request: RequestId) => typedError<GradleDependency[], IdeError>(__TAURI_INVOKE("gradle_dependencies", { gradlePath, configuration, offline, request })),
+	gradleDependencies: (gradlePath: string, configuration: string, offline: boolean, request: RequestId, buildDir: string | null) => typedError<GradleDependency[], IdeError>(__TAURI_INVOKE("gradle_dependencies", { gradlePath, configuration, offline, request, buildDir })),
 	/**
 	 *  The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
 	 *  build has downloaded it.
@@ -723,6 +743,8 @@ export const commands = {
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
+	debugHotReload: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session })),
+	debugHotRestart: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_restart", { session })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
 	debugRunTo: (session: DebugSessionId, threadId: number, path: string, line: number, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("debug_run_to", { session, threadId, path, line, force })),
 	debugStop: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_stop", { session })),
@@ -758,6 +780,8 @@ export const commands = {
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective")),
+	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
+	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
 	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
 	sdkPhpLanguageLevel: (path: string) => typedError<PhpLanguageLevels, IdeError>(__TAURI_INVOKE("sdk_php_language_level", { path })),
 	/**
@@ -792,10 +816,10 @@ export const commands = {
 	 */
 	windowOpenFileInNewWindow: (project: string | null, file: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_file_in_new_window", { project, file })),
 	/**
-	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
-	 *  `ssh_config` (Remote Development); a new window connects itself.
+	 *  [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
+	 *  Remote Development); a new window connects itself.
 	 */
-	windowOpenRemote: (sshConfig: string, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { sshConfig, path, newWindow })),
+	windowOpenRemote: (target: RemoteTarget, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, newWindow })),
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
@@ -819,6 +843,13 @@ export const commands = {
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
+	/**
+	 *  Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.
+	 * 
+	 *  macOS WebKit can deliver a tap's `mousedown` after the button is already up. AppKit would then run
+	 *  its drag loop with no release left to end it, and the window follows the pointer until the next click.
+	 */
+	windowStartDrag: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_start_drag")),
 	/**  What this window was opened for (taken once). */
 	windowTakeLaunch: () => __TAURI_INVOKE<{
 	/**  Project folder to open. */
@@ -1007,7 +1038,7 @@ export const commands = {
 	pluginWebReadFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_web_read_file", { path })),
 	/**  Gutter markers of plugin `line-markers` providers for an open document. */
 	pluginLineMarkers: (doc: DocId) => typedError<LineMarkerInfo[], IdeError>(__TAURI_INVOKE("plugin_line_markers", { doc })),
-	/**  The marketplace's plugins: read again when `refresh`, else the last index read. */
+	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
 	/**  Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default). */
@@ -1132,6 +1163,19 @@ export const commands = {
 	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
 	/**  Test Connection: connects with `config` as edited (not necessarily saved). */
 	sshTest: (config: SshConfiguration, secret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("ssh_test", { config, secret })),
+	/**
+	 *  Installed WSL distros, for the "Connect to WSL" picker. `wsl.exe` can stall while the WSL
+	 *  service starts, so the wait is bounded.
+	 */
+	wslDistros: () => typedError<string[], IdeError>(__TAURI_INVOKE("wsl_distros")),
+	/**
+	 *  The WSL project a `\\wsl.localhost\<distro>\…` folder stands for, so the frontend opens it
+	 *  through the distro and not as a network folder. `None` for any other path.
+	 */
+	wslResolve: (path: string) => __TAURI_INVOKE<{
+	target: RemoteTarget,
+	path: string,
+} | null>("wsl_resolve", { path }),
 	/**  Remembers the password / passphrase of configuration `id` (`None` forgets it). */
 	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
 	/**  Whether connecting with configuration `id` needs a password first. */
@@ -1174,15 +1218,17 @@ export const commands = {
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
 	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
 	/**
-	 *  File › Remote Development: opens `path` on the host of SSH configuration
-	 *  `ssh_config` in this window (installs / starts the server as needed).
+	 *  File › Remote Development: opens `path` on `target` (an SSH host or a WSL distribution)
+	 *  in this window (installs / starts the server as needed).
 	 */
-	remoteConnect: (sshConfig: string, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { sshConfig, path, onProgress })),
+	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
 	remoteCurrent: () => __TAURI_INVOKE<{
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
 	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
 	commands: string[],
 } | null>("remote_current"),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -1232,7 +1278,7 @@ export const commands = {
 	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, maxRows })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
@@ -1583,6 +1629,19 @@ export type AgentUsage = {
 	cost?: AgentCost | null,
 };
 
+/**  One entry of `adb devices -l`. */
+export type AndroidDevice = {
+	/**  `adb -s` value: a USB serial number, `emulator-5554`, or `host:port`. */
+	serial: string,
+	/**  `device` (usable), `offline`, `unauthorized` or `no permissions`. */
+	state: string,
+	model: string | null,
+	product: string | null,
+	/**  The device's own name from the build (`ro.product.device`). */
+	device: string | null,
+	transportId: string | null,
+};
+
 export type AppInfo = {
 	version: string,
 	platform: string,
@@ -1859,7 +1918,7 @@ export type BuildMessage = {
 /**  The build systems of a project; `None` when the project does not use one. */
 export type BuildModel = {
 	maven: MavenModel | null,
-	gradle: GradleModel | null,
+	gradle?: GradleModel[],
 };
 
 export type BuildResult = {
@@ -2382,6 +2441,8 @@ export type CoverageReportSpec =
 { kind: "lcov"; runner: string; path: IpcPath; base: IpcPath } | 
 /**  `go test -coverprofile`; import paths under `module` map to `module_dir`. */
 { kind: "goProfile"; path: IpcPath; module: string; moduleDir: IpcPath } | 
+/**  SimpleCov's `.resultset.json`; relative paths resolve against `base`. */
+{ kind: "simpleCov"; path: IpcPath; base: IpcPath } | 
 /**  Every JaCoCo XML report (Maven `target/site/jacoco`, Gradle `build/reports/jacoco`) under `dir`. */
 { kind: "jacoco"; dir: IpcPath } | 
 /**  The tool's raw data is exported to lcov by `argv` first (coverage.py: `… -m coverage lcov -o <lcov>`). */
@@ -2488,6 +2549,11 @@ export type DataSource = {
 	options?: DbOptions,
 	introspection?: DbIntrospection,
 	properties?: DbProperty[],
+	/**
+	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
+	 *  so not written to it.
+	 */
+	global?: boolean,
 };
 
 /**  System Settings › Date Formats (Git log, Local History, blame). */
@@ -3433,12 +3499,14 @@ export type ExtensionCount = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt";
+export type ExternalFormatter = "prettier" | "oxfmt" | "ruff";
 
-/**  An external formatter (Prettier, oxfmt) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules, managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH. */
 	path?: string,
+	/**  Ruff only: directory containing its configuration, or a configuration file. */
+	configurationDirectory?: string,
 	languages?: string[],
 	/**  Prefer this formatter even when a language server offers formatting. */
 	prefer?: boolean,
@@ -3523,6 +3591,18 @@ export type FileIconThemeOptions = {
 export type FileIdentifiers = {
 	path: IpcPath,
 	occurrences: IdentifierOccurrence[],
+};
+
+/**
+ *  Added and deleted lines of one file between two revisions (`git diff --numstat`).
+ *  A rename keeps the counts of the content change; a pure rename is `0`/`0`.
+ */
+export type FileLineStats = {
+	/**  Path after the change (the only path, when the file was not renamed). */
+	path: string,
+	oldPath: string | null,
+	added: number,
+	removed: number,
 };
 
 export type FileMatch = {
@@ -3920,6 +4000,8 @@ export type GradleRunUsing =
 
 /**  Build Tools › Gradle. */
 export type GradleSettings = {
+	/**  Linked build directories; absent preserves automatic discovery, empty unlinks all builds. */
+	linkedProjects?: string[] | null,
 	/**  Empty = Project JDK; otherwise a JDK home. */
 	jvm?: string,
 	distribution?: GradleDistribution,
@@ -4761,6 +4843,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
+	ruff?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
@@ -4951,12 +5034,6 @@ export type LogDetails = {
 	fingerprint: string,
 };
 
-export type LogIndexProgress = {
-	indexed: number,
-	total: number,
-	running: boolean,
-};
-
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type LogLocation = {
@@ -5019,6 +5096,22 @@ export type LogQuery = {
 	summaryOnly?: boolean,
 	/**  Inclusive refresh boundary. Clients join only verified linear prefixes. */
 	stopAt?: string | null,
+};
+
+/**  The single-letter logcat priority, in increasing severity. */
+export type LogcatLevel = "verbose" | "debug" | "info" | "warn" | "error" | "fatal" | 
+/**  A line logcat prints outside the message format (`--------- beginning of main`). */
+"unknown";
+
+/**  One [`LogcatLevel`]-tagged line of `adb logcat -v threadtime`. */
+export type LogcatLine = {
+	/**  `MM-DD HH:MM:SS.mmm`, as logcat prints it (no year, device time zone). */
+	time: string,
+	pid: number,
+	tid: number,
+	level: LogcatLevel,
+	tag: string,
+	message: string,
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
@@ -5139,6 +5232,8 @@ export type MavenProject = {
 export type MavenSettings = {
 	/**  Project-relative root POMs removed from the Maven project model. */
 	unlinkedProjects?: string[],
+	/**  Project-relative POMs outside the root reactor added as independent top-level projects. */
+	linkedProjects?: string[],
 	/**  Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`. */
 	home?: string,
 	/**  User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`. */
@@ -5295,7 +5390,7 @@ export type NotebookEdit = { type: "setSource"; cell: string; source: string } |
 
 export type NotebookOutputEvent = {
 	id: string,
-	path: string,
+	path: IpcPath,
 	cell: string,
 	msgId: string,
 	kind: string,
@@ -5307,7 +5402,7 @@ export type NotebookOutputEvent = {
 
 export type NotebookSnapshot = {
 	id: string,
-	path: string,
+	path: IpcPath,
 	version: number,
 	dirty: boolean,
 	canUndo: boolean,
@@ -5467,6 +5562,12 @@ export type PhpSettings = {
 	 *  `composer.json` (`wordpress`).
 	 */
 	stubs?: string[],
+	/**
+	 *  PHPStan configuration file for checking saved files; empty = the `phpstan.neon`,
+	 *  `phpstan.neon.dist` or `phpstan.dist.neon` PHPStan finds in the project root. Absolute,
+	 *  `~/`, or relative to the project.
+	 */
+	phpstanConfig?: string,
 };
 
 /**  The focused editor when a plugin command is invoked. */
@@ -5509,7 +5610,11 @@ export type PluginEvent =
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
  */
-{ type: "languagesChanged" };
+{ type: "languagesChanged" } | 
+/**  Copy `text` to the system clipboard. */
+{ type: "copyToClipboard"; pluginId: string; text: string } | 
+/**  Open `url` (`http(s)://`) in the system browser. */
+{ type: "openUrl"; pluginId: string; url: string };
 
 export type PluginInfo = {
 	id: string,
@@ -5972,6 +6077,14 @@ export type RecentProject = {
 	branch: string | null,
 };
 
+/**  A named group of recent projects on the welcome screen (New Project Group…, Move to Group). */
+export type RecentProjectGroup = {
+	name: string,
+	/**  Its projects, in the order they were added. */
+	paths: IpcPath[],
+	expanded?: boolean,
+};
+
 export type RefactoringProblem = {
 	severity: ProblemSeverity,
 	message: string,
@@ -6022,6 +6135,8 @@ export type RegistryAgent = {
 	installed: string | null,
 	/**  Whether [`Self::version`] is newer than the installed one. */
 	update: boolean,
+	/**  An install of it is running (it goes on after the Settings page that started it closes). */
+	installing: boolean,
 };
 
 export type RegistryDistribution = 
@@ -6057,9 +6172,9 @@ export type RemoteEntry = {
 	permissions: string,
 };
 
-/**  A project folder on the host of an SSH configuration. */
+/**  A project folder on an SSH host or in a WSL distribution. */
 export type RemoteLaunch = {
-	sshConfig: string,
+	target: RemoteTarget,
 	path: string,
 };
 
@@ -6087,9 +6202,9 @@ export type RemoteProgress = {
 export type RemoteProject = RemoteProject_Serialize | RemoteProject_Deserialize;
 
 export type RemoteProject_Deserialize = {
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
-	/**  `user@host:port` of the SSH configuration. */
+	/**  `user@host:port` of the SSH configuration; the distribution name for WSL. */
 	host: string,
 	serverVersion: string,
 	os: string,
@@ -6099,9 +6214,9 @@ export type RemoteProject_Deserialize = {
 };
 
 export type RemoteProject_Serialize = {
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
-	/**  `user@host:port` of the SSH configuration. */
+	/**  `user@host:port` of the SSH configuration; the distribution name for WSL. */
 	host: string,
 	serverVersion: string,
 	os: string,
@@ -6111,14 +6226,23 @@ export type RemoteProject_Serialize = {
 };
 
 export type RemoteSession = {
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
 	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
 	commands: string[],
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
 export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
+
+/**  Where a remote project lives and how the server there is reached. */
+export type RemoteTarget = 
+/**  The host of SSH configuration `config`. */
+{ kind: "ssh"; config: string } | 
+/**  A WSL distribution on this machine. */
+{ kind: "wsl"; distro: string };
 
 export type Renamed = {
 	edit: WorkspaceEdit,
@@ -6205,7 +6329,7 @@ export type Risk =
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
 
 export type RouteSource = {
-	path: string,
+	path: IpcPath,
 	text: string,
 };
 

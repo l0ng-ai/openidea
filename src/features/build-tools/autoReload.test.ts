@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
 
 const maven = (stale: boolean) =>
   ({ syncedAt: 1, stale, syncError: null, profiles: [], projects: [] }) as unknown as MavenModel;
-const model = (stale: boolean): BuildModel => ({ maven: maven(stale), gradle: null });
+const model = (stale: boolean): BuildModel => ({ maven: maven(stale), gradle: [] });
 
 beforeEach(() => {
   vi.clearAllMocks();

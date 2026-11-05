@@ -26,7 +26,7 @@
  */
 import { ChangeSet, Text } from "@codemirror/state";
 import type { TextChange } from "@/platform/ipc";
-import { minimalChange } from "./diff";
+import { minimalChanges } from "./diff";
 
 export interface SyncTransport {
   edit(baseVersion: number, changes: TextChange[]): Promise<number>;
@@ -258,9 +258,9 @@ export class DocSync {
     }
     if (gen !== this.generation || this.disposed) return;
     if (snap.version > this.serverVersion) {
-      const change = minimalChange(this.confirmed.toString(), snap.text);
+      const changes = minimalChanges(this.confirmed.toString(), snap.text);
       this.pendingRemote = this.pendingRemote.filter((p) => p.version > snap.version);
-      this.applyRemoteNow({ baseVersion: this.serverVersion, version: snap.version, changes: change ? [change] : [] });
+      this.applyRemoteNow({ baseVersion: this.serverVersion, version: snap.version, changes });
       this.drainRemote();
     }
     this.resend();
@@ -329,9 +329,9 @@ export class DocSync {
     this.pendingRemote = this.pendingRemote.filter((p) => p.version > snap.version);
     this.confirmed = Text.of(snap.text.split("\n"));
     this.serverVersion = snap.version;
-    const change = minimalChange(local, snap.text);
-    if (change) {
-      const cs = ChangeSet.of([change], local.length);
+    const changes = minimalChanges(local, snap.text);
+    if (changes.length) {
+      const cs = ChangeSet.of(changes, local.length);
       this.localText = this.confirmed;
       this.host.applyRemote(cs);
     }

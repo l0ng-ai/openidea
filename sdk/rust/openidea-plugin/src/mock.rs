@@ -63,8 +63,11 @@ struct State {
     subscriptions: BTreeSet<EventKind>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
+    remotes: Vec<(String, String)>,
     fetches: u32,
     fetch_error: Option<Error>,
+    clipboard: Option<String>,
+    opened_urls: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
@@ -96,8 +99,17 @@ pub struct MockHost {
 }
 
 /// Every capability a plugin can hold, except `process:`/`net:`/`fs.read:`.
-const ALL: &[&str] =
-    &["project.read", "editor.read", "editor.write", "vcs.read", "vcs.write", "storage", "events", "events.input"];
+const ALL: &[&str] = &[
+    "project.read",
+    "editor.read",
+    "editor.write",
+    "vcs.read",
+    "vcs.write",
+    "storage",
+    "events",
+    "events.input",
+    "clipboard",
+];
 
 impl MockHost {
     /// Installs a mock granting the usual capabilities, with project `/project`.
@@ -195,6 +207,21 @@ impl MockHost {
     /// What `vcs-status` returns for every project (`None`: not under git).
     pub fn set_vcs_status(&self, status: Option<RepositoryStatus>) {
         self.state.borrow_mut().vcs = status;
+    }
+
+    /// Remotes `vcs-remotes` returns for every project.
+    pub fn set_vcs_remotes(&self, remotes: &[(&str, &str)]) {
+        self.state.borrow_mut().remotes = remotes.iter().map(|&(n, u)| (n.to_owned(), u.to_owned())).collect();
+    }
+
+    /// Last text copied with [`crate::host::copy_to_clipboard`].
+    pub fn clipboard(&self) -> Option<String> {
+        self.state.borrow().clipboard.clone()
+    }
+
+    /// URLs opened with [`crate::host::open_url`], in order.
+    pub fn opened_urls(&self) -> Vec<String> {
+        self.state.borrow().opened_urls.clone()
     }
 
     /// Makes `vcs-fetch` fail.
@@ -350,6 +377,25 @@ pub mod current {
         with(|s| s.status.remove(id));
     }
 
+    pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "clipboard")?;
+            s.clipboard = Some(text.to_owned());
+            Ok(())
+        })
+    }
+
+    pub fn open_url(url: &str) -> Result<(), Error> {
+        let trimmed = url.trim();
+        if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+            return Err(Error::Invalid(format!("{url:?}: expected an http:// or https:// URL")));
+        }
+        with(|s| {
+            s.opened_urls.push(trimmed.to_owned());
+            Ok(())
+        })
+    }
+
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         with(|s| {
             require(s, "storage")?;
@@ -493,6 +539,13 @@ pub mod current {
             }
             s.fetches += 1;
             Ok(())
+        })
+    }
+
+    pub fn vcs_remotes(_: &ProjectRes) -> Result<Vec<(String, String)>, Error> {
+        with(|s| {
+            require(s, "vcs.read")?;
+            Ok(s.remotes.clone())
         })
     }
 
@@ -680,6 +733,13 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
+        mock.set_vcs_remotes(&[("origin", "git@github.com:o/r.git")]);
+        assert_eq!(project.vcs_remotes().unwrap(), [("origin".into(), "git@github.com:o/r.git".into())]);
+        host::copy_to_clipboard("copied").unwrap();
+        assert_eq!(mock.clipboard().as_deref(), Some("copied"));
+        host::open_url("https://example.com/a").unwrap();
+        assert_eq!(mock.opened_urls(), ["https://example.com/a"]);
+        assert!(matches!(host::open_url("file:///etc/passwd"), Err(Error::Invalid(_))));
         {
             let task = host::begin_task("Work", true);
             task.report(1, Some(2), None);
@@ -709,6 +769,8 @@ mod tests {
         assert_eq!(editor.apply_edits(1, &[]), Err(Error::Denied("editor.write".into())));
         assert_eq!(host::storage::get("k"), Err(Error::Denied("storage".into())));
         assert_eq!(host::subscribe(EventKind::ActionPerformed), Err(Error::Denied("events.input".into())));
+        assert_eq!(mock.invocation().project().unwrap().vcs_remotes(), Err(Error::Denied("vcs.read".into())));
+        assert_eq!(host::copy_to_clipboard("x"), Err(Error::Denied("clipboard".into())));
     }
 
     #[test]

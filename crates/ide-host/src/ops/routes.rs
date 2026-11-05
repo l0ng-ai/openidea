@@ -20,7 +20,7 @@ const MAX_FILE_BYTES: u64 = 4 << 20;
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteSource {
-    pub path: String,
+    pub path: ide_core::IpcPath,
     pub text: String,
 }
 
@@ -51,7 +51,7 @@ pub(crate) fn sources_in(root: &Path, excludes: &[String]) -> Vec<RouteSource> {
             return;
         }
         bytes.fetch_add(text.len(), Ordering::Relaxed);
-        found.push(RouteSource { path: path.to_string_lossy().into_owned(), text });
+        found.push(RouteSource { path: path.to_path_buf().into(), text });
     });
     let mut files = found.into_inner().unwrap_or_default();
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -116,7 +116,7 @@ mod tests {
         std::fs::write(tmp.path().join("src/Notes.txt"), "@GetMapping(\"/a\")").unwrap();
         let files = sources_in(tmp.path(), &[]);
         assert_eq!(files.len(), 1, "{:?}", files.iter().map(|f| &f.path).collect::<Vec<_>>());
-        assert!(Path::new(&files[0].path).ends_with("src/Ctl.java"), "{}", files[0].path);
+        assert!(files[0].path.ends_with("src/Ctl.java"), "{:?}", files[0].path);
         assert!(files[0].text.contains("@GetMapping"));
     }
 
@@ -129,6 +129,6 @@ mod tests {
         std::fs::write(tmp.path().join("build/B.java"), "@RequestMapping(\"/b\")").unwrap();
         let files = sources_in(tmp.path(), &["build/**".to_owned()]);
         assert_eq!(files.len(), 1, "{:?}", files.iter().map(|f| &f.path).collect::<Vec<_>>());
-        assert!(Path::new(&files[0].path).ends_with("module/src/A.java"), "{}", files[0].path);
+        assert!(files[0].path.ends_with("module/src/A.java"), "{:?}", files[0].path);
     }
 }

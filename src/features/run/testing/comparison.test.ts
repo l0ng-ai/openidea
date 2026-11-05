@@ -10,6 +10,13 @@ describe("parseComparison", () => {
     expect(parseComparison(['expected: "a b"', ' but was: "a c"'])).toEqual({ expected: '"a b"', actual: '"a c"' });
   });
 
+  it("TestNG", () => {
+    expect(parseComparison(["java.lang.AssertionError: total expected [3] but found [2]"])).toEqual({
+      expected: "3",
+      actual: "2",
+    });
+  });
+
   it("kotlin.test", () => {
     expect(parseComparison(["java.lang.AssertionError: Expected <1>, actual <2>."])).toEqual({
       expected: "1",

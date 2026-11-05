@@ -1,0 +1,15 @@
+[package]
+name = "ide-android"
+description = "Android devices and logcat for the Logcat tool window, driven through the adb CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+serde.workspace = true
+specta.workspace = true
+which = "8"
+
+[dev-dependencies]
+tempfile.workspace = true

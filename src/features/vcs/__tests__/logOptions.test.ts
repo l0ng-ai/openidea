@@ -90,8 +90,9 @@ describe("long edges", () => {
 describe("highlighting", () => {
   it("finds the loaded commits of the current branch", () => {
     const commits = [c("s", ["a"]), c("h", ["a"]), c("a", ["r"]), c("r")];
-    expect([...reachableFrom(commits, "h")].sort()).toEqual(["a", "h", "r"]);
-    expect(reachableFrom(commits, null).size).toBe(0);
+    expect([...reachableFrom(commits, ["h"])].sort()).toEqual(["a", "h", "r"]);
+    expect([...reachableFrom(commits, ["h", "s"])].sort()).toEqual(["a", "h", "r", "s"]);
+    expect(reachableFrom(commits, []).size).toBe(0);
   });
 
   it("matches my commits by email or name", () => {

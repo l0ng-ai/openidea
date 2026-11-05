@@ -1,7 +1,7 @@
 /**
- * Edit › Copy Reference (⌥⇧⌘C): the fully qualified name of the symbol at
- * the caret, built from the file's outline (symbols enclosing the caret) and
- * the language's module conventions; `path:line` where there is no symbol.
+ * Edit › Copy Reference (⌥⇧⌘C): with the caret on a declaration's name, its
+ * fully qualified name, built from the file's outline and the language's module
+ * conventions; anywhere else `path:line`, as in IDEA.
  */
 
 export interface ReferenceInput {
@@ -11,10 +11,31 @@ export interface ReferenceInput {
   /** Project root, for project-relative paths and module names. */
   root: string | null;
   text: string;
-  /** Names of the outline symbols enclosing the caret, outermost first. */
+  /** Names of the outline symbols down to the one named at the caret, outermost first; empty off a name. */
   chain: string[];
   /** 0-based caret line. */
   line: number;
+}
+
+/**
+ * Start the write during the user gesture, while the reference is still being resolved.
+ * Without `ClipboardItem`, the text is written once it is known.
+ */
+export function copyReferenceToClipboard(
+  reference: Promise<string>,
+  clipboard: Clipboard = navigator.clipboard,
+  Item: typeof ClipboardItem | null = globalThis.ClipboardItem ?? null,
+): Promise<void> {
+  if (!Item || typeof clipboard.write !== "function") return reference.then((text) => clipboard.writeText(text));
+  return clipboard.write([
+    new Item({ "text/plain": reference.then((text) => new Blob([text], { type: "text/plain" })) }),
+  ]);
+}
+
+/** Position inside a selected identifier or the identifier under the caret. */
+export function referenceOffset(text: string, from: number, to: number): number | null {
+  if (from !== to) return /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(text.slice(from, to)) ? from : null;
+  return /[\p{L}\p{N}_$]/u.test(text[from] ?? "") ? from : null;
 }
 
 export function relativePath(path: string, root: string | null): string {
@@ -49,7 +70,8 @@ export function pythonModulePath(path: string, root: string | null): string {
   const parts = relativePath(path, root)
     .replace(/\.pyi?$/, "")
     .split("/");
-  if (parts[0] === "src" && parts.length > 1) parts.shift();
+  const src = parts.lastIndexOf("src");
+  if (src >= 0 && src < parts.length - 1) parts.splice(0, src + 1);
   if (parts[parts.length - 1] === "__init__") parts.pop();
   return parts.join(".");
 }
@@ -59,42 +81,37 @@ const declared = (text: string, re: RegExp) => re.exec(text)?.[1] ?? null;
 export function qualifiedReference(r: ReferenceInput): string {
   const fallback = `${relativePath(r.path, r.root)}:${r.line + 1}`;
   const chain = r.chain.filter(Boolean);
+  if (!chain.length) return fallback;
   switch (r.language) {
     case "java":
     case "groovy": {
-      if (!chain.length) return fallback;
       const pkg = declared(r.text, /^\s*package\s+([\w.]+)\s*;?/m);
       const [type, ...rest] = chain;
       const typePath = [pkg, type].filter(Boolean).join(".");
-      // `pkg.Outer.Inner#member`: the last symbol is the member unless the caret is in a type only.
+      // `pkg.Outer.Inner#member`: the last symbol is the member unless the caret is on a type's name.
       return rest.length ? `${[typePath, ...rest.slice(0, -1)].join(".")}#${rest[rest.length - 1]}` : typePath;
     }
     case "kotlin":
     case "scala": {
-      if (!chain.length) return fallback;
       const pkg = declared(r.text, /^\s*package\s+([\w.]+)/m);
       return [pkg, ...chain].filter(Boolean).join(".");
     }
-    case "csharp": {
-      if (!chain.length) return fallback;
+    case "csharp":
       return chain.join(".");
-    }
-    case "rust": {
-      if (!chain.length) return rustModulePath(r.path);
+    case "rust":
       return [rustModulePath(r.path), ...chain.map((n) => (n.startsWith("impl") ? rustImplType(n) : n))].join("::");
-    }
     case "python":
       return [pythonModulePath(r.path, r.root), ...chain].join(".");
     case "go": {
       const pkg = declared(r.text, /^\s*package\s+(\w+)/m) ?? stem(r.path);
-      return chain.length ? [pkg, ...chain].join(".") : fallback;
+      return [pkg, ...chain].join(".");
     }
     case "cpp":
     case "c":
     case "objective-cpp":
     case "php":
-      return chain.length ? chain.join("::") : fallback;
+      return chain.join("::");
     default:
-      return chain.length ? `${relativePath(r.path, r.root)}:${chain.join(".")}` : fallback;
+      return `${relativePath(r.path, r.root)}:${chain.join(".")}`;
   }
 }

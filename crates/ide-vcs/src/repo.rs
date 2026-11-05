@@ -65,7 +65,6 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
         inner: std::sync::Mutex::new(cache),
         ignored: Default::default(),
         log_index: Default::default(),
-        index_progress: Default::default(),
         log_signatures: Default::default(),
     }))
 }

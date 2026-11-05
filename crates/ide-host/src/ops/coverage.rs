@@ -32,7 +32,7 @@ pub async fn coverage_collect(host: &Host, window: &str, report: CoverageReportS
     blocking(move || ide_coverage::collect(&report)).await
 }
 
-/// Reads a report collected elsewhere (CI): lcov, a Go cover profile or JaCoCo XML,
+/// Reads a report collected elsewhere (CI): lcov, a Go cover profile, JaCoCo XML or a SimpleCov resultset,
 /// with paths mapped into this project.
 pub async fn coverage_import(host: &Host, window: &str, path: IpcPath) -> IdeResult<CoverageSuite> {
     let root = host.project(window)?.root.clone();

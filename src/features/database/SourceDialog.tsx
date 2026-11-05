@@ -110,7 +110,7 @@ const blankSsh = (): DbSsh => ({
   user: "",
   auth: "openSsh",
   keyFile: "",
-  saveSecret: true,
+  saveSecret: false,
 });
 
 const blankOptions = (): DbOptions => ({
@@ -155,7 +155,7 @@ function blank(): DataSource {
     user: "",
     file: null,
     ssl: "prefer",
-    savePassword: true,
+    savePassword: false,
     readOnly: false,
     color: null,
     comment: "",
@@ -1069,6 +1069,10 @@ export function SourceDialog({
               </span>
             )}
           />
+          {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
+          <span title={tx("Available in all projects")}>
+            <Checkbox checked={!!s.global} onChange={(global) => set({ global })} label="Global" />
+          </span>
         </div>
         <span />
         {showComment ? (

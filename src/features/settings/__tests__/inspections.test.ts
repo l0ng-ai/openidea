@@ -15,7 +15,7 @@ import {
   type InspectionNode,
 } from "../pages/editor/inspectionsModel";
 import { splitPageTarget } from "../model/staging";
-import { validateInspections } from "@/platform/inspections";
+import { JAVA_SERIAL_VERSION_INSPECTION, validateInspections } from "@/platform/inspections";
 import { NATURAL_LANGUAGES_PAGE, SPELLING_PAGE } from "../pages/editor/spelling";
 import { INSPECTIONS_PAGE } from "../pages/editor/inspections";
 import { EDITOR_PAGES } from "../pages/editor";
@@ -62,6 +62,42 @@ describe("plugin inspections", () => {
   });
 });
 
+describe("PHPStan inspections", () => {
+  it("list each identifier below PHPStan, from seen codes and stored overrides", () => {
+    const tree = buildInspectionTree(
+      [{ name: "PHP", servers: ["intelephense"] }],
+      [
+        {
+          producer: "phpstan",
+          code: "return.type",
+          source: "PHPStan",
+          sample: "Should return int but returns string.",
+        },
+        { producer: "build", code: "E0308", source: "rustc", sample: "" },
+      ],
+      [{ "builtin:phpstan:constant.notFound": { enabled: false }, "builtin:build:E1": { enabled: false } }],
+    );
+    const php = find(tree, "group:PHP")!;
+    expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "builtin:phpstan"]);
+    const phpstan = find(tree, "PHP/builtin:phpstan")!;
+    expect(phpstan.children.map((n) => [n.id, n.name])).toEqual([
+      ["builtin:phpstan:constant.notFound", "constant.notFound"],
+      ["builtin:phpstan:return.type", "return.type"],
+    ]);
+    expect(phpstan.children[1]!.description).toBe(
+      "PHPStan problems with code return.type.\n\nExample: Should return int but returns string.",
+    );
+    expect(pathToInspection(tree, "builtin:phpstan:return.type")).toEqual([
+      "group:PHP",
+      "PHP/builtin:phpstan",
+      "PHP/builtin:phpstan:return.type",
+    ]);
+    // Other built-in checks stay single inspections.
+    expect(find(tree, "General/builtin:build")!.children).toEqual([]);
+    expect(checkState({ "builtin:phpstan:constant.notFound": { enabled: false } }, phpstan)).toBe("mixed");
+  });
+});
+
 describe("inspections tree", () => {
   const tree = buildInspectionTree(languages, seen, [{ "lsp:ruff:E501": { severity: "typo" } }]);
 
@@ -69,8 +105,10 @@ describe("inspections tree", () => {
     expect(tree.map((g) => g.name)).toEqual([
       "Cargo",
       "General",
+      "Java",
       "JavaScript",
       "Other",
+      "PHP",
       "Proofreading",
       "Python",
       "SQL",
@@ -107,6 +145,19 @@ describe("inspections tree", () => {
     o = setEnabled(o, python, true);
     expect(o).toEqual({});
     expect(checkState(o, python)).toBe("on");
+  });
+
+  it("keeps an inspection that is off by default off until turned on", () => {
+    const serial = find(tree, `Java/${JAVA_SERIAL_VERSION_INSPECTION}`)!;
+    expect(checkState({}, serial)).toBe("off");
+    let o = setEnabled({}, serial, true);
+    expect(o).toEqual({ [JAVA_SERIAL_VERSION_INSPECTION]: { enabled: true } });
+    expect(checkState(o, serial)).toBe("on");
+    o = setEnabled(o, serial, false);
+    expect(o).toEqual({});
+    // Turning a whole group on or off only records what differs from each default.
+    const java = find(tree, "group:Java")!;
+    expect(setEnabled({}, java, true)).toEqual({ [JAVA_SERIAL_VERSION_INSPECTION]: { enabled: true } });
   });
 
   it("keeps severity and enabled overrides independent", () => {

@@ -2,7 +2,9 @@
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
+import { streamSearch } from "@/platform/textSearch";
 import { joinPath, type FileTarget } from "./links";
+import { findRubyTest } from "./rubyTests";
 import { tx } from "@/platform/i18n";
 
 async function exists(path: string): Promise<boolean> {
@@ -90,8 +92,45 @@ export async function resolveTarget(target: FileTarget, cwd: string): Promise<st
   return (await findByName(target)) ?? (target.className ? findLibraryClass(target.className) : null);
 }
 
+/** Regular-expression search over the project's Ruby files (or the given ones). */
+async function searchRuby(pattern: string, files?: string[]) {
+  const out: import("@/platform/ipc").FileMatches[] = [];
+  await streamSearch(
+    nextRequestId(),
+    {
+      pattern,
+      isRegex: true,
+      caseSensitive: true,
+      wholeWord: false,
+      include: files ? [] : ["*.rb"],
+      exclude: [],
+      scope: files ? { kind: "files", paths: files } : { kind: "project" },
+      maxMatches: 500,
+    },
+    (f) => out.push(f),
+  );
+  return out.sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
 export async function openTarget(target: FileTarget, cwd: string, focus = true): Promise<void> {
   if (!isTauri()) return;
+  if (target.resolve === "rubyTest") {
+    const site = target.className
+      ? await findRubyTest(searchRuby, target.className, target.path).catch(() => null)
+      : null;
+    if (!site) {
+      notifications().notify({
+        group: "run",
+        level: "warning",
+        title: "File not found",
+        body: `${target.className ?? ""}#${target.path}`,
+        key: "run-link",
+      });
+      return;
+    }
+    await editorService().openFile(site.path, { selection: { line: site.line - 1, col: 0 }, focus });
+    return;
+  }
   const path = await resolveTarget(target, cwd);
   if (!path && target.className) {
     // A library or JDK frame without sources: nothing to open, which is no error.

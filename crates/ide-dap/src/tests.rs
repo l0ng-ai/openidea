@@ -1141,6 +1141,23 @@ async fn kotlin_official_release_ten_no_delay_runs() {
     }
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn netcoredbg_windows_source_paths_round_trip() {
+    let client = "D:/work/LoginController.cs";
+    let native = r"D:\work\LoginController.cs";
+    let h = harness(Script { source_path: Some(native.into()), ..Script::default() });
+    let path = PathBuf::from(client);
+    h.manager.set_breakpoints(path.clone(), vec![bp(25)]).await.unwrap();
+    let mut cfg = config();
+    cfg.adapter = "netcoredbg".into();
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], native);
+    let frames = h.manager.stack_trace(id, 1).await.unwrap();
+    assert_eq!(frames[0].path.as_deref(), Some(path.as_path()));
+    h.manager.stop(id).await.unwrap();
+}
+
 #[tokio::test]
 async fn java_windows_source_paths_for_launch_and_attach() {
     for request in ["launch", "attach"] {
@@ -1251,4 +1268,20 @@ async fn a_plugin_language_runs_its_debug_adapter_from_the_approved_program() {
     let err = manager.start(godot_launch(&dir), owner).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::PermissionDenied, "{}", err.message);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
+    let root = std::env::temp_dir().join(format!("openidea-flutter-{}", std::process::id()));
+    let app = root.join("app");
+    let tool = root.join("tool");
+    std::fs::create_dir_all(app.join("lib")).unwrap();
+    std::fs::create_dir_all(tool.join("bin")).unwrap();
+    std::fs::write(app.join("pubspec.yaml"), "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n").unwrap();
+    std::fs::write(tool.join("pubspec.yaml"), "name: tool\ndependencies:\n  args: ^2.0.0\n").unwrap();
+    assert!(is_flutter_project(&app, None));
+    assert!(is_flutter_project(&root, Some(&app.join("lib/main.dart"))));
+    assert!(!is_flutter_project(&tool, Some(&tool.join("bin/main.dart"))));
+    assert!(!is_flutter_project(&root, None));
+    std::fs::remove_dir_all(&root).unwrap();
 }

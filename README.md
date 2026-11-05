@@ -20,7 +20,7 @@
   &nbsp;·&nbsp;
   <a href="#plugins">Plugins</a>
   &nbsp;·&nbsp;
-  <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
+  <a href="#community">Community</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
@@ -60,6 +60,13 @@ themes, icon themes and languages need no code at all.
 Install them from Settings › Plugins, or start your own with
 `openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
 the [official plugins](plugins/official). The plugin API is still a preview.
+
+## Community
+
+- [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
+- WeChat group — scan to join:
+
+  <img src="docs/assets/wechat-group.png" alt="WeChat group QR code" width="200">
 
 ## License
 

@@ -16,7 +16,7 @@ dunce.workspace = true
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-mcp-bridge = "0.13"
 tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
@@ -71,14 +71,18 @@ ide-tools = { path = "../crates/ide-tools" }
 ide-plugin = { path = "../crates/ide-plugin" }
 ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
+ide-android = { path = "../crates/ide-android" }
 ide-github = { path = "../crates/ide-github" }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 # Plugin secrets in the login keychain.
 security-framework = "3.7"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSEvent", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "CFRunLoop"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString"] }
 # Used only by the debug font-restriction override; Cargo dependency cfg cannot test debug_assertions.
@@ -89,6 +93,16 @@ objc2-web-kit = { version = "0.3", default-features = false, features = ["std", 
 gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Storage_EnhancedStorage",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

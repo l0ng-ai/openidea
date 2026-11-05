@@ -414,9 +414,21 @@ const linkPlugin = ViewPlugin.fromClass(
     private probeTimer: ReturnType<typeof setTimeout> | undefined;
     constructor(readonly view: EditorView) {
       // Window-wide, so ⌘/Ctrl over an unfocused editor underlines too; released anywhere clears it.
-      this.off = onNavigationModifier((held) => {
+      const offModifier = onNavigationModifier((held) => {
         if (!held || this.last) this.show(held);
       });
+      // IDEA's macOS "Force touch" shortcut: a force click navigates like ⌘-click
+      // (the keyboard dispatcher keeps the system Look Up popover away).
+      const onForceDown = (e: Event) => {
+        const m = e as MouseEvent;
+        if (m.metaKey || m.ctrlKey || m.altKey || m.shiftKey) return;
+        if (navigateFromPointer(view, m)) m.preventDefault();
+      };
+      view.contentDOM.addEventListener("webkitmouseforcedown", onForceDown);
+      this.off = () => {
+        offModifier();
+        view.contentDOM.removeEventListener("webkitmouseforcedown", onForceDown);
+      };
     }
     destroy() {
       this.off();
@@ -542,17 +554,23 @@ const linkPlugin = ViewPlugin.fromClass(
         }
         // IDEA parity: middle button navigates on a plain click, without the modifier.
         if (e.button === 1 ? e.metaKey || e.ctrlKey || e.altKey || e.shiftKey : !isNavigationGesture(e)) return false;
-        const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
-        if (pos == null) return false;
+        if (!navigateFromPointer(view, e)) return false;
         e.preventDefault();
-        view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
-        view.focus();
-        void gotoTargets(view, "definition", pos);
         return true;
       },
     },
   },
 );
+
+/** Puts the caret under the pointer and goes to the declaration there, like a ⌘/Ctrl-click. */
+function navigateFromPointer(view: EditorView, e: MouseEvent): boolean {
+  const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+  if (pos == null) return false;
+  view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
+  view.focus();
+  void gotoTargets(view, "definition", pos);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Document highlights

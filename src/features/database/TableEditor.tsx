@@ -31,6 +31,7 @@ import { openDialog, sourceById, withConnection } from "./store";
 import type { TableRef } from "./tableInput";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { shortcutLabel } from "@/platform/keymap";
 
 const PAGE_SIZES = ["100", "500", "1000", "5000"];
 
@@ -46,6 +47,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const [nonce, setNonce] = useState(0);
   const [edits, setEdits] = useState<PendingEdits>(emptyEdits);
   const [panel, setPanel] = useState<DataPanel | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [extractor, setExtractor] = useState<ExportFormat>("csv");
   // The ORDER BY field while it's being edited; it shows the sort otherwise.
   const [orderDraft, setOrderDraft] = useState<string | null>(null);
@@ -254,6 +256,13 @@ export function TableEditor({ input }: { input: EditorInput }) {
           disabled={!editable}
           onClick={() => openDialog({ kind: "import", id: ref.id, schema: ref.schema, table: ref.table })}
         />
+        <IconButton
+          icon="search"
+          title="Search"
+          shortcut={shortcutLabel("find.inFile")}
+          aria-pressed={searchOpen}
+          onClick={() => setSearchOpen(!searchOpen)}
+        />
         <PanelToggle panel={panel} onChange={setPanel} />
       </div>
       <div className={styles.filterBar}>
@@ -322,6 +331,8 @@ export function TableEditor({ input }: { input: EditorInput }) {
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            searchOpen={searchOpen}
+            onSearchOpenChange={setSearchOpen}
             firstRowNumber={offset + 1}
             rowState={(r) => (r >= loaded ? "inserted" : edits.deletes.has(r) ? "deleted" : null)}
             isModified={(r, c) => !!edits.updates.get(r)?.has(names[c]!)}

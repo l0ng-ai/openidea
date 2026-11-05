@@ -36,7 +36,7 @@ const mavenModel: BuildModel = {
     stale: true,
     syncError: null,
   },
-  gradle: null,
+  gradle: [],
 };
 
 describe("build tools feature", () => {
@@ -62,7 +62,7 @@ describe("build tools feature", () => {
     expect(getContext()["build.maven"]).toBe(true);
     expect(toolWindows()).not.toContain("gradle");
 
-    act(() => useBuild.setState({ model: { maven: null, gradle: null } }));
+    act(() => useBuild.setState({ model: { maven: null, gradle: [] } }));
     expect(toolWindows()).not.toContain("maven");
     expect(getContext()["build.maven"]).toBe(false);
   });

@@ -249,6 +249,39 @@ describe("Git log background refresh", () => {
     expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(history.slice(0, PAGE * 3).map((c) => c.id));
   });
 
+  it("keeps the loaded multi-root window on refresh without emitting older candidates", async () => {
+    const roots = useVcs.getState().roots;
+    const history = Object.fromEntries(
+      roots.map((repo, root) => [
+        repo,
+        Array.from({ length: 180 }, (_, i) => commit(`${root}-${i}`, 1000 - i * 2 - root)),
+      ]),
+    );
+    log.mockImplementation(async (repo: string, q: LogQuery) => ({
+      status: "ok",
+      data: history[repo]!.slice(q.skip, q.skip + q.limit).map((c, i) => ({
+        ...c,
+        logPosition: q.skip + i,
+        logTotal: history[repo]!.length,
+      })),
+    }));
+    await reloadLog();
+    const loaded = useGitLog.getState().commits.map((c) => c.id);
+    expect(loaded).toHaveLength(PAGE);
+
+    history[roots[0]!]!.unshift(commit("new", 2000));
+    await reloadLog({ preserve: true });
+    expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(["new", ...loaded]);
+    expect(useGitLog.getState().done).toBe(false);
+
+    await loadMore();
+    const expected = Object.values(history)
+      .flat()
+      .sort((a, b) => (b.timeMs ?? 0) - (a.timeMs ?? 0));
+    expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(expected.map((c) => c.id));
+    expect(useGitLog.getState().done).toBe(true);
+  });
+
   it("retains the current history if refreshing fails", async () => {
     useVcs.setState({ roots: ["/project/front"] });
     log.mockResolvedValue({ status: "ok", data: [commit("old")] });
