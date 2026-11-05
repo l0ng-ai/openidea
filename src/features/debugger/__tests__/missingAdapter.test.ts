@@ -27,6 +27,17 @@ describe("missing debug adapters", () => {
     expect(missingAdapter("delve", unavailable("debug adapter `delve` not found (x)"))?.tool).toBe("delve");
   });
 
+  it("offers the managed install of the missing php-debug adapter", () => {
+    const e = unavailable(
+      "debug adapter `php-debug` not found (`php-debug-adapter` is neither installed by OpenIDEA nor on PATH). Install PHP Debug (Xdebug) in Settings › Languages & Frameworks › Language Servers, and enable Xdebug",
+    );
+    expect(missingAdapter("php-debug", e)).toMatchObject({
+      tool: "php-debug",
+      title: "PHP Debug (Xdebug) is not installed",
+      body: e.message,
+    });
+  });
+
   it("leaves other failures and adapters without an installer alone", () => {
     expect(missingAdapter("js-debug", unavailable("connection refused"))).toBeNull();
     expect(missingAdapter("js-debug", new Error("debug adapter `js-debug` not found"))).toBeNull();

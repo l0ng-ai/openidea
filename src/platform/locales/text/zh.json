@@ -4123,6 +4123,7 @@
   "The JavaScript debugger (vscode-js-debug) is not installed": "JavaScript 调试器 (vscode-js-debug) 未安装",
   "Delve is not installed": "Delve 未安装",
   "CodeLLDB is not installed": "CodeLLDB 未安装",
+  "PHP Debug (Xdebug) is not installed": "PHP Debug (Xdebug) 未安装",
   "{name} (child)": "{name}（子进程）",
   "Enable breakpoint at {path}:{line}": "启用位于 {path}:{line} 的断点",
   "Headers ({count})": "标头 ({count})",
