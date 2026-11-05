@@ -4,7 +4,7 @@ use super::{DocState, Documents, RegEntry, disk_len, keys_for};
 use ide_core::error::ErrorKind;
 use ide_core::{DocId, FileEdit, IdeError, IdeEvent, IdeResult, NullSink, WorkspaceEdit, WorkspaceEditPrecondition};
 use parking_lot::Mutex;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -259,7 +259,9 @@ fn hash_bytes(hash: &mut blake3::Hasher, bytes: &[u8]) {
     hash.update(bytes);
 }
 
-fn hash_disk(hash: &mut blake3::Hasher, path: &Path) -> IdeResult<()> {
+/// Hashes `path` (recursively for a directory). A file in `unsaved` contributes the bytes its
+/// buffer would save, not its disk bytes, so saving a buffer leaves the hash unchanged.
+fn hash_disk(hash: &mut blake3::Hasher, path: &Path, unsaved: &HashMap<PathBuf, Vec<u8>>) -> IdeResult<()> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -277,6 +279,10 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path) -> IdeResult<()> {
     if meta.file_type().is_symlink() {
         hash.update(b"link");
         hash_bytes(hash, fs::read_link(path)?.as_os_str().as_encoded_bytes());
+    } else if let Some(bytes) = unsaved.get(path).filter(|_| meta.is_file()) {
+        hash.update(b"file");
+        hash.update(&(bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
     } else if meta.is_file() {
         hash.update(b"file");
         hash.update(&meta.len().to_le_bytes());
@@ -295,7 +301,7 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path) -> IdeResult<()> {
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
             hash_bytes(hash, entry.file_name().as_encoded_bytes());
-            hash_disk(hash, &entry.path())?;
+            hash_disk(hash, &entry.path(), unsaved)?;
         }
     } else {
         return Err(IdeError::invalid(format!("{} is not a regular file or directory", path.display())));
@@ -303,14 +309,19 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path) -> IdeResult<()> {
     Ok(())
 }
 
-/// A reverted edit may leave the dirty flag set even when all saved bytes match.
-fn differs_from_disk(state: &DocState) -> IdeResult<bool> {
+/// The bytes saving `state` would write.
+fn saved_bytes(state: &DocState) -> IdeResult<Vec<u8>> {
     let text = state.doc.text_for_save();
-    let bytes = if state.native_to_ascii {
+    Ok(if state.native_to_ascii {
         ide_vfs::encode_properties_ascii(&text).into_bytes()
     } else {
         ide_vfs::encode(&text, &state.encoding, state.has_bom)?
-    };
+    })
+}
+
+/// A reverted edit may leave the dirty flag set even when all saved bytes match.
+fn differs_from_disk(state: &DocState) -> IdeResult<bool> {
+    let bytes = saved_bytes(state)?;
     match fs::read(&state.path) {
         Ok(disk) => Ok(disk != bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
@@ -329,35 +340,31 @@ impl Documents {
         Ok(())
     }
 
+    /// What each path holds: disk contents, with unsaved buffers in place of their files. Saving
+    /// a buffer doesn't change it; edits, external writes and file operations do.
     fn fingerprints(&self, paths: &[PathBuf]) -> IdeResult<Vec<WorkspaceEditPrecondition>> {
+        let mut unsaved = HashMap::new();
+        for id in self.open_documents() {
+            self.with_doc(id, |state| {
+                let file = text_path(&state.path)?;
+                if state.dirty && paths.iter().any(|path| file.starts_with(path)) && differs_from_disk(state)? {
+                    unsaved.insert(file, saved_bytes(state)?);
+                }
+                Ok(())
+            })?;
+        }
         paths
             .iter()
             .map(|path| {
                 let mut hash = blake3::Hasher::new();
-                hash_disk(&mut hash, path)?;
-                let mut dirty = Vec::new();
-                for id in self.open_documents() {
-                    self.with_doc(id, |state| {
-                        let file = text_path(&state.path)?;
-                        if state.dirty && file.starts_with(path) && differs_from_disk(state)? {
-                            dirty.push((
-                                file,
-                                state.doc.text(),
-                                state.encoding.clone(),
-                                state.doc.line_ending(),
-                                state.has_bom,
-                            ));
-                        }
-                        Ok(())
-                    })?;
-                }
-                dirty.sort_by(|a, b| a.0.cmp(&b.0));
-                for (file, text, encoding, ending, bom) in dirty {
+                hash_disk(&mut hash, path, &unsaved)?;
+                // Unsaved files not on disk (yet) or outside what the walk above reached.
+                let mut extra: Vec<_> =
+                    unsaved.iter().filter(|(file, _)| file.starts_with(path) && !file.exists()).collect();
+                extra.sort_by(|a, b| a.0.cmp(b.0));
+                for (file, bytes) in extra {
                     hash_bytes(&mut hash, file.as_os_str().as_encoded_bytes());
-                    hash_bytes(&mut hash, text.as_bytes());
-                    hash_bytes(&mut hash, encoding.as_bytes());
-                    hash_bytes(&mut hash, ending.as_str().as_bytes());
-                    hash.update(&[u8::from(bom)]);
+                    hash_bytes(&mut hash, bytes);
                 }
                 Ok(WorkspaceEditPrecondition { path: path.clone().into(), hash: hash.finalize().to_hex().to_string() })
             })
@@ -394,14 +401,22 @@ impl Documents {
         if edit.files.is_empty() {
             return Ok(());
         }
+        // Validate project rules before path resolution can erase linked components.
+        crate::file_ops::validate_workspace_edit_paths(edit)?;
         let mut edit = normalize_edit(edit)?;
+        let captured = !edit.preconditions.is_empty();
+        crate::file_ops::expand_workspace_edit(&mut edit)?;
         self.prepare_workspace_edit(&mut edit)?;
         self.validate_preconditions(&edit.preconditions)?;
         for file in &edit.files {
             if let FileEdit::Edit { path, version: Some(version), .. } = file {
-                let doc = self.by_path(path).ok_or_else(|| stale(path))?;
-                if i64::from(self.version(doc)?) != i64::from(*version) {
-                    return Err(stale(path));
+                match self.by_path(path) {
+                    Some(doc) if i64::from(self.version(doc)?) != i64::from(*version) => return Err(stale(path)),
+                    Some(_) => {}
+                    // Servers version files the editor never opened (gopls renames). The
+                    // preconditions captured with the edit already cover its disk contents.
+                    None if captured => {}
+                    None => return Err(stale(path)),
                 }
             }
         }

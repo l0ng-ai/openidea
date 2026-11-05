@@ -18,6 +18,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  COMMUNITY_PLUGINS_INDEX: https://github.com/l0ng-ai/openidea-plugins/releases/download/index/index.json
 
 jobs:
   # Creates (or reuses) one draft release that every platform build uploads into.
@@ -25,8 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.release.outputs.id }}
+      official_plugin_keys: ${{ steps.plugin-keys.outputs.keys }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
       - name: Tag matches app version
         run: |
@@ -35,8 +37,32 @@ jobs:
             echo "::error::tag $TAG does not match tauri.conf.json version $app"
             exit 1
           fi
+      # A shipped plugin API is frozen: its WIT must be the snapshot api_frozen.rs checks later
+      # versions against (plugins/README.md, "Evolving the plugin API").
+      - name: Plugin API snapshot matches wit/
+        run: |
+          api() { sed -n 's/^package openidea:plugin@\(.*\);$/\1/p' "$1/plugin.wit"; }
+          snapshot=sdk/rust/openidea-plugin/tests/api/released
+          if [ "$(api wit)" != "$(api "$snapshot")" ]; then
+            echo "::error::plugin API $(api wit) ships without a snapshot ($snapshot is $(api "$snapshot")): copy wit/*.wit to $snapshot/"
+            exit 1
+          fi
+      # The official plugins' public key (from PLUGIN_SIGNING_KEY, the seed
+      # `openidea-plugin keygen` writes), built into the app: their packages
+      # must carry its signature whatever the marketplace index lists. Without
+      # the secret the app takes the index's word, as development builds do.
+      - id: plugin-keys
+        env:
+          SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            seed="$(printf %s "$SIGNING_KEY" | base64 -d | od -An -tx1 | tr -d ' \n')"
+            key="$(printf '302e020100300506032b657004220420%s' "$seed" | xxd -r -p |
+              openssl pkey -inform DER -pubout -outform DER | tail -c 32 | base64)"
+            echo "keys=$key" >> "$GITHUB_OUTPUT"
+          fi
       - id: release
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const tag = process.env.TAG;
@@ -57,6 +83,8 @@ jobs:
   build:
     needs: create-release
     name: Build (${{ matrix.name }})
+    env:
+      OPENIDEA_OFFICIAL_PLUGIN_KEYS: ${{ needs.create-release.outputs.official_plugin_keys }}
     strategy:
       fail-fast: false
       matrix:
@@ -81,11 +109,11 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
@@ -155,7 +183,7 @@ jobs:
           - { runner: macos-latest, target: x86_64-apple-darwin, os: macos, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
@@ -184,7 +212,11 @@ jobs:
   # (releases/latest/download/plugins-index.json). They are not in the
   # installers: users install them from Settings › Plugins. Without the
   # signing key (secret PLUGIN_SIGNING_KEY: the file `openidea-plugin keygen`
-  # writes) nothing is published and the release goes on.
+  # writes) nothing is published and the release goes on. The index also lists
+  # the community plugins of the registry (COMMUNITY_PLUGINS_INDEX; refreshed
+  # between releases by plugins-index.yml), and the release carries the
+  # openidea-plugin tool for Linux x64, which that workflow and the registry's
+  # checks run.
   plugins:
     needs: create-release
     name: Official plugins
@@ -198,7 +230,7 @@ jobs:
             echo "::warning::PLUGIN_SIGNING_KEY is not set: the official plugins are not published"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.key.outputs.skip != 'true'
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
@@ -207,10 +239,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.key.outputs.skip != 'true'
         with: { key: release-plugins }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         if: steps.key.outputs.skip != 'true'
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.key.outputs.skip != 'true'
         with: { node-version: 22 }
       # Builds the web pages; fails when a checked-in component isn't built from these sources.
@@ -237,11 +269,17 @@ jobs:
             version="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "$dir/plugin.toml" | head -1)"
             "$tool" pack "$dir" --key "$key" --publisher openidea --out "$out/$id-$version.oiplugin"
           done
-          # The published index's revocations and earlier keys carry over.
+          # The published index's revocations, earlier keys and community plugins carry over.
           curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/plugins-index.json" \
             -o "$out/plugins-index.json" || rm -f "$out/plugins-index.json"
-          "$tool" index "$out" --publisher openidea --name OpenIDEA --key "$key" --out "$out/plugins-index.json"
-          gh release upload "$TAG" "$out"/*.oiplugin "$out/plugins-index.json" --clobber
+          # Downloads point at this release: older versions kept for older IDEs stay where they were published.
+          "$tool" index "$out" --publisher openidea --name OpenIDEA --key "$key" --out "$out/plugins-index.json" \
+            --download-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          "$tool" merge "$out/plugins-index.json" "$COMMUNITY_PLUGINS_INDEX" --keep openidea ||
+            echo "::warning::the community plugins were not refreshed"
+          gzip -9 -c "$tool" > "$out/openidea-plugin-linux-x86_64.gz"
+          gh release upload "$TAG" "$out"/*.oiplugin "$out/plugins-index.json" \
+            "$out/openidea-plugin-linux-x86_64.gz" --clobber
 
   # The updater manifest (latest.json), built once from the signed bundles every build uploaded.
   # Fails when a platform is missing, so a release never ships a manifest without it.
@@ -249,7 +287,7 @@ jobs:
     needs: [create-release, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
@@ -309,7 +347,7 @@ jobs:
     needs: [create-release, build, server, plugins, updater-manifest]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:

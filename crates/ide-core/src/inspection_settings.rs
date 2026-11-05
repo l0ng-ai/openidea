@@ -36,6 +36,23 @@ impl Default for InspectionSettings {
     }
 }
 
+impl InspectionSettings {
+    /// Overrides of the profile in effect; `Default`'s when `profile` names none that exists.
+    pub fn active(&self) -> &BTreeMap<String, InspectionOverride> {
+        let custom = |level: &str, key: &str| match level {
+            "ide" => self.ide_profiles.get(key),
+            "project" => self.project_profiles.get(key),
+            _ => None,
+        };
+        match self.profile.as_str() {
+            "project" => &self.project,
+            id => {
+                id.split_once(':').and_then(|(level, key)| custom(level, key)).map_or(&self.default, |p| &p.overrides)
+            }
+        }
+    }
+}
+
 /// A named profile made with Copy.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -110,5 +127,21 @@ mod tests {
         assert!(!s.default["builtin:spelling"].options.as_ref().unwrap()["processCode"]);
         let back: InspectionSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn active_profile_falls_back_to_default() {
+        let off = |id: &str| {
+            BTreeMap::from([(id.to_owned(), InspectionOverride { enabled: Some(false), ..Default::default() })])
+        };
+        let mut s = InspectionSettings { default: off("a"), project: off("b"), ..Default::default() };
+        s.ide_profiles.insert("strict".into(), CustomInspectionProfile { name: "Strict".into(), overrides: off("c") });
+        assert!(s.active().contains_key("a"));
+        s.profile = "project".into();
+        assert!(s.active().contains_key("b"));
+        s.profile = "ide:strict".into();
+        assert!(s.active().contains_key("c"));
+        s.profile = "project:gone".into();
+        assert!(s.active().contains_key("a"));
     }
 }

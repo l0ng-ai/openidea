@@ -82,9 +82,15 @@ describe("t / locales", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
     expect(resolveLocale("ko-KR")).toBe("ko");
+    expect(resolveLocale("pt-BR")).toBe("pt");
+    expect(resolveLocale("pt_PT")).toBe("pt");
     expect(resolveLocale("EN-us")).toBe("en");
     expect(resolveLocale("fr")).toBe("fr");
     expect(resolveLocale("fr-CA")).toBe("fr");
+    expect(resolveLocale("pl_PL")).toBe("pl");
+    expect(resolveLocale("pl-PL")).toBe("pl");
+    expect(resolveLocale("es-MX")).toBe("es");
+    expect(resolveLocale("es_MX")).toBe("es");
     expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
@@ -105,6 +111,9 @@ describe("t / locales", () => {
     );
     await setLocale("zh-CN");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 个快捷键");
+    await setLocale("pt-BR");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
   });
 
   it("switches to Korean", async () => {
@@ -175,6 +184,14 @@ describe("t / locales", () => {
     expect(tx(zh)).toBe("Run 'orders'");
   });
 
+  it("loads the Portuguese catalogs", async () => {
+    await setLocale("pt-BR");
+    expect(useI18n.getState().locale).toBe("pt");
+    expect(t("common.cancel")).toBe("Cancelar");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
+  });
+
   it("loads the French catalogs", async () => {
     await setLocale("fr-FR");
     expect(useI18n.getState().locale).toBe("fr");
@@ -183,6 +200,22 @@ describe("t / locales", () => {
     expect(tx("Sync with OS")).toBe("Synchroniser avec le système");
     expect(tx`Run '${"orders"}'`).toBe("Exécuter 'orders'");
     expect(txTemplate("ruff is not installed")).toBe("ruff n'est pas installé");
+  });
+
+  it("loads the Polish catalogs", async () => {
+    await setLocale("pl-PL");
+    expect(useI18n.getState().locale).toBe("pl");
+    expect(t("common.cancel")).toBe("Anuluj");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 skrót");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
+  });
+
+  it("loads the Spanish catalogs", async () => {
+    await setLocale("es-MX");
+    expect(useI18n.getState().locale).toBe("es");
+    expect(t("common.cancel")).toBe("Cancelar");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 atajo");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 atajos");
   });
 
   it("lists keys by prefix", () => {
@@ -215,7 +248,7 @@ describe("catalogs", () => {
   it("exist for exactly the supported locales", () => {
     expect(translated.length).toBeGreaterThan(0);
     expect(Object.keys(translations).sort()).toEqual(translated);
-    expect(Object.keys(texts).sort()).toEqual(translated);
+    expect(Object.keys(texts).sort()).toEqual([...SUPPORTED_LOCALES].sort());
   });
 
   it("translate source text into non-empty text", () => {

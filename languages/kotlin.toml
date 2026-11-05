@@ -6,6 +6,11 @@ block-comment = ["/*", "*/"]
 indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "Kotlin"
 tree-sitter = "kotlin"
+scratch-template = '''
+fun main() {
+    $END$
+}
+'''
 
 [[language-servers]]
 name = "kotlin-lsp"

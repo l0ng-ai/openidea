@@ -468,6 +468,40 @@ async fn run_in_terminal_spawns_debuggee() {
     assert!(response["body"]["processId"].as_u64().unwrap() > 0);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn run_in_terminal_program_reads_typed_input() {
+    let h = harness(Script {
+        // CodeLLDB's launcher asks to clear the terminal; the console keeps its output.
+        run_in_terminal: Some(vec![
+            "sh".into(),
+            "-c".into(),
+            "[ -t 0 ] && echo 'name?' && read name && echo \"hello $name\"".into(),
+            "--clear-screen".into(),
+        ]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::ProgramInput)).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("name?"))).await;
+    h.manager.send_input(session, "Bob\n").unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("hello Bob"))).await;
+    let output: String = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Debug { event: DebugEvent::Output { category, output }, .. } if category == "stdout" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!output.contains('\r'), "{output:?}");
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "x\n").is_err());
+}
+
 #[test]
 fn launch_arguments_merge_and_defaults() {
     let mut c = config();
@@ -698,6 +732,37 @@ async fn js_debug_launch_gets_port_and_workspace_folder() {
     assert_eq!(launch["type"], "pwa-node");
 }
 
+/// CodeLLDB treats console input as LLDB commands unless told otherwise: Evaluate Expression
+/// and the Debug Console send expressions, so its console evaluates them. A launch
+/// configuration that picks a console mode keeps it.
+#[tokio::test]
+async fn codelldb_console_evaluates_expressions() {
+    let launch_with = |extra: Value| async move {
+        let h = harness(Script::default());
+        let config = LaunchConfig {
+            name: "demo".into(),
+            adapter: "codelldb".into(),
+            request: "launch".into(),
+            program: Some("/p/target/debug/demo".into()),
+            args: vec![],
+            cwd: Some("/p".into()),
+            env: BTreeMap::new(),
+            extra_json: Some(extra.to_string()),
+        };
+        h.start(config).await.unwrap();
+        h.request("launch")["arguments"].clone()
+    };
+    let launch = launch_with(json!({})).await;
+    assert_eq!(launch["_adapterSettings"]["consoleMode"], "evaluate");
+    assert_eq!(launch["sourceLanguages"], json!(["rust"]));
+
+    let launch =
+        launch_with(json!({"_adapterSettings": {"consoleMode": "commands", "showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "commands", "showDisassembly": "never"}));
+    let launch = launch_with(json!({"_adapterSettings": {"showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "evaluate", "showDisassembly": "never"}));
+}
+
 /// An adapter that is already listening (java-debug inside jdtls): the client
 /// connects over TCP to the `debugServer` port instead of spawning anything.
 #[tokio::test]
@@ -923,6 +988,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {
@@ -1109,6 +1175,23 @@ async fn kotlin_official_release_ten_no_delay_runs() {
     }
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn netcoredbg_windows_source_paths_round_trip() {
+    let client = "D:/work/LoginController.cs";
+    let native = r"D:\work\LoginController.cs";
+    let h = harness(Script { source_path: Some(native.into()), ..Script::default() });
+    let path = PathBuf::from(client);
+    h.manager.set_breakpoints(path.clone(), vec![bp(25)]).await.unwrap();
+    let mut cfg = config();
+    cfg.adapter = "netcoredbg".into();
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], native);
+    let frames = h.manager.stack_trace(id, 1).await.unwrap();
+    assert_eq!(frames[0].path.as_deref(), Some(path.as_path()));
+    h.manager.stop(id).await.unwrap();
+}
+
 #[tokio::test]
 async fn java_windows_source_paths_for_launch_and_attach() {
     for request in ["launch", "attach"] {
@@ -1219,4 +1302,20 @@ async fn a_plugin_language_runs_its_debug_adapter_from_the_approved_program() {
     let err = manager.start(godot_launch(&dir), owner).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::PermissionDenied, "{}", err.message);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
+    let root = std::env::temp_dir().join(format!("openidea-flutter-{}", std::process::id()));
+    let app = root.join("app");
+    let tool = root.join("tool");
+    std::fs::create_dir_all(app.join("lib")).unwrap();
+    std::fs::create_dir_all(tool.join("bin")).unwrap();
+    std::fs::write(app.join("pubspec.yaml"), "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n").unwrap();
+    std::fs::write(tool.join("pubspec.yaml"), "name: tool\ndependencies:\n  args: ^2.0.0\n").unwrap();
+    assert!(is_flutter_project(&app, None));
+    assert!(is_flutter_project(&root, Some(&app.join("lib/main.dart"))));
+    assert!(!is_flutter_project(&tool, Some(&tool.join("bin/main.dart"))));
+    assert!(!is_flutter_project(&root, None));
+    std::fs::remove_dir_all(&root).unwrap();
 }

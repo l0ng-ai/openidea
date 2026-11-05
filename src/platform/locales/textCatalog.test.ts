@@ -91,7 +91,9 @@ const UNTRANSLATED = new Set<string>([
   "CMake",
   "Prettier",
   "oxfmt",
+  "Ruff",
   "IntelliJ IDEA",
+  "PHPStan",
   // Docker run target placeholder values
   "compose.yaml",
   "python:3.12",
@@ -111,6 +113,7 @@ const UNTRANSLATED = new Set<string>([
   "loopvar,rangefunc",
   // SSH and run-target placeholders
   "SSH",
+  "WSL",
   "example.com",
   "java",
   "node",

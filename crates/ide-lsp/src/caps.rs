@@ -37,7 +37,7 @@ pub fn client_capabilities() -> Value {
             "fileOperations": { "dynamicRegistration": true, "willRename": true, "didRename": true },
             "configuration": true,
             "didChangeConfiguration": { "dynamicRegistration": false },
-            "didChangeWatchedFiles": { "dynamicRegistration": false, "relativePatternSupport": false },
+            "didChangeWatchedFiles": { "dynamicRegistration": true, "relativePatternSupport": true },
             "symbol": {
                 "dynamicRegistration": false,
                 "symbolKind": { "valueSet": symbol_kinds },
@@ -48,7 +48,7 @@ pub fn client_capabilities() -> Value {
             "semanticTokens": { "refreshSupport": true },
             "codeLens": { "refreshSupport": true },
             "inlayHint": { "refreshSupport": true },
-            "diagnostics": { "refreshSupport": false },
+            "diagnostics": { "refreshSupport": true },
             "textDocumentContent": { "dynamicRegistration": true }
         },
         "textDocument": {
@@ -130,6 +130,7 @@ pub fn client_capabilities() -> Value {
                 "prepareSupportDefaultBehavior": 1,
                 "honorsChangeAnnotations": false
             },
+            "diagnostic": { "dynamicRegistration": false, "relatedDocumentSupport": false },
             "publishDiagnostics": {
                 "relatedInformation": true,
                 "tagSupport": { "valueSet": [1, 2] },
@@ -161,7 +162,8 @@ pub fn client_capabilities() -> Value {
             "callHierarchy": { "dynamicRegistration": false },
             "typeHierarchy": { "dynamicRegistration": false }
         },
-        "experimental": {}
+        // rust-analyzer: report when the project has loaded (`quiescent`).
+        "experimental": { "serverStatusNotification": true }
     })
 }
 

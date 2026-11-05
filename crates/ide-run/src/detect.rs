@@ -564,9 +564,8 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
                 Some(m) => format!("application:{m}:{class}"),
                 None => format!("application:{class}"),
             };
-            let mut app = config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class])
-                .in_dir(module_rel.as_ref().map(PathBuf::from))
-                .debug("java-debug");
+            let mut app =
+                config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class]).debug("java-debug");
             app.extras.module = Some(module_rel.clone().unwrap_or_default());
             out.push(app);
         }
@@ -1060,6 +1059,10 @@ fn ruby_config(
     c
 }
 
+/// Loads the test files of the directories (or files) named in `ARGV`, default `test`, the way `rake test`
+/// does; options such as `-v` stay in `ARGV` for Minitest.
+const MINITEST_RUNNER: &str = r#"paths, opts = ARGV.partition { |a| !a.start_with?("-") }; ARGV.replace(opts); (paths.empty? ? ["test"] : paths).flat_map { |d| File.file?(d) ? [d] : Dir[File.join(d, "**", "{*_test,test_*}.rb")] }.sort.each { |f| require File.expand_path(f) }"#;
+
 fn uses_rspec(root: &Path) -> bool {
     root.join("spec").is_dir()
         || root.join(".rspec").is_file()
@@ -1102,6 +1105,17 @@ fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
     }
     if uses_rspec(root) {
         out.push(ruby_config("rspec".into(), "rspec".into(), "rspec", ruby_tool(root, "rspec"), &[]).test());
+    } else if root.join("test").is_dir() && !out.iter().any(|c| c.id == "rake:test") {
+        // Minitest / Test::Unit without a `test` Rake task: load every test file under `test/`.
+        let mut args = Vec::new();
+        for dir in ["lib", "test"] {
+            if root.join(dir).is_dir() {
+                args.push(format!("-I{dir}"));
+            }
+        }
+        args.extend(["-e".to_owned(), MINITEST_RUNNER.to_owned(), "test".to_owned()]);
+        let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+        out.push(ruby_config("minitest".into(), "minitest".into(), "ruby", ruby_tool(root, "ruby"), &extra).test());
     }
 }
 

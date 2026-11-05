@@ -3,14 +3,21 @@
  *
  * Closing a window (traffic light, Quit closing every window) runs
  * `decideClose`: confirm exit when this is the last window and
- * `general.confirmExit` is on, then Save All / Don't Save / Cancel when
- * documents have unsaved changes. Quit confirms once, then the backend closes
- * every window, each of which runs only its unsaved-changes check.
+ * `general.confirmExit` is on, then Terminate / Cancel when Run/Debug processes
+ * still run and `run.confirmTerminate` is on, then Save All / Don't Save / Cancel
+ * when documents have unsaved changes. Quit confirms once, then the backend
+ * closes every window, each of which runs its own checks.
  */
 import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
-import { maybeEditorService, notifications, type EditorCloseSession } from "@/workbench/contributions";
+import { workflowSettings } from "@/platform/workflowSettings";
+import {
+  maybeEditorService,
+  notifications,
+  runningProcesses as liveProcesses,
+  type EditorCloseSession,
+} from "@/workbench/contributions";
 import { ask, type Ask } from "@/workbench/messages";
 import { AUX_CLOSED, auxiliaryWindow, closeDocumentWindows, type AuxCloseResult } from "@/platform/auxWindow";
 
@@ -29,6 +36,9 @@ export interface CloseInput {
   quitting: boolean;
   windows: number;
   confirmExit: boolean;
+  confirmTerminate: boolean;
+  /** Running Run/Debug process names this close would terminate. */
+  processes: readonly string[];
   dirty: number;
   project: string | null;
 }
@@ -37,6 +47,9 @@ export interface CloseDeps {
   ask: Ask;
   saveAll: () => Promise<void>;
   disableConfirmExit: () => Promise<void>;
+  disableConfirmTerminate: () => Promise<void>;
+  /** Running Run/Debug process names in this window. */
+  runningProcesses: () => Promise<readonly string[]>;
   onSaveFailed: (e: unknown) => void;
   /** Stops custom document edits/execution before reading their final dirty state. */
   prepareClose?: () => Promise<EditorCloseSession | undefined>;
@@ -53,6 +66,24 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
     });
     if (r.button !== "exit") return false;
     if (r.checked) await deps.disableConfirmExit().catch(() => {});
+  }
+  if (input.confirmTerminate && input.processes.length > 0) {
+    const names = input.processes;
+    const r = await deps.ask({
+      title:
+        names.length === 1
+          ? t("app.terminateProcesses.titleOne", { name: names[0]! })
+          : t("app.terminateProcesses.titleMany", { count: names.length }),
+      body:
+        names.length === 1
+          ? t("app.terminateProcesses.bodyOne", { name: names[0]! })
+          : t("app.terminateProcesses.bodyMany", { count: names.length, names: names.join(", ") }),
+      buttons: [{ id: "terminate", label: t("app.terminateProcesses.terminate"), primary: true }],
+      checkbox: t("app.terminateProcesses.dontAsk"),
+      icon: "warning",
+    });
+    if (r.button !== "terminate") return false;
+    if (r.checked) await deps.disableConfirmTerminate().catch(() => {});
   }
   let session: EditorCloseSession | undefined;
   let authorized = false;
@@ -94,6 +125,11 @@ const defaultDeps: CloseDeps = {
     const r = await commands.settingsSet("global", "general.confirmExit", "false");
     if (r.status === "ok") useProject.setState({ settings: r.data });
   },
+  disableConfirmTerminate: async () => {
+    const r = await commands.settingsSet("global", "run.confirmTerminate", "false");
+    if (r.status === "ok") useProject.setState({ settings: r.data });
+  },
+  runningProcesses: async () => (await liveProcesses()).map((p) => p.name),
   onSaveFailed: (e) =>
     notifications().notify({
       level: "error",
@@ -101,6 +137,11 @@ const defaultDeps: CloseDeps = {
       body: e instanceof Error ? e.message : String(e),
     }),
 };
+
+/** Process names this close would terminate; an unavailable feature list never blocks closing. */
+async function processNames(deps: CloseDeps): Promise<string[]> {
+  return [...new Set(await deps.runningProcesses().catch(() => []))].filter(Boolean);
+}
 
 let closing = false;
 
@@ -120,11 +161,14 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       if (await confirmLeave(deps)) await closeProject();
       return false;
     }
+    const confirmTerminate = workflowSettings().run.confirmTerminate;
     const ok = await decideClose(
       {
         quitting: ctx.quitting,
         windows: ctx.windows,
         confirmExit: confirmExitEnabled(s.settings),
+        confirmTerminate,
+        processes: confirmTerminate ? await processNames(deps) : [],
         dirty: dirtyCount(),
         project: s.project?.name ?? null,
       },
@@ -151,15 +195,36 @@ export async function confirmLeave(
   project = useProject.getState().project?.name ?? null,
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
-  return decideClose({ quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project }, deps);
+  const confirmTerminate = workflowSettings().run.confirmTerminate;
+  return decideClose(
+    {
+      quitting: false,
+      windows: 2,
+      confirmExit: false,
+      confirmTerminate,
+      processes: confirmTerminate ? await processNames(deps) : [],
+      dirty: dirtyCount(),
+      project,
+    },
+    deps,
+  );
 }
 
 /** Quit: confirm once (if enabled), then let the backend close every window. */
 export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
   if (!isTauri()) return;
   if (confirmExitEnabled(useProject.getState().settings)) {
+    // Each window asks about its own processes as the backend closes it.
     const ok = await decideClose(
-      { quitting: false, windows: 1, confirmExit: true, dirty: 0, project: null },
+      {
+        quitting: false,
+        windows: 1,
+        confirmExit: true,
+        confirmTerminate: false,
+        processes: [],
+        dirty: 0,
+        project: null,
+      },
       { ...deps, prepareClose: undefined },
     );
     if (!ok) return;

@@ -184,6 +184,12 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
     par_map(&candidates, |(path, source)| python_sdk(path, source, root))
 }
 
+/// Interpreter `path` (one the project is set to, wherever it lives) as an SDK, named
+/// like the detected ones.
+pub fn python_interpreter_sdk(path: &Path, root: Option<&Path>) -> Option<Sdk> {
+    python_sdk(path, if venv_of(path).is_some() { "venv" } else { "system" }, root)
+}
+
 pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Option<Sdk> {
     let version = query(path, &["--version"], VERSION_TIMEOUT)
         .and_then(|v| v.strip_prefix("Python ").map(str::to_owned))
@@ -193,10 +199,11 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
     let label = match (&venv, source) {
         (Some(home), _) => {
             let dir = home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            // `.venv` inside a project reads better as the project name, like PyCharm.
+            // `.venv` inside a project reads better as the folder that holds it (the project,
+            // or a member such as `backend`), like PyCharm.
             let owner = home.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
             match (dir.starts_with('.') || dir == "venv" || dir == "env", owner, root) {
-                (true, Some(owner), Some(root)) if home.parent() == Some(root) => format!("Python {short} ({owner})"),
+                (true, Some(owner), Some(root)) if home.starts_with(root) => format!("Python {short} ({owner})"),
                 _ => format!("Python {short} ({dir})"),
             }
         }
@@ -275,8 +282,38 @@ pub(crate) fn php_source(path: &Path, home: Option<&Path>) -> &'static str {
     }
 }
 
-/// `php` CLIs: every one on `PATH`, Homebrew's versioned formulae, PHP version managers,
-/// Laravel Herd, and the usual Windows distributions (XAMPP, Laragon).
+/// A PHP CLI named with its version, as Debian / Ubuntu (`ppa:ondrej/php`) install them:
+/// `php8.1`, `php81`. Not `php-cgi8.1`, `phpize8.1` or `phpdbg8.1`.
+pub(crate) fn is_versioned_php_name(name: &str) -> bool {
+    let name = name.strip_suffix(".exe").unwrap_or(name);
+    let Some(version) = name.strip_prefix("php") else { return false };
+    let mut parts = version.splitn(2, '.');
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    parts.next().is_some_and(digits) && parts.next().is_none_or(digits)
+}
+
+/// The versioned PHP CLIs in `dirs`, in `PATH` order (sorted by name within a directory).
+pub(crate) fn versioned_php_in(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in dirs {
+        if version_managers::is_shims_dir(&dir) {
+            continue;
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| is_versioned_php_name(n))
+            .collect();
+        names.sort();
+        found.extend(names.into_iter().map(|n| dir.join(n)).filter(|p| p.is_file()));
+    }
+    found
+}
+
+/// `php` CLIs: every one on `PATH` (also versioned ones, `php8.1`), Homebrew's versioned
+/// formulae, PHP version managers, Laravel Herd, and the usual Windows distributions (XAMPP, Laragon).
 fn php() -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
     let home = home_dir();
@@ -284,6 +321,11 @@ fn php() -> Vec<Sdk> {
         if version_managers::is_shim(&p) {
             continue;
         }
+        let source = php_source(&p, home.as_deref());
+        found.push((p, source));
+    }
+    // After the plain `php`: deduplication keeps `/usr/bin/php` over the `php8.3` it links to.
+    for p in versioned_php_in(std::env::split_paths(&search_path())) {
         let source = php_source(&p, home.as_deref());
         found.push((p, source));
     }
@@ -325,7 +367,7 @@ fn php() -> Vec<Sdk> {
         }
     }
     let found = dedupe_by_real_path(found);
-    par_map(&found, |(path, source)| {
+    let mut sdks = par_map(&found, |(path, source)| {
         let version = query(path, &["-r", "echo PHP_VERSION;"], VERSION_TIMEOUT)?;
         let version = version.trim().to_owned();
         if version.is_empty() {
@@ -339,7 +381,16 @@ fn php() -> Vec<Sdk> {
             home: path.parent().and_then(Path::parent).map(Into::into),
             extra: None,
         })
-    })
+    });
+    newest_first(&mut sdks);
+    sdks
+}
+
+/// Newest version first, number by number (8.3.12 before 8.3.9); stable, so on equal
+/// versions the `PATH` install stays first.
+pub(crate) fn newest_first(sdks: &mut [Sdk]) {
+    let key = |s: &Sdk| ide_core::tool_path::version_key(s.version.as_deref().unwrap_or(""));
+    sdks.sort_by_key(|s| std::cmp::Reverse(key(s)));
 }
 
 fn node() -> Vec<Sdk> {
@@ -659,6 +710,10 @@ mod maven_path_tests {
 
     impl Subst {
         fn new(target: &Path) -> Self {
+            // Tests run in parallel and may race for the same free letter; only a drive that
+            // shows this target's marker is ours.
+            let marker = format!("{}.subst", target.file_name().unwrap().to_string_lossy());
+            std::fs::write(target.join(&marker), "").unwrap();
             for letter in (b'D'..=b'Z').rev() {
                 let name = format!("{}:", char::from(letter));
                 let root = PathBuf::from(format!("{name}\\"));
@@ -666,7 +721,7 @@ mod maven_path_tests {
                     continue;
                 }
                 let output = Command::new("subst").arg(&name).arg(target).output().unwrap();
-                if output.status.success() {
+                if output.status.success() && root.join(&marker).exists() {
                     return Self { name, root };
                 }
             }

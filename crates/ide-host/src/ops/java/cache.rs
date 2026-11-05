@@ -242,6 +242,29 @@ mod tests {
         assert!(build().is_err());
         assert_eq!(fs::read_to_string(root.join("calls")).unwrap().lines().count(), 5);
     }
+    /// An external tool (e.g. an AI code editor) rewrites a source file with the same byte
+    /// length and preserves its mtime. The `(length, mtime)` fingerprint reads that as
+    /// "unchanged" and would reuse the stale snapshot; the content hash must catch it.
+    #[test]
+    fn external_edit_preserving_length_and_mtime_rebuilds_the_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(cache.clone());
+        let first = session.build(root, &model, root, false, None, &cancel).unwrap();
+        assert_eq!(fs::read_to_string(first.snapshot.join("0/Main.class")).unwrap(), "first");
+
+        let source = root.join("src/main/kotlin/Main.kt");
+        let mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        fs::write(&source, "other").unwrap(); // 5 bytes, same length as "first"
+        fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
+        let rebuilt = session.build(root, &model, root, false, None, &cancel).unwrap();
+        assert_ne!(rebuilt.snapshot, first.snapshot, "a same-length, same-mtime content change must rebuild");
+        assert_eq!(fs::read_to_string(rebuilt.snapshot.join("0/Main.class")).unwrap(), "other");
+    }
+
     #[test]
     fn session_drop_removes_superseded_snapshots_and_preserves_records_across_reopen() {
         let dir = tempfile::tempdir().unwrap();

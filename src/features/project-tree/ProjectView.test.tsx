@@ -95,6 +95,47 @@ function setup() {
 }
 
 describe("ProjectView", () => {
+  it("toggles Unity metadata and generated files independently in the rendered tree", async () => {
+    fs = new MemoryFs(
+      {
+        "/w/acme/Assets/Player.cs": "code",
+        "/w/acme/Assets/Player.cs.meta": "metadata",
+        "/w/acme/Library/cache": "cache",
+        "/w/acme/Game.sln": "",
+      },
+      ROOT,
+    );
+    setProjectFsForTests(fs, ROOT);
+    initProjectTree(ROOT, "Game", null, { editorVersion: "6000.0.62f1", projects: [], solutions: [] });
+    const { rows } = setup();
+    act(() => useProjectTree.setState({ expanded: new Set([ROOT, `${ROOT}/Assets`]) }));
+    await waitFor(() => expect(rows()).toContain("Player.cs"));
+    expect(rows()).not.toContain("Player.cs.meta");
+    expect(rows()).not.toContain("Library");
+    act(() => setViewOption("showUnityMeta", true));
+    await waitFor(() => expect(rows()).toContain("Player.cs.meta"));
+    expect(rows()).not.toContain("Game.sln");
+    act(() => setViewOption("showUnityGenerated", true));
+    await waitFor(() => expect(rows()).toContain("Game.sln"));
+    expect(rows()).toContain("Library");
+    act(() => setViewOption("showUnityMeta", false));
+    expect(rows()).not.toContain("Player.cs.meta");
+    expect(rows()).toContain("Library");
+  });
+
+  it("shows Unity version and generation guidance, then updates when project files arrive", async () => {
+    initProjectTree(ROOT, "Game", null, { editorVersion: "6000.0.62f1", projects: [], solutions: [] });
+    const { row } = setup();
+    expect(screen.getByText(/C# project files are missing/)).toHaveAttribute("role", "status");
+    await waitFor(() => expect(row("Game")).toHaveTextContent("Unity 6000.0.62f1"));
+    act(() => {
+      useProjectTree.setState({
+        unity: { editorVersion: "6000.0.62f1", projects: ["Assembly-CSharp.csproj"], solutions: ["Game.sln"] },
+      });
+    });
+    expect(screen.queryByText(/C# project files are missing/)).not.toBeInTheDocument();
+  });
+
   it("shows the root with its path and loads children lazily", async () => {
     const { rows, row, tree } = setup();
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "README.md"]));
@@ -623,10 +664,24 @@ describe("Show Members", () => {
   });
 });
 
-it("renders workspace member roots with their own paths, without the settings directory", async () => {
-  fs = new MemoryFs({ "/z/first.txt": "", "/a/second.txt": "", "/workspace/.openidea/workspace.json": "{}" });
+it("sorts workspace member roots by the folder names shown in the tree", async () => {
+  fs = new MemoryFs({
+    "/a/service10/ten.txt": "",
+    "/z/Service2/two.txt": "",
+    "/m/alpha/first.txt": "",
+    "/workspace/.openidea/workspace.json": "{}",
+  });
   setProjectFsForTests(fs, "/workspace");
-  initProjectTree("/workspace", "Workspace", ["/z", "/a"]);
+  initProjectTree("/workspace", "Workspace", ["/a/service10", "/z/Service2", "/m/alpha"]);
   const { rows } = setup();
-  await waitFor(() => expect(rows()).toEqual(["z/z", "first.txt", "a/a", "second.txt"]));
+  await waitFor(() =>
+    expect(rows()).toEqual([
+      "alpha/m/alpha",
+      "first.txt",
+      "Service2/z/Service2",
+      "two.txt",
+      "service10/a/service10",
+      "ten.txt",
+    ]),
+  );
 });

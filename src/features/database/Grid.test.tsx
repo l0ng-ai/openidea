@@ -2,6 +2,8 @@ import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerActions } from "@/platform/actions";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
+import { DataView } from "./DataView";
 import { Grid } from "./Grid";
 import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
 import { exportData } from "./export";
@@ -128,5 +130,107 @@ describe("large database cells", () => {
     expect(onEdit).toHaveBeenCalledWith(0, 0, "updated");
     rerender(<Grid columns={columns} rowCount={1} value={() => null} />);
     expect(screen.getByRole("gridcell").textContent).toBe("<null>");
+  });
+});
+
+describe("multi-line database cells", () => {
+  const columns = [{ name: "note", type: "text" }];
+  const multi = "first line\nsecond line\r\nthird";
+
+  it("shows line breaks as markers on one line", () => {
+    render(<Grid columns={columns} rowCount={1} value={() => multi} />);
+    expect(screen.getByRole("gridcell").textContent).toBe("first line↵second line↵third");
+  });
+
+  it.each([
+    ["LF", "a\nb", "a\nb\nc"],
+    ["CRLF, kept although the textarea uses LF", "a\r\nb", "a\r\nb\r\nc"],
+  ])("edits a multi-line value (%s) in the multi-line editor and keeps its line breaks", (_, value, saved) => {
+    const onEdit = vi.fn();
+    render(<Grid columns={columns} rowCount={1} value={() => value} editable onEdit={onEdit} />);
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(editor.tagName).toBe("TEXTAREA");
+    fireEvent.change(editor, { target: { value: "a\nb\nc" } });
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+    expect(onEdit).toHaveBeenCalledWith(0, 0, saved);
+  });
+
+  it("opens the multi-line editor with Shift+Enter, from the grid and from the inline editor", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={columns} rowCount={1} value={() => "one"} editable onEdit={onEdit} />);
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Enter", shiftKey: true });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).tagName).toBe("TEXTAREA");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const inline = screen.getByRole("textbox");
+    expect(inline.tagName).toBe("INPUT");
+    fireEvent.change(inline, { target: { value: "one two" } });
+    fireEvent.keyDown(inline, { key: "Enter", shiftKey: true });
+    fireEvent.blur(inline);
+    const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor.value).toBe("one two");
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+});
+describe("result grid search", () => {
+  const columns = [
+    { name: "city", type: "text" },
+    { name: "n", type: "int" },
+  ];
+  const data = [
+    ["Shanghai", "1"],
+    ["Beijing", "2"],
+    ["Shenzhen", "3"],
+    ["Hangzhou", "4"],
+  ];
+  const value = (r: number, c: number) => data[r]?.[c] ?? null;
+
+  it("opens the search bar on Ctrl+F and highlights the matches of the page", () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <DataView
+          columns={columns}
+          rowCount={4}
+          value={value}
+          panel={null}
+          onPanelChange={() => {}}
+          searchOpen={open}
+          onSearchOpenChange={setOpen}
+        />
+      );
+    }
+    render(<Harness />);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "f", ctrlKey: true });
+    const input = screen.getByRole("textbox", { name: "Search in results" });
+    fireEvent.change(input, { target: { value: "sh" } });
+    const marked = () =>
+      screen
+        .getAllByRole("gridcell")
+        .filter((c) => /cellMatch/.test(c.className))
+        .map((c) => c.textContent);
+    expect(marked()).toEqual(["Shanghai", "Shenzhen"]);
+    expect(screen.getByText("1/2")).toBeTruthy();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByText("2/2")).toBeTruthy();
+
+    // Match Case: "sh" no longer matches "Sh…".
+    fireEvent.click(screen.getByRole("button", { name: /Match Case/ }));
+    expect(marked()).toEqual([]);
+    expect(screen.getByText("0 results")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Match Case/ }));
+
+    // Filter rows keeps only the rows with a match.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Filter rows" }));
+    expect(screen.getAllByRole("row").length - 1).toBe(2);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("search")).toBeNull();
+    expect(screen.getAllByRole("row").length - 1).toBe(4);
   });
 });

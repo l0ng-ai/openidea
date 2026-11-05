@@ -33,7 +33,7 @@ import { defineBuiltinUiPoints } from "./points";
 import { startViewUi } from "./uiPoints";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { IntellijThemesDialogHost } from "./IntellijThemesDialog";
-import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, usePlugins } from "./store";
+import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
 
 function registerPluginsPage(): () => void {
   return registerSettingsPage({
@@ -90,6 +90,16 @@ export function activate(): () => void {
         },
       },
       {
+        id: "plugins.updateAll",
+        title: "Update All Plugins",
+        category: "Plugins",
+        icon: "plugin",
+        keywords: ["upgrade", "marketplace", "new version"],
+        run: async () => {
+          await updateAllPlugins();
+        },
+      },
+      {
         id: "plugins.importIntellijTheme",
         title: "Import IntelliJ Theme from File…",
         category: "Plugins",
@@ -103,10 +113,19 @@ export function activate(): () => void {
       },
       {
         id: "plugins.importInstalledIntellijTheme",
-        title: "Import Theme from IntelliJ IDE…",
+        title: "Import Theme from JetBrains IDE…",
         category: "Plugins",
         icon: "plugin",
-        keywords: ["intellij", "jetbrains", "theme", "color scheme", "migrate"],
+        keywords: [
+          "intellij",
+          "jetbrains",
+          "pycharm",
+          "webstorm",
+          "android studio",
+          "theme",
+          "color scheme",
+          "migrate",
+        ],
         when: "projectOpen",
         run: () => showInstalledIntellijThemes(),
       },

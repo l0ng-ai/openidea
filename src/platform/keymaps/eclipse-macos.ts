@@ -50,6 +50,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.expandToLevel5": [],
   "refactor.extractMethod": ["Meta+Alt+M"],
   "navigate.fileStructure": ["Meta+O"],
+  "db.goToColumn": ["Meta+O"],
   "find.inFile": [],
   "find.inPath": ["Ctrl+H"],
   "find.next": ["Meta+K"],
@@ -123,6 +124,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "debug.stepOver": ["F6"],
   "debug.forceStepOver": ["Meta+Ctrl+F6"],
   "code.surroundWith": ["Meta+Alt+Z"],
+  // ⌥⌘Z is Surround With here, not the table editor's Revert.
+  "db.revertChanges": [],
   "file.reloadFromDisk": [],
   "project.reloadFromDisk": [],
   "navigate.toggleBookmark": [],

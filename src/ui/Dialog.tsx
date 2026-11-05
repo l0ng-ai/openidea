@@ -110,10 +110,19 @@ export interface DialogProps {
   footer?: ReactNode;
   width?: number | string;
   /**
-   * `both` shows a corner grip resizing the window. The content lays out again
-   * against the new size; a numeric `width` is also the minimum width.
+   * `both` shows a corner grip resizing the window or popup. The content lays out
+   * again against the new size; a numeric `width` is also the minimum width
+   * unless `minWidth` says otherwise.
    */
   resizable?: "both";
+  minWidth?: number;
+  minHeight?: number;
+  /** Height cap while content-sized; a manual resize lifts it. */
+  maxHeight?: number;
+  /** Size to open at, such as one remembered from `onResized`; kept inside the window. */
+  initialSize?: { w: number; h: number } | null;
+  /** The size a resize ended at. */
+  onResized?: (size: { w: number; h: number }) => void;
   /**
    * `top` places a lightweight modal popup (choosers, Search Everywhere) near
    * the top. Popups (also any dialog without a title) get no window title bar
@@ -201,6 +210,11 @@ function DialogInner({
   footer,
   width = 480,
   resizable,
+  minWidth,
+  minHeight,
+  maxHeight,
+  initialSize,
+  onResized,
   position = "center",
   className,
   dismissOnBackdrop,
@@ -224,7 +238,11 @@ function DialogInner({
 
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [active, setActive] = useState(() => typeof document === "undefined" || document.hasFocus());
-  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const [size, setSize] = useState<{ w: number; h: number } | null>(() =>
+    resizable && initialSize && typeof window !== "undefined"
+      ? { w: Math.min(initialSize.w, window.innerWidth - 24), h: Math.min(initialSize.h, window.innerHeight - 24) }
+      : null,
+  );
 
   useEffect(() => {
     const onFocus = () => setActive(true);
@@ -318,7 +336,7 @@ function DialogInner({
 
   const label = aria["aria-label"] ?? (typeof title === "string" ? title : undefined);
   const hasFooter = !!(buttons?.length || footerStart || onHelp || footer);
-  const canResize = resizable === "both" && !popup;
+  const canResize = resizable === "both";
 
   const resize = (e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -327,21 +345,30 @@ function DialogInner({
     e.preventDefault();
     const start = { x: e.clientX, y: e.clientY };
     const rect = el.getBoundingClientRect();
-    const minW = typeof width === "number" ? width : 320;
+    const minW = minWidth ?? (typeof width === "number" ? width : 320);
     const chrome = el.querySelector<HTMLElement>("[data-dialog-titlebar]")?.offsetHeight ?? 0;
-    const minH = chrome + 120;
+    const minH = minHeight ?? chrome + 120;
     const origin = offset;
+    let last: { w: number; h: number } | null = null;
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return up();
       const w = Math.min(Math.max(rect.width + ev.clientX - start.x, minW), window.innerWidth - 24);
-      const h = Math.min(Math.max(rect.height + ev.clientY - start.y, minH), window.innerHeight - 24);
-      setSize({ w, h });
-      // The overlay centres the dialog: shift by half the growth so its top-left stays put.
-      setOffset({ x: origin.x + (w - rect.width) / 2, y: origin.y + (h - rect.height) / 2 });
+      // A `top` popup grows downwards from where it sits.
+      const maxH = position === "top" ? window.innerHeight - rect.top - 12 : window.innerHeight - 24;
+      const h = Math.min(Math.max(rect.height + ev.clientY - start.y, minH), maxH);
+      last = { w, h };
+      setSize(last);
+      // The overlay centres the dialog (a `top` popup only horizontally): shift by half
+      // the growth so its top-left stays put.
+      setOffset({
+        x: origin.x + (w - rect.width) / 2,
+        y: position === "top" ? origin.y : origin.y + (h - rect.height) / 2,
+      });
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (last) onResized?.(last);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -368,6 +395,7 @@ function DialogInner({
         style={{
           width: size ? size.w : width,
           height: size?.h,
+          maxHeight: !size && maxHeight ? `min(${maxHeight}px, 100%)` : undefined,
           translate: offset.x || offset.y ? `${offset.x}px ${offset.y}px` : undefined,
         }}
       >

@@ -5,8 +5,8 @@ wit_bindgen::generate!({
     inline: "
         package fixture:misbehave;
         world misbehave {
-            include openidea:plugin/plugin-syntax@1.0.0;
-            export openidea:plugin/providers@1.0.0;
+            include openidea:plugin/plugin-syntax@1.1.0;
+            export openidea:plugin/providers@1.1.0;
         }
     ",
     path: "../../../../../wit",
@@ -14,7 +14,9 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-use exports::openidea::plugin::providers::{self, CodeAction, CompletionItem, Document, InlineSuggestion, LineMarker};
+use exports::openidea::plugin::providers::{
+    self, CodeAction, CompletionItem, Document, FileEdit, InlineSuggestion, LineMarker,
+};
 use exports::openidea::plugin::syntax_provider::{self, Fold, Symbol, Token};
 use exports::openidea::plugin::{commands, event_handler, lifecycle};
 use openidea::plugin::{invocation::Invocation, types};
@@ -67,6 +69,23 @@ impl commands::Guest for Misbehave {
             }
             // The user gave up: not the plugin failing.
             "cancel" => Err(types::Error::Cancelled),
+            // Event kinds are names: one this IDE doesn't know is refused.
+            "subscribe" => openidea::plugin::events::subscribe(&arg.unwrap_or_default()).map(|()| None),
+            // Tagged problems from another tool on the line 0 of `arg`.
+            "diagnose" => {
+                use openidea::plugin::diagnostics::{self, Diagnostic, Severity};
+                let start = types::Position { line: 0, character: 0 };
+                let d = Diagnostic {
+                    range: types::Range { start, end: start },
+                    severity: Severity::Warning,
+                    message: "unused".into(),
+                    code: None,
+                    source: Some("lint".into()),
+                    tags: vec!["unnecessary".into(), "glowing".into()],
+                    related: Vec::new(),
+                };
+                diagnostics::publish(&arg.unwrap_or_default(), &[d]).map(|()| None)
+            }
             other => Err(types::Error::NotFound(format!("command {other}"))),
         }
     }
@@ -113,14 +132,24 @@ impl syntax_provider::Guest for Misbehave {
 impl providers::Guest for Misbehave {
     fn completion(doc: Document, _at: types::Position, _trigger: Option<String>) -> Vec<CompletionItem> {
         behave(&doc.text);
+        // `rich`: a snippet that also adds an import.
+        let rich = doc.text == "rich";
+        let start = types::Position { line: 0, character: 0 };
         vec![CompletionItem {
             label: doc.path.clone(),
             detail: None,
             kind: Some("keyword".into()),
-            insert_text: doc.path,
+            insert_text: if rich { "f(${1:x})$0".into() } else { doc.path },
+            snippet: rich,
             replace: None,
             sort_text: None,
+            filter_text: rich.then(|| "fun".into()),
             documentation: None,
+            additional_edits: if rich {
+                vec![types::TextEdit { range: types::Range { start, end: start }, text: "use f;\n".into() }]
+            } else {
+                Vec::new()
+            },
         }]
     }
 
@@ -128,8 +157,27 @@ impl providers::Guest for Misbehave {
         None
     }
 
-    fn code_actions(_doc: Document, _selection: types::Range) -> Vec<CodeAction> {
-        Vec::new()
+    /// `lazy`: one action whose edits come from `resolve-code-action`.
+    fn code_actions(doc: Document, _selection: types::Range) -> Vec<CodeAction> {
+        if doc.text != "lazy" {
+            return Vec::new();
+        }
+        vec![CodeAction {
+            title: "Fix later".into(),
+            kind: Some("quickfix".into()),
+            preferred: false,
+            edits: Vec::new(),
+            data: Some("fix".into()),
+        }]
+    }
+
+    fn resolve_code_action(doc: Document, action: CodeAction) -> Result<CodeAction, types::Error> {
+        if action.data.as_deref() != Some("fix") {
+            return Err(types::Error::Invalid("not one of mine".into()));
+        }
+        let start = types::Position { line: 0, character: 0 };
+        let edit = types::TextEdit { range: types::Range { start, end: start }, text: "fixed ".into() };
+        Ok(CodeAction { edits: vec![FileEdit { path: doc.path, edits: vec![edit] }], ..action })
     }
 
     fn definition(_doc: Document, _at: types::Position) -> Vec<types::Location> {

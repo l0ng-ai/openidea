@@ -37,8 +37,8 @@ describe("Collapse Linear Branches", () => {
     ];
     const { commits: shown, graph } = collapseLinear(commits, new Set());
     expect(shown.map((x) => x.id)).toEqual(["t", "m", "base"]);
-    expect(graph.find((g) => g.id === "m")).toEqual({ id: "m", parents: ["base"], dashed: [true] });
-    expect(graph.find((g) => g.id === "t")).toEqual({ id: "t", parents: ["m"] });
+    expect(graph.find((g) => g.id === "m")).toMatchObject({ id: "m", parents: ["base"], dashed: [true] });
+    expect(graph.find((g) => g.id === "t")).toMatchObject({ id: "t", parents: ["m"] });
     const { rows } = computeGraph(graph);
     expect(rows[1]!.down.some((s) => s.dashed)).toBe(true);
     expect(rows[2]!.up.some((s) => s.dashed)).toBe(true);
@@ -52,7 +52,12 @@ describe("Collapse Linear Branches", () => {
       c("x", [], ["tag: v1"]),
     ];
     const { graph } = collapseLinear(commits, new Set());
-    expect(graph.find((g) => g.id === "y")).toEqual({ id: "y", parents: ["x"], dashed: [true] });
+    expect(graph.find((g) => g.id === "y")).toMatchObject({
+      id: "y",
+      parents: ["x"],
+      dashed: [true],
+      edgeTypes: ["filtered"],
+    });
     expect(computeGraph(commits).rows[1]!.down.some((s) => s.dashed)).toBe(true);
   });
 
@@ -85,8 +90,9 @@ describe("long edges", () => {
 describe("highlighting", () => {
   it("finds the loaded commits of the current branch", () => {
     const commits = [c("s", ["a"]), c("h", ["a"]), c("a", ["r"]), c("r")];
-    expect([...reachableFrom(commits, "h")].sort()).toEqual(["a", "h", "r"]);
-    expect(reachableFrom(commits, null).size).toBe(0);
+    expect([...reachableFrom(commits, ["h"])].sort()).toEqual(["a", "h", "r"]);
+    expect([...reachableFrom(commits, ["h", "s"])].sort()).toEqual(["a", "h", "r", "s"]);
+    expect(reachableFrom(commits, []).size).toBe(0);
   });
 
   it("matches my commits by email or name", () => {

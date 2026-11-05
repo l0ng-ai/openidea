@@ -175,3 +175,66 @@ async fn contended_version_reads_do_not_block_the_async_worker() {
         assert!(watchdog.join().unwrap(), "request {request_kind} blocked the only async worker");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_actions_skip_a_command_no_server_provides_after_their_edit() {
+    use ide_lsp::types::{CodeAction, Command};
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("imports.txt");
+    std::fs::write(&file, "unused\nused\n").unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: tmp.path().join("config"),
+        data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("local-data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(|_| {})),
+        owner: |window| window,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.open_light("main", &file).unwrap();
+    let info = ops::doc::open(&host, "main", file.clone()).await.unwrap();
+    // Optimize Imports as vtsls offers it: the edit, then a command its client runs itself.
+    let action = |edit: bool| CodeAction {
+        title: "Organize Imports".into(),
+        kind: Some("source.organizeImports".into()),
+        is_preferred: false,
+        disabled_reason: None,
+        edit: edit.then(|| {
+            serde_json::from_value(json!({ "files": [{ "kind": "edit", "path": file, "edits": [
+                { "range": { "start": { "line": 0, "col": 0 }, "end": { "line": 1, "col": 0 } }, "new_text": "" }
+            ] }] }))
+            .unwrap()
+        }),
+        command: Some(Command {
+            title: String::new(),
+            command: "_typescript.didOrganizeImports".into(),
+            arguments: vec![],
+        }),
+        data: None,
+        server: ide_core::ServerId(1),
+    };
+    let follow_up = action(true).command.unwrap();
+    let asked = ops::lsp::lsp_resolve_command(
+        &host,
+        "main",
+        ide_core::RequestId(1),
+        info.id,
+        ide_core::ServerId(1),
+        follow_up,
+        vec![],
+    )
+    .await;
+    assert!(matches!(asked, Ok(None)), "{asked:?}");
+    ops::lsp::lsp_execute_code_action(&host, "main", ide_core::RequestId(2), info.id, action(true), vec![])
+        .await
+        .unwrap();
+    assert_eq!(ops::doc::snapshot(&host, "main", info.id).await.unwrap().text, "used\n");
+    ops::lsp::lsp_apply_code_action(&host, "main", info.id, action(true)).await.unwrap();
+    assert_eq!(ops::doc::snapshot(&host, "main", info.id).await.unwrap().text, "");
+    // Without an edit the command is the action: it still can't run.
+    let ran =
+        ops::lsp::lsp_execute_code_action(&host, "main", ide_core::RequestId(3), info.id, action(false), vec![]).await;
+    assert!(ran.is_err(), "{ran:?}");
+}

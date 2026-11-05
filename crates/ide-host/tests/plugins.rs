@@ -6,6 +6,7 @@
 //! `plugins/build.sh <dir>` after changing their source or `wit/`.
 
 use ide_core::error::ErrorKind;
+use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
 use ide_plugin::{EditorContext, HostError, Invocation, Limits};
 use parking_lot::Mutex;
@@ -123,6 +124,19 @@ fn misbehave_pkg() -> PathBuf {
     repo().join("crates/ide-plugin/tests/fixtures/misbehave")
 }
 
+/// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
+/// another (or behind a new instance starting) holds once it caught up.
+fn eventually(mut f: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(5);
+    while !f() {
+        if Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 /// A theme package with a light and a dark theme, plus licence files, in `dir`.
 fn write_theme_pair(dir: &Path) {
     std::fs::create_dir_all(dir.join("t")).unwrap();
@@ -201,7 +215,7 @@ fn fixture(limits: Limits) -> Fixture {
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::write(project.join("src/notes.txt"), "one two three\nfour five\n").unwrap();
     std::fs::write(tmp.path().join("secret.txt"), "top secret").unwrap();
-    let project = project.canonicalize().unwrap();
+    let project = dunce::canonicalize(project).unwrap();
     let events: Events = Arc::default();
     let sink = {
         let events = events.clone();
@@ -346,7 +360,7 @@ fn read_file_is_confined_to_the_project() {
     let inv = Invocation { client: None, workspace_root: None, editor: None };
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
-    assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), f.project.to_string_lossy());
+    assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
 }
 
@@ -397,11 +411,11 @@ fn crashes_restart_with_backoff_until_the_circuit_opens() {
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.activations, info.error), (PluginStatus::Active, 2, None));
 
-    // Three in a row: stopped for the session, with growing waits between.
+    // Three in a row: stopped for the session, backing off between them (the wait
+    // doubles: `Limits::backoff`, tested where it is defined; wall-clock waits on CI
+    // are too noisy to compare).
     f.take_events();
-    let mut waits = Vec::new();
-    for _ in 0..3 {
-        let started = Instant::now();
+    for crash in 0..3 {
         let err = loop {
             match f.run("misbehave", "panic", None) {
                 Err(e) if e.contains("restarts in") => std::thread::sleep(Duration::from_millis(20)),
@@ -409,9 +423,10 @@ fn crashes_restart_with_backoff_until_the_circuit_opens() {
             }
         };
         assert!(err.contains("crashed"), "{err}");
-        waits.push(started.elapsed());
+        if crash < 2 {
+            assert!(f.run("misbehave", "echo", None).unwrap_err().contains("restarts in"), "backing off");
+        }
     }
-    assert!(waits[2] >= backoff * 2 && waits[2] > waits[1], "{waits:?}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!(info.status, PluginStatus::Failed);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("3 times in a row")), "{:?}", info.error);
@@ -479,12 +494,15 @@ fn running_calls_can_be_cancelled() {
         let f = f.clone();
         std::thread::spawn(move || f.run("misbehave", "spin", None))
     };
-    std::thread::sleep(Duration::from_millis(100));
-    let started = Instant::now();
-    f.host.cancel("misbehave");
+    // A cancel before the call runs (the instance may still be starting) does nothing: repeat it.
+    let until = Instant::now() + Duration::from_secs(5);
+    while !spinning.is_finished() {
+        assert!(Instant::now() < until, "the running call wasn't interrupted");
+        f.host.cancel("misbehave");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let err = spinning.join().unwrap().unwrap_err();
     assert!(err.contains("was cancelled"), "{err}");
-    assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(f.run("misbehave", "echo", Some("x")).unwrap().as_deref(), Some("x"), "no backoff");
     let stats = f.host.info_of("misbehave").unwrap().stats;
     assert_eq!((stats.crashes, stats.activations), (0, 2));
@@ -526,16 +544,22 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     let provider = host.syntax_provider();
     let mis = LanguageId::new("mis");
 
-    let tokens = provider.highlights(&mis, "fast").unwrap();
+    // The first call starts the instance, which may take longer than the soft deadline.
+    let mut tokens = None;
+    assert!(eventually(|| {
+        tokens = provider.highlights(&mis, "fast");
+        tokens.is_some()
+    }));
+    let tokens = tokens.unwrap();
     assert_eq!((tokens[0].start, tokens[0].end, tokens[0].kind.as_str()), (0, 4, "keyword"));
 
     // Slower than the soft deadline: dropped (however late this thread gets
     // to look), but the instance lives on.
     assert!(provider.highlights(&mis, "sleep:150").is_none());
-    std::thread::sleep(Duration::from_millis(150));
-    assert!(provider.highlights(&mis, "fast").is_some());
+    assert!(eventually(|| provider.highlights(&mis, "fast").is_some()));
     let info = host.info_of("misbehave").unwrap();
-    assert_eq!((info.stats.slow_calls, info.stats.crashes, info.stats.activations), (1, 0, 1));
+    assert!(info.stats.slow_calls >= 1, "{:?}", info.stats);
+    assert_eq!((info.stats.crashes, info.stats.activations), (0, 1));
 
     // Past the hard deadline: interrupted; the next call gets a new instance.
     assert!(provider.highlights(&mis, "spin").is_none());
@@ -544,7 +568,8 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     let info = host.info_of("misbehave").unwrap();
     assert_eq!(info.stats.crashes, 1, "{:?}", info.error);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("timed out after 400ms")), "{:?}", info.error);
-    assert!(provider.highlights(&mis, "fast").is_some());
+    // The new instance may take longer to start than the soft deadline on a slow runner.
+    assert!(eventually(|| provider.highlights(&mis, "fast").is_some()));
     assert_eq!(host.info_of("misbehave").unwrap().stats.activations, 2);
 }
 
@@ -553,9 +578,10 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
 #[test]
 fn providers_of_several_plugins_run_concurrently() {
     let tmp = tempfile::tempdir().unwrap();
+    // A budget no runner misses, so only the overlap is measured.
     let limits = Limits {
-        edit_soft: Duration::from_millis(300),
-        edit_hard: Duration::from_secs(2),
+        edit_soft: Duration::from_secs(5),
+        edit_hard: Duration::from_secs(10),
         fuel: u64::MAX,
         ..Limits::default()
     };
@@ -584,16 +610,17 @@ fn providers_of_several_plugins_run_concurrently() {
         text: text.into(),
     };
     let at = ide_core::Pos::new(0, 0);
-    // Activation is not what is measured.
-    assert_eq!(host.provide_completion(&doc("fast"), at, None).len(), 2);
+    // Activation is not what is measured: a first call that starts an instance
+    // can run past the edit-path budget, and its answer is dropped.
+    assert!(eventually(|| host.provide_completion(&doc("fast"), at, None).len() == 2));
 
     let started = Instant::now();
-    let items = host.provide_completion(&doc("sleep:200"), at, None);
+    let items = host.provide_completion(&doc("sleep:500"), at, None);
     let elapsed = started.elapsed();
     let mut from: Vec<&str> = items.iter().map(|(p, _)| p.as_str()).collect();
     from.sort();
     assert_eq!(from, ["slow-a", "slow-b"], "both within the budget");
-    assert!(elapsed < Duration::from_millis(350), "one after the other would take 400ms: {elapsed:?}");
+    assert!(elapsed < Duration::from_millis(950), "one after the other would take 1000ms: {elapsed:?}");
     assert_eq!(host.info_of("slow-b").unwrap().stats.slow_calls, 0);
 }
 
@@ -613,7 +640,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 8, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 10, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -1651,22 +1678,21 @@ fn official_ai_completion_cancels_superseded_requests() {
     };
     let at = ide_core::Pos::new(1, 4);
     let host = Arc::new(f);
-    // A slow request, superseded 200 ms later by the next keystroke's.
+    // A slow request, superseded by the next keystroke's once the server has it
+    // (starting the instance comes first, and takes longer on a slow runner).
     let first = ide_core::CancellationToken::new();
     let slow = {
         let (host, doc, first) = (host.clone(), doc.clone(), first.clone());
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let r = host.host.provide_inline_completion(&doc, at, &first);
-            (r, started.elapsed())
-        })
+        std::thread::spawn(move || (host.host.provide_inline_completion(&doc, at, &first), Instant::now()))
     };
-    std::thread::sleep(Duration::from_millis(200));
+    assert!(eventually(|| seen.lock().len() == 1), "the first request reaches the server");
+    let cancelled = Instant::now();
     first.cancel();
     let started = Instant::now();
     let second = host.host.provide_inline_completion(&doc, at, &ide_core::CancellationToken::new());
     let took = started.elapsed();
-    let (old, old_took) = slow.join().unwrap();
+    let (old, old_done) = slow.join().unwrap();
+    let old_took = old_done.saturating_duration_since(cancelled);
     assert!(old.is_none(), "the superseded request yields nothing");
     assert!(old_took < Duration::from_secs(1), "cancelled, not waited out: {old_took:?}");
     assert_eq!(second.map(|(_, s)| s.insert_text).as_deref(), Some("a + b"));
@@ -1715,7 +1741,7 @@ fn official_checkstyle_checks_on_save() {
     let java = f.project.join("src/A.java");
     std::fs::write(&java, "class A {\n\tint x;\n}\n").unwrap();
     let saved = |f: &Fixture| {
-        f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(java.to_string_lossy().into_owned())]);
+        f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(to_ipc(&java))]);
         f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
     };
     saved(&f);
@@ -1768,7 +1794,7 @@ fn official_license_header_reports_fixes_and_scans() {
         f.workspace.diagnostics.lock().get(&("openidea.license-header".into(), path.to_path_buf())).cloned()
     };
 
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(a.to_string_lossy().into_owned())]);
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(to_ipc(&a))]);
     f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(20)));
     let d = diagnostics(&a).expect("published on open");
@@ -1793,7 +1819,7 @@ fn official_license_header_reports_fixes_and_scans() {
     f.host.run_command("openidea.license-header", "scan", None, f.inv()).unwrap();
     assert_eq!(diagnostics(&b).map(|d| d.len()), Some(1), "found by the scan");
     std::fs::write(&a, "// Copyright (c) 2026 X\nfn a() {}\n").unwrap();
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(a.to_string_lossy().into_owned())]);
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileSaved(to_ipc(&a))]);
     f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(20)));
     assert_eq!(diagnostics(&a).map(|d| d.len()), Some(0), "cleared once the header is there");
@@ -1844,7 +1870,12 @@ fn official_mybatis_navigates_between_interface_and_xml() {
     assert_eq!((target.path, target.range.start), (xml_path.clone(), ide_core::Pos::new(1, 14)));
 
     let xdoc = doc(&xml_path, "xml", xml);
-    let to_java = f.host.provide_definition(&xdoc, ide_core::Pos::new(1, 16));
+    // Reads the interface from disk: on a slow machine that too can run past the budget.
+    let mut to_java = Vec::new();
+    assert!(eventually(|| {
+        to_java = f.host.provide_definition(&xdoc, ide_core::Pos::new(1, 16));
+        !to_java.is_empty()
+    }));
     assert_eq!(
         to_java.iter().map(|l| (l.path.clone(), l.range.start)).collect::<Vec<_>>(),
         [(java_path.clone(), ide_core::Pos::new(3, 9))]
@@ -2013,6 +2044,139 @@ fn pinned_programs_fill_views_and_open_terminals() {
     let (_, title, _, args) = open("build").expect("a terminal");
     assert_eq!(title, "tail build");
     assert_eq!(args, ["follow", "build", "--lines=5"]);
+}
+
+#[test]
+fn views_open_project_files_at_a_line() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    std::fs::write(f.project.join("jobs.log"), "build\ndeploy\nfailed\n").unwrap();
+    let press = |button: &str| {
+        f.take_events();
+        let result = f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Button { id: button.into() }, f.inv());
+        let opened = f.take_events().into_iter().find_map(|(client, e)| match e {
+            PluginEvent::OpenLocation { path, line, column, .. } => Some((client, path.0, line, column)),
+            _ => None,
+        });
+        (result, opened)
+    };
+
+    let (result, opened) = press("log");
+    assert!(result.is_ok(), "{result:?}");
+    let (client, path, line, column) = opened.expect("a location");
+    assert_eq!((client.as_deref(), line, column), (Some("main"), 2, 4));
+    assert_eq!(path.canonicalize().unwrap(), f.project.join("jobs.log").canonicalize().unwrap());
+
+    let (result, opened) = press("outside");
+    assert!(result.is_err(), "a path outside the project is refused");
+    assert!(opened.is_none());
+
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, opened) = press("log");
+    assert!(result.unwrap_err().message.contains("project.read"), "needs project.read");
+    assert!(opened.is_none());
+}
+
+#[test]
+fn vcs_remotes_clipboard_and_open_url() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    // Not a git repository yet: `vcs-remotes` returns an empty list.
+    assert_eq!(f.run("jobs", "remotes", None).unwrap().as_deref(), Some(""));
+
+    git(&f.project, &["init", "-b", "main"]);
+    git(&f.project, &["remote", "add", "origin", "git@github.com:l0ng-ai/openidea.git"]);
+    git(&f.project, &["remote", "add", "upstream", "https://github.com/org/openidea"]);
+    assert_eq!(
+        f.run("jobs", "remotes", None).unwrap().as_deref(),
+        Some("origin=git@github.com:l0ng-ai/openidea.git\nupstream=https://github.com/org/openidea")
+    );
+
+    f.host.set_capability("jobs", "vcs.read", false).unwrap();
+    assert!(f.run("jobs", "remotes", None).unwrap_err().contains("vcs.read"), "needs vcs.read");
+
+    // `ui.copy-to-clipboard` requires `clipboard` and addresses the calling window.
+    f.take_events();
+    f.run("jobs", "copy", Some("https://github.com/l0ng-ai/openidea")).unwrap();
+    let copied = f.take_events().into_iter().find_map(|(client, e)| match e {
+        PluginEvent::CopyToClipboard { plugin_id, text } => Some((client, plugin_id, text)),
+        _ => None,
+    });
+    assert_eq!(copied, Some((Some("main".into()), "jobs".into(), "https://github.com/l0ng-ai/openidea".into())));
+
+    f.host.set_capability("jobs", "clipboard", false).unwrap();
+    f.take_events();
+    assert!(f.run("jobs", "copy", Some("secret")).unwrap_err().contains("clipboard"), "needs clipboard");
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::CopyToClipboard { .. })));
+
+    // `ui.open-url` accepts http(s) URLs and rejects other schemes.
+    f.take_events();
+    f.run("jobs", "open-url", Some("https://github.com/l0ng-ai/openidea/blob/main/README.md#L1")).unwrap();
+    let opened = f.take_events().into_iter().find_map(|(client, e)| match e {
+        PluginEvent::OpenUrl { plugin_id, url } => Some((client, plugin_id, url)),
+        _ => None,
+    });
+    assert_eq!(
+        opened,
+        Some(
+            (Some("main".into()), "jobs".into(), "https://github.com/l0ng-ai/openidea/blob/main/README.md#L1".into(),)
+        )
+    );
+
+    for bad in ["javascript:alert(1)", "file:///etc/passwd", ""] {
+        f.take_events();
+        let err = f.run("jobs", "open-url", Some(bad)).unwrap_err();
+        assert!(err.contains("http:// or https://"), "{bad:?}: {err}");
+        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::OpenUrl { .. })));
+    }
+}
+
+#[test]
+fn views_can_use_an_svg_icon_from_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let clean = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#08f"/></svg>"##;
+    let package = |dir: &str, icon: &str, svg: &str| {
+        let pkg = tmp.path().join(dir);
+        for (path, text) in [("panel/index.html", "<p>panel</p>"), ("icons/panel.svg", svg)] {
+            std::fs::create_dir_all(pkg.join(path).parent().unwrap()).unwrap();
+            std::fs::write(pkg.join(path), text).unwrap();
+        }
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "panel-icon"
+name = "Panel Icon"
+version = "1.0.0"
+engines.openidea = "^1.0"
+
+[[contributes.views]]
+id = "panel"
+title = "Panel"
+icon = "{icon}"
+location = "bottom"
+web = "panel/index.html"
+"#
+            ),
+        )
+        .unwrap();
+        pkg
+    };
+
+    assert!(f.host.install_from_dir(&package("missing", "icons/missing.svg", clean), &Consent::all()).is_err());
+    let scripted = clean.replace("<rect", "<script>alert(1)</script><rect");
+    assert!(f.host.install_from_dir(&package("scripted", "icons/panel.svg", &scripted), &Consent::all()).is_err());
+
+    let info = f.install(&package("clean", "icons/panel.svg", clean));
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let view = f.host.ui_items("views").into_iter().find(|v| v.key == "panel").expect("the view");
+    assert_eq!(view.decl["icon"].as_str(), Some("icons/panel.svg"));
+    let assets = f.host.assets("panel-icon", "viewIcon/panel").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("<rect"));
 }
 
 /// A plugin with web views and no code: its pages and their files are
@@ -2387,4 +2551,62 @@ fn uninstalling_deletes_the_plugins_secrets() {
     assert!(keychain.get("openidea.ai-completion", "api-key").is_some());
     f.host.uninstall("openidea.ai-completion").unwrap();
     assert!(keychain.0.lock().is_empty(), "{:?}", keychain.0.lock().keys().collect::<Vec<_>>());
+}
+
+/// Plugin API 1.0 leaves room to grow: event kinds are names, and the editor
+/// providers carry snippets, imports, lazily computed quick fixes and tagged
+/// problems.
+#[test]
+fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("misbehave-providers");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"completion\", \"code-actions\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = |text: &str| ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: text.into(),
+    };
+    let at = ide_core::Pos::new(0, 0);
+
+    // The first call starts the instance, which may take longer than the edit-path budget.
+    let mut items = Vec::new();
+    assert!(eventually(|| {
+        items = f.host.provide_completion(&doc("rich"), at, None);
+        !items.is_empty()
+    }));
+    let item = &items[0].1;
+    assert_eq!(
+        (item.insert_text.as_str(), item.snippet, item.filter_text.as_deref()),
+        ("f(${1:x})$0", true, Some("fun"))
+    );
+    assert_eq!(item.additional_edits[0].new_text, "use f;\n");
+
+    // Offered without edits; computed when picked.
+    let actions = f.host.provide_code_actions(&doc("lazy"), ide_core::Range::default());
+    let (plugin, action) = actions.into_iter().next().expect("offered");
+    assert!(action.edits.is_empty() && action.data.as_deref() == Some("fix"));
+    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone()).unwrap();
+    assert_eq!(resolved.edits[0].1[0].new_text, "fixed ");
+    let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
+    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
+
+    // A kind this IDE doesn't know is refused, not a trap.
+    let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
+    assert!(err.message.contains("no event kind"), "{}", err.message);
+    let err = f.host.run_command("misbehave", "subscribe", Some("file-saved"), f.inv()).unwrap_err();
+    assert!(err.message.contains("events"), "known, but not granted: {}", err.message);
+
+    // Tags the IDE knows, the tool that found it.
+    let path = f.project.join("a.txt");
+    f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
+    let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
+    assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
 }

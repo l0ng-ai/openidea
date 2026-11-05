@@ -73,6 +73,14 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
+        wit::ui::copy_to_clipboard(text).map_err(error)
+    }
+
+    pub fn open_url(url: &str) -> Result<(), Error> {
+        wit::ui::open_url(url).map_err(error)
+    }
+
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         wit::storage::get(key).map_err(error)
     }
@@ -152,24 +160,16 @@ mod imp {
         wit::vcs::fetch(p).map_err(error)
     }
 
-    fn kind(k: EventKind) -> wit::events::EventKind {
-        use wit::events::EventKind as K;
-        match k {
-            EventKind::FileOpened => K::FileOpened,
-            EventKind::FileSaved => K::FileSaved,
-            EventKind::EditorFocused => K::EditorFocused,
-            EventKind::ActionPerformed => K::ActionPerformed,
-            EventKind::VcsChanged => K::VcsChanged,
-            EventKind::Scheduled => K::Scheduled,
-        }
+    pub fn vcs_remotes(p: &ProjectRes) -> Result<Vec<(String, String)>, Error> {
+        wit::vcs::remotes(p).map_err(error)
     }
 
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
-        wit::events::subscribe(kind(k)).map_err(error)
+        wit::events::subscribe(k.name()).map_err(error)
     }
 
     pub fn unsubscribe(k: EventKind) {
-        wit::events::unsubscribe(kind(k))
+        wit::events::unsubscribe(k.name())
     }
 
     pub fn begin_task(title: &str, cancellable: bool) -> TaskRes {
@@ -189,7 +189,7 @@ mod imp {
     }
 
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
-        use wit::diagnostics::{Diagnostic as D, Severity as S};
+        use wit::diagnostics::{Diagnostic as D, RelatedInformation as R, Severity as S};
         let items: Vec<D> = items
             .iter()
             .map(|d| D {
@@ -202,6 +202,23 @@ mod imp {
                 },
                 message: d.message.clone(),
                 code: d.code.clone(),
+                source: d.source.clone(),
+                tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
+                    .into_iter()
+                    .filter(|(on, _)| *on)
+                    .map(|(_, tag)| tag.to_owned())
+                    .collect(),
+                related: d
+                    .related
+                    .iter()
+                    .map(|r| R {
+                        location: wit::types::Location {
+                            path: r.location.path.clone(),
+                            range: range_out(r.location.range),
+                        },
+                        message: r.message.clone(),
+                    })
+                    .collect(),
             })
             .collect();
         wit::diagnostics::publish(path, &items).map_err(error)
@@ -240,6 +257,10 @@ mod imp {
         wit::views::open_terminal(title, program, args).map_err(error)
     }
 
+    pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
+        wit::views::open_location(path, line, column).map_err(error)
+    }
+
     pub fn setting(key: &str) -> Option<String> {
         wit::settings::get(key)
     }
@@ -264,7 +285,7 @@ mod imp {
     }
 
     pub fn event(e: wit::events::Event) -> Event {
-        use wit::events::{ActionSource as S, Event as E};
+        use wit::events::Event as E;
         match e {
             E::FileOpened(p) => Event::FileOpened(p),
             E::FileSaved(p) => Event::FileSaved(p),
@@ -274,16 +295,10 @@ mod imp {
             E::ActionPerformed(a) => Event::ActionPerformed(ActionPerformed {
                 action: a.action,
                 title: a.title,
-                source: match a.source {
-                    S::Keyboard => ActionSource::Keyboard,
-                    S::Menu => ActionSource::Menu,
-                    S::Toolbar => ActionSource::Toolbar,
-                    S::ContextMenu => ActionSource::ContextMenu,
-                    S::Search => ActionSource::Search,
-                    S::Other => ActionSource::Other,
-                },
+                source: ActionSource::parse(&a.source),
                 shortcut: a.shortcut,
             }),
+            E::Other(x) => Event::Other { kind: x.kind, data: x.data },
         }
     }
 }
@@ -336,6 +351,11 @@ impl Project {
         imp::vcs_status(&self.inner)
     }
 
+    /// Configured remotes (`(name, fetch_url)`), in order. Needs `vcs.read`.
+    pub fn vcs_remotes(&self) -> Result<Vec<(String, String)>, Error> {
+        imp::vcs_remotes(&self.inner)
+    }
+
     /// Fetches all remotes. Needs `vcs.write`; long-running, so call it in a [`Task`].
     pub fn vcs_fetch(&self) -> Result<(), Error> {
         imp::vcs_fetch(&self.inner)
@@ -386,6 +406,10 @@ pub fn post_view_message(view: &str, message: &str) -> Result<(), Error> {
 /// interactive sessions (`kubectl exec -it …`).
 pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
     imp::open_terminal(title, program, args)
+}
+
+pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
+    imp::open_location(path, line, column)
 }
 
 /// One of the plugin's settings (`[contributes.settings]`) as JSON: the
@@ -519,6 +543,16 @@ pub fn set_status_item(id: &str, item: &StatusItem) {
 
 pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
+}
+
+/// Copies `text` to the system clipboard. Needs `clipboard`.
+pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
+    imp::copy_to_clipboard(text)
+}
+
+/// Opens an `http://` or `https://` URL in the user's default browser.
+pub fn open_url(url: &str) -> Result<(), Error> {
+    imp::open_url(url)
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of

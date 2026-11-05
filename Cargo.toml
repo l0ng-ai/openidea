@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.35"
+version = "0.1.37"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -76,7 +76,6 @@ ignore = "0.4"
 base64 = "0.22"
 globset = "0.4"
 notify = "8"
-notify-debouncer-full = "0.6"
 trash = "5"
 blake3 = "1"
 dunce = "1"
@@ -106,6 +105,9 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
 bb8 = "0.9"
 uuid = { version = "1", features = ["v4"] }
+# OS credential stores
+keyring = "4.2"
+keyring-core = "1"
 
 # testing
 insta = { version = "1", features = ["yaml"] }
@@ -115,8 +117,14 @@ tempfile = "3"
 [profile.dev]
 # Keep debug builds snappy while giving dependencies decent speed.
 opt-level = 0
+# Full debug info is most of target/. Line tables keep file:line in our backtraces, but a
+# debugger can't show locals; re-enable with `--config profile.dev.debug=true`.
+debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 2
+# Dependency frames keep function names only. Re-enable one with
+# `--config 'profile.dev.package.<crate>.debug=true'`.
+debug = false
 
 [profile.release]
 codegen-units = 1

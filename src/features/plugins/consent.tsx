@@ -59,7 +59,7 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
         {
           label: req.kind === "install" ? tx("Install") : tx("Allow"),
           role: "default",
-          onClick: () => finish({ optional: [...accepted] }),
+          onClick: () => finish({ optional: [...accepted], signerChange: !!req.signerChanged }),
         },
       ]}
     >
@@ -67,6 +67,14 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
         {req.unsigned && (
           <p className={styles.consentWarning} role="note">
             <T>This package is not signed. Only continue if you trust where it came from.</T>
+          </p>
+        )}
+        {req.signerChanged && (
+          <p className={styles.consentWarning} role="alert">
+            <T>
+              This version is signed with a different key than the installed one, and the publisher's earlier key
+              doesn't vouch for it. Only continue if you know the publisher changed keys.
+            </T>
           </p>
         )}
         {caps.length === 0 ? (

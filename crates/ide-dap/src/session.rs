@@ -43,6 +43,8 @@ pub(crate) struct Session {
     pub adapter_process: Mutex<Option<Child>>,
     /// Processes started for `runInTerminal`.
     pub debuggees: Mutex<Vec<Child>>,
+    /// The terminal a `runInTerminal` program runs in: typed input goes to it.
+    pub program: Mutex<Option<ProgramTerminal>>,
     /// Set once `configurationDone` was sent; breakpoint updates go out live after that.
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
@@ -90,6 +92,7 @@ impl Session {
             caps: Mutex::new(Value::Null),
             adapter_process: Mutex::new(child),
             debuggees: Mutex::new(Vec::new()),
+            program: Mutex::new(None),
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
             terminated: AtomicBool::new(false),
@@ -111,8 +114,8 @@ impl Session {
         if let Some(path) = self.kotlin_mirror.lock().as_ref().and_then(|m| m.adapter_path(path)) {
             return path;
         }
-        if self.adapter == "java-debug" {
-            let native = java_source_path(&path.to_string_lossy());
+        if self.adapter == "java-debug" || (cfg!(windows) && self.adapter == "netcoredbg") {
+            let native = windows_source_path(&path.to_string_lossy());
             self.resolved_paths.lock().insert(native.clone(), path.to_path_buf());
             return native;
         }
@@ -133,7 +136,11 @@ impl Session {
         if let Some(real) = self.kotlin_mirror.lock().as_ref().and_then(|m| m.client_path(Path::new(path))) {
             return Some(real);
         }
-        let key = if self.adapter == "java-debug" { java_source_path(path) } else { PathBuf::from(path) };
+        let key = if self.adapter == "java-debug" || (cfg!(windows) && self.adapter == "netcoredbg") {
+            windows_source_path(path)
+        } else {
+            PathBuf::from(path)
+        };
         self.resolved_paths.lock().get(&key).cloned().or_else(|| {
             (self.adapter == "java-debug" && is_windows_source_path(path))
                 .then(|| PathBuf::from(path.replace('\\', "/")))
@@ -262,11 +269,14 @@ impl Session {
         for mut c in std::mem::take(&mut *self.debuggees.lock()) {
             let _ = c.start_kill();
         }
+        if let Some(mut program) = self.program.lock().take() {
+            let _ = program.child.kill();
+        }
     }
 }
 
-// java-debug treats a forward-slash drive path as a URI (scheme "C").
-// Keep DAP path mode, but use native Windows separators for Java source lookup.
+// java-debug and Windows netcoredbg need native separators for source lookup.
+// Keep DAP path mode, but normalize Windows drive and UNC paths.
 fn is_windows_source_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'/' | b'\\'))
@@ -274,7 +284,7 @@ fn is_windows_source_path(path: &str) -> bool {
         || path.starts_with(r"\\")
 }
 
-fn java_source_path(path: &str) -> PathBuf {
+fn windows_source_path(path: &str) -> PathBuf {
     if is_windows_source_path(path) { PathBuf::from(path.replace('/', r"\")) } else { PathBuf::from(path) }
 }
 
@@ -447,8 +457,25 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
     }
 }
 
-/// `runInTerminal`: spawns the debuggee directly and forwards its output to the console.
+/// A `runInTerminal` program and the pseudo-terminal it runs in.
+pub(crate) struct ProgramTerminal {
+    writer: Box<dyn std::io::Write + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    _master: Box<dyn portable_pty::MasterPty + Send>,
+}
+
+impl ProgramTerminal {
+    pub(crate) fn write(&mut self, text: &str) -> std::io::Result<()> {
+        self.writer.write_all(text.as_bytes())?;
+        self.writer.flush()
+    }
+}
+
+/// `runInTerminal`: starts the debuggee on a pseudo-terminal, as an IDE terminal would (CodeLLDB
+/// starts a launcher that gives the program its terminal, and the program reads input only from
+/// a terminal), forwards its output to the console, and keeps the terminal for typed input.
 pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, String> {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     let argv: Vec<String> = args
         .get("args")
         .and_then(Value::as_array)
@@ -457,16 +484,25 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     let Some((program, rest)) = argv.split_first() else {
         return Err("runInTerminal without args".into());
     };
-    let mut cmd = tokio::process::Command::new(program);
-    ide_core::process::prepare(cmd.as_std_mut());
-    cmd.args(rest)
-        .envs(ide_core::process::shell_env())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    if let Some(cwd) = args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
-        cmd.current_dir(cwd);
+    let pair = native_pty_system()
+        .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| format!("cannot open a terminal for {program}: {e}"))?;
+    let mut cmd = CommandBuilder::new(program);
+    // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
+    cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
+    for (k, v) in ide_core::process::host_env_fixes() {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        }
+    }
+    for (k, v) in ide_core::process::shell_env() {
+        cmd.env(k, v);
+    }
+    cmd.env("TERM", "xterm-256color");
+    match args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+        Some(cwd) => cmd.cwd(cwd),
+        None => cmd.cwd(&s.spec.cwd),
     }
     if let Some(env) = args.get("env").and_then(Value::as_object) {
         for (k, v) in env {
@@ -476,16 +512,51 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
             };
         }
     }
-    let mut child = cmd.spawn().map_err(|e| format!("failed to start {program}: {e}"))?;
-    let pid = child.id();
-    if let Some(out) = child.stdout.take() {
-        forward_output(s, out, "stdout");
+    let child = pair.slave.spawn_command(cmd).map_err(|e| format!("failed to start {program}: {e}"))?;
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().map_err(|e| format!("terminal of {program}: {e}"))?;
+    let writer = pair.master.take_writer().map_err(|e| format!("terminal of {program}: {e}"))?;
+    let pid = child.process_id();
+    forward_terminal_output(s, reader);
+    if let Some(mut previous) = s.program.lock().replace(ProgramTerminal { writer, child, _master: pair.master }) {
+        let _ = previous.child.kill();
     }
-    if let Some(err) = child.stderr.take() {
-        forward_output(s, err, "stderr");
-    }
-    s.debuggees.lock().push(child);
+    s.owner.sink.emit(IdeEvent::Debug { session: s.id, event: DebugEvent::ProgramInput });
     Ok(json!({ "processId": pid }))
+}
+
+/// The program's terminal output, as stdout lines (`\r\n` as `\n`; colours are kept).
+fn forward_terminal_output(s: &Session, mut reader: Box<dyn std::io::Read + Send>) {
+    let session = s.id;
+    let sink = s.owner.sink.clone();
+    let _ = std::thread::Builder::new().name(format!("openidea-debuggee-{}", session.0)).spawn(move || {
+        let mut buf = vec![0u8; 8192];
+        let mut pending: Vec<u8> = Vec::new();
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => pending.extend_from_slice(&buf[..n]),
+            }
+            // Keep incomplete UTF-8 sequences, and a `\r` that may start a `\r\n`, for the next chunk.
+            let mut valid = match std::str::from_utf8(&pending) {
+                Ok(_) => pending.len(),
+                Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                Err(_) => pending.len(),
+            };
+            if valid > 0 && pending[valid - 1] == b'\r' {
+                valid -= 1;
+            }
+            let output = String::from_utf8_lossy(&pending[..valid]).replace("\r\n", "\n");
+            pending.drain(..valid);
+            if !output.is_empty() {
+                sink.emit(IdeEvent::Debug { session, event: DebugEvent::Output { category: "stdout".into(), output } });
+            }
+        }
+        if !pending.is_empty() {
+            let output = String::from_utf8_lossy(&pending).replace("\r\n", "\n");
+            sink.emit(IdeEvent::Debug { session, event: DebugEvent::Output { category: "stdout".into(), output } });
+        }
+    });
 }
 
 fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream: R, category: &'static str) {

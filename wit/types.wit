@@ -1,4 +1,4 @@
-package openidea:plugin@1.0.0;
+package openidea:plugin@1.1.0;
 
 /// Shared types. Positions are 0-based lines and UTF-16 code unit columns,
 /// as in the editor and LSP.
@@ -50,6 +50,15 @@ interface types {
     record location {
         path: string,
         range: range,
+    }
+
+    /// A case added after 1.0, carried by the `other` case of a variant that
+    /// grows (events, view bodies, view events, form fields): its kind and its
+    /// data as JSON. Whoever doesn't know the kind ignores it or shows a
+    /// fallback; the SDKs decode the kinds they know.
+    record extension {
+        kind: string,
+        data: string,
     }
 
     /// Passed to `lifecycle.activate`.

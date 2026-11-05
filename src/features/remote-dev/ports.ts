@@ -10,7 +10,7 @@ const SAVED_KEY = "openidea.remote.ports:";
 
 function savedKey(): string | null {
   const session = useRemote.getState().session;
-  return session ? `${SAVED_KEY}${session.sshConfig}:${session.root}` : null;
+  return session?.target.kind === "ssh" ? `${SAVED_KEY}${session.target.config}:${session.root}` : null;
 }
 
 export function savedPorts(): number[] {
@@ -53,6 +53,14 @@ export function parsePort(text: string): number | null {
 }
 
 export async function forwardPort(port: number): Promise<ForwardedPort | null> {
+  if (useRemote.getState().session?.target.kind === "wsl") {
+    notifications().notify({
+      group: "remote",
+      level: "error",
+      title: tx("Forwarding ports is not supported in a WSL project yet"),
+    });
+    return null;
+  }
   try {
     const forwarded = await call(commands.remoteForwardPort(port));
     await refreshPorts(true);

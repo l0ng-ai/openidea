@@ -89,7 +89,7 @@ pub mod providers_bindings {
         export_macro_name: "__export_editor_providers_world",
         default_bindings_module: "openidea_plugin::providers_bindings",
         with: {
-            "openidea:plugin/types@1.0.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/types@1.1.0": crate::bindings::openidea::plugin::types,
         },
     });
 }
@@ -106,16 +106,16 @@ pub mod views_bindings {
         export_macro_name: "__export_views_world",
         default_bindings_module: "openidea_plugin::views_bindings",
         with: {
-            "openidea:plugin/types@1.0.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.0.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.0.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.0.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.1.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.1.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.1.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.1.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
 
 /// The plugin API version this SDK targets.
-pub const API_VERSION: &str = "1.0";
+pub const API_VERSION: &str = "1.1";
 
 /// A plugin. One instance lives as long as the plugin's Wasm instance (until
 /// it is disabled, crashes or is reclaimed when idle).
@@ -253,6 +253,16 @@ macro_rules! __providers_exports {
                 selection: $crate::bindings::openidea::plugin::types::Range,
             ) -> ::std::vec::Vec<$crate::providers_bindings::exports::openidea::plugin::providers::CodeAction> {
                 $crate::__rt::code_actions::<$plugin>(doc, selection)
+            }
+
+            fn resolve_code_action(
+                doc: $crate::providers_bindings::exports::openidea::plugin::providers::Document,
+                action: $crate::providers_bindings::exports::openidea::plugin::providers::CodeAction,
+            ) -> ::core::result::Result<
+                $crate::providers_bindings::exports::openidea::plugin::providers::CodeAction,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
+                $crate::__rt::resolve_code_action::<$plugin>(doc, action)
             }
 
             fn definition(
@@ -420,9 +430,12 @@ pub mod __rt {
                 detail: i.detail,
                 kind: i.kind.map(|k| k.as_str().to_owned()),
                 insert_text: i.insert_text,
+                snippet: i.snippet,
                 replace: i.replace.map(crate::host::__range_to),
                 sort_text: i.sort_text,
+                filter_text: i.filter_text,
                 documentation: i.documentation,
+                additional_edits: i.additional_edits.into_iter().map(edit_out).collect(),
             })
             .collect()
     }
@@ -443,25 +456,54 @@ pub mod __rt {
         sel: b::types::Range,
     ) -> Vec<w::CodeAction> {
         let d = doc(d);
-        with::<T, _>(|x| x.code_actions(&d, crate::host::__range_from(sel)))
-            .into_iter()
-            .map(|a| w::CodeAction {
-                title: a.title,
-                kind: a.kind,
-                preferred: a.preferred,
-                edits: a
-                    .edits
-                    .into_iter()
-                    .map(|(path, edits)| w::FileEdit {
-                        path,
-                        edits: edits
-                            .into_iter()
-                            .map(|e| b::types::TextEdit { range: crate::host::__range_to(e.range), text: e.text })
-                            .collect(),
-                    })
-                    .collect(),
-            })
-            .collect()
+        with::<T, _>(|x| x.code_actions(&d, crate::host::__range_from(sel))).into_iter().map(action_out).collect()
+    }
+
+    pub fn resolve_code_action<T: Plugin + p::Providers + Default>(
+        d: w::Document,
+        action: w::CodeAction,
+    ) -> Result<w::CodeAction, b::types::Error> {
+        let d = doc(d);
+        with::<T, _>(|x| x.resolve_code_action(&d, action_in(action))).map(action_out).map_err(error_out)
+    }
+
+    fn edit_out(e: crate::TextEdit) -> b::types::TextEdit {
+        b::types::TextEdit { range: crate::host::__range_to(e.range), text: e.text }
+    }
+
+    fn action_out(a: p::CodeAction) -> w::CodeAction {
+        w::CodeAction {
+            title: a.title,
+            kind: a.kind,
+            preferred: a.preferred,
+            edits: a
+                .edits
+                .into_iter()
+                .map(|(path, edits)| w::FileEdit { path, edits: edits.into_iter().map(edit_out).collect() })
+                .collect(),
+            data: a.data,
+        }
+    }
+
+    fn action_in(a: w::CodeAction) -> p::CodeAction {
+        p::CodeAction {
+            title: a.title,
+            kind: a.kind,
+            preferred: a.preferred,
+            edits: a
+                .edits
+                .into_iter()
+                .map(|f| {
+                    let edits = f
+                        .edits
+                        .into_iter()
+                        .map(|e| crate::TextEdit { range: crate::host::__range_from(e.range), text: e.text })
+                        .collect();
+                    (f.path, edits)
+                })
+                .collect(),
+            data: a.data,
+        }
     }
 
     pub fn definition<T: Plugin + p::Providers + Default>(
@@ -531,6 +573,9 @@ pub mod __rt {
                             v::FieldValue::Multiline(t) => vt::FieldValue::Multiline(t),
                             v::FieldValue::Checkbox(c) => vt::FieldValue::Checkbox(c),
                             v::FieldValue::Choice(o, s) => vt::FieldValue::Choice((o, s)),
+                            v::FieldValue::Other { kind, data } => {
+                                vt::FieldValue::Other(b::types::Extension { kind, data })
+                            }
                         },
                     })
                     .collect(),
@@ -543,6 +588,7 @@ pub mod __rt {
                 editable: t.editable,
             }),
             v::Body::Html(h) => vt::Body::Html(h),
+            v::Body::Other { kind, data } => vt::Body::Other(b::types::Extension { kind, data }),
         };
         vt::View {
             toolbar: view
@@ -582,6 +628,7 @@ pub mod __rt {
             vt::ViewEvent::InsertRow(r) => v::ViewEvent::InsertRow(r),
             vt::ViewEvent::DeleteRows(r) => v::ViewEvent::DeleteRows(r),
             vt::ViewEvent::Message(m) => v::ViewEvent::Message(m),
+            vt::ViewEvent::Other(x) => v::ViewEvent::Other { kind: x.kind, data: x.data },
         };
         with::<T, _>(|p| p.handle(&view, event, &ctx)).map_err(error_out)
     }

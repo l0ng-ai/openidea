@@ -29,3 +29,4 @@ uuid.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile.workspace = true
+ide-ssh = { workspace = true, features = ["testing"] }

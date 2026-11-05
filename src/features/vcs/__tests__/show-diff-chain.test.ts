@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { FileStatus } from "@/bindings";
 import { getAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
 import { registerVcsActions } from "../actions";
 import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
@@ -8,10 +9,11 @@ import { initialChangelists, useChangelists } from "../changelists";
 import { chainNeighbour } from "../diffInput";
 
 const opened = vi.hoisted(() => vi.fn());
+const project = vi.hoisted(() => ({ paths: [] as string[] }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   editorService: () => ({ openInput: opened }),
-  projectViewSelection: () => [],
+  projectViewSelection: () => project.paths,
 }));
 vi.mock("../comparePaths", () => ({ showDirectoryWorkingDiff: async () => false }));
 
@@ -29,9 +31,11 @@ let unregister: () => void;
 
 beforeEach(() => {
   opened.mockClear();
+  project.paths = [];
+  setContext("activeToolWindow", "");
   const files = [status("z.ts"), status("b.ts"), status("a.ts"), status("other.ts")];
   useVcs.setState({ root: "/repo", roots: ["/repo"], status: files, byPath: new Map(files.map((f) => [f.path, f])) });
-  useCommit.setState({ groupByDir: false });
+  useCommit.setState({ groupByDir: false, selection: [] });
   const state = initialChangelists();
   state.lists.push({ id: "other", name: "Other", comment: "" });
   state.files = { "other.ts": "other" };
@@ -41,6 +45,7 @@ beforeEach(() => {
 
 afterEach(() => {
   unregister();
+  setContext("activeToolWindow", "");
   useVcs.setState(vcs);
   useCommit.setState(commit);
   useChangelists.setState(lists);
@@ -89,4 +94,21 @@ it("keeps repository grouping in a changelist's chain", async () => {
     "/repo/module/a.ts",
     "/repo/module/b.ts",
   ]);
+});
+
+it("shows the selected change rather than a Project view selection kept from earlier", async () => {
+  // The Project view keeps its selection while the Commit window has focus: ⌘D must open
+  // the file selected in the changes tree, not the one still selected there.
+  project.paths = ["/repo/z.ts"];
+  setContext("activeToolWindow", "commit");
+  useCommit.setState({ selection: ["/repo/b.ts"] });
+  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  expect(opened.mock.calls[0]![0].data.path).toBe("/repo/b.ts");
+});
+
+it("shows a Project view selection outside the changes tree", async () => {
+  project.paths = ["/repo/z.ts"];
+  setContext("activeToolWindow", "project");
+  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  expect(opened.mock.calls[0]![0].data.path).toBe("/repo/z.ts");
 });

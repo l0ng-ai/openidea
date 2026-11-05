@@ -2,7 +2,7 @@
  * Run targets inside a file, for the gutter ▶ icons and "Run test" code lenses:
  * `fn main`, `#[test]` functions and `mod tests`, JS/TS `test`/`it`/`describe`,
  * pytest `def test_*` / `class Test*`, unittest `TestCase` subclasses, Go `func TestX(t *testing.T)`,
- * JUnit `@Test`.
+ * JUnit `@Test`, Minitest / Test::Unit classes, modules holding them and `def test_*`.
  * Line-based regex detection (cheap, no parser), plus the run configuration for
  * one target derived from the project's detected test configurations.
  */
@@ -34,12 +34,14 @@ export interface RunTarget {
   spring?: boolean;
   /** Python: a unittest `TestCase` subclass or one of its methods (what Django's runner can run). */
   unittest?: boolean;
+  /** Ruby: a `module` suite, which runs the tests of every class declared inside it. */
+  rubyModule?: boolean;
 }
 
 /** Above this size we skip detection (generated / minified files). */
 export const MAX_SCAN = 400_000;
 
-type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | null;
+type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | "ruby" | null;
 
 export function targetLanguage(relPath: string): Lang {
   if (/\.rs$/.test(relPath)) return "rust";
@@ -48,6 +50,7 @@ export function targetLanguage(relPath: string): Lang {
   if (/\.php$/.test(relPath)) return "php";
   if (/\.go$/.test(relPath)) return "go";
   if (/\.(java|kt|kts|scala|groovy)$/.test(relPath)) return "jvm";
+  if (/\.rb$/.test(relPath)) return "ruby";
   return null;
 }
 
@@ -211,6 +214,53 @@ function pythonTargets(lines: string[]): RunTarget[] {
   return out;
 }
 
+/** A class that holds Minitest / Test::Unit tests: by its superclass or its name. */
+const isRubyTestClass = (name: string, superclass: string | undefined) =>
+  /(Test|TestCase|Spec)$/.test(superclass ?? "") || /Tests?(Case)?$/.test(name.split("::").pop()!);
+
+/**
+ * Minitest / Test::Unit: test classes, the modules that hold them (run together) and their
+ * `def test_*` methods (ActiveSupport's `test "does x" do` is `test_does_x`). Frames are tracked
+ * by indentation, as Python's are. Results name a class by its full name (`Outer::InnerTest`).
+ */
+function rubyTargets(lines: string[]): RunTarget[] {
+  const frames: Array<{ indent: number; name: string; test: boolean; at: number; hasTests: boolean }> = [];
+  const out: Array<RunTarget & { frame?: (typeof frames)[number] }> = [];
+  const fullName = () => frames.map((f) => f.name).join("::");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const indent = indentOf(line);
+    while (frames.length && frames[frames.length - 1]!.indent >= indent) frames.pop();
+    const decl = /^\s*(class|module)\s+([A-Z]\w*(?:::[A-Z]\w*)*)(?:\s*<\s*([\w:]+))?/.exec(line);
+    if (decl) {
+      const test = decl[1] === "class" && isRubyTestClass(decl[2]!, decl[3]);
+      const frame = { indent, name: decl[2]!, test, at: i, hasTests: false };
+      frames.push(frame);
+      out.push({
+        line: i,
+        kind: "suite",
+        name: fullName(),
+        path: [fullName()],
+        ...(decl[1] === "module" ? { rubyModule: true } : {}),
+        frame,
+      });
+      continue;
+    }
+    const owner = frames[frames.length - 1];
+    if (!owner?.test) continue;
+    const method =
+      /^\s*def\s+(test_\w*[?!]?)/.exec(line)?.[1] ??
+      (/^\s*test\s*\(?\s*(["'])(.+?)\1/.exec(line)?.[2] ?? "").replace(/\s+/g, "_").replace(/^(?=.)/, "test_");
+    if (method && method !== "test_") {
+      for (const f of frames) f.hasTests = true;
+      out.push({ line: i, kind: "test", name: `${fullName()}#${method}`, path: [fullName(), method] });
+    }
+  }
+  // A class or module that holds no tests is noise.
+  return out.filter((t) => t.kind !== "suite" || t.frame?.hasTests).map(({ frame: _frame, ...t }) => t);
+}
+
 /** `go test` reports subtest names with spaces as `_` (`t.Run("zero case")` → `TestX/zero_case`). */
 export const goSubtestName = (name: string) => name.replace(/\s/g, "_");
 
@@ -367,6 +417,9 @@ export function detectRunTargets(text: string, relPath: string, django = false):
       return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
       return /\.(java|kts?)$/.test(relPath) ? javaKotlinTargets(text, relPath) : jvmTargets(lines, relPath);
+    case "ruby":
+      // RSpec files (`spec/`) are not Minitest.
+      return /(^|\/)test_[^/]*\.rb$|_test\.rb$|(^|\/)tests?\//.test(relPath) ? rubyTargets(lines) : [];
     default:
       return [];
   }
@@ -455,6 +508,17 @@ export function targetConfig(
           toolArgs: formatArgs([...withoutGoSelection(parts.flags), ...(benchmark ? ["-bench", pattern] : [])]),
         };
       return result;
+    }
+    case "rake":
+    case "ruby": {
+      // Minitest's `--name=`: `Class#test_x` names one test exactly, a regexp (no `$`, which a shell would
+      // eat) the rest. The `=` form is one argument: rake's test loader would `require` the value of `-n x`.
+      const full = target.path[0]!;
+      const pattern =
+        target.kind === "test" ? `${full}#${target.path[1]}` : target.rubyModule ? `/^${full}::/` : `/^${full}#/`;
+      return file.kind === "rake"
+        ? named([...file.args, `TESTOPTS=--name=${pattern}`])
+        : named([...file.args, `--name=${pattern}`]);
     }
     case "cargo": {
       const path = target.path.join("::");

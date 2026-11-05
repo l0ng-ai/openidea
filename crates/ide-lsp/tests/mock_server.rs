@@ -31,6 +31,8 @@ struct MockState {
     errors: Mutex<HashMap<String, (i64, String)>>,
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
+    /// Holds the handling of notifications of this method until the gate opens.
+    held: Mutex<Option<(String, Arc<Gate>)>>,
     peer: Mutex<Option<Peer>>,
 }
 
@@ -74,6 +76,12 @@ struct MockHandler(Arc<MockState>);
 impl Handler for MockHandler {
     fn on_notification(&self, method: &str, params: Value) {
         let s = &self.0;
+        let held = s.held.lock().clone();
+        if let Some((m, gate)) = held
+            && m == method
+        {
+            gate.hold();
+        }
         // Held throughout: a test that sees the effect (a document, the peer gone) also sees the record.
         let mut log = s.notifications.lock();
         let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
@@ -230,6 +238,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
         pinned: None,
     }
 }
@@ -269,6 +278,7 @@ fn harness_configured(
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: servers
             .iter()
@@ -419,6 +429,7 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
         &[created.clone(), other],
         &[modified.clone(), outside],
         std::slice::from_ref(&removed),
+        &[h.root.join(".venv/lib/site-packages")],
     );
     eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
     assert_eq!(
@@ -430,9 +441,78 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
         ])
     );
     // Nothing of its languages: no notification.
-    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[]);
+    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// A server that registers file watchers hears of what they match, inside excluded folders
+/// too (`uv add` into `.venv`, `go get` rewriting `go.mod`); folders outside the project
+/// that relative patterns name are reported for watching; unregistered, it falls back to
+/// its languages' files.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_file_watchers_choose_the_changes_a_server_hears_of() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let roots = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
+    {
+        let roots = roots.clone();
+        h.mgr.set_file_watch_roots_hook(Box::new(move |r| roots.lock().push(r)));
+    }
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let outside = tempfile::tempdir().unwrap();
+    let outside = dunce::canonicalize(outside.path()).unwrap();
+    let external = outside.join("venv/lib/site-packages");
+    s.peer()
+        .request::<_, Value>(
+            "client/registerCapability",
+            json!({ "registrations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [
+                { "globPattern": "**/*.{mk,mod}" },
+                { "globPattern": "**/pyrightconfig.json", "kind": 2 },
+                { "globPattern": "**/site-packages/**" },
+                { "globPattern": { "baseUri": uri_of(&external), "pattern": "**" } },
+                { "globPattern": { "baseUri": uri_of(&h.root.join("sub")), "pattern": "**" } },
+            ] } }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![external.clone()]), "only folders outside the project");
+
+    let sp = h.root.join(".venv/lib/python3.14/site-packages");
+    let notified = || s.notified("workspace/didChangeWatchedFiles");
+    h.mgr.watched_files_changed(
+        &[h.root.join("go.mod"), h.root.join("notes.txt"), h.root.join("pyrightconfig.json")],
+        &[h.root.join("pyrightconfig.json"), external.join("idna/core.py")],
+        &[h.root.join("old.mk")],
+        &[sp.join("idna"), h.root.join("node_modules/x")],
+    );
+    eventually(|| !notified().is_empty()).await;
+    assert_eq!(
+        notified()[0]["changes"],
+        json!([
+            { "uri": uri_of(&h.root.join("go.mod")), "type": 1 },
+            { "uri": uri_of(&h.root.join("pyrightconfig.json")), "type": 2 },
+            { "uri": uri_of(&external.join("idna/core.py")), "type": 2 },
+            { "uri": uri_of(&h.root.join("old.mk")), "type": 3 },
+            { "uri": uri_of(&sp.join("idna")), "type": 1 },
+        ])
+    );
+
+    s.peer()
+        .request::<_, Value>(
+            "client/unregisterCapability",
+            json!({ "unregisterations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles" }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![]));
+    h.mgr.watched_files_changed(&[h.root.join("go.mod"), h.root.join("b.mk")], &[], &[], &[sp.join("idna")]);
+    eventually(|| notified().len() == 2).await;
+    assert_eq!(notified()[1]["changes"], json!([{ "uri": uri_of(&h.root.join("b.mk")), "type": 1 }]));
     h.mgr.shutdown_all().await;
 }
 
@@ -697,6 +777,113 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
 }
 
+/// The diagnostics shown last for `path` by `source`, as their messages.
+fn shown(h: &Harness, path: &Path, source: &str) -> Option<Vec<String>> {
+    h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Diagnostics { path: p, source: s, items } if **p == *path && s == source => {
+            Some(items.iter().map(|d| d.message.clone()).collect())
+        }
+        _ => None,
+    })
+}
+
+/// Reports a "bad" diagnostic per line containing `bad`, as `textDocument/diagnostic`; answers
+/// `unchanged` when the text is what `previousResultId` was computed from.
+fn pull_responder() -> Responder {
+    Arc::new(|s: &MockState, method: &str, params: &Value| {
+        if method != "textDocument/diagnostic" {
+            return None;
+        }
+        let text = s.docs.lock().get(params["textDocument"]["uri"].as_str()?).cloned()?;
+        let id = format!("{}", text.len() * 31 + text.matches("bad").count());
+        if params["previousResultId"].as_str() == Some(id.as_str()) {
+            return Some(json!({ "kind": "unchanged", "resultId": id }));
+        }
+        let items: Vec<Value> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains("bad"))
+            .map(|(i, _)| {
+                json!({ "range": {"start":{"line":i,"character":0},"end":{"line":i,"character":3}},
+                        "severity": 1, "message": "bad" })
+            })
+            .collect();
+        Some(json!({ "kind": "full", "resultId": id, "items": items }))
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pulled_diagnostics_follow_edits_and_join_pushed_ones() {
+    let mut pull_caps = incremental_caps();
+    pull_caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness(&[("mock", pull_caps), ("push", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    *s.responder.lock() = Some(pull_responder());
+    let (doc, path) = h.open("a.mk", "ok\nbad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("push", ServerStatus::Ready).await;
+    assert!(s.requested("initialize")[0]["capabilities"]["textDocument"]["diagnostic"].is_object());
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["bad".into()])).await;
+    assert!(h.launcher.state("push").requested("textDocument/diagnostic").is_empty(), "it pulls from providers only");
+
+    // What the server still pushes (rust-analyzer: `cargo check`) shows next to what was pulled.
+    let pushed = json!({ "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":2}},
+                         "severity": 2, "message": "pushed" });
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": [pushed] }))
+        .unwrap();
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into(), "bad".into()])).await;
+
+    // Edits are pulled again once typing pauses.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), "bad\n")], &|| unreachable!());
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into(), "bad".into(), "bad".into()])).await;
+    // Pulled diagnostics are code actions' context like pushed ones.
+    let _ = h.mgr.code_actions(doc, rng(2, 1, 2, 1), vec![]).await;
+    let ctx = &s.requested("textDocument/codeAction")[0]["context"]["diagnostics"];
+    assert_eq!(ctx.as_array().unwrap().iter().map(|d| d["message"].as_str().unwrap()).collect::<Vec<_>>(), ["bad"]);
+
+    // Saving unchanged text asks with the last result id; `unchanged` keeps what is shown.
+    let pulls = s.requested("textDocument/diagnostic").len();
+    h.mgr.did_save(doc, "bad\nok\nbad\n");
+    eventually(|| s.requested("textDocument/diagnostic").len() > pulls).await;
+    let last = s.requested("textDocument/diagnostic").last().cloned().unwrap();
+    assert!(last["previousResultId"].is_string());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(shown(&h, &path, "mock"), Some(vec!["pushed".into(), "bad".into(), "bad".into()]));
+
+    // Closing drops what was pulled; the pushed diagnostics stay the server's to clear.
+    h.mgr.did_close(doc);
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["pushed".into()])).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_pull_is_retried_and_a_refresh_pulls_again() {
+    let mut caps = incremental_caps();
+    caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness(&[("mock", caps)]);
+    let s = h.launcher.state("mock");
+    *s.responder.lock() = Some(pull_responder());
+    // Busy indexing: the server cancels and asks to be asked again.
+    s.errors.lock().insert("textDocument/diagnostic".into(), (-32802, "indexing".into()));
+    let (_doc, path) = h.open("a.mk", "bad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.requested("textDocument/diagnostic").len() >= 2).await;
+    assert_eq!(shown(&h, &path, "mock"), None);
+    s.errors.lock().clear();
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["bad".into()])).await;
+
+    // `workspace/diagnostic/refresh` (e.g. after a project reload) pulls open files again.
+    *s.responder.lock() = Some(Arc::new(|_: &MockState, method: &str, _: &Value| {
+        (method == "textDocument/diagnostic").then(|| {
+            json!({ "kind": "full", "items": [
+            { "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":3}}, "message": "reloaded" } ] })
+        })
+    }));
+    let refreshed: Value = s.peer().request("workspace/diagnostic/refresh", Value::Null, None).await.unwrap();
+    assert_eq!(refreshed, Value::Null);
+    eventually(|| shown(&h, &path, "mock") == Some(vec!["reloaded".into()])).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn apply_edit_hook_and_server_requests() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -767,6 +954,11 @@ async fn apply_edit_hook_and_server_requests() {
     assert_eq!(v, Value::Null);
     assert!(peer.request::<_, Value>("unknown/method", Value::Null, None).await.is_err());
 
+    peer.notify(
+        "window/showMessage",
+        json!({ "type": 1, "message": "overly long loop turn took 113ms (event handling took 95ms): PrimeCaches" }),
+    )
+    .unwrap();
     peer.notify("window/showMessage", json!({ "type": 2, "message": "careful" })).unwrap();
     peer.notify("window/showMessage", json!({ "type": 3, "message": "info only" })).unwrap();
     peer.notify("window/logMessage", json!({ "type": 1, "message": "log" })).unwrap();
@@ -775,7 +967,10 @@ async fn apply_edit_hook_and_server_requests() {
     })
     .await;
     let notifies = h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { .. })).count();
-    assert_eq!(notifies, 2, "showMessageRequest error + showMessage warning; info is not surfaced");
+    assert_eq!(
+        notifies, 2,
+        "showMessageRequest error + showMessage warning; info and rust-analyzer's developer notices are not surfaced"
+    );
 
     // Dynamically registered capability is now usable.
     s.respond(
@@ -820,6 +1015,78 @@ async fn progress_tasks_and_busy_status() {
     assert_eq!(tasks[0], ("Indexing".into(), None, Some(0.0), false));
     assert_eq!(tasks[1], ("Indexing".into(), Some("3/10".into()), Some(0.3), false));
     assert!(tasks[2].3);
+}
+
+/// While a server says it is loading the project (rust-analyzer: `serverStatus`
+/// not quiescent) an empty or withdrawn answer is asked again once loading moves
+/// on. `$/progress` alone (background indexing, `cargo check`) doesn't wait.
+#[tokio::test(flavor = "multi_thread")]
+async fn navigation_waits_for_a_server_that_is_still_loading() {
+    #[derive(Clone, Copy, Debug)]
+    enum Answer {
+        Empty,
+        ContentModified,
+    }
+    for answer in [Answer::Empty, Answer::ContentModified] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        let peer = s.peer();
+        peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": false })).unwrap();
+        h.wait_status("mock", ServerStatus::Busy).await;
+        if let Answer::ContentModified = answer {
+            s.errors.lock().insert("textDocument/definition".into(), (-32801, "content modified".into()));
+        }
+        let mgr = h.mgr.clone();
+        let goto = tokio::spawn(async move { mgr.goto(doc, Pos::new(1, 1), GotoKind::Definition).await });
+        eventually(|| !s.requested("textDocument/definition").is_empty()).await;
+        assert!(!goto.is_finished(), "{answer:?}: an answer while loading is not final");
+
+        s.errors.lock().clear();
+        let r = json!({"start":{"line":0,"character":3},"end":{"line":0,"character":6}});
+        s.respond("textDocument/definition", json!({ "uri": uri_of(&path), "range": r }));
+        peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": true })).unwrap();
+        let defs = tokio::time::timeout(Duration::from_secs(10), goto).await.unwrap().unwrap().unwrap();
+        assert_eq!(defs, vec![ide_core::Location::file(path.clone(), rng(0, 3, 0, 6))], "{answer:?}");
+        h.wait_status("mock", ServerStatus::Ready).await;
+    }
+
+    // Hover documentation the same way.
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.peer().notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": false })).unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let mgr = h.mgr.clone();
+    let hover = tokio::spawn(async move { mgr.hover(doc, Pos::new(0, 0), Default::default()).await });
+    eventually(|| !s.requested("textDocument/hover").is_empty()).await;
+    s.respond("textDocument/hover", json!({ "contents": "docs" }));
+    s.peer().notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": true })).unwrap();
+    let hover = tokio::time::timeout(Duration::from_secs(10), hover).await.unwrap().unwrap().unwrap();
+    assert!(hover.is_some());
+
+    // "Nothing here" is the answer at once: rust-analyzer loaded with `cargo check`
+    // running, and a server without `serverStatus` indexing in the background.
+    for quiescent in [Some(true), None] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (doc, _) = h.open("a.mk", "x");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        let peer = s.peer();
+        if let Some(q) = quiescent {
+            peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": q })).unwrap();
+        }
+        peer.notify("$/progress", json!({ "token": "bg", "value": { "kind": "begin", "title": "Indexing" } })).unwrap();
+        h.wait_status("mock", ServerStatus::Busy).await;
+        let defs = tokio::time::timeout(Duration::from_secs(2), h.mgr.goto(doc, Pos::new(0, 0), GotoKind::Definition))
+            .await
+            .unwrap_or_else(|_| panic!("{quiescent:?}: no wait for background work"))
+            .unwrap();
+        assert!(defs.is_empty());
+        assert_eq!(s.requested("textDocument/definition").len(), 1, "{quiescent:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1038,6 +1305,54 @@ async fn preparation_refreshes_config_and_survives_unchanged_settings() {
     h.wait_status("mock", ServerStatus::Ready).await;
     assert_eq!(started.load(Ordering::SeqCst), 1);
     assert_eq!(h.launcher.state("mock").launches.load(Ordering::SeqCst), 1);
+}
+
+/// Intelephense applies the PHP version only to documents it parses after reading its
+/// configuration: once that is answered, servers that opt in get their open documents again.
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
+    let h = harness_configured("mock", "mk", &[("mock", incremental_caps()), ("extra", incremental_caps())], |cfg| {
+        cfg.resync_on_configuration = cfg.name == "mock"
+    });
+    let (doc, path) = h.open("a.mk", "enum A {}");
+    let uri = uri_of(&path);
+    let (s, extra) = (h.launcher.state("mock"), h.launcher.state("extra"));
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("extra", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().contains_key(&uri) && extra.docs.lock().contains_key(&uri)).await;
+    h.mgr.did_change(doc, 2, &[change(rng(0, 9, 0, 9), "\n")], &|| unreachable!());
+    eventually(|| s.notified("textDocument/didChange").len() == 1).await;
+
+    let items = |section: &str| json!({ "items": [{ "section": section }] });
+    let options = json!([{ "flag": true, "nested": { "deep": 1 } }]);
+    let answer: Value = extra.peer().request("workspace/configuration", items("extra"), None).await.unwrap();
+    assert_eq!(answer, options);
+    // The mock handles what arrives in order, answers included: a re-sync sent before the
+    // answer would hold it back here.
+    let gate = Arc::new(Gate::default());
+    *s.held.lock() = Some(("textDocument/didChange".into(), gate.clone()));
+    let peer = s.peer();
+    let request = peer.request::<_, Value>("workspace/configuration", items("mock"), None);
+    let answer = tokio::time::timeout(Duration::from_secs(10), request).await.expect("re-sync sent before the answer");
+    assert_eq!(answer.unwrap(), options);
+    eventually(|| gate.entered()).await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 1);
+    gate.open();
+    eventually(|| s.notified("textDocument/didChange").len() == 2).await;
+    assert_eq!(
+        s.notified("textDocument/didChange")[1],
+        json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": "enum A {}\n" }] })
+    );
+    assert_eq!(s.docs.lock()[&uri], "enum A {}\n");
+
+    // A notification sent after both answers reaches the servers after anything they triggered.
+    h.mgr.did_save(doc, "enum A {}\n");
+    eventually(|| extra.notified("textDocument/didSave").len() == 1 && s.notified("textDocument/didSave").len() == 1)
+        .await;
+    assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
+    let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1487,6 +1802,37 @@ async fn implementations_per_position() {
     cancel.cancel();
     let err = h.mgr.implementations(doc, &[Pos::new(0, 6)], cancel).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_implementations_come_from_sources_first() {
+    let caps = json!({
+        "textDocumentSync": 1,
+        "implementationProvider": true,
+        "executeCommandProvider": { "commands": ["openidea.java.implementations"] },
+    });
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, path) = h.open("Repo.java", "interface Repo {}\nclass A implements Repo {}\nclass B {}\nclass C {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let uri = uri_of(&path);
+    let at = move |line: u32| json!([{ "uri": uri, "range": {"start":{"line":line,"character":6},"end":{"line":line,"character":7}} }]);
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
+        // The sources have an implementation of line 0 only.
+        "workspace/executeCommand" => Some(if params["arguments"][1] == 0 { at(1) } else { json!([]) }),
+        "textDocument/implementation" => Some(at(3)),
+        _ => None,
+    }));
+    let found = h.mgr.goto(doc, Pos::new(0, 10), GotoKind::Implementation).await.unwrap();
+    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![1]);
+    assert!(s.requested("textDocument/implementation").is_empty(), "no search through the dependencies");
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.java.implementations");
+    assert_eq!((asked[0]["arguments"][1].clone(), asked[0]["arguments"][2].clone()), (json!(0), json!(10)));
+    // None in the sources: the standard request, with the dependencies.
+    let found = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Implementation).await.unwrap();
+    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![3]);
+    assert_eq!(s.requested("textDocument/implementation").len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2099,6 +2445,41 @@ async fn will_and_did_rename_files_honour_filters() {
         s.requested("initialize")[0]["capabilities"]["workspace"]["fileOperations"],
         json!({ "dynamicRegistration": true, "willRename": true, "didRename": true })
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn will_rename_files_asks_tsserver_when_the_server_has_no_file_operations() {
+    // vtsls: no `willRename` filters, but tsserver's `getEditsForFileRename` through its command.
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["typescript.tsserverRequest"] });
+    let h = harness_configured("typescript", "ts", &[("vtsls", caps)], |cfg| cfg.tsserver_project = true);
+    let money = h.root.join("money.ts");
+    let index = h.root.join("index.ts");
+    std::fs::write(&money, "export const one = 1;\n").unwrap();
+    std::fs::write(&index, "import { one } from \"./money\";\n").unwrap();
+    let s = h.launcher.state("vtsls");
+    *s.responder.lock() = Some(Arc::new(move |_, method, p| {
+        (method == "workspace/executeCommand" && p["arguments"][0] == "getEditsForFileRename").then(|| {
+            json!({ "success": true, "body": [{ "fileName": p["arguments"][1]["oldFilePath"].as_str().unwrap().replace("money.ts", "index.ts"),
+                "textChanges": [{ "start": { "line": 1, "offset": 22 }, "end": { "line": 1, "offset": 29 }, "newText": "./lib/money" }] }] })
+        })
+    }));
+    let to = h.root.join("lib/money.ts");
+    let result =
+        h.mgr.will_rename_files(&[(money.clone(), to.clone())], ide_core::CancellationToken::new()).await.unwrap();
+    assert_eq!(result.servers, vec!["vtsls".to_owned()]);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    match &result.edit.files[..] {
+        [FileEdit::Edit { path, edits, version: None }] => {
+            assert_eq!(path, &index);
+            assert_eq!(edits[0].range, rng(0, 21, 0, 28));
+            assert_eq!(edits[0].new_text, "./lib/money");
+        }
+        other => panic!("unexpected edit {other:?}"),
+    }
+    let asked = s.requested("workspace/executeCommand");
+    let asked = asked.iter().find(|r| r["arguments"][0] == "getEditsForFileRename").unwrap();
+    assert_eq!(asked["arguments"][1], json!({ "oldFilePath": money, "newFilePath": to }));
 }
 
 // ------------------------------------------------------------------ inspect code
@@ -3063,7 +3444,8 @@ async fn interactive_capability_is_scoped_to_gopls() {
     let (doc, _) = h.open("probe.mk", "x\n");
     h.wait_status("mock", ServerStatus::Ready).await;
     let s = h.launcher.state("mock");
-    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"], json!({}));
+    let experimental = &s.requested("initialize")[0]["capabilities"]["experimental"];
+    assert!(experimental.get("interactiveResolve").is_none(), "{experimental}");
     let form = h
         .mgr
         .resolve_command(

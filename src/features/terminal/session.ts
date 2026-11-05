@@ -14,10 +14,12 @@ import { fitScheduler, settledResize } from "./fit";
 import { installTerminalDrop } from "./drop";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
+import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
@@ -179,12 +181,16 @@ export class TerminalSession {
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
   private opened = false;
+  /** `focus()` arrived before the textarea existed (the pane is focused while xterm is still closed). */
+  private pendingFocus = false;
+  /** Bounds retries when the pane has no box yet, or xterm cannot measure a cell. */
+  private fitAttempts = 0;
   private disposed = false;
   private disposables: IDisposable[] = [];
   private resizeObserver: ResizeObserver | null = null;
   private readonly fitter = fitScheduler(() => this.doFit());
   private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
-  private inputRaf = 0;
+  /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
   private lastSize = { cols: 0, rows: 0 };
   /** Bumped on restart so late output from a previous PTY is ignored. */
@@ -377,28 +383,41 @@ export class TerminalSession {
     }));
   }
 
-  /** Moves the host into `container` and opens / fits / starts as needed. */
+  /** Moves the host into `container` and fits / starts once the pane has a size. */
   attach(container: HTMLElement) {
     if (this.disposed) return;
     if (this.host.parentElement !== container) container.appendChild(this.host);
-    if (!this.opened) {
-      this.opened = true;
-      // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
-      // selected text rendered at a visibly different weight than the rest.
-      this.term.open(this.host);
-      remeasureWhenFontsLoad(
-        this.term,
-        fontFor(workflowSettings().terminal),
-        () => !this.disposed,
-        () => this.scheduleFit(),
-      );
-      this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
-      this.watchImeCommit();
-    }
     this.resizeObserver?.disconnect();
-    this.resizeObserver = new ResizeObserver(() => this.scheduleFit());
+    this.resizeObserver = new ResizeObserver(() => {
+      this.fitAttempts = 0;
+      this.scheduleFit();
+    });
     this.resizeObserver.observe(container);
     this.scheduleFit();
+  }
+
+  /**
+   * Opens xterm only after the host has a box. `open()` measures the cell size
+   * immediately; doing it while the tool window is still 0×0 (the first layout
+   * pass, or a tab under `display: none`) leaves the helper textarea unable to
+   * take keys for the rest of the session.
+   */
+  private openIfReady() {
+    if (this.opened || this.disposed) return;
+    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
+    // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
+    // selected text rendered at a visibly different weight than the rest.
+    this.term.open(this.host);
+    this.opened = true;
+    remeasureWhenFontsLoad(
+      this.term,
+      fontFor(workflowSettings().terminal),
+      () => !this.disposed,
+      () => this.scheduleFit(),
+    );
+    this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
+    this.watchImeCommit();
+    if (this.pendingFocus) this.focus();
   }
 
   detach(container: HTMLElement) {
@@ -412,18 +431,28 @@ export class TerminalSession {
   }
 
   /**
-   * Routes a WebKitGTK / fcitx5 IME commit through `ImeCommitGate`: the platform reports the
-   * composition's own keystroke (code 229) and its input event but never `compositionstart`,
-   * which is what xterm's own bookkeeping is built on.
+   * Delivers the IME commits xterm loses on macOS, and routes a WebKitGTK / fcitx5 commit
+   * through `ImeCommitGate` elsewhere (that platform reports the commit's own keystroke code
+   * 229 and its input event, but reports `compositionstart` only for composed words).
    */
   private watchImeCommit() {
     const textarea = this.term.textarea;
     if (!textarea) return;
+    // WKWebView: xterm drops commits IMEs without composition events inject (Doubao) and
+    // misses text that lands after its textarea snapshot. Deliver those here.
+    if (usePlatform.getState().os === "macos") {
+      this.disposables.push({
+        dispose: ownTerminalInput({ host: this.host, textarea, send: (data) => this.send(data) }),
+      });
+      return;
+    }
+    // WebKitGTK (Linux) and WebView2 keep the fcitx5 deduplication gate.
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.keyCode === 229) this.ime.begin();
+      else this.ime.keystroke();
     };
     const onInput = (e: InputEvent) => {
-      if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.begin();
+      if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.input();
     };
     const onCompositionStart = () => this.ime.compositionStart();
     // Bubble phase, i.e. after xterm's own listener: the rebase must land behind the emissions
@@ -451,9 +480,21 @@ export class TerminalSession {
 
   private doFit() {
     if (this.disposed || !this.host.isConnected) return;
-    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
+    // The grid row is still 0 on the first layout pass (the track is set by a
+    // parent layout effect after this one). Keep asking until it has a box;
+    // ResizeObserver also resets the budget when the size actually changes.
+    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) {
+      if (this.fitAttempts++ < 20) this.scheduleFit();
+      return;
+    }
+    this.openIfReady();
+    if (!this.opened) return;
     const dims = this.fit.proposeDimensions();
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
+      if (this.fitAttempts++ < 20) this.scheduleFit();
+      return;
+    }
+    this.fitAttempts = 0;
     if (dims.cols !== this.term.cols || dims.rows !== this.term.rows) this.term.resize(dims.cols, dims.rows);
     if (this.snapshot.status === "idle") {
       void this.start();
@@ -512,7 +553,9 @@ export class TerminalSession {
       }
       this.ptyId = info.id;
       this.update({ status: "running", title: info.title || "Local" });
+      this.flushPendingInput();
     } catch (e) {
+      this.pendingInput = "";
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
       this.term.writeln(RESTART_HINT);
       this.update({ status: "error" });
@@ -543,6 +586,7 @@ export class TerminalSession {
   exited(code: number | null) {
     if (this.disposed) return;
     this.ptyId = null;
+    this.pendingInput = "";
     this.update({ status: "exited", exitCode: code });
     // Let output still in flight on the channel land first.
     setTimeout(() => {
@@ -556,26 +600,36 @@ export class TerminalSession {
   restart() {
     if (this.snapshot.status === "running" || this.snapshot.status === "starting") return;
     this.term.write("\r\n");
+    this.pendingInput = "";
     this.update({ status: "idle" });
     void this.start();
   }
 
-  /** Sends input to the PTY, coalescing rapid keystrokes per animation frame. */
+  /**
+   * Sends input to the PTY. Keystrokes are not coalesced: WebKit delivers at most one key
+   * event per frame already, and a frame-based batch only made input wait for rendering.
+   */
   input(data: string) {
+    if (!data) return;
     const status = this.snapshot.status;
     if (status === "exited" || status === "error") {
       if (data === "\r") this.restart();
       return;
     }
-    if (this.ptyId === null) return;
-    this.pendingInput += data;
-    if (this.inputRaf) return;
-    this.inputRaf = requestAnimationFrame(() => {
-      this.inputRaf = 0;
-      const chunk = this.pendingInput;
-      this.pendingInput = "";
-      if (chunk && this.ptyId !== null) void commands.termWrite(this.ptyId, chunk);
-    });
+    if (this.ptyId === null) {
+      // The shell is still being spawned (tens of ms); keep the keystrokes and send them
+      // once the PTY exists instead of dropping them.
+      this.pendingInput += data;
+      return;
+    }
+    void commands.termWrite(this.ptyId, data);
+  }
+
+  /** Sends keystrokes buffered while the PTY was starting. */
+  private flushPendingInput() {
+    const queued = this.pendingInput;
+    this.pendingInput = "";
+    if (queued && this.ptyId !== null) void commands.termWrite(this.ptyId, queued);
   }
 
   /** Writes input immediately (shortcuts translated outside xterm). */
@@ -614,8 +668,22 @@ export class TerminalSession {
     if (follow !== this.snapshot.follow) this.update({ follow });
   }
 
+  /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */
   focus() {
+    if (this.disposed) return;
+    if (!this.opened || !this.term.textarea) {
+      this.pendingFocus = true;
+      this.scheduleFit();
+      return;
+    }
+    this.pendingFocus = false;
     this.term.focus();
+  }
+
+  /** Fits again after the tool window is shown or its box changes. */
+  refit() {
+    this.fitAttempts = 0;
+    this.scheduleFit();
   }
 
   applyTheme() {
@@ -662,7 +730,7 @@ export class TerminalSession {
     this.disposed = true;
     this.fitter.cancel();
     this.ptyResize.cancel();
-    cancelAnimationFrame(this.inputRaf);
+    this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
     if (this.ptyId !== null) void commands.termKill(this.ptyId);

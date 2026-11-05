@@ -3,12 +3,14 @@ import type { FileStatus } from "@/bindings";
 import {
   aggregateCheck,
   buildChangeTree,
+  checkOf,
   commitRepos,
   ignoreTargets,
   initialCheck,
   hunkIncluded,
   groupFileNodes,
   planCommit,
+  remainingOverrides,
   stagingSide,
   toggledHunk,
   type CheckState,
@@ -216,6 +218,28 @@ describe("commit inclusion", () => {
     expect(aggregateCheck([status[0]!, status[3]!], checks)).toMatchObject({ checked: true, indeterminate: false });
     expect(aggregateCheck([status[0]!, status[4]!], checks)).toMatchObject({ checked: false, indeterminate: true });
     expect(aggregateCheck([status[1]!], checks)).toMatchObject({ checked: false, indeterminate: true });
+  });
+
+  it("keeps the changes left out of a commit excluded after it", () => {
+    const files = Array.from({ length: 20 }, (_, i) => fs(`src/f${i}.kt`, null, "modified"));
+    const leftOut = files.slice(5);
+    const checks = new Map<string, CheckState>(leftOut.map((f) => [f.path, "none"]));
+    const plan = planCommit(files, checks);
+    expect(plan.included).toHaveLength(5);
+
+    // The commit takes its 5 files out of the tree; the 15 left out keep their override.
+    const kept = remainingOverrides(checks, plan.included);
+    expect(kept.has(files[0]!.path)).toBe(false);
+    expect(leftOut.every((f) => checkOf(f, kept) === "none")).toBe(true);
+    expect(aggregateCheck(leftOut, kept)).toMatchObject({ checked: false, indeterminate: false });
+  });
+
+  it("drops only the committed paths from the per-file overrides", () => {
+    const overrides = new Map([
+      ["/r/a.ts", new Set(["h1"])],
+      ["/r/b.ts/", new Set(["h2"])],
+    ]);
+    expect([...remainingOverrides(overrides, [fs("a.ts", null, "modified")])]).toEqual([["/r/b.ts/", new Set(["h2"])]]);
   });
 
   it("commits a file with excluded blocks partially, without staging it", () => {

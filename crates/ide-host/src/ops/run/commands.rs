@@ -142,6 +142,21 @@ pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: V
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Writes one of the IDE's Gradle init scripts (`text`; the file is named `<name>-<hash>`) on
+/// the machine that runs the build, for `--init-script`, and returns its path.
+pub async fn run_gradle_init_script(_host: &Host, _window: &str, name: String, text: String) -> IdeResult<String> {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(IdeError::invalid(format!("invalid init script name {name:?}")));
+    }
+    tokio::task::spawn_blocking(move || {
+        ide_run::gradle_jvm::write_script(&ide_run::gradle_jvm::default_dir(), &name, &text)
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| IdeError::internal(format!("cannot write the Gradle init script: {e}")))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 /// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
 pub async fn run_test_reports(
@@ -307,6 +322,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
     d.add("run_gradle_jvm_args_script", |c| async move {
         run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
+    });
+    d.add("run_gradle_init_script", |c| async move {
+        run_gradle_init_script(&c.host, &c.window, c.arg("name")?, c.arg("text")?).await
     });
     d.add("run_test_reports", |c| async move {
         run_test_reports(&c.host, &c.window, c.arg("module")?, c.arg("sinceMs")?).await

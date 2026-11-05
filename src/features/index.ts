@@ -24,7 +24,9 @@ import { activate as runAnything } from "./run-anything";
 import { activate as macros } from "./macros";
 import { activate as debuggerFeature } from "./debugger";
 import { activate as coverage } from "./coverage";
+import { activate as colorPreview } from "./color-preview";
 import { activate as profiler } from "./profiler";
+import { activate as logcat } from "./logcat";
 import { activate as buildTools } from "./build-tools";
 import { activate as build } from "./build";
 import { activate as templates, activateSettingsPages as templatesPages } from "./templates";
@@ -70,7 +72,9 @@ const features: Array<[string, Activate]> = [
   ["macros", macros],
   ["debugger", debuggerFeature],
   ["coverage", coverage],
+  ["color-preview", colorPreview],
   ["profiler", profiler],
+  ["logcat", logcat],
   ["build-tools", buildTools],
   ["build", build],
   ["templates", templates],

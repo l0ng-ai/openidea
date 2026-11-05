@@ -223,24 +223,23 @@ function PaneView({ paneId }: { paneId: string }) {
   const pinnedCount = tabs.filter((t) => t.pinned).length;
   // Settings › Editor Tabs › Tab placement Left / Right: a vertical, scrolling column.
   const vertical = tabPrefs.placement === "left" || tabPrefs.placement === "right";
-  const pinnedRow =
-    tabPrefs.pinnedSeparateRow && (vertical || !tabPrefs.multipleRows) && pinnedCount > 0 && pinnedCount < tabs.length;
+  const pinnedRow = tabPrefs.pinnedSeparateRow && pinnedCount > 0 && pinnedCount < tabs.length;
   const dnd = useMemo(() => {
     // A tab released outside the window detaches into a forced new window.
     const dropOutside = (raw: string) => {
       const p = parseTabPayload(raw);
       if (p) void ctrl.detachTab(p.paneId, p.tabId);
     };
-    const strip = (offset: number): TabsDnd => ({
+    const strip = (offset: number, pin?: boolean): TabsDnd => ({
       type: EDITOR_TAB_MIME,
       payload: (tabId) => JSON.stringify({ paneId, tabId }),
       onDrop: (raw, index) => {
         const p = parseTabPayload(raw);
-        if (p) ctrl.moveTab(p.paneId, p.tabId, paneId, index + offset);
+        if (p) ctrl.moveTab(p.paneId, p.tabId, paneId, index + offset, pin);
       },
       onDropOutside: dropOutside,
     });
-    return { all: strip(0), rest: strip(pinnedCount) };
+    return { all: strip(0), pinned: strip(0, true), rest: strip(pinnedCount, false) };
   }, [ctrl, paneId, pinnedCount]);
 
   // Dropping a tab or project files on the editor: an edge splits, the middle opens / moves here.
@@ -343,7 +342,7 @@ function PaneView({ paneId }: { paneId: string }) {
       {pinnedRow ? (
         // Settings › Editor Tabs › Show pinned tabs in a separate row.
         <div className={clsx(styles.tabRows, hidden && styles.tabsHidden)}>
-          {strip(items.slice(0, pinnedCount), dnd.all, vertical ? actions : undefined)}
+          {strip(items.slice(0, pinnedCount), dnd.pinned, vertical ? actions : undefined)}
           {strip(items.slice(pinnedCount), dnd.rest, vertical ? undefined : actions)}
         </div>
       ) : (

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import type { RunConfig } from "@/platform/ipc";
+import { afterEach, describe, expect, it } from "vitest";
+import type { HierarchyItem, RunConfig } from "@/platform/ipc";
 import {
   innermostTarget,
   nodeTypeStripping,
@@ -15,8 +15,18 @@ import {
   type LocatedTool,
   type ToolEnv,
 } from "./producers";
+import { clearInheritedMain, resolveCandidates, unresolvedCandidates } from "./inheritedMain";
+
+afterEach(() => clearInheritedMain());
 
 const ROOT = "/work/app";
+const superItem: Omit<HierarchyItem, "name" | "path"> = {
+  kind: "class",
+  detail: null,
+  range: { start: { line: 0, col: 0 }, end: { line: 1, col: 0 } },
+  selectionRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+  fromRanges: [],
+};
 const SCRATCH = "/Users/me/Library/Application Support/ai.l0ng.openidea/scratches";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
@@ -152,6 +162,31 @@ describe("single-file producers (scratches)", () => {
     expect(produceContext(scratch("hi.py"), env({}))!.missing!.title).toBe("Cannot run 'hi.py'");
   });
 
+  it("Python: a module with relative imports runs with -m from above its top package", () => {
+    const venv = [cfg({ id: "pytest", kind: "pytest", command: ".venv/bin/pytest" })];
+    const packages = new Set([`${ROOT}/src/tasks`, `${ROOT}/src/tasks/sub`]);
+    const at = (path: string, content: string) =>
+      run({ path, root: ROOT, configs: venv, content, pythonPackage: (d) => packages.has(d) });
+    const relative = "from .models import TaskList\n";
+    expect(at(`${ROOT}/src/tasks/cli.py`, relative)).toMatchObject({
+      command: `${ROOT}/.venv/bin/python`,
+      args: ["-m", "tasks.cli"],
+      cwd: "src",
+    });
+    expect(at(`${ROOT}/src/tasks/sub/__main__.py`, "from ..models import X\n")).toMatchObject({
+      args: ["-m", "tasks.sub"],
+      cwd: "src",
+    });
+    // A directory without `__init__.py` is still the module's package; a top-level one runs from the root.
+    expect(at(`${ROOT}/scripts/gen.py`, relative)).toMatchObject({ args: ["-m", "scripts.gen"], cwd: null });
+    // Without relative imports, the file runs as a script.
+    expect(at(`${ROOT}/src/tasks/cli.py`, "import argparse\n")).toMatchObject({
+      command: ".venv/bin/python",
+      args: ["src/tasks/cli.py"],
+      cwd: null,
+    });
+  });
+
   it("shell scripts: the shell of the #! line, else by extension; extensionless files by #!", () => {
     expect(run(scratch("a.sh", "#!/usr/bin/env bash\necho hi"))).toMatchObject({
       command: "/bin/bash",
@@ -191,6 +226,15 @@ describe("single-file producers (scratches)", () => {
   it("Ruby, PHP, Perl, Lua, R, Swift, Dart, Elixir, Scala CLI, Kotlin script", () => {
     expect(run(scratch("a.rb"))).toMatchObject({ command: "/bin/ruby", args: ["a.rb"] });
     expect(run(scratch("a.php"))).toMatchObject({ command: "/bin/php", args: ["a.php"] });
+    // The PHP chosen in Settings wins over the PATH one, also with no PHP on PATH (#1555).
+    const php81 = "/opt/homebrew/opt/php@8.1/bin/php";
+    expect(run(scratch("a.php"), { ...ALL, php: php81 })).toMatchObject({ command: php81, args: ["a.php"] });
+    expect(run(scratch("a.php"), env({}, { php: php81 }))).toMatchObject({ command: php81, args: ["a.php"] });
+    expect(run(scratch("tool", "#!/usr/bin/env php\n<?php echo 1;"), { ...ALL, php: php81 })).toMatchObject({
+      command: php81,
+      args: ["tool"],
+    });
+    expect(produceContext(scratch("a.php"), env({}))!.missing!.body).toMatch(/Settings › Languages & Frameworks › PHP/);
     expect(run(scratch("a.pl"))).toMatchObject({ command: "/bin/perl" });
     expect(run(scratch("a.lua"))).toMatchObject({ command: "/bin/lua" });
     expect(run(scratch("a.R"))).toMatchObject({ command: "/bin/Rscript", args: ["a.R"] });
@@ -309,6 +353,69 @@ describe("single-file producers (scratches)", () => {
     expect(p.config!.args.at(-1)).toBe("demo.Hi");
   });
 
+  it("Java: a main class after another top-level class compiles with javac, then runs with java -cp", () => {
+    const src =
+      "class Parent {\n  void show() {}\n}\n\npublic class Test {\n" +
+      "  public static void main(String[] args) {\n    new Parent().show();\n  }\n}\n";
+    const input = { path: `${ROOT}/src/Test.java`, root: ROOT, configs: [], content: src };
+    const out = "/tmp/openidea-run/Test-[a-z0-9]+-classes";
+    for (const p of [produceFile(input, ALL), produceContext(input, ALL), produceContext({ ...input, line: 6 }, ALL)]) {
+      expect(p!.config).toMatchObject({
+        id: "context:file:src/Test.java",
+        name: "Test.java",
+        kind: "java-file",
+        args: [],
+        cwd: null,
+        debugAdapter: "java-debug",
+      });
+      expect(p!.config!.command).toMatch(
+        new RegExp(`^mkdir -p (${out}) && /bin/javac -g -d \\1 src/Test\\.java && /bin/java -cp \\1 Test$`),
+      );
+    }
+    // The source launcher runs the first top-level class: a main there keeps `java Test.java`.
+    expect(
+      run(scratch("Test.java", "public class Test {\n  public static void main(String[] a) {}\n}\nclass B {}")),
+    ).toEqual({ name: "Test.java", command: "/bin/java", args: ["Test.java"], cwd: SCRATCH });
+    // Java 25 compact source file: no class, `java Hi.java` as before.
+    expect(run(scratch("Hi.java", "void main() {\n  IO.println(1);\n}\nclass Helper {}\n"))).toMatchObject({
+      command: "/bin/java",
+      args: ["Hi.java"],
+    });
+  });
+
+  it("Java: the gutter runs the main class it marks, nested ones and those of a JDK on Windows too", () => {
+    const src = [
+      "package demo;",
+      "class First {",
+      "  public static void main(String[] args) {}",
+      "  static class Inner {",
+      "    public static void main(String[] args) {}",
+      "  }",
+      "}",
+      "public class Second {",
+      "  public static void main(String[] args) {}",
+      "}",
+    ].join("\n");
+    const at = (line?: number) => produceContext(scratch("Second.java", src, line), ALL)!;
+    // The file and the first class: the source launcher.
+    for (const p of [at(), at(2)]) expect(p.config).toMatchObject({ command: "/bin/java", args: ["Second.java"] });
+    const second = at(8);
+    expect(second).toMatchObject({ name: "Second", scope: "element" });
+    expect(second.config).toMatchObject({ id: `context:file:${SCRATCH}/Second.java#demo.Second`, name: "Second" });
+    expect(second.config!.command).toMatch(/ && \/bin\/java -cp \S+ demo\.Second$/);
+    expect(at(4).config!.command).toMatch(/ && \/bin\/java -cp \S+ 'demo\.First\$Inner'$/);
+    const jdk = "C:\\Program Files\\Java\\jdk-21\\bin\\java.exe";
+    const win: ToolEnv = {
+      tool: (n) => (n === "java" ? { path: jdk, version: null } : null),
+      compileDir: "C:/Users/me/AppData/Local/openidea/run",
+      windows: true,
+    };
+    const p = produceContext(scratch("Second.java", src, 8), win)!;
+    expect(p.config!.command).toMatch(
+      /^\(if not exist (C:\\Users\\me\\AppData\\Local\\openidea\\run\\Second-[a-z0-9]+-classes) mkdir \1\) && "C:\\Program Files\\Java\\jdk-21\\bin\\javac\.exe" -g -d \1 Second\.java && "C:\\Program Files\\Java\\jdk-21\\bin\\java\.exe" -cp \1 demo\.Second$/,
+    );
+  });
+
   it("Java: a main in a Gradle module outside the project runs on the module's classpath", () => {
     // `includeFlat 'billing'`: the module folder is a sibling of the project folder.
     const svc = "/work/billing/modules/core";
@@ -327,8 +434,25 @@ describe("single-file producers (scratches)", () => {
     });
     expect(produceContext(input(), ALL)!.config!.kind).toBe("java-file");
     const p = produceContext(input(["/work/billing", svc]), ALL)!;
-    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: null });
     expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
+  });
+
+  it("Java: a class whose superclass declares main runs as a Spring Boot application", async () => {
+    const path = `${ROOT}/src/main/java/demo/AiChatApplication.java`;
+    const content = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const input = { path, root: ROOT, configs: gradle, content, line: 3 };
+    expect(fileTargets(input, content)).toEqual([]);
+    await resolveCandidates(path, unresolvedCandidates(path, content), {
+      supertypes: async () => [{ ...superItem, name: "AtomStarter", path: "jdt://lib/AtomStarter.class" }],
+      text: async () => "package x; public class AtomStarter { public static void main(String[] a) {} }",
+    });
+    expect(fileTargets(input, content)).toMatchObject([
+      { kind: "main", className: "demo.AiChatApplication", spring: true },
+    ]);
+    expect(produceContext(input, ALL)!.config).toMatchObject({ kind: "spring-boot" });
+    expect(produceContext(input, ALL)!.config!.args.at(-1)).toBe("demo.AiChatApplication");
   });
 
   describe("Java / Kotlin mains in a build nested in a folder of repositories", () => {
@@ -372,7 +496,8 @@ describe("single-file producers (scratches)", () => {
             kind: "spring-boot",
             name: "DromaraApplication",
             command: "java",
-            cwd: module,
+            module,
+            cwd: null,
           });
           expect(p!.config!.args).toEqual(["-cp", "${classpath}", "org.dromara.DromaraApplication"]);
         }
@@ -388,7 +513,7 @@ describe("single-file producers (scratches)", () => {
     it("Kotlin and test classes use the build that contains them", () => {
       const kt = "package demo\n\nfun main() {\n  println(1)\n}\n";
       const p = produceContext(at("backend/app/src/main/kotlin/demo/App.kt", nested("gradle", "backend"), kt, 3), ALL)!;
-      expect(p.config).toMatchObject({ kind: "application", cwd: "backend/app" });
+      expect(p.config).toMatchObject({ kind: "application", module: "backend/app", cwd: null });
       expect(p.config!.args.at(-1)).toBe("demo.AppKt");
       const test = "package demo;\nclass AppTest {\n  @Test\n  void works() {\n  }\n}\n";
       const t = produceContext(

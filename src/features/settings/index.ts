@@ -38,6 +38,7 @@ import { installActionProxies, installSettingsHost } from "./window/bridge";
 import { AssignShortcutOverlay, showAssignShortcut } from "./keymap/AssignShortcut";
 import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
+import { activatePhpStatus } from "./languages/PhpStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
 import { trackIconThemePages } from "./iconThemePages";
@@ -109,6 +110,7 @@ export function activate(): () => void {
     trackRuntimeSettings(),
     trackIconThemePages(),
     activatePythonStatus(),
+    activatePhpStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
     registerActions(zoomActions()),

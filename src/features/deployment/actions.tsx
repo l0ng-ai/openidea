@@ -225,6 +225,16 @@ async function deleteRemote(paths: string[]) {
 }
 
 /** Compares every covered selection with `server`. */
+/** Sync with Deployed to: its own window on desktop (the browser build keeps the in-page dialog). */
+async function openComparison(server: DeploymentServerValid, paths: string[]) {
+  if (!isTauri()) return openSync(server, paths);
+  try {
+    await showDeploymentComparison(server.id, paths);
+  } catch (error) {
+    showFailure("Cannot open comparison for {server}", server, error);
+  }
+}
+
 export async function openSync(server: DeploymentServerValid, paths: string[]) {
   const coverage = (await serverCoverage(paths))?.find((c) => c.server === server.id);
   if (!coverage) return;
@@ -453,15 +463,7 @@ export function registerDeploymentActions(): () => void {
         const target = paths[0] ?? projectRoot();
         if (!target) return;
         const targets = paths.length ? paths : [target];
-        void pickServer("Sync with Deployed to", targets).then(async (server) => {
-          if (!server) return;
-          if (!isTauri()) return openSync(server, targets);
-          try {
-            await showDeploymentComparison(server.id, targets);
-          } catch (error) {
-            showFailure("Cannot open comparison for {server}", server, error);
-          }
-        });
+        void pickServer("Sync with Deployed to", targets).then((server) => server && openComparison(server, targets));
       },
     },
     {
@@ -473,7 +475,7 @@ export function registerDeploymentActions(): () => void {
       keywords: ["deploy", "sftp", "compare", "synchronize", "remote", "diff"],
       run: withTargets(async (paths) => {
         const server = await defaultServer("Sync with Deployed to", paths);
-        if (server) await openSync(server, paths);
+        if (server) await openComparison(server, paths);
       }),
     },
     {

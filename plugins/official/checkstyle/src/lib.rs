@@ -97,12 +97,8 @@ fn diagnostic(p: &Problem, text: &str) -> Diagnostic {
     let line_len = text.split('\n').nth(p.line as usize).map_or(0, |l| l.encode_utf16().count() as u32);
     let start = p.column.unwrap_or(0).min(line_len);
     let end = if p.column.is_some() && start < line_len { start + 1 } else { line_len };
-    Diagnostic {
-        range: Range::new(Position::new(p.line, start), Position::new(p.line, end.max(start))),
-        severity: p.severity,
-        message: p.message.clone(),
-        code: Some(p.check.clone()),
-    }
+    let range = Range::new(Position::new(p.line, start), Position::new(p.line, end.max(start)));
+    Diagnostic::new(range, p.severity, p.message.clone()).code(p.check.clone())
 }
 
 /// The project containing `path`.
@@ -112,6 +108,26 @@ fn project_of(path: &str) -> Option<Project> {
         .into_iter()
         .filter(|p| p.root().is_ok_and(|r| path.starts_with(&r)))
         .max_by_key(|p| p.root().map(|r| r.len()).unwrap_or(0))
+}
+
+fn windows_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else {
+        path.strip_prefix("//?/").unwrap_or(&path).to_owned()
+    }
+}
+
+fn report_matches_file(reported: &str, path: &str) -> bool {
+    // WASI plugins run on every host, so interpret the host's path rather than cfg(windows).
+    let drive = path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+    if drive || path.starts_with("//") || path.starts_with(r"\\") {
+        let (reported, path) = (windows_path(reported), windows_path(path));
+        reported == path || path.ends_with(&reported)
+    } else {
+        reported == path || path.ends_with(reported)
+    }
 }
 
 /// The configuration for files of `project`.
@@ -142,11 +158,8 @@ impl Checkstyle {
             return Err(Error::Failed(format!("checkstyle: {}", out.stderr.lines().next().unwrap_or("no report"))));
         }
         let report = parse_report(&out.stdout);
-        let problems = report
-            .into_iter()
-            .find(|(f, _)| f == path || path.ends_with(f.as_str()))
-            .map(|(_, p)| p)
-            .unwrap_or_default();
+        let problems =
+            report.into_iter().find(|(f, _)| report_matches_file(f, path)).map(|(_, p)| p).unwrap_or_default();
         let text = project.read_file(path).unwrap_or_default();
         let diagnostics: Vec<Diagnostic> = problems.iter().map(|p| diagnostic(p, &text)).collect();
         host::publish_diagnostics(path, &diagnostics)?;
@@ -188,6 +201,7 @@ impl Providers for Checkstyle {
                     kind: Some("quickfix".into()),
                     preferred: true,
                     edits: vec![(doc.path.clone(), vec![edit])],
+                    data: None,
                 });
             }
         }
@@ -236,7 +250,7 @@ impl Plugin for Checkstyle {
 
 register_plugin!(Checkstyle, providers);
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use openidea_plugin::ProcessOutput;
@@ -289,6 +303,45 @@ mod tests {
         let titles: Vec<_> = actions.iter().map(|a| a.title.as_str()).collect();
         assert_eq!(titles, ["Checkstyle: Replace tabs with spaces", "Checkstyle: Remove trailing whitespace"]);
         assert_eq!(actions[1].edits[0].1[0].text, "  void f() {}");
+    }
+
+    #[test]
+    fn unix_report_paths_preserve_backslashes() {
+        assert!(report_matches_file("/project/A\\B.java", "/project/A\\B.java"));
+        assert!(!report_matches_file("/project/A\\B.java", "/project/A/B.java"));
+    }
+
+    #[test]
+    fn windows_reports_match_the_saved_file_and_keep_quick_fixes() {
+        for (root, reported) in [
+            ("C:/project", r"C:\project\src\A.java"),
+            ("C:/project", r"\\?\C:\project\src\A.java"),
+            ("C:/project", r"src\A.java"),
+            ("//server/share/project", r"\\server\share\project\src\A.java"),
+            ("//server/share/project", r"\\?\UNC\server\share\project\src\A.java"),
+        ] {
+            let host =
+                MockHost::install().with_capabilities(&["project.read", "events", "storage", "process:checkstyle"]);
+            host.set_project_root(Some(root));
+            host.add_file("src/A.java", "class A {\n\tint x;\n  void f() {}   \n}");
+            let xml = REPORT.replace("/project/src/A.java", reported);
+            host.on_process("checkstyle", move |_, _| {
+                Ok(ProcessOutput { status: Some(1), stdout: xml.clone(), stderr: String::new() })
+            });
+            let path = format!("{root}/src/A.java");
+            let mut plugin = Checkstyle::default();
+            plugin.handle_events(&[Event::FileSaved(path.clone())], &host.invocation());
+            assert_eq!(host.diagnostics()[&path].len(), 2, "{reported}");
+            let doc = Document {
+                path: path.clone(),
+                language: "java".into(),
+                version: 1,
+                text: "class A {\n\tint x;\n  void f() {}   \n}".into(),
+            };
+            let actions = plugin.code_actions(&doc, Range::new(Position::new(1, 0), Position::new(2, 0)));
+            assert_eq!(actions.len(), 2, "{reported}");
+            assert_eq!(actions[0].edits[0].0, path);
+        }
     }
 
     #[test]

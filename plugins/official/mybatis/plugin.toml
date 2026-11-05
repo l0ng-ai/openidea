@@ -5,6 +5,7 @@ description = "Jumps between MyBatis mapper interfaces and their XML statements 
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: navigation both ways, line markers, id and parameter completion."
+categories = ["frameworks"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 activation = ["on-command:*"]

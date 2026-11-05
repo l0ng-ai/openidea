@@ -63,8 +63,11 @@ struct State {
     subscriptions: BTreeSet<EventKind>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
+    remotes: Vec<(String, String)>,
     fetches: u32,
     fetch_error: Option<Error>,
+    clipboard: Option<String>,
+    opened_urls: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
@@ -74,6 +77,7 @@ struct State {
     refreshed: Vec<String>,
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
+    locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
 }
 
@@ -95,8 +99,17 @@ pub struct MockHost {
 }
 
 /// Every capability a plugin can hold, except `process:`/`net:`/`fs.read:`.
-const ALL: &[&str] =
-    &["project.read", "editor.read", "editor.write", "vcs.read", "vcs.write", "storage", "events", "events.input"];
+const ALL: &[&str] = &[
+    "project.read",
+    "editor.read",
+    "editor.write",
+    "vcs.read",
+    "vcs.write",
+    "storage",
+    "events",
+    "events.input",
+    "clipboard",
+];
 
 impl MockHost {
     /// Installs a mock granting the usual capabilities, with project `/project`.
@@ -196,6 +209,21 @@ impl MockHost {
         self.state.borrow_mut().vcs = status;
     }
 
+    /// Remotes `vcs-remotes` returns for every project.
+    pub fn set_vcs_remotes(&self, remotes: &[(&str, &str)]) {
+        self.state.borrow_mut().remotes = remotes.iter().map(|&(n, u)| (n.to_owned(), u.to_owned())).collect();
+    }
+
+    /// Last text copied with [`crate::host::copy_to_clipboard`].
+    pub fn clipboard(&self) -> Option<String> {
+        self.state.borrow().clipboard.clone()
+    }
+
+    /// URLs opened with [`crate::host::open_url`], in order.
+    pub fn opened_urls(&self) -> Vec<String> {
+        self.state.borrow().opened_urls.clone()
+    }
+
     /// Makes `vcs-fetch` fail.
     pub fn fail_fetch(&self, error: Option<Error>) {
         self.state.borrow_mut().fetch_error = error;
@@ -218,6 +246,10 @@ impl MockHost {
     /// `(view, message)` the plugin posted to its views' frames.
     pub fn view_messages(&self) -> Vec<(String, String)> {
         self.state.borrow().view_messages.clone()
+    }
+
+    pub fn opened_locations(&self) -> Vec<(String, u32, u32)> {
+        self.state.borrow().locations.clone()
     }
 
     /// Terminals the plugin opened.
@@ -343,6 +375,25 @@ pub mod current {
 
     pub fn remove_status_item(id: &str) {
         with(|s| s.status.remove(id));
+    }
+
+    pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "clipboard")?;
+            s.clipboard = Some(text.to_owned());
+            Ok(())
+        })
+    }
+
+    pub fn open_url(url: &str) -> Result<(), Error> {
+        let trimmed = url.trim();
+        if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+            return Err(Error::Invalid(format!("{url:?}: expected an http:// or https:// URL")));
+        }
+        with(|s| {
+            s.opened_urls.push(trimmed.to_owned());
+            Ok(())
+        })
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -491,6 +542,13 @@ pub mod current {
         })
     }
 
+    pub fn vcs_remotes(_: &ProjectRes) -> Result<Vec<(String, String)>, Error> {
+        with(|s| {
+            require(s, "vcs.read")?;
+            Ok(s.remotes.clone())
+        })
+    }
+
     pub fn subscribe(kind: EventKind) -> Result<(), Error> {
         with(|s| {
             let cap = match kind {
@@ -595,6 +653,14 @@ pub mod current {
         })
     }
 
+    pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            s.locations.push((path.into(), line, column));
+            Ok(())
+        })
+    }
+
     pub fn setting(key: &str) -> Option<String> {
         with(|s| s.settings.get(key).cloned())
     }
@@ -667,6 +733,13 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
+        mock.set_vcs_remotes(&[("origin", "git@github.com:o/r.git")]);
+        assert_eq!(project.vcs_remotes().unwrap(), [("origin".into(), "git@github.com:o/r.git".into())]);
+        host::copy_to_clipboard("copied").unwrap();
+        assert_eq!(mock.clipboard().as_deref(), Some("copied"));
+        host::open_url("https://example.com/a").unwrap();
+        assert_eq!(mock.opened_urls(), ["https://example.com/a"]);
+        assert!(matches!(host::open_url("file:///etc/passwd"), Err(Error::Invalid(_))));
         {
             let task = host::begin_task("Work", true);
             task.report(1, Some(2), None);
@@ -696,6 +769,8 @@ mod tests {
         assert_eq!(editor.apply_edits(1, &[]), Err(Error::Denied("editor.write".into())));
         assert_eq!(host::storage::get("k"), Err(Error::Denied("storage".into())));
         assert_eq!(host::subscribe(EventKind::ActionPerformed), Err(Error::Denied("events.input".into())));
+        assert_eq!(mock.invocation().project().unwrap().vcs_remotes(), Err(Error::Denied("vcs.read".into())));
+        assert_eq!(host::copy_to_clipboard("x"), Err(Error::Denied("clipboard".into())));
     }
 
     #[test]
@@ -722,11 +797,8 @@ mod tests {
         let out = mock.invocation().project().unwrap().run_process("java", &["-version".into()], None).unwrap();
         assert_eq!(out.stdout, "-version");
         assert_eq!(mock.process_runs()[0].cwd.as_deref(), Some("/project"));
-        host::publish_diagnostics(
-            "/project/a.java",
-            &[Diagnostic { range: Range::default(), severity: Severity::Warning, message: "m".into(), code: None }],
-        )
-        .unwrap();
+        host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
+            .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
     }
 }

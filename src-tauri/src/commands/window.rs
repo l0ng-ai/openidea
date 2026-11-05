@@ -52,17 +52,17 @@ pub async fn window_open_file_in_new_window(
     windows::open_file_in_new_window(&app, project, file)
 }
 
-/// [`window_open_project`] for folder `path` on the host of SSH configuration
-/// `ssh_config` (Remote Development); a new window connects itself.
+/// [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
+/// Remote Development); a new window connects itself.
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_remote(
     app: AppHandle,
-    ssh_config: String,
+    target: crate::remote_dev::RemoteTarget,
     path: String,
     new_window: bool,
 ) -> IdeResult<OpenOutcome> {
-    windows::open_remote_window(&app, &ssh_config, &path, new_window)
+    windows::open_remote_window(&app, &target, &path, new_window)
 }
 
 /// Opens an empty (welcome) window; returns its label.
@@ -124,9 +124,7 @@ pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
 #[tauri::command]
 #[specta::specta]
 pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
-    let on = !window.is_fullscreen().map_err(|e| IdeError::internal(e.to_string()))?;
-    window.set_fullscreen(on).map_err(|e| IdeError::internal(e.to_string()))?;
-    Ok(on)
+    crate::window_groups::toggle_fullscreen(&window)
 }
 
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).

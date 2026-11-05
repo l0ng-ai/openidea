@@ -114,6 +114,9 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::ViewChanged { .. }
             | PluginEvent::ViewMessage { .. }
             | PluginEvent::OpenTerminal { .. }
+            | PluginEvent::OpenLocation { .. }
+            | PluginEvent::CopyToClipboard { .. }
+            | PluginEvent::OpenUrl { .. }
     )
 }
 
@@ -272,7 +275,8 @@ impl RemotePlugins {
                 report.failed.push(format!("{}: invalid plugin id", pkg.id));
                 continue;
             }
-            let consent = Consent { optional: pkg.granted.clone() };
+            // The desktop asked the user, change of signer included.
+            let consent = Consent { optional: pkg.granted.clone(), signer_change: true };
             if self.current_digest(&pkg.id).as_deref() == Some(pkg.digest.as_str()) {
                 if let Err(e) = self.follow_grants(&pkg, &consent) {
                     report.failed.push(format!("{}: {e}", pkg.id));
