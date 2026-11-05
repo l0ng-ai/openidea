@@ -425,6 +425,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::menu_model,
         window::menu_set_disabled,
         window::app_log_location,
+        window::app_cli_install,
+        window::app_cli_uninstall,
         window::app_build_info,
         window::app_check_update,
         window::app_startup_update_check,

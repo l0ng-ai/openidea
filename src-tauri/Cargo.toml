@@ -37,6 +37,7 @@ tracing-subscriber.workspace = true
 dirs.workspace = true
 
 ide-core.workspace = true
+ide-cli.workspace = true
 dunce.workspace = true
 ide-clipboard.workspace = true
 ide-fonts.workspace = true

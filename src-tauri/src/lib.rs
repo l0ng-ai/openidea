@@ -4,6 +4,7 @@
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
 mod application_focus;
+mod cli;
 mod commands;
 #[cfg(debug_assertions)]
 mod dev;
@@ -63,6 +64,10 @@ pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
+    // The `openidea` command: answer and exit, no UI.
+    if let Some(code) = cli::run(&context.config().identifier) {
+        std::process::exit(code);
+    }
     logging::init(&context.config().identifier);
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
@@ -168,6 +173,7 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
+        cli::serve(app.handle(), &app.config().identifier);
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
