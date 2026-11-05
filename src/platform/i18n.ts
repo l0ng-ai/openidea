@@ -45,7 +45,7 @@ export const LOCALES = {
   fr: { name: "Français (French)", tag: "fr" },
   pl: { name: "Polski (Polish)", tag: "pl" },
   pt: { name: "Português (Portuguese)", tag: "pt-BR" },
-  es: { name: "Español", tag: "es-MX" },
+  es: { name: "Español (Spanish)", tag: "es-MX" },
 } as const;
 export type Locale = keyof typeof LOCALES;
 export const SUPPORTED_LOCALES = Object.keys(LOCALES) as Locale[];
