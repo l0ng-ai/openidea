@@ -440,9 +440,9 @@ export function registerDebugActions(): () => void {
       id: "debug.hotReload",
       title: "Hot Reload",
       category: "Debug",
-      icon: "rerun",
+      icon: "hot-reload",
       description: "Flutter: inject the changed sources into the running app",
-      when: "debugSessionRunning",
+      when: "debugSessionRunning && debugSessionDart",
       run: () => {
         const s = activeSession();
         if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id)));
@@ -452,9 +452,9 @@ export function registerDebugActions(): () => void {
       id: "debug.hotRestart",
       title: "Hot Restart",
       category: "Debug",
-      icon: "rerun",
+      icon: "refresh",
       description: "Flutter: restart the app, discarding its state",
-      when: "debugSessionRunning",
+      when: "debugSessionRunning && debugSessionDart",
       run: () => {
         const s = activeSession();
         if (s) void report("Hot Restart failed", call(commands.debugHotRestart(s.id)));
