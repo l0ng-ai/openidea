@@ -1322,9 +1322,28 @@ fn php_sources_and_selected_interpreter() {
     assert_eq!(source("/opt/homebrew/opt/php@8.2/bin/php"), "homebrew");
     assert_eq!(source("/home/me/bin/php"), "path");
 
+    use crate::discover::{is_versioned_php_name, versioned_php_in};
+    for name in ["php8.1", "php81", "php8", "php8.3.exe"] {
+        assert!(is_versioned_php_name(name), "{name}");
+    }
+    for name in ["php", "php-cgi8.1", "phpize8.1", "phpdbg8.1", "php-fpm8.1", "php8.", "php.8", "php8.1.2x", "phpunit"]
+    {
+        assert!(!is_versioned_php_name(name), "{name}");
+    }
+
     if cfg!(windows) {
         return; // Unix paths
     }
+    let bins = tempfile::tempdir().unwrap();
+    for name in ["php", "php8.3", "php8.1", "php-cgi8.1", "phpize8.1", "phpdbg8.1"] {
+        std::fs::write(bins.path().join(name), "").unwrap();
+    }
+    std::fs::create_dir(bins.path().join("php9.0")).unwrap();
+    assert_eq!(
+        versioned_php_in([bins.path().to_path_buf()]),
+        vec![bins.path().join("php8.1"), bins.path().join("php8.3")]
+    );
+
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
     assert_eq!(crate::apply::php_dir(tmp.path(), &s), None);
