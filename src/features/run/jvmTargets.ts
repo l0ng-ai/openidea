@@ -89,6 +89,8 @@ function tokenize(code: string): Token[] {
 }
 
 const TEST_ANNOTATIONS = new Set(["Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate"]);
+/** TestNG methods that set up or feed tests; not tests themselves under a class-level `@Test`. */
+const TESTNG_NOT_TESTS = /^(Before|After)\w*$|^(DataProvider|Factory)$/;
 const TYPE_KEYWORDS = new Set(["class", "interface", "enum", "record", "object"]);
 const NOT_TYPES = new Set(["new", "return", "throw", "else", "case", "assert", "yield", "await", "this", "super"]);
 const KOTLIN_DECL = /^(fun|val|var|class|object|interface|enum|data|sealed|abstract|open|private|public|internal|@)$/;
@@ -246,7 +248,16 @@ function scan(src: string, relPath: string, kotlin: boolean) {
     const modifiers: string[] = [];
     for (let k = i - 1; k >= 0 && !MEMBER_END.has(tokens[k]!.text); k--) modifiers.push(tokens[k]!.text);
     const owner = top();
-    if (annotations.some((a) => TEST_ANNOTATIONS.has(a)) && owner) {
+    // TestNG `@Test` on a class (JUnit's is method-only): its public `void` methods are tests.
+    const classLevelTest =
+      !kotlin &&
+      owner?.kind === "class" &&
+      owner.annotations.includes("Test") &&
+      prev === "void" &&
+      modifiers.includes("public") &&
+      !modifiers.includes("static") &&
+      !annotations.some((a) => TESTNG_NOT_TESTS.test(a));
+    if ((annotations.some((a) => TEST_ANNOTATIONS.has(a)) || classLevelTest) && owner) {
       const className = qualify(binaryName(frames));
       out.push({ line: tokens[i]!.line, kind: "test", className, method: name });
       for (let f = frames.length; f > 0; f--) {

@@ -71,6 +71,9 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
 - `pnpm smoke smoke/run.test.ts -t <language>` — run and test that language's fixture through the
   run store and a real `openidea-server` (build it first: `cargo build -p ide-host --bin openidea-server`).
+- `pnpm smoke smoke/debug.test.ts -t <language>` — debug that fixture's entry point the same way, with
+  the debugger the IDE installs (on macOS, CodeLLDB and Delve may need Developer Mode:
+  `sudo DevToolsSecurity -enable`).
 - `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
@@ -118,8 +121,8 @@ Several worktrees can be developed and run side by side.
   default MCP session belongs to this worktree.
 - Keep each worktree's Cargo output directory separate; do not point `CARGO_TARGET_DIR` or
   `target` symlinks at a shared directory.
-- Each worktree's first build is cold (around 5 minutes) and its Cargo output takes
-  15–30 GB. Avoid running several heavy builds on one machine at the same time.
+- Each worktree's first build is cold (several minutes) and `cargo build` output takes
+  around 9 GB; tests, clippy and incremental builds add more. Avoid running several heavy builds on one machine at the same time.
 - Stop only processes started for the current worktree/session. Never use broad
   process-name kills such as `pkill openidea`.
 - When done: stop that worktree's app and dev session, delete its build output, then

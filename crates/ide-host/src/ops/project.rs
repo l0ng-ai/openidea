@@ -175,7 +175,12 @@ pub fn set_settings(
         host.apply_proxy();
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    let code_style = key == "editor" || key == "editor.codeStyle" || key.starts_with("editor.codeStyle.");
+    // So do inspections that are compiler options (`ide-sdk` `configure_java_compiler`).
+    let code_style = key == "editor"
+        || key == "editor.codeStyle"
+        || key.starts_with("editor.codeStyle.")
+        || key == "inspections"
+        || key.starts_with("inspections.");
     let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));

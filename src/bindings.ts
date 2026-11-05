@@ -2482,6 +2482,11 @@ export type DataSource = {
 	options?: DbOptions,
 	introspection?: DbIntrospection,
 	properties?: DbProperty[],
+	/**
+	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
+	 *  so not written to it.
+	 */
+	global?: boolean,
 };
 
 /**  System Settings › Date Formats (Git log, Local History, blame). */

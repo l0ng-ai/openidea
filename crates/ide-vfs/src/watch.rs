@@ -12,9 +12,8 @@
 use crate::FsBatch;
 use crate::rules::{ExcludeMatcher, GitignoreStack};
 use ide_core::{IdeError, IdeEvent, IdeResult, SharedSink};
-use notify_debouncer_full::notify::event::{ModifyKind, RenameMode};
-use notify_debouncer_full::notify::{self, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
-use notify_debouncer_full::{DebounceEventResult, DebouncedEvent, Debouncer, NoCache, new_debouncer_opt};
+use notify::event::{ModifyKind, RenameMode};
+use notify::{Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -62,10 +61,9 @@ pub struct Watcher {
 
 type SharedExcludes = Arc<RwLock<ExcludeMatcher>>;
 
-enum Inner {
-    Recursive(#[allow(dead_code)] Debouncer<RecommendedWatcher, NoCache>),
-    Polling(#[allow(dead_code)] Debouncer<PollWatcher, NoCache>),
-    PerDirectory { state: Arc<DirState>, thread: Option<JoinHandle<()>> },
+struct Inner {
+    state: Arc<DirState>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Watcher {
@@ -131,80 +129,32 @@ impl Watcher {
 
     /// Number of OS-level watches (1 in recursive and flat mode).
     pub fn watch_count(&self) -> usize {
-        match &self.inner {
-            Inner::Recursive(_) | Inner::Polling(_) => 1,
-            Inner::PerDirectory { state, .. } => state.watched.lock().len(),
-        }
+        self.inner.state.watched.lock().len()
     }
 
     fn start_native(root: &Path, filter: EventFilter, emit: Emit, mode: WatchMode) -> IdeResult<Inner> {
-        let config = notify::Config::default();
-        match mode {
-            WatchMode::Recursive => {
-                Self::start_debounced(root, filter, emit, RecursiveMode::Recursive, config).map(Inner::Recursive)
-            }
-            WatchMode::Flat => {
-                Self::start_debounced(root, filter, emit, RecursiveMode::NonRecursive, config).map(Inner::Recursive)
-            }
-            WatchMode::PerDirectory => Self::start_per_directory::<RecommendedWatcher>(root, filter, emit, config),
-        }
+        Self::start_queued::<RecommendedWatcher>(root, filter, emit, mode, notify::Config::default())
     }
 
     /// Polls per directory unless flat: a recursive poll would rescan
     /// `node_modules` and `target` every round.
     fn start_polling(root: &Path, filter: EventFilter, emit: Emit, mode: WatchMode) -> IdeResult<Inner> {
         let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
-        match mode {
-            WatchMode::Flat => {
-                Self::start_debounced(root, filter, emit, RecursiveMode::NonRecursive, config).map(Inner::Polling)
-            }
-            WatchMode::Recursive | WatchMode::PerDirectory => {
-                Self::start_per_directory::<PollWatcher>(root, filter, emit, config)
-            }
-        }
+        let mode = if mode == WatchMode::Flat { mode } else { WatchMode::PerDirectory };
+        Self::start_queued::<PollWatcher>(root, filter, emit, mode, config)
     }
 
-    fn start_debounced<W: notify::Watcher>(
+    fn start_queued<W: notify::Watcher + Send + 'static>(
         root: &Path,
         filter: EventFilter,
         emit: Emit,
-        recursive: RecursiveMode,
-        config: notify::Config,
-    ) -> IdeResult<Debouncer<W, NoCache>> {
-        let polled = W::kind() == WatcherKind::PollWatcher;
-        // No file-id cache: building it walks and stats the whole tree before `watch` returns,
-        // which made opening large projects block for seconds. Renames arrive as remove + create.
-        let handler = move |result: DebounceEventResult| match result {
-            Ok(mut events) => {
-                if polled {
-                    events.retain(|e| !is_dir_touch(&e.event));
-                }
-                let (batch, _) = filter.batch_detailed(&events);
-                if !batch.is_empty() {
-                    emit(&batch);
-                }
-            }
-            Err(errors) => {
-                for e in errors {
-                    tracing::warn!("file watcher: {e}");
-                }
-            }
-        };
-        let mut debouncer = new_debouncer_opt::<_, W, _>(DEBOUNCE, None, handler, NoCache, config)
-            .map_err(|e| io_error(format!("cannot start file watcher: {e}")))?;
-        debouncer.watch(root, recursive).map_err(|e| io_error(format!("cannot watch {}: {e}", root.display())))?;
-        Ok(debouncer)
-    }
-
-    fn start_per_directory<W: notify::Watcher + Send + 'static>(
-        root: &Path,
-        filter: EventFilter,
-        emit: Emit,
+        mode: WatchMode,
         config: notify::Config,
     ) -> IdeResult<Inner> {
         let polled = W::kind() == WatcherKind::PollWatcher;
         let state = Arc::new(DirState {
             filter,
+            mode,
             watcher: Mutex::new(None),
             watched: Mutex::default(),
             queue: Mutex::default(),
@@ -228,8 +178,11 @@ impl Watcher {
         )
         .map_err(|e| io_error(format!("cannot start file watcher: {e}")))?;
         *state.watcher.lock() = Some(Box::new(watcher));
-        let mut created = Vec::new();
-        state.watch_tree(root, false, &mut created);
+        if mode == WatchMode::PerDirectory {
+            state.watch_tree(root, false, &mut Vec::new());
+        } else {
+            state.add_watch(root);
+        }
         if state.watched.lock().is_empty() {
             return Err(io_error(format!("cannot watch {}", root.display())));
         }
@@ -240,20 +193,22 @@ impl Watcher {
                 .spawn(move || state.run(&*emit))
                 .map_err(|e| io_error(format!("cannot start file watcher: {e}")))?
         };
-        Ok(Inner::PerDirectory { state, thread: Some(thread) })
+        Ok(Inner { state, thread: Some(thread) })
     }
 }
 
-impl Drop for Watcher {
+impl Drop for Inner {
     fn drop(&mut self) {
-        if let Inner::PerDirectory { state, thread } = &mut self.inner {
+        let state = &self.state;
+        {
+            let _queue = state.queue.lock();
             state.stop.store(true, Ordering::SeqCst);
             state.wake.notify_all();
-            let watcher = state.watcher.lock().take();
-            drop(watcher);
-            if let Some(t) = thread.take() {
-                let _ = t.join();
-            }
+        }
+        let watcher = state.watcher.lock().take();
+        drop(watcher);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
         }
     }
 }
@@ -268,10 +223,10 @@ fn is_dir_touch(event: &notify::Event) -> bool {
     matches!(event.kind, EventKind::Modify(_)) && event.paths.iter().all(|p| p.is_dir())
 }
 
-/// State of the per-directory strategy, shared with the notify callback
-/// (weakly) and the debounce thread.
+/// Shared with the notify callback (weakly) and the debounce thread.
 struct DirState {
     filter: EventFilter,
+    mode: WatchMode,
     watcher: Mutex<Option<Box<dyn notify::Watcher + Send>>>,
     watched: Mutex<HashSet<PathBuf>>,
     queue: Mutex<Vec<(notify::Event, Instant)>>,
@@ -310,9 +265,13 @@ impl DirState {
                 }
                 std::mem::take(&mut *q)
             };
-            let events: Vec<DebouncedEvent> = events.into_iter().map(|(e, t)| DebouncedEvent::new(e, t)).collect();
+            // A scan may publish a path before its create event is delivered:
+            // keep create + remove pairs so the consumer still sees the removal.
+            let events: Vec<Event> = events.into_iter().map(|(e, _)| e).collect();
             let (mut batch, rule_dirs) = self.filter.batch_detailed(&events);
-            self.update_watches(&mut batch, &rule_dirs);
+            if self.mode == WatchMode::PerDirectory {
+                self.update_watches(&mut batch, &rule_dirs);
+            }
             if !batch.is_empty() && !self.stopped() {
                 emit(&batch);
             }
@@ -363,7 +322,9 @@ impl DirState {
         }
         let mut guard = self.watcher.lock();
         let Some(w) = guard.as_mut() else { return false };
-        match w.watch(dir, RecursiveMode::NonRecursive) {
+        let recursive =
+            if self.mode == WatchMode::Recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        match w.watch(dir, recursive) {
             Ok(()) => {
                 self.watched.lock().insert(dir.to_path_buf());
                 true
@@ -555,17 +516,17 @@ impl EventFilter {
     }
 
     #[cfg(test)]
-    pub fn batch(&self, events: &[DebouncedEvent]) -> FsBatch {
+    pub fn batch(&self, events: &[Event]) -> FsBatch {
         self.batch_detailed(events).0
     }
 
     /// The coalesced, filtered batch plus the directories whose ignore rules
     /// changed (their cached matchers have been rebuilt already).
-    pub fn batch_detailed(&self, events: &[DebouncedEvent]) -> (FsBatch, Vec<PathBuf>) {
+    pub fn batch_detailed(&self, events: &[Event]) -> (FsBatch, Vec<PathBuf>) {
         let mut changes: BTreeMap<PathBuf, Change> = BTreeMap::new();
         for ev in events {
-            let paths = &ev.event.paths;
-            match ev.event.kind {
+            let paths = &ev.paths;
+            match ev.kind {
                 EventKind::Access(_) => {}
                 EventKind::Create(_) => paths.iter().for_each(|p| self.classify(p, Change::Created, &mut changes)),
                 EventKind::Remove(_) => paths.iter().for_each(|p| self.classify(p, Change::Removed, &mut changes)),
@@ -601,7 +562,7 @@ impl EventFilter {
                 rule_dirs.insert(dir.to_path_buf());
             }
         }
-        if events.iter().flat_map(|e| &e.event.paths).any(|p| p.ends_with(".git/info/exclude")) {
+        if events.iter().flat_map(|e| &e.paths).any(|p| p.ends_with(".git/info/exclude")) {
             self.gitignore.reload_repo_level();
             rule_dirs.insert(self.root.clone());
         }
@@ -669,11 +630,125 @@ impl EventFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify_debouncer_full::notify::Event;
-    use notify_debouncer_full::notify::event::{CreateKind, DataChange, RemoveKind};
+    use notify::event::{CreateKind, DataChange, RemoveKind};
 
-    fn ev(kind: EventKind, paths: Vec<PathBuf>) -> DebouncedEvent {
-        DebouncedEvent::new(Event { kind, paths, attrs: Default::default() }, Instant::now())
+    fn ev(kind: EventKind, paths: Vec<PathBuf>) -> Event {
+        Event { kind, paths, attrs: Default::default() }
+    }
+
+    const TRANSIENT_PATHS: &[&str] = &["fresh.txt", "src/fresh.rs", "src/tasks/fresh.py"];
+
+    /// Delivers a whole debounce window without depending on OS scheduling.
+    struct TransientWatcher(Box<dyn notify::EventHandler>);
+
+    impl notify::Watcher for TransientWatcher {
+        fn new<F: notify::EventHandler>(handler: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self(Box::new(handler)))
+        }
+
+        fn watch(&mut self, root: &Path, _: RecursiveMode) -> notify::Result<()> {
+            for rel in TRANSIENT_PATHS {
+                for kind in [
+                    EventKind::Create(CreateKind::File),
+                    EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                    EventKind::Remove(RemoveKind::File),
+                ] {
+                    self.0.handle_event(Ok(Event::new(kind).add_path(root.join(rel))));
+                }
+            }
+            for kind in [EventKind::Create(CreateKind::Folder), EventKind::Remove(RemoveKind::Folder)] {
+                self.0.handle_event(Ok(Event::new(kind).add_path(root.join("new"))));
+            }
+            for (rel, kind) in [
+                ("from.py", EventKind::Create(CreateKind::File)),
+                ("from.py", EventKind::Modify(ModifyKind::Name(RenameMode::From))),
+                ("to.py", EventKind::Modify(ModifyKind::Name(RenameMode::To))),
+                ("to.py", EventKind::Remove(RemoveKind::File)),
+            ] {
+                self.0.handle_event(Ok(Event::new(kind).add_path(root.join(rel))));
+            }
+            for kind in [EventKind::Remove(RemoveKind::File), EventKind::Create(CreateKind::File)] {
+                self.0.handle_event(Ok(Event::new(kind).add_path(root.join("kept.py"))));
+            }
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn kind() -> WatcherKind {
+            WatcherKind::NullWatcher
+        }
+    }
+
+    #[test]
+    fn debounce_preserves_transient_removals_and_atomic_replacements() {
+        for mode in [WatchMode::Recursive, WatchMode::Flat, WatchMode::PerDirectory] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(tmp.path()).unwrap();
+            std::fs::write(root.join("kept.py"), "class Kept: pass\n").unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let emit: Emit = Arc::new(move |b| tx.send(b.clone()).unwrap());
+            let _watcher = Watcher::start_queued::<TransientWatcher>(
+                &root,
+                EventFilter::new(root.clone(), &[]),
+                emit,
+                mode,
+                notify::Config::default(),
+            )
+            .unwrap();
+            let batch = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let removed: BTreeSet<_> = batch.removed.into_iter().collect();
+            let expected =
+                TRANSIENT_PATHS.iter().copied().chain(["new", "from.py", "to.py"]).map(|rel| root.join(rel)).collect();
+            assert_eq!(removed, expected, "{mode:?}: scans may have already published transient paths");
+            assert_eq!(batch.modified, vec![root.join("kept.py")]);
+            assert!(batch.created.is_empty());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_watch_reports_quickly_removed_files() {
+        for mode in [WatchMode::Recursive, WatchMode::Flat, WatchMode::PerDirectory] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(tmp.path()).unwrap();
+            std::fs::create_dir_all(root.join("src/tasks")).unwrap();
+            let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+            let watcher = {
+                let batches = batches.clone();
+                Watcher::start_with(
+                    &root,
+                    Vec::new(),
+                    Arc::new(ide_core::NullSink),
+                    Box::new(move |b| batches.lock().push(b.clone())),
+                    mode,
+                )
+                .unwrap()
+            };
+            assert!(watcher.polling().is_none());
+            assert_eq!(watcher.watch_count(), if mode == WatchMode::PerDirectory { 3 } else { 1 });
+            let paths: Vec<_> = TRANSIENT_PATHS
+                .iter()
+                .filter(|rel| mode != WatchMode::Flat || !rel.contains('/'))
+                .map(|rel| root.join(rel))
+                .collect();
+            for path in &paths {
+                std::fs::write(path, "class FreshWidget:\n    pass\n").unwrap();
+                std::fs::remove_file(path).unwrap();
+            }
+            assert!(
+                wait_for(&batches, |b| paths.iter().all(|p| b.iter().any(|batch| batch.removed.contains(p)))),
+                "{mode:?}: {:?}",
+                batches.lock()
+            );
+            drop(watcher);
+            let count = batches.lock().len();
+            std::fs::write(root.join("after-drop.txt"), "x").unwrap();
+            std::thread::sleep(DEBOUNCE * 2);
+            assert_eq!(batches.lock().len(), count, "no callback after drop in {mode:?}");
+        }
     }
 
     #[test]
@@ -822,8 +897,7 @@ mod tests {
         }
         let filter = EventFilter::new(root.clone(), &[]);
         let modify = EventKind::Modify(ModifyKind::Data(DataChange::Content));
-        let touch =
-            |paths: &[&str]| -> Vec<DebouncedEvent> { paths.iter().map(|p| ev(modify, vec![root.join(p)])).collect() };
+        let touch = |paths: &[&str]| -> Vec<Event> { paths.iter().map(|p| ev(modify, vec![root.join(p)])).collect() };
         let (batch, rules) = filter.batch_detailed(&touch(&["pkg/a.tmp", "pkg/gen/x.rs", "pkg/keep.rs", "b.tmp"]));
         assert_eq!(batch.modified, vec![root.join("b.tmp"), root.join("pkg/keep.rs")]);
         assert_eq!(batch.ignored, vec![root.join("pkg/a.tmp")], "nested rules, but not inside ignored folders");
@@ -873,10 +947,7 @@ mod tests {
     }
 
     fn watcher_state(w: &Watcher) -> &DirState {
-        match &w.inner {
-            Inner::PerDirectory { state, .. } => state,
-            Inner::Recursive(_) | Inner::Polling(_) => panic!("not per-directory"),
-        }
+        &w.inner.state
     }
 
     fn wait_for(events: &Mutex<Vec<FsBatch>>, pred: impl Fn(&[FsBatch]) -> bool) -> bool {
