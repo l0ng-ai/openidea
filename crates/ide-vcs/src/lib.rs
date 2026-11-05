@@ -302,6 +302,18 @@ pub struct ChangedFile {
     pub old_path: Option<String>,
 }
 
+/// Added and deleted lines of one file between two revisions (`git diff --numstat`).
+/// A rename keeps the counts of the content change; a pure rename is `0`/`0`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileLineStats {
+    /// Path after the change (the only path, when the file was not renamed).
+    pub path: String,
+    pub old_path: Option<String>,
+    pub added: u32,
+    pub removed: u32,
+}
+
 /// A file changed across several commits: its content at `before` ↔ at `after`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1247,6 +1259,12 @@ impl Repo {
     pub fn diff_revisions(&self, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         ops::diff_revisions(self, from, to)
+    }
+    /// Added and deleted lines between `from` and `to`. `paths` limits the diff to those
+    /// repository-relative paths (both names of a rename); empty diffs every file.
+    pub fn diff_numstat(&self, from: &str, to: &str, paths: &[String]) -> IdeResult<Vec<FileLineStats>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        ops::diff_numstat(self, from, to, paths)
     }
     /// Tracked files whose working-tree content differs from `rev`.
     pub fn diff_with_worktree(&self, rev: &str) -> IdeResult<Vec<ChangedFile>> {

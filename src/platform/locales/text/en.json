@@ -5,5 +5,10 @@
   "WSL distribution:": "WSL distribution:",
   "WSL distribution": "WSL distribution",
   "Project runs on {label}": "Project runs on {label}",
-  "Forwarding ports is not supported in a WSL project yet": "Forwarding ports is not supported in a WSL project yet"
+  "Forwarding ports is not supported in a WSL project yet": "Forwarding ports is not supported in a WSL project yet",
+  "Show lines added and deleted": "Show lines added and deleted",
+  "{added} line added": "{added} line added",
+  "{added} lines added": "{added} lines added",
+  "{removed} line deleted": "{removed} line deleted",
+  "{removed} lines deleted": "{removed} lines deleted"
 }

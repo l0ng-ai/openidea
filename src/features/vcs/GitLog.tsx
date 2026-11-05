@@ -104,6 +104,7 @@ import {
   showChangesDiff,
   toLogChanges,
   useLogChanges,
+  withLineStats,
   type LogChange,
 } from "./logChanges";
 import { canDeleteBranch, canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
@@ -2175,8 +2176,9 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const onlyAffected = useLogOptions((s) => s.showOnlyAffected);
   const preview = useLogOptions((s) => s.diffPreview);
   const diffLocation = useLogOptions((s) => s.diffLocation);
+  const showLineStats = useLogOptions((s) => s.showLineStats);
   const filters = useGitLog((s) => s.filters);
-  const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot]);
+  const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot, showLineStats]);
   const files = result?.key === filesKey ? result.files : null;
   const error = result?.key === filesKey ? result.error : null;
 
@@ -2225,6 +2227,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       return toLogChanges(files, c, commitRoot, readOnly);
     })();
     load
+      .then((files) => (showLineStats ? withLineStats(files).catch(() => files) : files))
       .then((files) => alive && setResult({ key: filesKey, files, error: null }))
       .catch(
         (e) => alive && setResult({ key: filesKey, files: null, error: e instanceof Error ? e.message : String(e) }),
@@ -2232,7 +2235,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     return () => {
       alive = false;
     };
-  }, [idsKey, chosen, fromParents, parentIndex, commitRoot, filesKey, many, readOnly]);
+  }, [idsKey, chosen, fromParents, parentIndex, commitRoot, filesKey, many, readOnly, showLineStats]);
 
   const groupByDirectory = useLogOptions((s) => s.groupByDirectory);
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -2254,6 +2257,14 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
         )
       : changes;
   }, [files, commit, many, filters.path, filters.paths, onlyAffected]);
+  const lineTotals = useMemo(() => {
+    if (!showLineStats || !changes.length) return null;
+    if (changes.some((f) => f.added === undefined || f.removed === undefined)) return null;
+    return changes.reduce((sum, f) => ({ added: sum.added + f.added!, removed: sum.removed + f.removed! }), {
+      added: 0,
+      removed: 0,
+    });
+  }, [changes, showLineStats]);
   const multipleRoots = new Set(chosen.map(commitRepo)).size > 1;
   const changeTreePath = useCallback(
     (f: LogChange) => `${multipleRoots ? `${repoName(f.repo ?? "")}/` : ""}${f.group ? `${f.group}/` : ""}${f.path}`,
@@ -2341,6 +2352,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       { kind: "separator" },
       { kind: "action", action: "vcs.log.changes.diffPreview" },
       toggle("Show Only Affected Changes", logOptions(), "showOnlyAffected"),
+      toggle("Show lines added and deleted", logOptions(), "showLineStats"),
       toggle("Show Changes from Parents", logOptions(), "changesFromParents"),
       {
         label: "Diff Preview Location",
@@ -2404,6 +2416,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
               {files ? fileCount(changes.length) : ""}
               {many ? " " + tx`in ${chosen.length} commits` : ""}
             </span>
+            {lineTotals && <LineStats added={lineTotals.added} removed={lineTotals.removed} />}
             <span className={styles.grow} />
             <IconButton
               icon="expand-all"
@@ -2699,13 +2712,50 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
   ];
 }
 
+function lineCount(file: ChangedFile | LogChange): { added: number; removed: number } | null {
+  if (!("added" in file) || typeof file.added !== "number" || typeof file.removed !== "number") return null;
+  return { added: file.added, removed: file.removed };
+}
+
+/** Sum of a directory once every file under it has counts; otherwise the row stays without them. */
+function nodeLineCount(node: FileTreeNode<ChangedFile | LogChange>): { added: number; removed: number } | null {
+  if (node.file) return lineCount(node.file);
+  let added = 0;
+  let removed = 0;
+  for (const child of node.children) {
+    const count = nodeLineCount(child);
+    if (!count) return null;
+    added += count.added;
+    removed += count.removed;
+  }
+  return node.children.length ? { added, removed } : null;
+}
+
+function LineStats({ added, removed }: { added: number; removed: number }) {
+  return (
+    <span className={styles.lineStats}>
+      <span className={styles.lineAdded} aria-label={added === 1 ? tx`${added} line added` : tx`${added} lines added`}>
+        +{added}
+      </span>
+      <span
+        className={styles.lineRemoved}
+        aria-label={removed === 1 ? tx`${removed} line deleted` : tx`${removed} lines deleted`}
+      >
+        −{removed}
+      </span>
+    </span>
+  );
+}
+
 function ChangedFileRow({ node, flat = false }: { node: FileTreeNode<ChangedFile | LogChange>; flat?: boolean }) {
+  const stats = nodeLineCount(node);
   if (!node.file)
     return (
       <span className={styles.fileRow}>
         <Icon name="folder" size={16} className={styles.fileIcon} />
         <span className={styles.fileName}>{node.name}</span>
         <span className={styles.fileDir}>{fileCount(node.count)}</span>
+        {stats && <LineStats added={stats.added} removed={stats.removed} />}
       </span>
     );
   const f = node.file;
@@ -2718,6 +2768,7 @@ function ChangedFileRow({ node, flat = false }: { node: FileTreeNode<ChangedFile
       </span>
       {flat && dirName(f.path) && <span className={styles.fileDir}>{dirName(f.path)}</span>}
       {f.oldPath && <span className={styles.fileDir}>{tx`renamed from ${baseName(f.oldPath)}`}</span>}
+      {stats && <LineStats added={stats.added} removed={stats.removed} />}
     </span>
   );
 }
