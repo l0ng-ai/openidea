@@ -6870,6 +6870,8 @@ export type SmartKeysSettings = {
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
 	smartIndent?: boolean,
+	/**  Enter › Insert documentation comment stub: Enter after `/**` closes the comment. */
+	insertDocStub?: boolean,
 	/**  Backspace › Unindent: `autoindent` (proper indent position) | `nearest` indent position | `none`. */
 	backspaceUnindent?: string,
 };
