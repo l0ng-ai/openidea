@@ -287,6 +287,7 @@
   "Base interpreter": "基础解释器",
   "Base interpreter:": "基础解释器：",
   "Based on syntax (language server not ready)": "基于语法（语言服务器尚未就绪）",
+  "Based on project index (language server not ready)": "基于项目索引（语言服务器尚未就绪）",
   "Behavior": "行为",
   "Benchmark function": "基准测试函数",
   "Binary response": "二进制响应",

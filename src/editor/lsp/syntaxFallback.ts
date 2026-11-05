@@ -14,6 +14,9 @@ import { tx } from "@/platform/i18n";
 /** Subtle marker for answers that did not come from the language server. */
 export const SYNTAX_NOTE = "Based on syntax (language server not ready)";
 
+/** Same, for answers from the project index (imports, re-exports, components). */
+export const INDEX_NOTE = "Based on project index (language server not ready)";
+
 /** A declaration candidate; index symbols carry their name, kind and container. */
 export interface DeclarationTarget extends Location {
   name?: string;
@@ -25,7 +28,12 @@ export type DeclarationFallback =
   /** No grammar for the language: the fallback has nothing to say. */
   | { kind: "unsupported" }
   /** Certain local definition, or every index symbol of that name and role. */
-  | { kind: "targets"; targets: DeclarationTarget[]; ambiguous: boolean };
+  | {
+      kind: "targets";
+      targets: DeclarationTarget[];
+      ambiguous: boolean;
+      /** Where the answer came from, for the post-navigation hint. */ note?: string;
+    };
 
 const TYPE_KINDS: ReadonlySet<SymbolKind> = new Set([
   "class",
@@ -132,9 +140,48 @@ export function localTargets(path: string, symbol: LocalSymbol): { targets: Decl
 const SYMBOL_LIMIT = 500;
 
 /**
+ * The word at `col` in the line (the caret may sit anywhere inside it):
+ * what the project index resolves. Null outside a word.
+ */
+function wordAround(line: string, col: number): string | null {
+  const isWord = (c: string | undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
+  if (!isWord(line[col])) {
+    if (!isWord(line[col - 1])) return null;
+    col--;
+  }
+  let start = col;
+  let end = col;
+  while (start > 0 && isWord(line[start - 1])) start--;
+  while (end < line.length && isWord(line[end])) end++;
+  const word = line.slice(start, end);
+  return IDENT.test(word) ? word : null;
+}
+
+/**
+ * Where the project index resolves the word at `pos` to without a language
+ * server — the import chain, re-exports, script-setup state and component
+ * tags, vue included (`name` overrides the word when the scope analysis
+ * knows it). Null when the index cannot answer.
+ */
+async function indexTargets(
+  doc: { doc: number; path: string; language: string },
+  text: Text,
+  pos: Pos,
+  name: string | null,
+): Promise<DeclarationFallback | null> {
+  const word = name ?? wordAround(text.line(pos.line + 1).text, pos.col);
+  if (!word) return null;
+  const indexed = await call(commands.indexGoto(doc.doc, pos, word)).catch(() => null);
+  if (!indexed?.targets.length) return null;
+  return { kind: "targets", targets: indexed.targets, ambiguous: indexed.targets.length > 1, note: INDEX_NOTE };
+}
+
+/**
  * Go to Declaration without a language server: a certain local definition,
- * otherwise project index symbols with exactly that name (filtered by the
- * syntactic role when the tree tells). Call after `whenSynced`.
+ * the project index (imports, re-exports, components — its goto runs the
+ * region scope analysis of a Vue `<script>` server-side), then project index
+ * symbols with exactly that name (filtered by the syntactic role when the
+ * tree tells). Call after `whenSynced`.
  */
 export async function declarationFallback(
   doc: { doc: number; path: string; language: string },
@@ -143,7 +190,11 @@ export async function declarationFallback(
   signal?: AbortSignal,
 ): Promise<DeclarationFallback> {
   const support = await structure.support(doc.language);
-  if (!support.tree) return { kind: "unsupported" };
+  if (!support.tree) {
+    // No grammar (Vue SFCs, …): the index answers instead — this branch is
+    // where vue lands (E15: the old code returned `unsupported` here).
+    return (await indexTargets(doc, text, pos, null)) ?? { kind: "unsupported" };
+  }
   let locals: Locals | null = null;
   if (support.locals) locals = await structure.locals(doc.doc, pos, { signal });
   if (locals?.status === "noIdentifier") return { kind: "targets", targets: [], ambiguous: false };
@@ -152,6 +203,9 @@ export async function declarationFallback(
   const at = await structure.nodeAt(doc.doc, { start: pos, end: pos }, { signal });
   const name = locals?.status === "notLocal" ? locals.name : identifierText(text, at);
   if (!name) return { kind: "targets", targets: [], ambiguous: false };
+  // The index first: the import chain outranks plain name matching.
+  const indexed = await indexTargets(doc, text, pos, name);
+  if (indexed) return indexed;
   // A member (`obj.name`) can be any member of that name; only a plain name has a syntactic role.
   const role = locals?.status === "notLocal" && locals.reason === "member" ? "other" : usageRole(at);
   const matches = await call(commands.findSymbols(name, "all", SYMBOL_LIMIT));
