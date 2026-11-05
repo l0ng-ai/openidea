@@ -50,6 +50,7 @@ vi.mock("@/platform/javaLaunch", async (original) => ({
 vi.mock("./buildUpdate", () => ({ runUpdateBuild: mocks.runBuild }));
 vi.mock("./tomcat", () => ({ buildTomcatArtifact: mocks.build, syncTomcatOutputs: mocks.sync }));
 vi.mock("./store", () => ({
+  rerunConfig: (s: Pick<RunSession, "config">) => mocks.state.configs.find((c) => c.id === s.config.id) ?? s.config,
   startRun: mocks.start,
   stopSession: mocks.stop,
   waitForExit: mocks.wait,
@@ -104,6 +105,16 @@ describe("Tomcat application updates", () => {
     expect(mocks.wait).toHaveBeenCalledWith(["run1"]);
     expect(mocks.wait.mock.invocationCallOrder[0]).toBeLessThan(mocks.action.mock.invocationCallOrder[0]!);
     expect(mocks.action).toHaveBeenCalledWith("run.debugConfig", session.config);
+  });
+  it("restarts with the configuration as edited since the server started", async () => {
+    const edited = { ...session.config, name: "Tomcat (edited)" };
+    mocks.state.configs = [edited];
+    try {
+      await updateTomcat(session, "restart");
+      expect(mocks.action).toHaveBeenCalledWith("run.debugConfig", edited);
+    } finally {
+      mocks.state.configs = [];
+    }
   });
   it("redeploys when the debugger cannot perform HotSwap", async () => {
     mocks.action.mockResolvedValue(false);

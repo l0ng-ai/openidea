@@ -140,6 +140,14 @@ pub fn bin_dir_of(ruby: &Path) -> Option<PathBuf> {
     ruby.parent().map(Path::to_path_buf)
 }
 
+/// Where `ruby` installs gem executables (`Gem.bindir`, the `--user-install` one) that exist, asked
+/// of the Ruby that version managers select in `root`: Homebrew's keeps its bindir off `PATH`.
+pub fn gem_bin_dirs(ruby: &Path, root: &Path) -> Vec<PathBuf> {
+    query_in(ruby, &["-e", ide_core::tool_path::RUBY_GEM_BIN_SCRIPT], Some(root), &[], QUERY_TIMEOUT)
+        .map(|out| ide_core::tool_path::gem_bin_dirs(&out))
+        .unwrap_or_default()
+}
+
 type NamedRoots = Vec<(String, PathBuf)>;
 
 /// Standard-library / site directories (`ruby/3.3.0`) and the gems Bundler resolves

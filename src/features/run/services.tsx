@@ -29,7 +29,16 @@ import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { loadConfigs, persistTemporary, startRun, stopSession, useRun, type RunSession } from "./store";
+import {
+  configRemoved,
+  loadConfigs,
+  persistTemporary,
+  rerunConfig,
+  startRun,
+  stopSession,
+  useRun,
+  type RunSession,
+} from "./store";
 import {
   currentServiceSession,
   currentServiceSessions,
@@ -230,6 +239,7 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
 /**
  * Groups by configuration type: added types list all their configurations, other
  * types only those that ran. A default type (Spring Boot) without configurations is hidden.
+ * A configuration deleted since it ran (`removed`) stays only while its run is live.
  */
 export function runServiceItems(
   configs: readonly RunConfig[],
@@ -238,11 +248,13 @@ export function runServiceItems(
   ran: readonly string[] = [],
   order: ServiceOrder = {},
   debug: readonly DebugServiceSession[] = [],
+  removed: (id: string) => boolean = () => false,
 ): ServiceTreeItem[] {
   const executions = serviceSessions(sessions, debug);
   const latest = currentServiceSessions(executions);
   const kinds = [...added];
-  for (const s of executions) if (!kinds.includes(s.config.kind)) kinds.push(s.config.kind);
+  const shown = (s: ServiceSession) => liveServiceSession(s) || !removed(s.config.id);
+  for (const s of executions) if (shown(s) && !kinds.includes(s.config.kind)) kinds.push(s.config.kind);
   for (const id of ran) {
     const kind = configs.find((c) => c.id === id)?.kind;
     if (kind && !kinds.includes(kind)) kinds.push(kind);
@@ -252,7 +264,7 @@ export function runServiceItems(
       ? configs.filter((c) => c.kind === kind)
       : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
     for (const s of latest.values())
-      if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
+      if (s.config.kind === kind && shown(s) && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
     if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
     const children = orderServices(entries, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
@@ -298,7 +310,15 @@ function useRoots(): ServiceTreeItem[] {
   }, [root, typesRoot, ranRoot]);
   return useMemo(
     () =>
-      runServiceItems(configs, sessions, typesRoot === root ? types : [], ranRoot === root ? ran : [], order, debug),
+      runServiceItems(
+        configs,
+        sessions,
+        typesRoot === root ? types : [],
+        ranRoot === root ? ran : [],
+        order,
+        debug,
+        configRemoved,
+      ),
     [configs, sessions, types, typesRoot, ran, ranRoot, root, order, debug],
   );
 }
@@ -335,7 +355,7 @@ function run(r: Resolved) {
   if (debug) debug.rerun?.();
   else if (r.session?.run) {
     const s = r.session.run;
-    void startRun(s.config, s.id, s.baseConfig, { show: false });
+    void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
   } else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
 }
 
