@@ -324,7 +324,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-224 themeable tokens: 117 in the UI theme file, 107 in the editor colour scheme file.
+228 themeable tokens: 121 in the UI theme file, 107 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
