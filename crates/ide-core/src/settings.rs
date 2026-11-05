@@ -722,6 +722,10 @@ pub struct PhpSettings {
     /// Intelephense stub sets loaded on top of its defaults and the `ext-*` entries of
     /// `composer.json` (`wordpress`).
     pub stubs: Vec<String>,
+    /// PHPStan configuration file for checking saved files; empty = the `phpstan.neon`,
+    /// `phpstan.neon.dist` or `phpstan.dist.neon` PHPStan finds in the project root. Absolute,
+    /// `~/`, or relative to the project.
+    pub phpstan_config: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
