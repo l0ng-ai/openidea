@@ -14,6 +14,8 @@ enum TextFilter {
         ids: HashSet<ObjectId>,
         hash: Option<String>,
     },
+    /// Case-insensitive non-ASCII text: git folds case only for ASCII under the C locale.
+    Folded(String),
     Regex(regex_lite::Regex),
 }
 
@@ -37,6 +39,9 @@ impl TextFilter {
                 .map_err(|e| IdeError::invalid(format!("invalid regular expression: {e}")))?;
             return Ok(Some(Self::Regex(re)));
         }
+        if !q.text_match_case && !text.is_ascii() {
+            return Ok(Some(Self::Folded(text.to_lowercase())));
+        }
         let mut filter = vec!["--fixed-strings".to_string(), format!("--grep={text}")];
         if !q.text_match_case {
             filter.push("--regexp-ignore-case".into());
@@ -49,6 +54,7 @@ impl TextFilter {
     fn matches(&self, repo: &gix::Repository, index: &mut crate::log_index::LogIndex, id: ObjectId) -> IdeResult<bool> {
         Ok(match self {
             Self::Regex(re) => re.is_match(&index.message(repo, id)?),
+            Self::Folded(needle) => index.message(repo, id)?.to_lowercase().contains(needle.as_str()),
             Self::Selected { ids, hash } => {
                 ids.contains(&id) || hash.as_ref().is_some_and(|h| id.to_string().starts_with(h.as_str()))
             }
@@ -68,7 +74,8 @@ fn git_select(
 ) -> IdeResult<HashSet<ObjectId>> {
     let mut ids = HashSet::new();
     for scope in scopes {
-        let mut args = vec!["log".to_string(), "--format=%H".into()];
+        let mut args =
+            vec!["log".to_string(), "--format=%H".into(), "--no-show-signature".into(), "--no-follow".into()];
         if first_parent {
             args.push("--first-parent".into());
         }

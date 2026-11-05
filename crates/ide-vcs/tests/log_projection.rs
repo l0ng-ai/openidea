@@ -449,3 +449,16 @@ fn paths_are_literal_and_text_matches_bodies_or_hash_prefixes() {
     assert!(ids(LogQuery { text: Some("body needle".into()), text_match_case: true, ..Default::default() }).is_empty());
     assert_eq!(ids(LogQuery { text: Some(plain[..7].to_uppercase()), ..Default::default() }), vec![plain]);
 }
+
+#[test]
+fn case_insensitive_text_folds_non_ascii() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    let hit = commit(dir, "a", "Ärger ПРИВЕТ");
+    commit(dir, "a", "other");
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let ids = |q: LogQuery| repo.log(&q).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(ids(LogQuery { text: Some("ärger привет".into()), ..Default::default() }), vec![hit.clone()]);
+    assert!(ids(LogQuery { text: Some("ärger".into()), text_match_case: true, ..Default::default() }).is_empty());
+}
