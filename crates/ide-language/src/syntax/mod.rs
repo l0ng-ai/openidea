@@ -8,11 +8,13 @@ mod grammars;
 mod highlight;
 pub(crate) mod lines;
 mod literals;
+mod modules;
 mod outline;
 mod selection;
+mod sfc;
 mod web;
 
-use crate::{FoldRange, LanguageConfig, LanguageRegistry, SymbolTag};
+use crate::{Facts, FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
 pub use configuration::ConfigurationKey;
 pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};
@@ -246,6 +248,45 @@ impl Syntax {
     /// Value ranges of the `id="name"` / `name="name"` attributes in an HTML document.
     pub fn web_anchors(&self, lang: &LanguageId, text: &str, name: &str) -> Vec<Range> {
         self.with_web_tree(lang, text, |_, _, tree| web::anchors(tree, text, name)).unwrap_or_default()
+    }
+
+    /// The `<script>` regions of a Vue SFC / HTML document (empty for other
+    /// languages): what [`Syntax::script_facts`] parses per block.
+    pub fn script_regions(&self, lang: &LanguageId, text: &str) -> Vec<ScriptRegion> {
+        self.with_web_tree(lang, text, |_g, _css, tree| sfc::script_regions(tree, text)).unwrap_or_default()
+    }
+
+    /// Import/export/declaration facts of a TS/JS source, or of every
+    /// `<script>` region of a Vue SFC / HTML document. Ranges are
+    /// document-absolute; empty for other languages.
+    pub fn script_facts(&self, lang: &LanguageId, text: &str) -> Facts {
+        if text.len() > MAX_PARSE_BYTES {
+            return Facts::default();
+        }
+        let idx = lines::LineIndex::new(text);
+        // A TS/JS source itself.
+        if let Some(g) = self.grammar(lang).filter(|g| matches!(g.spec.name, "typescript" | "tsx" | "javascript")) {
+            return self.facts_with(&g.language, text, 0, &idx);
+        }
+        // A document with <script> regions: each parsed with its own grammar,
+        // ranges shifted into document coordinates by the region base.
+        let mut all = Facts::default();
+        for region in self.script_regions(lang, text) {
+            let Some(g) = self.grammar(&region.language) else { continue };
+            let mut part = self.facts_with(&g.language, &region.text, region.base, &idx);
+            all.decls.append(&mut part.decls);
+            all.imports.append(&mut part.imports);
+            all.reexports.append(&mut part.reexports);
+        }
+        all
+    }
+
+    /// The facts of `text` (parsed with `language`) as document-absolute
+    /// ranges: `idx` indexes the document, `base` is where `text` starts in
+    /// it (0 for a whole file, the block offset for a `<script>` region).
+    fn facts_with(&self, language: &Language, text: &str, base: usize, idx: &lines::LineIndex) -> Facts {
+        let Some(tree) = parse(language, text, None) else { return Facts::default() };
+        modules::facts(&tree, text, base, idx)
     }
 
     /// Highlighting from the grammar's own query; `None` without one.

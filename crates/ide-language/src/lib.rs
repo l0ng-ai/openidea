@@ -300,3 +300,75 @@ pub struct SymbolTag {
     pub container: Option<String>,
     pub range: Range,
 }
+
+/// Import/export/declaration facts of a TS/JS source, or of the `<script>`
+/// regions of a Vue SFC / HTML document: what the project index resolves
+/// cross-file navigation with when no language server is available
+/// (see `docs/vue-ts-semantic-index.md`). Ranges are document-absolute.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Facts {
+    /// Module-level declarations (functions, classes, types, variables).
+    pub decls: Vec<Decl>,
+    /// Import statements: what they bind and from where.
+    pub imports: Vec<Import>,
+    /// Re-exports (`export { x } from`, `export * from`).
+    pub reexports: Vec<Reexport>,
+}
+
+/// A module-level declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Decl {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// The name's range.
+    pub range: Range,
+    /// Declared with `export`, or inside an `export` statement.
+    pub exported: bool,
+}
+
+/// One imported (or re-exported) binding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportName {
+    /// `import { a as b }`: imported name `a`, local binding `b`.
+    Named { imported: String, local: String },
+    /// `import d from`: the module's default export, bound to `d`.
+    Default { local: String },
+    /// `import * as ns`; `export * from` uses the local name `"*"`.
+    Namespace { local: String },
+}
+
+/// An import statement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Import {
+    pub names: Vec<ImportName>,
+    /// The module specifier as written (`'./x'` → `./x`).
+    pub source: String,
+    /// The statement's range.
+    pub range: Range,
+}
+
+/// A re-export: `export { x } from './y'`, `export * from`, `export * as ns from`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reexport {
+    pub names: Vec<ImportName>,
+    pub source: String,
+    /// The statement's range.
+    pub range: Range,
+}
+
+/// One `<script>` block of a Vue SFC / HTML document: what
+/// [`crate::Syntax::script_facts`] parses per block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRegion {
+    /// Byte offset of `text` within the document.
+    pub base: usize,
+    /// The language the block's `lang` attribute picks.
+    pub language: LanguageId,
+    /// The script text.
+    pub text: String,
+}
