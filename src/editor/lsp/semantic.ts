@@ -11,7 +11,13 @@
  */
 import { syntaxTree } from "@codemirror/language";
 import type { Tree } from "@lezer/common";
-import { pythonSyntaxRanges, pythonFallbackRanges } from "./pythonHighlight";
+import {
+  pythonSyntaxRanges,
+  pythonFallbackRanges,
+  pythonSymbolClasses,
+  pythonSymbolKinds,
+  type PythonSymbolKind,
+} from "./pythonHighlight";
 import { Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { commands, type SemanticTokens } from "@/platform/ipc";
@@ -83,6 +89,24 @@ export function rainbowIndex(name: string): number {
 /** Locals and parameters only: no fields, statics, constants, library or `self` names. */
 const RAINBOW_TYPES = new Set(["variable", "parameter"]);
 const NOT_LOCAL = new Set(["static", "constant", "defaultLibrary", "global", "classScope", "fileScope"]);
+const PYTHON_VARIABLE_KINDS = new Set<PythonSymbolKind>([
+  "localVariable",
+  "globalVariable",
+  "instanceAttribute",
+  "classAttribute",
+  "constant",
+  "property",
+  "typeParameter",
+]);
+const PYTHON_SYMBOL_BASES = new Set([
+  "cm-sem-variable",
+  "cm-sem-global",
+  "cm-sem-property",
+  "cm-sem-constant",
+  "cm-sem-type",
+  "cm-sem-typeParameter",
+  "cm-sem-builtin",
+]);
 
 export interface SemanticRange {
   from: number;
@@ -115,7 +139,8 @@ export function semanticRanges(
   language?: string,
   tree?: Tree,
 ): SemanticRange[] {
-  const syntax = language === "python" && tree ? pythonSyntaxRanges(tree, doc) : [];
+  const symbols = language === "python" && tree ? pythonSymbolKinds(tree, doc) : undefined;
+  const syntax = language === "python" && tree ? pythonSyntaxRanges(tree, doc, symbols) : [];
   const covered = rangeCoverage(syntax);
   const serverRanges: Array<{ from: number; to: number }> = [];
   const out: SemanticRange[] = [];
@@ -129,7 +154,12 @@ export function semanticRanges(
       typeIdx = data[i + 3]!,
       mods = data[i + 4]!;
     if (line >= doc.lines || len <= 0) continue;
+    const l = doc.line(line + 1);
+    const from = l.from + Math.min(col, l.length);
+    const to = Math.min(from + len, l.to);
+    if (from >= to) continue;
     const type = tokenTypes[typeIdx] ?? "";
+    const pythonKind = symbols?.get(`${from}:${to}`);
     const names: string[] = [];
     for (let b = 0; b < tokenModifiers.length; b++) if (mods & (1 << b)) names.push(tokenModifiers[b]!);
     const classes: string[] = [];
@@ -145,17 +175,20 @@ export function semanticRanges(
     if (language === "python" && names.includes("static")) classes.push("cm-sem-python-static");
     if (language === "python" && type === "method") classes.push("cm-sem-python-method-call");
     if (language === "python" && names.includes("defaultLibrary")) classes.push("cm-sem-python-builtin");
+    if (pythonKind && PYTHON_VARIABLE_KINDS.has(pythonKind)) {
+      for (let j = classes.length - 1; j >= 0; j--) if (PYTHON_SYMBOL_BASES.has(classes[j]!)) classes.splice(j, 1);
+      classes.push(...pythonSymbolClasses(pythonKind).split(" "));
+    }
     const local =
       rainbow &&
       !constant &&
       !names.includes("selfParameter") &&
-      RAINBOW_TYPES.has(type) &&
       !names.some((n) => NOT_LOCAL.has(n)) &&
-      (type === "parameter" || !marksLocals || names.includes("local"));
-    const l = doc.line(line + 1);
-    const from = l.from + Math.min(col, l.length);
-    const to = Math.min(from + len, l.to);
-    if (from >= to) continue;
+      (language === "python"
+        ? pythonKind
+          ? pythonKind === "localVariable" || pythonKind === "parameter"
+          : type === "parameter"
+        : RAINBOW_TYPES.has(type) && (type === "parameter" || !marksLocals || names.includes("local")));
     serverRanges.push({ from, to });
     if (!classes.length && !local) continue;
     if (covered(from, to)) continue;
@@ -165,9 +198,12 @@ export function semanticRanges(
   if (language === "python" && tree) {
     const serverCovered = rangeCoverage(serverRanges);
     out.push(
-      ...pythonFallbackRanges(tree, doc, rainbow ? (name) => `cm-sem-rainbow-${rainbowIndex(name)}` : undefined).filter(
-        (r) => !covered(r.from, r.to) && !serverCovered(r.from, r.to),
-      ),
+      ...pythonFallbackRanges(
+        tree,
+        doc,
+        rainbow ? (name) => `cm-sem-rainbow-${rainbowIndex(name)}` : undefined,
+        symbols,
+      ).filter((r) => !covered(r.from, r.to) && !serverCovered(r.from, r.to)),
     );
   }
   out.push(...syntax);
@@ -231,8 +267,10 @@ const semanticPlugin = ViewPlugin.fromClass(
       else this.refresh();
     }
     refreshSyntax(doc: Text) {
-      const syntax =
-        docOf(this.view)?.language === "python" ? pythonSyntaxRanges(syntaxTree(this.view.state), doc) : [];
+      const tree = syntaxTree(this.view.state);
+      const python = docOf(this.view)?.language === "python";
+      const symbols = python ? pythonSymbolKinds(tree, doc) : undefined;
+      const syntax = python ? pythonSyntaxRanges(tree, doc, symbols) : [];
       const covered = rangeCoverage(syntax);
       const retained: Array<{ from: number; to: number }> = [];
       const marks = syntax.map((r) => markFor(r.className, r.source).range(r.from, r.to));
@@ -249,9 +287,10 @@ const semanticPlugin = ViewPlugin.fromClass(
       if (docOf(this.view)?.language === "python") {
         const retainedCovered = rangeCoverage(retained);
         for (const r of pythonFallbackRanges(
-          syntaxTree(this.view.state),
+          tree,
           doc,
           this.rainbow ? (name) => `cm-sem-rainbow-${rainbowIndex(name)}` : undefined,
+          symbols,
         ))
           if (!covered(r.from, r.to) && !retainedCovered(r.from, r.to))
             marks.push(markFor(r.className, r.source).range(r.from, r.to));

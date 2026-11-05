@@ -101,6 +101,27 @@ describe(".icls schemes", () => {
     expect(roundTrip.pyBytes?.foreground).toBe("#445566");
   });
 
+  it("round trips the Python identifier attributes independently", () => {
+    const names = [
+      ["pyLocalVariable", "101010"],
+      ["pyGlobalVariable", "202020"],
+      ["pyInstanceAttribute", "303030"],
+      ["pyClassAttribute", "404040"],
+      ["pyConstant", "505050"],
+      ["pyProperty", "606060"],
+      ["pyTypeParameter", "707070"],
+    ] as const;
+    const xml = `<scheme name="Python identifiers"><attributes>${names
+      .map(
+        ([id, value]) =>
+          `<option name="OPENIDEA_${id}"><value><option name="FOREGROUND" value="${value}"/></value></option>`,
+      )
+      .join("")}</attributes></scheme>`;
+    const { id, customs } = importScheme({}, parseIcls(xml).scheme);
+    const attrs = parseIcls(exportIcls(id, customs)).scheme.attributes;
+    for (const [name, value] of names) expect(attrs[name]?.foreground).toBe(`#${value}`);
+  });
+
   it("imports the global variable colour", () => {
     const xml =
       '<scheme name="G" parent_scheme="Darcula"><attributes><option name="DEFAULT_GLOBAL_VARIABLE"><value>' +

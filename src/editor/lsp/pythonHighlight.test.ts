@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { findLanguageDescription, loadSupport } from "../core/cm/languages";
-import { pythonSyntaxRanges, pythonFallbackRanges } from "./pythonHighlight";
+import { pythonSyntaxRanges, pythonFallbackRanges, pythonSymbolKinds } from "./pythonHighlight";
 import { semanticRanges } from "./semantic";
 
 async function parse(source: string) {
@@ -104,5 +104,76 @@ class Foo:
     );
     expect(result[0]?.className).toBe("cm-sem-parameter cm-sem-self");
     expect(result[1]?.className).toContain("cm-sem-rainbow-");
+  });
+
+  it("classifies Python variables, attributes, properties, constants and type parameters", async () => {
+    const state = await parse(`MAX_SIZE: Final = 10
+name = "x"
+T = TypeVar("T")
+type Alias[U] = list[U]
+
+class Box[T]:
+    count = 0
+    ICON: Final = "box"
+
+    def __init__(self, value: T):
+        self.value = value
+        local = 1
+        self.count
+        self.value
+        self.size
+
+    @property
+    def size(self) -> T:
+        return self.value
+
+    def read(self) -> T:
+        return Box.count + Box.ICON
+`);
+    const tree = syntaxTree(state);
+    const kinds = pythonSymbolKinds(tree, state.doc);
+    const kindOf = (name: string) =>
+      [...kinds]
+        .filter(([range]) => {
+          const [from, to] = range.split(":").map(Number);
+          return state.doc.sliceString(from!, to!) === name;
+        })
+        .map(([, kind]) => kind);
+    expect(kindOf("local")).toEqual(["localVariable"]);
+    expect(kindOf("name")).toEqual(["globalVariable"]);
+    expect(kindOf("MAX_SIZE")).toEqual(["constant"]);
+    expect(kindOf("value")).toContain("instanceAttribute");
+    expect(kindOf("count")).toContain("classAttribute");
+    expect(kindOf("ICON")).toContain("constant");
+    expect(kindOf("size")).toContain("property");
+    expect(kindOf("T")).toEqual(expect.arrayContaining(["typeParameter"]));
+    expect(kindOf("U")).toEqual(["typeParameter", "typeParameter"]);
+
+    const syntax = pythonSyntaxRanges(tree, state.doc, kinds);
+    const syntaxClass = (name: string) =>
+      syntax.filter((range) => state.doc.sliceString(range.from, range.to) === name).map((range) => range.className);
+    expect(syntaxClass("size")).toContain("cm-sem-property cm-sem-python-property");
+    expect(syntaxClass("T")).toContain("cm-sem-typeParameter cm-sem-python-type-parameter");
+  });
+
+  it("keeps Pyrefly tokens but applies the finer Python category", async () => {
+    const state = await parse("MAX_SIZE: Final = 10\ndef f(x):\n    local = x\n    return local");
+    const result = semanticRanges(
+      state.doc,
+      {
+        tokenTypes: ["variable"],
+        tokenModifiers: [],
+        data: [0, 0, 8, 0, 0, 2, 4, 5, 0, 1, 3, 11, 5, 0, 2],
+      },
+      true,
+      "python",
+      syntaxTree(state),
+    );
+    const classOf = (name: string) =>
+      result.filter((range) => state.doc.sliceString(range.from, range.to) === name).map((range) => range.className);
+    expect(classOf("MAX_SIZE")).toEqual(["cm-sem-constant cm-sem-python-constant"]);
+    expect(classOf("local")[0]).toContain("cm-sem-variable cm-sem-python-local-variable cm-sem-rainbow-");
+    expect(classOf("local")[1]).toContain("cm-sem-python-local-variable");
+    expect(classOf("MAX_SIZE")[0]).not.toContain("cm-sem-rainbow-");
   });
 });

@@ -26,6 +26,13 @@ const attributes = {
   "PY.SELF_PARAMETER": { FOREGROUND: "aa7788" },
   "PY.BUILTIN_NAME": { FOREGROUND: "bb8899" },
   "PY.KEYWORD_ARGUMENT": { FOREGROUND: "cc99aa" },
+  OPENIDEA_pyLocalVariable: { FOREGROUND: "aa1101" },
+  OPENIDEA_pyGlobalVariable: { FOREGROUND: "aa2202" },
+  OPENIDEA_pyInstanceAttribute: { FOREGROUND: "aa3303" },
+  OPENIDEA_pyClassAttribute: { FOREGROUND: "aa4404" },
+  OPENIDEA_pyConstant: { FOREGROUND: "aa5505" },
+  OPENIDEA_pyProperty: { FOREGROUND: "aa6606" },
+  OPENIDEA_pyTypeParameter: { FOREGROUND: "aa7707" },
 };
 const xml = `<scheme name="Python" parent_scheme="Darcula"><attributes>${Object.entries(attributes)
   .map(
@@ -44,16 +51,27 @@ const support = await loadSupport(findLanguageDescription("Python", "demo.py")!)
 new EditorView({
   parent: document.body,
   state: EditorState.create({
-    doc: `def outer(x):
+    doc: `MAX_SIZE: Final = 10
+name = "global"
+T = TypeVar("T")
+
+def outer(x: T) -> T:
     """Syntax Highlighting Demo"""
     def nested(y):
         print(y + 1)
     nested(x)
 
-class Foo:
-    def __init__(self: Foo):
+class Foo[T]:
+    count = 0
+    def __init__(self: Foo, value: T):
         value = b"newline:\\n"
+        local = 1
+        self.instance_attr = value
+        print(local, MAX_SIZE, name, T)
         self.run(whatever=1) # Comment
+    @property
+    def size(self) -> int:
+        return self.instance_attr
 `,
     extensions: [
       support!,

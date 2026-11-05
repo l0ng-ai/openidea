@@ -407,6 +407,13 @@ export const lspTheme = EditorView.theme({
     textUnderlineOffset: "3px",
   },
   ".cm-sem-deprecated": { textDecoration: "line-through" },
+  ".cm-sem-python-local-variable": pythonStyle("python-local-variable", "variable"),
+  ".cm-sem-global.cm-sem-python-global-variable": pythonStyle("python-global-variable", "global"),
+  ".cm-sem-python-instance-attribute": pythonStyle("python-instance-attribute", "property"),
+  ".cm-sem-python-class-attribute": pythonStyle("python-class-attribute", "property"),
+  ".cm-sem-python-constant": pythonStyle("python-constant", "constant"),
+  ".cm-sem-python-property": pythonStyle("python-property", "property"),
+  ".cm-sem-python-type-parameter": pythonStyle("python-type-parameter", "type"),
   // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the
   // syntax highlighter's span inside.
   ...Object.fromEntries(
