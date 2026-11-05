@@ -11,10 +11,7 @@ name: Language smoke
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
-    paths:
+    paths: &paths
       - "crates/**"
       - "languages/**"
       - "fixtures/**"
@@ -27,6 +24,10 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/language-smoke.yml"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths: *paths
   workflow_dispatch:
 
 concurrency:
