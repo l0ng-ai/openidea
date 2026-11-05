@@ -106,6 +106,9 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
 bb8 = "0.9"
 uuid = { version = "1", features = ["v4"] }
+# OS credential stores
+keyring = "4.2"
+keyring-core = "1"
 
 # testing
 insta = { version = "1", features = ["yaml"] }

@@ -1,20 +1,15 @@
-//! Saved data source passwords, in the app's data directory rather than the OS
-//! credential store (no system prompts). One JSON file for all projects, keyed
-//! by project root, then credential key; owner-only on Unix.
+//! Saved data source passwords, in the OS credential store like the other saved
+//! passwords ([`SecretFile`]). One index file for all projects; each credential is
+//! keyed by project root, then credential key.
 
-use ide_core::{IdeError, IdeResult};
-use parking_lot::Mutex;
+use ide_core::IdeResult;
+use ide_ssh::secrets::SecretFile;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Project root → credential key → secret.
-type Contents = BTreeMap<String, BTreeMap<String, String>>;
-
-/// Serialises read-modify-write across the projects sharing the file.
-static LOCK: Mutex<()> = Mutex::new(());
-
 pub struct SecretStore {
     path: PathBuf,
+    file: SecretFile,
     project: String,
 }
 
@@ -23,9 +18,24 @@ pub fn ssh_key(id: &str) -> String {
     format!("{id}#ssh")
 }
 
+fn file_key(project: &str, key: &str) -> String {
+    format!("{project}|{key}")
+}
+
+/// Older versions' file: project root → credential key → secret.
+fn legacy(value: serde_json::Value) -> Option<BTreeMap<String, String>> {
+    let all: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_value(value).ok()?;
+    Some(
+        all.into_iter()
+            .flat_map(|(project, keys)| keys.into_iter().map(move |(k, s)| (file_key(&project, &k), s)))
+            .collect(),
+    )
+}
+
 impl SecretStore {
     pub fn new(path: PathBuf, root: &Path) -> Self {
-        Self { path, project: root.to_string_lossy().into_owned() }
+        let file = SecretFile::with_legacy(path.clone(), legacy);
+        Self { path, file, project: root.to_string_lossy().into_owned() }
     }
 
     /// The same file, keyed by `scope` instead (global data sources: the app data directory).
@@ -34,55 +44,15 @@ impl SecretStore {
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        let _g = LOCK.lock();
-        self.read().remove(&self.project)?.remove(key)
+        self.file.get(&file_key(&self.project, key))
     }
 
     pub fn set(&self, key: &str, secret: &str) -> IdeResult<()> {
-        let _g = LOCK.lock();
-        let mut all = self.read();
-        all.entry(self.project.clone()).or_default().insert(key.to_owned(), secret.to_owned());
-        self.write(&all)
+        self.file.set(&file_key(&self.project, key), secret)
     }
 
     pub fn delete(&self, key: &str) {
-        let _g = LOCK.lock();
-        let mut all = self.read();
-        let Some(project) = all.get_mut(&self.project) else { return };
-        if project.remove(key).is_none() {
-            return;
-        }
-        if project.is_empty() {
-            all.remove(&self.project);
-        }
-        if let Err(e) = self.write(&all) {
-            tracing::warn!("saved passwords: {}", e.message);
-        }
-    }
-
-    fn read(&self) -> Contents {
-        match std::fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                tracing::warn!("saved passwords: {}: {e}", self.path.display());
-                Contents::new()
-            }),
-            Err(_) => Contents::new(),
-        }
-    }
-
-    fn write(&self, all: &Contents) -> IdeResult<()> {
-        let err = |e: std::io::Error| IdeError::unavailable(format!("saved passwords: {e}"));
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(err)?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let bytes = serde_json::to_vec_pretty(all).map_err(|e| IdeError::internal(e.to_string()))?;
-        std::io::Write::write_all(&mut options.open(&tmp).map_err(err)?, &bytes).map_err(err)?;
-        std::fs::rename(&tmp, &self.path).map_err(err)
+        self.file.delete(&file_key(&self.project, key))
     }
 }
 
@@ -92,6 +62,7 @@ mod tests {
 
     #[test]
     fn keeps_projects_apart_and_drops_empty_ones() {
+        ide_ssh::secrets::testing::use_memory_store();
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("db-passwords.json");
         let a = SecretStore::new(file.clone(), Path::new("/p/a"));
