@@ -214,12 +214,12 @@ export function activate(): () => void {
       if (s.settings?.editor !== prev.settings?.editor) terminalRuntime()?.applySettingsToAll();
     }),
     onIdeEvent("terminalExited", (e) => terminalRuntime()?.sessionForTerminalId(e.terminal)?.exited(e.code)),
-    // Sessions belong to the project; closing / switching it ends them.
+    // Sessions belong to the project. Remember this project's tabs, then open the next one's.
     useProject.subscribe((s, prev) => {
       const rt = terminalRuntime();
       if (rt && s.project?.root !== prev.project?.root) {
         if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
-        rt.closeAll();
+        rt.syncTerminalProject(s.project?.root ?? null);
       }
     }),
   ];
@@ -242,6 +242,6 @@ export function activate(): () => void {
 
   return () => {
     disposers.reverse().forEach((d) => d());
-    terminalRuntime()?.closeAll();
+    terminalRuntime()?.unbindTerminals();
   };
 }
