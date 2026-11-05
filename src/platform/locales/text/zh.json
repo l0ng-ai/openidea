@@ -6299,5 +6299,6 @@
   "Idle": "空闲",
   "Composer dependencies are not installed": "未安装 Composer 依赖",
   "Installed Composer packages differ from composer.lock": "已安装的 Composer 包与 composer.lock 不一致",
-  "Composer Install": "安装 Composer 依赖"
+  "Composer Install": "安装 Composer 依赖",
+  "Input for the program (pause to evaluate)": "程序输入（暂停后可计算）"
 }

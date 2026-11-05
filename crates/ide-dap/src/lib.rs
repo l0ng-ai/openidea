@@ -1266,6 +1266,16 @@ impl DebugManager {
         Ok(())
     }
 
+    /// Types `text` into the terminal the session's program runs in (see [`ide_core::event::DebugEvent::ProgramInput`]).
+    pub fn send_input(&self, s: DebugSessionId, text: &str) -> IdeResult<()> {
+        let session = self.session(s)?;
+        let mut program = session.program.lock();
+        let program = program
+            .as_mut()
+            .ok_or_else(|| IdeError::invalid("The program doesn't read input from the debug console"))?;
+        program.write(text).map_err(|e| IdeError::internal(format!("cannot write to the program: {e}")))
+    }
+
     /// Flutter's DAP adapter: injects the changed sources into the running app.
     /// Not part of the DAP standard; adapters that do not know the request reject it.
     pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {

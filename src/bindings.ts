@@ -735,6 +735,8 @@ export const commands = {
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
+	/**  Types `text` into the session's program (a `runInTerminal` program). */
+	debugSendInput: (session: DebugSessionId, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("debug_send_input", { session, text })),
 	debugHotReload: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session })),
 	debugHotRestart: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_restart", { session })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
@@ -2855,7 +2857,12 @@ export type DebugEvent =
  *  First event of every session (only build output of a root session's
  *  `cargo` step can precede it). `parent` is set for adapter-started child sessions.
  */
-{ kind: "started"; name: string; adapter: string; parent: DebugSessionId | null } | { kind: "initialized" } | { kind: "stopped"; threadId: number; reason: string; description: string | null; allThreadsStopped: boolean } | { kind: "continued"; threadId: number; allThreadsContinued: boolean } | { kind: "output"; category: string; output: string } | { kind: "thread"; threadId: number; started: boolean } | { kind: "breakpointsChanged"; path: IpcPath } | { kind: "terminated" } | { kind: "exited"; code: number } | 
+{ kind: "started"; name: string; adapter: string; parent: DebugSessionId | null } | { kind: "initialized" } | { kind: "stopped"; threadId: number; reason: string; description: string | null; allThreadsStopped: boolean } | { kind: "continued"; threadId: number; allThreadsContinued: boolean } | { kind: "output"; category: string; output: string } | { kind: "thread"; threadId: number; started: boolean } | 
+/**
+ *  The program runs in a terminal the IDE gave it (`runInTerminal`): what is typed for it
+ *  in the debug console reaches its input.
+ */
+{ kind: "programInput" } | { kind: "breakpointsChanged"; path: IpcPath } | { kind: "terminated" } | { kind: "exited"; code: number } | 
 /**
  *  java-debug's `hotcodereplace` event: `change_type` is `BUILD_COMPLETE` (classes
  *  changed and can be reloaded), `STARTING`, `END`, `WARNING` or `ERROR`.
