@@ -923,8 +923,17 @@ pub fn open_path(app: &AppHandle, path: &Path) {
 /// Opens paths from outside the app (a second instance, Finder's Open With, the Dock):
 /// see [`plan_open`]; the focused window is the preferred free one.
 pub fn open_paths(app: &AppHandle, paths: Vec<PathBuf>) {
+    let (existing, missing): (Vec<_>, Vec<_>) = paths.into_iter().partition(|path| path.exists());
+    if !missing.is_empty() {
+        let paths = missing.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
+        app.state::<AppState>().sink.emit(ide_core::IdeEvent::Notify {
+            level: ide_core::event::NotifyLevel::Warning,
+            title: "Cannot open path".into(),
+            body: Some(format!("The path does not exist:\n{paths}")),
+        });
+    }
     let preferred = target_window(app).map(|w| w.label().to_owned());
-    run_open(app, plan_open(resolve(paths), &window_holds(app, preferred.as_deref())));
+    run_open(app, plan_open(resolve(existing), &window_holds(app, preferred.as_deref())));
 }
 
 /// What each window holds, `preferred` first.
@@ -1005,6 +1014,25 @@ fn launch_for(path: PathBuf, is_dir: bool) -> Launch {
 
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
+    if args.iter().any(|arg| arg == crate::jump_list::OPEN_RECENT_ARG)
+        && let Some(path) = cli_path(&args, Path::new(&cwd)).filter(|path| path.exists())
+    {
+        let target = target_window(app)
+            .filter(|window| auxiliary_parent(window.label()).is_none())
+            .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.get_webview_window(&label)));
+        if let Some(window) = target {
+            let _ = app.emit_to(
+                window.label(),
+                crate::menu::MENU_EVENT,
+                crate::menu::MenuRoute {
+                    action: crate::menu::OPEN_RECENT_ACTION.into(),
+                    arg: Some(ide_core::ipc_path::to_ipc(&path)),
+                },
+            );
+            focus(&window);
+            return;
+        }
+    }
     match cli_path(&args, Path::new(&cwd)) {
         Some(path) => {
             remember_cli_position(&app.state::<WindowsState>(), &args, &path);

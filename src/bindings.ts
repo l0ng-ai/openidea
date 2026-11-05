@@ -496,7 +496,6 @@ export const commands = {
 	vcsOpenExternalLog: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("vcs_open_external_log", { path })),
 	vcsLogDetails: (repo: string | null, revision: string) => typedError<LogDetails, IdeError>(__TAURI_INVOKE("vcs_log_details", { repo, revision })),
 	vcsLogDetailsBatch: (repo: string | null, revisions: string[], request: RequestId) => typedError<LogDetails[], IdeError>(__TAURI_INVOKE("vcs_log_details_batch", { repo, revisions, request })),
-	vcsLogIndex: (repo: string | null, request: number | null) => typedError<LogIndexProgress, IdeError>(__TAURI_INVOKE("vcs_log_index", { repo, request })),
 	vcsRevisionChildren: (repo: string | null, revision: string, directory: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_children", { repo, revision, directory })),
 	vcsRevisionFiles: (repo: string | null, revision: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_files", { repo, revision })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -4987,12 +4986,6 @@ export type LogDetails = {
 	fingerprint: string,
 };
 
-export type LogIndexProgress = {
-	indexed: number,
-	total: number,
-	running: boolean,
-};
-
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type LogLocation = {
@@ -5349,7 +5342,7 @@ export type NotebookEdit = { type: "setSource"; cell: string; source: string } |
 
 export type NotebookOutputEvent = {
 	id: string,
-	path: string,
+	path: IpcPath,
 	cell: string,
 	msgId: string,
 	kind: string,
@@ -5361,7 +5354,7 @@ export type NotebookOutputEvent = {
 
 export type NotebookSnapshot = {
 	id: string,
-	path: string,
+	path: IpcPath,
 	version: number,
 	dirty: boolean,
 	canUndo: boolean,
