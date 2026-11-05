@@ -1496,7 +1496,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3001,7 +3001,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c48eccd894bd15555b0346470e63491ded94aefe76b3fcb1052084b5a393238"
 dependencies = [
  "bstr",
- "hashbrown 0.17.1",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -4515,6 +4515,7 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
+ "wat",
 ]
 
 [[package]]
@@ -8374,7 +8375,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
 dependencies = [
  "foldhash",
- "hashbrown 0.17.1",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -10318,6 +10319,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
+name = "unicode-width"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
+
+[[package]]
 name = "universal-hash"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10835,6 +10842,28 @@ dependencies = [
  "futures",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "wast"
+version = "258.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b912cfe5696dfaae736e344fc82082dbd63609abbaeca3926466c0b10d9fecc"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width",
+ "wasm-encoder",
+]
+
+[[package]]
+name = "wat"
+version = "1.258.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3069154948f5737a8bcd5c55dcdf2c2b59ca776057732e49821167bde268ec6e"
+dependencies = [
+ "wast",
 ]
 
 [[package]]

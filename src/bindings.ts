@@ -17,6 +17,13 @@ export const commands = {
 	androidLogcat: (request: RequestId, serial: string, clear: boolean, onLines: Channel<LogcatLine[]>) => typedError<null, IdeError>(__TAURI_INVOKE("android_logcat", { request, serial, clear, onLines })),
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
+	/**  The welcome screen's project groups. */
+	recentProjectGroups: () => __TAURI_INVOKE<RecentProjectGroup[]>("recent_project_groups"),
+	/**
+	 *  Replaces the project groups; returns them as saved (names trimmed and unique, each
+	 *  project in one group, only recent projects).
+	 */
+	setRecentProjectGroups: (groups: RecentProjectGroup[]) => typedError<RecentProjectGroup[], IdeError>(__TAURI_INVOKE("set_recent_project_groups", { groups })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
 	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
@@ -724,6 +731,8 @@ export const commands = {
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
+	debugHotReload: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session })),
+	debugHotRestart: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_restart", { session })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
 	debugRunTo: (session: DebugSessionId, threadId: number, path: string, line: number, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("debug_run_to", { session, threadId, path, line, force })),
 	debugStop: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_stop", { session })),
@@ -5539,7 +5548,11 @@ export type PluginEvent =
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
  */
-{ type: "languagesChanged" };
+{ type: "languagesChanged" } | 
+/**  Copy `text` to the system clipboard. */
+{ type: "copyToClipboard"; pluginId: string; text: string } | 
+/**  Open `url` (`http(s)://`) in the system browser. */
+{ type: "openUrl"; pluginId: string; url: string };
 
 export type PluginInfo = {
 	id: string,
@@ -6000,6 +6013,14 @@ export type RecentProject = {
 	openedAtMs: number | null,
 	/**  Current git branch when last opened, shown on the welcome screen. */
 	branch: string | null,
+};
+
+/**  A named group of recent projects on the welcome screen (New Project Group…, Move to Group). */
+export type RecentProjectGroup = {
+	name: string,
+	/**  Its projects, in the order they were added. */
+	paths: IpcPath[],
+	expanded?: boolean,
 };
 
 export type RefactoringProblem = {

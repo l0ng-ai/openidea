@@ -362,6 +362,7 @@ const ICONS = {
   "gutter-overriding": "gutter/overridingMethod",
   stop: "run/stop",
   rerun: "run/rerun",
+  "hot-reload": "openidea/general/hotReload",
   "rerun-filled": "run/rerun_stroke",
   "restart-debug": "run/restartDebug",
   "restart-debug-filled": "run/restartDebug_stroke",

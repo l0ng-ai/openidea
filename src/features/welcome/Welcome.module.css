@@ -172,6 +172,26 @@
 .projectBadge {
   margin-top: 1px;
 }
+/* A project group: one line, folds its projects. */
+.group {
+  align-items: center;
+  gap: 6px;
+  --icon-color: var(--fg-muted);
+}
+.groupName {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.groupCount {
+  color: var(--fg-faint);
+}
+.projectNested {
+  padding-left: 32px;
+}
 .projectText {
   flex: 1;
   min-width: 0;

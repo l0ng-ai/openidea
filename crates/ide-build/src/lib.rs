@@ -80,6 +80,12 @@ pub fn load_linked(
         let repo = maven_repo.or_else(maven::default_local_repo);
         let mut m = maven::load_with_linked(root, repo, &profiles, &settings.linked_projects);
         maven::UnlinkedProjects::from_model(&m, settings).filter(&mut m);
+        // The user settings' profiles can be chosen too (`-P` applies to them as well).
+        for p in maven::user_settings_file(root, settings).map(|f| maven::settings_profiles(&f)).unwrap_or_default() {
+            if !m.profiles.iter().any(|x| x.id == p.id) {
+                m.profiles.push(p);
+            }
+        }
         sync::apply_maven_cache(root, cache_dir, &mut m);
         m
     });
