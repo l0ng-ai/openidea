@@ -691,6 +691,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         path_dirs.push(dir);
     }
 
+    // Gems install to the Ruby's bindir, which is not always on `PATH` (Homebrew).
+    if name == "ruby-lsp"
+        && let Some(ruby) = ruby_interpreter(root, s)
+    {
+        path_dirs.extend(crate::ruby::gem_bin_dirs(&ruby, server_root));
+    }
+
     if !path_dirs.is_empty() {
         let dirs: Vec<&Path> = path_dirs.iter().map(PathBuf::as_path).collect();
         cfg.env.insert("PATH".into(), path_with(&dirs));
@@ -1299,5 +1306,31 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         configure_maven_import(&mut cfg, tmp.path(), &[], Some(&files));
         assert!(serde_json::to_value(cfg.initialization_options).unwrap().get("projectConfigurations").is_none());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod ruby_lsp_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn ruby_lsp_is_found_in_the_rubys_gem_bindir_when_that_is_off_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bindir = tmp.path().join("gems/bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        // Homebrew's Ruby: `Gem.bindir` is not on `PATH`.
+        let ruby = tmp.path().join("ruby");
+        std::fs::write(&ruby, format!("#!/bin/sh\necho '{}'\necho '/nonexistent/user/bin'\n", bindir.display()))
+            .unwrap();
+        std::fs::set_permissions(&ruby, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut s = Settings::default();
+        s.languages.ruby.interpreter = ruby.to_string_lossy().into_owned();
+        let mut cfg = custom_server("ruby-lsp", &LanguageServerSettings::default());
+        configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+        let path = cfg.env.get("PATH").expect("PATH set");
+        let dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
+        assert!(dirs.contains(&bindir), "{dirs:?}");
+        assert!(!dirs.iter().any(|d| d.starts_with("/nonexistent")), "{dirs:?}");
     }
 }

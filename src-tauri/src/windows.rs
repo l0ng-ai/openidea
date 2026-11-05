@@ -120,7 +120,9 @@ pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
     pub groups_restored: AtomicBool,
-    pub groups_persist: tokio::sync::Mutex<()>,
+    /// Serialises writes of the saved session. Holds the previous run's session once read: it is
+    /// read before this run first overwrites the file, so restoring still sees it.
+    pub groups_persist: tokio::sync::Mutex<Option<Vec<ide_workspace::window_groups::SavedWindows>>>,
     launches: Mutex<HashMap<String, Launch>>,
     /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
     positions: Mutex<HashMap<PathBuf, (u32, u32)>>,

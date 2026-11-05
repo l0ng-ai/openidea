@@ -1,7 +1,7 @@
 /**
- * Markdown → sanitized HTML for the preview. Every top-level block is wrapped
- * in an element carrying its 0-based source line (`data-line`) for scroll
- * sync; images keep their source in `data-src` and are loaded by the preview
+ * Markdown → sanitized HTML for the preview. Every top-level block (or run of
+ * blocks inside one HTML container) is wrapped in an element carrying its
+ * 0-based source line (`data-line`) for scroll sync; images keep their source in `data-src` and are loaded by the preview
  * (local files through the backend, as the CSP blocks file URLs). Mermaid
  * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`. YAML front matter is shown
  * as a table of its top-level fields.
@@ -99,6 +99,37 @@ function frontMatterTable(fields: readonly [string, string][]): string {
   return `<table data-front-matter=""><tbody>${rows.join("")}</tbody></table>`;
 }
 
+// Containers whose open and close tags may sit in separate HTML blocks with Markdown between them.
+const CONTAINER_TAGS = new Set([
+  "article",
+  "aside",
+  "blockquote",
+  "center",
+  "details",
+  "div",
+  "dl",
+  "figure",
+  "footer",
+  "header",
+  "main",
+  "nav",
+  "ol",
+  "section",
+  "table",
+  "ul",
+]);
+const TAG = /<(\/?)([a-zA-Z][\w-]*)(?:"[^"]*"|'[^']*'|[^'">])*?(\/?)>/g;
+
+/** Applies the container tags an HTML block opens and closes to `open`, the stack of unclosed ones. */
+function trackContainers(raw: string, open: string[]) {
+  for (const [, closing, name, selfClosing] of raw.replace(/<!--[\s\S]*?(?:-->|$)/g, "").matchAll(TAG)) {
+    const tag = name!.toLowerCase();
+    if (!CONTAINER_TAGS.has(tag) || selfClosing) continue;
+    if (!closing) open.push(tag);
+    else if (open.includes(tag)) open.length = open.lastIndexOf(tag);
+  }
+}
+
 export function renderMarkdown(text: string): string {
   const front = frontMatter(text);
   const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
@@ -106,6 +137,10 @@ export function renderMarkdown(text: string): string {
   const slugs = new Map<string, number>();
   let line = front?.lines ?? 0;
   let html = front ? `<div data-line="0">${frontMatterTable(front.fields)}</div>` : "";
+  // Blocks inside an HTML container left open (`<details>`, `<div>`…) share its wrapper up to
+  // the close: a wrapper per block would end the container early and spill its content out.
+  const open: string[] = [];
+  let group: { line: number; html: string } | null = null;
   for (const token of tokens) {
     const start = line;
     line += countLines(token.raw);
@@ -118,8 +153,14 @@ export function renderMarkdown(text: string): string {
       slugs.set(base, n + 1);
       body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${n ? `${base}-${n}` : base}">`);
     }
-    html += `<div data-line="${start}">${body}</div>`;
+    group ??= { line: start, html: "" };
+    group.html += body;
+    if (token.type === "html") trackContainers(token.raw, open);
+    if (open.length) continue;
+    html += `<div data-line="${group.line}">${group.html}</div>`;
+    group = null;
   }
+  if (group) html += `<div data-line="${group.line}">${group.html}</div>`;
   // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
   return purify().sanitize(html, {
     USE_PROFILES: { html: true },

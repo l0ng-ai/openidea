@@ -5,7 +5,7 @@ vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
   promptText: mocks.prompt,
 }));
-import { newBranch, newBranchInRepos } from "../branchOps";
+import { newBranch, newBranchInRepos, renameBranch } from "../branchOps";
 import { useVcs } from "../store";
 
 const branch = (head: string | null): BranchInfo => ({
@@ -60,4 +60,17 @@ it("still suggests a remote branch's name without the prefix", async () => {
 it("prefills the current branch in the multi-repository dialog too", async () => {
   await newBranchInRepos(["/p/front", "/p/back"]);
   expect(mocks.prompt.mock.calls[0]?.[0].initial).toBe("feature/ui");
+});
+
+it.each([
+  ["New Branch", () => newBranch()],
+  ["New Branch from a revision", () => newBranch("origin/main")],
+  ["New Branch in several repositories", () => newBranchInRepos(["/p/front", "/p/back"])],
+  ["Rename Branch", () => renameBranch("main")],
+])("%s turns a typed space into a separator, as IDEA does", async (_name, open) => {
+  await open();
+  const { sanitize, validate } = mocks.prompt.mock.calls[0]![0];
+  const typed: string = sanitize("fix login");
+  expect(typed).toBe("fix-login");
+  expect(validate(typed)).toBeNull();
 });
