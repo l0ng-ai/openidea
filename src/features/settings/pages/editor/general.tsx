@@ -677,7 +677,10 @@ const SMART_KEYS = editorPage({
     },
     {
       title: "Enter",
-      items: [{ t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" }],
+      items: [
+        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
+        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
+      ],
     },
     {
       title: "Backspace",
