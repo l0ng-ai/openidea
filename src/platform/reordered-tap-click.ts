@@ -1,10 +1,12 @@
 /**
  * macOS WebKit routes mouse events through the input method while an editable element has
- * focus, and can hand the page a tap as `pointerup` -> `pointerdown` (WebKit bug 219670).
- * The press then has no release, so the tap's click is lost and the next tap's `pointerup`
- * pairs with this stale press instead. `pointerdown.timeStamp` stays native, so a press
- * stamped no later than the `pointerup` just before it is a reordered tap: finish it with
- * a synthetic `pointerup`/`mouseup`/`click`, and drop the wrongly paired click that follows.
+ * focus, and with a third-party input method it can hand the page a tap as `pointerup` ->
+ * `pointerdown` (WebKit bug 219670). The press then has no release: the tap's click is lost,
+ * and the engine, which still considers the button down, starts the next tap with a bare
+ * `mousedown` (no `pointerdown`). `pointerdown.timeStamp` stays native, so a press stamped no
+ * later than the `pointerup` just before it is a reordered tap: finish it with a synthetic
+ * `pointerup`/`mouseup`/`click`, and give the next press the `pointerdown` the engine skips.
+ * The next tap's own click lands on its own target, so it is left alone.
  *
  * TODO: remove once the minimum supported macOS ships a WebKit with bug 219670 fixed (WebKit#76581).
  */
@@ -16,6 +18,9 @@ interface Options {
 
 const primaryMouse = (e: PointerEvent) => e.pointerType === "mouse" && e.isPrimary && e.button === 0;
 
+/** The engine's id of the mouse pointer (the only one a reordered tap concerns). */
+const MOUSE_POINTER_ID = 1;
+
 export function installReorderedTapClick({
   win = window,
   isTrusted: trusted = (e) => e.isTrusted,
@@ -23,42 +28,79 @@ export function installReorderedTapClick({
   // Events this shim dispatches must not be mistaken for the engine's.
   const own = new WeakSet<Event>();
   const isTrusted = (e: Event) => trusted(e) && !own.has(e);
-  let lastUp: { time: number } | null = null;
+  const send = (target: Element, e: Event) => {
+    own.add(e);
+    target.dispatchEvent(e);
+  };
+  let lastUp: number | null = null;
+  // A pointer is down as far as the page has been told; a mouse press without one is a skipped pointerdown.
+  let down = false;
   let pending: { target: Element; detail: number; x: number; y: number; mods: MouseEventInit } | null = null;
-  // The click WebKit pairs with the stale press arrives right after the next real pointerup.
-  let dropPaired = false;
+
+  const mods = (e: MouseEvent): MouseEventInit => ({
+    ctrlKey: e.ctrlKey,
+    shiftKey: e.shiftKey,
+    altKey: e.altKey,
+    metaKey: e.metaKey,
+  });
 
   const onPointerUp = (e: PointerEvent) => {
-    if (!isTrusted(e) || !primaryMouse(e)) return;
-    lastUp = { time: e.timeStamp };
+    if (!isTrusted(e)) return;
+    down = false;
+    if (primaryMouse(e)) lastUp = e.timeStamp;
+  };
+
+  const onPointerCancel = (e: PointerEvent) => {
+    if (isTrusted(e)) down = false;
   };
 
   const onPointerDown = (e: PointerEvent) => {
+    if (!isTrusted(e)) return;
+    down = true;
     const before = lastUp;
     lastUp = null;
-    dropPaired = false;
     pending = null;
-    if (!isTrusted(e) || !primaryMouse(e) || !before || e.timeStamp > before.time) return;
+    if (!primaryMouse(e) || before === null || e.timeStamp > before) return;
     if (!(e.target instanceof Element)) return;
-    pending = {
-      target: e.target,
-      detail: 1,
-      x: e.clientX,
-      y: e.clientY,
-      mods: { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey },
-    };
+    pending = { target: e.target, detail: 1, x: e.clientX, y: e.clientY, mods: mods(e) };
     // After this tick the page's own pointerdown/mousedown handlers have run, as for an in-order tap.
     setTimeout(finish);
   };
 
   const onMouseDown = (e: MouseEvent) => {
-    if (pending && isTrusted(e)) pending.detail = e.detail || 1;
+    if (!isTrusted(e) || e.button !== 0) return;
+    if (pending) {
+      pending.detail = e.detail || 1;
+      return;
+    }
+    if (down || !(e.target instanceof Element)) return;
+    down = true;
+    send(
+      e.target,
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: MOUSE_POINTER_ID,
+        pointerType: "mouse",
+        isPrimary: true,
+        button: 0,
+        buttons: 1,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        screenX: e.screenX,
+        screenY: e.screenY,
+        ...mods(e),
+      }),
+    );
   };
 
   const finish = () => {
     const tap = pending;
     pending = null;
-    if (!tap?.target.isConnected) return;
+    if (!tap) return;
+    down = false;
+    if (!tap.target.isConnected) return;
     const init = {
       bubbles: true,
       cancelable: true,
@@ -69,40 +111,24 @@ export function installReorderedTapClick({
       clientY: tap.y,
       ...tap.mods,
     };
-    const send = (e: Event) => {
-      own.add(e);
-      tap.target.dispatchEvent(e);
-    };
-    send(new PointerEvent("pointerup", { ...init, pointerType: "mouse", isPrimary: true }));
-    send(new MouseEvent("mouseup", { ...init, detail: tap.detail }));
-    send(new MouseEvent("click", { ...init, detail: tap.detail }));
-    if (tap.detail === 2) send(new MouseEvent("dblclick", { ...init, detail: 2 }));
-    dropPaired = true;
-  };
-
-  // Only mouse clicks (detail > 0); a keyboard-activated click is unrelated to the stale press.
-  const dropIfPaired = (e: Event) => {
-    if (!dropPaired || !isTrusted(e) || !((e as MouseEvent).detail > 0)) return;
-    e.stopImmediatePropagation();
-    e.preventDefault();
-  };
-  const onClick = (e: Event) => {
-    if (!isTrusted(e)) return;
-    dropIfPaired(e);
-    dropPaired = false;
+    send(
+      tap.target,
+      new PointerEvent("pointerup", { ...init, pointerId: MOUSE_POINTER_ID, pointerType: "mouse", isPrimary: true }),
+    );
+    send(tap.target, new MouseEvent("mouseup", { ...init, detail: tap.detail }));
+    send(tap.target, new MouseEvent("click", { ...init, detail: tap.detail }));
+    if (tap.detail === 2) send(tap.target, new MouseEvent("dblclick", { ...init, detail: 2 }));
   };
 
   const capture = { capture: true };
   win.addEventListener("pointerup", onPointerUp as EventListener, capture);
+  win.addEventListener("pointercancel", onPointerCancel as EventListener, capture);
   win.addEventListener("pointerdown", onPointerDown as EventListener, capture);
   win.addEventListener("mousedown", onMouseDown as EventListener, capture);
-  win.addEventListener("click", onClick, capture);
-  win.addEventListener("dblclick", dropIfPaired, capture);
   return () => {
     win.removeEventListener("pointerup", onPointerUp as EventListener, capture);
+    win.removeEventListener("pointercancel", onPointerCancel as EventListener, capture);
     win.removeEventListener("pointerdown", onPointerDown as EventListener, capture);
     win.removeEventListener("mousedown", onMouseDown as EventListener, capture);
-    win.removeEventListener("click", onClick, capture);
-    win.removeEventListener("dblclick", dropIfPaired, capture);
   };
 }

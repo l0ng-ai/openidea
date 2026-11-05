@@ -19,7 +19,7 @@ describe("installReorderedTapClick", () => {
     uninstall = installReorderedTapClick({ isTrusted: () => true });
     el = document.body.appendChild(document.createElement("div"));
     log = [];
-    for (const t of ["pointerup", "mouseup", "click", "dblclick"])
+    for (const t of ["pointerdown", "pointerup", "mouseup", "click", "dblclick"])
       el.addEventListener(t, (e) => log.push(`${t}:${(e as MouseEvent).detail}`));
   });
   afterEach(() => {
@@ -47,7 +47,7 @@ describe("installReorderedTapClick", () => {
 
   it("leaves an in-order tap alone", () => {
     inOrderTap(10, 20);
-    expect(log).toEqual(["pointerup:0", "mouseup:0", "click:1"]);
+    expect(log).toEqual(["pointerdown:0", "pointerup:0", "mouseup:0", "click:1"]);
   });
 
   it("finishes a reordered tap with exactly one click", () => {
@@ -57,16 +57,28 @@ describe("installReorderedTapClick", () => {
     expect(log.filter((l) => l.startsWith("pointerup"))).toHaveLength(2);
   });
 
-  it("drops the click the engine pairs with the stale press, so repeated taps click once each", () => {
+  it("gives the next press the pointerdown the engine skips, and keeps its click", () => {
     reversedTap(1393, 1386);
-    // Next tap: its pointerup pairs with the previous stale press and the engine clicks.
-    el.dispatchEvent(ev("pointerup", 2000));
-    el.dispatchEvent(ev("mouseup", 2000));
-    el.dispatchEvent(ev("click", 2000, { detail: 1 }));
-    el.dispatchEvent(ev("pointerdown", 1990));
-    el.dispatchEvent(ev("mousedown", 1990, { detail: 1 }));
+    log = [];
+    // The engine still considers the button down: the next tap starts with a bare mousedown.
+    el.dispatchEvent(ev("mousedown", 2000, { detail: 1 }));
+    el.dispatchEvent(ev("pointerup", 2050));
+    el.dispatchEvent(ev("mouseup", 2050));
+    el.dispatchEvent(ev("click", 2050, { detail: 1 }));
     vi.runAllTimers();
-    expect(log.filter((l) => l.startsWith("click"))).toEqual(["click:1", "click:1"]);
+    expect(log).toEqual(["pointerdown:0", "pointerup:0", "mouseup:0", "click:1"]);
+  });
+
+  it("adds no pointerdown to an in-order press", () => {
+    inOrderTap(10, 20);
+    inOrderTap(30, 40);
+    expect(log.filter((l) => l.startsWith("pointerdown"))).toEqual(["pointerdown:0", "pointerdown:0"]);
+  });
+
+  it("adds no pointerdown to a press another pointer type started", () => {
+    el.dispatchEvent(ev("pointerdown", 10, { pointerType: "touch" }));
+    el.dispatchEvent(ev("mousedown", 10, { detail: 1 }));
+    expect(log).toEqual(["pointerdown:0"]);
   });
 
   it("does not drop the click of an in-order tap that follows a reordered one", () => {
@@ -85,7 +97,7 @@ describe("installReorderedTapClick", () => {
     el.dispatchEvent(ev("pointerup", 1393, { pointerType: "touch" }));
     el.dispatchEvent(ev("pointerdown", 1386, { pointerType: "touch" }));
     vi.runAllTimers();
-    expect(log).toEqual(["pointerup:0"]);
+    expect(log).toEqual(["pointerup:0", "pointerdown:0"]);
   });
 
   it("does nothing when the target left the document before the tick", () => {
@@ -93,7 +105,7 @@ describe("installReorderedTapClick", () => {
     el.dispatchEvent(ev("pointerdown", 1386));
     el.remove();
     vi.runAllTimers();
-    expect(log).toEqual(["pointerup:0"]);
+    expect(log).toEqual(["pointerup:0", "pointerdown:0"]);
   });
 
   it("stops intercepting after uninstall", () => {
