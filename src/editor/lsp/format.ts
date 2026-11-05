@@ -136,20 +136,26 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
       commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
     );
   } catch (e) {
-    if (e instanceof IpcError && e.data?.type === "tool" && (e.data.tool === "prettier" || e.data.tool === "oxfmt")) {
+    const formatter =
+      e instanceof IpcError && e.data?.type === "tool"
+        ? {
+            prettier: { failed: "Prettier formatting failed", timedOut: "Prettier formatting timed out" },
+            oxfmt: { failed: "oxfmt formatting failed", timedOut: "oxfmt formatting timed out" },
+            ruff: { failed: "Ruff formatting failed", timedOut: "Ruff formatting timed out" },
+          }[e.data.tool]
+        : undefined;
+    if (e instanceof IpcError && e.data?.type === "tool" && formatter) {
       const tool = e.data.tool;
       if (e.kind === "notFound" && e.data.missing) {
-        await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave });
+        await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave, formatter: true });
       } else if (e.kind !== "cancelled") {
         notifications().notify({
           group: "tools",
           level: "error",
-          title: tool === "oxfmt" ? tx("oxfmt formatting failed") : tx("Prettier formatting failed"),
+          title: tx(formatter.failed),
           body:
             e.kind === "timedOut"
-              ? tool === "oxfmt"
-                ? tx("oxfmt formatting timed out")
-                : tx("Prettier formatting timed out")
+              ? tx(formatter.timedOut)
               : createElement("span", { className: styles.diagnostics }, e.message),
           key: `${tool}-format-error:${doc.path}`,
           sticky: false,

@@ -479,6 +479,10 @@ mod tests {
         let text = std::fs::read_to_string(added.join("settings.toml")).unwrap();
         assert_eq!(text, "[languageServers.ruff]\nargs = [\"server\"]\ncommand = \"ruff\"\nlanguages = [\"python\"]\n");
 
+        let s =
+            store.set(SettingsScope::Global, "languages.ruff.configurationDirectory", json!("shared/ruff")).unwrap();
+        assert_eq!(s.languages.ruff.configuration_directory, "shared/ruff");
+
         // Project layer is created on demand and wins.
         let s = store.set(SettingsScope::Project, "editor.fontSize", json!(12)).unwrap();
         assert_eq!(s.editor.font_size, 12.0);

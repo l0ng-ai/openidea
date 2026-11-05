@@ -1,6 +1,6 @@
 use crate::apply::{
     apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    terminal_activation, tsdk, without_derived,
+    ruff_configuration, terminal_activation, tsdk, without_derived,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -481,6 +481,9 @@ fn language_server_settings_disable_add_and_override() {
         (ruff.command.as_str(), ruff.args.as_slice()),
         ("/opt/ruff", &["server".to_string(), "--preview".to_string()][..])
     );
+    s.languages.ruff.configuration_directory = "ruff-config".into();
+    let defined = [server("ruff")];
+    assert!(!language_servers("python", &defined, &s)[0].require_root_marker);
 
     s.language_servers.insert(
         "rust-analyzer".into(),
@@ -521,6 +524,38 @@ fn language_server_settings_disable_add_and_override() {
     let parsed: LanguageServerSettings =
         serde_json::from_value(json!({ "features": ["code-action"], "codeActionKinds": ["refactor"] })).unwrap();
     assert_eq!(parsed.code_action_kinds, Some(vec!["refactor".to_string()]));
+}
+
+#[test]
+fn ruff_configuration_directory_resolves_files_and_validates_pyproject() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let dir = root.join("shared ruff");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(ruff_configuration(root, "").unwrap(), None);
+    assert!(ruff_configuration(root, &dir.to_string_lossy()).unwrap_err().message.contains("has no"));
+
+    let ruff = dir.join("ruff.toml");
+    std::fs::write(&ruff, "line-length = 100\n").unwrap();
+    assert_eq!(ruff_configuration(root, &dir.to_string_lossy()).unwrap(), Some(ruff.clone()));
+    assert_eq!(ruff_configuration(root, &ruff.to_string_lossy()).unwrap(), Some(ruff));
+
+    std::fs::remove_file(dir.join("ruff.toml")).unwrap();
+    let pyproject = dir.join("pyproject.toml");
+    std::fs::write(&pyproject, "[project]\nname = \"x\"\n").unwrap();
+    assert!(ruff_configuration(root, &dir.to_string_lossy()).unwrap_err().message.contains("has no"));
+    std::fs::write(&pyproject, "[tool.ruff]\nline-length = 100\n").unwrap();
+    assert_eq!(ruff_configuration(root, &dir.to_string_lossy()).unwrap(), Some(pyproject.clone()));
+
+    let mut settings = Settings::default();
+    settings.languages.ruff.configuration_directory = dir.to_string_lossy().into_owned();
+    let mut cfg = server("ruff");
+    configure_server(&mut cfg, root, root, &settings);
+    let configured = dir.join("pyproject.toml").to_string_lossy().into_owned();
+    assert_eq!(
+        cfg.settings.as_ref().and_then(|s| s.get("configuration")).and_then(|v| v.as_str()),
+        Some(configured.as_str())
+    );
 }
 
 #[test]

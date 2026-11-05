@@ -7,6 +7,7 @@ use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
 use ide_core::version_managers::Tool;
+use ide_core::{IdeError, IdeResult};
 use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
 use serde_json::{Value, json};
@@ -26,6 +27,39 @@ pub fn setting_path(root: &Path, s: &str) -> Option<PathBuf> {
         None => PathBuf::from(s),
     };
     Some(if p.is_absolute() { p } else { root.join(p) })
+}
+
+fn toml_has_table(file: &Path, table: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else { return false };
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else { return false };
+    table.split('.').try_fold(&value, |value, key| value.get(key)).is_some_and(toml::Value::is_table)
+}
+
+/// The Ruff configuration file selected by `languages.ruff.configurationDirectory`.
+/// A file can be chosen directly; a directory resolves `ruff.toml`, `.ruff.toml`,
+/// then a `pyproject.toml` containing `[tool.ruff]`.
+pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<PathBuf>> {
+    let Some(path) = setting_path(root, configured) else { return Ok(None) };
+    if path.is_file() {
+        return Ok(Some(path));
+    }
+    if !path.is_dir() {
+        return Err(IdeError::invalid(format!("Ruff configuration path does not exist: {}", path.display())));
+    }
+    for name in ["ruff.toml", ".ruff.toml"] {
+        let file = path.join(name);
+        if file.is_file() {
+            return Ok(Some(file));
+        }
+    }
+    let pyproject = path.join("pyproject.toml");
+    if toml_has_table(&pyproject, "tool.ruff") {
+        return Ok(Some(pyproject));
+    }
+    Err(IdeError::invalid(format!(
+        "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {}",
+        path.display()
+    )))
 }
 
 /// The project interpreter: the configured one, else a project virtualenv
@@ -575,6 +609,18 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
     }
 
+    if name == "ruff" {
+        match ruff_configuration(root, &s.languages.ruff.configuration_directory) {
+            Ok(Some(path)) => {
+                let mut settings = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
+                settings["configuration"] = json!(path.to_string_lossy());
+                cfg.settings = Some(settings);
+            }
+            Ok(None) => {}
+            Err(e) => cfg.launch_error = Some(e.message),
+        }
+    }
+
     if name == "rust-analyzer" {
         let r = &s.languages.rust;
         let extra_args: Vec<&str> = r.rustfmt_args.split_whitespace().collect();
@@ -717,6 +763,11 @@ pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Se
     for (name, ls) in &s.language_servers {
         if ls.enabled && ls.languages.iter().any(|l| l == language) && !out.iter().any(|c| &c.name == name) {
             out.push(custom_server(name, ls));
+        }
+    }
+    if non_empty(&s.languages.ruff.configuration_directory).is_some() {
+        for cfg in out.iter_mut().filter(|cfg| cfg.name == "ruff") {
+            cfg.require_root_marker = false;
         }
     }
     out

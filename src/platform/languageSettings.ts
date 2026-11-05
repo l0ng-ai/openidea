@@ -25,9 +25,10 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
+  configurationDirectory: string;
   languages: string[];
   prefer: boolean;
   runOnSave: boolean;
@@ -35,6 +36,7 @@ interface ExternalFormatterValid {
 
 const DEFAULT_FORMATTER: ExternalFormatterValid = {
   path: "",
+  configurationDirectory: "",
   languages: [
     "markdown",
     "yaml",
@@ -53,6 +55,11 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   ],
   prefer: false,
   runOnSave: false,
+};
+
+const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
+  ...DEFAULT_FORMATTER,
+  languages: ["python"],
 };
 
 /** `languages.php.languageLevel` values; `""` = Auto (from `composer.json`). */
@@ -99,6 +106,7 @@ export interface LanguagesValid {
   typescript: { version: string };
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
+  ruff: ExternalFormatterValid;
   java: {
     jdk: string;
     jdtlsJdk: string;
@@ -159,6 +167,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
+  ruff: DEFAULT_RUFF_FORMATTER,
   java: {
     jdk: "",
     jdtlsJdk: "",
@@ -228,11 +237,11 @@ const folders = (v: unknown): string[] =>
 const folderKey = (stored: string) => (stored === "." ? "" : stored);
 const storedFolder = (rel: string) => normalizeFolder(rel) || ".";
 
-function validateFormatter(raw: unknown): ExternalFormatterValid {
-  const d = DEFAULT_FORMATTER;
+function validateFormatter(raw: unknown, d = DEFAULT_FORMATTER): ExternalFormatterValid {
   const f = obj(raw);
   return {
     path: text(f.path, d.path),
+    configurationDirectory: text(f.configurationDirectory, d.configurationDirectory),
     languages: Array.isArray(f.languages)
       ? [...new Set(f.languages.filter((v): v is string => typeof v === "string"))]
       : d.languages,
@@ -299,6 +308,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
+    ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
