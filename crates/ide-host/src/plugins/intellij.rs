@@ -18,7 +18,9 @@ use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 
 /// A descriptor, theme or editor scheme larger than this is not one.
-const MAX_FILE: u64 = 4 << 20;
+pub(super) const MAX_FILE: u64 = 4 << 20;
+/// The descriptor IntelliJ plugins ship in their jar.
+pub(super) const PLUGIN_XML: &str = "META-INF/plugin.xml";
 /// A plugin jar read into memory from a Marketplace zip.
 const MAX_JAR: u64 = 64 << 20;
 /// Jars of one plugin looked into.
@@ -27,7 +29,6 @@ const MAX_JARS: usize = 64;
 const MAX_NESTED: u64 = 256 << 20;
 /// Descriptors read for one plugin: `plugin.xml` and those it includes.
 const MAX_DESCRIPTORS: usize = 64;
-const PLUGIN_XML: &str = "META-INF/plugin.xml";
 
 /// A theme plugin's themes, as read from its files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -174,7 +175,7 @@ fn entry_name(path: &str) -> &str {
     path.trim().trim_start_matches('/')
 }
 
-fn text(bytes: &[u8]) -> String {
+pub(super) fn text(bytes: &[u8]) -> String {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -190,9 +191,9 @@ fn read_file(path: &Path) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-trait ReadSeek: Read + Seek {}
+pub(super) trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
-type Jar = zip::ZipArchive<Box<dyn ReadSeek>>;
+pub(super) type Jar = zip::ZipArchive<Box<dyn ReadSeek>>;
 
 fn open_jar(path: &Path) -> Result<Jar, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -202,7 +203,7 @@ fn open_jar(path: &Path) -> Result<Jar, String> {
 
 /// The jars of the plugin at `path`: a jar, a Marketplace zip (`<plugin>/lib/*.jar`)
 /// or an installed plugin's folder (`lib/*.jar`).
-fn plugin_jars(path: &Path) -> Result<Vec<Jar>, String> {
+pub(super) fn plugin_jars(path: &Path) -> Result<Vec<Jar>, String> {
     let not_plugin = || format!("{} is not an IntelliJ plugin: no {PLUGIN_XML} and no lib/*.jar", path.display());
     if path.is_dir() {
         let mut found: Vec<PathBuf> = [path.join("lib"), path.join("lib").join("modules")]
@@ -281,7 +282,7 @@ fn read_entry(jar: &mut Jar, name: &str, max: u64) -> Result<Option<Vec<u8>>, St
     Ok(Some(buf))
 }
 
-fn find(jars: &mut [Jar], name: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
+pub(super) fn find(jars: &mut [Jar], name: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
     for jar in jars.iter_mut() {
         if let Some(bytes) = read_entry(jar, name, max)? {
             return Ok(Some(bytes));
