@@ -65,6 +65,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::app_info,
         app::recent_projects,
         app::remove_recent_project,
+        app::recent_project_groups,
+        app::set_recent_project_groups,
         app::open_project,
         app::project_trust_status,
         app::project_trust_list,

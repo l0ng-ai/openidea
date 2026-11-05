@@ -1,7 +1,7 @@
 /** Recent projects: loading, filtering, opening and removal. */
 import { create } from "zustand";
 import { executeAction, getAction } from "@/platform/actions";
-import { commands, IpcError, isCancelled, isTauri, type RecentProject } from "@/platform/ipc";
+import { commands, IpcError, isCancelled, isTauri, type RecentProject, type RecentProjectGroup } from "@/platform/ipc";
 import { openProject, useProject } from "@/platform/project";
 import { connectRemote, forgetRemote, parseRemoteLocation, recentRemotes, remoteLocation } from "@/platform/remote";
 import { tx } from "@/platform/i18n";
@@ -11,6 +11,8 @@ import { openRemoteProject } from "@/workbench/projectWindow";
 
 interface RecentState {
   projects: RecentProject[];
+  /** Project groups (New Project Group…), shown above the ungrouped projects. */
+  groups: RecentProjectGroup[];
   loaded: boolean;
   home: string | null;
   version: string | null;
@@ -20,6 +22,7 @@ interface RecentState {
 
 export const useRecent = create<RecentState>(() => ({
   projects: [],
+  groups: [],
   loaded: false,
   home: null,
   version: null,
@@ -43,13 +46,15 @@ export async function loadRecent() {
     useRecent.setState({ projects: SAMPLE, loaded: true, home: "/Users/dev", version: "0.1.0-dev" });
     return;
   }
-  const [projects, info, home] = await Promise.all([
+  const [projects, groups, info, home] = await Promise.all([
     commands.recentProjects().catch(() => [] as RecentProject[]),
+    commands.recentProjectGroups().catch(() => [] as RecentProjectGroup[]),
     commands.appInfo().catch(() => null),
     import("@tauri-apps/api/path").then((m) => m.homeDir()).catch(() => null),
   ]);
   useRecent.setState({
     projects: withRemotes(projects),
+    groups,
     loaded: true,
     version: info?.version ?? useRecent.getState().version,
     home: home ? home.replace(/\/+$/, "") : useRecent.getState().home,
@@ -77,7 +82,10 @@ export function remoteDisplay(location: string): string | null {
 }
 
 export async function removeRecent(path: string) {
-  useRecent.setState((s) => ({ projects: s.projects.filter((p) => p.path !== path) }));
+  useRecent.setState((s) => ({
+    projects: s.projects.filter((p) => p.path !== path),
+    groups: s.groups.map((g) => (g.paths.includes(path) ? { ...g, paths: g.paths.filter((p) => p !== path) } : g)),
+  }));
   const remote = parseRemoteLocation(path);
   if (remote) {
     forgetRemote(remote.sshConfig, remote.path);
@@ -204,4 +212,91 @@ export function filterRecent(projects: readonly RecentProject[], query: string, 
 function isCompactMatch(indices: number[]): boolean {
   if (indices.length < 2) return true;
   return indices[indices.length - 1]! - indices[0]! < indices.length * 6;
+}
+
+// ---------------------------------------------------------------------------
+// Project groups
+
+/** The group `path` belongs to, if any. */
+export function groupOf(path: string, groups: readonly RecentProjectGroup[]): RecentProjectGroup | undefined {
+  return groups.find((g) => g.paths.includes(path));
+}
+
+/** Saves `next` (shown at once; the backend's normalised copy replaces it). */
+async function saveGroups(next: RecentProjectGroup[]) {
+  useRecent.setState({ groups: next });
+  if (!isTauri()) return;
+  const r = await commands.setRecentProjectGroups(next);
+  if (r.status === "ok") useRecent.setState({ groups: r.data });
+  else notifications().notify({ level: "error", title: "Cannot save project groups", body: r.error.message });
+}
+
+const groups = () => useRecent.getState().groups;
+
+/** Why `name` can't name a new group (or group `current` renamed), or null. */
+export function groupNameError(value: string, current?: string): string | null {
+  const name = value.trim();
+  if (!name) return tx("Enter a group name");
+  return name !== current && groups().some((g) => g.name === name) ? tx`A group named '${name}' already exists` : null;
+}
+
+/** New Project Group…; with `path`, the project moves into it. */
+export function createGroup(name: string, path?: string) {
+  const n = name.trim();
+  if (groupNameError(n)) return Promise.resolve();
+  const rest = groups().map((g) => (path ? { ...g, paths: g.paths.filter((p) => p !== path) } : g));
+  return saveGroups([...rest, { name: n, paths: path ? [path] : [], expanded: true }]);
+}
+
+export function renameGroup(name: string, to: string) {
+  const n = to.trim();
+  if (n === name || groupNameError(n, name)) return Promise.resolve();
+  return saveGroups(groups().map((g) => (g.name === name ? { ...g, name: n } : g)));
+}
+
+/** Removes the group; its projects stay in the list, ungrouped. */
+export function removeGroup(name: string) {
+  return saveGroups(groups().filter((g) => g.name !== name));
+}
+
+/** Moves `path` into group `name`, or out of every group with `null`. */
+export function moveToGroup(path: string, name: string | null) {
+  return saveGroups(
+    groups().map((g) => {
+      const paths = g.paths.filter((p) => p !== path);
+      return { ...g, paths: g.name === name ? [...paths, path] : paths };
+    }),
+  );
+}
+
+export function setGroupExpanded(name: string, expanded: boolean) {
+  return saveGroups(groups().map((g) => (g.name === name ? { ...g, expanded } : g)));
+}
+
+export type RecentRow =
+  | { kind: "group"; group: RecentProjectGroup; count: number }
+  | { kind: "project"; m: RecentMatch; group: string | null };
+
+/**
+ * The rows of the list: without a query, groups first (their projects under the expanded
+ * ones, most recent first), then the ungrouped projects; while searching, the matches only.
+ */
+export function recentRows(
+  projects: readonly RecentProject[],
+  groupList: readonly RecentProjectGroup[],
+  query: string,
+  home?: string | null,
+): RecentRow[] {
+  const matches = filterRecent(projects, query, home);
+  if (query.trim() || groupList.length === 0) return matches.map((m) => ({ kind: "project", m, group: null }));
+  const rows: RecentRow[] = [];
+  const grouped = new Set<string>();
+  for (const group of groupList) {
+    const members = matches.filter((m) => group.paths.includes(m.project.path));
+    members.forEach((m) => grouped.add(m.project.path));
+    rows.push({ kind: "group", group, count: members.length });
+    if (group.expanded) rows.push(...members.map((m): RecentRow => ({ kind: "project", m, group: group.name })));
+  }
+  for (const m of matches) if (!grouped.has(m.project.path)) rows.push({ kind: "project", m, group: null });
+  return rows;
 }
