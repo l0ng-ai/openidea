@@ -23,13 +23,16 @@ import {
   menuGroupItems,
   notifications,
   resolveFileEditor,
+  textEditorWrapperFor,
   useContributions,
   useStandaloneEditor,
+  useTextEditorWrappers,
   type EditorCloseSession,
   type EditorInput,
   type OpenOptions,
   type FileEditorResolution,
   type OpenEditorTab,
+  type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ask } from "@/workbench/messages";
@@ -344,6 +347,11 @@ export class EditorController implements SlotHost {
     );
     // Gutter, centred column and sticky lines follow Distraction Free Mode.
     this.disposers.push(useDistractionFree.subscribe(() => this.manager.applySettings()));
+    this.disposers.push(
+      useTextEditorWrappers.subscribe(({ wrappers }) => {
+        this.upgradeWrappedImageTabs(wrappers);
+      }),
+    );
     if (prevRoot) this.restoreSession(prevRoot);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
@@ -453,6 +461,35 @@ export class EditorController implements SlotHost {
   }
 
   // --- session (open tabs, splits, carets per project) ---------------------------
+
+  private upgradeWrappedImageTabs(wrappers: ReadonlyMap<string, TextEditorWrapperContribution>) {
+    const s = useTabs.getState();
+    let changed = false;
+    const panes: TabsState["panes"] = {};
+    const toEnsure: string[] = [];
+    for (const [paneId, pane] of Object.entries(s.panes)) {
+      let paneChanged = false;
+      const tabs = pane.tabs.map((tab) => {
+        const path = tab.input.path;
+        if (
+          tab.input.kind === "image" &&
+          path &&
+          textEditorWrapperFor(wrappers, path) &&
+          !pane.tabs.some((other) => other.id !== tab.id && other.input.key === fileKey(path))
+        ) {
+          paneChanged = true;
+          changed = true;
+          if (pane.active === tab.id) toEnsure.push(tab.id);
+          return { ...tab, input: fileInput(path) };
+        }
+        return tab;
+      });
+      panes[paneId] = paneChanged ? { ...pane, tabs } : pane;
+    }
+    if (!changed) return;
+    useTabs.setState({ ...s, panes }, true);
+    for (const tabId of toEnsure) void this.ensureSlot(tabId);
+  }
 
   private scheduleSessionSave() {
     if (!this.sessionRoot) return;
