@@ -1,10 +1,7 @@
 /**
- * Find in the debug console output: every occurrence in every line, with IDEA's
+ * Find in console output (Run, Debug): every occurrence in every line, with IDEA's
  * Match Case / Words / Regex options. Matches carry the line's stable id so the
  * bar can keep the current match while output keeps arriving.
- *
- * The Run console has its own copy (`features/run/find.ts`); features don't import
- * each other, so the two stay separate until the find UI moves to `src/ui`.
  */
 
 export interface FindOptions {
@@ -48,7 +45,7 @@ function wholeWord(text: string, start: number, end: number): boolean {
 }
 
 /** All matches of `query` in `lines`, in document order. */
-export function findInConsole(
+export function findInLines(
   lines: readonly { id: number; text: string }[],
   query: string,
   options: FindOptions,

@@ -8,17 +8,17 @@ import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { spanStyle, type Span, type SpanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
-import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
-import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
-import { useExpressionCompletion } from "./ExpressionCompletion";
+import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import {
   DEFAULT_FIND_OPTIONS,
-  findInConsole,
+  findInLines,
   type ConsoleMatch,
   type FindOptions,
   type FindResult,
-} from "./consoleFind";
-import { DebugFindBar } from "./DebugFindBar";
+} from "@/ui/consoleFind";
+import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
+import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
+import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
@@ -153,7 +153,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
 
   // Find (⌘F): search the whole buffer, not just the rendered rows.
   const found = useMemo(
-    () => (findOpen ? findInConsole(lines ?? [], query, findOptions) : EMPTY_FIND),
+    () => (findOpen ? findInLines(lines ?? [], query, findOptions) : EMPTY_FIND),
     [findOpen, lines, query, findOptions],
   );
   const activeIndex = found.matches.length ? Math.min(Math.max(activeMatchIndex, 0), found.matches.length - 1) : -1;
@@ -224,7 +224,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
   useEffect(() => {
     if (!findOpen) return;
-    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-find-bar]"));
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
   }, [findOpen]);
 
   // A new query (or option) starts from the viewport, not from the top of the output.
@@ -367,7 +367,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   return (
     <div className={styles.console}>
       {findOpen && (
-        <DebugFindBar
+        <ConsoleFindBar
           query={query}
           onChange={changeQuery}
           options={findOptions}

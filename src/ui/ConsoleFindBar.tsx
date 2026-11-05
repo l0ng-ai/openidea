@@ -1,13 +1,14 @@
-/** ⌘F in the Debug console: the IDEA find bar (Match Case / Words / Regex, n/m, previous/next). */
+/** ⌘F in a console (Run, Debug): the IDEA find bar (Match Case / Words / Regex, n/m, previous/next). */
 import { type KeyboardEvent, type RefObject } from "react";
 import clsx from "clsx";
-import { IconButton, SearchField } from "@/ui";
+import { IconButton } from "./Button";
+import { SearchField } from "./Input";
 import { formatBinding, hasPrimaryModifier } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import type { FindOptions } from "./consoleFind";
-import styles from "./DebugToolWindow.module.css";
+import styles from "./ConsoleFindBar.module.css";
 
-export interface DebugFindBarProps {
+export interface ConsoleFindBarProps {
   query: string;
   onChange: (query: string) => void;
   options: FindOptions;
@@ -26,7 +27,7 @@ export interface DebugFindBarProps {
   onClose: () => void;
 }
 
-export function DebugFindBar({
+export function ConsoleFindBar({
   query,
   onChange,
   options,
@@ -39,7 +40,7 @@ export function DebugFindBar({
   onNext,
   onPrevious,
   onClose,
-}: DebugFindBarProps) {
+}: ConsoleFindBarProps) {
   const none = !!query && !invalid && count === 0;
   const counter = invalid
     ? "Bad regex"
@@ -83,7 +84,7 @@ export function DebugFindBar({
       className={styles.find}
       role="search"
       aria-label={tx("Find in console")}
-      data-find-bar=""
+      data-console-find=""
       onKeyDown={onKeyDown}
     >
       <SearchField

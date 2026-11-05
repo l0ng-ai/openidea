@@ -4,7 +4,6 @@ import { ContextMenuHost } from "@/ui";
 import { usePlatform } from "@/platform/platformInfo";
 import { adoptSession, appendConsole, useDebug } from "../state";
 import { DebugConsole } from "../ui/DebugConsole";
-import { DEFAULT_FIND_OPTIONS, findInConsole } from "../ui/consoleFind";
 
 const clipboard = vi.hoisted(() => ({ writeText: vi.fn(async () => {}) }));
 
@@ -57,34 +56,6 @@ function type(query: string) {
 function markCount(container: HTMLElement) {
   return container.querySelectorAll("[data-find-match]").length;
 }
-
-describe("findInConsole", () => {
-  const lines = [
-    { id: 1, text: "alpha beta" },
-    { id: 2, text: "gamma Beta" },
-    { id: 3, text: "beta again" },
-  ];
-
-  it("matches every occurrence, ignoring case by default", () => {
-    const result = findInConsole(lines, "beta", DEFAULT_FIND_OPTIONS);
-    expect(result.matches.map((m) => [m.line, m.lineId, m.start, m.end])).toEqual([
-      [0, 1, 6, 10],
-      [1, 2, 6, 10],
-      [2, 3, 0, 4],
-    ]);
-  });
-
-  it("honours match case, whole words and regex", () => {
-    expect(findInConsole(lines, "beta", { ...DEFAULT_FIND_OPTIONS, caseSensitive: true }).matches).toHaveLength(2);
-    expect(findInConsole(lines, "bet", { ...DEFAULT_FIND_OPTIONS, wholeWord: true }).matches).toHaveLength(0);
-    expect(findInConsole(lines, "b.ta", { ...DEFAULT_FIND_OPTIONS, regex: true }).matches).toHaveLength(3);
-  });
-
-  it("reports an invalid regular expression and an empty query", () => {
-    expect(findInConsole(lines, "(", { ...DEFAULT_FIND_OPTIONS, regex: true }).invalid).toBe(true);
-    expect(findInConsole(lines, "", DEFAULT_FIND_OPTIONS).matches).toEqual([]);
-  });
-});
 
 describe("Debug console find", () => {
   it("opens on ⌘F, searches as you type and highlights every match", () => {
