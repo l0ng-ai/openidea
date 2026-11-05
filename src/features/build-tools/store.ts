@@ -233,15 +233,33 @@ export async function loadModel(): Promise<void> {
 }
 
 const UNLINKED_PROJECTS = "languages.java.maven.unlinkedProjects";
+const LINKED_PROJECTS = "languages.java.maven.linkedProjects";
 
-async function setLinked(root: string, pom: string, linked: boolean) {
+/**
+ * Adds `poms` to Maven (back from unlinked, or as independent top-level projects when no
+ * reactor lists them), or removes them (a linked one is dropped, a discovered one unlinked).
+ */
+async function setLinked(root: string, poms: string[], linked: boolean) {
   if (useProject.getState().project?.root !== root) return;
   const settings = await commands.settingsGet();
   if (useProject.getState().project?.root !== root) return;
-  const previous = settings.languages.java?.maven?.unlinkedProjects ?? [];
-  const next = linked ? previous.filter((p) => p !== pom) : [...new Set([...previous, pom])];
-  if (JSON.stringify(next) === JSON.stringify(previous)) return;
-  await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(next)));
+  const maven = settings.languages.java?.maven;
+  const unlinkedBefore = maven?.unlinkedProjects ?? [];
+  const linkedBefore = maven?.linkedProjects ?? [];
+  const known = new Set(useBuild.getState().model?.maven?.projects.map((p) => p.pom));
+  let unlinked = unlinkedBefore;
+  let extra = linkedBefore;
+  for (const pom of poms) {
+    if (linked && unlinked.includes(pom)) unlinked = unlinked.filter((p) => p !== pom);
+    else if (linked) {
+      if (!known.has(pom) && !extra.includes(pom)) extra = [...extra, pom];
+    } else if (extra.includes(pom)) extra = extra.filter((p) => p !== pom);
+    else if (!unlinked.includes(pom)) unlinked = [...unlinked, pom];
+  }
+  if (unlinked === unlinkedBefore && extra === linkedBefore) return;
+  if (unlinked !== unlinkedBefore)
+    await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(unlinked)));
+  if (extra !== linkedBefore) await call(commands.settingsSet("project", LINKED_PROJECTS, JSON.stringify(extra)));
   await loadModel();
 }
 
@@ -260,7 +278,19 @@ export async function unlinkProjects(pom: string | null) {
   )
     return;
   cancelSync("maven");
-  await setLinked(root, pom, false);
+  await setLinked(root, [pom], false);
+}
+
+/** Project-relative `pom.xml` paths of `picked` inside `root`; others are skipped. */
+function projectPoms(root: string, picked: readonly string[]): string[] {
+  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
+  return picked.flatMap((p) => {
+    const path = p.replace(/\\/g, "/");
+    if (!path.startsWith(`${base}/`)) return [];
+    const pom = path.slice(base.length + 1);
+    const parts = pom.split("/");
+    return parts.some((part) => part === ".." || part === ".") || parts.pop() !== "pom.xml" ? [] : [pom];
+  });
 }
 
 export async function addProjects() {
@@ -270,17 +300,12 @@ export async function addProjects() {
   const picked = await open({
     title: tx`Add Maven Projects`,
     directory: false,
-    multiple: false,
+    multiple: true,
     defaultPath: root,
     filters: [{ name: "pom.xml", extensions: ["xml"] }],
   });
-  if (typeof picked !== "string") return;
-  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
-  const path = picked.replace(/\\/g, "/");
-  if (!path.startsWith(`${base}/`)) return;
-  const pom = path.slice(base.length + 1);
-  if (pom.split("/").some((part) => part === ".." || part === ".") || pom.split("/").pop() !== "pom.xml") return;
-  await setLinked(root, pom, true);
+  const poms = projectPoms(root, typeof picked === "string" ? [picked] : (picked ?? []));
+  if (poms.length) await setLinked(root, poms, true);
 }
 
 /** Links independent Gradle builds without changing their files or build scripts. */

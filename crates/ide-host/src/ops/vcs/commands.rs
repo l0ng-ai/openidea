@@ -492,7 +492,7 @@ pub async fn vcs_add_to_ignore(
     window: &str,
     paths: Vec<PathBuf>,
     destination: IgnoreDestination,
-) -> IdeResult<Vec<String>> {
+) -> IdeResult<Vec<ide_core::IpcPath>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
@@ -509,7 +509,7 @@ pub async fn vcs_add_to_ignore(
             watcher.reload_ignore_rules();
         }
         project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
-        result.map(|files| files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+        result.map(|files| files.into_iter().map(Into::into).collect())
     })
     .await
 }
