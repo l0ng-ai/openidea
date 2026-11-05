@@ -192,7 +192,9 @@ ship no `.icls` at all keep the built-in syntax colours.
 | `--danger`, `--warning` | `Component.errorFocusColor`, `Component.warningFocusColor` |
 | `--bg-tooltip`, `--fg-tooltip`, `--border-tooltip` | `ToolTip.background`, `.foreground`, `.borderColor` |
 | `--bg-button`, `--border-button` | `Button.startBackground`, `Button.startBorderColor` |
-| `--bg-tab-selected`, `--border-tab-selected` | `EditorTabs.underlinedTabBackground`, `EditorTabs.underlineColor` |
+| `--bg-tab-selected` | `EditorTabs.underlinedTabBackground` |
+| `--border-tab-selected` | `EditorTabs.underlinedBorderColor` (Islands), `EditorTabs.underlineColor` |
+| `--fg-completion-match` | `CompletionPopup.matchForeground` |
 | `--bg-toolbar-hover`, `--bg-toolbar-pressed` | `ActionButton.hoverBackground`, `ActionButton.pressedBackground` |
 | `--bg-stripe-hover`, `--bg-stripe-selected` | `ToolWindow.Button.hoverBackground`, `.selectedBackground` |
 | `--scrollbar-thumb`, `--scrollbar-thumb-hover` | `ScrollBar.Mac.thumbColor`, `ScrollBar.Mac.hoverThumbColor` |
@@ -209,6 +211,7 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../../s
 | `--caret`, `--bg-current-line` | colour `CARET_COLOR`, `CARET_ROW_COLOR` |
 | `--bg-editor-selection` | colour `SELECTION_BACKGROUND` |
 | `--fg-line-number`, `--fg-line-number-current` | colour `LINE_NUMBERS_COLOR`, `LINE_NUMBER_ON_CARET_ROW_COLOR` |
+| `--bg-editor-gutter` | colour `EDITOR_GUTTER_BACKGROUND`, else the editor background (as the new UI paints it; `GUTTER_BACKGROUND` is the classic UI's) |
 | `--border-indent-guide`, `--border-right-margin`, `--fg-whitespace` | colour `INDENT_GUIDE`, `RIGHT_MARGIN_COLOR`, `WHITESPACES` |
 | `--vcs-*`, `--gutter-*` | colour `FILESTATUS_*`, `MODIFIED_LINES_COLOR`, `ADDED_LINES_COLOR`, `DELETED_LINES_COLOR` |
 | `--syn-keyword`, `--syn-string`, `--syn-number` | `DEFAULT_KEYWORD`, `DEFAULT_STRING`, `DEFAULT_NUMBER` |
@@ -226,7 +229,9 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../../s
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined` | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME` |
 | `--ansi-*` | `CONSOLE_*_OUTPUT` (`CONSOLE_DARKGRAY_OUTPUT` is bright black, `CONSOLE_GRAY_OUTPUT` white) |
 
-The full tables are `ICLS_COLORS` and `ICLS_ATTRIBUTES` in the same file.
+The full tables are `ICLS_COLORS` and `ICLS_ATTRIBUTES` in the same file. An
+attribute written as `<value />` has no colours of its own and shows as plain
+text (`TEXT`'s foreground), as in IntelliJ, not with the parent scheme's colour.
 
 ### From VS Code (by hand)
 

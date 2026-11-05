@@ -53,7 +53,8 @@ export const UI_KEYS: Record<string, string[]> = {
   "--bg-checkbox": ["Checkbox.Background.Default"],
   "--border-checkbox": ["Checkbox.Border.Default"],
   "--bg-tab-selected": ["EditorTabs.underlinedTabBackground", "EditorTabs.selectedBackground"],
-  "--border-tab-selected": ["EditorTabs.underlineColor"],
+  // Islands paints the selected tab's border with `underlinedBorderColor`; the classic tabs underline with `underlineColor`.
+  "--border-tab-selected": ["EditorTabs.underlinedBorderColor", "EditorTabs.underlineColor"],
   "--bg-tab-hover": ["EditorTabs.hoverBackground"],
   "--border-editor-tabs": ["EditorTabs.borderColor"],
   "--bg-toolbar-hover": ["ActionButton.hoverBackground"],
@@ -66,6 +67,7 @@ export const UI_KEYS: Record<string, string[]> = {
   "--bg-counter": ["Counter.background"],
   "--fg-counter": ["Counter.foreground"],
   "--bg-search-match": ["SearchMatch.startBackground", "SearchMatch.endBackground"],
+  "--fg-completion-match": ["CompletionPopup.matchForeground"],
   "--bg-toggle-on": ["ToggleButton.onBackground"],
   "--fg-toggle-on": ["ToggleButton.onForeground"],
   "--bg-toggle-off": ["ToggleButton.offBackground"],
@@ -89,7 +91,8 @@ export const ICLS_COLORS: Record<string, string[]> = {
   SELECTION_BACKGROUND: ["--bg-editor-selection"],
   LINE_NUMBERS_COLOR: ["--fg-line-number"],
   LINE_NUMBER_ON_CARET_ROW_COLOR: ["--fg-line-number-current"],
-  GUTTER_BACKGROUND: ["--bg-editor-gutter"],
+  // The new UI paints the gutter with this, else with the editor's background; `GUTTER_BACKGROUND` is the classic UI's.
+  EDITOR_GUTTER_BACKGROUND: ["--bg-editor-gutter"],
   INDENT_GUIDE: ["--border-indent-guide"],
   SELECTED_INDENT_GUIDE: ["--border-indent-guide-active"],
   RIGHT_MARGIN_COLOR: ["--border-right-margin"],
@@ -244,19 +247,33 @@ export function convertIcls(xml: string): { name: string; dark: boolean | null; 
     if (key && value !== undefined && ICLS_COLORS[key]) set(ICLS_COLORS[key], iclsColor(value));
   }
 
-  const attributes = /<attributes>([\s\S]*?)<\/attributes>/.exec(xml)?.[1] ?? "";
-  for (const m of attributes.matchAll(/<option name="([^"]+)"[^>]*>\s*<value>([\s\S]*?)<\/value>\s*<\/option>/g)) {
-    const map = ICLS_ATTRIBUTES[m[1]!];
-    if (!map) continue;
+  const body = /<attributes>([\s\S]*?)<\/attributes>/.exec(xml)?.[1] ?? "";
+  const attributes = new Map<string, Map<string, string>>();
+  const empty = new Set<string>();
+  for (const m of body.matchAll(
+    /<option name="([^"]+)"[^>]*>\s*(?:<value\s*\/>|<value>([\s\S]*?)<\/value>)\s*<\/option>/g,
+  )) {
+    if (m[2] === undefined) empty.add(m[1]!);
     const parts = new Map<string, string>();
-    for (const o of m[2]!.matchAll(/<option\b[^>]*\/>/g)) {
+    for (const o of (m[2] ?? "").matchAll(/<option\b[^>]*\/>/g)) {
       const k = attr(o[0], "name");
       const v = attr(o[0], "value");
       if (k && v !== undefined) parts.set(k, v);
     }
+    attributes.set(m[1]!, parts);
+  }
+  const textForeground = iclsColor(attributes.get("TEXT")?.get("FOREGROUND") ?? "");
+  for (const [key, parts] of attributes) {
+    const map = ICLS_ATTRIBUTES[key];
+    if (!map) continue;
+    // `<value />` defines the key without colours, so the parent scheme's don't apply: it shows as plain text.
+    if (empty.has(key)) {
+      for (const [part, token] of map) if (part === "FOREGROUND") set([token], textForeground);
+      continue;
+    }
     for (const [part, token] of map) set([token], iclsColor(parts.get(part) ?? ""));
     // FONT_TYPE: 1 bold, 2 italic, 3 bold italic.
-    if (m[1] === "DEFAULT_LINE_COMMENT" && parts.has("FONT_TYPE")) {
+    if (key === "DEFAULT_LINE_COMMENT" && parts.has("FONT_TYPE")) {
       tokens["--syn-comment-style"] = Number(parts.get("FONT_TYPE")) & 2 ? "italic" : "normal";
     }
   }
