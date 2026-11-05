@@ -2,6 +2,7 @@
 //! Capabilities were checked by the runtime before any of this runs.
 
 use super::{PluginEvent, PluginEventSink};
+use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
@@ -419,7 +420,7 @@ impl HostApi for PluginApi {
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
-            root: repo.root().to_string_lossy().into_owned(),
+            root: to_ipc(repo.root()),
             branch: info.head,
             commit: info.head_commit,
             upstream: info.upstream,
@@ -467,7 +468,7 @@ impl HostApi for PluginApi {
             }
             let Ok(rel) = entry.path().strip_prefix(root) else { continue };
             if matcher.is_match(rel) {
-                out.push(entry.path().to_string_lossy().into_owned());
+                out.push(to_ipc(entry.path()));
             }
         }
         out.sort();

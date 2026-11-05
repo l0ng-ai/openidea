@@ -13,6 +13,7 @@ use crate::types::{
 };
 use crate::wit_host::{bindings, providers_bindings, syntax_bindings, views_bindings};
 use ide_core::CancellationToken;
+use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
 use std::path::Path;
@@ -935,12 +936,7 @@ fn location_from_wit(l: wit_types::Location) -> Location {
 }
 
 fn doc_to_wit(d: &ProviderDocument) -> wit_prov::Document {
-    wit_prov::Document {
-        path: d.path.to_string_lossy().into_owned(),
-        language: d.language.clone(),
-        version: d.version,
-        text: d.text.clone(),
-    }
+    wit_prov::Document { path: to_ipc(&d.path), language: d.language.clone(), version: d.version, text: d.text.clone() }
 }
 
 /// Resets the budgets for the next call: fuel, deadline, cancellation.
@@ -1012,7 +1008,7 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
             .edits
             .iter()
             .map(|(path, edits)| wit_prov::FileEdit {
-                path: path.to_string_lossy().into_owned(),
+                path: to_ipc(path),
                 edits: edits
                     .iter()
                     .map(|e| wit_types::TextEdit { range: range_to_wit(e.range), text: e.new_text.clone() })
