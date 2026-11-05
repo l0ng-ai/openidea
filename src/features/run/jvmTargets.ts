@@ -349,6 +349,24 @@ function extendsClause(tokens: Token[], at: number): string | null {
   return null;
 }
 
+/** Binary name of a Java file's first top-level type: the class the source launcher (`java Hi.java`) runs. */
+export function firstTopLevelType(src: string): string | null {
+  const code = stripCommentsAndStrings(src);
+  const pkg = /^\s*package\s+([\w.]+)/m.exec(code)?.[1] ?? "";
+  const tokens = tokenize(code);
+  let depth = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!.text;
+    if (t === "{") depth++;
+    else if (t === "}") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && TYPE_KEYWORDS.has(t) && tokens[i - 1]?.text !== ".") {
+      const name = tokens[i + 1]?.text;
+      if (isIdent(name)) return pkg ? `${pkg}.${name}` : name!;
+    }
+  }
+  return null;
+}
+
 /** Simple name of a binary class name (`a.b.Outer$Inner` → `Inner`). */
 export function simpleClassName(className: string): string {
   return className.split(/[.$]/).pop() ?? className;
