@@ -520,12 +520,15 @@ impl Host {
         root: &Path,
         project_key: &str,
     ) -> (Arc<ide_db::DbManager>, Arc<ide_http::History>, Arc<ide_agent::AgentManager>) {
-        let db = Arc::new(ide_db::DbManager::new(
-            root.to_path_buf(),
-            self.data_dir.join("db-passwords.json"),
-            self.data_dir.join("db-history.json"),
-            self.ssh.clone(),
-        ));
+        let db = Arc::new(
+            ide_db::DbManager::new(
+                root.to_path_buf(),
+                self.data_dir.join("db-passwords.json"),
+                self.data_dir.join("db-history.json"),
+                self.ssh.clone(),
+            )
+            .with_global_sources(self.data_dir.clone()),
+        );
         let http_history = Arc::new(ide_http::History::new(self.data_dir.join("http-history").join(project_key)));
         let agents = Arc::new(ide_agent::AgentManager::new(
             ide_agent::AgentPaths {

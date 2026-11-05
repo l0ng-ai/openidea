@@ -4242,6 +4242,8 @@
   "Root markers": "根标记",
   "Initialization options": "初始化选项",
   "Global": "全局",
+  "global": "全局",
+  "Available in all projects": "在所有项目中可用",
   "This project": "此项目",
   "Executable name or path": "可执行文件名或路径",
   "Select the server executable": "选择服务器可执行文件",
