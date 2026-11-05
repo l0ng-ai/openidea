@@ -38,6 +38,8 @@ export interface ToolEnv {
   windows?: boolean;
   /** The project interpreter from settings (Python). */
   python?: string | null;
+  /** The PHP interpreter chosen in settings (else the `php` on `PATH`). */
+  php?: string | null;
   /** The project root has `deno.json(c)` / `bun.lock(b)`. */
   deno?: boolean;
   bun?: boolean;
@@ -288,7 +290,7 @@ const INSTALL: Record<string, string> = {
   js: "Install Node.js from https://nodejs.org (or `brew install node`).",
   python: "Install Python (`brew install python`) or choose an interpreter in Settings › Python Interpreter.",
   ruby: "Install Ruby (`brew install ruby`).",
-  php: "Install PHP (`brew install php`).",
+  php: "Install PHP (`brew install php`) or choose an interpreter in Settings › Languages & Frameworks › PHP.",
   perl: "Install Perl (`brew install perl`).",
   lua: "Install Lua (`brew install lua`).",
   r: "Install R (`brew install r`) so that `Rscript` is on the PATH.",
@@ -762,6 +764,8 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
               config: fileConfig(s, "python", py.command, [...py.prefix, s.arg], "debugpy"),
             };
         }
+        if (interp === "php" && env.php)
+          return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [...sb.slice(1), s.arg]) };
         const t = sb[0]!.startsWith("/") ? { command: sb[0]!, name: interp } : pick(env, [interp]);
         if (!t) return { name: s.file, scope: "file", missing: missing(lang, s.file, [interp]) };
         const kind = /^(ba|z|k|da|fi)?sh$/.test(interp) ? "shell" : interp === "node" ? "node" : interp;
@@ -805,6 +809,8 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       // Sources roots go on the load path (`-Ilib`), as `rake test` does; paths are project-relative.
       return simple(lang, s, env, lang, () => [...(s.inProject ? rubyLoadPath(currentRoots()) : []), s.arg]);
     case "php":
+      if (env.php) return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [s.arg]) };
+      return simple(lang, s, env, lang, () => [s.arg]);
     case "perl":
     case "lua":
     case "swift":

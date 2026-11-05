@@ -123,6 +123,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "debug.stepOver": ["F6"],
   "debug.forceStepOver": ["Meta+Ctrl+F6"],
   "code.surroundWith": ["Meta+Alt+Z"],
+  // ⌥⌘Z is Surround With here, not the table editor's Revert.
+  "db.revertChanges": [],
   "file.reloadFromDisk": [],
   "project.reloadFromDisk": [],
   "navigate.toggleBookmark": [],

@@ -1322,9 +1322,50 @@ fn php_sources_and_selected_interpreter() {
     assert_eq!(source("/opt/homebrew/opt/php@8.2/bin/php"), "homebrew");
     assert_eq!(source("/home/me/bin/php"), "path");
 
+    use crate::discover::{is_versioned_php_name, newest_first, versioned_php_in};
+    let sdk = |path: &str, version: &str| crate::Sdk {
+        path: std::path::PathBuf::from(path).into(),
+        name: format!("PHP {version}"),
+        version: Some(version.into()),
+        source: "path".into(),
+        home: None,
+        extra: None,
+    };
+    let mut sdks = vec![
+        sdk("/opt/homebrew/bin/php", "8.4.1"),
+        sdk("/opt/homebrew/opt/php@8.1/bin/php", "8.1.31"),
+        sdk("/opt/homebrew/opt/php@8.2/bin/php", "8.2.20"),
+        sdk("/home/me/.phpbrew/php/php-8.3.9/bin/php", "8.3.9"),
+        sdk("/home/me/.phpbrew/php/php-8.3.12/bin/php", "8.3.12"),
+        sdk("/home/me/.phpbrew/php/php-7.4.33/bin/php", "7.4.33"),
+        sdk("/usr/bin/php", "8.4.1"),
+    ];
+    newest_first(&mut sdks);
+    let order: Vec<_> = sdks.iter().map(|s| s.version.clone().unwrap()).collect();
+    assert_eq!(order, ["8.4.1", "8.4.1", "8.3.12", "8.3.9", "8.2.20", "8.1.31", "7.4.33"]);
+    // Stable: on equal versions the PATH install stays first.
+    assert_eq!(sdks[0].path.0, std::path::PathBuf::from("/opt/homebrew/bin/php"));
+    for name in ["php8.1", "php81", "php8", "php8.3.exe"] {
+        assert!(is_versioned_php_name(name), "{name}");
+    }
+    for name in ["php", "php-cgi8.1", "phpize8.1", "phpdbg8.1", "php-fpm8.1", "php8.", "php.8", "php8.1.2x", "phpunit"]
+    {
+        assert!(!is_versioned_php_name(name), "{name}");
+    }
+
     if cfg!(windows) {
         return; // Unix paths
     }
+    let bins = tempfile::tempdir().unwrap();
+    for name in ["php", "php8.3", "php8.1", "php-cgi8.1", "phpize8.1", "phpdbg8.1"] {
+        std::fs::write(bins.path().join(name), "").unwrap();
+    }
+    std::fs::create_dir(bins.path().join("php9.0")).unwrap();
+    assert_eq!(
+        versioned_php_in([bins.path().to_path_buf()]),
+        vec![bins.path().join("php8.1"), bins.path().join("php8.3")]
+    );
+
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
     assert_eq!(crate::apply::php_dir(tmp.path(), &s), None);
