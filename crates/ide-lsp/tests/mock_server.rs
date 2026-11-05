@@ -954,6 +954,11 @@ async fn apply_edit_hook_and_server_requests() {
     assert_eq!(v, Value::Null);
     assert!(peer.request::<_, Value>("unknown/method", Value::Null, None).await.is_err());
 
+    peer.notify(
+        "window/showMessage",
+        json!({ "type": 1, "message": "overly long loop turn took 113ms (event handling took 95ms): PrimeCaches" }),
+    )
+    .unwrap();
     peer.notify("window/showMessage", json!({ "type": 2, "message": "careful" })).unwrap();
     peer.notify("window/showMessage", json!({ "type": 3, "message": "info only" })).unwrap();
     peer.notify("window/logMessage", json!({ "type": 1, "message": "log" })).unwrap();
@@ -962,7 +967,10 @@ async fn apply_edit_hook_and_server_requests() {
     })
     .await;
     let notifies = h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { .. })).count();
-    assert_eq!(notifies, 2, "showMessageRequest error + showMessage warning; info is not surfaced");
+    assert_eq!(
+        notifies, 2,
+        "showMessageRequest error + showMessage warning; info and rust-analyzer's developer notices are not surfaced"
+    );
 
     // Dynamically registered capability is now usable.
     s.respond(
