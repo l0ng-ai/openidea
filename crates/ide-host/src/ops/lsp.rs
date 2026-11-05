@@ -30,6 +30,20 @@ async fn prepare_actions(
     .await
 }
 
+/// Where a completion list came from, for the "why did/didn't it pop up"
+/// diagnostic (spec 09). Kept out of `CompletionItem` so the IPC shape stays
+/// unchanged for existing consumers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionDiagnostics {
+    pub lsp_items: usize,
+    pub plugin_items: usize,
+    pub lsp_latency_ms: u64,
+    pub plugin_latency_ms: u64,
+    /// Set when the session was superseded before its result could publish.
+    pub discarded_reason: Option<String>,
+}
+
 pub async fn lsp_completion(
     host: &Host,
     window: &str,
@@ -38,19 +52,54 @@ pub async fn lsp_completion(
     pos: Pos,
     trigger: Option<String>,
 ) -> IdeResult<CompletionList> {
+    let generation = host.begin_completion(doc);
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
+
+    let started = std::time::Instant::now();
     let result = lsp.completion(doc, pos, trigger.clone(), cancel).await;
+    let lsp_latency_ms = started.elapsed().as_millis() as u64;
     host.end_request(request);
-    // Plugin providers (`[[contributes.providers]]`) add theirs.
-    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
-    let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
-    if items.is_empty() {
-        return result;
-    }
+
+    // Plugin providers (`[[contributes.providers]]`) add theirs. A new session
+    // (another keystroke) cancels this one, so stop before publishing anything.
+    let plugin_started = std::time::Instant::now();
+    let items = match plugin_providers(host, window, doc, ProviderKind::Completion) {
+        Some((plugins, d)) => {
+            plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref()))
+                .await
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let plugin_latency_ms = plugin_started.elapsed().as_millis() as u64;
+
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
+    let lsp_items = list.items.len();
+    let plugin_items = items.len();
     list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
-    Ok(list)
+
+    let mut diagnostics = CompletionDiagnostics {
+        lsp_items,
+        plugin_items,
+        lsp_latency_ms,
+        plugin_latency_ms,
+        discarded_reason: None,
+    };
+    match generation.submit(list) {
+        Ok(list) => {
+            tracing::debug!(?diagnostics, "completion session published");
+            Ok(list)
+        }
+        Err(rejected) => {
+            diagnostics.discarded_reason = Some(format!("{:?}", rejected.reason));
+            tracing::debug!(?diagnostics, "completion session discarded stale results");
+            Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing completions; request them again",
+            ))
+        }
+    }
 }
 
 /// The plugin host and the document, when some plugin provides `kind`.
@@ -900,5 +949,34 @@ mod tests {
             assert!(plugin_completion_kind(k).is_some(), "{k:?}");
         }
         assert_eq!(plugin_completion_kind("nonsense"), None);
+    }
+
+    // spec 09: a completion session is a publish boundary for a generation.
+    #[test]
+    fn a_new_completion_session_discards_the_previous_sessions_results() {
+        use ide_core::generation::{GenerationClock, StaleReason};
+        let clock = GenerationClock::new(DocId::next());
+        let first = clock.mint(); // session for the first keystroke
+        // A second keystroke starts a new session: bump + mint.
+        clock.bump();
+        let second = clock.mint();
+
+        let stale = first.submit(CompletionList { is_incomplete: false, items: Vec::new() }).unwrap_err();
+        assert_eq!(stale.reason, StaleReason::Superseded);
+        assert!(stale.into_value().items.is_empty());
+
+        // The current session still publishes.
+        let fresh = CompletionList { is_incomplete: true, items: Vec::new() };
+        assert!(second.submit(fresh).unwrap().is_incomplete);
+    }
+
+    #[test]
+    fn a_cancelled_completion_session_does_not_publish() {
+        use ide_core::generation::{GenerationClock, StaleReason};
+        let clock = GenerationClock::new(DocId::next());
+        let session = clock.mint();
+        session.cancel();
+        let rejected = session.submit(CompletionList { is_incomplete: false, items: Vec::new() }).unwrap_err();
+        assert_eq!(rejected.reason, StaleReason::Cancelled);
     }
 }

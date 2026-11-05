@@ -20,7 +20,7 @@ pub mod trust;
 
 pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
 
-use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
+use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
 use ide_run::ProcessManager;
 use ide_terminal::TerminalManager;
@@ -82,6 +82,9 @@ pub struct Host {
     pub(crate) external_logs: RwLock<HashMap<String, Vec<Arc<ide_vcs::Repo>>>>,
     requests: requests::Requests,
     project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
+    /// Per-document completion sessions (spec 09): a new session supersedes
+    /// in-flight results of the previous one.
+    completion_sessions: RwLock<HashMap<DocId, ide_core::generation::GenerationClock>>,
 }
 
 impl Host {
@@ -126,6 +129,7 @@ impl Host {
             external_logs: RwLock::default(),
             requests: Default::default(),
             project_requests: RwLock::default(),
+            completion_sessions: RwLock::default(),
         };
         host.apply_proxy();
         host
@@ -311,6 +315,18 @@ impl Host {
 
     pub fn begin_request(&self, id: RequestId) -> CancellationToken {
         self.requests.begin(id)
+    }
+
+    /// Starts a completion session for `doc` (spec 09). Any in-flight result of
+    /// a previous session for this document is superseded and cancelled; the
+    /// returned [`Generation`] is the publish boundary for this session's list.
+    pub fn begin_completion(&self, doc: DocId) -> ide_core::generation::Generation {
+        let mut sessions = self.completion_sessions.write();
+        let clock = sessions
+            .entry(doc)
+            .or_insert_with(|| ide_core::generation::GenerationClock::new(doc));
+        clock.bump();
+        clock.mint()
     }
 
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {
