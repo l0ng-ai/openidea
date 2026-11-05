@@ -250,6 +250,14 @@ describe("grid search", () => {
     expect(cellMatcher("(", { ...opts, regex: true })).toBe("invalid");
   });
 
+  it("steps over astral characters on empty matches in Words mode", () => {
+    for (const query of ["x*", "|", "^", String.raw`\d*`, String.raw`\b`]) {
+      const m = cellMatcher(query, { ...opts, regex: true, wholeWord: true }) as (v: string) => boolean;
+      expect(() => m("a😀b")).not.toThrow();
+      expect(typeof m("😀")).toBe("boolean");
+    }
+  });
+
   it("finds the matching cells row by row, skipping NULL", () => {
     const m = cellMatcher("i", opts) as (v: string) => boolean;
     expect(findCells([0, 1, 2, 3], 3, value, m)).toEqual([

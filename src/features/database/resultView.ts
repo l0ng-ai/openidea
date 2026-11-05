@@ -222,7 +222,9 @@ export function cellMatcher(query: string, options: SearchOptions): ((text: stri
       const start = m.index;
       const end = start + m[0].length;
       if (end === start) {
-        re.lastIndex = start + 1;
+        // Step a whole code point: with the `u` flag a lastIndex inside a surrogate pair
+        // snaps back to the pair's start, which would match the same empty string forever.
+        re.lastIndex = start + ((text.codePointAt(start) ?? 0) > 0xffff ? 2 : 1);
         if (!options.wholeWord) return true;
         continue;
       }
