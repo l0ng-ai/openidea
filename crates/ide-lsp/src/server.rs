@@ -405,14 +405,11 @@ impl Server {
         !self.progress.lock().is_empty() || *self.loading.lock() == Some(true)
     }
 
-    /// Whether the server is still loading the project, so an empty answer may
-    /// not be final: its own `serverStatus` when it sends one (background work
-    /// such as `cargo check` doesn't count), else any `$/progress` task.
+    /// Whether the server says it is still loading the project, so an empty
+    /// answer may not be final. Only `serverStatus` tells: `$/progress` also
+    /// covers background work (indexing, builds) during which answers are final.
     pub fn is_loading(&self) -> bool {
-        match *self.loading.lock() {
-            Some(loading) => loading,
-            None => !self.progress.lock().is_empty(),
-        }
+        *self.loading.lock() == Some(true)
     }
 
     /// Records `experimental/serverStatus`: `quiescent` false while the project loads.

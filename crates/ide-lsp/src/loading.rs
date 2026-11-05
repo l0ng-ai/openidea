@@ -5,7 +5,8 @@
 //! built, and withdraws answers (`ContentModified`) when loading changes its
 //! data. Such an answer is not final: the request runs again as loading
 //! progresses, so ⌘B right after opening a project lands once the server can
-//! answer instead of reporting "not found".
+//! answer instead of reporting "not found". Only servers that report loading
+//! through `experimental/serverStatus` wait; for others nothing changes.
 
 use crate::server::Server;
 use ide_core::error::ErrorKind;
@@ -39,12 +40,20 @@ where
         let phase = server.phase_notified();
         tokio::pin!(phase);
         phase.as_mut().enable();
+        let asked_while_loading = server.is_loading();
         let result = query().await;
         let retry = match &result {
             Ok(r) => is_empty(r),
             Err(e) => e.kind == ErrorKind::Cancelled && !cancelled(),
         };
-        if !retry || cancelled() || !server.is_loading() || server.running().is_none() {
+        if !retry || cancelled() || server.running().is_none() {
+            return result;
+        }
+        if !server.is_loading() {
+            // Loading ended while the server answered from its old state: ask once more.
+            if asked_while_loading {
+                continue;
+            }
             return result;
         }
         let now = tokio::time::Instant::now();

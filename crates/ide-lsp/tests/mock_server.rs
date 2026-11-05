@@ -1009,40 +1009,23 @@ async fn progress_tasks_and_busy_status() {
     assert!(tasks[2].3);
 }
 
-/// While a server loads the project (rust-analyzer: `serverStatus` not quiescent, or
-/// any `$/progress` from a server without it) an empty or withdrawn answer is
-/// asked again once loading moves on; background work (`cargo check`) doesn't wait.
+/// While a server says it is loading the project (rust-analyzer: `serverStatus`
+/// not quiescent) an empty or withdrawn answer is asked again once loading moves
+/// on. `$/progress` alone (background indexing, `cargo check`) doesn't wait.
 #[tokio::test(flavor = "multi_thread")]
 async fn navigation_waits_for_a_server_that_is_still_loading() {
-    #[derive(Clone, Copy, Debug)]
-    enum Loading {
-        ServerStatus,
-        Progress,
-    }
     #[derive(Clone, Copy, Debug)]
     enum Answer {
         Empty,
         ContentModified,
     }
-    for (loading, answer) in [
-        (Loading::ServerStatus, Answer::Empty),
-        (Loading::ServerStatus, Answer::ContentModified),
-        (Loading::Progress, Answer::Empty),
-    ] {
+    for answer in [Answer::Empty, Answer::ContentModified] {
         let h = harness(&[("mock", incremental_caps())]);
         let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");
         h.wait_status("mock", ServerStatus::Ready).await;
         let s = h.launcher.state("mock");
         let peer = s.peer();
-        let r = json!({"start":{"line":0,"character":3},"end":{"line":0,"character":6}});
-        match loading {
-            Loading::ServerStatus => {
-                peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": false })).unwrap()
-            }
-            Loading::Progress => peer
-                .notify("$/progress", json!({ "token": "load", "value": { "kind": "begin", "title": "Loading" } }))
-                .unwrap(),
-        }
+        peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": false })).unwrap();
         h.wait_status("mock", ServerStatus::Busy).await;
         if let Answer::ContentModified = answer {
             s.errors.lock().insert("textDocument/definition".into(), (-32801, "content modified".into()));
@@ -1050,20 +1033,14 @@ async fn navigation_waits_for_a_server_that_is_still_loading() {
         let mgr = h.mgr.clone();
         let goto = tokio::spawn(async move { mgr.goto(doc, Pos::new(1, 1), GotoKind::Definition).await });
         eventually(|| !s.requested("textDocument/definition").is_empty()).await;
-        assert!(!goto.is_finished(), "{loading:?}/{answer:?}: an answer while loading is not final");
+        assert!(!goto.is_finished(), "{answer:?}: an answer while loading is not final");
 
         s.errors.lock().clear();
+        let r = json!({"start":{"line":0,"character":3},"end":{"line":0,"character":6}});
         s.respond("textDocument/definition", json!({ "uri": uri_of(&path), "range": r }));
-        match loading {
-            Loading::ServerStatus => {
-                peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": true })).unwrap()
-            }
-            Loading::Progress => {
-                peer.notify("$/progress", json!({ "token": "load", "value": { "kind": "end" } })).unwrap()
-            }
-        }
+        peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": true })).unwrap();
         let defs = tokio::time::timeout(Duration::from_secs(10), goto).await.unwrap().unwrap().unwrap();
-        assert_eq!(defs, vec![ide_core::Location::file(path.clone(), rng(0, 3, 0, 6))], "{loading:?}/{answer:?}");
+        assert_eq!(defs, vec![ide_core::Location::file(path.clone(), rng(0, 3, 0, 6))], "{answer:?}");
         h.wait_status("mock", ServerStatus::Ready).await;
     }
 
@@ -1082,21 +1059,26 @@ async fn navigation_waits_for_a_server_that_is_still_loading() {
     let hover = tokio::time::timeout(Duration::from_secs(10), hover).await.unwrap().unwrap().unwrap();
     assert!(hover.is_some());
 
-    // Loaded, with `cargo check` running: "nothing here" is the answer.
-    let h = harness(&[("mock", incremental_caps())]);
-    let (doc, _) = h.open("a.mk", "x");
-    h.wait_status("mock", ServerStatus::Ready).await;
-    let s = h.launcher.state("mock");
-    let peer = s.peer();
-    peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": true })).unwrap();
-    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "begin", "title": "cargo check" } })).unwrap();
-    h.wait_status("mock", ServerStatus::Busy).await;
-    let defs = tokio::time::timeout(Duration::from_secs(2), h.mgr.goto(doc, Pos::new(0, 0), GotoKind::Definition))
-        .await
-        .expect("no wait for background work")
-        .unwrap();
-    assert!(defs.is_empty());
-    assert_eq!(s.requested("textDocument/definition").len(), 1);
+    // "Nothing here" is the answer at once: rust-analyzer loaded with `cargo check`
+    // running, and a server without `serverStatus` indexing in the background.
+    for quiescent in [Some(true), None] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (doc, _) = h.open("a.mk", "x");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        let peer = s.peer();
+        if let Some(q) = quiescent {
+            peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": q })).unwrap();
+        }
+        peer.notify("$/progress", json!({ "token": "bg", "value": { "kind": "begin", "title": "Indexing" } })).unwrap();
+        h.wait_status("mock", ServerStatus::Busy).await;
+        let defs = tokio::time::timeout(Duration::from_secs(2), h.mgr.goto(doc, Pos::new(0, 0), GotoKind::Definition))
+            .await
+            .unwrap_or_else(|_| panic!("{quiescent:?}: no wait for background work"))
+            .unwrap();
+        assert!(defs.is_empty());
+        assert_eq!(s.requested("textDocument/definition").len(), 1, "{quiescent:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
