@@ -12,7 +12,8 @@ export function activate(): () => void {
     title: "Logcat",
     icon: "toolwindow-logcat",
     anchor: "bottom",
-    stripe: "shown",
+    // Listed under the stripe's "…" until first opened: most projects are not Android ones.
+    stripe: "onUse",
     order: 26,
     component: LogcatView,
     // A device can be watched without a project open.

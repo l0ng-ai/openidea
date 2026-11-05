@@ -105,9 +105,9 @@ fn flush<T>(batch: &mut Vec<T>, on_batch: &mut dyn FnMut(Vec<T>)) {
 }
 
 /// Runs `cmd`, parsing every stdout line with `parse` and handing the results to
-/// `on_batch` — as soon as `max` are ready, or once `idle` passes without new
-/// output, so a quiet stream still shows its last line. Stderr is kept as a tail
-/// for the error message. Returns whether the child exited successfully.
+/// `on_batch` — as soon as `max` are ready, or once the oldest waiting line is `idle`
+/// old, so neither a quiet nor a steady stream holds lines back. Stderr is kept as a
+/// tail for the error message. Returns whether the child exited successfully.
 pub(crate) fn stream_batched<T>(
     mut cmd: Command,
     cancel: &CancellationToken,
@@ -134,16 +134,22 @@ pub(crate) fn stream_batched<T>(
     drop(tx);
     let mut stderr_tail: Vec<String> = Vec::new();
     let mut batch: Vec<T> = Vec::with_capacity(max);
+    // When the first line of the waiting batch arrived.
+    let mut since = Instant::now();
     while open > 0 {
         if cancel.is_cancelled() {
             terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
-        match rx.recv_timeout(idle) {
+        let wait = if batch.is_empty() { idle } else { idle.saturating_sub(since.elapsed()) };
+        match rx.recv_timeout(wait) {
             Ok(Event::Line(true, line)) => {
                 if let Some(item) = parse(&line) {
+                    if batch.is_empty() {
+                        since = Instant::now();
+                    }
                     batch.push(item);
-                    if batch.len() >= max {
+                    if batch.len() >= max || since.elapsed() >= idle {
                         flush(&mut batch, on_batch);
                     }
                 }
@@ -173,4 +179,28 @@ pub(crate) fn stream_batched<T>(
         std::thread::sleep(Duration::from_millis(10));
     };
     Ok((status.success(), stderr_tail))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_steady_stream_is_handed_over_while_it_runs() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "for i in $(seq 1 20); do echo $i; sleep 0.02; done"]);
+        let mut sizes = Vec::new();
+        let (ok, _) = stream_batched(
+            cmd,
+            &CancellationToken::new(),
+            Duration::from_millis(60),
+            300,
+            |line| Some(line.to_owned()),
+            &mut |batch| sizes.push(batch.len()),
+        )
+        .unwrap();
+        assert!(ok);
+        assert_eq!(sizes.iter().sum::<usize>(), 20);
+        assert!(sizes.len() >= 3, "lines arriving every 20 ms waited for the end: {sizes:?}");
+    }
 }

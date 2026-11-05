@@ -29,13 +29,12 @@ pub async fn android_logcat(
     on_lines: Channel<Vec<LogcatLine>>,
 ) -> IdeResult<()> {
     let cancel = state.begin_request(request);
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = blocking(move || {
         ide_android::logcat(&serial, clear, &cancel, &mut |batch| {
             let _ = on_lines.send(batch);
         })
     })
-    .await
-    .map_err(|e| IdeError::internal(e.to_string()))?;
+    .await;
     state.end_request(request);
     result
 }
