@@ -1,4 +1,11 @@
-import { collapseLinear, computeGraph, hideLongEdges, linearizeMerges, straightenLaneChanges } from "./graph";
+import {
+  collapseLinear,
+  compactLanes,
+  computeGraph,
+  hideLongEdges,
+  linearizeMerges,
+  straightenLaneChanges,
+} from "./graph";
 import { commitKey, graphCommit, type RepoCommit } from "./multiRoot";
 import type { LogOptions } from "./logOptions";
 
@@ -26,6 +33,6 @@ export function presentLogGraph(
   const byId = new Map(all.map((c) => [commitKey(c), c]));
   const commits = graph.map((c) => byId.get(c.id)!);
   const laid = computeGraph(graph).rows;
-  const rows = straightenLaneChanges(options.longEdges ? laid : hideLongEdges(laid));
+  const rows = straightenLaneChanges(compactLanes(options.longEdges ? laid : hideLongEdges(laid)));
   return { commits, graph, rows, linear, collapsed };
 }
