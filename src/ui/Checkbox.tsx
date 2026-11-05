@@ -43,6 +43,39 @@ export function Checkbox({ checked, onChange, label, disabled, indeterminate, cl
   );
 }
 
+export interface RadioProps {
+  checked: boolean;
+  onChange: () => void;
+  /** Radios with the same name form one group, moved through with the arrow keys. */
+  name: string;
+  label?: ReactNode;
+  disabled?: boolean;
+  className?: string;
+}
+
+/** Radio button, drawn like the checkbox with a round box and a dot. */
+export function Radio({ checked, onChange, name, label, disabled, className }: RadioProps) {
+  const id = useId();
+  const tx = useTx();
+  return (
+    <label className={clsx(styles.row, disabled && styles.disabled, className)} htmlFor={id}>
+      <span className={styles.boxWrap}>
+        <input
+          id={id}
+          type="radio"
+          name={name}
+          className={styles.native}
+          checked={checked}
+          disabled={disabled}
+          onChange={onChange}
+        />
+        <span className={clsx(styles.box, styles.radio, checked && styles.on)} aria-hidden />
+      </span>
+      {label != null && <span className={styles.label}>{typeof label === "string" ? tx(label) : label}</span>}
+    </label>
+  );
+}
+
 export interface ToggleProps {
   checked: boolean;
   onChange: (checked: boolean) => void;

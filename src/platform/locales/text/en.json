@@ -51,6 +51,9 @@
   "Xdebug is not loaded in PHP {version}": "Xdebug is not loaded in PHP {version}",
   "{php} runs without Xdebug, so breakpoints are skipped. Install Xdebug 3 for this PHP or choose another PHP interpreter.": "{php} runs without Xdebug, so breakpoints are skipped. Install Xdebug 3 for this PHP or choose another PHP interpreter.",
   "Open PHP Settings": "Open PHP Settings",
+  "Type your answer": "Type your answer",
+  "Recommended": "Recommended",
+  "No preview": "No preview",
   "Running in the background": "Running in the background",
   "Couldn't stop the background task": "Couldn't stop the background task"
 }

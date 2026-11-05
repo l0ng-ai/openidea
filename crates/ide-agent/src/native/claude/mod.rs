@@ -1117,36 +1117,44 @@ fn permission_result(
     }
 }
 
-/// `AskUserQuestion`: each question as a permission request whose options are its
-/// answers; `None` when one is not answered.
+/// `AskUserQuestion`: one permission request carrying all its questions, answered with a
+/// JSON object of question to the chosen labels and typed text; `None` when skipped.
 async fn ask_questions<F, Fut>(input: &Value, call: &Value, ask: F) -> Option<Value>
 where
     F: Fn(Value, Value) -> Fut,
     Fut: std::future::Future<Output = Option<String>>,
 {
-    let mut answers = serde_json::Map::new();
-    for q in input.get("questions").and_then(Value::as_array).into_iter().flatten() {
-        let question = q.get("question").and_then(Value::as_str).unwrap_or_default();
-        let labels: Vec<&str> = q
-            .get("options")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|o| o.get("label")?.as_str())
-            .collect();
-        let mut options: Vec<Value> = labels
-            .iter()
-            .enumerate()
-            .map(|(i, l)| json!({ "optionId": format!("answer-{i}"), "name": l, "kind": "allow_once" }))
-            .collect();
-        options.push(json!({ "optionId": "reject", "name": "Skip", "kind": "reject_once" }));
-        let mut call = call.clone();
-        call["title"] = json!(question);
-        let chosen = ask(call, Value::Array(options)).await?;
-        let i: usize = chosen.strip_prefix("answer-")?.parse().ok()?;
-        answers.insert(question.to_owned(), json!(labels.get(i)?));
-    }
+    let questions = input.get("questions")?;
+    let mut call = call.clone();
+    call["title"] = questions.pointer("/0/question").cloned().unwrap_or_else(|| json!("Claude has a question"));
+    call["_meta"] = json!({ "questions": questions });
+    let options = json!([{ "optionId": "reject", "name": "Skip", "kind": "reject_once" }]);
+    let chosen = ask(call, options).await?;
+    let chosen: serde_json::Map<String, Value> = serde_json::from_str(&chosen).ok()?;
+    let answers = questions
+        .as_array()?
+        .iter()
+        .filter_map(|entry| {
+            let question = entry.get("question")?.as_str()?;
+            let items: Vec<&str> = chosen.get(question)?.as_array()?.iter().filter_map(Value::as_str).collect();
+            let multi = entry.get("multiSelect").and_then(Value::as_bool) == Some(true);
+            let answer = if multi { join_answers(&items) } else { items.first()?.to_string() };
+            Some((question.to_owned(), json!(answer)))
+        })
+        .collect();
     Some(Value::Object(answers))
+}
+
+/// A multi-select answer as Claude Code's own question UI writes it: comma-joined, with an
+/// item that holds the separator or a quote JSON-quoted so it reads back as one item.
+fn join_answers(items: &[&str]) -> String {
+    items
+        .iter()
+        .map(
+            |item| if item.contains(", ") || item.contains('"') { json!(item).to_string() } else { (*item).to_owned() },
+        )
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Whether `result` ends `turn`: it answers the turn's last message, or (stopped) any of
