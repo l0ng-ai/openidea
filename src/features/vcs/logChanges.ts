@@ -14,6 +14,7 @@ import { baseName } from "./model";
 import { readWorkingText, runOp, saveAll, writeFileText } from "./ops";
 import { reportApply } from "./shelf";
 import { currentRepoRoot } from "./store";
+import { commitRepo } from "./multiRoot";
 import { repositoryPath } from "./repositoryPaths";
 import { confirmDialog } from "./dialogs";
 
@@ -29,6 +30,9 @@ export interface LogChange {
   /** `null`: the change deleted the file. */
   after: string | null;
   diff: DiffData;
+  readOnly?: boolean;
+  group?: string;
+  mergeParents?: Array<{ rev: string; path: string }>;
 }
 
 /** One commit's files (`commit` given) or several commits' combined changes. */
@@ -36,12 +40,14 @@ export function toLogChanges(
   files: readonly (ChangedFile | RevisionChange)[],
   commit: Commit | null,
   repo = currentRepoRoot(),
+  readOnly = false,
 ): LogChange[] {
   return files.map((f) => {
     if (commit) {
       const parent = commit.parents[0] ?? null;
       return {
         repo,
+        readOnly,
         path: f.path,
         oldPath: f.oldPath,
         kind: f.kind,
@@ -53,6 +59,7 @@ export function toLogChanges(
     const r = f as RevisionChange;
     return {
       repo,
+      readOnly,
       path: r.path,
       oldPath: r.oldPath,
       kind: r.kind,
@@ -138,6 +145,22 @@ export function changesArg(arg: unknown): LogChange[] {
 export async function showChangesDiff(changes: readonly LogChange[], preview = false) {
   const first = changes[0];
   if (!first) return;
+  if (first.mergeParents?.length === 2 && first.after) {
+    await editorService().openInput(
+      {
+        kind: "git-merge-diff",
+        key: `git-merge-diff:${first.repo}:${first.after}:${first.path}`,
+        data: {
+          repo: first.repo ?? currentRepoRoot(),
+          revision: first.after,
+          path: first.path,
+          parents: first.mergeParents,
+        },
+      },
+      { preview, focus: !preview },
+    );
+    return;
+  }
   const all = useLogChanges.getState().all;
   const chain = all.includes(first) ? all : [...changes];
   await openDiff(
@@ -151,6 +174,7 @@ export async function showChangesDiff(changes: readonly LogChange[], preview = f
 
 /** Compare with Local (`side` after) / Compare Before with Local: the revision ↔ the working file. */
 export async function compareChangeWithLocal(change: LogChange, side: "after" | "before" = "after") {
+  if (change.readOnly) return;
   const rev = side === "after" ? change.after : change.before;
   if (!rev) return;
   const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath, change.repo) : undefined;
@@ -163,6 +187,7 @@ export async function compareChangeWithLocal(change: LogChange, side: "after" | 
 
 /** Jump to Source: the working file. */
 export async function openChangeSource(change: LogChange) {
+  if (change.readOnly) return;
   await editorService().openFile(absolutePath(change.path, change.repo), { focus: true });
 }
 
@@ -171,6 +196,7 @@ export async function openChangeSource(change: LogChange) {
  * change deleted is deleted.
  */
 export async function getFromRevision(changes: readonly LogChange[]) {
+  if (changes.some((c) => c.readOnly)) return;
   if (!changes.length) return;
   const ok = await confirmDialog({
     title: "Get from Revision",
@@ -184,7 +210,7 @@ export async function getFromRevision(changes: readonly LogChange[]) {
   if (!ok) return;
   await saveAll();
   await runOp(
-    "Get from Revision",
+    tx("Get from Revision"),
     async () => {
       for (const c of changes) {
         const path = absolutePath(c.path, c.repo);
@@ -205,13 +231,20 @@ export async function getFromRevision(changes: readonly LogChange[]) {
 
 /** Revert Selected Changes: applies the reverse of the selected files' changes to the working tree. */
 export async function revertSelectedChanges(changes: readonly LogChange[], commits: readonly Commit[]) {
+  if (changes.some((c) => c.readOnly)) return;
   if (!changes.length || !commits.length) return;
+  const repo = changes[0]!.repo ?? currentRepoRoot();
+  if (changes.some((c) => (c.repo ?? currentRepoRoot()) !== repo)) return;
   await saveAll();
   // Oldest first; the backend reverses the order for a reversed patch.
-  const ids = [...commits].reverse().map((c) => c.id);
+  const ids = [...commits]
+    .reverse()
+    .filter((c) => (commitRepo(c) ?? currentRepoRoot()) === repo)
+    .map((c) => c.id);
+  if (!ids.length) return;
   const paths = new Set(changes.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path])));
   const outcome = await runOp(
-    "Revert selected changes",
+    tx("Revert selected changes"),
     async () => {
       const patch = filterPatch(
         await call(

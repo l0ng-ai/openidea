@@ -142,6 +142,21 @@ pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: V
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Writes one of the IDE's Gradle init scripts (`text`; the file is named `<name>-<hash>`) on
+/// the machine that runs the build, for `--init-script`, and returns its path.
+pub async fn run_gradle_init_script(_host: &Host, _window: &str, name: String, text: String) -> IdeResult<String> {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(IdeError::invalid(format!("invalid init script name {name:?}")));
+    }
+    tokio::task::spawn_blocking(move || {
+        ide_run::gradle_jvm::write_script(&ide_run::gradle_jvm::default_dir(), &name, &text)
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| IdeError::internal(format!("cannot write the Gradle init script: {e}")))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 /// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
 pub async fn run_test_reports(
@@ -241,6 +256,35 @@ pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mod
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Updates a running Tomcat artifact deployment from the module's compiled output and web
+/// resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
+pub async fn run_tomcat_sync(
+    host: &Host,
+    window: &str,
+    config: RunConfig,
+    module: std::path::PathBuf,
+    class_paths: Vec<String>,
+    resources_only: bool,
+) -> IdeResult<bool> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
+        return Err(IdeError::invalid("Start this Tomcat configuration before updating it"));
+    }
+    if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
+        return Ok(false);
+    }
+    tokio::task::spawn_blocking(move || {
+        let module = dunce::canonicalize(project.root.join(module))?;
+        let class_paths: Vec<_> =
+            class_paths.iter().filter_map(|p| dunce::canonicalize(project.root.join(p)).ok()).collect();
+        let base = ide_run::tomcat::base_dir(&project.cache_dir, &config.id);
+        ide_run::tomcat::sync_outputs(&base, &module, &class_paths, resources_only)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_dotnet_resolve", |c| async move {
@@ -255,6 +299,17 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_tomcat_home", |c| async move { run_tomcat_home(&c.host, &c.window, c.arg("home")?).await });
     d.add("run_tomcat_artifacts", |c| async move { run_tomcat_artifacts(&c.host, &c.window).await });
     d.add("run_tomcat_build", |c| async move { run_tomcat_build(&c.host, &c.window, c.arg("config")?).await });
+    d.add("run_tomcat_sync", |c| async move {
+        run_tomcat_sync(
+            &c.host,
+            &c.window,
+            c.arg("config")?,
+            c.arg("module")?,
+            c.arg("classPaths")?,
+            c.arg("resourcesOnly")?,
+        )
+        .await
+    });
     d.add("run_tomcat_update", |c| async move {
         run_tomcat_update(&c.host, &c.window, c.arg("config")?, c.arg("mode")?).await
     });
@@ -267,6 +322,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
     d.add("run_gradle_jvm_args_script", |c| async move {
         run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
+    });
+    d.add("run_gradle_init_script", |c| async move {
+        run_gradle_init_script(&c.host, &c.window, c.arg("name")?, c.arg("text")?).await
     });
     d.add("run_test_reports", |c| async move {
         run_test_reports(&c.host, &c.window, c.arg("module")?, c.arg("sinceMs")?).await

@@ -18,9 +18,12 @@ Visual style: dark, low-contrast greys, one cool accent
 - `src/ui/` — design-system primitives. `src/features/<name>/` — one feature each,
   exporting `activate()` registered in `src/features/index.ts`.
 - `languages/<id>.toml` — language definitions (detection, comments, LSP, DAP).
-- `crates/ide-host` — the `openidea-server` binary for remote development.
-- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins;
-  `templates/` — plugin starter templates.
+- `crates/ide-host` — the `openidea-server` binary for remote development and the
+  `openidea-plugin` CLI (plugin starter templates live in its `templates.rs`).
+- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins.
+  Plugin docs: `plugins/README.md`, `docs/plugins/themes.md`.
+- `java/` — JDT LS extension bundles (`java-usages`, `kotlin-bridge`) and the patched
+  Lombok agent, embedded into the app by `ide-sdk` / `ide-tools`.
 - `e2e/` — Playwright UI tests (`pnpm e2e`). `fixtures/` — sample projects per language
   for manual and automated testing.
 
@@ -39,14 +42,15 @@ Visual style: dark, low-contrast greys, one cool accent
   icons from `src/ui/icons.tsx`, never emoji. Real `<button>`/`<input>`; `aria-label` on icon buttons.
 - User-visible text goes through the text catalog: add every new string to both
   `src/platform/locales/text/en.json` and `zh.json` (`textCatalog.test.ts` enforces it).
+  Other locales may lack entries; their UI shows the English text until a translator adds it.
 - Keep comments sparse and purposeful; match surrounding style.
 - For GUI verification, prefer Tauri MCP; use Computer Use only when Tauri MCP is
   unavailable or cannot cover the required checks.
 
 ## Issues & PRs
 
-Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one issue per PR with
-`Closes #<n>`, reproduce first, keep the diff focused, short plain description, and a
+Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
+(`Closes #<n>` when it resolves an issue), reproduce first, keep the diff focused, short plain description, and a
 **How it was verified** section with commands run, results and (for UI) before/after screenshots.
 Unclear product decisions → `needs-decision` and stop.
 
@@ -63,6 +67,13 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   this worktree's running MCP bridges and actual ports.
 - `pnpm build` — typecheck + bundle frontend.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
+- `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
+  on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
+- `pnpm smoke smoke/run.test.ts -t <language>` — run and test that language's fixture through the
+  run store and a real `openidea-server` (build it first: `cargo build -p ide-host --bin openidea-server`).
+- `pnpm smoke smoke/debug.test.ts -t <language>` — debug that fixture's entry point the same way, with
+  the debugger the IDE installs (on macOS, CodeLLDB and Delve may need Developer Mode:
+  `sudo DevToolsSecurity -enable`).
 - `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
@@ -110,8 +121,8 @@ Several worktrees can be developed and run side by side.
   default MCP session belongs to this worktree.
 - Keep each worktree's Cargo output directory separate; do not point `CARGO_TARGET_DIR` or
   `target` symlinks at a shared directory.
-- Each worktree's first build is cold (around 5 minutes) and its Cargo output takes
-  15–30 GB. Avoid running several heavy builds on one machine at the same time.
+- Each worktree's first build is cold (several minutes) and `cargo build` output takes
+  around 9 GB; tests, clippy and incremental builds add more. Avoid running several heavy builds on one machine at the same time.
 - Stop only processes started for the current worktree/session. Never use broad
   process-name kills such as `pkill openidea`.
 - When done: stop that worktree's app and dev session, delete its build output, then

@@ -116,6 +116,11 @@ pub async fn build_sync(
             tracing::warn!("Maven profiles not saved: {e}");
             false
         });
+    if profiles_changed {
+        // The modules of the chosen profiles are read from the POMs with them from now on (the
+        // project tree's module folders too), whether or not Maven itself can run.
+        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+    }
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let current = load(&root, &cache, &settings);
@@ -150,6 +155,13 @@ pub async fn build_sync(
     .map_err(join_err);
     host.end_request(request);
     let model = result??;
+    if tool == BuildTool::Gradle {
+        // The sync may report project folders outside the project (`includeFlat`): index and list them.
+        project.refresh_index_scope();
+        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+        let p = project.clone();
+        tokio::task::spawn_blocking(move || p.refresh_repositories());
+    }
     if tool == BuildTool::Maven
         && model.maven.is_some()
         && let Some(bridge) = &project.kotlin_bridge
@@ -168,7 +180,16 @@ pub async fn build_sync(
         }
     };
     let lsp = project.lsp.clone();
-    let uris = build_files.iter().map(|f| ide_lsp::path_to_uri_string(&project.root.join(f))).collect();
+    // With a module of a reactor unlinked, jdtls imports the other modules one by one and
+    // not the reactor: naming the reactor here would import it again, all modules included.
+    let imported = match tool {
+        BuildTool::Maven => crate::project::jdtls_maven_import(&project.root, &project.settings.effective()).1,
+        BuildTool::Gradle => None,
+    };
+    let uris = match imported {
+        Some(files) => files.into_iter().filter(|f| f.ends_with("/pom.xml")).collect(),
+        None => build_files.iter().map(|f| ide_lsp::path_to_uri_string(&project.root.join(f))).collect(),
+    };
     tokio::spawn(async move {
         if profiles_changed {
             // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
@@ -199,6 +220,52 @@ fn declaring_pom(
     Err(IdeError::not_found(format!(
         "{dependency} is not declared in a pom.xml of this project (it may come from an imported BOM or an external parent POM)"
     )))
+}
+
+/// The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
+/// build has downloaded it (`ide_sdk::libraries::published_version_catalog`).
+pub async fn gradle_published_catalog(
+    host: &Host,
+    window: &str,
+    coordinates: String,
+) -> IdeResult<Option<ide_core::IpcPath>> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        ide_sdk::libraries::published_version_catalog(&project.root, &project.settings.effective(), &coordinates)
+            .map(Into::into)
+    })
+    .await
+    .map_err(join_err)
+}
+
+/// The resolved dependency tree of the Gradle project `gradle_path` (`:`, `:app`) for
+/// `configuration`, from Gradle's `dependencies` report; cancellable with `cancel_request(request)`.
+pub async fn gradle_dependencies(
+    host: &Host,
+    window: &str,
+    gradle_path: String,
+    configuration: String,
+    offline: bool,
+    request: RequestId,
+) -> IdeResult<Vec<ide_build::GradleDependency>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
+    let token = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        let gradle = load(&root, &cache, &settings).gradle;
+        let options = SyncOptions {
+            offline,
+            env: gradle.as_ref().map(|g| g.env.clone()).unwrap_or_default(),
+            gradle_command: gradle.as_ref().map(|g| g.command.clone()),
+            ..Default::default()
+        };
+        ide_build::gradle_dependencies(&root, &options, &gradle_path, &configuration, &token)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    result?
 }
 
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.
@@ -280,7 +347,7 @@ pub async fn build_run(
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
                 let member_cache = cache.join(crate::project::project_key(member));
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
-                let plan = compile::plan(member, &model, kind, file.as_deref())?;
+                let plan = compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?;
                 match &mut combined {
                     Some(combined) => combined.steps.extend(plan.steps),
                     None => combined = Some(plan),
@@ -290,7 +357,13 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            compile::plan(&root, &with_profiles(load(&root, &cache, &settings), &cache), kind, file.as_deref())?
+            compile::plan(
+                &root,
+                &with_profiles(load(&root, &cache, &settings), &cache),
+                kind,
+                file.as_deref(),
+                settings.cmake.profiles.as_deref(),
+            )?
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
@@ -318,6 +391,20 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("offline")?,
             c.arg("profiles")?,
             c.sender("onProgress")?,
+        )
+        .await
+    });
+    d.add("gradle_published_catalog", |c| async move {
+        gradle_published_catalog(&c.host, &c.window, c.arg("coordinates")?).await
+    });
+    d.add("gradle_dependencies", |c| async move {
+        gradle_dependencies(
+            &c.host,
+            &c.window,
+            c.arg("gradlePath")?,
+            c.arg("configuration")?,
+            c.arg("offline")?,
+            c.arg("request")?,
         )
         .await
     });

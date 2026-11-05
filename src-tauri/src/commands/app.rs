@@ -57,7 +57,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
     let label = window.label().to_owned();
     // Replacing this window's project (the UI skips reopening the same one).
     if app.state::<AppState>().project(&label).is_ok() {
-        crate::windows::close_settings_window(&app, &label);
+        crate::windows::close_auxiliary_windows(&app, &label);
     }
     let project = tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_project(&label, &path))
         .await
@@ -80,7 +80,7 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
     if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
-        crate::windows::close_settings_window(&app, &label);
+        crate::windows::close_auxiliary_windows(&app, &label);
         crate::window_groups::detach(&app, &label)?;
         crate::window_groups::persist(&app).await?;
     }
@@ -113,7 +113,7 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
 #[tauri::command]
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
-    crate::windows::close_settings_window(window.app_handle(), window.label());
+    crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
     state.close_project(window.label());
     let app = window.app_handle().clone();
@@ -126,14 +126,8 @@ pub fn close_project(window: Window, state: State<'_, AppState>) {
 #[specta::specta]
 pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
     state.note_ipc();
-    let mut out: Vec<LanguageInfo> = state.languages.all().iter().map(LanguageInfo::from).collect();
-    // Plugin-contributed languages; built-in definitions win on id clashes.
-    for lang in state.plugins.languages() {
-        if !out.iter().any(|l| l.id == lang.id) {
-            out.push(LanguageInfo::from(&lang));
-        }
-    }
-    out
+    // Includes plugin languages (built-in definitions win on id clashes).
+    state.languages.all().iter().map(LanguageInfo::from).collect()
 }
 
 /// Effective settings for the window's project, or global settings without one.

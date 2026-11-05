@@ -1,0 +1,18 @@
+.range {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.summary,
+.meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.summary {
+  color: var(--fg-emphasis);
+}
+.meta {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}

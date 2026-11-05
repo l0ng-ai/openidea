@@ -92,7 +92,14 @@ export const rubyScriptType: RunConfigTypeContribution = {
   description: "Run a Ruby script",
   defaults: {},
   fields: [
-    { key: "script", label: "Ruby script", mono: true, required: true, placeholder: "e.g. bin/rails or lib/app.rb" },
+    {
+      key: "script",
+      label: "Ruby script",
+      mono: true,
+      required: true,
+      browse: "file",
+      placeholder: "e.g. bin/rails or lib/app.rb",
+    },
     { key: "scriptArgs", label: "Script arguments", mono: true, placeholder: "e.g. server -p 3000" },
     { key: "rubyArgs", label: "Ruby arguments", mono: true, placeholder: "e.g. -Ilib -w" },
     bundlerField,

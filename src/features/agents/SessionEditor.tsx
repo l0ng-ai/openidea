@@ -1147,39 +1147,66 @@ function WorkingSubagents({ entries, onOpen }: { entries: AgentEntry[] | null; o
 /** Agent-written titles with the task's own folder dropped from paths. */
 const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
 
-function PermissionLine({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry, { type: "permission" }> }) {
+type PermissionEntry = Extract<AgentEntry, { type: "permission" }>;
+
+/**
+ * The answers to an open permission request. A request without options (some agents send
+ * none) can still be cancelled, so the agent doesn't wait for an answer it can't get.
+ */
+function PermissionAnswers({
+  task,
+  entry,
+  className,
+}: {
+  task: AgentTask;
+  entry: PermissionEntry;
+  className?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const answer = (option: string | null) => {
+    setBusy(true);
+    void respond(task.id, entry.id, option).finally(() => setBusy(false));
+  };
+  return (
+    <span className={className}>
+      {entry.options.length ? (
+        entry.options.map((o) => (
+          <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
+            {o.name}
+          </button>
+        ))
+      ) : (
+        <button type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(null)}>
+          <T>Cancel</T>
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** A permission request in the conversation; while open, answered right there as in the banner. */
+function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEntry }) {
   return (
     <div className={styles.permissionLine}>
       <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
-      <span className={styles.permissionTitle}>{shortTitle(task, entry.title)}</span>
+      <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
+        {shortTitle(task, entry.title)}
+      </span>
       <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
+      {!entry.chosen && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
     </div>
   );
 }
 
 /** The open permission request, as an editor notification banner above the conversation. */
 function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
-  const [busy, setBusy] = useState(false);
-  const entry = entries?.find(
-    (e): e is Extract<AgentEntry, { type: "permission" }> => e.type === "permission" && !e.chosen,
-  );
+  const entry = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen);
   if (!entry) return null;
-  const answer = (option: string | null) => {
-    setBusy(true);
-    void respond(task.id, entry.id, option).finally(() => setBusy(false));
-  };
   return (
     <div className={styles.banner} role="alert" aria-label={entry.title}>
       <Icon name="warning" size={16} />
-      <span className={styles.bannerText} title={entry.title}>
-        {shortTitle(task, entry.title)}
-      </span>
-      <span className={styles.bannerSpacer} />
-      {entry.options.map((o) => (
-        <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
-          {o.name}
-        </button>
-      ))}
+      <span className={styles.bannerText}>{shortTitle(task, entry.title)}</span>
+      <PermissionAnswers task={task} entry={entry} className={styles.bannerActions} />
     </div>
   );
 }
@@ -1407,7 +1434,7 @@ function ChangesPane({
             onActivate={(c) => void openChangeDiff(task, c.path)}
             renderNode={(c) => (
               <span className={styles.change} title={c.relPath}>
-                <Icon name={fileIconName(basename(c.path))} size={16} />
+                <Icon name={fileIconName(basename(c.path), c.path)} size={16} />
                 <span className={styles.changeName} style={{ color: KIND_COLOR[c.kind] }}>
                   {basename(c.path)}
                 </span>

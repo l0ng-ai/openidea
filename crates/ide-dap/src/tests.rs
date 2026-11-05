@@ -73,6 +73,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 msg,
                 json!({
                     "supportsConfigurationDoneRequest": true,
+                    "supportsCompletionsRequest": true,
                     "supportsTerminateRequest": true,
                     "supportsSetVariable": true,
                     "supportsFunctionBreakpoints": true,
@@ -172,6 +173,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ]})
             ),
             "evaluate" => ok!(msg, json!({"result": "42", "type": "int", "variablesReference": 0})),
+            "completions" => ok!(
+                msg,
+                json!({"targets": [
+                    {"label": "getName()", "text": "getName", "type": "method", "detail": "String"},
+                    {"label": "name", "type": "field"},
+                    {"label": ""},
+                ]})
+            ),
             "continue" => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(json!({"type": "event", "event": "exited", "body": {"exitCode": 3}}));
@@ -368,6 +377,14 @@ async fn full_protocol_flow() {
     let eval = h.request("evaluate");
     assert_eq!(eval["arguments"]["context"], "watch");
     assert_eq!(eval["arguments"]["frameId"], 10);
+    let items = h.manager.completions(id, Some(10), "req.na".into(), 0, 6).await.unwrap();
+    assert_eq!(
+        items.iter().map(|c| (c.label.as_str(), c.text.as_deref(), c.kind.as_deref())).collect::<Vec<_>>(),
+        [("getName()", Some("getName"), Some("method")), ("name", None, Some("field"))]
+    );
+    let asked = h.request("completions");
+    assert_eq!((asked["arguments"]["line"].clone(), asked["arguments"]["column"].clone()), (json!(1), json!(7)));
+    assert_eq!(asked["arguments"]["frameId"], 10);
 
     // Live breakpoint updates reach the session.
     let states = h.manager.set_breakpoints(path.clone(), vec![bp(0)]).await.unwrap();
@@ -681,6 +698,37 @@ async fn js_debug_launch_gets_port_and_workspace_folder() {
     assert_eq!(launch["type"], "pwa-node");
 }
 
+/// CodeLLDB treats console input as LLDB commands unless told otherwise: Evaluate Expression
+/// and the Debug Console send expressions, so its console evaluates them. A launch
+/// configuration that picks a console mode keeps it.
+#[tokio::test]
+async fn codelldb_console_evaluates_expressions() {
+    let launch_with = |extra: Value| async move {
+        let h = harness(Script::default());
+        let config = LaunchConfig {
+            name: "demo".into(),
+            adapter: "codelldb".into(),
+            request: "launch".into(),
+            program: Some("/p/target/debug/demo".into()),
+            args: vec![],
+            cwd: Some("/p".into()),
+            env: BTreeMap::new(),
+            extra_json: Some(extra.to_string()),
+        };
+        h.start(config).await.unwrap();
+        h.request("launch")["arguments"].clone()
+    };
+    let launch = launch_with(json!({})).await;
+    assert_eq!(launch["_adapterSettings"]["consoleMode"], "evaluate");
+    assert_eq!(launch["sourceLanguages"], json!(["rust"]));
+
+    let launch =
+        launch_with(json!({"_adapterSettings": {"consoleMode": "commands", "showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "commands", "showDisassembly": "never"}));
+    let launch = launch_with(json!({"_adapterSettings": {"showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "evaluate", "showDisassembly": "never"}));
+}
+
 /// An adapter that is already listening (java-debug inside jdtls): the client
 /// connects over TCP to the `debugServer` port instead of spawning anything.
 #[tokio::test]
@@ -906,6 +954,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {
@@ -915,6 +964,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
             transport: "tcp".into(),
             connect: Some(format!("127.0.0.1:{port}")),
             install_hint: Some("Open the project in the Godot editor".into()),
+            pinned: None,
         }),
     };
     Arc::new(LanguageRegistry::from_configs(vec![lang]))
@@ -1091,6 +1141,23 @@ async fn kotlin_official_release_ten_no_delay_runs() {
     }
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn netcoredbg_windows_source_paths_round_trip() {
+    let client = "D:/work/LoginController.cs";
+    let native = r"D:\work\LoginController.cs";
+    let h = harness(Script { source_path: Some(native.into()), ..Script::default() });
+    let path = PathBuf::from(client);
+    h.manager.set_breakpoints(path.clone(), vec![bp(25)]).await.unwrap();
+    let mut cfg = config();
+    cfg.adapter = "netcoredbg".into();
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], native);
+    let frames = h.manager.stack_trace(id, 1).await.unwrap();
+    assert_eq!(frames[0].path.as_deref(), Some(path.as_path()));
+    h.manager.stop(id).await.unwrap();
+}
+
 #[tokio::test]
 async fn java_windows_source_paths_for_launch_and_attach() {
     for request in ["launch", "attach"] {
@@ -1146,4 +1213,59 @@ async fn java_stack_frames_without_breakpoints_normalize_windows_paths() {
         assert_eq!(frames[0].path.as_deref(), Some(PathBuf::from(expected).as_path()));
         h.manager.stop(id).await.unwrap();
     }
+}
+
+/// A built-in language definition (GDScript) shipped by a plugin
+/// instead: its debugger starts the program approved for the plugin's
+/// `process:godot` grant, and refuses once that file changed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plugin_language_runs_its_debug_adapter_from_the_approved_program() {
+    use ide_language::ProgramPin;
+    use ide_language::plugin_point::{PluginLanguages, parse_definition};
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("openidea-plugin-dap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Stands in for `godot --headless --editor …`.
+    let program = dir.join("godot");
+    std::fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let mut gdscript = parse_definition(include_str!("../../../languages/gdscript.toml")).unwrap();
+    let debugger = gdscript.debugger.as_mut().unwrap();
+    debugger.args.clear();
+    debugger.connect = Some(format!("127.0.0.1:{port}"));
+
+    // No built-in GDScript: it comes from the plugin.
+    let registry = Arc::new(LanguageRegistry::from_configs(Vec::new()));
+    let store = PluginLanguages::new();
+    registry.attach_plugins(store.clone());
+    let pin = ProgramPin::approve(&program).unwrap();
+    store.set_process_policy(Arc::new(move |plugin, cap| {
+        (plugin == "acme.godot" && cap.to_string() == "process:godot").then(|| pin.clone())
+    }));
+    let _language = store.add("acme.godot".into(), gdscript);
+
+    let log: Log = Arc::default();
+    let server_log = log.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        fake_adapter(stream, server_log, Script::default()).await;
+    });
+    let (owner, _events) = recording_owner("main");
+    let manager = DebugManager::new(registry.clone());
+    let id = manager.start(godot_launch(&dir), owner).await.unwrap();
+    assert!(log.lock().iter().any(|m| m["command"] == "launch"));
+    manager.stop(id).await.unwrap();
+
+    // Replaced after approval: refused before anything starts.
+    std::fs::write(&program, "#!/bin/sh\nexec sleep 31\n").unwrap();
+    let (owner, _events) = recording_owner("main");
+    let err = manager.start(godot_launch(&dir), owner).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::PermissionDenied, "{}", err.message);
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -21,6 +21,51 @@ afterEach(() => {
 });
 
 describe("EditorController", () => {
+  it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
+    const backend = createMemoryBackend({ "/p/a.c": "int main() {\n    \n}\n" });
+    const save = vi.spyOn(backend, "save");
+    ctrl = new EditorController(backend);
+    ctrl.start();
+    await ctrl.openFile("/p/a.c", { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    const popup = document.createElement("div");
+    popup.setAttribute("data-popup", "");
+    const popupList = document.createElement("button");
+    popup.appendChild(popupList);
+    const elsewhere = document.createElement("button");
+    document.body.append(host, popup, elsewhere);
+    try {
+      const view = slot.mount(host);
+      ctrl.onMounted(slot);
+      const type = () => view.dispatch({ changes: { from: 0, insert: "x" }, userEvent: "input.type" });
+      // Into a popup (⌥↵ intentions): nothing is saved while it is open.
+      view.focus();
+      type();
+      popupList.focus();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(save).not.toHaveBeenCalled();
+      // Back to the editor (popup closed): still nothing.
+      view.focus();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(save).not.toHaveBeenCalled();
+      // From the popup elsewhere: saved then.
+      popupList.focus();
+      await new Promise((r) => setTimeout(r, 20));
+      elsewhere.focus();
+      await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      // Straight elsewhere: saved.
+      view.focus();
+      type();
+      elsewhere.focus();
+      await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    } finally {
+      host.remove();
+      popup.remove();
+      elsewhere.remove();
+    }
+  });
+
   it("leaves modified Enter to a non-text editor after switching from a focused file", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\ntwo\n" }));
     ctrl.start();

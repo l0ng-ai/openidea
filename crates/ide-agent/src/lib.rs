@@ -58,6 +58,8 @@ pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long deleting a task waits for its agent to exit before removing the worktree.
+const EXIT_WAIT: Duration = Duration::from_secs(5);
 
 /// The agent tasks of one project.
 pub struct AgentManager {
@@ -343,6 +345,14 @@ impl AgentManager {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
         provider::set_builtin_command(&dir, id, command.as_deref())
+    }
+
+    /// Sets the environment variables built-in `id` starts with; empty clears them.
+    pub fn set_builtin_env(&self, id: &str, env: std::collections::BTreeMap<String, String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_env(&dir, id, env)
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
@@ -831,7 +841,7 @@ impl AgentManager {
     /// Forgets the task; with `remove_worktree` also deletes its worktree (the branch stays).
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> IdeResult<()> {
         let task = self.task(id)?;
-        task.kill();
+        let live = task.kill();
         let (isolation, cwd, root) = {
             let s = task.state.lock();
             (
@@ -843,6 +853,11 @@ impl AgentManager {
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
         if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
+            // On Windows the agent's processes lock the folder (their working directory,
+            // open files) until they have exited.
+            if let Some(peer) = live {
+                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
+            }
             let worktrees = self.shared.paths.worktrees_dir.clone();
             blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
@@ -1597,11 +1612,12 @@ impl Task {
         }
     }
 
-    fn kill(&self) {
+    /// Stops the agent; returns its connection, to wait for its process to exit.
+    fn kill(&self) -> Option<acp::Conn> {
         self.cancel_permissions();
-        if let Some(live) = self.live.lock().take() {
-            live.peer.kill();
-        }
+        let live = self.live.lock().take()?;
+        live.peer.kill();
+        Some(live.peer)
     }
 }
 

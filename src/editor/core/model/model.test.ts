@@ -321,3 +321,33 @@ describe("camel humps", () => {
     expect(stops("  value2Go", "right")).toEqual([7, 8, 10]);
   });
 });
+
+describe("moveTab between the pinned row and the other row", () => {
+  // a^ b^ | c d e   (^ = pinned)
+  const setup = () => {
+    let s = initialTabsState();
+    for (const p of ["a", "b", "c", "d", "e"]) s = open(s, p);
+    const id = (p: string) => findTab(s, `file:${p}`, s.activePane)!.tab.id;
+    s = togglePin(s, s.activePane, id("a"));
+    s = togglePin(s, s.activePane, id("b"));
+    return { s, id };
+  };
+
+  it.each([
+    ["a plain tab onto the pinned row", "d", 1, true, ["a^", "d^", "b^", "c", "e"]],
+    ["a plain tab to the front of the pinned row", "e", 0, true, ["e^", "a^", "b^", "c", "d"]],
+    ["a plain tab to the end of the pinned row", "c", 2, true, ["a^", "b^", "c^", "d", "e"]],
+    ["a pinned tab onto the other row", "a", 4, false, ["b^", "c", "d", "a", "e"]],
+    ["a pinned tab to the start of the other row", "b", 2, false, ["a^", "b", "c", "d", "e"]],
+    ["a plain tab inside the other row keeps it plain", "c", 5, false, ["a^", "b^", "d", "e", "c"]],
+    ["an index past the pinned group stays in it", "d", 4, true, ["a^", "b^", "d^", "c", "e"]],
+  ])("%s", (_, path, index, pin, expected) => {
+    const { s, id } = setup();
+    expect(labels(moveTab(s, s.activePane, id(path), s.activePane, index, pin))).toEqual(expected);
+  });
+
+  it("leaves the pinned state alone without a target row", () => {
+    const { s, id } = setup();
+    expect(labels(moveTab(s, s.activePane, id("d"), s.activePane, 0))).toEqual(["d", "a^", "b^", "c", "e"]);
+  });
+});

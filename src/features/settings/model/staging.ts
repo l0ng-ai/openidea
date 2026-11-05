@@ -46,6 +46,7 @@ export interface SettingsDialogState {
   scopes: Record<string, Scope>;
   saving: boolean;
   error: string | null;
+  pagesLoading: boolean;
 }
 
 export const DEFAULT_PAGE = "appearance";
@@ -66,6 +67,7 @@ export const useSettingsDialog = create<SettingsDialogState>(() => ({
   scopes: {},
   saving: false,
   error: null,
+  pagesLoading: false,
 }));
 
 const stageKey = (scope: Scope, key: string) => `${scope}|${key}`;
@@ -109,6 +111,12 @@ async function loadGlobalBase() {
   }
 }
 
+export function rebaseSettings() {
+  const base = validateSettings(useProject.getState().settings);
+  useSettingsDialog.setState((s) => (s.open ? { base, globalBase: base } : {}));
+  void loadGlobalBase();
+}
+
 /** IDEA's File › New Projects Setup › Settings for New Projects. */
 export const settingsTitle = (newProjects: boolean) => (newProjects ? "Settings for New Projects" : "Settings");
 
@@ -129,6 +137,7 @@ export function closeSettings() {
     externalApplied: {},
     error: null,
     saving: false,
+    pagesLoading: false,
   });
 }
 

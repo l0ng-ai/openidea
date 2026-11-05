@@ -353,7 +353,11 @@ const lastUsed = new Map<string, number>();
 
 /** Options › Transaction control: a manual data source's consoles start in manual commit. */
 function applyConnectDefaults(id: string) {
-  if (sourceById(id)?.options?.transaction === "manual" && !useDatabase.getState().manualCommit.has(id))
+  if (
+    sourceById(id)?.driver !== "clickhouse" &&
+    sourceById(id)?.options?.transaction === "manual" &&
+    !useDatabase.getState().manualCommit.has(id)
+  )
     void setManualCommit(id, true).catch(() => {});
 }
 
@@ -944,6 +948,7 @@ function setPending(id: string, pending: boolean) {
 
 /** Commits or rolls back the open transaction of a manual-commit data source. */
 export async function finishTransaction(id: string, commit: boolean): Promise<boolean> {
+  if (sourceById(id)?.driver === "clickhouse") return false;
   try {
     await call(commands.dbFinishTransaction(id, commit));
     log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
@@ -975,6 +980,7 @@ async function askEndTransaction(source: DataSource): Promise<boolean | null> {
  * whether to commit or roll them back.
  */
 export async function setManualCommit(id: string, manual: boolean): Promise<void> {
+  if (sourceById(id)?.driver === "clickhouse" && manual) return;
   const st = useDatabase.getState();
   if (manual === st.manualCommit.has(id)) return;
   if (!manual && st.pendingTx.has(id)) {

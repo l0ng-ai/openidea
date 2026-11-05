@@ -154,6 +154,18 @@ describe("expansion", () => {
     for (const a of ["psvm", "sout", "fori", "iter", "main"]) expect(has("java", a)).toBe(true);
     for (const a of ["main", "fun", "val", "sout"]) expect(has("kotlin", a)).toBe(true);
     for (const a of ["todo", "fixme"]) expect(has("go", a)).toBe(true);
+    for (const a of ["fore", "forek", "pubf", "prisf", "thr", "eco", "rqro"]) expect(has("php", a)).toBe(true);
+    expect(has("java", "fore")).toBe(false);
+  });
+
+  it("writes PHP variables with their $", () => {
+    const php = (abbrev: string) => BUILTIN_TEMPLATES.find((t) => t.id === `php.${abbrev}`)!;
+    const fore = apply("", expandTemplate(php("fore")).snippet, 0);
+    expect(fore.text).toBe("foreach ( as $value) {\n  \n}");
+    // The caret starts on the iterable.
+    expect(fore.sel[0]).toEqual([9, 9]);
+    expect(apply("", expandTemplate(php("forek")).snippet, 0).text).toBe("foreach ( as $key => $value) {\n  \n}");
+    expect(apply("", expandTemplate(php("prosf")).snippet, 0).text).toBe("protected static function ()\n{\n  \n}");
   });
 
   it("merges user edits, deletions and user templates", () => {

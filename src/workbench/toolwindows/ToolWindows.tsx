@@ -133,8 +133,7 @@ async function setShowToolWindowNames(on: boolean) {
   useProject.setState({ settings });
 }
 
-/** Stripe button widths: icons only, and the range with names. */
-const STRIPE_ICONS = 32;
+/** Stripe button widths with names; icons only follow `--stripe-icon-button` (smaller in compact mode). */
 const STRIPE_MIN = 44;
 const STRIPE_DEFAULT = 56;
 const STRIPE_MAX = 96;
@@ -202,8 +201,8 @@ function StripeHandle({
 }) {
   const sign = side === "left" ? 1 : -1;
   // The stripe follows the pointer; names show from STRIPE_MIN (truncated), icons only below it.
-  const resolve = (raw: number) => {
-    const px = Math.round(Math.min(STRIPE_MAX, Math.max(STRIPE_ICONS, raw)));
+  const resolve = (raw: number, icons: number) => {
+    const px = Math.round(Math.min(STRIPE_MAX, Math.max(icons, raw)));
     return px < STRIPE_MIN ? { names: false, width, px } : { names: true, width: px, px };
   };
 
@@ -214,12 +213,14 @@ function StripeHandle({
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const origin = e.clientX;
-    const start = names ? width : STRIPE_ICONS;
+    const icons = parseFloat(getComputedStyle(stripe).getPropertyValue("--stripe-icon-button")) || 28;
+    const start = names ? width : icons;
     const cursor = document.body.style.cursor;
     document.body.style.cursor = "col-resize";
     let next = { names, width, px: start };
     const move = (ev: globalThis.PointerEvent) => {
-      const r = resolve(start + sign * (ev.clientX - origin));
+      if (!(ev.buttons & 1)) return end();
+      const r = resolve(start + sign * (ev.clientX - origin), icons);
       if (r.names !== next.names) onPreview(r.names);
       next = r;
       stripe.style.setProperty("--stripe-drag", `${r.px}px`);
@@ -314,6 +315,8 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
   };
   const onMove = (ev: globalThis.PointerEvent) => {
     if (!ghost) {
+      // Reordered macOS tap: no button held, so not a drag (see pointerDrag.ts).
+      if (!(ev.buttons & 1)) return finish(false);
       if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD) return;
       const r = button.getBoundingClientRect();
       ghost = button.cloneNode(true) as HTMLElement;
@@ -328,6 +331,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
       document.body.appendChild(ghost);
       useStripeDrag.setState({ id, drop: null });
     }
+    if (!(ev.buttons & 1)) return;
     place(ev.clientX, ev.clientY);
     const drop = stripeDropAt(ev.clientX, ev.clientY);
     const cur = useStripeDrag.getState().drop;
@@ -712,6 +716,9 @@ function HeaderRow({
   );
 }
 
+/** How long an activated tool window waits for lazily loaded content to focus. */
+const LATE_FOCUS_MS = 5000;
+
 function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: boolean }) {
   const ref = useRef<HTMLElement>(null);
   const focusRequest = useToolWindowLayout((s) => s.focusRequest);
@@ -722,20 +729,47 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
 
   useEffect(() => {
     if (!focusRequest || focusRequest.id !== tw.id || hidden) return;
+    let observer: MutationObserver | null = null;
+    let timer = 0;
+    const stop = () => {
+      observer?.disconnect();
+      observer = null;
+      window.clearTimeout(timer);
+    };
     const raf = requestAnimationFrame(() => {
       const root = ref.current;
       if (!root) return;
       const body = root.querySelector<HTMLElement>("[data-toolwindow-body]");
       // Like IDEA, activation focuses the content (a field, list or tree), never a button or
       // link: a scripted focus on one draws its focus ring (an empty view's "New…" link).
-      const content = [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
-        (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
-      );
-      if (body && !content && !body.hasAttribute("tabindex")) body.tabIndex = -1;
-      const target = body?.querySelector<HTMLElement>("[data-autofocus]") ?? content ?? body ?? root;
-      target.focus({ preventScroll: true });
+      const contentTarget = () =>
+        body?.querySelector<HTMLElement>("[data-autofocus]") ??
+        [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
+          (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
+        );
+      const target = contentTarget();
+      if (target || !body) {
+        (target ?? root).focus({ preventScroll: true });
+        return;
+      }
+      if (!body.hasAttribute("tabindex")) body.tabIndex = -1;
+      body.focus({ preventScroll: true });
+      // Lazily loaded views (the Terminal) render their field after this: focus it when it
+      // appears, unless focus has moved on meanwhile.
+      observer = new MutationObserver(() => {
+        if (document.activeElement !== body) return stop();
+        const late = contentTarget();
+        if (!late) return;
+        stop();
+        late.focus({ preventScroll: true });
+      });
+      observer.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-autofocus"] });
+      timer = window.setTimeout(stop, LATE_FOCUS_MS);
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      stop();
+    };
   }, [focusRequest, tw.id, hidden]);
 
   return (
@@ -812,6 +846,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
     document.body.style.cursor = stacked ? "row-resize" : "col-resize";
     let ratio: number | null = null;
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       ratio = ratioOf(m.clamp(m.first + (stacked ? ev.clientY : ev.clientX) - origin), m.total);
       apply(m.areas, ratio);
     };
@@ -963,6 +998,7 @@ function GapHandle({
     document.body.style.cursor = vertical ? "col-resize" : "row-resize";
     let next = m.size;
     const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
       const raw = m.size + sign * ((vertical ? ev.clientX : ev.clientY) - origin);
       // Dragged past half the minimum: collapse, as IDEA does.
       next = raw < MIN[anchor] / 2 ? 0 : clamp(raw, m.max);

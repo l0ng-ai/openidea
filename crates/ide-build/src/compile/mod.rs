@@ -10,6 +10,7 @@ pub use fingerprint::{LaunchFingerprint, launch_fingerprint};
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};
+use ide_core::settings::CMakeProfile;
 use ide_core::{CancellationToken, Diagnostic, IdeError, IdeResult, Pos, Range, Severity};
 use parse::{ColUnit, Format, OutputParser, RawMessage};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,8 @@ pub enum BuildSystem {
     Go,
     #[serde(rename = "typescript")]
     TypeScript,
+    #[serde(rename = "cmake")]
+    CMake,
 }
 
 /// One command of a build.
@@ -152,6 +155,8 @@ fn detect_dir(dir: &Path, model: &BuildModel, root: &Path) -> Option<BuildSystem
         Some(BuildSystem::Go)
     } else if has(dir, &["tsconfig.json", "package.json"]) {
         Some(BuildSystem::TypeScript)
+    } else if has(dir, &["CMakeLists.txt"]) {
+        Some(BuildSystem::CMake)
     } else {
         None
     }
@@ -176,7 +181,14 @@ fn ancestors_within<'a>(root: &'a Path, file: &'a Path) -> impl Iterator<Item = 
 }
 
 /// The build of `root`, or of the module containing `file` (Build Module / Recompile).
-pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path>) -> IdeResult<BuildPlan> {
+/// `cmake`: the CMake profiles of the settings (the first one is built), if any.
+pub fn plan(
+    root: &Path,
+    model: &BuildModel,
+    kind: BuildKind,
+    file: Option<&Path>,
+    cmake: Option<&[CMakeProfile]>,
+) -> IdeResult<BuildPlan> {
     let project_name = root.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned());
     let module_dir = match file {
         Some(f) => {
@@ -192,7 +204,9 @@ pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path
     let system = detect_dir(&dir, model, root)
         .or_else(|| if model.gradle.is_some() { Some(BuildSystem::Gradle) } else { None })
         .or_else(|| model.maven.as_ref().filter(|m| !m.projects.is_empty()).map(|_| BuildSystem::Maven))
-        .ok_or_else(|| IdeError::not_found("no supported build system (Maven, Gradle, Cargo, Go, TypeScript) found"))?;
+        .ok_or_else(|| {
+            IdeError::not_found("no supported build system (Maven, Gradle, Cargo, Go, TypeScript, CMake) found")
+        })?;
     let module = module_dir.as_deref().filter(|d| *d != root);
     let title = match module {
         Some(d) => format!(
@@ -209,6 +223,7 @@ pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path
         // Go builds the file's package (a module holds many).
         BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind),
         BuildSystem::TypeScript => ts_steps(&dir, kind),
+        BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
     };
     Ok(BuildPlan { system, title, steps })
 }
@@ -300,6 +315,50 @@ fn cargo_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
         }
         BuildKind::Artifacts => vec![build(true)],
     }
+}
+
+/// CLion's Build Project for a CMake project: configures the build directory when it has no
+/// `CMakeCache.txt` yet, then `cmake --build` (`--clean-first` to rebuild). The directory and
+/// options come from the CMake profile; without one, a configured directory of the project
+/// (the first by name), else `build`, as the generated run configurations use.
+fn cmake_steps(dir: &Path, kind: BuildKind, profile: Option<&CMakeProfile>) -> Vec<BuildStep> {
+    let build_dir = match profile {
+        Some(p) if !p.build_dir.trim().is_empty() => p.build_dir.trim().to_owned(),
+        Some(p) => format!("cmake-build-{}", p.build_type.to_lowercase()),
+        None => {
+            let mut configured: Vec<String> = std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| e.path().join("CMakeCache.txt").is_file())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            configured.sort();
+            configured.into_iter().next().unwrap_or_else(|| "build".into())
+        }
+    };
+    let build_type = profile.map_or("Debug", |p| p.build_type.as_str());
+    let env = profile.map(|p| p.env.clone()).unwrap_or_default();
+    let mut steps = Vec::new();
+    if !dir.join(&build_dir).join("CMakeCache.txt").is_file() {
+        let mut configure = BuildStep::new("cmake", &["-S", ".", "-B", &build_dir], dir, Format::Gcc);
+        if let Some(p) = profile.filter(|p| !p.generator.trim().is_empty()) {
+            configure.args.extend(["-G".into(), p.generator.clone()]);
+        }
+        configure.args.push(format!("-DCMAKE_BUILD_TYPE={build_type}"));
+        configure.args.push("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON".into());
+        configure.args.extend(profile.map(|p| p.cmake_args.clone()).unwrap_or_default());
+        configure.env = env.clone();
+        steps.push(configure);
+    }
+    let mut build = BuildStep::new("cmake", &["--build", &build_dir, "--config", build_type], dir, Format::Gcc);
+    if kind == BuildKind::Rebuild {
+        build.args.push("--clean-first".into());
+    }
+    build.args.extend(profile.map(|p| p.build_args.clone()).unwrap_or_default());
+    build.env = env;
+    steps.push(build);
+    steps
 }
 
 fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
@@ -687,7 +746,7 @@ fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> Id
     } else {
         BuildKind::Build
     };
-    let mut plan = plan(root, model, kind, Some(module))?;
+    let mut plan = plan(root, model, kind, Some(module), None)?;
     if plan.system == BuildSystem::Maven && !test {
         for step in &mut plan.steps {
             if let Some(goal) = step.args.last_mut() {
@@ -796,12 +855,12 @@ mod tests {
         write(&root, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
         write(&root, "core/src/main/java/A.java", "class A {}");
         let model = crate::load(&root, &tmp.path().join("cache"), None);
-        let p = plan(&root, &model, BuildKind::Build, None).unwrap();
+        let p = plan(&root, &model, BuildKind::Build, None, None).unwrap();
         assert_eq!(p.system, BuildSystem::Maven);
         assert_eq!(p.title, "demo");
         assert_eq!(p.steps.len(), 1);
         assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "test-compile"]);
-        let p = plan(&root, &model, BuildKind::Rebuild, Some(&root.join("core/src/main/java/A.java"))).unwrap();
+        let p = plan(&root, &model, BuildKind::Rebuild, Some(&root.join("core/src/main/java/A.java")), None).unwrap();
         assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "-pl", "core", "-am", "clean", "test-compile"]);
         assert_eq!(p.steps[0].cwd, root);
         assert_eq!(p.title, "demo: build module 'core'");
@@ -810,24 +869,24 @@ mod tests {
         write(&g, "settings.gradle", "include 'app'");
         write(&g, "app/build.gradle", "apply plugin: 'java'");
         let model = crate::load(&g, &tmp.path().join("cache2"), None);
-        let p = plan(&g, &model, BuildKind::Build, Some(&g.join("app/src/A.java"))).unwrap();
+        let p = plan(&g, &model, BuildKind::Build, Some(&g.join("app/src/A.java")), None).unwrap();
         assert_eq!(p.system, BuildSystem::Gradle);
         assert_eq!(p.steps[0].args, ["--console=plain", ":app:classes", ":app:testClasses"]);
         assert_eq!(
-            plan(&g, &model, BuildKind::Artifacts, None).unwrap().steps[0].args,
+            plan(&g, &model, BuildKind::Artifacts, None, None).unwrap().steps[0].args,
             ["--console=plain", "assemble"]
         );
 
         let c = tmp.path().join("c");
         write(&c, "Cargo.toml", "[package]\nname='c'");
-        let p = plan(&c, &BuildModel::default(), BuildKind::Rebuild, None).unwrap();
+        let p = plan(&c, &BuildModel::default(), BuildKind::Rebuild, None, None).unwrap();
         assert_eq!(p.system, BuildSystem::Cargo);
         assert_eq!(p.steps.len(), 2);
         assert_eq!(p.steps[0].args[0], "clean");
 
         let go = tmp.path().join("go");
         write(&go, "go.mod", "module x");
-        let p = plan(&go, &BuildModel::default(), BuildKind::Build, Some(&go.join("pkg/a/a.go"))).unwrap();
+        let p = plan(&go, &BuildModel::default(), BuildKind::Build, Some(&go.join("pkg/a/a.go")), None).unwrap();
         assert_eq!(p.steps[0].args, ["build", "./pkg/a/..."]);
         assert_eq!(p.steps[0].cwd, go);
 
@@ -835,19 +894,51 @@ mod tests {
         write(&ts, "package.json", r#"{"scripts":{"build":"vite build"}}"#);
         write(&ts, "tsconfig.json", "{}");
         write(&ts, "pnpm-lock.yaml", "");
-        let p = plan(&ts, &BuildModel::default(), BuildKind::Build, None).unwrap();
+        let p = plan(&ts, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
         assert_eq!(p.steps[0].args, ["--noEmit", "--pretty", "false", "-p", "."]);
-        let p = plan(&ts, &BuildModel::default(), BuildKind::Artifacts, None).unwrap();
+        let p = plan(&ts, &BuildModel::default(), BuildKind::Artifacts, None, None).unwrap();
         assert_eq!(
             (p.steps[0].program.as_str(), p.steps[0].args.as_slice()),
             ("pnpm", &["run".to_owned(), "build".to_owned()][..])
         );
 
+        let cm = tmp.path().join("cm");
+        write(&cm, "CMakeLists.txt", "project(app)");
+        let args = |p: &BuildPlan| p.steps.iter().map(|s| s.args.join(" ")).collect::<Vec<_>>();
+        let p = plan(&cm, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+        assert_eq!(p.system, BuildSystem::CMake);
+        assert_eq!(
+            args(&p),
+            [
+                "-S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                "--build build --config Debug"
+            ],
+            "an unconfigured project is configured first"
+        );
+        write(&cm, "cmake-build-release/CMakeCache.txt", "");
+        let p = plan(&cm, &BuildModel::default(), BuildKind::Rebuild, None, None).unwrap();
+        assert_eq!(
+            args(&p),
+            ["--build cmake-build-release --config Debug --clean-first"],
+            "a configured directory is reused"
+        );
+        let profile = CMakeProfile {
+            build_type: "Release".into(),
+            generator: "Ninja".into(),
+            build_args: vec!["-j".into(), "8".into()],
+            ..CMakeProfile::default()
+        };
+        let p =
+            plan(&cm, &BuildModel::default(), BuildKind::Build, None, Some(std::slice::from_ref(&profile))).unwrap();
+        assert_eq!(args(&p), ["--build cmake-build-release --config Release -j 8"]);
+        let p = plan(&cm, &BuildModel::default(), BuildKind::Build, None, Some(&[CMakeProfile::default()])).unwrap();
+        assert_eq!(p.steps[0].args[..4], ["-S", ".", "-B", "cmake-build-debug"]);
+
         let siblings = tmp.path().join("siblings");
         write(&siblings, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
         write(&siblings, "system/pom.xml", "<project><artifactId>system</artifactId></project>");
         let model = crate::load(&siblings, &tmp.path().join("cache3"), None);
-        let p = plan(&siblings, &model, BuildKind::Build, None).unwrap();
+        let p = plan(&siblings, &model, BuildKind::Build, None, None).unwrap();
         assert_eq!(p.system, BuildSystem::Maven);
         assert_eq!(
             p.steps.iter().map(|s| s.cwd.clone()).collect::<Vec<_>>(),
@@ -856,7 +947,7 @@ mod tests {
 
         let none = tmp.path().join("none");
         std::fs::create_dir_all(&none).unwrap();
-        assert!(plan(&none, &BuildModel::default(), BuildKind::Build, None).is_err());
+        assert!(plan(&none, &BuildModel::default(), BuildKind::Build, None, None).is_err());
     }
 
     #[test]

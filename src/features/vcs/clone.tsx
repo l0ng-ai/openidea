@@ -5,7 +5,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { openProject } from "@/platform/project";
 import { Checkbox, Dialog, Icon, IconButton, Input, ProgressBar, Select, T, showContextMenu } from "@/ui";
-import { notifications } from "@/workbench/contributions";
+import { cloneSourceList, notifications, useCloneSources } from "@/workbench/contributions";
 import { openDialog } from "./dialogs";
 import { progressFraction } from "./model";
 import logo from "../../../src-tauri/icons/128x128.png";
@@ -115,7 +115,11 @@ export function showCloneDialog(initialUrl = "") {
 }
 
 function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl: string }) {
-  const [url, setUrl] = useState(initialUrl);
+  /** Sidebar selection: "url" (Repository URL) or a contributed source's id; each keeps its own URL. */
+  const [sourceId, setSourceId] = useState("url");
+  const [urls, setUrls] = useState<Record<string, string>>({ url: initialUrl });
+  const url = urls[sourceId] ?? "";
+  const setUrl = (value: string) => setUrls((m) => ({ ...m, [sourceId]: value }));
   const [parent, setParent] = useState("");
   /** Directory edited by hand: stop deriving it from the URL. */
   const [customDir, setCustomDir] = useState<string | null>(null);
@@ -127,6 +131,8 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
   const request = useRef<number | null>(null);
   const urlField = useRef<HTMLDivElement>(null);
   const [recentUrls] = useState(readRecentUrls);
+  const sources = cloneSourceList(useCloneSources((s) => s.sources));
+  const source = sources.find((s) => s.id === sourceId);
 
   useEffect(() => {
     let alive = true;
@@ -168,9 +174,10 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
     else onClose();
   };
 
-  const clone = async () => {
-    if (invalid || busy) return;
-    const target = dir.trim();
+  const clone = async (picked?: string) => {
+    const cloneUrl = picked ?? url;
+    const target = (customDir ?? joinPath(parent, cloneDirName(cloneUrl))).trim();
+    if (validateClone(cloneUrl, target) || (shallow && depth === null) || busy) return;
     setBusy(true);
     setError(null);
     const id = nextRequestId();
@@ -181,9 +188,9 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
       if (text) setProgress({ line: text, fraction: progressFraction(text) });
     };
     try {
-      await call(commands.vcsClone(id, url.trim(), target, depth, channel));
+      await call(commands.vcsClone(id, cloneUrl.trim(), target, depth, channel));
       writeParent(parentOf(target));
-      rememberUrl(url.trim());
+      rememberUrl(cloneUrl.trim());
       onClose();
       try {
         await openProject(target);
@@ -226,12 +233,22 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
     >
       <div className={styles.layout}>
         <aside className={styles.sidebar} aria-label={tx("Clone source")}>
-          <div className={styles.sourceItem} data-selected="">
-            <Icon name="branch" size={22} />
-            <span className={styles.sourceName}>
-              <T>Repository URL</T>
-            </span>
-          </div>
+          {[{ id: "url", label: "Repository URL", icon: "branch" }, ...sources].map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={styles.sourceItem}
+              data-selected={s.id === sourceId ? "" : undefined}
+              aria-pressed={s.id === sourceId}
+              disabled={busy}
+              onClick={() => setSourceId(s.id)}
+            >
+              <Icon name={s.icon} size={22} />
+              <span className={styles.sourceName}>
+                <T>{s.label}</T>
+              </span>
+            </button>
+          ))}
         </aside>
 
         <form
@@ -241,45 +258,53 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
             void clone();
           }}
         >
-          <div className={styles.versionRow}>
-            <label id="vcs-clone-version-label">
-              <T>Version control:</T>
-            </label>
-            <Select
-              aria-label="Version control"
-              className={styles.versionSelect}
-              value="git"
-              options={[{ value: "git", label: "Git" }]}
-              onChange={() => {}}
-              disabled={busy}
-            />
-          </div>
-
-          <div className={styles.fieldRow}>
-            <label htmlFor="vcs-clone-url">
-              <T>URL:</T>
-            </label>
-            <div ref={urlField} className={styles.comboField}>
-              <Input
-                id="vcs-clone-url"
-                data-autofocus
-                variant="bare"
-                className={styles.fieldInput}
-                value={url}
-                disabled={busy}
-                placeholder="https://github.com/user/repository.git"
-                onChange={(e) => setUrl(e.target.value)}
-              />
-              <IconButton
-                icon="chevron-down"
-                size="normal"
-                className={styles.fieldButton}
-                title={recentUrls.length ? "Recent repository URLs" : "No recent repository URLs"}
-                disabled={busy || !recentUrls.length}
-                onClick={showUrlHistory}
-              />
+          {source ? (
+            <div className={styles.sourcePane}>
+              <source.component url={url} onUrl={setUrl} onClone={(u) => void clone(u)} disabled={busy} />
             </div>
-          </div>
+          ) : (
+            <>
+              <div className={styles.versionRow}>
+                <label id="vcs-clone-version-label">
+                  <T>Version control:</T>
+                </label>
+                <Select
+                  aria-label="Version control"
+                  className={styles.versionSelect}
+                  value="git"
+                  options={[{ value: "git", label: "Git" }]}
+                  onChange={() => {}}
+                  disabled={busy}
+                />
+              </div>
+
+              <div className={styles.fieldRow}>
+                <label htmlFor="vcs-clone-url">
+                  <T>URL:</T>
+                </label>
+                <div ref={urlField} className={styles.comboField}>
+                  <Input
+                    id="vcs-clone-url"
+                    data-autofocus
+                    variant="bare"
+                    className={styles.fieldInput}
+                    value={url}
+                    disabled={busy}
+                    placeholder="https://github.com/user/repository.git"
+                    onChange={(e) => setUrl(e.target.value)}
+                  />
+                  <IconButton
+                    icon="chevron-down"
+                    size="normal"
+                    className={styles.fieldButton}
+                    title={recentUrls.length ? "Recent repository URLs" : "No recent repository URLs"}
+                    disabled={busy || !recentUrls.length}
+                    onClick={showUrlHistory}
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
           <div className={styles.fieldRow}>
             <label htmlFor="vcs-clone-dir">

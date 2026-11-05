@@ -218,10 +218,19 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "vcs_init", json!({ "dir": project })).await.unwrap();
     until("git repository", || project.join(".git").is_dir()).await;
 
+    // A Docker run configuration's environment comes from the host its command runs on.
+    let env =
+        invoke(&peer, "docker_run_env", json!({ "endpoint": { "kind": "socket", "path": "/run/user/1/docker.sock" } }))
+            .await
+            .unwrap();
+    assert_eq!(env["DOCKER_HOST"], "unix:///run/user/1/docker.sock");
+
     // Real project-host ignore writes travel through the remote command dispatcher.
     assert!(Dispatcher::standard().commands().contains(&"vcs_add_to_ignore"));
     let ignore_root = dunce::canonicalize(&project).unwrap();
-    for (name, destination) in [("shared.tmp", "gitignore"), ("private.tmp", "localExclude")] {
+    // Not `.tmp`: a machine's global excludes file (often `*.tmp`) already
+    // ignores those, so the backend never writes the entry anywhere.
+    for (name, destination) in [("shared.ignore-me", "gitignore"), ("private.ignore-me", "localExclude")] {
         let path = ignore_root.join(name);
         std::fs::write(&path, "temporary").unwrap();
         invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [path], "destination": destination })).await.unwrap();
@@ -230,9 +239,9 @@ async fn serves_projects_files_documents_search_and_runs() {
         assert_eq!(entry["ignored"], true);
         assert_eq!(entry["excluded"], false);
     }
-    assert!(std::fs::read_to_string(project.join(".gitignore")).unwrap().contains("/shared.tmp"));
-    assert!(std::fs::read_to_string(project.join(".git/info/exclude")).unwrap().contains("/private.tmp"));
-    let outside = tmp.path().join("outside.tmp");
+    assert!(std::fs::read_to_string(project.join(".gitignore")).unwrap().contains("/shared.ignore-me"));
+    assert!(std::fs::read_to_string(project.join(".git/info/exclude")).unwrap().contains("/private.ignore-me"));
+    let outside = tmp.path().join("outside.ignore-me");
     std::fs::write(&outside, "keep").unwrap();
     assert!(
         invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [outside], "destination": "gitignore" })).await.is_err()

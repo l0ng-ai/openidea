@@ -256,6 +256,11 @@ pub fn set_writable(path: &Path, writable: bool) -> IdeResult<()> {
 pub fn rename(from: &Path, to: &Path) -> IdeResult<()> {
     ops::rename(from, to)
 }
+/// Checks source existence and destination conflicts without mutation, using
+/// the same filesystem identity rules as [`rename`].
+pub fn validate_rename(from: &Path, to: &Path) -> IdeResult<()> {
+    ops::validate_rename(from, to)
+}
 /// Moves to the OS trash (recoverable), like IDEA's safe delete for files.
 /// Deletes permanently when the trash is unavailable.
 pub fn delete(path: &Path) -> IdeResult<()> {
@@ -274,13 +279,14 @@ pub fn copy(from: &Path, to: &Path) -> IdeResult<()> {
 /// honouring .gitignore, .ignore and `excludes`. Shared by index and search.
 ///
 /// Hidden files are included; `.git` is always skipped. `.gitignore` applies
-/// even outside a git repository. Symlinks to files are visited, symlinked
+/// even outside a git repository; inside one, a nested repository's root is a
+/// boundary for the outer repository's rules. Symlinks to files are visited, symlinked
 /// directories are not followed.
 pub fn walk_files(root: &Path, excludes: &[String], visit: impl Fn(&Path) + Send + Sync) {
     let excludes = Arc::new(ExcludeMatcher::new(excludes));
     let base = root.to_path_buf();
     let mut builder = ignore::WalkBuilder::new(root);
-    builder.hidden(false).require_git(false).follow_links(false);
+    builder.hidden(false).require_git(ide_core::ignored::inside_git_repo(root)).follow_links(false);
     builder.filter_entry(move |entry| {
         if entry.depth() > 0 && entry.file_name() == ".git" {
             return false;
@@ -324,6 +330,11 @@ pub struct FsBatch {
     /// Folders holding changes filtered out as excluded or ignored. Only a view already
     /// showing such a folder cares, so they don't count as worktree changes.
     pub excluded_dirs: Vec<PathBuf>,
+    /// Files changed, created or removed that an ignore rule matches while their folder
+    /// is not ignored (`.env`). Kept apart from the worktree changes above (no Local
+    /// History, deployment or `fsChanged`), but the index lists them and open editors
+    /// follow them, like IDEA, where only ignored folders leave the project.
+    pub ignored: Vec<PathBuf>,
 }
 
 impl FsBatch {
@@ -333,6 +344,7 @@ impl FsBatch {
             && self.removed.is_empty()
             && self.vcs.is_empty()
             && self.excluded_dirs.is_empty()
+            && self.ignored.is_empty()
     }
 }
 

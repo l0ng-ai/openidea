@@ -42,7 +42,9 @@
   color: var(--fg-muted);
 }
 .fileError {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
 }
@@ -79,7 +81,7 @@
   color: var(--fg);
   background: var(--bg-app);
   -webkit-user-select: text;
-  cursor: text;
+  cursor: default;
   -webkit-user-select: text;
   user-select: text;
   outline: none;
@@ -89,6 +91,7 @@
   position: relative;
   width: 100%;
   min-width: max-content;
+  cursor: text;
 }
 .line {
   position: absolute;

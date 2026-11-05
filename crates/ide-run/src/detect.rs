@@ -40,6 +40,7 @@ pub(crate) fn detect_with_profiles(
     detect_make(root, &mut out);
     detect_just(root, &mut out);
     detect_godot(root, &mut out);
+    crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
     out.retain(|c| seen.insert(c.id.clone()));
@@ -150,7 +151,7 @@ fn relative(root: &Path, dir: &Path) -> PathBuf {
 
 // ---------------------------------------------------------------- node
 
-fn package_manager(root: &Path, pkg: &Json) -> &'static str {
+pub(crate) fn package_manager(root: &Path, pkg: &Json) -> &'static str {
     if let Some(pm) = pkg.get("packageManager").and_then(Json::as_str) {
         match pm.split('@').next().unwrap_or_default() {
             "pnpm" => return "pnpm",
@@ -171,7 +172,7 @@ fn package_manager(root: &Path, pkg: &Json) -> &'static str {
     }
 }
 
-fn is_test_script(name: &str) -> bool {
+pub(crate) fn is_test_script(name: &str) -> bool {
     matches!(name, "test" | "vitest" | "jest") || name.starts_with("test:")
 }
 

@@ -99,7 +99,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           id={HOME}
           autoFocus
           placeholder={
-            docked ? "Describe a task…" : "Describe a task for the agent. @ references a file, / runs a command"
+            docked
+              ? "Describe a task…"
+              : "Describe a task for the agent. @ references a file or folder, / runs a command"
           }
           root={root}
           projectRoot={root}
@@ -168,7 +170,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
               onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
             />
           )}
-          {isolation === "local" && current && (
+          {/* A folder that isn't a repository has no branch: the one Git found below it isn't where the agent runs. */}
+          {isolation === "local" && isGit && current && (
             <>
               {!docked && (
                 <span className={styles.note}>

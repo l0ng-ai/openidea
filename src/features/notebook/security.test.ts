@@ -4,6 +4,21 @@ import { markdownRoot, resolveMarkdownAttachments, sanitizedSvgUrl, staticOutput
 const parse = (html: string) => new DOMParser().parseFromString(html, "text/html");
 
 describe("static notebook output sanitization", () => {
+  it.each([
+    "<style>body{outline:7px solid red}</style>",
+    '<form action="https://example.com/x"><button>go</button></form>',
+    '<div style="position:fixed">x</div>',
+    '<link rel="stylesheet" href="https://example.com/x.css">',
+    '<meta http-equiv="refresh" content="0;url=https://example.com">',
+    '<base href="https://example.com/">',
+    '<iframe src="https://example.com"></iframe>',
+    '<button formaction="https://example.com/x">go</button>',
+  ])("keeps raw Markdown markup from reaching the page: %s", (raw) => {
+    const root = markdownRoot(`text\n\n${raw}\n`);
+    expect(root.querySelector("style, form, link, meta, base, iframe, [style], [formaction]")).toBeNull();
+    expect(root.textContent).not.toContain("outline");
+  });
+
   it("retains table content while removing executable, navigation and external-resource surfaces", () => {
     const document = parse(
       staticOutputDocument(`

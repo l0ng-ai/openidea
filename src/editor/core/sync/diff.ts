@@ -1,20 +1,11 @@
+import { diff } from "@codemirror/merge";
 import type { TextChange } from "@/platform/ipc";
 
 /**
- * The single replacement turning `a` into `b` (common prefix / suffix
- * trimmed), or null when equal. Linear time; used for resyncs, where the
- * backend's own patches are already minimal.
+ * The changes turning `a` into `b`, one per changed region; empty when equal. Used for resyncs:
+ * a single change spanning two distant edits would drag the caret and view to the first one.
+ * The timeout keeps a huge file from stalling the UI; past it the regions only get coarser.
  */
-export function minimalChange(a: string, b: string): TextChange | null {
-  if (a === b) return null;
-  const max = Math.min(a.length, b.length);
-  let start = 0;
-  while (start < max && a.charCodeAt(start) === b.charCodeAt(start)) start++;
-  let endA = a.length;
-  let endB = b.length;
-  while (endA > start && endB > start && a.charCodeAt(endA - 1) === b.charCodeAt(endB - 1)) {
-    endA--;
-    endB--;
-  }
-  return { from: start, to: endA, insert: b.slice(start, endB) };
+export function minimalChanges(a: string, b: string): TextChange[] {
+  return diff(a, b, { timeout: 50 }).map((c) => ({ from: c.fromA, to: c.toA, insert: b.slice(c.fromB, c.toB) }));
 }

@@ -3,9 +3,11 @@
 //!
 //! Every function blocks; callers run them off the UI / command threads.
 
+mod account;
 mod model;
 mod process;
 
+pub use account::{GhAccountRepo, GhAccountRepos, account_repositories, parse_account_repos};
 pub use model::*;
 
 use ide_core::{CancellationToken, IdeError, IdeResult};
