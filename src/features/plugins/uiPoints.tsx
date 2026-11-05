@@ -15,7 +15,7 @@
 import { useMemo } from "react";
 import type { PluginInfo } from "@/bindings";
 import { getAction } from "@/platform/actions";
-import { evaluateWhen } from "@/platform/context";
+import { evaluateWhen, getContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
 import {
@@ -63,7 +63,8 @@ import styles from "./PluginsPage.module.css";
 // --- menus ------------------------------------------------------------------------
 
 interface MenuDecl {
-  menu: "editor.context" | "projectView.context" | "editorTab.context" | "tools";
+  menu: "editor.context" | "projectView.context" | "editorTab.context" | "view.item.context" | "tools";
+  view?: string | null;
   command: string;
   when?: string | null;
 }
@@ -86,6 +87,20 @@ export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): 
     if (!getAction(action)) continue;
     // The editor menu runs with the focused editor; the others name their file.
     out.push({ kind: "action", action, arg: menu === "editor" ? undefined : paths[0] });
+  }
+  return out;
+}
+
+/** Plugin entries of a view item's context menu, with the item key as argument. */
+export function pluginViewItemMenuItems(pluginId: string, view: string, key: string): MenuItem[] {
+  const ctx = { ...getContext(), viewItem: key, viewItemKind: key.split(":")[0] };
+  const out: MenuItem[] = [];
+  for (const { pluginId: owner, decl } of contextItems.values()) {
+    if (owner !== pluginId || decl.menu !== "view.item.context" || decl.view !== view) continue;
+    if (!evaluateWhen(decl.when ?? undefined, ctx)) continue;
+    const action = pluginActionId(pluginId, decl.command);
+    if (!getAction(action)) continue;
+    out.push({ kind: "action", action, arg: key });
   }
   return out;
 }

@@ -7,7 +7,7 @@ import { bindingsFor, effectiveBindings, registerExtensionBindings, useKeymap } 
 import { createMemoryPluginsBackend, setPluginsBackend, type PluginsBackend } from "../backend";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, syncUiContributions } from "../projection";
-import { pluginMenuItems, withPluginSetting } from "../uiPoints";
+import { pluginMenuItems, pluginViewItemMenuItems, withPluginSetting } from "../uiPoints";
 import { matchesPattern } from "../views/customEditor";
 import { FRAME_CSP, FRAME_TAG, frameDocument, frameTheme, type FrameTheme } from "../views/frame";
 import { PluginView, treeNodes, wantedViewport } from "../views/PluginView";
@@ -190,6 +190,38 @@ describe("plugin menus", () => {
       { kind: "action", action: "plugin.p.check", arg: "/p/a.java" },
     ]);
     expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([]);
+    off();
+  });
+
+  it("projects view item menu entries with the item key as argument", () => {
+    const off = registerAction({ id: "plugin.k.logs", title: "Logs", run: () => {} });
+    syncUiContributions(
+      [
+        {
+          pluginId: "k",
+          point: "menus",
+          key: "view.item.context/res/logs",
+          decl: {
+            menu: "view.item.context",
+            view: "res",
+            command: "logs",
+            when: "viewItemKind == pod",
+          },
+        },
+      ],
+      [
+        { id: "k", name: "K", status: "active", enabled: true } as unknown as Parameters<
+          typeof syncUiContributions
+        >[1][number],
+      ],
+    );
+    expect(pluginViewItemMenuItems("k", "res", "pod:default:nginx")).toEqual([
+      { kind: "action", action: "plugin.k.logs", arg: "pod:default:nginx" },
+    ]);
+    expect(pluginViewItemMenuItems("k", "res", "svc:default/web")).toEqual([]);
+    expect(pluginViewItemMenuItems("k", "other", "pod:x")).toEqual([]);
+    expect(pluginViewItemMenuItems("other", "res", "pod:x")).toEqual([]);
+    expect(pluginMenuItems("projectView", ["/p/a"])).toEqual([]);
     off();
   });
 });
