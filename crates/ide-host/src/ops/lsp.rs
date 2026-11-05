@@ -54,23 +54,40 @@ pub async fn lsp_completion(
 ) -> IdeResult<CompletionList> {
     let generation = host.begin_completion(doc);
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
+    let request_cancel = host.begin_request(request);
 
     let started = std::time::Instant::now();
-    let result = lsp.completion(doc, pos, trigger.clone(), cancel).await;
+    let gen_cancel_outer = generation.cancellation();
+    let result = tokio::select! {
+        r = lsp.completion(doc, pos, trigger.clone(), request_cancel.clone()) => r,
+        _ = gen_cancel_outer.cancelled() => {
+            request_cancel.cancel();
+            Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "completion session superseded",
+            ))
+        }
+    };
     let lsp_latency_ms = started.elapsed().as_millis() as u64;
     host.end_request(request);
 
     // Plugin providers (`[[contributes.providers]]`) add theirs. A new session
     // (another keystroke) cancels this one, so stop before publishing anything.
     let plugin_started = std::time::Instant::now();
-    let items = match plugin_providers(host, window, doc, ProviderKind::Completion) {
-        Some((plugins, d)) => {
-            plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref()))
-                .await
-                .unwrap_or_default()
-        }
-        None => Vec::new(),
+    let gen_cancel = generation.cancellation();
+    let providers = plugin_providers(host, window, doc, ProviderKind::Completion);
+    let items = tokio::select! {
+        r = async {
+            match providers {
+                Some((plugins, d)) => {
+                    plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref()))
+                        .await
+                        .unwrap_or_default()
+                }
+                None => Vec::new(),
+            }
+        } => r,
+        _ = gen_cancel.cancelled() => Vec::new(),
     };
     let plugin_latency_ms = plugin_started.elapsed().as_millis() as u64;
 
@@ -88,12 +105,14 @@ pub async fn lsp_completion(
     };
     match generation.submit(list) {
         Ok(list) => {
-            tracing::debug!(?diagnostics, "completion session published");
+            host.completion_diagnostics.write().insert(doc, diagnostics);
+            tracing::debug!("completion session published");
             Ok(list)
         }
         Err(rejected) => {
             diagnostics.discarded_reason = Some(format!("{:?}", rejected.reason));
-            tracing::debug!(?diagnostics, "completion session discarded stale results");
+            host.completion_diagnostics.write().insert(doc, diagnostics);
+            tracing::debug!("completion session discarded stale results");
             Err(ide_core::IdeError::new(
                 ide_core::error::ErrorKind::OutOfSync,
                 "document changed while computing completions; request them again",

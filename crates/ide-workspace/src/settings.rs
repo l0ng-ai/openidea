@@ -381,6 +381,8 @@ impl SettingsStore {
             return Err(IdeError::invalid("not an OpenIDEA settings file, or one from a newer version"));
         }
         let layer = parse_layer(&bundle.settings).map_err(|e| IdeError::invalid(format!("invalid settings: {e}")))?;
+        // Validate the incoming bundle on its own first, so an invalid bundle is
+        // rejected even when the local file already holds a value for that key.
         try_merge(&mut defaults_json(), layer).map_err(|e| IdeError::invalid(format!("invalid settings: {e}")))?;
 
         let incoming: DocumentMut = bundle

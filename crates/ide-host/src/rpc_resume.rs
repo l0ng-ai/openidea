@@ -30,6 +30,8 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    /// `session_id` is retained for diagnostics only; identity is a fresh
+    /// `DocId` so no real document is implied.
     pub fn new(session_id: &str) -> Self {
         // A DocId is just a stable numeric identity; the token's string id is
         // kept separately so no real document is implied.
@@ -96,6 +98,8 @@ pub struct OfflineBuffer<T> {
 }
 
 impl<T> OfflineBuffer<T> {
+    /// `capacity == 0` is treated as 1: a caller that wants no buffering
+    /// should not construct an `OfflineBuffer` at all.
     pub fn new(capacity: usize) -> Self {
         Self { pending: VecDeque::new(), next_key: 1, capacity: capacity.max(1) }
     }

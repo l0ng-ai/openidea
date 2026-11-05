@@ -86,6 +86,8 @@ pub struct Host {
     /// Per-document completion sessions (spec 09): a new session supersedes
     /// in-flight results of the previous one.
     completion_sessions: RwLock<HashMap<DocId, ide_core::generation::GenerationClock>>,
+    /// Last completion diagnostics per document, for "why did/didn't it pop up".
+    completion_diagnostics: RwLock<HashMap<DocId, crate::ops::lsp::CompletionDiagnostics>>,
 }
 
 impl Host {
@@ -131,6 +133,7 @@ impl Host {
             requests: Default::default(),
             project_requests: RwLock::default(),
             completion_sessions: RwLock::default(),
+            completion_diagnostics: RwLock::default(),
         };
         host.apply_proxy();
         host
@@ -328,6 +331,11 @@ impl Host {
             .or_insert_with(|| ide_core::generation::GenerationClock::new(doc));
         clock.bump();
         clock.mint()
+    }
+
+    /// Last completion diagnostics for `doc`, if any session ran.
+    pub fn completion_diagnostics(&self, doc: DocId) -> Option<crate::ops::lsp::CompletionDiagnostics> {
+        self.completion_diagnostics.read().get(&doc).cloned()
     }
 
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {

@@ -147,6 +147,9 @@ fn mapping(point: &str) -> (CompatKind, Option<&'static str>, &'static str) {
 }
 
 /// Reads a descriptor from `path` (jar / zip / folder / loose `plugin.xml`).
+///
+/// Note: the loose-`.xml` branch does not traverse `<xi:include>` (no jar
+/// context); only the jar/folder branch does.
 pub fn read_descriptor(path: &Path) -> IdeResult<IntellijDescriptor> {
     let shown = || path.display().to_string();
     if path.is_file()
@@ -368,8 +371,8 @@ pub fn compat_report(path: &Path) -> IdeResult<CompatReport> {
     for a in &descriptor.actions {
         add(a.point.clone());
     }
-    for _ in &descriptor.services {
-        add("com.intellij.applicationService".to_owned());
+    for e in &descriptor.services {
+        add(e.point.clone());
     }
     for _ in &descriptor.themes {
         add("com.intellij.themeProvider".to_owned());

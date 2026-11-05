@@ -4104,6 +4104,7 @@ dependencies = [
  "dunce",
  "encoding_rs",
  "libc",
+ "proptest",
  "serde",
  "serde_json",
  "specta",

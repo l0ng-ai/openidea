@@ -59,7 +59,8 @@ impl GenerationClock {
     /// not yet published is still a member of the old generation, so its result
     /// will be rejected by [`Generation::submit`] as well.
     pub fn bump(&self) -> u64 {
-        let previous: Vec<_> = std::mem::take(&mut *self.lock_members());
+        let mut members = self.lock_members();
+        let previous: Vec<_> = std::mem::take(&mut *members);
         for token in previous {
             token.cancel();
         }
@@ -69,11 +70,14 @@ impl GenerationClock {
     /// Mints a handle bound to the current generation. The handle stays valid
     /// until [`GenerationClock::bump`] is called or [`Generation::cancel`] runs.
     pub fn mint(&self) -> Generation {
+        let mut members = self.lock_members();
+        let revision = self.revision.load(Ordering::Acquire);
         let token = Arc::new(CancellationToken::new());
-        self.lock_members().push(Arc::clone(&token));
+        members.push(Arc::clone(&token));
+        drop(members);
         Generation(Arc::new(GenerationInner {
             doc: self.doc,
-            revision: self.current(),
+            revision,
             clock: Arc::clone(&self.revision),
             token,
             self_cancelled: AtomicBool::new(false),

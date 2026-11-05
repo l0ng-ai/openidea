@@ -172,7 +172,7 @@ pub fn post_apply_ok(before: &[(DocId, u32)], after: &[(DocId, u32)]) -> bool {
         after
             .iter()
             .find(|(d, _)| d == doc)
-            .is_some_and(|(_, v)| *v == version.saturating_add(1))
+            .is_some_and(|(_, v)| *v == version.wrapping_add(1))
     })
 }
 
