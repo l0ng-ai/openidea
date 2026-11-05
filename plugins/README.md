@@ -11,9 +11,10 @@ editors, and contribute menus, shortcuts, settings, themes, file icon themes
 and languages. Plugins that only contribute data (themes, icons, languages,
 menus, settings) need no code at all.
 
-> **Preview.** The plugin system ships as a preview: until it is declared
-> stable the API (`openidea:plugin@1.0`) may still change, and the official
-> plugins are versioned `0.x`. See _Evolving the plugin API_ below.
+> **Preview.** The plugin system ships as a preview and the official plugins
+> are versioned `0.x`. Released API versions only grow: a plugin built for
+> `openidea:plugin@1.0` keeps loading in later 1.x IDEs. See _Evolving the
+> plugin API_ below.
 
 ```
 plugins/
@@ -919,8 +920,8 @@ the API itself follows _Evolving the plugin API_ below.
 
 ## 10. Evolving the plugin API
 
-While the plugin system is a preview the API may still change freely. Once it
-is declared stable wasmtime decides what stays compatible: it resolves interface names
+Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36 and 1.1.0
+with 0.1.37. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -960,7 +961,7 @@ Checked automatically:
 - SDK `tests/api_frozen.rs`: `tests/api/<version>/` holds the WIT of each
   released version; every interface, type, function and world import or
   export in it must still exist unchanged in `wit/` (rules 1–3). Copy `wit/`
-  there when releasing; there is no snapshot before the first release.
+  there when a version ships.
 - `crates/ide-plugin/tests/api_compat.rs`: the versions agree, the SDK's copy
   matches, the version check (rules 4, 5); a simulated next-minor host (every
   import stubbed at the newer version, plus extra functions and an extra
