@@ -74,6 +74,9 @@ ide-docker = { path = "../crates/ide-docker" }
 ide-android = { path = "../crates/ide-android" }
 ide-github = { path = "../crates/ide-github" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 # Plugin secrets in the login keychain.

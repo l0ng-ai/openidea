@@ -802,10 +802,10 @@ export const commands = {
 	 */
 	windowOpenFileInNewWindow: (project: string | null, file: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_file_in_new_window", { project, file })),
 	/**
-	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
-	 *  `ssh_config` (Remote Development); a new window connects itself.
+	 *  [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
+	 *  Remote Development); a new window connects itself.
 	 */
-	windowOpenRemote: (sshConfig: string, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { sshConfig, path, newWindow })),
+	windowOpenRemote: (target: RemoteTarget, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, newWindow })),
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
@@ -1149,6 +1149,19 @@ export const commands = {
 	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
 	/**  Test Connection: connects with `config` as edited (not necessarily saved). */
 	sshTest: (config: SshConfiguration, secret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("ssh_test", { config, secret })),
+	/**
+	 *  Installed WSL distros, for the "Connect to WSL" picker. `wsl.exe` can stall while the WSL
+	 *  service starts, so the wait is bounded.
+	 */
+	wslDistros: () => typedError<string[], IdeError>(__TAURI_INVOKE("wsl_distros")),
+	/**
+	 *  The WSL project a `\\wsl.localhost\<distro>\…` folder stands for, so the frontend opens it
+	 *  through the distro and not as a network folder. `None` for any other path.
+	 */
+	wslResolve: (path: string) => __TAURI_INVOKE<{
+	target: RemoteTarget,
+	path: string,
+} | null>("wsl_resolve", { path }),
 	/**  Remembers the password / passphrase of configuration `id` (`None` forgets it). */
 	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
 	/**  Whether connecting with configuration `id` needs a password first. */
@@ -1191,15 +1204,17 @@ export const commands = {
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
 	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
 	/**
-	 *  File › Remote Development: opens `path` on the host of SSH configuration
-	 *  `ssh_config` in this window (installs / starts the server as needed).
+	 *  File › Remote Development: opens `path` on `target` (an SSH host or a WSL distribution)
+	 *  in this window (installs / starts the server as needed).
 	 */
-	remoteConnect: (sshConfig: string, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { sshConfig, path, onProgress })),
+	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
 	remoteCurrent: () => __TAURI_INVOKE<{
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
 	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
 	commands: string[],
 } | null>("remote_current"),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -6110,9 +6125,9 @@ export type RemoteEntry = {
 	permissions: string,
 };
 
-/**  A project folder on the host of an SSH configuration. */
+/**  A project folder on an SSH host or in a WSL distribution. */
 export type RemoteLaunch = {
-	sshConfig: string,
+	target: RemoteTarget,
 	path: string,
 };
 
@@ -6140,9 +6155,9 @@ export type RemoteProgress = {
 export type RemoteProject = RemoteProject_Serialize | RemoteProject_Deserialize;
 
 export type RemoteProject_Deserialize = {
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
-	/**  `user@host:port` of the SSH configuration. */
+	/**  `user@host:port` of the SSH configuration; the distribution name for WSL. */
 	host: string,
 	serverVersion: string,
 	os: string,
@@ -6152,9 +6167,9 @@ export type RemoteProject_Deserialize = {
 };
 
 export type RemoteProject_Serialize = {
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
-	/**  `user@host:port` of the SSH configuration. */
+	/**  `user@host:port` of the SSH configuration; the distribution name for WSL. */
 	host: string,
 	serverVersion: string,
 	os: string,
@@ -6164,14 +6179,23 @@ export type RemoteProject_Serialize = {
 };
 
 export type RemoteSession = {
-	sshConfig: string,
+	target: RemoteTarget,
 	root: string,
 	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
 	commands: string[],
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
 export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
+
+/**  Where a remote project lives and how the server there is reached. */
+export type RemoteTarget = 
+/**  The host of SSH configuration `config`. */
+{ kind: "ssh"; config: string } | 
+/**  A WSL distribution on this machine. */
+{ kind: "wsl"; distro: string };
 
 export type Renamed = {
 	edit: WorkspaceEdit,

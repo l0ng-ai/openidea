@@ -70,6 +70,21 @@ mod framing_tests {
     }
 
     #[tokio::test]
+    async fn utf16_output_of_wsl_exe_before_a_message_does_not_swallow_it() {
+        // `wsl.exe` reports its own errors as UTF-16LE with a BOM; the real server only starts
+        // after it, so the first message must still be read whole.
+        let notice = "The Windows Subsystem for Linux instance has terminated.";
+        let mut input: Vec<u8> = [0xff, 0xfe].into();
+        input.extend(format!("{notice}\r\n").encode_utf16().flat_map(u16::to_le_bytes));
+        input.extend(b"Content-Length: 2\r\n\r\n{}");
+        let (msgs, noise) = read_with_noise(&input).await;
+        assert_eq!(msgs.unwrap(), vec![b"{}".to_vec()]);
+        // The text is kept for the error shown to the user, whatever the BOM decodes to.
+        let ascii: String = noise.concat().chars().filter(char::is_ascii).filter(|c| *c != '\0').collect();
+        assert_eq!(ascii.trim(), notice);
+    }
+
+    #[tokio::test]
     async fn unterminated_output_then_eof_is_reported() {
         // `pause` prints its prompt without a newline and the process is gone.
         let (msgs, noise) = read_with_noise(b"Press any key to continue . . . ").await;

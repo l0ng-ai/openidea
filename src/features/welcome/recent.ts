@@ -1,9 +1,26 @@
 /** Recent projects: loading, filtering, opening and removal. */
 import { create } from "zustand";
 import { executeAction, getAction } from "@/platform/actions";
-import { commands, IpcError, isCancelled, isTauri, type RecentProject, type RecentProjectGroup } from "@/platform/ipc";
+import {
+  commands,
+  IpcError,
+  isCancelled,
+  isTauri,
+  type RecentProject,
+  type RecentProjectGroup,
+  type RemoteTarget,
+} from "@/platform/ipc";
 import { openProject, useProject } from "@/platform/project";
-import { connectRemote, forgetRemote, parseRemoteLocation, recentRemotes, remoteLocation } from "@/platform/remote";
+import {
+  connectRemote,
+  forgetRemote,
+  parseRemoteLocation,
+  recentRemotes,
+  remoteLocation,
+  resolveRemoteLocation,
+  sameTarget,
+  targetName,
+} from "@/platform/remote";
 import { tx } from "@/platform/i18n";
 import { fuzzyMatch } from "@/ui";
 import { notifications } from "@/workbench/contributions";
@@ -64,7 +81,7 @@ export async function loadRecent() {
 /** The recent remote projects (Remote Development) among the local ones, most recent first. */
 function withRemotes(local: RecentProject[]): RecentProject[] {
   const remote: RecentProject[] = recentRemotes().map((r) => ({
-    path: remoteLocation(r.sshConfig, r.path),
+    path: remoteLocation(r.target, r.path),
     name: r.name,
     openedAtMs: r.openedAtMs,
     branch: null,
@@ -77,7 +94,8 @@ function withRemotes(local: RecentProject[]): RecentProject[] {
 export function remoteDisplay(location: string): string | null {
   const r = parseRemoteLocation(location);
   if (!r) return null;
-  const host = recentRemotes().find((x) => x.sshConfig === r.sshConfig && x.path === r.path)?.host || r.sshConfig;
+  const host =
+    recentRemotes().find((x) => sameTarget(x.target, r.target) && x.path === r.path)?.host || targetName(r.target);
   return `${host}:${r.path}`;
 }
 
@@ -88,7 +106,7 @@ export async function removeRecent(path: string) {
   }));
   const remote = parseRemoteLocation(path);
   if (remote) {
-    forgetRemote(remote.sshConfig, remote.path);
+    forgetRemote(remote.target, remote.path);
     return;
   }
   if (!isTauri()) return;
@@ -107,7 +125,7 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
     });
     return false;
   }
-  const remote = parseRemoteLocation(project.path);
+  const remote = await resolveRemoteLocation(project.path);
   if (remote) return openRemote(project, remote);
   const current = useProject.getState().project;
   if (current?.root === project.path) return true;
@@ -139,12 +157,12 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
 
 async function openRemote(
   project: Pick<RecentProject, "path" | "name">,
-  remote: { sshConfig: string; path: string },
+  remote: { target: RemoteTarget; path: string },
 ): Promise<boolean> {
   try {
-    return await openRemoteProject(remote.sshConfig, remote.path, async () => {
+    return await openRemoteProject(remote.target, remote.path, async () => {
       useRecent.setState({ opening: project.path });
-      await connectRemote(remote.sshConfig, remote.path);
+      await connectRemote(remote.target, remote.path);
     });
   } catch (e) {
     if (isCancelled(e)) return false;
