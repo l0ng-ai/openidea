@@ -59,7 +59,6 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
 }
 .chevron {
   flex: none;

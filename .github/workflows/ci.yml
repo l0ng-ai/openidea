@@ -7,6 +7,9 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   # A newer push supersedes the run in progress, on main too.
@@ -19,8 +22,50 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
+  # Which parts a pull request touches, so jobs it can't affect skip and leave the
+  # shared runners to others. Pushes and manual runs always run everything.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+    steps:
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
+          cat files.txt
+          docs='^(docs/|\.agents/|\.claude/|\.idea/|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|[^/]+\.md$|LICENSE$|NOTICE$)'
+          # Frontend-only paths. The Rust code embeds a few files under src/; those stay out.
+          web='^(src/|e2e/|perf/|public/|scripts/|smoke/|index\.html$|vite\.config\.ts$|tsconfig[^/]*\.json$|knip\.ts$|playwright\.config\.ts$|\.oxlintrc\.json$|\.oxfmtrc\.json$)'
+          embedded='^src/(bindings\.ts|styles/tokens\.css|features/plugins/views/frame-bridge\.js|platform/keymaps/)'
+          # A job runs when any changed file falls outside the paths that can't affect it.
+          rust=false
+          if grep -Ev "$docs|$web" files.txt | grep -q . || grep -Eq "$embedded" files.txt; then rust=true; fi
+          frontend=false
+          if grep -Ev "$docs" files.txt | grep -q .; then frontend=true; fi
+          echo "rust=$rust frontend=$frontend"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+
   rust:
     name: Rust (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +107,9 @@ jobs:
   # keep that build working.
   server:
     name: Remote server (linux musl)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 40
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -77,6 +125,9 @@ jobs:
   # own workspaces (the root excludes them), so the jobs above don't see them.
   plugins:
     name: Plugins (SDK, official, fixtures)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30
     runs-on: ubuntu-22.04
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
@@ -126,6 +177,9 @@ jobs:
 
   deny:
     name: Cargo deny
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -135,6 +189,9 @@ jobs:
 
   frontend:
     name: Frontend
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    timeout-minutes: 30
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -152,6 +209,9 @@ jobs:
 
   e2e:
     name: E2E
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    timeout-minutes: 30
     runs-on: ubuntu-24.04
     # Browsers and their system libraries are preinstalled; keep the tag in step with @playwright/test.
     container: mcr.microsoft.com/playwright:v1.64.1-noble

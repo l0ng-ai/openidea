@@ -162,14 +162,6 @@ pub struct LogDetails {
     pub fingerprint: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct LogIndexProgress {
-    pub indexed: u32,
-    pub total: u32,
-    pub running: bool,
-}
-
 /// Order of the Git Log (Graph Options › Sort).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -672,7 +664,6 @@ pub struct Repo {
     inner: std::sync::Mutex<repo::Cache>,
     ignored: std::sync::RwLock<IgnoredNames>,
     log_index: std::sync::Mutex<log_index::LogIndex>,
-    index_progress: std::sync::Mutex<LogIndexProgress>,
     log_signatures: std::sync::Mutex<std::collections::HashMap<String, LogDetails>>,
 }
 
@@ -844,59 +835,6 @@ impl Repo {
             .into_iter()
             .collect())
     }
-    pub fn log_index_progress(&self) -> LogIndexProgress {
-        self.index_progress.lock().unwrap_or_else(|p| p.into_inner()).clone()
-    }
-
-    /// Incremental persistent inverted index; completed objects survive cancellation/restart.
-    pub fn index_log(&self, cancel: &CancellationToken) -> IdeResult<LogIndexProgress> {
-        {
-            let mut progress = self.index_progress.lock().unwrap_or_else(|p| p.into_inner());
-            if progress.running {
-                return Ok(progress.clone());
-            }
-            progress.running = true;
-        }
-        let result = (|| {
-            let repo = self.gix()?;
-            let out = cli::run_cancellable(self.root(), &["rev-list", "--all", "--topo-order"], cancel)?;
-            let ids: Vec<_> = out
-                .stdout_str()
-                .lines()
-                .map(|id| gix::ObjectId::from_hex(id.as_bytes()).map_err(repo::gx))
-                .collect::<IdeResult<_>>()?;
-            {
-                let mut p = self.index_progress.lock().unwrap_or_else(|p| p.into_inner());
-                p.total = ids.len() as u32;
-                p.indexed = 0;
-            }
-            for (i, id) in ids.iter().enumerate() {
-                if cancel.is_cancelled() {
-                    return Err(ide_core::IdeError::cancelled());
-                }
-                let indexed = self.log_index.lock().unwrap_or_else(|p| p.into_inner()).indexed(&id.to_string());
-                if !indexed {
-                    let files = self.commit_files(&id.to_string())?;
-                    let paths =
-                        files.into_iter().flat_map(|f| std::iter::once(f.path).chain(f.old_path)).collect::<Vec<_>>();
-                    let mut index = self.log_index.lock().unwrap_or_else(|p| p.into_inner());
-                    let c = index.get(&repo, *id)?;
-                    let message = index.message(&repo, *id)?;
-                    index.index_commit(&c.id, &message, &c.author, &c.email, &paths);
-                    if i % 100 == 0 {
-                        index.flush();
-                    }
-                }
-                self.index_progress.lock().unwrap_or_else(|p| p.into_inner()).indexed = i as u32 + 1;
-            }
-            Ok(())
-        })();
-        self.log_index.lock().unwrap_or_else(|p| p.into_inner()).flush();
-        self.index_progress.lock().unwrap_or_else(|p| p.into_inner()).running = false;
-        result?;
-        Ok(self.log_index_progress())
-    }
-
     pub fn log_details(&self, revision: &str) -> IdeResult<LogDetails> {
         self.log_details_cancellable(revision, &CancellationToken::new())
     }

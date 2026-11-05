@@ -1,4 +1,4 @@
-package openidea:plugin@1.0.0;
+package openidea:plugin@1.1.0;
 
 interface workspace {
     use types.{error};
@@ -84,6 +84,8 @@ interface vcs {
 
     /// `none` when the project is not in a repository. Requires `vcs.read`.
     status: func(project: borrow<project>) -> result<option<repository-status>, error>;
+    /// Configured remotes (`name`, fetch `url`), in order. Requires `vcs.read`.
+    remotes: func(project: borrow<project>) -> result<list<tuple<string, string>>, error>;
     /// Fetches all remotes (pruning deleted branches). Requires `vcs.write`.
     /// Long-running: call it inside a task.
     fetch: func(project: borrow<project>) -> result<_, error>;
