@@ -7,15 +7,22 @@ expression: golden
 == src/Container.php
 class App\Container final @13:12-13:21 [13:0-49:1]
   property private array $factories = [] @16:18-16:28 [16:4-16:34]
+    @var array<string, Closure(self): object>
   property private array $instances = [] @19:18-19:28 [19:4-19:34]
+    @var array<string, object>
   method public static boot(): self @21:27-21:31 [21:4-28:5]
   method public set(string $id, Closure $factory): void @33:20-33:23 [33:4-37:5]
+    @param Closure(self): object $factory
   method public make(string $id): object @39:20-39:24 [39:4-48:5]
 == src/Contracts/Repository.php
 interface App\Contracts\Repository @11:10-11:20 [11:0-27:1]
+  @template T of object
   method public abstract find(string $id): ?object @16:20-16:24 [16:4-16:46]
+    @return T|null
   method public abstract all(): App\Support\Collection @21:20-21:23 [21:4-21:38]
+    @return \App\Support\Collection<T>
   method public abstract save(object $entity): void @26:20-26:24 [26:4-26:47]
+    @param T $entity
 == src/Library.php
 class App\Library final @11:12-11:19 [11:0-57:1]
   property private readonly promoted App\Repository\BookRepository $books @13:64-13:70 [13:32-13:70]
@@ -23,7 +30,9 @@ class App\Library final @11:12-11:19 [11:0-57:1]
   method public add(App\Model\Book $book): void @17:20-17:23 [17:4-20:5]
   method public find(string $isbn): ?App\Model\Book @22:20-22:24 [22:4-25:5]
   method public checkout(string $isbn): App\Model\Book @30:20-30:28 [30:4-40:5]
+    @throws \DomainException
   method public available(): App\Support\Collection @45:20-45:29 [45:4-48:5]
+    @return \App\Support\Collection<\App\Model\Book>
   method public totalValue(): string @50:20-50:30 [50:4-56:5]
 == src/Model/Book.php
 class App\Model\Book final @8:12-8:16 [8:0-33:1]
@@ -50,31 +59,52 @@ class App\Reports\ShelfReport final @10:12-10:23 [10:0-26:1]
   method public price(int $cents): string @22:20-22:25 [22:4-25:5]
 == src/Repository/AbstractRepository.php
 class App\Repository\AbstractRepository abstract @15:15-15:33 [15:0-39:1]
+  @template T of object
+  @implements \App\Contracts\Repository<T>
   implements App\Contracts\Repository
   property protected array $items = [] @18:20-18:26 [18:4-18:32]
+    @var array<string, T>
   method protected abstract idOf(object $entity): string @23:32-23:36 [23:4-23:61]
+    @param T $entity
   method public find(string $id): ?object @25:20-25:24 [25:4-28:5]
   method public all(): App\Support\Collection @30:20-30:23 [30:4-33:5]
   method public save(object $entity): void @35:20-35:24 [35:4-38:5]
 == src/Repository/BookRepository.php
 class App\Repository\BookRepository @14:6-14:20 [14:0-39:1]
+  @extends \App\Repository\AbstractRepository<\App\Model\Book>
   extends App\Repository\AbstractRepository
   use App\Support\HasTimestamps [16:4-16:22]
   method protected idOf(object $entity): string @21:23-21:27 [21:4-24:5]
+    @param \App\Model\Book $entity
   method public save(object $entity): void @26:20-26:24 [26:4-30:5]
   method public byGenre(App\Model\Genre $genre): App\Support\Collection @35:20-35:27 [35:4-38:5]
+    @return \App\Support\Collection<\App\Model\Book>
 == src/Support/Collection.php
 class App\Support\Collection final @16:12-16:22 [16:0-81:1]
+  @template T
+  @implements \IteratorAggregate<int, T>
   implements IteratorAggregate, Countable
   property private readonly promoted array $items @21:55-21:61 [21:32-21:66]
+    @var list<T>
   method public __construct(private readonly array $items = []) @21:20-21:31 [21:4-23:5]
+    @param list<T> $items
   method public map(callable $fn): self @30:20-30:23 [30:4-33:5]
+    @template U
+    @param callable(T): U $fn
+    @return \App\Support\Collection<U>
   method public filter(callable $fn): self @39:20-39:26 [39:4-42:5]
+    @param callable(T): bool $fn
+    @return \App\Support\Collection<T>
   method public push(mixed $item): self @48:20-48:24 [48:4-51:5]
+    @param T $item
+    @return \App\Support\Collection<T>
   method public first(): mixed @56:20-56:25 [56:4-59:5]
+    @return T|null
   method public toArray(): array @64:20-64:27 [64:4-67:5]
+    @return list<T>
   method public count(): int @69:20-69:25 [69:4-72:5]
   method public getIterator(): ArrayIterator @77:20-77:31 [77:4-80:5]
+    @return \ArrayIterator<int, T>
 == src/Support/HasTimestamps.php
 trait App\Support\HasTimestamps @8:6-8:19 [8:0-21:1]
   property private ?DateTimeImmutable $touchedAt = null @10:31-10:41 [10:4-10:49]

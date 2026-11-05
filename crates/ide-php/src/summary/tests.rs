@@ -267,6 +267,336 @@ fn never_panics_on_any_prefix() {
     }
 }
 
+#[test]
+fn phpdoc_core_tags_with_resolved_class_names() {
+    let source = r#"<?php
+namespace App;
+use Lib\{Thing, Other as O};
+
+/**
+ * Builds things.
+ * @deprecated use Factory instead
+ */
+final class Maker {
+    /** @var array<string, Thing> */
+    private array $cache = [];
+    /** @var int $a the first */
+    public $a, $b;
+    /** @var list<O> */
+    const LIST = [];
+
+    /**
+     * @param Thing|null $thing
+     * @param \Closure(Thing): O $make
+     * @param int ...$rest
+     * @param string &$out
+     * @return array{thing: Thing, other?: O, 0: \Countable, O::KEY: int}
+     * @throws \RuntimeException
+     * @throws Error when it breaks
+     */
+    public function make($thing, $make, &$out, ...$rest) {}
+
+    /**
+     * @param int|string $id
+     */
+    public function __construct(private $id, /** @var non-empty-string */ public $name = 'n') {}
+}
+
+/** @return static|self|$this|class-string<Thing>|key-of<O::MAP>|callable-string|resource|Generator<int, Thing, mixed, void> */
+function f() {}
+
+/** @var Thing */
+const K = 1;
+/** @deprecated */
+define('D', 2);
+"#;
+    assert_eq!(
+        shape(source),
+        [
+            "class App\\Maker final",
+            "  @deprecated use Factory instead",
+            "  const public LIST = []",
+            "    @var list<\\Lib\\Other>",
+            "  property private array $cache = []",
+            "    @var array<string, \\Lib\\Thing>",
+            "  property public $a",
+            "    @var int $a",
+            "  property public $b",
+            "    @var int $a",
+            "  property private promoted $id",
+            "    @var int|string",
+            "  property public promoted $name",
+            "    @var non-empty-string",
+            "  method public make($thing, $make, &$out, ...$rest)",
+            "    @param \\Lib\\Thing|null $thing",
+            "    @param \\Closure(\\Lib\\Thing): \\Lib\\Other $make",
+            "    @param int ...$rest",
+            "    @param string &$out",
+            "    @return array{thing: \\Lib\\Thing, other?: \\Lib\\Other, 0: \\Countable, \\Lib\\Other::KEY: int}",
+            "    @throws \\RuntimeException",
+            "    @throws \\App\\Error",
+            "  method public __construct(private $id, public $name = 'n')",
+            "    @param int|string $id",
+            "function App\\f()",
+            "  @return static|self|$this|class-string<\\Lib\\Thing>|key-of<\\Lib\\Other::MAP>|callable-string|resource|\\App\\Generator<int, \\Lib\\Thing, mixed, void>",
+            "const App\\K = 1",
+            "  @var \\Lib\\Thing",
+            "define D = 2",
+            "  @deprecated ",
+        ]
+    );
+    let summary = summarize(source);
+    let class = summary.class_like("App\\Maker").expect("Maker");
+    // `@var $a` names one item; `$b` falls back to nothing named `b`.
+    let b = class.property("b").and_then(|property| property.doc.as_ref()).expect("doc");
+    assert_eq!(b.var_type("b"), None);
+    assert_eq!(b.var_type("a"), Some(&DocType("int".into())));
+    assert_eq!(summary.constants[1].doc.as_ref().and_then(|doc| doc.deprecated.as_deref()), Some(""));
+}
+
+#[test]
+fn phpdoc_class_tags_templates_and_magic_members() {
+    let source = r#"<?php
+namespace App;
+use Lib\{Model, Builder};
+
+/**
+ * @template-covariant TKey of array-key
+ * @template TValue of Model = Model
+ * @template-contravariant TIn
+ * @extends Base<TKey, TValue>
+ * @implements \IteratorAggregate<TKey, TValue>
+ * @implements Contract<TValue>
+ * @use HasItems<TValue>
+ * @mixin Builder<TValue>
+ * @property int $count
+ * @property-read Model|null $first
+ * @property-write string $name
+ * @property $untyped
+ * @method static Builder<TValue> query()
+ * @method TValue find(int|string $id, bool &$found = false, Model ...$rest)
+ * @method Items<TKey, U> map<U of Model>(callable(TValue): U $fn) a template method
+ * @method void
+ */
+abstract class Items extends Base implements \IteratorAggregate, Contract {
+    use HasItems;
+
+    /**
+     * @template U
+     * @param callable(TValue): U $fn
+     * @return Items<TKey, U>
+     */
+    abstract public function map(callable $fn): self;
+
+    /** @return TKey|TIn|T */
+    abstract public function key(): mixed;
+}
+
+/**
+ * @template T of object
+ * @param class-string<T> $class
+ * @return T
+ */
+function make(string $class): object {}
+"#;
+    let shape = shape(source);
+    let expected = [
+        "class App\\Items abstract",
+        "  @template-covariant TKey of array-key",
+        "  @template TValue of \\Lib\\Model = \\Lib\\Model",
+        "  @template-contravariant TIn",
+        "  @extends \\App\\Base<TKey, TValue>",
+        "  @implements \\IteratorAggregate<TKey, TValue>",
+        "  @implements \\App\\Contract<TValue>",
+        "  @use \\App\\HasItems<TValue>",
+        "  @mixin \\Lib\\Builder<TValue>",
+        "  @property int $count",
+        "  @property-read \\Lib\\Model|null $first",
+        "  @property-write string $name",
+        "  @property $untyped",
+        "  @method static \\Lib\\Builder<TValue> query()",
+        "  @method TValue find(int|string $id, bool &$found = false, \\Lib\\Model ...$rest)",
+        "  @method \\App\\Items<TKey, U> map<U of \\Lib\\Model>(callable(TValue): U $fn)",
+        "  extends App\\Base",
+        "  implements IteratorAggregate, App\\Contract",
+        "  use App\\HasItems",
+        "  method public abstract map(callable $fn): self",
+        "    @template U",
+        "    @param callable(TValue): U $fn",
+        "    @return \\App\\Items<TKey, U>",
+        "  method public abstract key(): mixed",
+        "    @return TKey|TIn|\\App\\T",
+        "function App\\make(string $class): object",
+        "  @template T of object",
+        "  @param class-string<T> $class",
+        "  @return T",
+    ];
+    assert_eq!(shape, expected, "{}", shape.join("\n"));
+    let summary = summarize(source);
+    let doc = summary.class_likes[0].doc.as_ref().expect("class doc");
+    assert_eq!(doc.templates[0].variance, Variance::Covariant);
+    assert_eq!(doc.properties[1].access, PropertyAccess::Read);
+    let first = &doc.properties[1];
+    assert_eq!(&source[first.name_loc.start as usize..first.name_loc.end as usize], "$first");
+    let find = &doc.methods[1];
+    assert_eq!(&source[find.name_loc.start as usize..find.name_loc.end as usize], "find");
+    assert_eq!(find.params[1].default.as_deref(), Some("false"));
+    assert!(find.params[1].by_ref && find.params[2].variadic && !doc.methods[0].params.iter().any(|p| p.by_ref));
+    assert!(doc.methods[0].is_static);
+    assert_eq!(doc.local_type_names().collect::<Vec<_>>(), ["TKey", "TValue", "TIn"]);
+}
+
+#[test]
+fn phpdoc_vendor_tags_take_priority() {
+    let source = r#"<?php
+namespace App;
+
+/**
+ * @phpstan-type Row array{id: int, owner: User}
+ * @psalm-import-type Id from Ids as Key
+ * @type string $wordpress_hash_key not an alias
+ * @template T
+ * @psalm-template T of User
+ * @extends Base<mixed>
+ * @phpstan-extends Base<T>
+ * @property mixed $p
+ * @phpstan-property-read User $p
+ */
+class Repo extends Base {
+    /**
+     * @phpstan-param list<Row> $rows
+     * @param array $rows
+     * @psalm-return Key
+     * @return int
+     * @phpstan-var never
+     */
+    public function save(array $rows): int {}
+
+    /**
+     * @return array
+     * @phpstan-return list<T>
+     */
+    public function all(): array {}
+}
+"#;
+    let shape = shape(source);
+    let expected = [
+        "class App\\Repo",
+        "  @template T of \\App\\User",
+        "  @type Row = array{id: int, owner: \\App\\User}",
+        "  @import-type Id from App\\Ids as Key",
+        "  @extends \\App\\Base<T>",
+        "  @property-read \\App\\User $p",
+        "  extends App\\Base",
+        "  method public save(array $rows): int",
+        "    @var never",
+        "    @param list<Row> $rows",
+        "    @return Key",
+        "  method public all(): array",
+        "    @return list<T>",
+    ];
+    assert_eq!(shape, expected, "{}", shape.join("\n"));
+}
+
+#[test]
+fn phpdoc_unparsable_types_become_mixed_per_tag() {
+    let source = r#"<?php
+/**
+ * Registers a hook.
+ *
+ * @param string $name The hook.
+ * @param array $args {
+ *     Optional. Arguments.
+ *
+ *     @type string $type   The type.
+ *     @type int    $weight The weight.
+ * }
+ * @param callable(...mixed): mixed $callback What runs.
+ * @param array{ $broken
+ * @return array<int,
+ * @throws Oops
+ */
+function add_hook($name, $args, $callback, $broken) {}
+
+class C {
+    /** @var Closure(int $x>): void $handler */
+    public $handler;
+}
+"#;
+    let file = ParsedFile::parse("hooks.php", source);
+    assert!(!file.has_errors(), "{:?}", file.errors());
+    let summary = FileSummary::extract(&file);
+    let doc = summary.functions[0].doc.as_ref().expect("doc");
+    let params: Vec<(&str, &str)> = doc.params.iter().map(|param| (param.name.as_str(), param.ty.as_str())).collect();
+    assert_eq!(params[..2], [("name", "string"), ("args", "array")]);
+    assert!(
+        params.contains(&("callback", "mixed")) || params.contains(&("callback", "callable(...mixed): mixed")),
+        "{params:?}"
+    );
+    assert!(params.contains(&("broken", "mixed")), "{params:?} {doc:#?}");
+    assert_eq!(doc.return_type, Some(DocType::mixed()));
+    assert_eq!(doc.throws, [DocType("\\Oops".into())]);
+    assert!(doc.type_aliases.is_empty());
+    let handler = summary.class_likes[0].properties[0].doc.as_ref().expect("doc");
+    assert_eq!(handler.var_type("handler"), Some(&DocType::mixed()));
+}
+
+#[test]
+fn phpdoc_multiline_types_and_attributes_between() {
+    let source = "<?php\nnamespace App;\n/**\n * @return array{\n *     id: int,\n *     user: User,\n * }\n */\nfunction rows(): array {}\n\nclass C {\n    /** @var User */\n    #[Inject]\n    public $user;\n    /** no tags here */\n    public function plain() {}\n}\n";
+    assert_eq!(
+        shape(source),
+        [
+            "class App\\C",
+            "  #[App\\Inject]",
+            "  property public $user",
+            "    @var \\App\\User",
+            "  method public plain()",
+            "function App\\rows(): array",
+            "  @return array{ id: int, user: \\App\\User, }",
+        ]
+    );
+    let summary = summarize(source);
+    assert!(summary.class_likes[0].method("plain").is_some_and(|method| method.doc.is_none()));
+}
+
+#[test]
+fn phpdoc_never_panics_on_any_prefix() {
+    let text = r#"<?php
+namespace A;
+use X\Y;
+/**
+ * @template T of Y
+ * @extends B<array{a: Y, b?: list<T>}>
+ * @method static Y<T> m(int $a = 1, Y ...$r)
+ * @property-read ?Y $p
+ * @psalm-type R = array{0: Y::C, ...<string, T>}
+ */
+class C extends B {
+    /** @var Closure(Y): T */
+    public $f;
+    /**
+     * @param callable(...mixed): mixed $c
+     * @return (T is Y ? Y : never)
+     * @deprecated
+     */
+    public function g($c) {}
+}
+"#;
+    for end in (0..=text.len()).filter(|&end| text.is_char_boundary(end)) {
+        let file = ParsedFile::parse("p.php", &text[..end]);
+        let summary = FileSummary::extract(&file);
+        assert_eq!(FileSummary::from_bytes(&summary.to_bytes()).as_ref(), Ok(&summary));
+    }
+    let summary = summarize(text);
+    let class = &summary.class_likes[0];
+    let doc = class.doc.as_ref().expect("class doc");
+    assert_eq!(doc.extends, [DocType(r"\A\B<array{a: \X\Y, b?: list<T>}>".into())]);
+    assert_eq!(doc.type_aliases[0].ty, Some(DocType(r"array{0: \X\Y::C, ...<string, T>}".into())));
+    let g = class.method("g").and_then(|method| method.doc.as_ref()).expect("g doc");
+    assert_eq!(g.return_type, Some(DocType(r"(T is \X\Y ? \X\Y : never)".into())));
+}
+
 fn php_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir).expect("fixture dir").map(|e| e.expect("entry").path()).collect();
     entries.sort();

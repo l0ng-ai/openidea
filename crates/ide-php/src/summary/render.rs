@@ -2,11 +2,15 @@
 //!
 //! One line per declaration and member, with every field that the summary
 //! stores. `@l:c-l:c` is the name's range and `[l:c-l:c]` the declaration's
-//! (0-based lines, UTF-16 columns).
+//! (0-based lines, UTF-16 columns). Docblock tags follow their declaration,
+//! indented one level further and starting with `@`.
 
 use std::fmt::Write;
 
-use super::{ClassLike, ConstantKind, FileSummary, Loc, Param, Property, TraitRule, TypeHint, Visibility};
+use super::{
+    ClassLike, ConstantKind, DocBlock, DocTemplate, DocType, FileSummary, Loc, Param, Property, PropertyAccess,
+    TraitRule, TypeHint, Variance, Visibility,
+};
 
 pub(super) fn render(summary: &FileSummary) -> String {
     let mut out = String::new();
@@ -28,6 +32,7 @@ pub(super) fn render(summary: &FileSummary) -> String {
             name_loc(function.name_loc),
             decl_loc(function.loc)
         );
+        doc(&mut out, "  ", &function.doc);
     }
     for constant in &summary.constants {
         attributes(&mut out, "", &constant.attributes);
@@ -43,8 +48,115 @@ pub(super) fn render(summary: &FileSummary) -> String {
             name_loc(constant.name_loc),
             decl_loc(constant.loc)
         );
+        doc(&mut out, "  ", &constant.doc);
     }
     out
+}
+
+fn template(template: &DocTemplate) -> String {
+    let variance = match template.variance {
+        Variance::Invariant => "",
+        Variance::Covariant => "-covariant",
+        Variance::Contravariant => "-contravariant",
+    };
+    let mut line = format!("@template{variance} {}", template.name);
+    if let Some(bound) = &template.bound {
+        let _ = write!(line, " of {bound}");
+    }
+    if let Some(default) = &template.default {
+        let _ = write!(line, " = {default}");
+    }
+    line
+}
+
+fn types(out: &mut String, indent: &str, tag: &str, types: &[DocType]) {
+    for ty in types {
+        let _ = writeln!(out, "{indent}@{tag} {ty}");
+    }
+}
+
+fn doc(out: &mut String, indent: &str, doc: &Option<Box<DocBlock>>) {
+    let Some(doc) = doc else { return };
+    if let Some(deprecated) = &doc.deprecated {
+        let _ = writeln!(out, "{indent}@deprecated {deprecated}");
+    }
+    for item in &doc.templates {
+        let _ = writeln!(out, "{indent}{}", template(item));
+    }
+    for alias in &doc.type_aliases {
+        match (&alias.ty, &alias.imported_from) {
+            (_, Some((class, name))) => {
+                let _ = writeln!(out, "{indent}@import-type {name} from {class} as {}", alias.name);
+            }
+            (Some(ty), None) => {
+                let _ = writeln!(out, "{indent}@type {} = {ty}", alias.name);
+            }
+            (None, None) => {}
+        }
+    }
+    types(out, indent, "extends", &doc.extends);
+    types(out, indent, "implements", &doc.implements);
+    types(out, indent, "use", &doc.uses);
+    types(out, indent, "mixin", &doc.mixins);
+    for property in &doc.properties {
+        let access = match property.access {
+            PropertyAccess::ReadWrite => "",
+            PropertyAccess::Read => "-read",
+            PropertyAccess::Write => "-write",
+        };
+        let ty = property.ty.as_ref().map(|ty| format!("{ty} ")).unwrap_or_default();
+        let _ = writeln!(out, "{indent}@property{access} {ty}${} {}", property.name, name_loc(property.name_loc));
+    }
+    for method in &doc.methods {
+        let mut line = format!("{indent}@method ");
+        if method.is_static {
+            line.push_str("static ");
+        }
+        if let Some(ty) = &method.return_type {
+            let _ = write!(line, "{ty} ");
+        }
+        line.push_str(&method.name);
+        if !method.templates.is_empty() {
+            let templates: Vec<String> = method
+                .templates
+                .iter()
+                .map(|item| template(item).replacen("@template", "", 1).trim().to_owned())
+                .collect();
+            let _ = write!(line, "<{}>", templates.join(", "));
+        }
+        let params: Vec<String> = method
+            .params
+            .iter()
+            .map(|param| {
+                let mut text = param.ty.as_ref().map(|ty| format!("{ty} ")).unwrap_or_default();
+                if param.by_ref {
+                    text.push('&');
+                }
+                if param.variadic {
+                    text.push_str("...");
+                }
+                let _ = write!(text, "${}", param.name);
+                if let Some(default) = &param.default {
+                    let _ = write!(text, " = {default}");
+                }
+                text
+            })
+            .collect();
+        let _ = writeln!(out, "{line}({}) {}", params.join(", "), name_loc(method.name_loc));
+    }
+    for var in &doc.vars {
+        let name = var.name.as_ref().map(|name| format!(" ${name}")).unwrap_or_default();
+        let _ = writeln!(out, "{indent}@var {}{name}", var.ty);
+    }
+    for param in &doc.params {
+        let by_ref = if param.by_ref { "&" } else { "" };
+        let variadic = if param.variadic { "..." } else { "" };
+        let _ = writeln!(out, "{indent}@param {} {by_ref}{variadic}${}", param.ty, param.name);
+    }
+    if let Some(ty) = &doc.return_type {
+        let _ = writeln!(out, "{indent}@return {ty}");
+    }
+    types(out, indent, "throws", &doc.throws);
 }
 
 fn pos(loc: Loc) -> String {
@@ -138,6 +250,7 @@ fn property(out: &mut String, property: &Property) {
         let _ = write!(line, " = {default}");
     }
     let _ = writeln!(out, "{line} {} {}", name_loc(property.name_loc), decl_loc(property.loc));
+    doc(out, "    ", &property.doc);
 }
 
 fn class_like(out: &mut String, class: &ClassLike) {
@@ -155,6 +268,7 @@ fn class_like(out: &mut String, class: &ClassLike) {
         let _ = write!(header, ": {backing}");
     }
     let _ = writeln!(out, "{header} {} {}", name_loc(class.name_loc), decl_loc(class.loc));
+    doc(out, "  ", &class.doc);
     if !class.extends.is_empty() {
         let _ = writeln!(out, "  extends {}", class.extends.join(", "));
     }
@@ -186,6 +300,7 @@ fn class_like(out: &mut String, class: &ClassLike) {
         attributes(out, "  ", &case.attributes);
         let value = case.value.as_ref().map(|value| format!(" = {value}")).unwrap_or_default();
         let _ = writeln!(out, "  case {}{value} {} {}", case.name, name_loc(case.name_loc), decl_loc(case.loc));
+        doc(out, "    ", &case.doc);
     }
     for constant in &class.constants {
         attributes(out, "  ", &constant.attributes);
@@ -202,6 +317,7 @@ fn class_like(out: &mut String, class: &ClassLike) {
             name_loc(constant.name_loc),
             decl_loc(constant.loc)
         );
+        doc(out, "    ", &constant.doc);
     }
     for item in &class.properties {
         property(out, item);
@@ -220,5 +336,6 @@ fn class_like(out: &mut String, class: &ClassLike) {
             name_loc(method.name_loc),
             decl_loc(method.loc)
         );
+        doc(out, "    ", &method.doc);
     }
 }

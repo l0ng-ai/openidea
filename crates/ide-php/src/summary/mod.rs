@@ -11,7 +11,15 @@
 //!   are stored without the leading `\`.
 //! - Native type hints become [`TypeHint`]s with their class names resolved.
 //!   `self`, `static` and `parent` stay markers; the type layer (phase 2.x)
-//!   completes them, and PHPDoc types are added in phase 1.4.
+//!   completes them.
+//! - The docblock in front of a declaration becomes a [`DocBlock`]: the
+//!   `@var`, `@param`, `@return`, `@throws`, `@deprecated`, `@property*`,
+//!   `@method`, `@mixin`, `@template*`, `@extends`, `@implements`, `@use`
+//!   and type-alias tags. Their types are [`DocType`]s: unresolved PHPDoc
+//!   type expressions in which every class name is already fully qualified,
+//!   so they can be parsed later without this file's imports. A
+//!   `@psalm-*` / `@phpstan-*` tag wins over the plain tag it duplicates, and
+//!   a tag whose type fails to parse keeps its name with the type `mixed`.
 //! - Default values and constant values are kept as source text; phase 2.2
 //!   turns them into lazy types.
 //! - Every declaration has a [`Loc`] for its name and one for the whole
@@ -34,7 +42,7 @@ use crate::names::RelativeClass;
 use crate::syntax::ParsedFile;
 
 /// Bump whenever a type in this module changes shape.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -146,6 +154,8 @@ pub struct ClassLike {
     pub methods: Vec<Method>,
     /// Attribute class names, fully qualified.
     pub attributes: Vec<String>,
+    /// The docblock in front of the declaration, when it says anything.
+    pub doc: Option<Box<DocBlock>>,
 }
 
 /// One `use A, B { … }` inside a class-like.
@@ -178,6 +188,8 @@ pub struct ClassConstant {
     /// The value expression as written.
     pub value: String,
     pub attributes: Vec<String>,
+    /// The docblock in front of the declaration, when it says anything.
+    pub doc: Option<Box<DocBlock>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +200,8 @@ pub struct EnumCase {
     /// The value of a backed case, as written.
     pub value: Option<String>,
     pub attributes: Vec<String>,
+    /// The docblock in front of the declaration, when it says anything.
+    pub doc: Option<Box<DocBlock>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,6 +226,8 @@ pub struct Property {
     pub type_hint: Option<TypeHint>,
     pub default: Option<String>,
     pub attributes: Vec<String>,
+    /// The docblock in front of the declaration, when it says anything.
+    pub doc: Option<Box<DocBlock>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +244,8 @@ pub struct Method {
     pub params: Vec<Param>,
     pub return_type: Option<TypeHint>,
     pub attributes: Vec<String>,
+    /// The docblock in front of the declaration, when it says anything.
+    pub doc: Option<Box<DocBlock>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,6 +285,8 @@ pub struct FunctionDecl {
     pub params: Vec<Param>,
     pub return_type: Option<TypeHint>,
     pub attributes: Vec<String>,
+    /// The docblock in front of the declaration, when it says anything.
+    pub doc: Option<Box<DocBlock>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -288,6 +308,178 @@ pub struct ConstantDecl {
     pub loc: Loc,
     pub value: String,
     pub attributes: Vec<String>,
+    /// The docblock in front of the declaration, when it says anything.
+    pub doc: Option<Box<DocBlock>>,
+}
+
+/// A PHPDoc type expression, not yet resolved: the text as written (joined
+/// onto one line when it spans several), except that every class name is
+/// fully qualified with a leading `\`. Template parameters and type aliases
+/// in scope, keywords and `self`/`static`/`parent` stay as written. Phase 2.1
+/// parses it into a type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DocType(pub String);
+
+impl DocType {
+    /// The type of a tag whose type expression does not parse.
+    pub fn mixed() -> Self {
+        Self("mixed".to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DocType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The tags of one docblock that matter to other files.
+///
+/// When a `@psalm-*` or `@phpstan-*` tag and a plain tag describe the same
+/// thing (the return type, the same parameter, template, property, …), only
+/// the prefixed one is kept, in the position of the first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocBlock {
+    /// `@deprecated`, with its description (possibly empty).
+    pub deprecated: Option<String>,
+    /// `@var`, with or without a variable name.
+    pub vars: Vec<DocVar>,
+    pub params: Vec<DocParam>,
+    pub return_type: Option<DocType>,
+    pub throws: Vec<DocType>,
+    pub templates: Vec<DocTemplate>,
+    /// `@extends`, `@implements` and `@use` with their generic arguments.
+    pub extends: Vec<DocType>,
+    pub implements: Vec<DocType>,
+    pub uses: Vec<DocType>,
+    pub mixins: Vec<DocType>,
+    /// `@property`, `@property-read` and `@property-write`.
+    pub properties: Vec<DocProperty>,
+    pub methods: Vec<DocMethod>,
+    /// `@psalm-type` / `@phpstan-type` and their `import-type` tags.
+    pub type_aliases: Vec<DocTypeAlias>,
+}
+
+impl DocBlock {
+    /// True when no tag was kept.
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// The `@var` type for a variable or property name (without `$`): one
+    /// naming it, else one without a name.
+    pub fn var_type(&self, name: &str) -> Option<&DocType> {
+        let name = name.trim_start_matches('$');
+        self.vars
+            .iter()
+            .find(|var| var.name.as_deref() == Some(name))
+            .or_else(|| self.vars.iter().find(|var| var.name.is_none()))
+            .map(|var| &var.ty)
+    }
+
+    /// The `@param` type of a parameter (name without `$`).
+    pub fn param_type(&self, name: &str) -> Option<&DocType> {
+        let name = name.trim_start_matches('$');
+        self.params.iter().find(|param| param.name == name).map(|param| &param.ty)
+    }
+
+    /// Names that a type in this docblock (or in the declarations under it)
+    /// uses as template parameters or type aliases rather than classes.
+    pub fn local_type_names(&self) -> impl Iterator<Item = &str> {
+        self.templates
+            .iter()
+            .map(|template| template.name.as_str())
+            .chain(self.type_aliases.iter().map(|alias| alias.name.as_str()))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocVar {
+    /// Without the `$`.
+    pub name: Option<String>,
+    pub ty: DocType,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocParam {
+    /// Without the `$`.
+    pub name: String,
+    pub ty: DocType,
+    pub by_ref: bool,
+    pub variadic: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Variance {
+    #[default]
+    Invariant,
+    Covariant,
+    Contravariant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocTemplate {
+    pub name: String,
+    pub variance: Variance,
+    /// `of T` (or `as T`).
+    pub bound: Option<DocType>,
+    /// `= T`.
+    pub default: Option<DocType>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PropertyAccess {
+    #[default]
+    ReadWrite,
+    Read,
+    Write,
+}
+
+/// A magic property declared with `@property`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocProperty {
+    /// Without the `$`.
+    pub name: String,
+    pub name_loc: Loc,
+    pub ty: Option<DocType>,
+    pub access: PropertyAccess,
+}
+
+/// A magic method declared with `@method`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocMethod {
+    pub name: String,
+    pub name_loc: Loc,
+    pub is_static: bool,
+    pub templates: Vec<DocTemplate>,
+    pub params: Vec<DocMethodParam>,
+    pub return_type: Option<DocType>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocMethodParam {
+    /// Without the `$`.
+    pub name: String,
+    pub ty: Option<DocType>,
+    /// The default value as written.
+    pub default: Option<String>,
+    pub by_ref: bool,
+    pub variadic: bool,
+}
+
+/// `@psalm-type Name = T`, or `@psalm-import-type Name from Class [as Local]`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocTypeAlias {
+    /// The name the alias has in this class.
+    pub name: String,
+    /// The aliased type, for a local alias.
+    pub ty: Option<DocType>,
+    /// The class (fully qualified) and the alias name there, for an import.
+    pub imported_from: Option<(String, String)>,
 }
 
 /// A summary could not be decoded.

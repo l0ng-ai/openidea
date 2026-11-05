@@ -17,11 +17,14 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use super::{
-    ClassConstant, ClassKind, ClassLike, ClassModifiers, ConstantDecl, ConstantKind, EnumCase, FileSummary,
-    FunctionDecl, Loc, Method, Param, Promotion, Property, SCHEMA_VERSION, TraitRule, TraitUse, TypeHint, Visibility,
+    ClassConstant, ClassKind, ClassLike, ClassModifiers, ConstantDecl, ConstantKind, DocBlock, DocVar, EnumCase,
+    FileSummary, FunctionDecl, Loc, Method, Param, Promotion, Property, SCHEMA_VERSION, TraitRule, TraitUse, TypeHint,
+    Visibility,
 };
 use crate::names::{NameKind, NameScope, Resolution};
 use crate::syntax::ParsedFile;
+
+mod phpdoc;
 
 pub(super) fn extract(file: &ParsedFile) -> FileSummary {
     let mut cx = Extractor {
@@ -213,6 +216,7 @@ impl Extractor<'_> {
             params: self.params(&node.parameter_list),
             return_type: self.return_type(&node.return_type_hint),
             attributes: self.attributes(&node.attribute_lists),
+            doc: self.doc_at(node.span().start.offset, &[]),
         }
     }
 
@@ -224,6 +228,10 @@ impl Extractor<'_> {
         attributes: &Sequence<'_, AttributeList<'_>>,
         members: &Sequence<'_, ClassLikeMember<'_>>,
     ) -> ClassLike {
+        let doc = self.doc_at(span.start.offset, &[]);
+        // Template and alias names of the class, in scope in every member's
+        // docblock.
+        let names: Vec<String> = doc.iter().flat_map(|doc| doc.local_type_names()).map(str::to_owned).collect();
         let mut class = ClassLike {
             kind,
             fqn: self.scope.qualify(name.value),
@@ -240,15 +248,16 @@ impl Extractor<'_> {
             properties: Vec::new(),
             methods: Vec::new(),
             attributes: self.attributes(attributes),
+            doc,
         };
         for member in members {
             match member {
                 ClassLikeMember::TraitUse(trait_use) => class.trait_uses.push(self.trait_use(trait_use)),
-                ClassLikeMember::Constant(constant) => self.class_constant(constant, &mut class.constants),
-                ClassLikeMember::Property(property) => self.property(property, &mut class.properties),
-                ClassLikeMember::EnumCase(case) => class.cases.push(self.enum_case(case)),
+                ClassLikeMember::Constant(constant) => self.class_constant(constant, &names, &mut class.constants),
+                ClassLikeMember::Property(property) => self.property(property, &names, &mut class.properties),
+                ClassLikeMember::EnumCase(case) => class.cases.push(self.enum_case(case, &names)),
                 ClassLikeMember::Method(method) => {
-                    let method = self.method(method, kind == ClassKind::Interface);
+                    let method = self.method(method, kind == ClassKind::Interface, &names);
                     // Promoted constructor parameters are properties too.
                     if method.name.eq_ignore_ascii_case("__construct") {
                         for param in &method.params {
@@ -268,6 +277,7 @@ impl Extractor<'_> {
                                     type_hint: param.type_hint.clone(),
                                     default: None,
                                     attributes: param.attributes.clone(),
+                                    doc: self.promoted_doc(param, &method, &names),
                                 });
                             }
                         }
@@ -309,11 +319,24 @@ impl Extractor<'_> {
         TraitUse { traits: self.class_names(&node.trait_names), rules, loc: self.loc(node.span()) }
     }
 
-    fn class_constant(&self, node: &ClassLikeConstant<'_>, out: &mut Vec<ClassConstant>) {
+    /// A promoted property's docblock: the parameter's own (`/** @var T */`),
+    /// with the constructor's `@param` type when that has no `@var`.
+    fn promoted_doc(&self, param: &Param, constructor: &Method, names: &[String]) -> Option<Box<DocBlock>> {
+        let mut doc = self.doc_at(param.loc.start, names).map(|doc| *doc).unwrap_or_default();
+        if doc.vars.is_empty()
+            && let Some(ty) = constructor.doc.as_ref().and_then(|doc| doc.param_type(&param.name))
+        {
+            doc.vars.push(DocVar { name: None, ty: ty.clone() });
+        }
+        (!doc.is_empty()).then(|| Box::new(doc))
+    }
+
+    fn class_constant(&self, node: &ClassLikeConstant<'_>, names: &[String], out: &mut Vec<ClassConstant>) {
         let mods = Mods::of(&node.modifiers);
         let type_hint = node.hint.as_ref().map(|hint| self.hint(hint));
         let attributes = self.attributes(&node.attribute_lists);
         let loc = self.loc(node.span());
+        let doc = self.doc_at(node.span().start.offset, names);
         for item in &node.items {
             out.push(ClassConstant {
                 name: lossy(item.name.value),
@@ -324,11 +347,12 @@ impl Extractor<'_> {
                 type_hint: type_hint.clone(),
                 value: self.source(item.value.span()),
                 attributes: attributes.clone(),
+                doc: doc.clone(),
             });
         }
     }
 
-    fn property(&self, node: &AstProperty<'_>, out: &mut Vec<Property>) {
+    fn property(&self, node: &AstProperty<'_>, names: &[String], out: &mut Vec<Property>) {
         let (attribute_lists, modifiers, hint, items, has_hooks): (_, _, _, Vec<&PropertyItem<'_>>, _) = match node {
             AstProperty::Plain(plain) => {
                 (&plain.attribute_lists, &plain.modifiers, &plain.hint, plain.items.iter().collect(), false)
@@ -341,6 +365,7 @@ impl Extractor<'_> {
         let type_hint = hint.as_ref().map(|hint| self.hint(hint));
         let attributes = self.attributes(attribute_lists);
         let loc = self.loc(node.span());
+        let doc = self.doc_at(node.span().start.offset, names);
         for item in items {
             let (variable, default) = match item {
                 PropertyItem::Abstract(item) => (&item.variable, None),
@@ -361,11 +386,12 @@ impl Extractor<'_> {
                 type_hint: type_hint.clone(),
                 default,
                 attributes: attributes.clone(),
+                doc: doc.clone(),
             });
         }
     }
 
-    fn enum_case(&self, node: &AstEnumCase<'_>) -> EnumCase {
+    fn enum_case(&self, node: &AstEnumCase<'_>, names: &[String]) -> EnumCase {
         let (name, value) = match &node.item {
             EnumCaseItem::Unit(item) => (&item.name, None),
             EnumCaseItem::Backed(item) => (&item.name, Some(self.source(item.value.span()))),
@@ -376,10 +402,11 @@ impl Extractor<'_> {
             loc: self.loc(node.span()),
             value,
             attributes: self.attributes(&node.attribute_lists),
+            doc: self.doc_at(node.span().start.offset, names),
         }
     }
 
-    fn method(&self, node: &AstMethod<'_>, in_interface: bool) -> Method {
+    fn method(&self, node: &AstMethod<'_>, in_interface: bool, names: &[String]) -> Method {
         let mods = Mods::of(&node.modifiers);
         Method {
             name: lossy(node.name.value),
@@ -393,6 +420,7 @@ impl Extractor<'_> {
             params: self.params(&node.parameter_list),
             return_type: self.return_type(&node.return_type_hint),
             attributes: self.attributes(&node.attribute_lists),
+            doc: self.doc_at(node.span().start.offset, names),
         }
     }
 
@@ -477,6 +505,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
     fn walk_in_constant(&self, node: &'ast Constant<'arena>, cx: &mut Extractor<'f>) {
         let loc = cx.loc(node.span());
         let attributes = cx.attributes(&node.attribute_lists);
+        let doc = cx.doc_at(node.span().start.offset, &[]);
         for item in &node.items {
             let constant = ConstantDecl {
                 kind: ConstantKind::Const,
@@ -485,6 +514,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
                 loc,
                 value: cx.source(item.value.span()),
                 attributes: attributes.clone(),
+                doc: doc.clone(),
             };
             cx.summary.constants.push(constant);
         }
@@ -516,6 +546,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
             loc: cx.loc(node.span()),
             value: cx.source(value.span()),
             attributes: Vec::new(),
+            doc: cx.doc_at(node.span().start.offset, &[]),
         };
         cx.summary.constants.push(constant);
     }

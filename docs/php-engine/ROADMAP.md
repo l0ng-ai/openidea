@@ -124,7 +124,7 @@ The design:
 
   Each summary is serializable with postcard and records a schema version. Tests: golden snapshots of summaries for `fixtures/php-app`.
 
-- [ ] Phase 1.4: PHPDoc in summaries
+- [x] Phase 1.4: PHPDoc in summaries
       Parse doc blocks with `mago-phpdoc-syntax`:
   - `@var`, `@param`, `@return`, `@throws`, `@deprecated`
   - `@property(-read|-write)`, `@method`, `@mixin`
