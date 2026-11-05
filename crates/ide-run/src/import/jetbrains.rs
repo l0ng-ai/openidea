@@ -3,8 +3,9 @@
 //! its templates (`default="true"`) and temporary configurations. A configuration found in more
 //! than one place is taken from the first, in that order.
 //!
-//! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script and
-//! compound configurations become the matching kinds; other types are skipped with their type.
+//! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script,
+//! Application, Spring Boot and compound configurations become the matching kinds; other types
+//! are skipped with their type.
 //! `$PROJECT_DIR$` (and `$MODULE_DIR$`, `$MODULE_WORKING_DIR$`, `$ContentRoot$`,
 //! `$ProjectFileDir$`, all the project directory here) and `$USER_HOME$` are replaced; another
 //! path variable skips the configuration.
@@ -162,6 +163,8 @@ const VITEST: &str = "JavaScriptTestRunnerVitest";
 const NODE: &str = "NodeJSConfigurationType";
 const SHELL: &str = "ShConfigurationType";
 const COMPOUND: &str = "CompoundRunConfigurationType";
+const APPLICATION: &str = "Application";
+const SPRING_BOOT: &str = "SpringBootApplicationConfigurationType";
 
 type Res<T> = Result<T, SkipReason>;
 
@@ -329,6 +332,8 @@ impl Cx<'_> {
             JEST | VITEST => self.js_tests(name, c, ty == VITEST, &mut ignored)?,
             NODE => self.node(name, c, &mut ignored)?,
             SHELL => self.shell(name, c)?,
+            APPLICATION => self.java_app(name, c, false, &mut ignored)?,
+            SPRING_BOOT => self.java_app(name, c, true, &mut ignored)?,
             COMPOUND => {
                 members = c.children_named("toRun").filter_map(|t| t.attr("name")).map(str::to_owned).collect();
                 config(name, "compound", String::new(), Vec::new(), None)
@@ -695,6 +700,54 @@ impl Cx<'_> {
         Ok(rc)
     }
 
+    // ------------------------------------------------------------- Java
+
+    /// IDEA's Application and Spring Boot types, as the `application` / `spring-boot` forms run
+    /// them: `java <vm options> -cp ${classpath} <main> [--spring.profiles.active=…] <arguments>`
+    /// with the module's runtime classpath.
+    fn java_app(&self, name: &str, c: &El, spring: bool, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let main = if spring { "SPRING_BOOT_MAIN_CLASS" } else { "MAIN_CLASS_NAME" };
+        let Some(main) = self.text(c.option(main))? else { return Err(SkipReason::NothingToRun) };
+        let (_, cwd) = self.cwd(c.option("WORKING_DIRECTORY"))?;
+        let mut args = self.words(c.option("VM_PARAMETERS"))?;
+        args.extend(["-cp".to_owned(), "${classpath}".to_owned(), main]);
+        if spring && let Some(profiles) = self.text(c.option("ACTIVE_PROFILES"))? {
+            args.push(format!("--spring.profiles.active={profiles}"));
+        }
+        args.extend(self.words(c.option("PROGRAM_PARAMETERS"))?);
+        let mut rc =
+            config(name, if spring { "spring-boot" } else { "application" }, "java".into(), args, Some("java-debug"));
+        rc.cwd = cwd.map(Into::into);
+        self.envs(c, &mut rc);
+        if let Some(module) = c.child("module").and_then(|m| m.attr("name")).filter(|m| !m.is_empty()) {
+            match module_dir(self.root, module) {
+                Some(dir) => rc.extras.module = Some(dir),
+                None => ignored.push(format!("module {module}")),
+            }
+        }
+        // Options the forms have no field for.
+        if c.flag("ALTERNATIVE_JRE_PATH_ENABLED") {
+            ignored.push("JRE".into());
+        }
+        if c.flag("INCLUDE_PROVIDED_SCOPE") {
+            ignored.push("provided scope".into());
+        }
+        if c.child("classpathModifications").is_some_and(|m| !m.children.is_empty()) {
+            ignored.push("classpath modifications".into());
+        }
+        if spring {
+            for (option, label) in [("HIDE_BANNER", "hide banner"), ("DEBUG_MODE", "debug output")] {
+                if c.flag(option) {
+                    ignored.push(label.into());
+                }
+            }
+            if c.child("additionalParameters").is_some_and(|p| !p.children.is_empty()) {
+                ignored.push("override configuration properties".into());
+            }
+        }
+        Ok(rc)
+    }
+
     // ------------------------------------------------------------- Shell
 
     /// A script file (with its interpreter) or script text, kept as the Shell Script form's fields.
@@ -833,6 +886,56 @@ fn module_count(root: &Path) -> usize {
         .flat_map(|c| c.children_named("modules"))
         .map(|m| m.children_named("module").count())
         .sum()
+}
+
+/// The folder (relative, `""` for the project's own) of IDEA module `name`: a Maven module is
+/// named after its `artifactId` (usually its folder), a Gradle one `<project>.<path>.<source set>`.
+fn module_dir(root: &Path, name: &str) -> Option<String> {
+    let folder = |dir: &Path| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let exact = |dir: &Path| folder(dir) == name || pom_artifact(dir).is_some_and(|a| a == name);
+    if let Some(dir) = find_module(root, &exact) {
+        return Some(dir);
+    }
+    let gradle = name.strip_suffix(".main").or_else(|| name.strip_suffix(".test")).unwrap_or(name);
+    let last = gradle.rsplit('.').next().filter(|last| *last != name)?;
+    find_module(root, &|dir: &Path| folder(dir) == last)
+}
+
+/// The shallowest build folder under `root` (itself included) that `names` accepts.
+fn find_module(root: &Path, names: &dyn Fn(&Path) -> bool) -> Option<String> {
+    const BUILDS: [&str; 3] = ["pom.xml", "build.gradle", "build.gradle.kts"];
+    let mut level = vec![root.to_path_buf()];
+    for _ in 0..5 {
+        if let Some(found) = level.iter().find(|d| BUILDS.iter().any(|b| d.join(b).is_file()) && names(d)) {
+            let rel = found.strip_prefix(root).ok()?;
+            return Some(rel.to_string_lossy().replace('\\', "/"));
+        }
+        let mut next: Vec<PathBuf> = level
+            .iter()
+            .filter_map(|d| std::fs::read_dir(d).ok())
+            .flat_map(|entries| entries.flatten().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .filter(|p| {
+                let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                !n.starts_with('.') && !["node_modules", "target", "build", "out", "src"].contains(&n.as_str())
+            })
+            .collect();
+        next.sort();
+        level = next;
+    }
+    None
+}
+
+/// The `artifactId` of the module's own `pom.xml` (not its parent's).
+fn pom_artifact(dir: &Path) -> Option<String> {
+    let pom = std::fs::read_to_string(dir.join("pom.xml")).ok()?;
+    let own = match (pom.find("<parent>"), pom.find("</parent>")) {
+        (Some(start), Some(end)) if start < end => format!("{}{}", &pom[..start], &pom[end..]),
+        _ => pom,
+    };
+    let start = own.find("<artifactId>")? + "<artifactId>".len();
+    let end = start + own[start..].find("</artifactId>")?;
+    Some(own[start..end].trim().to_owned())
 }
 
 /// `--settings` from PyCharm's "Settings" field: a file (`mysite/settings/dev.py`, relative to
