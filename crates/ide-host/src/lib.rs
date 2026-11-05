@@ -15,6 +15,7 @@ mod project;
 mod proxy;
 mod requests;
 pub mod rpc;
+pub mod rpc_resume;
 pub mod shell_env;
 pub mod trust;
 
