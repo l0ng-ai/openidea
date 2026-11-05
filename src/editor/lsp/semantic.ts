@@ -56,6 +56,8 @@ const MODIFIER_CLASS: Record<string, string> = {
   declaration: "declaration",
   definition: "declaration",
   defaultLibrary: "builtin",
+  // lua-language-server marks globals; `NOT_LOCAL` below keeps them out of the rainbow.
+  global: "global",
 };
 
 /** Number of `--syn-rainbow-<n>` colours (IDEA's five semantic highlighting colours). */
