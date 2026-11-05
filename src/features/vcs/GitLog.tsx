@@ -49,7 +49,6 @@ import {
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
 import { nextSpeedMatch } from "./logSearch";
-import { LogIndexStatus } from "./logIndex";
 import { presentLogGraph } from "./logPresentation";
 import {
   closeLogTab,
@@ -328,7 +327,6 @@ export function LogView() {
       <SplitPanel id="commits" defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
-          <LogIndexStatus repositories={repo} />
           <CommitList />
         </div>
       </SplitPanel>

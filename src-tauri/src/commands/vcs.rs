@@ -142,16 +142,6 @@ pub async fn vcs_log_details_batch(
 }
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_log_index(
-    window: Window,
-    state: State<'_, AppState>,
-    repo: Option<PathBuf>,
-    request: Option<RequestId>,
-) -> IdeResult<LogIndexProgress> {
-    ide_host::ops::vcs::vcs_log_index(&state.host, window.label(), repo, request).await
-}
-#[tauri::command]
-#[specta::specta]
 pub async fn vcs_revision_children(
     window: Window,
     state: State<'_, AppState>,
