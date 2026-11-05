@@ -184,6 +184,12 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
     par_map(&candidates, |(path, source)| python_sdk(path, source, root))
 }
 
+/// Interpreter `path` (one the project is set to, wherever it lives) as an SDK, named
+/// like the detected ones.
+pub fn python_interpreter_sdk(path: &Path, root: Option<&Path>) -> Option<Sdk> {
+    python_sdk(path, if venv_of(path).is_some() { "venv" } else { "system" }, root)
+}
+
 pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Option<Sdk> {
     let version = query(path, &["--version"], VERSION_TIMEOUT)
         .and_then(|v| v.strip_prefix("Python ").map(str::to_owned))
@@ -193,10 +199,11 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
     let label = match (&venv, source) {
         (Some(home), _) => {
             let dir = home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            // `.venv` inside a project reads better as the project name, like PyCharm.
+            // `.venv` inside a project reads better as the folder that holds it (the project,
+            // or a member such as `backend`), like PyCharm.
             let owner = home.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
             match (dir.starts_with('.') || dir == "venv" || dir == "env", owner, root) {
-                (true, Some(owner), Some(root)) if home.parent() == Some(root) => format!("Python {short} ({owner})"),
+                (true, Some(owner), Some(root)) if home.starts_with(root) => format!("Python {short} ({owner})"),
                 _ => format!("Python {short} ({dir})"),
             }
         }
