@@ -34,6 +34,8 @@
     "--syn-python-predefined-usage": "#c4a0f2",
     "--syn-python-fstring": "#9ccc7a",
     "--syn-python-bytes": "#9ccc7a",
+    "--syn-php-variable": "#b9a3f0",
+    "--syn-php-function-call": "#f2d07a",
     "--syn-builtin": "#6fc3df",
     "--syn-self": "#d6849c",
     "--syn-keyword-arg": "#c4a0f2",
