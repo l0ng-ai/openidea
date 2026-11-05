@@ -4,10 +4,11 @@ import { useProject } from "@/platform/project";
 import { usePlugins } from "./store";
 
 const PREFIX = "workspaceContains:";
-const KEY = /(?<![\w.\-:/])workspaceContains:[\w.\-:/]+/g;
+// A whole identifier: at the start or after a character that can't be part of one.
+const KEY = /(?:^|[^\w.\-:/])(workspaceContains:[\w.\-:/]+)/g;
 
 export function workspaceContainsKeys(whens: readonly (string | null | undefined)[]): string[] {
-  return [...new Set(whens.flatMap((when) => when?.match(KEY) ?? []))];
+  return [...new Set(whens.flatMap((when) => [...(when ?? "").matchAll(KEY)].map((m) => m[1]!)))];
 }
 
 function relativePath(key: string): string | null {
