@@ -77,6 +77,30 @@ describe(".icls schemes", () => {
     expect(customs).toEqual(before);
   });
 
+  it("imports PyCharm dot keys after shared defaults without inherited font effects", () => {
+    const xml = `<scheme name="Python"><attributes>
+      <option name="PY.KEYWORD"><value><option name="FOREGROUND" value="112233"/></value></option>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="ff0000"/><option name="FONT_TYPE" value="1"/><option name="EFFECT_TYPE" value="1"/></value></option>
+      <option name="JAVA_KEYWORD"><value><option name="FOREGROUND" value="00ff00"/></value></option>
+      <option name="PY.NESTED_FUNC_DEFINITION"><value><option name="FOREGROUND" value="223344"/></value></option>
+      <option name="PY.DOC_COMMENT"><value><option name="FOREGROUND" value="334455"/><option name="EFFECT_TYPE" value="1"/></value></option>
+      <option name="PY.STRING.B"><value><option name="FOREGROUND" value="445566"/><option name="FONT_TYPE" value="1"/></value></option>
+      <option name="PY.BUILTIN_NAME"><value><option name="FOREGROUND" value="abcd"/></value></option>
+    </attributes></scheme>`;
+    const attrs = parseIcls(xml).scheme.attributes;
+    expect(attrs.keyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    expect(attrs.pyNestedFunction?.foreground).toBe("#223344");
+    expect(attrs.pyDocstring?.foreground).toBe("#334455");
+    expect(attrs.pyDocstring?.effect).toBe("none");
+    expect(attrs.pyBytes?.foreground).toBe("#445566");
+    expect(attrs.pyBytes?.bold).toBe(true);
+    expect(attrs.pyBuiltin?.foreground).toBe("#00abcd");
+    const imported = importScheme({}, parseIcls(xml).scheme);
+    const roundTrip = parseIcls(exportIcls(imported.id, imported.customs)).scheme.attributes;
+    expect(roundTrip.pyNestedFunction?.foreground).toBe("#223344");
+    expect(roundTrip.pyBytes?.foreground).toBe("#445566");
+  });
+
   it("imports the global variable colour", () => {
     const xml =
       '<scheme name="G" parent_scheme="Darcula"><attributes><option name="DEFAULT_GLOBAL_VARIABLE"><value>' +

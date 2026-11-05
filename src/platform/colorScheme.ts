@@ -135,6 +135,16 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   ...[1, 2, 3, 4, 5].map((n) => syn(`semantic${n}`, `Semantic highlighting › Color ${n}`, [LD], `rainbow-${n}`)),
   ...[1, 2, 3].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
 
+  syn("pyMethodCall", "Method call", ["Python"], "python-method-call"),
+  syn("pyAnnotation", "Type annotation", ["Python"], "python-annotation"),
+  syn("pyParentheses", "Parentheses", ["Python"], "python-parentheses"),
+  syn("pyBrackets", "Brackets", ["Python"], "python-brackets"),
+  syn("pyBraces", "Braces", ["Python"], "python-braces"),
+  syn("pyNestedFunction", "Nested function definition", ["Python"], "python-nested-function"),
+  syn("pyBytes", "Byte string", ["Python"], "python-bytes"),
+  syn("pyPredefinedDefinition", "Predefined function definition", ["Python"], "python-predefined-definition"),
+  syn("pyPredefinedUsage", "Predefined name usage", ["Python"], "python-predefined-usage"),
+  syn("pyFormat", "Format specifier", ["Python"], "python-format"),
   syn("pySelf", "Self parameter", ["Python"], "self"),
   {
     id: "pyStaticSymbol",
