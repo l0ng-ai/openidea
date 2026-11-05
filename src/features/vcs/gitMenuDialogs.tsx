@@ -5,12 +5,13 @@ import type { Branch, MergeOptions, Remote, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, IconButton, Input, Select, T, type SelectOption } from "@/ui";
+import { Checkbox, Dialog, Icon, IconButton, Input, Select, T, type SelectOption } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, selectRepo, useVcs } from "./store";
+import { isCurrentWorktree } from "./worktrees";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -660,7 +661,13 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
             onClick={() => setSelected(w.path)}
             onDoubleClick={() => void executeAction("file.openProjectPath", w.path)}
           >
-            <span className={styles.fileName}>{w.branch ?? (w.head ? w.head.slice(0, 8) : <T>(bare)</T>)}</span>
+            {/* The worktree this window works in, as IDEA marks it. */}
+            <span className={styles.worktreeMark}>
+              {isCurrentWorktree(w.path, repo) && <Icon name="check" size={14} label={tx("Current worktree")} />}
+            </span>
+            <span className={clsx(styles.fileName, styles.worktreeName)}>
+              {w.branch ?? (w.head ? w.head.slice(0, 8) : <T>(bare)</T>)}
+            </span>
             <span className={clsx(styles.fileDir, styles.mono)}>{w.path}</span>
             {(w.main || w.locked || w.prunable) && (
               <span className={styles.fileDir}>{w.main ? "main" : w.locked ? tx("locked") : tx("prunable")}</span>

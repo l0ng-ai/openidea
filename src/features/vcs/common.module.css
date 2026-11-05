@@ -305,6 +305,18 @@
 .manageRowSelected:hover {
   background: var(--bg-list-selected);
 }
+/* A fixed slot, so the names line up whether or not a row is marked. */
+.worktreeMark {
+  display: flex;
+  flex: none;
+  width: 14px;
+  margin-right: -4px;
+}
+/* The branch keeps its width; the path is what gets cut short. */
+.worktreeName {
+  flex: none;
+  max-width: 40%;
+}
 
 .comparisonDialog > [data-dialog-body] {
   display: flex;
