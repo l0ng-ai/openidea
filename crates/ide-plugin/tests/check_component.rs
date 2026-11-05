@@ -14,12 +14,12 @@ fn check(wat: &str) -> Result<Option<semver::Version>, String> {
 #[test]
 fn components_the_host_cannot_link_are_refused() {
     let cases = [
-        // dengliu.gitlink 0.1.0: functions added to `ui` on an unreleased branch, still at @1.0.0.
+        // As dengliu.gitlink 0.1.0 was: built from unreleased WIT that added functions under the same version.
         (
             "a function the host's interface lacks",
             r#"(component (import "openidea:plugin/ui@1.0.0" (instance
-                (export "copy-to-clipboard" (func (param "text" string))))))"#,
-            "copy-to-clipboard",
+                (export "not-a-host-function" (func (param "text" string))))))"#,
+            "not-a-host-function",
         ),
         (
             "a function with another signature",

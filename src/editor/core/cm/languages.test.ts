@@ -24,6 +24,30 @@ describe("language modes", () => {
     ]);
   });
 
+  it("parses YAML into large tree buffers and highlights mappings after comment lines", async () => {
+    for (const path of ["/p/application.yml", "/p/compose.yaml"]) {
+      const support = await loadSupport(findLanguageDescription("YAML", path)!);
+      // @lezer/yaml can invert a node's range on a tree buffer boundary; one buffer avoids it.
+      expect((support!.language.parser as unknown as { bufferLength: number }).bufferLength).toBe(1 << 16);
+    }
+    const support = await loadSupport(findLanguageDescription("YAML", "/p/application.yml")!);
+    const source = "spring:\n  datasource:\n  # driver: a\n  # url: b\n    driver: c # d\n    url: e\n";
+    const found: Array<[string, string]> = [];
+    highlightTree(
+      support!.language.parser.parse(source),
+      tagHighlighter([
+        { tag: t.lineComment, class: "comment" },
+        { tag: t.definition(t.propertyName), class: "key" },
+      ]),
+      (from, to, style) => found.push([source.slice(from, to), style]),
+    );
+    expect(found.filter(([, style]) => style === "comment").map(([text]) => text)).toEqual([
+      "# driver: a",
+      "# url: b",
+      "# d",
+    ]);
+  });
+
   it("recognizes AsciiDoc files and loads their lightweight syntax mode", async () => {
     for (const path of ["/docs/guide.adoc", "/docs/guide.asciidoc"]) {
       const description = findLanguageDescription("AsciiDoc", path);

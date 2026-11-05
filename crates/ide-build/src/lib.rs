@@ -216,7 +216,7 @@ mod tests {
         };
         assert_eq!(
             gradle_external_roots(&root, &temp.path().join("cache"), &settings),
-            [external.canonicalize().unwrap()]
+            [dunce::canonicalize(&external).unwrap()]
         );
         settings.linked_projects = Some(vec![]);
         assert!(gradle_external_roots(&root, &temp.path().join("cache"), &settings).is_empty());

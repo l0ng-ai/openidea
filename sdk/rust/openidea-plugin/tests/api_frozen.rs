@@ -140,12 +140,18 @@ fn released_apis_are_unchanged() {
         for (key, was) in &release {
             match current.get(key) {
                 None => broken.push(format!("{key}: removed (was {was})")),
-                // A world may gain imports and exports; everything else stays as it was.
+                // A world may gain imports and exports; everything else stays as it was. Items are
+                // compared without their `@version`: a later minor names them `@1.1.0`, and wasmtime
+                // resolves the release's `@1.0.0` to it.
                 Some(now) if key.starts_with("world ") => {
                     let had = |s: &str, part: &str| -> Vec<String> {
                         let start = s.find(part).unwrap() + part.len();
                         let end = s[start..].find(']').unwrap() + start;
-                        s[start..end].split(", ").filter(|x| !x.is_empty()).map(str::to_owned).collect()
+                        s[start..end]
+                            .split(", ")
+                            .filter(|x| !x.is_empty())
+                            .map(|x| x.split('@').next().unwrap_or(x).to_owned())
+                            .collect()
                     };
                     for part in ["imports [", "exports ["] {
                         let now = had(now, part);
