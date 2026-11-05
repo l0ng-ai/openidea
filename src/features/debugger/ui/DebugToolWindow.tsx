@@ -37,6 +37,7 @@ import {
   useDebug,
   type DebugSession,
 } from "../state";
+import { remoteWaitingNote } from "../remote";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -304,7 +305,11 @@ function FramesPane({ session }: { session: DebugSession }) {
         onBlur={() => blurDebugView("frames")}
       >
         {!paused && (
-          <div className={styles.note}>{session.status === "terminated" ? tx("Finished") : tx("Running…")}</div>
+          <div className={styles.note}>
+            {session.status === "terminated"
+              ? tx("Finished")
+              : (remoteWaitingNote(rootOf(session).runConfig) ?? tx("Running…"))}
+          </div>
         )}
         {items.map((item) =>
           item.kind === "hidden" ? (

@@ -5,6 +5,7 @@
  * PHP Remote Debug is the exception: its php-debug listens and Xdebug connects to it.
  * Only Debug applies to them (`debugOnly`); they launch no process.
  */
+import { tx } from "@/platform/i18n";
 import type { LaunchConfig, RunConfig } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import type { RunConfigTypeContribution, RunConfigTypeField } from "@/workbench/contributions";
@@ -381,6 +382,12 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
     default:
       return null;
   }
+}
+
+/** What a session of `rc` shows while nothing is suspended, when it waits for the debuggee to connect. */
+export function remoteWaitingNote(rc: Pick<RunConfig, "kind" | "params"> | undefined): string | null {
+  if (rc?.kind !== PHP_REMOTE) return null;
+  return tx`Listening for Xdebug on port ${portOf(rc.params ?? {}, 9003)}`;
 }
 
 /** What a Remote JVM Debug configuration attaches to (before the listen mode relay). */

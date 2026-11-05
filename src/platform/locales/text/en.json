@@ -33,5 +33,8 @@
   "{removed} lines deleted": "{removed} lines deleted",
   "PHP Remote Debug (Xdebug)": "PHP Remote Debug (Xdebug)",
   "Listen for Xdebug connections: debug PHP requests served elsewhere (php-fpm, a container)": "Listen for Xdebug connections: debug PHP requests served elsewhere (php-fpm, a container)",
-  "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container": "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container"
+  "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container": "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container",
+  "e.g. /var/www/html": "e.g. /var/www/html",
+  "Listening for Xdebug on port {port}": "Listening for Xdebug on port {port}",
+  "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port.": "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port."
 }

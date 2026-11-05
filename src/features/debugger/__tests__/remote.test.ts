@@ -35,6 +35,7 @@ const {
   xdebugCommand,
   remoteAttachConfig,
   remoteJvmTarget,
+  remoteWaitingNote,
 } = remote;
 
 function configOf(type: (typeof REMOTE_TYPES)[number], params: Record<string, string> = {}): RunConfig {
@@ -178,6 +179,25 @@ describe("remote attach requests", () => {
     expect(JSON.parse(l.extraJson!)).toEqual({ port: 9003, pathMappings: { "/var/www/html": "/p" } });
     const plain = JSON.parse(remoteAttachConfig(configOf(phpRemoteType), "/p")!.extraJson!);
     expect(plain).toEqual({ port: 9003 });
+  });
+
+  it.each([
+    [{ remoteRoot: "/app", localRoot: "web" }, { "/app": "/p/web" }],
+    [{ remoteRoot: "/app", localRoot: "/srv/site" }, { "/app": "/srv/site" }],
+  ])("PHP Remote Debug maps the server path %j to the local root", (params, pathMappings) => {
+    const l = remoteAttachConfig(configOf(phpRemoteType, params), "/p")!;
+    expect(JSON.parse(l.extraJson!)).toEqual({ port: 9003, pathMappings });
+    expect(l).toMatchObject({ args: [], env: {} });
+  });
+
+  it("PHP Remote Debug keeps its form when Port, its only value, is cleared", () => {
+    const cleared = withParams(configOf(phpRemoteType), {}, phpRemoteType);
+    expect(missingParams(cleared, phpRemoteType)).toEqual({ port: "Port is required" });
+  });
+
+  it("PHP Remote Debug says which port it waits on; the attaching types don't", () => {
+    expect(remoteWaitingNote(configOf(phpRemoteType, { port: "9010" }))).toBe("Listening for Xdebug on port 9010");
+    for (const t of REMOTE_TYPES.filter((x) => x !== phpRemoteType)) expect(remoteWaitingNote(configOf(t))).toBeNull();
   });
 
   it("start-the-remote-side hints follow the port", () => {
