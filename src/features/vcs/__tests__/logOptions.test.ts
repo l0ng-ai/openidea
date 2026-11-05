@@ -37,11 +37,28 @@ describe("Collapse Linear Branches", () => {
     ];
     const { commits: shown, graph } = collapseLinear(commits, new Set());
     expect(shown.map((x) => x.id)).toEqual(["t", "m", "base"]);
-    expect(graph.find((g) => g.id === "m")).toEqual({ id: "m", parents: ["base"], dashed: [true] });
-    expect(graph.find((g) => g.id === "t")).toEqual({ id: "t", parents: ["m"] });
+    expect(graph.find((g) => g.id === "m")).toMatchObject({ id: "m", parents: ["base"], dashed: [true] });
+    expect(graph.find((g) => g.id === "t")).toMatchObject({ id: "t", parents: ["m"] });
     const { rows } = computeGraph(graph);
     expect(rows[1]!.down.some((s) => s.dashed)).toBe(true);
     expect(rows[2]!.up.some((s) => s.dashed)).toBe(true);
+  });
+
+  it("keeps the dashed links of a filtered log", () => {
+    // A user filter already linked y past hidden commits.
+    const commits = [
+      c("z", ["y"], ["main"]),
+      { ...c("y", ["x"], ["tag: v2"]), dashed: [true] },
+      c("x", [], ["tag: v1"]),
+    ];
+    const { graph } = collapseLinear(commits, new Set());
+    expect(graph.find((g) => g.id === "y")).toMatchObject({
+      id: "y",
+      parents: ["x"],
+      dashed: [true],
+      edgeTypes: ["filtered"],
+    });
+    expect(computeGraph(commits).rows[1]!.down.some((s) => s.dashed)).toBe(true);
   });
 
   it("keeps referenced and kept commits", () => {

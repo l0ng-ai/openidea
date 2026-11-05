@@ -24,7 +24,14 @@ export function statusBarMenu(
     .filter((i) => i.title)
     .map((i) => {
       const visible = isStatusItemVisible(i, overrides);
-      return { id: i.id, label: i.title!, checked: visible, run: () => set(i.id, !visible) };
+      // Plugin widgets are named by their plugin, not translated.
+      return {
+        id: i.id,
+        label: i.title!,
+        verbatim: i.id.startsWith("plugin."),
+        checked: visible,
+        run: () => set(i.id, !visible),
+      };
     });
 }
 

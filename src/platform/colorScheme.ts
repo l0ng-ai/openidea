@@ -113,6 +113,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
+  syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
   syn("constant", "Identifiers › Constant", [LD], "constant"),
   syn("field", "Identifiers › Instance field", [LD], "property"),
   { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
@@ -257,6 +258,25 @@ export function effectiveScheme(
 ): string {
   if (isBuiltinTheme(setting) || (setting && Object.hasOwn(customs, setting))) return setting;
   return themeScheme(root);
+}
+
+/** Light or dark: a built-in scheme's theme kind, a custom scheme's parent (null: unknown). */
+export function schemeKind(id: string | undefined, customs: CustomColorSchemes = {}): "light" | "dark" | null {
+  if (isBuiltinTheme(id)) return themeKind(id);
+  return (id && customSchemes(customs)[id]?.parent) || null;
+}
+
+/**
+ * The scheme setting once the IDE theme has turned `kind`, or null to keep it: a chosen scheme
+ * of the other kind gives way to the theme's own, so a light theme doesn't keep a dark editor.
+ */
+export function schemeAfterThemeChange(
+  setting: string | undefined,
+  kind: "light" | "dark",
+  customs: CustomColorSchemes = {},
+): string | null {
+  const current = schemeKind(setting, customs);
+  return current && current !== kind ? "theme-default" : null;
 }
 
 /** Scheme belonging to the active IDE theme (`data-theme` / `data-contrast`). */

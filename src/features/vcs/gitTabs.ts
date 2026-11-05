@@ -54,7 +54,9 @@ export function gitTabs(input: GitTabsInput): ContentTab[] {
   return [
     ...(input.modal ? [{ id: "changes", label: "Local Changes" }, ...stashTabs(input)] : []),
     { id: "log", label: "Log" },
-    ...input.logTabs.map((t) => ({ id: t.id, label: logTabLabel(t), closable: true })),
+    ...input.logTabs
+      .filter((t) => t.location !== "editor")
+      .map((t) => ({ id: t.id, label: logTabLabel(t), closable: true })),
     { id: "console", label: "Console" },
     { id: "worktrees", label: "Worktrees" },
   ];

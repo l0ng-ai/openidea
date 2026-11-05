@@ -56,6 +56,7 @@ const MODIFIER_CLASS: Record<string, string> = {
   declaration: "declaration",
   definition: "declaration",
   defaultLibrary: "builtin",
+  global: "global",
 };
 
 /** Number of `--syn-rainbow-<n>` colours (IDEA's five semantic highlighting colours). */

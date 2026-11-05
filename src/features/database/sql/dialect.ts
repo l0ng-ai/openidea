@@ -24,6 +24,9 @@ export function isReserved(word: string): boolean {
   return RESERVED.has(word.toUpperCase());
 }
 
+export const nameMatcher = (driver: DbDriver) => (a: string | null | undefined, b: string | null | undefined) =>
+  !!a && !!b && (driver === "clickhouse" ? a === b : a.toLowerCase() === b.toLowerCase());
+
 /** Clause keywords: a word in this set ends a table alias or expression. */
 export const CLAUSE_WORDS = new Set(
   (
@@ -34,6 +37,30 @@ export const CLAUSE_WORDS = new Set(
 );
 
 export function statementStarters(driver: DbDriver): string[] {
+  if (driver === "clickhouse")
+    return [
+      "SELECT",
+      "INSERT INTO",
+      "WITH",
+      "CREATE TABLE",
+      "CREATE VIEW",
+      "CREATE MATERIALIZED VIEW",
+      "CREATE DATABASE",
+      "ALTER TABLE",
+      "DROP TABLE",
+      "DROP VIEW",
+      "DROP DATABASE",
+      "RENAME TABLE",
+      "TRUNCATE TABLE",
+      "EXPLAIN",
+      "SHOW DATABASES",
+      "SHOW TABLES",
+      "SHOW CREATE TABLE",
+      "DESCRIBE TABLE",
+      "USE",
+      "SET",
+      "OPTIMIZE TABLE",
+    ];
   const common = [
     "SELECT",
     "INSERT INTO",
@@ -177,6 +204,33 @@ export const DATA_TYPES: Record<DbDriver, string[]> = {
     "VARBINARY",
     "XML",
   ],
+  clickhouse: [
+    "UInt64",
+    "UInt32",
+    "UInt16",
+    "UInt8",
+    "Int64",
+    "Int32",
+    "Float64",
+    "Float32",
+    "Decimal",
+    "String",
+    "FixedString",
+    "Bool",
+    "Date",
+    "Date32",
+    "DateTime",
+    "DateTime64",
+    "UUID",
+    "IPv4",
+    "IPv6",
+    "Array",
+    "Tuple",
+    "Map",
+    "Nullable",
+    "LowCardinality",
+    "JSON",
+  ],
 };
 
 const f = (name: string, params: string, returns?: string, aggregate?: boolean): SqlFunction => ({
@@ -296,6 +350,38 @@ const FUNCTIONS: Record<DbDriver, SqlFunction[]> = {
     f("newid", "", "uniqueidentifier"),
     f("row_number", "", "bigint"),
     f("rank", "", "bigint"),
+  ],
+  clickhouse: [
+    f("count", "*", "UInt64", true),
+    f("sum", "expr", undefined, true),
+    f("avg", "expr", "Float64", true),
+    f("min", "expr", undefined, true),
+    f("max", "expr", undefined, true),
+    f("uniq", "expr", "UInt64", true),
+    f("uniqExact", "expr", "UInt64", true),
+    f("groupArray", "expr", "Array", true),
+    f("argMax", "arg, value", undefined, true),
+    f("coalesce", "value, ..."),
+    f("ifNull", "a, b"),
+    f("nullIf", "a, b"),
+    f("lower", "text", "String"),
+    f("upper", "text", "String"),
+    f("length", "value", "UInt64"),
+    f("concat", "value, ...", "String"),
+    f("substring", "text, start, length", "String"),
+    f("replaceAll", "text, pattern, replacement", "String"),
+    f("abs", "number"),
+    f("round", "number, digits"),
+    f("toString", "expr", "String"),
+    f("toUInt64", "expr", "UInt64"),
+    f("toDate", "expr", "Date"),
+    f("toDateTime", "expr", "DateTime"),
+    f("toStartOfDay", "datetime", "DateTime"),
+    f("now", "", "DateTime"),
+    f("today", "", "Date"),
+    f("arrayJoin", "array"),
+    f("tuple", "value, ...", "Tuple"),
+    f("cast", "expr AS type"),
   ],
 };
 

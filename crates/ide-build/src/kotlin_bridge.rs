@@ -81,7 +81,7 @@ pub fn build(
     cancel: &CancellationToken,
 ) -> IdeResult<Outcome> {
     std::fs::create_dir_all(generation)?;
-    let mut plan = compile::plan(root, model, BuildKind::Build, None)?;
+    let mut plan = compile::plan(root, model, BuildKind::Build, None, None)?;
     if plan.system != compile::BuildSystem::Maven {
         return Err(IdeError::invalid("Kotlin bridge requires a Maven build root"));
     }

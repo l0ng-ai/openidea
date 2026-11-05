@@ -65,8 +65,33 @@ describe("import summary", () => {
     expect(
       screen.getByText("Skipped 'Current file': Uses ${file}, which is known only when VS Code starts it"),
     ).toBeInTheDocument();
-    expect(screen.getByText("Skipped 'Chrome': The chrome debugger has no equivalent here")).toBeInTheDocument();
+    expect(screen.getByText("Skipped 'Chrome': Type 'chrome' has no equivalent here")).toBeInTheDocument();
     expect(screen.getByText("Skipped 'Unnamed': Not a configuration with a name")).toBeInTheDocument();
+    cleanup();
+    const files = importSummary(
+      result({
+        imported: [],
+        skipped: [
+          { name: "Server", reason: { kind: "missingFile", file: "manage.py" } },
+          { name: ".run/Broken.run.xml", reason: { kind: "invalidFile", detail: "unclosed element" } },
+          { name: "Repo", reason: { kind: "pathVariable", variable: "$MAVEN_REPOSITORY$" } },
+          { name: "Job", reason: { kind: "severalModules", variable: "$MODULE_DIR$" } },
+        ],
+      }),
+    );
+    render(<>{files.body}</>);
+    expect(screen.getByText("Skipped 'Server': manage.py isn't in the project")).toBeInTheDocument();
+    expect(
+      screen.getByText("Skipped '.run/Broken.run.xml': The file can't be read: unclosed element"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Skipped 'Repo': Uses $MAVEN_REPOSITORY$, a path variable with no value here"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Skipped 'Job': Uses $MODULE_DIR$, and the project has several modules"),
+    ).toBeInTheDocument();
+    cleanup();
+    render(<>{s.body}</>);
     expect(screen.getByText("Left out of 'Django': justMyCode")).toBeInTheDocument();
     expect(screen.getByText("Click OK or Apply to save them.")).toBeInTheDocument();
     cleanup();
@@ -88,7 +113,7 @@ describe("import summary", () => {
     await setLocale("zh");
     expect(importSummary(two).title).toBe("已从 .vscode/launch.json 导入 2 个运行配置");
     render(<>{importSummary(result({ imported: [] })).body}</>);
-    expect(screen.getByText("已跳过 'Chrome'：此处没有与 chrome 调试器对应的配置类型")).toBeInTheDocument();
+    expect(screen.getByText("已跳过 'Chrome'：此处没有与类型 'chrome' 对应的配置")).toBeInTheDocument();
     cleanup();
   });
 });
@@ -151,6 +176,14 @@ describe("Run/Debug Configurations › Import from .vscode/launch.json", () => {
       }),
     );
     expect(screen.queryByRole("treeitem", { name: /^Django/ })).not.toBeInTheDocument();
+  });
+
+  it("offers one link per source with files", async () => {
+    ipc.runImportSources.mockImplementation(async () => ok(["vscode", "jetbrains"]));
+    render(<EditConfigsOverlay />);
+    expect(await screen.findByRole("button", { name: "Import from .vscode/launch.json" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Import from JetBrains run configurations" }));
+    await waitFor(() => expect(ipc.runImportConfigs).toHaveBeenCalledWith("jetbrains", [detected]));
   });
 
   it("imports again when asked while the dialog is open", async () => {

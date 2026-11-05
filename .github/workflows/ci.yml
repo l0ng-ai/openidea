@@ -15,6 +15,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Line tables keep test backtraces readable; full debuginfo only adds build time and cache size.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   rust:
@@ -25,10 +27,10 @@ jobs:
         os: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
@@ -62,7 +64,7 @@ jobs:
     name: Remote server (linux musl)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-unknown-linux-musl }
       - uses: Swatinem/rust-cache@v2
@@ -71,11 +73,62 @@ jobs:
       - run: cargo build --locked -p ide-host --bin openidea-server --target x86_64-unknown-linux-musl
       - run: target/x86_64-unknown-linux-musl/debug/openidea-server --version
 
+  # The plugin SDK, the official plugins and the test fixtures build in their
+  # own workspaces (the root excludes them), so the jobs above don't see them.
+  plugins:
+    name: Plugins (SDK, official, fixtures)
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-wasip2, components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: plugins
+          cache-directories: target-plugins
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Format, lint (host and wasm) and test each crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in sdk/rust/openidea-plugin plugins/official/*/ crates/ide-plugin/tests/fixtures/*/; do
+            [ -f "$dir/Cargo.toml" ] || continue
+            echo "::group::$dir"
+            cargo fmt --check --manifest-path "$dir/Cargo.toml"
+            cargo clippy --locked --all-targets --manifest-path "$dir/Cargo.toml" -- -D warnings
+            cargo clippy --locked --target wasm32-wasip2 --manifest-path "$dir/Cargo.toml" -- -D warnings
+            cargo test --locked --manifest-path "$dir/Cargo.toml"
+            echo "::endgroup::"
+          done
+      - uses: pnpm/action-setup@v5
+        with: { version: 11 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      # Plugin web pages (`web-src/`, their own pnpm projects): typecheck and test.
+      - name: Web pages typecheck and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in plugins/official/*/web-src/; do
+            [ -f "$dir/package.json" ] || continue
+            echo "::group::$dir"
+            pnpm --dir "$dir" install --frozen-lockfile --ignore-workspace
+            pnpm --dir "$dir" exec tsc --noEmit
+            pnpm --dir "$dir" test
+            echo "::endgroup::"
+          done
+      # The host's tests run the checked-in components: they must be built from these sources.
+      # Web pages aren't checked in: this builds them and checks the result.
+      - name: Checked-in components are up to date, web pages build
+        run: plugins/build.sh --check
+
   deny:
     name: Cargo deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check
@@ -84,10 +137,10 @@ jobs:
     name: Frontend
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
@@ -103,16 +156,16 @@ jobs:
     # Browsers and their system libraries are preinstalled; keep the tag in step with @playwright/test.
     container: mcr.microsoft.com/playwright:v1.64.1-noble
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm e2e
         env:
           HOME: /root
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: playwright-report

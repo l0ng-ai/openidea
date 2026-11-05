@@ -5,6 +5,7 @@ import { getContext, setContext } from "@/platform/context";
 import { registerAction } from "@/platform/actions";
 import { Popup } from "./Popup";
 import { ContextMenuHost, Menu, MenuList, hideContextMenu, showContextMenu } from "./Menu";
+import menuStyles from "./Menu.module.css";
 import { Dialog } from "./Dialog";
 
 function Harness({ onClose }: { onClose?: (r: string) => void }) {
@@ -190,6 +191,41 @@ describe("Menu action enablement", () => {
     expect(screen.getByRole("menuitem", { name: /Paste/ })).toHaveFocus();
     act(() => hideContextMenu());
     expect(input).toHaveFocus();
+  });
+
+  it("highlights the row under the pointer without moving focus", () => {
+    render(
+      <MenuList
+        items={[
+          { label: "Open", run: () => undefined },
+          { label: "Save", run: () => undefined },
+        ]}
+        onDone={() => {}}
+      />,
+    );
+    const open = screen.getByRole("menuitem", { name: "Open" });
+    const save = screen.getByRole("menuitem", { name: "Save" });
+    expect(open).toHaveFocus();
+    expect(open.className).toContain(menuStyles.active);
+    fireEvent.pointerEnter(save);
+    expect(save.className).toContain(menuStyles.active);
+    expect(open.className).not.toContain(menuStyles.active);
+    expect(open).toHaveFocus();
+  });
+
+  it("reports a hovered row once and lets the keyboard continue from it", () => {
+    const active: string[] = [];
+    const item = (label: string) => ({ label, onActive: () => active.push(label), run: () => undefined });
+    render(<MenuList items={[item("Open"), item("Save"), item("Close")]} onDone={() => {}} />);
+    const save = screen.getByRole("menuitem", { name: "Save" });
+    fireEvent.pointerEnter(save);
+    fireEvent.mouseEnter(save);
+    expect(active).toEqual(["Save"]);
+    fireEvent.keyDown(save, { key: "ArrowDown" });
+    expect(screen.getByRole("menuitem", { name: "Close" })).toHaveFocus();
+    fireEvent.pointerLeave(save);
+    fireEvent.pointerEnter(save);
+    expect(active).toEqual(["Save", "Close", "Save"]);
   });
 
   it("follows context changes after the menu opened", () => {

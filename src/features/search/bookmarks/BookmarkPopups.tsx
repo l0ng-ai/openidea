@@ -225,7 +225,7 @@ function BookmarksPopup() {
 
   const fileLabel = (path: string, dir: boolean) => (
     <span className={styles.fileRow}>
-      <Icon name={dir ? "folder" : fileIconName(basename(path))} size={14} />
+      <Icon name={dir ? "folder" : fileIconName(basename(path), path)} size={14} />
       <span className={styles.fileName}>{basename(path)}</span>
       <span className={styles.dim}>{root ? relPath(path) : path}</span>
     </span>

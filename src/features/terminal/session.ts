@@ -413,17 +413,18 @@ export class TerminalSession {
 
   /**
    * Routes a WebKitGTK / fcitx5 IME commit through `ImeCommitGate`: the platform reports the
-   * composition's own keystroke (code 229) and its input event but never `compositionstart`,
-   * which is what xterm's own bookkeeping is built on.
+   * commit's own keystroke (code 229) and its input event, but reports `compositionstart` only
+   * for composed words — never for the punctuation an IME commits directly.
    */
   private watchImeCommit() {
     const textarea = this.term.textarea;
     if (!textarea) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.keyCode === 229) this.ime.begin();
+      else this.ime.keystroke();
     };
     const onInput = (e: InputEvent) => {
-      if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.begin();
+      if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.input();
     };
     const onCompositionStart = () => this.ime.compositionStart();
     // Bubble phase, i.e. after xterm's own listener: the rebase must land behind the emissions

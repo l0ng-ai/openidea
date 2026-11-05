@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTestParser, frameworkFor, withTestReporting } from "./index";
-import { phpunitArgs, phpunitFilter, phpunitParser, TeamcityOutput, withTeamcity } from "./phpunit";
+import { phpunitArgs, phpunitFilter, phpunitParser, withTeamcity } from "./phpunit";
+import { TeamcityOutput } from "./teamcity";
 import { TestResults } from "./results";
 import type { TestEvent } from "./types";
 

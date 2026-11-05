@@ -1,9 +1,11 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "src-tauri"]
+# Plugins and the guest SDK build for wasm32-wasip2 in their own workspaces.
+exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -41,6 +43,8 @@ ide-ssh = { path = "crates/ide-ssh" }
 ide-remote = { path = "crates/ide-remote" }
 ide-host = { path = "crates/ide-host" }
 ide-notebook = { path = "crates/ide-notebook" }
+ide-extension = { path = "crates/ide-extension" }
+ide-plugin = { path = "crates/ide-plugin" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
@@ -69,9 +73,9 @@ ropey = "1.6"
 encoding_rs = "0.8"
 chardetng = "0.1"
 ignore = "0.4"
+base64 = "0.22"
 globset = "0.4"
 notify = "8"
-notify-debouncer-full = "0.6"
 trash = "5"
 blake3 = "1"
 dunce = "1"
@@ -81,6 +85,7 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # search, index, language
 grep-searcher = "0.1"
 grep-regex = "0.1"
+regex-syntax = "0.8"
 grep-matcher = "0.1"
 nucleo-matcher = "0.3"
 redb = "4"
@@ -100,6 +105,9 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
 bb8 = "0.9"
 uuid = { version = "1", features = ["v4"] }
+# OS credential stores
+keyring = "4.2"
+keyring-core = "1"
 
 # testing
 insta = { version = "1", features = ["yaml"] }
@@ -109,8 +117,14 @@ tempfile = "3"
 [profile.dev]
 # Keep debug builds snappy while giving dependencies decent speed.
 opt-level = 0
+# Full debug info is most of target/. Line tables keep file:line in our backtraces, but a
+# debugger can't show locals; re-enable with `--config profile.dev.debug=true`.
+debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 2
+# Dependency frames keep function names only. Re-enable one with
+# `--config 'profile.dev.package.<crate>.debug=true'`.
+debug = false
 
 [profile.release]
 codegen-units = 1

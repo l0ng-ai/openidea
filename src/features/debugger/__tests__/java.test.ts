@@ -54,7 +54,7 @@ const { isJavaDebuggable, javaAttachConfig, javaLaunchConfig } = await import(".
 const app: RunConfig = {
   id: "application:a.Main",
   name: "Main",
-  kind: "spring-boot",
+  kind: "application",
   command: "java",
   args: ["-Xmx1g", "-cp", "${classpath}", "a.Main", "--port", "8081 x"],
   cwd: "api",
@@ -91,6 +91,17 @@ describe("Java debugging (java-debug through jdtls)", () => {
       console: "internalConsole",
       shortenCommandLine: "none",
     });
+  });
+
+  it("debugs Spring Boot with coloured console output, as Run does", async () => {
+    const boot = { ...app, kind: "spring-boot" };
+    expect(JSON.parse((await javaLaunchConfig(boot, "/p")).extraJson!).vmArgs).toBe(
+      "-Dspring.output.ansi.enabled=always -Xmx1g",
+    );
+    const own = { ...boot, args: ["-Dspring.output.ansi.enabled=never", ...app.args] };
+    expect(JSON.parse((await javaLaunchConfig(own, "/p")).extraJson!).vmArgs).toBe(
+      "-Dspring.output.ansi.enabled=never -Xmx1g",
+    );
   });
 
   it("passes the configuration's VM options to java-debug's vmArgs, before the main class", async () => {

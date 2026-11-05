@@ -49,6 +49,7 @@
   "app.lightEdit.openProject": "作为项目打开",
   "app.lightEdit.openProjectTooltip": "将 {folder} 作为项目打开",
   "app.log.failed": "无法显示日志",
+  "app.project.opening": "正在打开 {name}…",
   "app.title.default": "OpenIDEA",
   "app.unsaved.body": "{project} 中有 {count} 个文件尚未保存。关闭前是否保存？",
   "app.unsaved.discard": "不保存",
@@ -241,6 +242,8 @@
   "menu.refactor.extractVariable": "引入变量…",
   "menu.refactor.inline": "内联…",
   "menu.refactor.move": "移动…",
+  "menu.refactor.pullMembersUp": "上拉成员…",
+  "menu.refactor.pushMembersDown": "下推成员…",
   "menu.refactor.rename": "重命名…",
   "menu.refactor.safeDelete": "安全删除…",
   "menu.refactor.thisMenu": "重构此项…",
@@ -337,6 +340,7 @@
   "menu.vcs.addToVcs": "添加到 VCS",
   "menu.vcs.compareWithBranch": "与分支或修订比较…",
   "menu.vcs.showHistory": "显示历史记录",
+  "menu.vcs.showHistoryForSelection": "显示所选内容的历史记录",
   "menu.build": "构建",
   "menu.build.buildProject": "构建项目",
   "menu.build.buildModule": "构建模块",
@@ -446,5 +450,7 @@
   "menu.editor.contextInfo": "上下文信息",
   "run.services.configurationCount": "{count} 个配置",
   "search.bookmarks.count": "{count} 个书签",
+  "search.find.matches": "在 {files} 个文件中有 {matches} 个匹配项",
+  "search.find.matchesIncomplete": "在 {files}+ 个文件中有 {matches}+ 个匹配项",
   "settings.zoom.hint": "使用 {zoomIn} 或 {zoomOut} 更改，使用 {reset} 重置为 100%"
 }

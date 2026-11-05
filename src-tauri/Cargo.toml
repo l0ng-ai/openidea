@@ -16,7 +16,7 @@ dunce.workspace = true
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-mcp-bridge = "0.13"
 tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
@@ -27,6 +27,8 @@ specta-typescript.workspace = true
 specta.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
+percent-encoding = "2"
 tokio.workspace = true
 parking_lot.workspace = true
 blake3.workspace = true
@@ -67,13 +69,16 @@ ide-notebook.workspace = true
 ide-jsonrpc.workspace = true
 ide-tools = { path = "../crates/ide-tools" }
 ide-plugin = { path = "../crates/ide-plugin" }
+ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
 ide-github = { path = "../crates/ide-github" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
+# Plugin secrets in the login keychain.
+security-framework = "3.7"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "CFRunLoop"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString"] }
 # Used only by the debug font-restriction override; Cargo dependency cfg cannot test debug_assertions.

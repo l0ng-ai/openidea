@@ -12,6 +12,7 @@ pub mod debug;
 pub mod dependencies;
 pub mod deploy;
 pub mod doc;
+pub mod docker;
 pub mod env;
 pub mod fs;
 pub mod history;
@@ -87,6 +88,7 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     run::register(d);
     env::register(d);
     deploy::register(d);
+    docker::register(d);
     db::register(d);
 }
 

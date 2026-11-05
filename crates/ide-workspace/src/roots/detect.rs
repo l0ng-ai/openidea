@@ -62,7 +62,10 @@ const ROOT_NAMES: &[&str] = &[
 pub fn affects_roots(rel: &Path) -> bool {
     let mut names = rel.iter().rev().filter_map(|c| c.to_str());
     let Some(name) = names.next() else { return false };
-    BUILD_FILES.contains(&name) || ROOT_NAMES.contains(&name) || names.next() == Some("src")
+    BUILD_FILES.contains(&name)
+        || ROOT_NAMES.contains(&name)
+        || matches!(name, "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt")
+        || names.next() == Some("src")
 }
 
 /// Detects roots below `root`; paths in the result are unique and sorted.
@@ -77,6 +80,29 @@ pub fn detect(root: &Path) -> Vec<SourceFolder> {
             break;
         }
         let dir = if rel.is_empty() { root.to_path_buf() } else { root.join(&rel) };
+        if crate::unity::is_project(&dir) {
+            for (name, kind) in
+                [("Assets", RootKind::Source), ("Packages", RootKind::Source), ("ProjectSettings", RootKind::Resources)]
+            {
+                if dir.join(name).is_dir() {
+                    out.push(SourceFolder {
+                        path: join(&rel, name),
+                        kind,
+                        detected_from: Some(join(&rel, crate::unity::VERSION_FILE)),
+                    });
+                }
+            }
+            // Exclude before the index/watchers start, even if Unity creates its caches later.
+            for name in crate::unity::GENERATED_DIRS {
+                out.push(SourceFolder {
+                    path: join(&rel, name),
+                    kind: RootKind::Excluded,
+                    detected_from: Some(join(&rel, crate::unity::VERSION_FILE)),
+                });
+            }
+            // Assets and PackageCache may contain arbitrary build files; they aren't nested modules.
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         let mut files: Vec<String> = Vec::new();
         let mut dirs: Vec<String> = Vec::new();
@@ -242,6 +268,43 @@ mod tests {
 
     fn summary(roots: &[SourceFolder]) -> Vec<String> {
         roots.iter().map(|r| format!("{}={:?}@{}", r.path, r.kind, r.detected_from.as_deref().unwrap_or(""))).collect()
+    }
+
+    #[test]
+    fn unity_roots_exclude_future_caches_and_do_not_scan_assets_as_modules() {
+        let dir = tree(&[
+            "Assets/Scripts/Player.cs",
+            "Assets/Plugins/Tool/package.json",
+            "ProjectSettings/ProjectVersion.txt",
+            "Packages/manifest.json",
+            "Library/PackageCache/tool/Cargo.toml",
+        ]);
+        let roots = detect(dir.path());
+        assert!(roots.iter().any(|r| r.path == "Assets" && r.kind == RootKind::Source));
+        assert!(roots.iter().any(|r| r.path == "Packages" && r.kind == RootKind::Source));
+        assert!(!roots.iter().any(|r| r.path.starts_with("Assets/") || r.path.starts_with("Library/")));
+        let effective = super::super::ProjectRoots::compute(roots, &Default::default());
+        for name in crate::unity::GENERATED_DIRS {
+            assert!(effective.excluded_globs().contains(&format!("/{name}")));
+        }
+        for path in ["Assets", "Packages", "ProjectSettings", crate::unity::VERSION_FILE] {
+            assert!(affects_roots(Path::new(path)));
+        }
+    }
+
+    #[test]
+    fn nested_unity_roots_are_anchored_without_excluding_other_projects() {
+        let dir = tree(&[
+            "game/Assets/Scripts/Player.cs",
+            "game/ProjectSettings/ProjectVersion.txt",
+            "server/Cargo.toml",
+            "server/src/main.rs",
+            "Library/Source.cs",
+        ]);
+        let roots = super::super::ProjectRoots::compute(detect(dir.path()), &Default::default());
+        assert!(roots.excluded_globs().contains(&"/game/Library".to_owned()));
+        assert!(!roots.excluded_globs().contains(&"/Library".to_owned()));
+        assert!(roots.roots.iter().any(|r| r.path == "server/src" && r.kind == RootKind::Source));
     }
 
     #[test]

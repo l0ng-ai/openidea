@@ -9,6 +9,9 @@
  * document symbols (as Super Method, ⌘U). Only declarations in and near the
  * viewport are asked, in one debounced pass after edits / scrolling; results
  * are cached per document text, and markers follow their lines in between.
+ * The cache outlives the editor view (switching tabs remounts it) until other
+ * files change or a language server settles: on some servers (jdtls) every
+ * implementation search walks the whole workspace, so asking again is costly.
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
@@ -22,6 +25,7 @@ import {
   commands,
   isCancelled,
   nextRequestId,
+  onIdeEvent,
   type HierarchyItem,
   type Location,
   type OutlineItem,
@@ -50,6 +54,69 @@ const MARGIN_LINES = 60;
 const MAX_PER_PASS = 60;
 const DEBOUNCE_MS = 500;
 const gutterBackoff = featureBackoff();
+const MAX_CACHED_DOCS = 32;
+
+interface DocMarkers {
+  doc: Text;
+  cache: MarkerCache;
+  outline: { items: OutlineItem[]; candidates: MarkerCandidate[] } | null;
+  /** `changes` when the cache was started. */
+  changes: number;
+}
+
+/** Marker caches by path, most recently used last. */
+const docMarkers = new Map<string, DocMarkers>();
+/**
+ * Bumped when other files may have changed (edited in an editor; saved, created or removed
+ * on disk): every document's cached answers may be stale then.
+ */
+let changes = 0;
+const live = new Set<MarkersPlugin>();
+let watching = false;
+
+/** Build output and tool folders: their changes add no implementations. */
+const OUTPUT_PATH =
+  /(?:^|[\\/])(?:\.git|\.gradle|\.idea|\.openidea|node_modules|target|build|out|bin)(?:[\\/]|$)|\.class$/;
+
+/** Whether changes to `paths` can invalidate cached markers. */
+export function affectsMarkers(paths: readonly string[]): boolean {
+  return paths.some((p) => !OUTPUT_PATH.test(p));
+}
+
+/** Subscribes once per window and stays subscribed, so the settle echo guard survives remounts. */
+function watchChanges() {
+  if (watching) return;
+  watching = true;
+  onIdeEvent("fsChanged", (e) => {
+    if (affectsMarkers([...e.created, ...e.modified, ...e.removed])) changes++;
+  });
+  // Answers (outlines too) given while a server was starting or indexing may be incomplete.
+  onServerSettled(() => {
+    docMarkers.clear();
+    for (const plugin of live) plugin.refreshSoon();
+  });
+}
+
+/** The cache for `doc` at `path`: kept while its text and other files are unchanged. */
+export function markersOf(path: string, doc: Text): DocMarkers {
+  let entry = docMarkers.get(path);
+  if (!entry || entry.doc !== doc) entry = { doc, cache: emptyCache(), outline: null, changes };
+  else if (entry.changes !== changes) entry = { ...entry, cache: emptyCache(), changes };
+  docMarkers.delete(path);
+  docMarkers.set(path, entry);
+  if (docMarkers.size > MAX_CACHED_DOCS) docMarkers.delete(docMarkers.keys().next().value!);
+  return entry;
+}
+
+function markersStale(path: string, doc: Text): boolean {
+  const entry = docMarkers.get(path);
+  return !entry || entry.doc !== doc || entry.changes !== changes;
+}
+
+/** Records that other files may have changed (tests). */
+export function noteOtherChanges() {
+  changes++;
+}
 
 /** Settings › Editor › General › Gutter Icons groups that are on. */
 export function enabledGroups(prefs: Pick<EditorExtras, "showGutterIcons" | "gutterIconsDisabled">): Set<MarkerGroup> {
@@ -227,38 +294,34 @@ function markerSet(placed: readonly PlacedMarker[]): RangeSet<GutterMarker> {
 
 class MarkersPlugin {
   private refresh = debounce(() => void this.run(), DEBOUNCE_MS);
-  private cache = emptyCache();
-  private cacheDoc: Text | null = null;
-  private outline: { doc: Text; items: OutlineItem[]; candidates: MarkerCandidate[] } | null = null;
   private generation = 0;
   private request: RequestId | null = null;
   private offSettings: () => void;
-  private offServers: () => void;
 
   constructor(private view: EditorView) {
+    live.add(this);
+    watchChanges();
     this.refresh();
     this.offSettings = useProject.subscribe((s, prev) => {
       if (s.settings !== prev.settings) this.refresh();
     });
-    // Answers given while a server was starting or indexing may be incomplete.
-    this.offServers = onServerSettled(() => {
-      this.invalidate();
-      this.refresh();
-    });
+  }
+
+  refreshSoon() {
+    this.refresh();
   }
 
   update(u: ViewUpdate) {
-    if (u.docChanged || u.viewportChanged) this.refresh();
+    if (u.docChanged) {
+      // Other documents' markers may depend on this one.
+      changes++;
+      this.refresh();
+    } else if (u.viewportChanged) this.refresh();
     // Other files may have changed meanwhile (a new implementation).
     else if (u.focusChanged && u.view.hasFocus) {
-      this.invalidate();
-      this.refresh();
+      const ctx = docOf(u.view);
+      if (ctx && markersStale(ctx.path, u.view.state.doc)) this.refresh();
     }
-  }
-
-  private invalidate() {
-    this.cacheDoc = null;
-    this.outline = null;
   }
 
   private cancelRequest() {
@@ -286,30 +349,26 @@ class MarkersPlugin {
     }
     const text = view.state.doc;
     const stale = () => gen !== this.generation || view.state.doc !== text;
-    if (this.cacheDoc !== text) {
-      this.cache = emptyCache();
-      this.cacheDoc = text;
-    }
+    const entry = markersOf(ctx.path, text);
     try {
-      if (this.outline?.doc !== text) {
+      if (!entry.outline) {
         const items = await lspRequest(() => commands.docOutline(ctx.doc));
         if (stale()) return;
-        this.outline = {
-          doc: text,
+        entry.outline = {
           items,
           candidates: markerCandidates(items, (l) => (l < text.lines ? text.line(l + 1).text : "")),
         };
       }
-      const { candidates, items } = this.outline;
+      const { candidates, items } = entry.outline;
       const { from, to } = view.viewport;
       const first = text.lineAt(from).number - 1 - MARGIN_LINES;
       const last = text.lineAt(to).number - 1 + MARGIN_LINES;
       const visible = candidates.filter((c) => c.line >= first && c.line <= last).slice(0, MAX_PER_PASS);
       const request = (this.request = nextRequestId());
-      await fillMarkers(ctx.path, visible, groups, markerDeps(ctx, items, request, this.cache), this.cache);
+      await fillMarkers(ctx.path, visible, groups, markerDeps(ctx, items, request, entry.cache), entry.cache);
       if (this.request === request) this.request = null;
       if (stale()) return;
-      this.show(place(text, cachedMarkers(candidates, groups, this.cache)));
+      this.show(place(text, cachedMarkers(candidates, groups, entry.cache)));
     } catch (e) {
       if (isUnavailable(e)) gutterBackoff.mark(ctx.doc);
       else if (!isCancelled(e)) console.debug("[lineMarkers]", e);
@@ -320,8 +379,8 @@ class MarkersPlugin {
     this.refresh.cancel();
     this.cancelRequest();
     this.offSettings();
-    this.offServers();
     this.generation++;
+    live.delete(this);
   }
 }
 

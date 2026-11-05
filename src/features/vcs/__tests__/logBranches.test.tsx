@@ -15,6 +15,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+const execute = vi.hoisted(() => vi.fn());
+vi.mock("@/platform/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/actions")>()),
+  executeAction: execute,
+}));
+
+import { ContextMenuHost } from "@/ui";
 import { BranchesPanel } from "../GitLog";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
@@ -54,6 +61,26 @@ beforeEach(() => {
 });
 
 describe("Git Log branches pane", () => {
+  it("offers Manage Remotes… on the Remote node and on each remote, like IDEA", async () => {
+    useVcs.setState({ branches: [...branches, b("origin/main", { remote: true, commit: "1" })] });
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.contextMenu(screen.getByText("Remote"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Manage Remotes…" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("vcs.manageRemotes"));
+    execute.mockClear();
+    // Expand Remote, then the remote itself.
+    fireEvent.mouseDown(screen.getByText("Remote"));
+    fireEvent.keyDown(screen.getByRole("tree", { name: "Branches" }), { key: "ArrowRight" });
+    fireEvent.contextMenu(await screen.findByText("origin"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Manage Remotes…" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("vcs.manageRemotes"));
+  });
+
   it("one click only selects the branch", () => {
     render(<BranchesPanel />);
     fireEvent.mouseDown(screen.getByText("feature"));

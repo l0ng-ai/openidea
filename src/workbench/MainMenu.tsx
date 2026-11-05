@@ -229,6 +229,9 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
           onPointerEnter={() => {
             if (open !== null) setOpen(i);
           }}
+          onMouseEnter={() => {
+            if (open !== null) setOpen(i);
+          }}
           onClick={() => {
             if (open === i) close();
             else setOpen(i);

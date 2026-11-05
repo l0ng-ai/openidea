@@ -42,7 +42,8 @@ import {
   type TestOutputParser,
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
-import { TeamcityOutput } from "./testing/phpunit";
+import { moveToReportedClasses } from "./testing/jvm";
+import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
@@ -53,6 +54,7 @@ import { typeFor } from "./types";
 import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
+import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -111,6 +113,10 @@ interface RunState {
   selectedId: string | null;
   /** Ids of temporary configurations (created by gutter / context runs, not saved; last in `configs`). */
   temporary: string[];
+  /** Ids of configurations pinned to the top of the chooser, in pin order. */
+  pinned: string[];
+  /** Ids of the configurations started last, newest first (at most `MAX_RECENT`). */
+  recent: string[];
   sessions: RunSession[];
   activeSession: string | null;
   /** Output version per session (re-render trigger for the console). */
@@ -136,6 +142,8 @@ export const useRun = create<RunState>(() => ({
   loadError: null,
   selectedId: null,
   temporary: [],
+  pinned: [],
+  recent: [],
   sessions: [],
   activeSession: null,
   versions: {},
@@ -191,14 +199,25 @@ export async function loadConfigs(): Promise<void> {
     const saved = await call(commands.runConfigs());
     if (useProject.getState().project?.root !== root) return;
     // Temporary configs survive reloads (and restarts) until saved or evicted; a saved one wins.
-    const temps = readTemporary(root).filter((t) => !saved.some((c) => c.id === t.id));
+    // They are kept without what settings derived: today's toolchains apply to them, as to the others.
+    const kept = readTemporary(root).filter((t) => !saved.some((c) => c.id === t.id));
+    const temps = kept.length ? await call(commands.runApplySettings(kept)).catch(() => kept) : kept;
+    if (useProject.getState().project?.root !== root) return;
     const configs = [...saved, ...temps];
     const stored = useRun.getState().selectedId ?? readSelected(root);
     const selectedId =
       stored === CURRENT_FILE || configs.some((c) => c.id === stored)
         ? stored
         : (defaultSelection(saved)?.id ?? CURRENT_FILE);
-    useRun.setState({ configs, temporary: temps.map((t) => t.id), loaded: true, loadError: null, selectedId });
+    useRun.setState({
+      configs,
+      temporary: temps.map((t) => t.id),
+      pinned: readIds(PINNED_KEY, root),
+      recent: readIds(RECENT_KEY, root),
+      loaded: true,
+      loadError: null,
+      selectedId,
+    });
   } catch (e) {
     useRun.setState({ loaded: true, loadError: e instanceof Error ? e.message : String(e) });
   }
@@ -223,6 +242,67 @@ export function selectConfig(id: string | null) {
   if (root) writeSelected(root, id);
 }
 
+const PINNED_KEY = "openidea.run.pinned:";
+const RECENT_KEY = "openidea.run.recent:";
+export const MAX_RECENT = 5;
+
+function readIds(key: string, root: string): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(key + root) ?? "[]") as unknown;
+    return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeIds(key: string, ids: readonly string[]) {
+  const root = useProject.getState().project?.root;
+  if (!root) return;
+  try {
+    if (ids.length) localStorage.setItem(key + root, JSON.stringify(ids));
+    else localStorage.removeItem(key + root);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** Pins a configuration to the top of the chooser, or unpins it. Kept per project. */
+export function togglePinned(id: string) {
+  const { pinned } = useRun.getState();
+  const next = pinned.includes(id) ? pinned.filter((p) => p !== id) : [...pinned, id];
+  useRun.setState({ pinned: next });
+  writeIds(PINNED_KEY, next);
+}
+
+/** A configuration was started: it leads the chooser's recent configurations. Kept per project. */
+export function markRecent(id: string) {
+  const { recent } = useRun.getState();
+  if (id === CURRENT_FILE || recent[0] === id) return;
+  const next = [id, ...recent.filter((r) => r !== id)].slice(0, MAX_RECENT);
+  useRun.setState({ recent: next });
+  writeIds(RECENT_KEY, next);
+}
+
+/** Marks every configuration whose run or debug session starts (any executor, reruns included). */
+export function trackRecentConfigurations(): () => void {
+  const offRun = useRun.subscribe((s, prev) => {
+    if (s.sessions === prev.sessions) return;
+    for (const x of s.sessions) {
+      if (!prev.sessions.some((p) => p.id === x.id && p.startedAt === x.startedAt)) markRecent(x.config.id);
+    }
+  });
+  const offDebug = useDebugRunSessions.subscribe((s, prev) => {
+    if (s.sessions === prev.sessions) return;
+    for (const x of s.sessions) {
+      if (x.configId && !prev.sessions.some((p) => p.id === x.id)) markRecent(x.configId);
+    }
+  });
+  return () => {
+    offRun();
+    offDebug();
+  };
+}
+
 /** Whether the chooser's "Current File" is selected. */
 export function currentFileSelected(): boolean {
   return useRun.getState().selectedId === CURRENT_FILE;
@@ -236,7 +316,8 @@ export function selectedConfig(): RunConfig | undefined {
 // ---------------------------------------------------------------------------
 // Temporary configurations (IDEA: created by gutter / context runs, at most 5)
 
-const TEMPORARY_KEY = "openidea.run.temporary:";
+// v2: kept without settings-derived values (earlier entries froze the toolchain they were made with).
+const TEMPORARY_KEY = "openidea.run.temporary.v2:";
 export const MAX_TEMPORARY = 5;
 
 function readTemporary(root: string): RunConfig[] {
@@ -259,14 +340,24 @@ function writeTemporary(root: string, configs: RunConfig[]) {
   }
 }
 
-function persistTemporary() {
+let persisting = 0;
+
+export function persistTemporary() {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const { configs, temporary } = useRun.getState();
-  writeTemporary(
-    root,
-    temporary.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c),
-  );
+  const list = temporary.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c);
+  writeTemporary(root, list);
+  // A rewrite still pending from an earlier call must not bring back what was removed since.
+  const generation = ++persisting;
+  if (!list.length || !isTauri()) return;
+  // Then rewritten without what settings derived (the project's Maven, JDK, interpreter…), so a
+  // later settings change reaches them as it does detected and saved configurations.
+  void call(commands.runWithoutDerived(list))
+    .then((kept) => {
+      if (generation === persisting && useProject.getState().project?.root === root) writeTemporary(root, kept);
+    })
+    .catch(() => {});
 }
 
 /** IDEA's `isConfigurationFromContext` for an Application: the same main class of the same module. */
@@ -340,6 +431,30 @@ export async function deleteConfig(id: string): Promise<void> {
   await saveUserConfigs(
     configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id),
     configs.find((c) => c.id === id)?.detected ? [id] : [],
+  );
+}
+
+/**
+ * Edit Configurations' OK / Apply. A temporary configuration stays temporary unless it was edited
+ * there (then it is saved, as IDEA makes it permanent), and one removed there is forgotten.
+ */
+export async function saveEditedConfigs(draft: readonly RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  const { configs, temporary } = useRun.getState();
+  const unchanged = (c: RunConfig) => {
+    const before = configs.find((o) => o.id === c.id);
+    return !!before && JSON.stringify(before) === JSON.stringify(c);
+  };
+  const kept = temporary.filter((id) => draft.some((c) => c.id === id && unchanged(c)));
+  if (kept.length !== temporary.length) {
+    useRun.setState({
+      configs: configs.filter((c) => !temporary.includes(c.id) || kept.includes(c.id)),
+      temporary: kept,
+    });
+    persistTemporary();
+  }
+  await saveUserConfigs(
+    draft.filter((c) => !c.detected && !kept.includes(c.id)),
+    removedDetectedIds,
   );
 }
 
@@ -452,8 +567,13 @@ function newRuntime(config: RunConfig): SessionRuntime {
     if (tests && parser) tests.apply(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
+  // PHPUnit `--teamcity` and Gradle's test init script report through service messages.
   const stdout =
-    framework === "go" ? new GoTestOutput(feed) : framework === "phpunit" ? new TeamcityOutput(feed) : null;
+    framework === "go"
+      ? new GoTestOutput(feed)
+      : framework === "phpunit" || framework === "jvm"
+        ? new TeamcityOutput(feed)
+        : null;
   const runtime: SessionRuntime = {
     stdout,
     tests,
@@ -661,7 +781,11 @@ export async function startRun(
   };
   try {
     let launch = options.launch ?? config;
-    if (isJvmApplication(launch)) {
+    // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
+    const delegated = isJvmApplication(launch) ? await gradleDelegation(launch) : null;
+    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+    if (delegated) launch = delegated;
+    else if (isJvmApplication(launch)) {
       const resolved = await resolveJvmApplication(sessionId, launch);
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
       if (!resolved) {
@@ -683,7 +807,8 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? withTestReporting(launch) : launch;
+    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : launch;
+    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
@@ -800,7 +925,16 @@ function finishSession(sessionId: string, code: number | null) {
       if (rt.tests && rt.parser) {
         rt.tests.apply(rt.parser.end?.() ?? []);
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
-        if (frameworkFor(session.config) === "jvm") rt.tests.apply(await jvmReportEvents(session));
+        if (frameworkFor(session.config) === "jvm") {
+          const reports = await jvmReports(session);
+          const tests = rt.tests;
+          // Tests the run reported already (Gradle's init script, Surefire failures) keep their output.
+          tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+          moveToReportedClasses(
+            rt.tests,
+            reports.map((r) => r.className),
+          );
+        }
         if (runtimes.get(sessionId) !== rt) return;
         rt.tests.finish(code);
         recordTestStates(rt.tests);
@@ -817,12 +951,11 @@ function finishSession(sessionId: string, code: number | null) {
   }, 30);
 }
 
-async function jvmReportEvents(session: RunSession): Promise<TestEvent[]> {
+async function jvmReports(session: RunSession): Promise<TestCaseReport[]> {
   if (!isTauri()) return [];
   try {
     // Report files are written during the run; allow for coarse file-system timestamps.
-    const reports = await call(commands.runTestReports(session.config.cwd ?? null, session.startedAt - 2000));
-    return testReportEvents(reports);
+    return await call(commands.runTestReports(session.config.cwd ?? null, session.startedAt - 2000));
   } catch {
     return [];
   }
@@ -840,7 +973,7 @@ export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[
     for (const line of text.split("\n").slice(0, 200)) events.push({ type: "output", path, line });
     const outer = r.className.split("$")[0]!;
     const frame = new RegExp(
-      `at (${outer.replace(/[.$]/g, "\\$&")}(?:\\$[\\w$]+)?)\\.[\\w$<>]+\\(([\\w$-]+\\.(?:java|kt|groovy|scala)):(\\d+)\\)`,
+      `at (?:\\S*/)?(${outer.replace(/[.$]/g, "\\$&")}(?:\\$[\\w$]+)?)\\.[^()\\n]+\\(([\\w$-]+\\.(?:java|kt|groovy|scala)):(\\d+)\\)`,
     ).exec(r.output ?? "");
     if (frame) events.push({ type: "location", path, location: jvmFrameTarget(frame[1], frame[2]!, Number(frame[3])) });
   }
@@ -936,6 +1069,16 @@ export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): 
 export function rerunSession(sessionId: string) {
   const session = getSession(sessionId);
   if (session) void startRun(session.config, sessionId, session.baseConfig);
+}
+
+/**
+ * "Debug": relaunches the session's configuration in debug mode — the same
+ * `run.debugConfig` entry the Services view and the editor context menu use
+ * (`baseConfig` keeps the original configuration for derived launches).
+ */
+export function debugSession(sessionId: string) {
+  const session = getSession(sessionId);
+  if (session) void executeAction("run.debugConfig", session.baseConfig ?? session.config);
 }
 
 /** Paths of the failed tests of a session's last run. */
@@ -1089,6 +1232,8 @@ export function resetRuns() {
     loadError: null,
     selectedId: null,
     temporary: [],
+    pinned: [],
+    recent: [],
     sessions: [],
     activeSession: null,
     versions: {},

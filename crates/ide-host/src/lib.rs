@@ -1,6 +1,6 @@
 //! The IDE backend without a UI toolkit: open projects per window, terminals,
 //! processes, settings and the remote services. The desktop shell (`src-tauri`)
-//! wraps one [`Host`] and adds windows, menus and plugins; `openidea-server`
+//! wraps one [`Host`] and adds windows and menus; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod data_dirs;
@@ -10,6 +10,7 @@ mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;
 pub mod ops;
+pub mod plugins;
 mod project;
 mod proxy;
 mod requests;
@@ -24,7 +25,7 @@ use ide_language::{LanguageRegistry, Syntax};
 use ide_run::ProcessManager;
 use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -73,14 +74,22 @@ pub struct Host {
     pub environment: environment::Environment,
     /// The HTTP proxy's saved password (see `proxy.rs`).
     proxy_password: ide_ssh::secrets::SecretFile,
+    /// The proxy password when it could not be saved (no credential store).
+    proxy_session_password: Mutex<Option<String>>,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
     /// One project per window, keyed by window label.
     projects: RwLock<HashMap<String, Arc<Project>>>,
+    pub(crate) external_logs: RwLock<HashMap<String, Vec<Arc<ide_vcs::Repo>>>>,
     requests: requests::Requests,
     project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
+    /// Shutdowns of projects closed with [`Host::close_project_detached`].
+    closing: parking_lot::Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
+
+/// How long exit waits for project shutdown before giving up.
+const EXIT_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Host {
     pub fn new(config: HostConfig) -> Self {
@@ -101,6 +110,7 @@ impl Host {
         let host = Self {
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
+            proxy_session_password: Mutex::default(),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
@@ -121,8 +131,10 @@ impl Host {
             owner,
             runtime,
             projects: RwLock::default(),
+            external_logs: RwLock::default(),
             requests: Default::default(),
             project_requests: RwLock::default(),
+            closing: Default::default(),
         };
         host.apply_proxy();
         host
@@ -131,6 +143,17 @@ impl Host {
     /// The tree-sitter grammars (blocks only if start-up warm-up is still running).
     pub fn syntax(&self) -> Arc<Syntax> {
         self.syntax.get_or_init(|| Arc::new(Syntax::new())).clone()
+    }
+
+    /// Plugin languages or the servers they may start changed (they are part
+    /// of [`Self::languages`] and every project's fork): open documents are
+    /// detected again and language servers follow their new configuration.
+    pub fn plugin_languages_changed(&self) {
+        for project in self.projects() {
+            project.documents.redetect_languages();
+            let lsp = project.lsp.clone();
+            self.runtime.spawn(async move { lsp.reconfigure().await });
+        }
     }
 
     /// Every open project (all windows).
@@ -165,45 +188,69 @@ impl Host {
         }
     }
 
+    /// Closes `window`'s project and waits until its language servers, kernels and
+    /// debug sessions have shut down. Never call this on the UI event-loop thread:
+    /// the shutdown runs on the async runtime, whose workers may themselves be
+    /// waiting for the event loop (IPC responses, window queries). Use
+    /// [`Self::close_project_detached`] there.
     pub fn close_project(&self, window: &str) {
-        let project = self.projects.write().remove(window);
-        if let Some(project) = project {
-            if !project.light {
-                self.environment.project_closed();
-            }
-            if let Some(bridge) = &project.kotlin_bridge {
-                bridge.stop();
-            }
-            project.documents.clear_workspace_edit_history();
-            project.agents.shutdown();
-            project.notebooks.stop_admission();
-            // What the closing window started goes with it — the builds and searches it
-            // asked for, its runs, its shells and its debug sessions — and the language
-            // servers finish shutting down before the window is gone, as IDEA closes a
-            // project's processes.
-            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
-                self.cancel_request(request);
-            }
-            self.processes.kill_project(&project.root);
-            self.terminals.kill_key(self.owner_window(window));
-            self.shutdown_project_workers_blocking(
-                vec![project.notebooks.clone()],
-                project.kotlin_bridge.iter().cloned().collect(),
-                Some(project.lsp.clone()),
-                Some((self.debugger.clone(), window.to_owned())),
-            );
+        if let Some(shutdown) = self.begin_close(window) {
+            self.wait_blocking(shutdown);
         }
     }
 
-    /// Synchronous project/window destruction must finish owned kernel cleanup,
-    /// not enqueue work which can be lost as the desktop runtime exits.
-    fn shutdown_project_workers_blocking(
+    /// Like [`Self::close_project`], but returns once the project is detached from
+    /// the window; its workers finish shutting down in the background, and
+    /// [`Self::shutdown_notebooks_on_exit`] waits for them before the process exits.
+    pub fn close_project_detached(&self, window: &str) {
+        if let Some(shutdown) = self.begin_close(window) {
+            let mut closing = self.closing.lock();
+            closing.retain(|handle| !handle.is_finished());
+            closing.push(shutdown);
+        }
+    }
+
+    /// Detaches the project from `window` and stops what it started, synchronously,
+    /// so the window can open another project at once. Returns the thread that
+    /// finishes shutting down its workers.
+    fn begin_close(&self, window: &str) -> Option<std::thread::JoinHandle<()>> {
+        self.external_logs.write().remove(self.owner_window(window));
+        for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+            self.cancel_request(request);
+        }
+        let project = self.projects.write().remove(window)?;
+        if !project.light {
+            self.environment.project_closed();
+        }
+        if let Some(bridge) = &project.kotlin_bridge {
+            bridge.stop();
+        }
+        project.documents.clear_workspace_edit_history();
+        project.agents.shutdown();
+        project.notebooks.stop_admission();
+        // What the closing window started goes with it — the builds and searches it
+        // asked for, its runs, its shells and its debug sessions — and its language
+        // servers shut down.
+        self.processes.kill_project(&project.root);
+        self.terminals.kill_key(self.owner_window(window));
+        Some(self.spawn_project_shutdown(
+            vec![project.notebooks.clone()],
+            project.kotlin_bridge.iter().cloned().collect(),
+            Some(project.lsp.clone()),
+            Some((self.debugger.clone(), window.to_owned())),
+        ))
+    }
+
+    /// Project/window destruction must finish owned kernel cleanup, not enqueue
+    /// work which can be lost as the desktop runtime exits: the returned thread is
+    /// joined by the closer or, for a detached close, before exit.
+    fn spawn_project_shutdown(
         &self,
         notebooks: Vec<Arc<notebook::NotebookService>>,
         bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
         lsp: Option<Arc<ide_lsp::LspManager>>,
         debug: Option<(Arc<ide_dap::DebugManager>, String)>,
-    ) {
+    ) -> std::thread::JoinHandle<()> {
         for bridge in &bridges {
             bridge.stop();
         }
@@ -211,25 +258,37 @@ impl Host {
             service.stop_admission();
         }
         let runtime = self.runtime.clone();
-        let wait = move || {
-            let worker = std::thread::spawn(move || {
-                runtime.block_on(async move {
-                    for bridge in bridges {
-                        bridge.shutdown().await;
-                    }
-                    for service in notebooks {
-                        service.shutdown().await;
-                    }
-                    if let Some(lsp) = lsp {
-                        lsp.shutdown_all().await;
-                    }
-                    if let Some((debug, key)) = debug {
-                        debug.stop_key(&key).await;
-                    }
-                });
+        std::thread::spawn(move || {
+            runtime.block_on(async move {
+                for bridge in bridges {
+                    bridge.shutdown().await;
+                }
+                for service in notebooks {
+                    service.shutdown().await;
+                }
+                if let Some(lsp) = lsp {
+                    lsp.shutdown_all().await;
+                }
+                if let Some((debug, key)) = debug {
+                    debug.stop_key(&key).await;
+                }
             });
-            if let Err(error) = worker.join() {
-                tracing::error!("notebook shutdown thread failed: {error:?}");
+        })
+    }
+
+    /// Waits for detached closes, so a project opened next never races the
+    /// language servers of one still shutting down (e.g. over a shared workspace).
+    pub(crate) fn wait_detached_closes(&self) {
+        let pending: Vec<_> = self.closing.lock().drain(..).collect();
+        for shutdown in pending {
+            self.wait_blocking(shutdown);
+        }
+    }
+
+    fn wait_blocking(&self, shutdown: std::thread::JoinHandle<()>) {
+        let wait = move || {
+            if let Err(error) = shutdown.join() {
+                tracing::error!("project shutdown thread failed: {error:?}");
             }
         };
         if tokio::runtime::Handle::try_current()
@@ -241,15 +300,32 @@ impl Host {
         }
     }
 
-    /// Called before the desktop runtime exits, including update/restart exits.
+    /// Called before the desktop runtime exits, including update/restart exits, on
+    /// the event-loop thread: waits for detached closes and the open projects'
+    /// kernels, but no longer than [`EXIT_SHUTDOWN_WAIT`], so a runtime worker
+    /// stuck on the event loop cannot keep the process from exiting.
     pub fn shutdown_notebooks_on_exit(&self) {
         let projects = self.projects();
-        self.shutdown_project_workers_blocking(
+        let mut pending: Vec<_> = self.closing.lock().drain(..).collect();
+        pending.push(self.spawn_project_shutdown(
             projects.iter().map(|project| project.notebooks.clone()).collect(),
             projects.iter().filter_map(|project| project.kotlin_bridge.clone()).collect(),
             None,
             None,
-        );
+        ));
+        let deadline = std::time::Instant::now() + EXIT_SHUTDOWN_WAIT;
+        while pending.iter().any(|handle| !handle.is_finished()) {
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!("project shutdown did not finish within {EXIT_SHUTDOWN_WAIT:?}; exiting anyway");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for handle in pending {
+            if let Err(error) = handle.join() {
+                tracing::error!("project shutdown thread failed: {error:?}");
+            }
+        }
     }
 
     /// Called before desktop exit, which may bypass document destructors.
@@ -299,11 +375,17 @@ impl Host {
     }
 
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {
-        let token = self.begin_request(id);
-        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
+        let token = self.begin_project_read_request(window, id);
         if self.project(window).is_ok_and(|p| !p.is_trusted()) {
             token.cancel();
         }
+        token
+    }
+
+    /// Read-only work remains cancellable/disposed with its window in restricted projects.
+    pub fn begin_project_read_request(&self, window: &str, id: RequestId) -> CancellationToken {
+        let token = self.begin_request(id);
+        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
         token
     }
 

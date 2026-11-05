@@ -1,8 +1,9 @@
 //! Run configurations imported on request from another IDE's project files
-//! (`.vscode/launch.json`). Each source turns its entries into [`Entry`]s; [`finish`]
-//! gives them ids, skips names that already exist (so importing again adds nothing
-//! twice) and resolves compound members by name.
+//! (`.vscode/launch.json`, JetBrains `.run/*.run.xml` and `.idea/workspace.xml`). Each source
+//! turns its entries into [`Entry`]s; [`finish`] gives them ids, skips names that already exist
+//! (so importing again adds nothing twice) and resolves compound members by name.
 
+mod jetbrains;
 mod vscode;
 
 use crate::RunConfig;
@@ -12,21 +13,31 @@ use specta::Type;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
-/// A project file run configurations can be imported from.
+/// Project files run configurations can be imported from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum RunImportSource {
     /// VS Code's `.vscode/launch.json`.
     Vscode,
+    /// JetBrains IDEs' `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`.
+    Jetbrains,
 }
 
 impl RunImportSource {
-    pub const ALL: [Self; 1] = [Self::Vscode];
+    pub const ALL: [Self; 2] = [Self::Vscode, Self::Jetbrains];
 
-    /// The file read, relative to the project root.
+    /// The files read, relative to the project root, as the summary names them.
     pub fn file(self) -> &'static str {
         match self {
             Self::Vscode => ".vscode/launch.json",
+            Self::Jetbrains => ".run, .idea",
+        }
+    }
+
+    fn is_present(self, root: &Path) -> bool {
+        match self {
+            Self::Vscode => root.join(self.file()).is_file(),
+            Self::Jetbrains => !jetbrains::files(root).is_empty(),
         }
     }
 }
@@ -62,7 +73,7 @@ pub struct SkippedRunConfig {
 pub enum SkipReason {
     /// A configuration with this name already exists.
     NameTaken,
-    /// The debugger type (`type`) has no equivalent here, e.g. `cppdbg`.
+    /// The configuration type has no equivalent here: a VS Code debugger (`cppdbg`), a JetBrains type (`Application`).
     UnsupportedType {
         #[serde(rename = "type")]
         type_: String,
@@ -75,6 +86,14 @@ pub enum SkipReason {
     Variable { variable: String },
     /// No program, module or command.
     NothingToRun,
+    /// A JetBrains path variable with no value here (`$MAVEN_REPOSITORY$`, user-defined ones).
+    PathVariable { variable: String },
+    /// `$MODULE_DIR$` in a project with several modules: which module's directory is unknown.
+    SeveralModules { variable: String },
+    /// A file the configuration needs isn't in the project (Django's `manage.py`).
+    MissingFile { file: String },
+    /// A project file that can't be read, or isn't XML; `name` is the file.
+    InvalidFile { detail: String },
     /// A compound member that is neither imported nor an existing configuration.
     MissingMember { member: String },
     /// Not an object with a name.
@@ -104,22 +123,19 @@ pub fn import(
     env: &BTreeMap<String, String>,
 ) -> IdeResult<RunImport> {
     let file = source.file();
-    let text = match std::fs::read_to_string(root.join(file)) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(IdeError::not_found(format!("{file} not found")));
-        }
-        Err(e) => return Err(e.into()),
-    };
+    if !source.is_present(root) {
+        return Err(IdeError::not_found(format!("{file} not found")));
+    }
     let entries = match source {
-        RunImportSource::Vscode => vscode::entries(&text, root, env)?,
+        RunImportSource::Vscode => vscode::entries(&std::fs::read_to_string(root.join(file))?, root, env)?,
+        RunImportSource::Jetbrains => jetbrains::entries(root, env)?,
     };
     Ok(finish(source, entries, existing))
 }
 
-/// The sources whose file exists under `root`.
+/// The sources with files under `root`.
 pub fn available(root: &Path) -> Vec<RunImportSource> {
-    RunImportSource::ALL.into_iter().filter(|s| root.join(s.file()).is_file()).collect()
+    RunImportSource::ALL.into_iter().filter(|s| s.is_present(root)).collect()
 }
 
 fn unique_id(name: &str, ids: &mut HashSet<String>) -> String {
@@ -187,6 +203,107 @@ pub(crate) fn finish(source: RunImportSource, entries: Vec<Entry>, existing: &[R
         imported: imported.into_iter().map(|(_, c)| c).collect(),
         skipped: skipped.into_iter().map(|(_, s)| s).collect(),
     }
+}
+
+// ------------------------------------------------------------- shared by the sources
+
+/// The variable `name` of `env`; Windows names ignore case (`${env:PATH}` finds `Path`).
+pub(crate) fn env_var(env: &BTreeMap<String, String>, name: &str, windows: bool) -> Option<String> {
+    match env.get(name) {
+        Some(v) => Some(v.clone()),
+        None if windows => env.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone()),
+        None => None,
+    }
+}
+
+/// The program's file name without a Windows extension (`npm.cmd` → `npm`).
+pub(crate) fn command_name(cmd: &str) -> &str {
+    let name = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
+    name.strip_suffix(".cmd").or_else(|| name.strip_suffix(".exe")).unwrap_or(name)
+}
+
+pub(crate) fn config(name: &str, kind: &str, command: String, args: Vec<String>, debug: Option<&str>) -> RunConfig {
+    RunConfig {
+        id: String::new(),
+        name: name.to_owned(),
+        kind: kind.to_owned(),
+        command,
+        args,
+        cwd: None,
+        env: BTreeMap::new(),
+        detected: false,
+        is_test: false,
+        debug_adapter: debug.map(str::to_owned),
+        allow_parallel: false,
+        extras: crate::RunExtras::default(),
+    }
+}
+
+/// Splits a command line into words: whitespace, `'…'` and `"…"` quoting, backslash escapes
+/// (like `parseArgs` in `src/platform/commandLine.ts`).
+pub(crate) fn split_args(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut has = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some('"') if c == '\\' && chars.peek().is_some_and(|n| "\"\\$`".contains(*n)) => {
+                cur.extend(chars.next());
+            }
+            Some(_) => cur.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                has = true;
+            }
+            None if c == '\\' && chars.peek().is_some() => {
+                cur.extend(chars.next());
+                has = true;
+            }
+            None if c.is_whitespace() => {
+                if has || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                has = false;
+            }
+            None => cur.push(c),
+        }
+    }
+    if has || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// An absolute path inside the project, written relative to `dir` (the run's working
+/// directory, where the process resolves it); anything else as it is.
+pub(crate) fn path_from(root: &Path, value: String, dir: &Path) -> String {
+    let path = Path::new(&value);
+    if !path.is_absolute() {
+        return value;
+    }
+    let path = normalize(path);
+    if path.starts_with(root) && dir.starts_with(root) { relative_to(&path, dir).unwrap_or(value) } else { value }
+}
+
+/// The project's interpreter (see [`crate::detect::project_python`]), relative to `dir`.
+pub(crate) fn project_python(root: &Path, dir: &Path) -> (String, Vec<String>) {
+    let (exe, lead) = crate::detect::project_python(root);
+    let exe = if exe.contains('/') { path_from(root, root.join(&exe).to_string_lossy().into(), dir) } else { exe };
+    (exe, lead)
+}
+
+/// The working directory `cwd` (absolute) and the configuration's `cwd` (relative to the root, `None` for the root).
+pub(crate) fn working_dir(root: &Path, cwd: &str) -> (PathBuf, Option<PathBuf>) {
+    let abs = normalize(&root.join(cwd));
+    let rel = match abs.strip_prefix(root) {
+        Ok(r) if r.as_os_str().is_empty() => None,
+        Ok(r) => Some(PathBuf::from(relative_to(&abs, root).unwrap_or_else(|| r.to_string_lossy().into()))),
+        Err(_) => Some(abs.clone()),
+    };
+    (abs, rel)
 }
 
 /// `path` as written relative to `base` (both absolute, without `..`), with `/` separators;
