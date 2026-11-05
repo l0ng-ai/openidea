@@ -1,5 +1,6 @@
 /** Spring request-path index, cached per project until a mapping source changes. */
 import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { ipcPath, isSameOrInside } from "@/platform/paths";
 import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
 import { springControllers } from "./endpoints";
 
@@ -40,8 +41,10 @@ export function routeIndex(root: string | null): Promise<EndpointEntry[]> {
 async function scan(root: string): Promise<EndpointEntry[]> {
   const sources = await call(commands.springRouteSources());
   const routes: EndpointEntry[] = [];
+  const base = ipcPath(root).replace(/\/$/, "");
   for (const source of sources) {
-    if (!source.path.startsWith(root)) continue;
+    const path = ipcPath(source.path);
+    if (!isSameOrInside(path, base)) continue;
     for (const controller of springControllers(source.text)) {
       for (const endpoint of controller.endpoints) {
         const at = lineCol(source.text, endpoint.offset);
@@ -53,8 +56,8 @@ async function scan(root: string): Promise<EndpointEntry[]> {
             url,
             controller: controller.name,
             methodName: endpoint.methodName,
-            path: source.path,
-            rel: source.path.slice(root.length + 1),
+            path,
+            rel: path.slice(base.length + 1),
             line: at.line,
             col: at.col,
           });
