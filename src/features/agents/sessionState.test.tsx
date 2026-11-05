@@ -14,14 +14,16 @@ const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
   changes: [] as AgentChange[],
   answers: [] as Array<[string, number, string | null]>,
+  fetched: [] as string[],
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: {
-    agentEntries: async (id: string, sub: string | null) => ({
-      status: "ok",
-      data: backend.entries.get(sub ? `${id}/${sub}` : id) ?? [],
-    }),
+    agentEntries: async (id: string, sub: string | null) => {
+      const key = sub ? `${id}/${sub}` : id;
+      backend.fetched.push(key);
+      return { status: "ok", data: backend.entries.get(key) ?? [] };
+    },
     agentChanges: async () => ({ status: "ok", data: backend.changes }),
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
     agentRespond: async (task: string, permission: number, option: string | null) => {
@@ -177,6 +179,29 @@ describe("a pending permission request in the conversation", () => {
 });
 
 describe("session state across tasks and hosts", () => {
+  it("fetches a conversation once and shows it again from the store when its tab reopens", async () => {
+    const entries = new Map(useAgents.getState().entries);
+    entries.delete("A");
+    useAgents.setState({ entries });
+    backend.fetched = [];
+    const first = render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    first.unmount();
+    render(<SessionEditor input={input("A")} />);
+    expect(screen.getByText("Answer A")).toBeInTheDocument();
+    await act(async () => {});
+    expect(backend.fetched).toEqual(["A"]);
+  });
+
+  it("opens a long conversation at its end and renders the earlier entries after it", async () => {
+    const entries = Array.from({ length: 150 }, (_, i): AgentEntry => ({ type: "agent", text: `Reply ${i}` }));
+    useAgents.setState({ entries: new Map(useAgents.getState().entries).set("A", entries) });
+    render(<SessionEditor input={input("A")} />);
+    expect(screen.getByText("Reply 149")).toBeInTheDocument();
+    expect(await screen.findByText("Reply 0")).toBeInTheDocument();
+    expect(stream().children).toHaveLength(150);
+  });
+
   it("returns to the task conversation when the docked task changes after opening a subagent", async () => {
     const dispose = registerActions(taskActions);
     try {

@@ -149,7 +149,14 @@ describe("log controls", () => {
     expect(screen.getByRole("status")).toHaveTextContent("b");
   });
 
+  it("hides the column headers unless View Options shows them", async () => {
+    render(<LogView />);
+    await screen.findByRole("listbox", { name: "Commits" });
+    expect(screen.queryByRole("separator", { name: "Resize Author column" })).toBeNull();
+  });
+
   it("resizes and reorders columns using the keyboard", async () => {
+    useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);
     const author = await screen.findByRole("separator", { name: "Resize Author column" });
     fireEvent.keyDown(author, { key: "ArrowRight" });

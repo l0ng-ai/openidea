@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGraph, straightenLaneChanges } from "../graph";
+import { compactLanes, computeGraph, straightenLaneChanges, type GraphRow } from "../graph";
 
 const c = (id: string, ...parents: string[]) => ({ id, parents });
 
@@ -104,5 +104,63 @@ describe("straightenLaneChanges", () => {
     expect(rows[1]!.up[0]!.fromX).toBeUndefined();
     expect(rows[1]!.down[0]!.toX).toBeUndefined();
     expect(rows[2]!.up[0]!.fromX).toBeUndefined();
+  });
+});
+
+describe("compactLanes", () => {
+  const row = (lane: number, up: [number, number][], down: [number, number][], width = 9): GraphRow => ({
+    lane,
+    color: 0,
+    up: up.map(([from, to]) => ({ from, to, color: 0 })),
+    down: down.map(([from, to]) => ({ from, to, color: 0 })),
+    width,
+  });
+
+  it("packs the lanes of each row side by side, in their order", () => {
+    // Lanes 2 and 7 (branch layout leaves the slots between them empty); 7 merges into 2.
+    const rows = compactLanes([
+      row(
+        7,
+        [],
+        [
+          [2, 2],
+          [7, 7],
+        ],
+      ),
+      row(
+        2,
+        [
+          [2, 2],
+          [7, 2],
+        ],
+        [[2, 2]],
+      ),
+      row(2, [[2, 2]], []),
+    ]);
+    expect(rows.map((r) => r.lane)).toEqual([1, 0, 0]);
+    expect(rows.map((r) => r.width)).toEqual([2, 2, 1]);
+    expect(rows[0]!.down.map((s) => [s.from, s.to])).toEqual([
+      [0, 0],
+      [1, 1],
+    ]);
+    expect(rows[1]!.up.map((s) => [s.from, s.to])).toEqual([
+      [0, 0],
+      [1, 0],
+    ]);
+  });
+
+  it("keeps lines joined across rows when a lane is freed in between", () => {
+    const laid = computeGraph([
+      { id: "a", parents: ["c"], refs: ["a"] },
+      { id: "b", parents: ["c"], refs: ["b"] },
+      { id: "x", parents: ["c"], refs: ["x"] },
+      { id: "c", parents: [], refs: ["main"] },
+    ]).rows;
+    const rows = compactLanes(laid);
+    for (let r = 0; r + 1 < rows.length; r++) {
+      const below = new Set(rows[r]!.down.map((s) => s.to));
+      expect(new Set(rows[r + 1]!.up.map((s) => s.from))).toEqual(below);
+      expect(Math.max(...below)).toBe(below.size - 1);
+    }
   });
 });
