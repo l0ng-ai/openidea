@@ -1,0 +1,19 @@
+package openidea:plugin@1.0.0;
+
+/// Inspections a plugin provides through `[[contributes.inspections]]`.
+/// The host calls `run` for every open document whose language matches the
+/// declaration; results are merged into the Problems view and respect the
+/// inspection profile and suppression comments.
+interface inspections {
+    use types.{range};
+
+    record inspection-finding {
+        range: range,
+        severity: string,
+        message: string,
+        quick-fix-id: option<string>,
+    }
+
+    /// Run the inspection over `text`. Returns findings for this document only.
+    run: func(language: string, text: string) -> list<inspection-finding>;
+}
