@@ -821,13 +821,14 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
 mod tests {
     #[test]
     fn independent_gradle_builds_keep_their_launchers_and_task_paths() {
+        let wrapper = if cfg!(windows) { "gradlew.bat" } else { "gradlew" };
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         for dir in ["a", "b"] {
             std::fs::create_dir_all(root.join(dir).join("app/src/main/java")).unwrap();
             std::fs::write(root.join(dir).join("settings.gradle"), "include 'app'").unwrap();
             std::fs::write(root.join(dir).join("app/build.gradle"), "plugins { id 'java' }").unwrap();
-            std::fs::write(root.join(dir).join("gradlew"), "").unwrap();
+            std::fs::write(root.join(dir).join(wrapper), "").unwrap();
         }
         let settings = ide_core::settings::GradleSettings {
             linked_projects: Some(vec!["a".into(), "b".into()]),
@@ -842,7 +843,7 @@ mod tests {
         assert_eq!(all.steps[1].cwd, root.join("b"));
         let module = super::plan(root, &model, super::BuildKind::Rebuild, Some(&root.join("b/app")), None).unwrap();
         assert_eq!(module.steps.len(), 1);
-        assert_eq!(module.steps[0].program, root.join("b/gradlew").to_string_lossy());
+        assert_eq!(module.steps[0].program, root.join("b").join(wrapper).to_string_lossy());
         assert_eq!(module.steps[0].cwd, root.join("b"));
         assert_eq!(module.steps[0].env["JAVA_HOME"], "/jdk-b");
         assert_eq!(module.steps[0].args, ["--console=plain", ":app:clean", ":app:classes", ":app:testClasses"]);
@@ -854,7 +855,7 @@ mod tests {
         nested.path = ":b:app".into();
         model.gradle[0].projects.push(nested);
         let nested = super::plan(root, &model, super::BuildKind::Build, Some(&root.join("b/app")), None).unwrap();
-        assert_eq!(nested.steps[0].program, root.join("b/gradlew").to_string_lossy());
+        assert_eq!(nested.steps[0].program, root.join("b").join(wrapper).to_string_lossy());
         assert_eq!(nested.steps[0].args, ["--console=plain", ":app:classes", ":app:testClasses"]);
         model.gradle.clear();
         assert!(super::plan(root, &model, super::BuildKind::Build, Some(&root.join("b/app")), None).is_err());
@@ -862,6 +863,7 @@ mod tests {
 
     #[test]
     fn absolute_linked_roots_build_the_project_and_external_source_module() {
+        let wrapper = if cfg!(windows) { "gradlew.bat" } else { "gradlew" };
         let temp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(temp.path()).unwrap();
         let root = base.join("workspace");
@@ -871,7 +873,7 @@ mod tests {
         std::fs::write(external.join("settings.gradle"), "include 'app'").unwrap();
         let source = external.join("app/src/main/java/App.java");
         std::fs::write(&source, "class App {}").unwrap();
-        std::fs::write(external.join("gradlew"), "").unwrap();
+        std::fs::write(external.join(wrapper), "").unwrap();
         let settings = ide_core::settings::GradleSettings {
             linked_projects: Some(vec![external.to_string_lossy().into_owned()]),
             ..Default::default()
@@ -880,7 +882,7 @@ mod tests {
         model.gradle[0].env.insert("JAVA_HOME".into(), "/external-jdk".into());
         let all = super::plan(&root, &model, super::BuildKind::Build, None, None).unwrap();
         assert_eq!(all.steps[0].cwd, external);
-        assert_eq!(all.steps[0].program, external.join("gradlew").to_string_lossy());
+        assert_eq!(all.steps[0].program, external.join(wrapper).to_string_lossy());
         let module = super::plan(&root, &model, super::BuildKind::Rebuild, Some(&source), None).unwrap();
         assert_eq!(module.steps[0].cwd, external);
         assert_eq!(module.steps[0].env["JAVA_HOME"], "/external-jdk");

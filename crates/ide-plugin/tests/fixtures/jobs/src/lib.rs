@@ -32,9 +32,22 @@ impl Jobs {
 }
 
 impl Plugin for Jobs {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
             "follow" => self.follow().map(|()| None),
+            "remotes" => {
+                let project = ctx.project().ok_or("no project is open")?;
+                let remotes = project.vcs_remotes()?;
+                Ok(Some(remotes.into_iter().map(|(n, u)| format!("{n}={u}")).collect::<Vec<_>>().join("\n")))
+            }
+            "copy" => {
+                host::copy_to_clipboard(arg.unwrap_or_default())?;
+                Ok(None)
+            }
+            "open-url" => {
+                host::open_url(arg.unwrap_or_default())?;
+                Ok(None)
+            }
             _ => Err(Error::NotFound(format!("command {id}"))),
         }
     }

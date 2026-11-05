@@ -115,6 +115,21 @@ const OWN_MODES = [
     load: () => import("./erb").then((m) => m.erb()),
   }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
+  LanguageDescription.of({
+    name: "YAML",
+    alias: ["yml"],
+    extensions: ["yaml", "yml"],
+    load: async () => {
+      const support = await languageData.find((l) => l.name === "YAML")!.load();
+      // @lezer/yaml can give a mapping that follows comment lines an inverted range when it
+      // lands on a tree buffer boundary (1024 entries by default); highlighting then skips
+      // the whole mapping. Larger buffers keep ordinary YAML files in one.
+      return new LanguageSupport(
+        (support.language as LRLanguage).configure({ bufferLength: 1 << 16 }),
+        support.support,
+      );
+    },
+  }),
 ];
 
 const BATCH_KEYWORDS = new Set([
