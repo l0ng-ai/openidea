@@ -111,8 +111,8 @@ impl Session {
         if let Some(path) = self.kotlin_mirror.lock().as_ref().and_then(|m| m.adapter_path(path)) {
             return path;
         }
-        if self.adapter == "java-debug" {
-            let native = java_source_path(&path.to_string_lossy());
+        if self.adapter == "java-debug" || (cfg!(windows) && self.adapter == "netcoredbg") {
+            let native = windows_source_path(&path.to_string_lossy());
             self.resolved_paths.lock().insert(native.clone(), path.to_path_buf());
             return native;
         }
@@ -133,7 +133,11 @@ impl Session {
         if let Some(real) = self.kotlin_mirror.lock().as_ref().and_then(|m| m.client_path(Path::new(path))) {
             return Some(real);
         }
-        let key = if self.adapter == "java-debug" { java_source_path(path) } else { PathBuf::from(path) };
+        let key = if self.adapter == "java-debug" || (cfg!(windows) && self.adapter == "netcoredbg") {
+            windows_source_path(path)
+        } else {
+            PathBuf::from(path)
+        };
         self.resolved_paths.lock().get(&key).cloned().or_else(|| {
             (self.adapter == "java-debug" && is_windows_source_path(path))
                 .then(|| PathBuf::from(path.replace('\\', "/")))
@@ -265,8 +269,8 @@ impl Session {
     }
 }
 
-// java-debug treats a forward-slash drive path as a URI (scheme "C").
-// Keep DAP path mode, but use native Windows separators for Java source lookup.
+// java-debug and Windows netcoredbg need native separators for source lookup.
+// Keep DAP path mode, but normalize Windows drive and UNC paths.
 fn is_windows_source_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'/' | b'\\'))
@@ -274,7 +278,7 @@ fn is_windows_source_path(path: &str) -> bool {
         || path.starts_with(r"\\")
 }
 
-fn java_source_path(path: &str) -> PathBuf {
+fn windows_source_path(path: &str) -> PathBuf {
     if is_windows_source_path(path) { PathBuf::from(path.replace('/', r"\")) } else { PathBuf::from(path) }
 }
 
