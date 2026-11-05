@@ -3,6 +3,7 @@
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { formatBinding, isMacHost } from "@/platform/keymap";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
@@ -256,7 +257,14 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
       ? [
           { kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) },
           ...(deletable.length
-            ? [{ label: "Delete…", icon: "trash", shortcut: "⌫", run: () => void deleteUnversioned(deletable) }]
+            ? [
+                {
+                  label: "Delete…",
+                  icon: "trash",
+                  shortcut: formatBinding(isMacHost() ? "Backspace" : "Delete"),
+                  run: () => void deleteUnversioned(deletable),
+                },
+              ]
             : []),
         ]
       : []),
