@@ -28,6 +28,7 @@ import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
 import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
+import { windowDragRegion } from "./window-drag";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -287,11 +288,11 @@ export function TitleBar({
   // main menu (Windows, Linux) it stays, or nothing would lead back out of the mode.
   if (bare)
     return (
-      <header ref={setBar} className={className} data-tauri-drag-region data-titlebar="bare">
+      <header ref={setBar} className={className} {...windowDragRegion} data-titlebar="bare">
         {frameless && (
           <>
             <MainMenu />
-            <div className={styles.drag} data-tauri-drag-region />
+            <div className={styles.drag} {...windowDragRegion} />
             <WindowControls />
           </>
         )}
@@ -303,7 +304,7 @@ export function TitleBar({
     <header
       ref={setBar}
       className={clsx(className, minimal && styles.minimal, dialog && styles.dialogBar)}
-      data-tauri-drag-region
+      {...windowDragRegion}
       onContextMenu={(e) => {
         if (!toolbar || e.defaultPrevented) return;
         e.preventDefault();
@@ -312,12 +313,12 @@ export function TitleBar({
     >
       {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
-        <span className={styles.windowTitle} data-tauri-drag-region>
+        <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} data-tauri-drag-region />
+      <div className={styles.drag} {...windowDragRegion} />
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}
