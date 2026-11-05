@@ -216,8 +216,13 @@ export interface BuiltinInspection {
   description: string;
   /** Highlighting level when the profile sets none (else as reported). */
   defaultLevel?: InspectionLevel;
+  /** `false`: off until a profile turns it on. */
+  defaultEnabled?: boolean;
   options?: readonly InspectionOptionSpec[];
 }
+
+/** Turned on, the Java language server's compiler reports it (`ide-sdk` `SERIAL_VERSION_INSPECTION`). */
+export const JAVA_SERIAL_VERSION_INSPECTION = "java:missing-serial-version";
 
 /** Producer key of the Typo inspection's diagnostics. */
 export const SPELLING_PRODUCER = "spelling";
@@ -284,6 +289,16 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     description: "Compiler errors and warnings of the last Build Project, shown at their source positions.",
   },
   {
+    id: JAVA_SERIAL_VERSION_INSPECTION,
+    producer: "jdt-serial-version",
+    name: "Serializable class without 'serialVersionUID'",
+    group: "Java",
+    description:
+      "Reports classes that implement Serializable but declare no serialVersionUID field. Alt+Enter on the class name adds a default or a generated ID. The Java language server checks it, and restarts when this is changed.",
+    defaultLevel: "warning",
+    defaultEnabled: false,
+  },
+  {
     id: "builtin:sql",
     producer: "sql-inspections",
     name: "Unresolved database references",
@@ -309,6 +324,11 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
 
 const BUILTIN_BY_PRODUCER = new Map(BUILTIN_INSPECTIONS.map((b) => [b.producer, b]));
 const BUILTIN_BY_ID = new Map(BUILTIN_INSPECTIONS.map((b) => [b.id, b]));
+
+/** Whether inspection `id` is on when a profile doesn't say. */
+export function enabledByDefault(id: string): boolean {
+  return BUILTIN_BY_ID.get(id)?.defaultEnabled ?? true;
+}
 
 /** Option `key` of inspection `id` under `profile` (its default when unset). */
 export function inspectionOption(profile: ProfileOverrides, id: string, key: string): boolean {
@@ -363,7 +383,7 @@ export function applyProfile<D extends Diagnostic>(
 ): readonly D[] {
   const base = producerInspectionId(producer);
   const own = profile[base];
-  if (own?.enabled === false) return [];
+  if (!(own?.enabled ?? enabledByDefault(base))) return [];
   const fallback = BUILTIN_BY_PRODUCER.get(producer)?.defaultLevel;
   let changed = false;
   const out: D[] = [];
