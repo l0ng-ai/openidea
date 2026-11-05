@@ -471,9 +471,20 @@
   min-width: 0;
   color: var(--fg-secondary);
 }
+/* Title, state and answers on one line when they fit; a long title takes its own line and
+   the state and answers go below it, in line with it. */
+.permissionBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 2px 6px;
+}
 /* Up to three lines; the full text is its tooltip. */
 .permissionTitle {
   display: -webkit-box;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   -webkit-box-orient: vertical;
@@ -482,7 +493,7 @@
   overflow-wrap: anywhere;
 }
 .permissionLine > svg,
-.permissionLine > .muted {
+.permissionBody > .muted {
   flex: none;
 }
 .permissionAnswers {
