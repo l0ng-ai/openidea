@@ -405,28 +405,6 @@ pub async fn vcs_log_details_batch(
     result
 }
 
-pub async fn vcs_log_index(
-    host: &Host,
-    window: &str,
-    repo: Option<PathBuf>,
-    request: Option<RequestId>,
-) -> IdeResult<LogIndexProgress> {
-    let project = LogAccess::new(host, window, repo.as_deref());
-    let cancel =
-        request.map_or_else(ide_core::CancellationToken::new, |id| host.begin_project_read_request(window, id));
-    let result = blocking(move || {
-        project.with_log_repo_at(repo.as_deref(), |r| {
-            r.enable_log_index(&project.cache);
-            if request.is_some() { r.index_log(&cancel) } else { Ok(r.log_index_progress()) }
-        })
-    })
-    .await;
-    if let Some(request) = request {
-        host.end_request(request);
-    }
-    result
-}
-
 pub async fn vcs_revision_children(
     host: &Host,
     window: &str,
@@ -1222,10 +1200,6 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_log_details_batch", |c| async move {
         vcs_log_details_batch(&c.host, &c.window, c.arg("repo")?, c.arg("revisions")?, c.arg("request")?).await
     });
-    d.add(
-        "vcs_log_index",
-        |c| async move { vcs_log_index(&c.host, &c.window, c.arg("repo")?, c.arg("request")?).await },
-    );
     d.add("vcs_revision_children", |c| async move {
         vcs_revision_children(&c.host, &c.window, c.arg("repo")?, c.arg("revision")?, c.arg("directory")?).await
     });
