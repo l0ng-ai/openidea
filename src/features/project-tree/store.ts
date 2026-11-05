@@ -14,6 +14,7 @@ import {
   GROUP_PREFIX,
   buildModel,
   buildPathsModel,
+  compareNames,
   extraFolders,
   isGroupKey,
   isLibKey,
@@ -34,7 +35,7 @@ import {
 } from "./model";
 import { projectFs } from "./fs";
 import { projectViewRoots, useProjectViewRoots, type ProjectViewRootContribution } from "@/workbench/contributions";
-import { ancestorsWithin, isSameOrInside, type PackageKind } from "./paths";
+import { ancestorsWithin, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
 export interface ViewOptions extends TreeOptions {
   /** Select the active editor's file in the tree. */
@@ -218,12 +219,9 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   const extras = useProjectViewRoots.getState().roots;
   const options = treeOptions(s);
   const contributed = projectViewRoots(extras);
-  const memberRoots = s.members?.map((path) => ({
-    path,
-    label: path.slice(path.lastIndexOf("/") + 1),
-    icon: "",
-    detail: path,
-  }));
+  const memberRoots = s.members
+    ?.map((path) => ({ path, label: nameOf(path), icon: "", detail: path }))
+    .sort((a, b) => compareNames(a.label, b.label));
   const project = () =>
     memberRoots
       ? withExtraRoots(EMPTY_MODEL, memberRoots, s.listings, options, placeholder)
