@@ -6220,9 +6220,5 @@
   "Count rows": "统计行数",
   "Last Page": "最后一页",
   "{first}-{last} of {total}": "{first}-{last}，共 {total}",
-  "Model": "模型",
-  "Effort": "推理强度",
-  "Model & effort settings": "模型与推理强度设置",
-  "Select model": "选择模型",
-  "Not supported": "不支持"
+  "Model & effort settings": "模型与推理强度"
 }

@@ -168,26 +168,16 @@ it("edits secondary settings from the compact popup and restores focus when dism
   expect(trigger).toHaveFocus();
 });
 
-describe("IntelliJ AIR Model & Effort + Mode UX", () => {
-  const copilotConfig = (
-    currentModel = "claude-sonnet-5.5",
-    currentEffort: string | null = "medium",
-    effortLevels: string[] | null = ["low", "medium", "high", "xhigh", "max"],
-  ): AgentConfigOption[] => [
+describe("model and effort button", () => {
+  const copilotConfig = (effortLevels: string[] | null = ["low", "medium", "high", "xhigh"]): AgentConfigOption[] => [
     {
       id: "model",
       name: "Model",
       category: "model",
       description: null,
-      current: currentModel,
+      current: "claude-sonnet-5.5",
       via: "option",
-      values: [
-        value("claude-sonnet-5.5", "Claude Sonnet 5.5", "1x"),
-        value("claude-haiku-4.5", "Claude Haiku 4.5", "0.33x"),
-        value("gemini-4-argon", "Gemini 4 Argon", "1x"),
-        value("gpt-5.3-codex", "GPT-5.3-Codex", "1x"),
-        value("gpt-6-sol", "GPT-6 Sol", "1x"),
-      ],
+      values: [value("claude-sonnet-5.5", "Claude Sonnet 5.5", "1x"), value("gpt-6-sol", "GPT-6 Sol", "1x")],
     },
     ...(effortLevels
       ? [
@@ -196,9 +186,9 @@ describe("IntelliJ AIR Model & Effort + Mode UX", () => {
             name: "Reasoning Effort",
             category: "thought_level",
             description: null,
-            current: currentEffort,
+            current: "medium",
             via: "option" as const,
-            values: effortLevels.map((lvl) => value(lvl, lvl)),
+            values: effortLevels.map((lvl) => value(lvl, lvl === "xhigh" ? "XHigh" : lvl)),
           },
         ]
       : []),
@@ -207,12 +197,11 @@ describe("IntelliJ AIR Model & Effort + Mode UX", () => {
       name: "Mode",
       category: "mode",
       description: null,
-      current: "https://agentclientprotocol.com/ns/modes#agent",
+      current: "https://agentclientprotocol.com/protocol/session-modes#agent",
       via: "option",
       values: [
-        value("https://agentclientprotocol.com/ns/modes#agent", "Agent"),
-        value("https://agentclientprotocol.com/ns/modes#plan", "Plan"),
-        value("https://agentclientprotocol.com/ns/modes#autopilot", "Autopilot"),
+        value("https://agentclientprotocol.com/protocol/session-modes#agent", "Agent"),
+        value("https://agentclientprotocol.com/protocol/session-modes#plan", "Plan"),
       ],
     },
     {
@@ -226,79 +215,32 @@ describe("IntelliJ AIR Model & Effort + Mode UX", () => {
     },
   ];
 
-  it("renders exactly 2 AIR pills (Model+Effort and Mode+Allow All) with no duplicate overflow button", () => {
-    const onChange = vi.fn();
-    render(<ConfigPickers config={copilotConfig()} onChange={onChange} />);
-
-    const modelBtn = screen.getByRole("button", { name: "Model" });
-    expect(within(modelBtn).getByText("Claude Sonnet 5.5")).toBeInTheDocument();
-    expect(within(modelBtn).getByText("Medium")).toBeInTheDocument();
-
-    const modeBtn = screen.getByRole("button", { name: "Mode" });
-    expect(within(modeBtn).getByText("Agent")).toBeInTheDocument();
-    expect(within(modeBtn).getByText("Allow All")).toBeInTheDocument();
-
-    expect(screen.queryByRole("button", { name: "Agent settings" })).not.toBeInTheDocument();
+  it("shows the model with the agent's effort name and the mode with Allow All", () => {
+    render(<ConfigPickers config={copilotConfig()} onChange={vi.fn()} />);
+    const model = screen.getByRole("button", { name: "Model" });
+    expect(model).toHaveTextContent("Claude Sonnet 5.5medium");
+    expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("AgentAllow All");
+    expect(screen.queryByRole("button", { name: "Reasoning Effort" })).not.toBeInTheDocument();
   });
 
-  it("adjusts discrete effort slider steps from the advertised thought_level option (0, 3, 4, 5, and 6 steps)", () => {
+  it("steps through the advertised effort levels and picks a model from the popup", () => {
     const onChange = vi.fn();
-    const { rerender } = render(
-      <ConfigPickers
-        config={copilotConfig("claude-sonnet-5.5", "xhigh", ["low", "medium", "high", "xhigh", "max"])}
-        values={{ model: "claude-sonnet-5.5", reasoning_effort: "xhigh" }}
-        onChange={onChange}
-      />,
-    );
-
+    render(<ConfigPickers config={copilotConfig()} values={{ reasoning_effort: "high" }} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
     const dialog = screen.getByRole("dialog", { name: "Model & effort settings" });
-    expect(within(dialog).getAllByRole("radio")).toHaveLength(5);
-    expect(within(dialog).getByText("Extra High")).toBeInTheDocument();
+    const slider = within(dialog).getByRole("slider", { name: "Reasoning Effort" });
+    expect(slider).toHaveAttribute("max", "3");
+    expect(slider).toHaveValue("2");
+    expect(slider).toHaveAttribute("aria-valuetext", "high");
+    fireEvent.change(slider, { target: { value: "3" } });
+    expect(onChange).toHaveBeenLastCalledWith("reasoning_effort", "xhigh");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: /GPT-6 Sol/ }));
+    expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
+  });
 
-    fireEvent.click(within(dialog).getByRole("radio", { name: "Max" }));
-    expect(onChange).toHaveBeenCalledWith("reasoning_effort", "max");
-
-    // 6-step model advertised by agent (Off, Low, Medium, High, Extra High, Max)
-    rerender(
-      <ConfigPickers
-        config={copilotConfig("gpt-6-sol", "none", ["none", "low", "medium", "high", "xhigh", "max"])}
-        values={{ model: "gpt-6-sol", reasoning_effort: "none" }}
-        onChange={onChange}
-      />,
-    );
-    expect(within(dialog).getAllByRole("radio")).toHaveLength(6);
-    expect(within(dialog).getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
-
-    // 4-step model advertised by agent (Low, Medium, High, Extra High)
-    rerender(
-      <ConfigPickers
-        config={copilotConfig("gpt-5.3-codex", "high", ["low", "medium", "high", "xhigh"])}
-        values={{ model: "gpt-5.3-codex", reasoning_effort: "high" }}
-        onChange={onChange}
-      />,
-    );
-    expect(within(dialog).getAllByRole("radio")).toHaveLength(4);
-
-    // 3-step model advertised by agent (Low, Medium, High)
-    rerender(
-      <ConfigPickers
-        config={copilotConfig("gemini-4-argon", "medium", ["low", "medium", "high"])}
-        values={{ model: "gemini-4-argon", reasoning_effort: "medium" }}
-        onChange={onChange}
-      />,
-    );
-    expect(within(dialog).getAllByRole("radio")).toHaveLength(3);
-
-    // 0-step model when agent omits thought_level (Not supported)
-    rerender(
-      <ConfigPickers
-        config={copilotConfig("claude-haiku-4.5", null, null)}
-        values={{ model: "claude-haiku-4.5" }}
-        onChange={onChange}
-      />,
-    );
-    expect(within(dialog).queryAllByRole("radio")).toHaveLength(0);
-    expect(within(dialog).getByText("Not supported")).toBeInTheDocument();
+  it("keeps a plain model picker when the agent has no effort option", () => {
+    render(<ConfigPickers config={copilotConfig(null)} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "listbox");
   });
 });

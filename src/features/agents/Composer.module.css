@@ -66,25 +66,21 @@
 }
 .configPicker {
   display: flex;
-  align-items: center;
-  gap: 4px;
   min-width: 0;
 }
 .configPicker > button {
   max-width: 100%;
 }
-.modelBadgeIcon {
-  flex: none;
-  color: var(--fg-subtle);
-}
 .settingsMenu {
   display: none;
-  flex: none;
-  margin-left: auto;
 }
 .settingsPopup {
   width: min(320px, calc(100vw - 24px));
   padding: 12px;
+}
+.settingsTitle {
+  margin-bottom: 12px;
+  font-weight: 600;
 }
 .settingsRow {
   display: grid;
@@ -98,344 +94,138 @@
   color: var(--fg-muted);
   overflow-wrap: anywhere;
 }
-
-/* IntelliJ AIR 2-pill chip + hover tooltip */
-.airChipWrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-.airChip {
+/* A ghost button showing a value and its detail, like a ghost Select. */
+.chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
-  max-width: 100%;
-  padding: 2px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
-  font-size: var(--font-size);
-  line-height: 1.2;
+  height: var(--h-control);
+  min-width: 0;
+  padding: 0 4px 0 6px;
+  border-radius: var(--radius-control);
+  color: var(--fg-secondary);
   white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 120ms ease;
+  transition: background var(--dur-fast) var(--ease);
 }
-.airChip:hover,
-.airChipOpen {
-  background: var(--bg-button-hover);
+.chip:hover,
+.chip[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
 }
-.airChipPrimary {
-  color: var(--fg);
+.chipValue {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.airChipSecondary {
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-
-.airTooltip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  z-index: 60;
-  min-width: 210px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--bg-popup, var(--bg-elevated, #2b2d30));
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.36),
-    inset 0 0 0 1px var(--border);
-  color: var(--fg);
-  font-size: var(--font-size-small, 12px);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(2px);
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease;
-}
-.airChipWrap:hover .airTooltip {
-  opacity: 1;
-  transform: translateY(0);
-}
-.airTooltipGrid {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  column-gap: 16px;
-  row-gap: 4px;
-  align-items: baseline;
-  white-space: nowrap;
-}
-.airTooltipKey {
-  color: var(--fg-muted);
-}
-.airTooltipVal {
-  color: var(--fg);
-  font-weight: 500;
-}
-.airTooltipFooter {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-.airTooltipShortcut {
-  font-family: inherit;
-  font-size: inherit;
+.chipDetail {
   color: var(--fg-subtle);
-  background: none;
-  border: 0;
-  padding: 0;
 }
-
-/* IntelliJ AIR Model & Effort popup */
+.chipChevron {
+  flex: none;
+  color: var(--fg-muted);
+}
 .modelEffortPopup {
-  width: 236px;
-  padding: 8px 10px 10px;
-  border-radius: 10px;
+  width: min(300px, calc(100vw - 24px));
+  padding: 4px 12px 12px;
 }
-.modelEffortDropdownRow {
+.effortHeader {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+.effortValue {
+  color: var(--fg-strong);
+}
+.effortSlider {
+  --thumb: 14px;
+  margin-top: 8px;
+}
+.effortSlider input {
+  display: block;
   width: 100%;
-  min-height: 28px;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 6px;
+  height: var(--thumb);
+  margin: 0;
+  appearance: none;
   background: transparent;
-  color: var(--fg);
-  cursor: pointer;
-  gap: 8px;
 }
-.modelEffortDropdownRow:hover,
-.modelEffortDropdownRowActive {
-  background: var(--bg-list-selected);
+.effortSlider input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--control-off) var(--fill));
 }
-.modelEffortLabel {
-  color: var(--fg-muted);
-  flex: none;
+.effortSlider input::-webkit-slider-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc((4px - var(--thumb)) / 2);
+  border-radius: 50%;
+  appearance: none;
+  background: var(--fg-on-accent);
+  box-shadow:
+    0 0 0 1px var(--border-button),
+    var(--shadow-tooltip);
 }
-.modelEffortCurrent {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  color: var(--fg);
+.effortSlider input:focus-visible {
+  outline: none;
 }
-.modelEffortCurrentName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.effortSlider input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
-.modelEffortChevron {
-  flex: none;
-  color: var(--fg-muted);
-}
-
-.modelSubmenuPopup {
-  width: 232px;
-  max-height: 340px;
-  padding: 6px;
-  border-radius: 10px;
-  overflow-y: auto;
-}
-.modelSubmenuList {
+/* One dot per level, centred under the thumb's positions. */
+.effortTicks {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.modelSubmenuItem {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
-  width: 100%;
-  min-height: 26px;
-  padding: 2px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-  gap: 8px;
-}
-.modelSubmenuItem:hover,
-.modelSubmenuItemActive {
-  background: var(--bg-list-selected);
-}
-.modelSubmenuName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.modelSubmenuRight {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-.modelSubmenuDetail {
-  color: var(--fg-muted);
-  font-size: var(--font-size-small, 11px);
-}
-.modelSubmenuCheck {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  color: var(--fg);
-}
-
-/* IntelliJ AIR Effort section + discrete N-step slider */
-.effortSection {
+  padding: 0 calc(var(--thumb) / 2 - 2px);
   margin-top: 4px;
-  padding: 4px 6px 2px;
 }
-.effortHeaderRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 22px;
-  gap: 8px;
-}
-.effortValueLabel {
-  color: var(--fg-muted);
-}
-.effortSliderTrack {
-  position: relative;
-  width: 100%;
-  height: 23px;
-  margin-top: 6px;
-  border-radius: 12px;
-  background: rgba(128, 128, 128, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.28);
-  cursor: pointer;
-  user-select: none;
-  touch-action: none;
-}
-.effortSliderTrack:focus-visible {
-  outline: 2px solid var(--border-focus, #3574f0);
-  outline-offset: 1px;
-}
-.effortSliderFill {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 23px;
-  border-radius: 12px;
-  background: #3574f0;
-  pointer-events: none;
-  transition:
-    width 110ms ease,
-    background-color 110ms ease;
-}
-.effortSliderFillExpensive {
-  background: #8060db;
-}
-.effortSliderStep {
-  position: absolute;
-  top: 50%;
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  border: 0;
+.effortTicks > span {
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  background: transparent;
-  transform: translate(-50%, -50%);
-  cursor: pointer;
-  z-index: 1;
+  background: var(--control-off);
 }
-.effortSliderStep::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: rgba(160, 160, 160, 0.55);
-  transform: translate(-50%, -50%);
-}
-.effortSliderStepCovered::after {
-  background: rgba(255, 255, 255, 0.45);
-}
-.effortSliderStepActive::after {
-  opacity: 0;
-}
-.effortSliderThumb {
-  position: absolute;
-  top: 50%;
-  width: 17px;
-  height: 17px;
-  border-radius: 6px;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  z-index: 2;
-  transition: left 110ms ease;
-}
-
-.modeTriggerFramed {
-  width: 100%;
-  min-height: 26px;
-  box-shadow: inset 0 0 0 1px var(--border-button);
-  border-radius: var(--radius-input);
-  padding: 0 8px;
+.effortTicks > .effortTickActive {
+  background: var(--accent);
 }
 .modePopup {
-  width: 204px;
-  padding: 6px 8px 8px;
-  border-radius: 10px;
+  min-width: 200px;
+  padding: 6px 0;
 }
-.modePopupHeader {
-  padding: 2px 8px 4px;
-  color: var(--fg-muted);
-  font-size: var(--font-size-small, 12px);
-}
-.modePopupList {
+.modeList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
-.modePopupItem {
+.modeOption {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  min-height: 26px;
+  gap: 6px;
+  height: 24px;
+  margin: 0 6px;
   padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
+  border-radius: var(--radius-row);
+  color: var(--fg-strong);
   text-align: left;
-  cursor: pointer;
+  white-space: nowrap;
 }
-.modePopupItem:hover,
-.modePopupItemActive {
+.modeOption:hover,
+.modeOption:focus-visible {
+  outline: none;
   background: var(--bg-list-selected);
 }
-.modePopupFooter {
-  margin-top: 6px;
-  padding: 6px 8px 0;
-  border-top: 1px solid var(--border);
+.modeCheck {
+  width: 12px;
+  flex: none;
+  color: var(--fg-muted);
+}
+.modeFooter {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-.modePopupFooterLabel {
-  color: var(--fg);
+  gap: 12px;
+  margin-top: 6px;
+  padding: 8px 14px 2px;
+  border-top: 1px solid var(--border);
 }
 @container agent-composer (max-width: 600px) {
   .bar {
@@ -460,6 +250,8 @@
   }
   .settingsMenu {
     display: flex;
+    flex: none;
+    margin-left: auto;
   }
   .actions {
     width: 100%;
