@@ -71,6 +71,17 @@ pub struct Progress {
     pub message: Option<String>,
     /// Set while the server accepts `window/workDoneProgress/cancel` for it.
     pub cancel: Option<ide_core::task::CancelHandle>,
+    /// When the server last reported on this token; a task that stops reporting is stuck.
+    pub last: tokio::time::Instant,
+}
+
+impl Progress {
+    /// Nothing came for `stale`: the work behind the task is blocked on something that
+    /// never answers (an HTTP read with no response header, Maven waiting for a
+    /// repository). Its task must not hold the IDE while that lasts.
+    pub fn silent(&self, stale: Duration) -> bool {
+        tokio::time::Instant::now() >= self.last + stale
+    }
 }
 
 pub struct Server {
@@ -398,6 +409,16 @@ impl Server {
         !self.progress.lock().is_empty()
     }
 
+    /// Whether progress token `token` is still running on this instance.
+    pub fn has_progress(&self, token: &str) -> bool {
+        self.progress.lock().contains_key(token)
+    }
+
+    /// Whether token `token` has reported nothing for `stale`.
+    pub fn progress_silent(&self, token: &str, stale: Duration) -> bool {
+        self.progress.lock().get(token).is_some_and(|p| p.silent(stale))
+    }
+
     /// Called after a `$/progress` task ended.
     pub fn progress_ended(&self) {
         if !self.is_busy() {
@@ -642,6 +663,24 @@ mod tests {
     fn server() -> Server {
         let cfg: LanguageServerConfig = toml::from_str("name = \"s\"\ncommand = \"s\"").unwrap();
         Server::new(cfg, PathBuf::from("/p"), LanguageId::new("vue"))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_progress_task_turns_silent_once_its_reports_stop() {
+        let stale = Duration::from_secs(180);
+        let mut p = Progress {
+            task: TaskId::next(),
+            title: "Importing Maven project(s)".into(),
+            message: Some("https://maven.example/".into()),
+            cancel: None,
+            last: tokio::time::Instant::now(),
+        };
+        assert!(!p.silent(stale));
+        tokio::time::advance(stale).await;
+        assert!(p.silent(stale), "no report for the whole window");
+        // A report puts the task back to work, whatever it was doing.
+        p.last = tokio::time::Instant::now();
+        assert!(!p.silent(stale));
     }
 
     #[test]

@@ -1009,6 +1009,40 @@ async fn progress_tasks_and_busy_status() {
     assert!(tasks[2].3);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_progress_task_that_stops_reporting_is_closed_and_the_server_reads_ready() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": {
+            "kind": "begin",
+            "title": "Initialize Workspace",
+            "message": "Importing Maven project(s) - https://maven.example/",
+            "percentage": 44,
+        } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    // The import is blocked on a repository that never answers: nothing reports again.
+    tokio::time::advance(Duration::from_secs(200)).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let last = h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Task { title, done, .. } => Some((title.clone(), *done)),
+        _ => None,
+    });
+    assert_eq!(last, Some(("Initialize Workspace".into(), true)), "its task is gone, not frozen at 44%");
+    // The task went away on its own, so the IDE has to say why.
+    let warning = h.events.lock().iter().find_map(|e| match e {
+        IdeEvent::Notify { level, body, .. } if *level == ide_core::event::NotifyLevel::Warning => body.clone(),
+        _ => None,
+    });
+    let warning = warning.expect("a warning tells the user what happened");
+    assert!(warning.contains("'Initialize Workspace' reported nothing"), "{warning}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn progress_titled_with_an_executable_path_shows_the_program_name() {
     let h = harness(&[("mock", incremental_caps())]);
