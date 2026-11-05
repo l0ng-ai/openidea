@@ -62,6 +62,7 @@ import {
 import { setMethodLines, softWrapActive } from "../cm/prefs";
 import type { EditorSlot } from "./slot";
 import { tx } from "@/platform/i18n";
+import { logError } from "@/platform/errorLog";
 import { WorkspaceHistory } from "./workspaceHistory";
 
 export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
@@ -263,13 +264,15 @@ export class DocModel {
       },
       {
         applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
-        onDiscarded: () =>
+        onDiscarded: (reason) => {
+          logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
           manager.notify({
             level: "warning",
             title: "Editor resynchronised",
             body: tx`Some unsaved edits to ${this.path} could not be applied and were replaced by the file's current content.`,
-          }),
-        onError: (e) => console.warn(`document ${this.path}: sync error`, e),
+          });
+        },
+        onError: (e) => logError(`document ${this.path}: sync error`, e),
       },
       manager.scheduler,
     );

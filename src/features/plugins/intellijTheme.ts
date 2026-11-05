@@ -109,7 +109,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   DELETED_LINES_COLOR: ["--gutter-deleted"],
 };
 
-type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR";
+type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR" | "ERROR_STRIPE_COLOR";
 
 /** `.icls` `<attributes>` options → [part, token] pairs. */
 export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
@@ -117,9 +117,19 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
     ["FOREGROUND", "--fg-editor"],
     ["BACKGROUND", "--bg-editor"],
   ],
-  DIFF_MODIFIED: [["BACKGROUND", "--diff-modified"]],
-  DIFF_INSERTED: [["BACKGROUND", "--diff-inserted"]],
-  DIFF_DELETED: [["BACKGROUND", "--diff-deleted"]],
+  DIFF_MODIFIED: [
+    ["BACKGROUND", "--diff-modified"],
+    ["ERROR_STRIPE_COLOR", "--diff-modified-stripe"],
+  ],
+  DIFF_INSERTED: [
+    ["BACKGROUND", "--diff-inserted"],
+    ["ERROR_STRIPE_COLOR", "--diff-inserted-stripe"],
+  ],
+  DIFF_DELETED: [
+    ["BACKGROUND", "--diff-deleted"],
+    ["ERROR_STRIPE_COLOR", "--diff-deleted-stripe"],
+  ],
+  DIFF_CONFLICT: [["ERROR_STRIPE_COLOR", "--diff-conflict-stripe"]],
   DEFAULT_KEYWORD: [["FOREGROUND", "--syn-keyword"]],
   DEFAULT_STRING: [["FOREGROUND", "--syn-string"]],
   DEFAULT_NUMBER: [["FOREGROUND", "--syn-number"]],

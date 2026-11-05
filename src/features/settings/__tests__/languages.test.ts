@@ -63,7 +63,12 @@ describe("languages settings", () => {
       languageLevel: "",
       includePaths: [],
       stubs: [],
+      phpstanConfig: "",
     });
+    expect(validateLanguages({ php: { phpstanConfig: " build/phpstan.neon " } }).php.phpstanConfig).toBe(
+      "build/phpstan.neon",
+    );
+    expect(validateLanguages({ php: { phpstanConfig: 3 } }).php.phpstanConfig).toBe("");
     const lists = validateLanguages({ php: { includePaths: [" ../platform ", "", 3, "../platform"], stubs: "redis" } });
     expect(lists.php.includePaths).toEqual(["../platform"]);
     expect(lists.php.stubs).toEqual([]);

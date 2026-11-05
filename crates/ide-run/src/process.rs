@@ -80,6 +80,8 @@ pub struct StartOptions {
     pub encoding: Option<String>,
     /// Project content and source roots added to Python launch environments.
     pub python_paths: Vec<PathBuf>,
+    /// Where the Ruby test reporter is installed (see [`crate::ruby_reporter`]); Ruby test runs load it.
+    pub ruby_reporter: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -354,6 +356,10 @@ impl ProcessManager {
         let mut env = launch_env(root, config)?;
         if matches!(config.kind.as_str(), "python" | "pytest" | "django-test") {
             crate::python_path::extend(&mut env.vars, &options.python_paths, !env.clear)?;
+        }
+        if let Some(dir) = options.ruby_reporter.as_deref().filter(|_| crate::ruby_reporter::applies(config)) {
+            crate::ruby_preload::add(&mut env.vars, dir, crate::ruby_reporter::FEATURE, !env.clear);
+            env.vars.insert("OPENIDEA_TEST_REPORT".into(), "1".into());
         }
         let on_output: OutputFn = Arc::from(on_output);
         let on_output = match extras.output_file.as_deref() {
