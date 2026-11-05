@@ -2,18 +2,44 @@
 use super::*;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::time::SystemTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchFingerprint {
     version: u32,
     parameters: String,
-    files: BTreeMap<PathBuf, Option<(u64, SystemTime)>>,
+    /// Per input: `(byte length, mtime, blake3-of-content)` for regular files, `None` for
+    /// directories and inputs that cannot be resolved. The content hash catches external
+    /// edits that preserve both length and mtime (timestamp-preserving tools, coarse
+    /// timestamp granularity), which `(length, mtime)` alone would miss.
+    files: BTreeMap<PathBuf, Option<(u64, SystemTime, String)>>,
+}
+
+/// `blake3` hex of a file's bytes, streamed in chunks so memory stays bounded. An
+/// unreadable file records a sentinel so one permission problem does not drop the whole
+/// fingerprint (that would just force a normal rebuild).
+fn content_hash(path: &Path) -> IdeResult<String> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok("missing".into()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn scan(
     path: &Path,
-    files: &mut BTreeMap<PathBuf, Option<(u64, SystemTime)>>,
+    files: &mut BTreeMap<PathBuf, Option<(u64, SystemTime, String)>>,
     ancestors: &mut HashSet<PathBuf>,
     cancel: &CancellationToken,
 ) -> IdeResult<()> {
@@ -40,7 +66,7 @@ fn scan(
         }
         ancestors.remove(&canonical);
     } else if meta.is_file() {
-        files.insert(path.to_path_buf(), Some((meta.len(), meta.modified()?)));
+        files.insert(path.to_path_buf(), Some((meta.len(), meta.modified()?, content_hash(path)?)));
     } else {
         return Err(IdeError::internal("unsupported launch input file"));
     }
@@ -149,7 +175,7 @@ pub fn launch_fingerprint(
     }
     // Store project inputs relative to the project, including each file's relative path.
     let files = files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect();
-    Ok(Some(LaunchFingerprint { version: 1, parameters, files }))
+    Ok(Some(LaunchFingerprint { version: 2, parameters, files }))
 }
 
 #[cfg(test)]
@@ -229,6 +255,25 @@ mod tests {
             fs::remove_file(root.join(rel)).unwrap();
             assert_ne!(touched, fingerprint(root, &model), "deleted {rel}");
         }
+    }
+
+    /// An external tool that keeps the byte length and the mtime (timestamp-preserving
+    /// writes, coarse-granularity filesystems) still changes the content: the fingerprint
+    /// must differ via the content hash, not via `(length, mtime)`.
+    #[test]
+    fn external_edit_preserving_length_and_mtime_still_invalidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let source = root.join("lib/src/main/kotlin/Channel.kt");
+        let before = fingerprint(root, &model);
+        assert!(before.is_some());
+        let mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        // Same 5-byte length, different content.
+        write(root, "lib/src/main/kotlin/Channel.kt", "valve");
+        fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
+        let after = fingerprint(root, &model);
+        assert_ne!(before, after, "a same-length, same-mtime content change must invalidate the fingerprint");
     }
 
     #[test]
