@@ -8,6 +8,7 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+mod jump_list;
 #[cfg(any(target_os = "linux", test))]
 mod linux_window_state;
 mod logging;
@@ -63,6 +64,8 @@ pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
+    // Before the first window: one taskbar identity for every launch path.
+    jump_list::set_app_id(&context.config().identifier);
     logging::init(&context.config().identifier);
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
@@ -173,6 +176,7 @@ pub fn run() {
         }
         app.on_menu_event(on_menu_event);
         windows::create_main_window(app.handle())?;
+        jump_list::refresh(app.handle(), app.state::<AppState>().recent.list());
         Ok(())
     })
     .on_window_event(|window, event| match event {
