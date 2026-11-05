@@ -15,6 +15,7 @@ pub mod process;
 pub mod recent;
 pub mod roots;
 pub mod settings;
+pub mod settings_schema;
 pub mod text_refs;
 pub mod unity;
 pub mod window_groups;
