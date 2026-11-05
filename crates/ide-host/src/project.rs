@@ -209,6 +209,7 @@ impl Host {
                         cfg.launch_error = Some(e);
                         None
                     });
+                    ide_sdk::apply::configure_java_compiler(cfg, &data_dir, &effective.inspections);
                     ide_sdk::java::configure_jdtls(
                         cfg,
                         server_root,
