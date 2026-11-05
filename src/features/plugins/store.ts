@@ -271,9 +271,11 @@ export async function rollBackPlugin(id: string): Promise<void> {
   }
 }
 
-/** Enables or disables every installed (non-dev) plugin; returns how many changed. */
+/** Enables or disables every downloaded plugin (not dev or bundled ones); returns how many changed. */
 export async function setAllInstalledEnabled(enabled: boolean): Promise<number> {
-  const targets = usePlugins.getState().plugins.filter((p) => p.source === "installed" && p.enabled !== enabled);
+  const targets = usePlugins
+    .getState()
+    .plugins.filter((p) => p.source === "installed" && !p.bundled && p.enabled !== enabled);
   let changed = 0;
   for (const p of targets) if (await setPluginEnabled(p.id, enabled)) changed++;
   return changed;

@@ -5700,6 +5700,8 @@ export type PluginInfo = {
 	homepage: string | null,
 	changeNotes: string | null,
 	source: PluginSource,
+	/**  Installed with the app (`plugins/bundled.json`): it can be disabled, not uninstalled. */
+	bundled: boolean,
 	/**  Package directory. */
 	path: IpcPath,
 	enabled: boolean,
