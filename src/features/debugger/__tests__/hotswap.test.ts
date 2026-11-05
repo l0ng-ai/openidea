@@ -30,7 +30,7 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
 import type { DebugCapabilities, DebugSessionId } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { hotSwapMessage, onHotCodeReplace, reloadChangedClasses } from "../hotswap";
+import { hotSwapMenuItems, hotSwapMessage, onHotCodeReplace, reloadChangedClasses } from "../hotswap";
 import { publishContext, useDebug, type DebugSession } from "../state";
 
 function session(id: number, hotCodeReplace: boolean): DebugSession {
@@ -78,6 +78,13 @@ describe("HotSwap", () => {
     useDebug.setState({ sessions: { 2: session(2, false) }, active: 2 });
     publishContext();
     expect(getContext().debugCanHotSwap).toBe(false);
+  });
+
+  it("offers the reload in the editor menu of a Java file while a session can reload classes", () => {
+    expect(hotSwapMenuItems(["/p/app/src/A.java"])).toEqual([{ kind: "action", action: "debug.reloadChangedClasses" }]);
+    expect(hotSwapMenuItems(["/p/app/pom.xml"])).toEqual([]);
+    useDebug.setState({ sessions: { 2: session(2, false) }, active: 2 });
+    expect(hotSwapMenuItems(["/p/app/src/A.java"])).toEqual([]);
   });
 
   it("builds, reloads in Java sessions and reports the count", async () => {

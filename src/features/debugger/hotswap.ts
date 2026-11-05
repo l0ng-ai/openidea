@@ -9,6 +9,7 @@ import { call, commands, isTauri, type DebugEvent, type DebugSessionId } from "@
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { isLive, useDebug, type DebugSession } from "./state";
 import { tx } from "@/platform/i18n";
+import type { MenuItem } from "@/ui/Menu";
 
 const KEY = "debug.hotswap";
 /** `BUILD_COMPLETE` events of our own build are not worth a prompt. */
@@ -16,6 +17,12 @@ let quietUntil = 0;
 
 export function hotSwapSessions(): DebugSession[] {
   return Object.values(useDebug.getState().sessions).filter((s) => isLive(s) && !!s.caps?.hotCodeReplace);
+}
+
+/** Editor menu: Reload Changed Classes on a Java file while a debug session can reload classes. */
+export function hotSwapMenuItems(paths: readonly string[]): MenuItem[] {
+  const java = paths.length === 1 && /\.java$/i.test(paths[0]!);
+  return java && hotSwapSessions().length ? [{ kind: "action", action: "debug.reloadChangedClasses" }] : [];
 }
 
 /** "3 classes", translated per count (the sentence around it is translated on its own). */
