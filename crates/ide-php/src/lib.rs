@@ -27,6 +27,9 @@
 //!   ([`project::ProjectLayout`]): the project folder, Composer autoload
 //!   rules and installed packages, include paths and excluded folders, and
 //!   the PSR-4/PSR-0 namespace ⇄ directory map ([`project::AutoloadMap`]).
+//! - [`stubs`]: built-in declarations from the bundled phpstorm-stubs
+//!   ([`stubs::BundledStubs`]), filtered by PHP version and enabled
+//!   extensions ([`stubs::StubFilter`]).
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
@@ -34,6 +37,7 @@ pub mod index;
 pub mod names;
 pub mod probe;
 pub mod project;
+pub mod stubs;
 pub mod summary;
 pub mod syntax;
 

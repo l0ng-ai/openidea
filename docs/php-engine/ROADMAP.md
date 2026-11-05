@@ -149,7 +149,7 @@ The design:
 
   Use a mapping from PSR-4 namespace to directory, which later phases need for moves and new classes. Tests use temporary Composer projects.
 
-- [ ] Phase 1.7: Bundled phpstorm-stubs
+- [x] Phase 1.7: Bundled phpstorm-stubs
   1. Check the licence (Apache-2.0, plus CC-BY for the PHP manual text) and add the notice to the repo's third-party notices.
   2. Fetch a pinned phpstorm-stubs release at build time or check it in. Pick whichever matches how the repo handles bundled assets, and record why.
   3. Index it into a ready-made summary set that's embedded in or shipped with the app.

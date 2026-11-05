@@ -138,6 +138,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## JetBrains phpstorm-stubs
+
+`crates/ide-php/stubs/phpstorm-stubs.zip` (embedded in the native PHP engine for built-in
+functions, classes and constants) contains the extension folders' `.php` files of
+[phpstorm-stubs](https://github.com/JetBrains/phpstorm-stubs) release `v2026.2` (commit
+`709e512210784a7c0a677b3a89d35def844a59b9`), copied unmodified, together with that release's
+`LICENSE` and `README.md`. `scripts/php-stubs.sh` rebuilds the archive from the pinned tag.
+Copyright JetBrains s.r.o. and contributors, licensed under the Apache License 2.0
+(full text in the archive's `LICENSE` and at <https://www.apache.org/licenses/LICENSE-2.0>).
+The stubs' documentation comments contain material by the PHP Documentation Group, licensed
+under [Creative Commons Attribution 3.0](https://www.php.net/manual/en/cc.license.php)
+(CC-BY 3.0).
+
 ## Tools downloaded on request (not bundled)
 
 The tool installer (`crates/ide-tools`, Settings › Languages & Frameworks ›
