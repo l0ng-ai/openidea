@@ -250,9 +250,10 @@ pub async fn db_execute(
     request: RequestId,
     id: String,
     statements: Vec<SqlStatement>,
+    skip: u32,
     max_rows: u32,
 ) -> IdeResult<Vec<StatementOutcome>> {
-    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, max_rows).await
+    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, skip, max_rows).await
 }
 
 #[tauri::command]

@@ -6190,5 +6190,13 @@
   "Plugin update available": "有插件可更新",
   "{length} plugin updates available": "{length} 个插件可更新",
   "Updated {updated} plugins": "已更新 {updated} 个插件",
-  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "此版本的签名密钥与已安装的版本不同，且发布者之前的密钥没有为它背书。只有在确认发布者更换了密钥时才继续。"
+  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "此版本的签名密钥与已安装的版本不同，且发布者之前的密钥没有为它背书。只有在确认发布者更换了密钥时才继续。",
+  "Search in results": "在结果中搜索",
+  "Bad regex": "正则表达式无效",
+  "Filter rows": "筛选行",
+  "Result pages": "结果分页",
+  "First Page": "第一页",
+  "Count rows": "统计行数",
+  "Last Page": "最后一页",
+  "{first}-{last} of {total}": "{first}-{last}，共 {total}"
 }

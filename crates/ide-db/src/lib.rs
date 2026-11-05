@@ -1009,7 +1009,20 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        let r = self.run(id, statement, max_rows, cancel).await;
+        self.execute_from(id, statement, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping
+    /// them: a later page of a result, where only that page is decoded and returned.
+    pub async fn execute_from(
+        &self,
+        id: &str,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        let r = self.run(id, statement, skip, max_rows, cancel).await;
         let ran = match &r {
             Ok(_) => true,
             Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
@@ -1044,7 +1057,7 @@ impl DbManager {
     /// The execution plan of `statement` (explained, not run).
     pub async fn explain(&self, id: &str, statement: &str, cancel: &CancellationToken) -> IdeResult<Vec<PlanNode>> {
         let driver = self.pool(id).await?.driver();
-        let result = self.run(id, &plan::explain_statement(driver, statement), MAX_META_ROWS, cancel).await?;
+        let result = self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel).await?;
         plan::parse(driver, &result)
     }
 
@@ -1052,13 +1065,14 @@ impl DbManager {
         &self,
         id: &str,
         statement: &str,
+        skip: usize,
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else {
-            return pool.execute(statement, max_rows, cancel).await;
+            return pool.execute_from(statement, skip, max_rows, cancel).await;
         };
         if pool.driver() == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
@@ -1070,7 +1084,7 @@ impl DbManager {
             *held = Some(conn);
         }
         let conn = held.as_mut().expect("opened above");
-        let r = conn.execute(&pool, statement, max_rows, cancel).await;
+        let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             // The server rolls the transaction back with the connection.
             held.take().expect("opened above").discard().await;

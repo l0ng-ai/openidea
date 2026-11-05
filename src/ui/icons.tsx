@@ -225,6 +225,8 @@ const ICONS = {
   refresh: "general/refresh",
   settings: "general/settings",
   help: "openidea/general/help",
+  "page-first": "openidea/general/pageFirst",
+  "page-last": "openidea/general/pageLast",
   sliders: "openidea/general/sliders",
   "graphql-variables": "openidea/general/graphqlVariables",
   layout: "general/layout",
