@@ -24,6 +24,13 @@ pub fn sdk_python_effective(window: Window, state: State<'_, AppState>) -> IdeRe
     ide_host::ops::sdk::sdk_python_effective(&state.host, window.label())
 }
 
+/// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
+#[tauri::command]
+#[specta::specta]
+pub fn sdk_php_effective(window: Window, state: State<'_, AppState>) -> IdeResult<Option<ide_core::IpcPath>> {
+    ide_host::ops::sdk::sdk_php_effective(&state.host, window.label())
+}
+
 /// The PHP language level of the project `path` belongs to: the effective one and Auto's.
 #[tauri::command]
 #[specta::specta]

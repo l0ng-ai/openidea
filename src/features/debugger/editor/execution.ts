@@ -61,7 +61,7 @@ export function inlineValuesFor(text: string, values: Record<string, string>): s
 function lineDecorations(state: EditorState, exec: Exec | null): DecorationSet {
   if (!exec || exec.line >= state.doc.lines) return Decoration.none;
   const line = state.doc.line(exec.line + 1);
-  return Decoration.set([Decoration.line({ class: styles.execLine }).range(line.from)]);
+  return Decoration.set([Decoration.line({ class: `${styles.execLine} cm-openidea-lineBg` }).range(line.from)]);
 }
 
 export function executionPoint(ctx: EditorDocContext): Extension {

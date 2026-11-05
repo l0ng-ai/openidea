@@ -306,8 +306,9 @@ impl PluginApi {
         // allowed, and installing it later approves nothing by itself.
         let pin = self.shared.pins.read().get(&(self.id().to_owned(), cap.clone())).cloned().ok_or_else(|| {
             HostError::Failed(format!(
-                "{cap}: `{program}` was not found when this permission was allowed; \
-                 install it, then allow {cap} again in Settings › Plugins"
+                "{cap}: `{program}` was not found on PATH when this permission was allowed. \
+                 Restarting doesn't approve a program installed later: once `{program}` is on PATH, \
+                 clear {cap} in Settings › Plugins and select it again"
             ))
         })?;
         pin.verify().map(Path::to_path_buf).map_err(|e| HostError::Denied(format!("{cap}: {e}")))
@@ -831,7 +832,8 @@ mod tests {
         // Allowed while the program was missing: say how to fix it rather than "not granted".
         let err = api.approved_program("lint").unwrap_err().to_string();
         assert!(
-            err.contains("was not found when this permission was allowed") && err.contains("allow process:lint again"),
+            err.contains("was not found on PATH when this permission was allowed")
+                && err.contains("clear process:lint in Settings › Plugins and select it again"),
             "{err}"
         );
 

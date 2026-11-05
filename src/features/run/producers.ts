@@ -38,6 +38,8 @@ export interface ToolEnv {
   windows?: boolean;
   /** The project interpreter from settings (Python). */
   python?: string | null;
+  /** The PHP interpreter chosen in settings (else the `php` on `PATH`). */
+  php?: string | null;
   /** The project root has `deno.json(c)` / `bun.lock(b)`. */
   deno?: boolean;
   bun?: boolean;
@@ -288,7 +290,7 @@ const INSTALL: Record<string, string> = {
   js: "Install Node.js from https://nodejs.org (or `brew install node`).",
   python: "Install Python (`brew install python`) or choose an interpreter in Settings › Python Interpreter.",
   ruby: "Install Ruby (`brew install ruby`).",
-  php: "Install PHP (`brew install php`).",
+  php: "Install PHP (`brew install php`) or choose an interpreter in Settings › Languages & Frameworks › PHP.",
   perl: "Install Perl (`brew install perl`).",
   lua: "Install Lua (`brew install lua`).",
   r: "Install R (`brew install r`) so that `Rscript` is on the PATH.",
@@ -596,6 +598,10 @@ function simple(
   return { name: s.file, scope: "file", config: fileConfig(s, kind, t.command, args(t.command, t.name), debugAdapter) };
 }
 
+/** `-I<dir>` for each Sources root of the project (the project root itself is already the cwd). */
+const rubyLoadPath = (roots: readonly { path: string; kind: string }[]): string[] =>
+  roots.filter((r) => r.kind === "source" && r.path !== "").map((r) => `-I${r.path}`);
+
 const hasGoMain = (content?: string) => content === undefined || /^\s*package\s+main\b/m.test(content);
 const hasRustMain = (content?: string) =>
   content === undefined || /^(?:pub\s+)?(?:async\s+)?fn\s+main\s*\(/m.test(content);
@@ -758,6 +764,8 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
               config: fileConfig(s, "python", py.command, [...py.prefix, s.arg], "debugpy"),
             };
         }
+        if (interp === "php" && env.php)
+          return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [...sb.slice(1), s.arg]) };
         const t = sb[0]!.startsWith("/") ? { command: sb[0]!, name: interp } : pick(env, [interp]);
         if (!t) return { name: s.file, scope: "file", missing: missing(lang, s.file, [interp]) };
         const kind = /^(ba|z|k|da|fi)?sh$/.test(interp) ? "shell" : interp === "node" ? "node" : interp;
@@ -798,7 +806,11 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       };
     }
     case "ruby":
+      // Sources roots go on the load path (`-Ilib`), as `rake test` does; paths are project-relative.
+      return simple(lang, s, env, lang, () => [...(s.inProject ? rubyLoadPath(currentRoots()) : []), s.arg]);
     case "php":
+      if (env.php) return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [s.arg]) };
+      return simple(lang, s, env, lang, () => [s.arg]);
     case "perl":
     case "lua":
     case "swift":
@@ -966,7 +978,7 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
 export function produceContext(input: ContextInput, env: ToolEnv): Produced | null {
   if (input.content !== undefined && input.line !== undefined) {
     const targets = fileTargets(input, input.content.slice(0, 400_000));
-    const inner = innermostTarget(input.content, targets, input.line, /\.py$/.test(input.path));
+    const inner = innermostTarget(input.content, targets, input.line, /\.(py|rb)$/.test(input.path));
     if (inner) {
       const p = elementProduction(input, env, inner);
       if (p) return p;
@@ -991,7 +1003,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   let element: RunTarget | null = null;
   if (produced.scope === "element") {
     const targets = fileTargets(input, (input.content ?? "").slice(0, 400_000));
-    element = innermostTarget(input.content ?? "", targets, input.line ?? 0, /\.py$/.test(input.path));
+    element = innermostTarget(input.content ?? "", targets, input.line ?? 0, /\.(py|rb)$/.test(input.path));
     if (!element || element.kind === "main" || element.kind === "generate") return [produced];
   } else if (!produced.config.isTest) {
     return [produced];
@@ -1021,6 +1033,33 @@ function cmakeTargets(input: ContextInput): RunConfig[] {
 
 const TEST_DIR = /(^|\/)(tests?|__tests__|specs?|test_?\w*)$/;
 
+/**
+ * The tests of a Ruby folder: RSpec on the folder, `rake test` with `TEST=<glob>`, or the
+ * detected Minitest runner given the folder (Sources roots on its load path).
+ */
+function rubyDirectory(
+  closest: (kinds: string[]) => RunConfig | undefined,
+  relToCwd: (c: RunConfig) => string,
+  make: (base: RunConfig, label: string, args: string[]) => Produced,
+  label: string,
+): Produced | null {
+  const rspec = closest(["rspec"]);
+  if (rspec) return make(rspec, label, [...rspec.args, relToCwd(rspec)]);
+  const rake = closest(["rake"]);
+  if (rake && rake.args.at(-1) === "test") {
+    // Rake splits `TEST` at commas into patterns, so no braces: two globs.
+    const dir = relToCwd(rake);
+    return make(rake, label, [...rake.args, `TEST=${dir}/**/*_test.rb,${dir}/**/test_*.rb`]);
+  }
+  const minitest = closest(["ruby"]);
+  if (!minitest) return null;
+  const at = minitest.args.indexOf("-e");
+  const flags = rubyLoadPath(currentRoots()).filter((f) => !minitest.args.includes(f));
+  const args = [...minitest.args.slice(0, -1)];
+  args.splice(at < 0 ? args.length : at, 0, ...flags);
+  return make(minitest, label, [...args, relToCwd(minitest)]);
+}
+
 export function produceDirectory(input: ContextInput): Produced | null {
   const { root } = input;
   if (!root || !isProjectPath(input) || input.path === root) return null;
@@ -1029,8 +1068,8 @@ export function produceDirectory(input: ContextInput): Produced | null {
   const jvmRoot = /^(?:(.*)\/)?src\/test(?:\/(java|kotlin|scala|groovy))?$/.exec(rel);
   const jvmPackage = /^(?:(.*)\/)?src\/test\/(?:java|kotlin|scala|groovy)\/(.+)$/.exec(rel);
   const marked = isTestPath(currentRoots(), rel);
-  if (!TEST_DIR.test(rel) && !jvmRoot && !jvmPackage && !marked && !/(^|\/)src\/test(\/|$)/.test(rel)) return null;
   const tests = input.configs.filter((c) => c.isTest);
+  if (!TEST_DIR.test(rel) && !jvmRoot && !jvmPackage && !marked && !/(^|\/)src\/test(\/|$)/.test(rel)) return null;
   const closest = (kinds: string[]) => {
     const cands = tests.filter((c) => kinds.includes(c.kind));
     const score = (c: RunConfig) => {
@@ -1071,6 +1110,8 @@ export function produceDirectory(input: ContextInput): Produced | null {
     }
   }
   const js = closest(["npm", "bun", "deno"]);
+  const ruby = marked && !js && rubyDirectory(closest, relToCwd, make, testsIn);
+  if (ruby) return ruby;
   const py = closest(["pytest"]);
   const django = closest(["django-test"]);
   const go = closest(["go"]);

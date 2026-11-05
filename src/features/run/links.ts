@@ -12,9 +12,11 @@ export interface FileTarget {
   /**
    * `path`: resolve against the run directory; `name`: a file name from a JVM
    * stack frame — look it up in the project (`path` then is the file under its
-   * package directory, `com/acme/OrderController.kt`, when the frame names the class).
+   * package directory, `com/acme/OrderController.kt`, when the frame names the class);
+   * `rubyTest`: a Minitest test with no file in its output — `className` is its class, `path` its
+   * method name — found by searching the project (`rubyTests.ts`).
    */
-  resolve: "path" | "name";
+  resolve: "path" | "name" | "rubyTest";
   /** JVM frames: the class's binary name (`com.acme.OrderController$Inner`). */
   className?: string;
 }
