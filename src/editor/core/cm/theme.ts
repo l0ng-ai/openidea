@@ -92,6 +92,7 @@ export const overviewStyles = {
     cursor: "pointer",
   },
   ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
+  ".cm-openidea-overviewMark-full": { left: "0", width: "100%", minHeight: "2px", borderRadius: "0" },
   // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
   ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
   // The lane owns the scrollbar and its thumb (cm/lanes.ts): the native one is hidden so a press

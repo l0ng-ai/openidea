@@ -169,8 +169,8 @@ class OverviewLane {
         for (const r of rows) {
           const el = document.createElement("div");
           el.className =
-            r.mark.kind === "thin"
-              ? "cm-openidea-overviewMark cm-openidea-overviewMark-thin"
+            r.mark.kind === "thin" || r.mark.kind === "full"
+              ? `cm-openidea-overviewMark cm-openidea-overviewMark-${r.mark.kind}`
               : "cm-openidea-overviewMark";
           el.style.top = `${r.top}${unit}`;
           el.style.height = `${r.height}${unit}`;

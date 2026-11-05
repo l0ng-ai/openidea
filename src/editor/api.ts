@@ -238,8 +238,11 @@ export interface ScrollbarMark {
   to?: number;
   /** CSS colour, normally a token such as `var(--danger)`. */
   color: string;
-  /** `line` (default): 4px-wide bar on the lane; `thin`: 2px bar (search hits, occurrences). */
-  kind?: "line" | "thin";
+  /**
+   * `line` (default): 4px-wide bar on the lane; `thin`: 2px bar (search hits, occurrences);
+   * `full`: the lane's whole width (IDEA's diff and merge error stripe).
+   */
+  kind?: "line" | "thin" | "full";
   /** Shown on hover. */
   tooltip?: string;
   /** Higher wins when marks overlap. Default 0. */

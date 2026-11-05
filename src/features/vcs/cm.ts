@@ -232,7 +232,7 @@ const stripeColor = byKind((kind) => `var(--diff-${kind}-stripe)`);
 export type DiffLayout = "split" | "aligned" | "unified";
 
 /**
- * The changes on the overview lane as thin marks, after IDEA's diff error stripe
+ * The changes on the overview lane as marks across its width, after IDEA's diff error stripe
  * (DiffDrawUtil.LineHighlighterBuilder): a side-by-side pane marks each chunk's lines in the
  * chunk's type, an empty side a point where the lines would be. The unified view has no modified type: the old lines are marked deleted and the
  * new ones inserted (createUnifiedChunkHighlighters); the old lines sit above the new ones in a
@@ -244,8 +244,8 @@ export function diffScrollbarMarks(state: EditorState, unified: boolean): Scroll
   if (unified)
     return info.chunks.flatMap((c) => {
       const marks: ScrollbarMark[] = [];
-      if (c.fromB !== c.toB) marks.push({ from: c.fromB, to: c.endB, color: stripeColor.inserted, kind: "thin" });
-      if (c.fromA !== c.toA) marks.push({ from: c.fromB, color: stripeColor.deleted, kind: "thin", priority: 1 });
+      if (c.fromB !== c.toB) marks.push({ from: c.fromB, to: c.endB, color: stripeColor.inserted, kind: "full" });
+      if (c.fromA !== c.toA) marks.push({ from: c.fromB, color: stripeColor.deleted, kind: "full", priority: 1 });
       return marks;
     });
   const isA = info.side === "a";
@@ -253,7 +253,7 @@ export function diffScrollbarMarks(state: EditorState, unified: boolean): Scroll
     from: isA ? c.fromA : c.fromB,
     to: isA ? c.endA : c.endB,
     color: stripeColor[chunkKind(c)],
-    kind: "thin",
+    kind: "full",
   }));
 }
 

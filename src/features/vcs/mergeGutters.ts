@@ -205,7 +205,7 @@ const stripeMark = (c: MergeChange, from: number, to: number): ScrollbarMark => 
     from,
     to: to > from ? to - 1 : from,
     color: `var(--diff-${type}-stripe)`,
-    kind: "thin",
+    kind: "full",
     priority: type === "conflict" ? 1 : 0,
   };
 };
