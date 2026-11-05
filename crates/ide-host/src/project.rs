@@ -88,6 +88,7 @@ impl Host {
             return Ok(current);
         }
         self.close_project(window);
+        self.wait_detached_closes();
         let sink: SharedSink = (self.sink_for)(window);
         // Before anything the project starts: its children get the project's environment.
         let trusted = Arc::new(AtomicBool::new(self.trust.trusted(&root)?));
@@ -567,6 +568,7 @@ impl Host {
             return Ok(current);
         }
         self.close_project(window);
+        self.wait_detached_closes();
         let sink: SharedSink = (self.sink_for)(window);
         let settings = Arc::new(SettingsStore::load(&self.config_dir, None));
         let effective = settings.effective();
