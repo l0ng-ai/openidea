@@ -2,6 +2,8 @@ name: Language smoke
 # Everyday code intelligence (completion, go to definition, Find Usages, hover, diagnostics
 # with a quick fix, an intention, formatting, rename) per language, against the language
 # server the app starts by default: crates/ide-host/tests/language_smoke.rs.
+# Opening the fixture with its build tool and SDK (Maven / Gradle sync, the virtualenv, the
+# JDK): the ignored tests of crates/ide-host/tests/project_smoke.rs.
 # Then running and testing each fixture through the run store and openidea-server
 # (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts; and debugging its
 # entry point with the debugger the IDE installs (breakpoint, frames, variables, evaluate,
@@ -107,6 +109,12 @@ jobs:
 
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
+      - if: matrix.language == 'java'
+        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk
+      - if: matrix.language == 'kotlin'
+        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact gradle_sync
+      - if: matrix.language == 'python'
+        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact python_venv
 
       - run: pnpm install --frozen-lockfile
       - run: cargo build --locked -p ide-host --bin openidea-server

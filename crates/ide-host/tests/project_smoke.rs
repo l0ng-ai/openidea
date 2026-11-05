@@ -3,7 +3,8 @@
 //! Search Everywhere / Go to Class / Go to Symbol answered from it and kept current as files
 //! come and go, and the Maven / Gradle model.
 //!
-//! The `#[ignore]`d sync tests run Maven and Gradle (CI's `Language smoke` java and kotlin jobs):
+//! The `#[ignore]`d tests run Maven, Gradle, python3 and a JDK 21 (CI's `Language smoke`
+//! java, kotlin and python jobs):
 //! `cargo test -p ide-host --test project_smoke -- --ignored`.
 
 use ide_host::{Host, HostConfig, ops};
