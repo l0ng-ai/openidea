@@ -19,7 +19,7 @@ mkdir -p "$LOGS"
 export FORCE_COLOR=1
 # Each rustc/link.exe can take 2+ GB; unlimited parallel jobs ran the machine out of memory.
 # Sessions inherit this, so their own cargo runs are limited too.
-export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6}
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
 
 PROMPT='Follow docs/php-engine/RULES.md. Open docs/php-engine/ROADMAP.md, find the FIRST phase marked "- [ ]", and complete it end-to-end: read the design section and the code the phase names first, implement, write tests, run fmt + clippy + the required tests, fix everything until green, tick the checkbox, append to docs/php-engine/PROGRESS.md, and make ONE commit. Run every command in the foreground (never in the background, never wait for notifications): this session ends the moment you stop replying. Then stop. Do not start the next phase.'
 
@@ -68,15 +68,22 @@ for ((i = 1; i <= MAX_ITER; i++)); do
         [[ -n "$blocked" ]] && printf 'Blocked phases:\n%s\n' "$blocked" | tee -a "$LIVE"
         exit 0
     fi
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-        say "the working tree has uncommitted changes before session $i: stopping"
+    prompt=$PROMPT
+    if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+        if ((i > 1)); then
+            say "the working tree has uncommitted changes before session $i: stopping"
+            git status --short | tee -a "$LIVE"
+            exit 1
+        fi
+        # The previous run was interrupted mid-phase: let the first session carry on from its work.
+        say "resuming: the working tree holds unfinished work for this phase"
         git status --short | tee -a "$LIVE"
-        exit 1
+        prompt="$PROMPT The working tree already holds uncommitted work for this phase from an interrupted session (see git status and git diff). Review it, keep what is right, finish the phase from there, and include it in the one commit."
     fi
     head_before=$(git rev-parse HEAD)
     log=$(printf '%s/session-%s-%03d.log' "$LOGS" "$(date +%Y%m%d-%H%M%S)" "$i")
     say "════ session $i: ${next#- \[ \] } ($(progress))"
-    claude -p "$PROMPT" --max-turns "$MAX_TURNS" --permission-mode acceptEdits \
+    claude -p "$prompt" --max-turns "$MAX_TURNS" --permission-mode acceptEdits \
         --output-format stream-json --verbose 2>&1 |
         node scripts/php-engine-format.mjs | tee "$log" >>"$LIVE"
     head_after=$(git rev-parse HEAD)
