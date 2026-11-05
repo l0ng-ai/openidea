@@ -92,6 +92,9 @@ export function startWorkspaceContains(): () => void {
     onIdeEvent("fsChanged", (e) => {
       if (affectsWorkspaceContains([...e.created, ...e.removed], projectRoots(), currentKeys())) refresh();
     }),
+    onIdeEvent("excludedDirsChanged", (e) => {
+      if (affectsWorkspaceContains(e.dirs, projectRoots(), currentKeys())) refresh();
+    }),
   ];
   refresh();
   return () => disposers.forEach((d) => d());
