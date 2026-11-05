@@ -71,8 +71,9 @@ export interface SessionOptions {
   /**
    * Run this program instead of the configured shell (e.g. `docker exec -it <id> sh`).
    * `shell`: it is a shell (a predefined session), so shell integration still applies.
+   * `env` is added to the terminal's environment.
    */
-  command?: { program: string; args: string[]; shell?: boolean };
+  command?: { program: string; args: string[]; shell?: boolean; env?: Record<string, string> };
 }
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
@@ -539,7 +540,7 @@ export class TerminalSession {
             cwd: this.opts.cwd,
             shell: shell ?? null,
             args,
-            env: { ...t.env },
+            env: { ...t.env, ...custom?.env },
             cols,
             rows,
             shellIntegration: (!custom || !!custom.shell) && t.shellIntegration,

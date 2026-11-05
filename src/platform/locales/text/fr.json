@@ -3713,7 +3713,7 @@
   "Templates of this project only": "Modèles de ce projet uniquement",
   "none": "aucun",
   "Opens a terminal tab running the shell at `arg` (a path from `termAvailableShells`).": "Ouvre un onglet de terminal exécutant le shell situé à `arg` (un chemin de `termAvailableShells`).",
-  "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.": "Ouvre un onglet de terminal exécutant `{ program, args, name?, cwd? }` à la place du shell.",
+  "Opens a terminal tab running `{ program, args, name?, cwd?, env? }` instead of the shell.": "Ouvre un onglet de terminal exécutant `{ program, args, name?, cwd?, env? }` à la place du shell.",
   "TODO items in files of a changelist": "Éléments TODO dans les fichiers d'une liste de modifications",
   "Too many matches; showing the first 10 000.": "Trop de correspondances ; affichage des 10 000 premières.",
   "{name} downloaded": "{name} téléchargé",

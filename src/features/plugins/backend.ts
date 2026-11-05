@@ -95,6 +95,8 @@ export interface PluginsBackend {
   /** Stores a secret (`null` removes it). */
   setSecret(pluginId: string, name: string, value: string | null): Promise<void>;
   setActiveFile(path: string | null): Promise<void>;
+  /** The window's focused text editor and selections (MCP tool calls for this project get it). */
+  setFocusedEditor(editor: PluginEditor | null): Promise<void>;
   setTheme(pluginId: string | null, themeId: string | null): Promise<ActiveTheme | null>;
   /** The selected theme's resolved frame colour (`#rrggbb[aa]`), which new windows open in. */
   setThemeFrame(color: string | null): Promise<void>;
@@ -219,6 +221,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   },
   setActiveFile: async (path) => {
     await commands.pluginSetActiveFile(path);
+  },
+  setFocusedEditor: async (editor) => {
+    await commands.pluginSetFocusedEditor(editor);
   },
   setTheme: (pluginId, themeId) => call(commands.pluginSetTheme(pluginId, themeId)),
   setThemeFrame: async (color) => {
@@ -542,6 +547,7 @@ export function createMemoryPluginsBackend(
     setActiveFile: async (path) => {
       activeFile = path;
     },
+    setFocusedEditor: async () => {},
     setTheme: async (pluginId, themeId) => {
       theme = pluginId && themeId ? { pluginId, themeId } : null;
       const t = activeTheme();

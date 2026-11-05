@@ -61,6 +61,8 @@ pub struct Settings {
     pub cmake: CMakeSettings,
     /// Tools › Agents › Chat.
     pub agents: AgentSettings,
+    /// Tools › MCP Server (global only).
+    pub mcp_server: McpServerSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -83,6 +85,20 @@ pub struct AgentSettings {
 impl Default for AgentSettings {
     fn default() -> Self {
         Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
+    }
+}
+
+/// Tools › MCP Server: AI agents outside the IDE call plugins' tools.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpServerSettings {
+    /// Serve the tools on 127.0.0.1 while the IDE runs.
+    pub enabled: bool,
+}
+
+impl Default for McpServerSettings {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -230,6 +246,7 @@ impl Default for Settings {
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
+            mcp_server: McpServerSettings::default(),
             plugins: BTreeMap::new(),
         }
     }

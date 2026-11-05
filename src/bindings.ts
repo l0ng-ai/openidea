@@ -1086,6 +1086,16 @@ export const commands = {
 	pluginSetSecret: (pluginId: string, name: string, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_secret", { pluginId, name, value })),
 	/**  The UI reports the focused editor's file (`editor-focused` events). */
 	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
+	/**
+	 *  The UI reports this window's focused text editor and its selections (MCP
+	 *  tool calls for this window's project get it).
+	 */
+	pluginSetFocusedEditor: (editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => __TAURI_INVOKE<void>("plugin_set_focused_editor", { editor }),
+	mcpServerStatus: () => __TAURI_INVOKE<McpServerStatus>("mcp_server_status"),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
 	pluginId: string,
@@ -5314,6 +5324,28 @@ export type MavenSettings = {
 	mvndHome?: string,
 };
 
+/**  Tools › MCP Server: AI agents outside the IDE call plugins' tools. */
+export type McpServerSettings = {
+	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	enabled?: boolean,
+};
+
+/**  What Settings › Tools › MCP Server shows. */
+export type McpServerStatus = {
+	running: boolean,
+	/**  Why it isn't running though turned on. */
+	error: string | null,
+	port: number | null,
+	/**  The window's local project, which the URL and command below are for. */
+	project: IpcPath | null,
+	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	url: string | null,
+	/**  Bearer token of `url` (changes with every run). */
+	token: string | null,
+	/**  The stdio bridge: this executable and its arguments. */
+	stdioCommand: string[],
+};
+
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
 "app" | "languageServer" | 
@@ -5680,7 +5712,9 @@ export type PluginEvent =
 /**  For the script of a view's `html` body. */
 { type: "viewMessage"; pluginId: string; view: string; message: string } | 
 /**  Open a terminal running `program` (already approved and verified). */
-{ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | { type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number } | 
+{ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; 
+/**  Added to the terminal's environment (`terminal.open`). */
+env?: ([string, string])[]; cwd: IpcPath } | { type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number } | 
 /**
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
@@ -6866,6 +6900,8 @@ export type Settings_Deserialize = {
 	cmake?: CMakeSettings_Deserialize,
 	/**  Tools › Agents › Chat. */
 	agents?: AgentSettings,
+	/**  Tools › MCP Server (global only). */
+	mcpServer?: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -6926,6 +6962,8 @@ export type Settings_Serialize = {
 	cmake: CMakeSettings_Serialize,
 	/**  Tools › Agents › Chat. */
 	agents: AgentSettings,
+	/**  Tools › MCP Server (global only). */
+	mcpServer: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };

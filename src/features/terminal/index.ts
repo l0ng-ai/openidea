@@ -104,19 +104,27 @@ export function activate(): () => void {
       {
         id: "terminal.runCommand",
         title: "Run Command in Terminal",
-        description: "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.",
+        description: "Opens a terminal tab running `{ program, args, name?, cwd?, env? }` instead of the shell.",
         category: "Terminal",
         icon: "terminal",
         when: "projectOpen",
         hidden: true,
         run: async ({ arg }) => {
-          const a = arg as { program?: unknown; args?: unknown; name?: unknown; cwd?: unknown } | undefined;
+          const a = arg as
+            | { program?: unknown; args?: unknown; name?: unknown; cwd?: unknown; env?: unknown }
+            | undefined;
           if (!a || typeof a.program !== "string" || !a.program) return;
           const args = Array.isArray(a.args) ? a.args.filter((x): x is string => typeof x === "string") : [];
+          const env =
+            a.env && typeof a.env === "object"
+              ? Object.fromEntries(
+                  Object.entries(a.env).filter((kv): kv is [string, string] => typeof kv[1] === "string"),
+                )
+              : undefined;
           const cwd = (typeof a.cwd === "string" && a.cwd) || projectRoot();
           if (!cwd) return;
           const rt = await loadTerminalRuntime();
-          rt.newTab(cwd, typeof a.name === "string" && a.name ? a.name : undefined, { program: a.program, args });
+          rt.newTab(cwd, typeof a.name === "string" && a.name ? a.name : undefined, { program: a.program, args, env });
           toolWindowService().show(WINDOW, true);
           focusActiveSoon();
         },

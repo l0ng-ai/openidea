@@ -95,6 +95,8 @@ export interface ValidSettings extends WorkflowSettings {
   languageServers: Record<string, LanguageServerEntry>;
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
+  /** Tools › MCP Server (global). */
+  mcpServer: { enabled: boolean };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -162,6 +164,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   tools: {},
   languageServers: {},
   agents: { showContextUsage: true, showWorkTime: true, showUsageLimits: true, showCost: false },
+  mcpServer: { enabled: true },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -280,6 +283,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
       showCost: bool(agents.showCost, d.agents.showCost),
     },
+    mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
     ...validateWorkflow(root),
   };
 }

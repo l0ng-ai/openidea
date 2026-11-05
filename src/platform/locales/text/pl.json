@@ -3814,7 +3814,7 @@
   "Templates of this project only": "Szablony tylko dla tego projektu",
   "none": "brak",
   "Opens a terminal tab running the shell at `arg` (a path from `termAvailableShells`).": "Otwiera kartę terminala wykonującą powłokę wskazaną w `arg` (ścieżka z `termAvailableShells`).",
-  "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.": "Otwiera kartę terminala uruchamiającą `{ program, args, name?, cwd? }` zamiast domyślnej powłoki.",
+  "Opens a terminal tab running `{ program, args, name?, cwd?, env? }` instead of the shell.": "Otwiera kartę terminala uruchamiającą `{ program, args, name?, cwd?, env? }` zamiast domyślnej powłoki.",
   "TODO items in files of a changelist": "Elementy TODO w plikach na liście zmian",
   "Too many matches; showing the first 10 000.": "Zbyt wiele wyników; wyświetlanie pierwszych 10 000.",
   "{name} downloaded": "Pobrano {name}",

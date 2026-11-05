@@ -612,6 +612,14 @@ pub fn plugin_set_active_file(window: Window, state: State<'_, AppState>, path: 
     state.plugins.set_active_file(window.label(), path);
 }
 
+/// The UI reports this window's focused text editor and its selections (MCP
+/// tool calls for this window's project get it).
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_set_focused_editor(window: Window, state: State<'_, AppState>, editor: Option<PluginEditor>) {
+    state.plugins.set_focused_editor(window.label(), editor.map(PluginEditor::context));
+}
+
 /// Selects a plugin theme; both `None` restores the built-in theme.
 #[tauri::command]
 #[specta::specta]

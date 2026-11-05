@@ -1,0 +1,14 @@
+.status {
+  color: var(--fg-subtle);
+}
+.error {
+  color: var(--danger);
+}
+.endpoint {
+  width: 420px;
+}
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

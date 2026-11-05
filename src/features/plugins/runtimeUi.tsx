@@ -258,7 +258,13 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
-      void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
+      void executeAction("terminal.runCommand", {
+        program: e.program,
+        args: e.args,
+        name: e.title,
+        cwd: e.cwd,
+        env: Object.fromEntries(e.env ?? []),
+      });
       return true;
     case "openLocation":
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });

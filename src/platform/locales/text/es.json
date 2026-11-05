@@ -3847,7 +3847,7 @@
   "Templates of this project only": "Plantillas solo de este proyecto",
   "none": "ninguno",
   "Opens a terminal tab running the shell at `arg` (a path from `termAvailableShells`).": "Abre una pestaña de terminal ejecutando el shell en `arg` (una ruta de `termAvailableShells`).",
-  "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.": "Abre una pestaña de terminal ejecutando `{ program, args, name?, cwd? }` en lugar del shell.",
+  "Opens a terminal tab running `{ program, args, name?, cwd?, env? }` instead of the shell.": "Abre una pestaña de terminal ejecutando `{ program, args, name?, cwd?, env? }` en lugar del shell.",
   "TODO items in files of a changelist": "Elementos TODO en archivos de una lista de cambios",
   "Too many matches; showing the first 10 000.": "Demasiadas coincidencias; mostrando las primeras 10 000.",
   "{name} downloaded": "{name} descargado",

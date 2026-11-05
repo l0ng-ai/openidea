@@ -280,6 +280,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_subscribe"
             | "plugin_list"
             | "plugin_set_active_file"
+            | "plugin_set_focused_editor"
+            | "mcp_server_status"
             | "plugin_set_theme"
             | "plugin_set_theme_frame"
             | "plugin_catalog"

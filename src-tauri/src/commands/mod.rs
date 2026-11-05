@@ -29,6 +29,7 @@ pub mod history;
 pub mod http;
 pub mod java;
 pub mod lsp;
+pub mod mcp;
 pub mod nav;
 pub mod notebook;
 pub mod perf;
@@ -503,6 +504,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_secrets,
         plugin::plugin_set_secret,
         plugin::plugin_set_active_file,
+        plugin::plugin_set_focused_editor,
+        mcp::mcp_server_status,
         plugin::plugin_set_theme,
         plugin::plugin_set_theme_frame,
         perf::app_metrics,

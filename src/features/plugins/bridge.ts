@@ -7,7 +7,7 @@
  * permission dialog, and opened files fire `on-language` / `on-file`.
  */
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
-import { useEditorRegistry } from "@/editor/api";
+import { onEditorEvent, useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
 import { notifications } from "@/workbench/contributions";
 import { useProducerNames } from "@/platform/inspections";
@@ -31,6 +31,7 @@ import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { pluginsBackend } from "./backend";
 import { trackIconTheme } from "./iconThemes";
+import { editorContext } from "./editorContext";
 import { defineBuiltinUiPoints } from "./points";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
@@ -229,18 +230,49 @@ export function followThemeSetting(): () => void {
   return () => disposers.forEach((d) => d());
 }
 
-/** Reports the focused editor's file to the backend (`editor-focused` events). */
+/** How long the caret rests before the focused editor's selections are reported. */
+const SELECTION_REPORT_MS = 300;
+
+/**
+ * Reports the focused editor's file to the backend (`editor-focused` events),
+ * and the editor with its selections once the caret rests (MCP tool calls).
+ */
 function trackActiveFile(): () => void {
   let last: string | null | undefined;
+  let lastContext = "";
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const reportContext = () => {
+    timer = null;
+    const editor = editorContext();
+    const key = JSON.stringify(editor);
+    if (key === lastContext) return;
+    lastContext = key;
+    void pluginsBackend()
+      .setFocusedEditor(editor)
+      .catch(() => {});
+  };
+  const scheduleContext = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(reportContext, SELECTION_REPORT_MS);
+  };
   const report = (path: string | null) => {
     if (path === last) return;
     last = path;
     void pluginsBackend()
       .setActiveFile(path)
       .catch(() => {});
+    scheduleContext();
   };
   report(useEditorRegistry.getState().active?.ctx.path ?? null);
-  return useEditorRegistry.subscribe((s) => report(s.active?.ctx.path ?? null));
+  const offRegistry = useEditorRegistry.subscribe((s) => report(s.active?.ctx.path ?? null));
+  const offCaret = onEditorEvent((e) => {
+    if (e.type === "caretMoved") scheduleContext();
+  });
+  return () => {
+    offRegistry();
+    offCaret();
+    if (timer) clearTimeout(timer);
+  };
 }
 
 // --- events -----------------------------------------------------------------
