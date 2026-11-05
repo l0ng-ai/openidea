@@ -3,7 +3,8 @@
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
-import { useId, useMemo } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { call, commands } from "@/platform/ipc";
 import { IconButton, Input, type SelectOption } from "@/ui";
 import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
@@ -117,13 +118,31 @@ const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
   level ? { value: level, label: level } : { value: "", label: "Auto", detail: "from composer.json" },
 );
 
+/** The `php` on `PATH` (what the Default interpreter runs), looked up while `enabled`. */
+function usePathPhp(enabled: boolean): string | null {
+  const [path, setPath] = useState<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    call(commands.sdkLocateTools(["php"], null))
+      .then((r) => live && setPath(r.tools[0]?.path ?? null))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+  return path;
+}
+
 export function PhpPage() {
   const [interpreter] = useSetting<string>("languages.php.interpreter");
   const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
   const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
   const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
   const { list } = useDetected("php");
-  const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
+  const pathPhp = usePathPhp(!interpreter);
+  // Default runs the `php` on PATH: the list is newest first, so it isn't necessarily `list[0]`.
+  const selected = list.find((s) => s.path === (interpreter || pathPhp));
   return (
     <div className={styles.page}>
       <Section>
