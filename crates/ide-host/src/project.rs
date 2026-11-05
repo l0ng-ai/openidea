@@ -77,6 +77,8 @@ impl Host {
             lap = std::time::Instant::now();
         };
         let root = dunce::canonicalize(root)?;
+        let opening = self.opening(window);
+        let _opening = opening.lock();
         // Reject a damaged manifest before replacing the currently open project.
         ide_workspace::workspace::Workspace::load(&root)?;
         // The window reloaded (or asked again) for the project it already has: keep
@@ -569,6 +571,8 @@ impl Host {
             return Err(IdeError::invalid(format!("{} is a folder", file.display())));
         }
         let dir = file.parent().map(Path::to_path_buf).ok_or_else(|| IdeError::invalid("no parent folder"))?;
+        let opening = self.opening(window);
+        let _opening = opening.lock();
         if let Ok(current) = self.project(window)
             && current.light
         {

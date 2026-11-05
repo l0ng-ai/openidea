@@ -11,9 +11,10 @@ editors, and contribute menus, shortcuts, settings, themes, file icon themes
 and languages. Plugins that only contribute data (themes, icons, languages,
 menus, settings) need no code at all.
 
-> **Preview.** The plugin system ships as a preview: until it is declared
-> stable the API (`openidea:plugin@1.0`) may still change, and the official
-> plugins are versioned `0.x`. See _Evolving the plugin API_ below.
+> **Preview.** The plugin system ships as a preview and the official plugins
+> are versioned `0.x`. Released API versions only grow: a plugin built for
+> `openidea:plugin@1.0` keeps loading in later 1.x IDEs. See _Evolving the
+> plugin API_ below.
 
 ```
 plugins/
@@ -769,7 +770,7 @@ granted, and starts the approved program.
   the package at its root or in its only folder, or a folder's `plugin.toml`;
   a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused; IntelliJ
   theme plugins are imported instead: _Import IntelliJ Theme from File…_ and _Import Theme
-  from IntelliJ IDE…_, see [`docs/plugins/themes.md`](../docs/plugins/themes.md)). The install
+  from JetBrains IDE…_, see [`docs/plugins/themes.md`](../docs/plugins/themes.md)). The install
   page lists every capability and whether the package is signed by a publisher
   the marketplace trusts; nothing is copied until you accept.
 - **Versions:** installed plugins live in `<app-data>/plugins/<id>/<version>/`
@@ -919,8 +920,8 @@ the API itself follows _Evolving the plugin API_ below.
 
 ## 10. Evolving the plugin API
 
-While the plugin system is a preview the API may still change freely. Once it
-is declared stable wasmtime decides what stays compatible: it resolves interface names
+Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36 and 1.1.0
+with 0.1.37. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -957,10 +958,15 @@ only grows:
 
 Checked automatically:
 
-- SDK `tests/api_frozen.rs`: `tests/api/<version>/` holds the WIT of each
+- SDK `tests/api_frozen.rs`: `tests/api/released/` holds the WIT of the latest
   released version; every interface, type, function and world import or
-  export in it must still exist unchanged in `wit/` (rules 1–3). Copy `wit/`
-  there when releasing; there is no snapshot before the first release.
+  export in it must still exist unchanged in `wit/` (rules 1–3). Under the
+  released version `wit/` must match it exactly, so additions start with a
+  version bump. Each snapshot passed this check against the one before, so
+  one snapshot covers every release.
+- Releasing: when the `wit/` version changes, copy `wit/*.wit` over
+  `tests/api/released/` in the release commit. The release workflow refuses a
+  tag whose `wit/` version differs from the snapshot's.
 - `crates/ide-plugin/tests/api_compat.rs`: the versions agree, the SDK's copy
   matches, the version check (rules 4, 5); a simulated next-minor host (every
   import stubbed at the newer version, plus extra functions and an extra

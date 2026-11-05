@@ -2,6 +2,7 @@
 //! Capabilities were checked by the runtime before any of this runs.
 
 use super::{PluginEvent, PluginEventSink};
+use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
@@ -419,7 +420,7 @@ impl HostApi for PluginApi {
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
-            root: repo.root().to_string_lossy().into_owned(),
+            root: to_ipc(repo.root()),
             branch: info.head,
             commit: info.head_commit,
             upstream: info.upstream,
@@ -467,7 +468,7 @@ impl HostApi for PluginApi {
             }
             let Ok(rel) = entry.path().strip_prefix(root) else { continue };
             if matcher.is_match(rel) {
-                out.push(entry.path().to_string_lossy().into_owned());
+                out.push(to_ipc(entry.path()));
             }
         }
         out.sort();
@@ -804,6 +805,19 @@ mod tests {
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
         let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new());
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
+    }
+
+    #[test]
+    fn repository_and_search_paths_match_ipc_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).arg(tmp.path()).status().unwrap().success());
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let file = root.join("src/Example.java");
+        std::fs::write(&file, "class Example {}\n").unwrap();
+        let api = api(&root, Arc::default());
+        assert_eq!(api.find_files(&root, "**/*.java", 8).unwrap(), [to_ipc(&file)]);
+        assert_eq!(api.vcs_status(&root).unwrap().unwrap().root, to_ipc(&root));
     }
 
     #[test]

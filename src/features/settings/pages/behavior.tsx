@@ -6,7 +6,7 @@
  */
 
 import { FontPicker } from "../components/FontPicker";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
@@ -33,7 +33,8 @@ import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
 import { LOCALES, SUPPORTED_LOCALES, tx, useT } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
-import { originDetail, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
+import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
+import { themePreview } from "@/workbench/quickSwitch";
 
 const BUILTIN_THEME_LABELS = BUILTIN_THEMES.map((t) => t.label);
 
@@ -62,12 +63,28 @@ function ThemeRow() {
   const matched = useLabelMatch("Sync with OS");
   const choices = useThemeChoices();
   const shown: ConcreteTheme = theme === "system" ? "light" : theme;
+  // The theme under the pointer shows as in Quick Switch; the one picked here shows until Apply or Cancel.
+  const picker = useMemo(() => themePreview(), []);
+  const previewed = useRef(false);
+  useEffect(
+    () => () => {
+      if (previewed.current) previewTheme(null);
+    },
+    [],
+  );
+  const preview = (id: ConcreteTheme | null) => {
+    previewed.current = true;
+    if (id !== null) return picker.preview(id);
+    picker.restore();
+    if (shown !== currentThemeChoice()) previewTheme(shown);
+  };
   return (
     <Row label="Theme">
       <Select<ConcreteTheme>
         value={shown}
         options={themeSelectOptions(choices, shown)}
         onChange={setTheme}
+        onPreview={preview}
         aria-label="Theme"
         disabled={sync}
       />

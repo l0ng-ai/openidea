@@ -130,14 +130,15 @@ install it from disk.
 Only port themes whose licence allows redistribution, keep their licence file,
 and credit the original authors in `authors` and `description`.
 
-### From IntelliJ IDEA (automatic)
+### From JetBrains IDEs (automatic)
 
-To use a theme you already have in IntelliJ, open **Settings › Plugins**, gear
+To use a theme you already have in a JetBrains IDE, open **Settings › Plugins**, gear
 menu:
 
-- **Import Theme from IntelliJ IDE…** lists the theme plugins installed in the
-  JetBrains IDEs (and Android Studio) on this computer, the theme each IDE uses
-  first. It reads their settings folders: `~/Library/Application Support/JetBrains`
+- **Import Theme from JetBrains IDE…** lists the theme plugins installed in the
+  JetBrains IDEs (and Android Studio) on this computer, one row per plugin of
+  each IDE, the plugins of the themes the IDEs use first. It reads the settings
+  folder of each IDE's newest version: `~/Library/Application Support/JetBrains`
   (macOS), `%APPDATA%\JetBrains` (Windows), `~/.config/JetBrains` and
   `~/.local/share/JetBrains` (Linux).
 - **Import IntelliJ Theme from File…** takes a theme plugin downloaded from the
@@ -146,8 +147,8 @@ menu:
 
 The whole plugin becomes one OpenIDEA theme plugin, `intellij.<plugin id>`, with
 each of its themes and their editor schemes; it is installed through the usual
-install page and the chosen theme (otherwise the first) is applied. Importing
-the plugin again replaces it. Both are actions too (`plugins.importIntellijTheme`,
+install page, and the theme in use stays as it is: choose one of its themes in
+**Settings › Appearance › Theme**. Importing the plugin again replaces it. Both are actions too (`plugins.importIntellijTheme`,
 `plugins.importInstalledIntellijTheme`). The conversion is the one described
 below.
 

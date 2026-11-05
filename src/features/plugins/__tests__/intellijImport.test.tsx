@@ -41,6 +41,15 @@ const INSTALLED: InstalledIntellijTheme[] = [
     dark: true,
     active: false,
   },
+  {
+    ide: "DataGrip 2026.2",
+    plugin: "Night Owl",
+    path: "/dg/plugins/NightOwl",
+    themeId: "owl-id",
+    themeName: "Night Owl",
+    dark: true,
+    active: false,
+  },
 ];
 
 let notes: Note[];
@@ -100,8 +109,8 @@ afterEach(() => {
 });
 
 describe("IntelliJ theme import", () => {
-  it("installs the converted plugin through the install page and applies the chosen theme", async () => {
-    expect(await importIntellijTheme("/downloads/DeepSea.zip", "shallow-id")).toBe(ID);
+  it("installs the converted plugin through the install page and leaves the theme in use as it is", async () => {
+    expect(await importIntellijTheme("/downloads/DeepSea.zip")).toBe(ID);
     expect(read).toHaveBeenCalledWith("/downloads/DeepSea.zip");
     const [name, files] = stage.mock.calls[0]!;
     expect(name).toBe(ID);
@@ -111,14 +120,11 @@ describe("IntelliJ theme import", () => {
       "themes/shallow.theme.json",
     ]);
     expect(installed).toEqual(["/app/plugins/.downloads/generated"]);
-    expect(useThemeOverride.getState().theme).toBe(`plugin:${ID}/shallow`);
+    // Which of its themes to use is the user's choice.
+    expect(useThemeOverride.getState().theme).toBeNull();
   });
 
-  it("applies the first theme without a choice, and nothing when the install is declined", async () => {
-    expect(await importIntellijTheme("/downloads/DeepSea.jar")).toBe(ID);
-    expect(useThemeOverride.getState().theme).toBe(`plugin:${ID}/deep-sea`);
-
-    useThemeOverride.setState({ theme: null });
+  it("returns nothing when the install is declined", async () => {
     setConsentPrompt(async () => null);
     expect(await importIntellijTheme("/downloads/DeepSea.jar")).toBeNull();
     expect(useThemeOverride.getState().theme).toBeNull();
@@ -152,33 +158,33 @@ describe("IntelliJ theme import", () => {
   });
 });
 
-describe("Import Theme from IntelliJ IDE", () => {
-  it("lists the installed themes by plugin, the one in use first, and imports the chosen one", async () => {
+describe("Import Theme from JetBrains IDE", () => {
+  it("lists one row per theme plugin, the one in use first, and imports the chosen plugin", async () => {
     const user = userEvent.setup();
     const onImported = vi.fn();
     render(<IntellijThemesDialogHost />);
     act(() => showInstalledIntellijThemes(onImported));
-    const list = await screen.findByRole("listbox", { name: "IntelliJ themes" });
+    const list = await screen.findByRole("listbox", { name: "JetBrains theme plugins" });
     const options = await waitFor(() => {
       const found = Array.from(list.querySelectorAll('[role="option"]'));
       expect(found).toHaveLength(2);
       return found;
     });
-    // Both under their plugin's heading: importing one brings the plugin's every theme.
-    expect(within(list).getByText("Deep Sea Themes")).toBeInTheDocument();
-    expect(within(list).getByText("2 themes")).toBeInTheDocument();
-    expect(within(list).getByText("IntelliJ IDEA 2025.2")).toBeInTheDocument();
-    expect(options[0]).toHaveTextContent("Shallow");
+    // A plugin brings all its themes: they are listed in its row, not offered one by one.
+    expect(options[0]).toHaveTextContent("Deep Sea Themes");
     expect(options[0]).toHaveTextContent("In use");
-    expect(options[1]).toHaveTextContent("Deep Sea");
+    expect(options[0]).toHaveTextContent("2 themes · IntelliJ IDEA 2025.2");
+    expect(options[0]).toHaveTextContent("Shallow, Deep Sea");
+    expect(options[1]).toHaveTextContent("Night Owl");
+    expect(options[1]).toHaveTextContent("1 theme · DataGrip 2026.2");
     expect(options[1]).not.toHaveTextContent("In use");
 
-    await user.click(screen.getByText("Deep Sea"));
+    await user.click(within(list).getByText("1 theme · DataGrip 2026.2"));
     await user.click(screen.getByRole("button", { name: "Import" }));
     await waitFor(() => expect(onImported).toHaveBeenCalledWith(ID));
-    expect(read).toHaveBeenCalledWith("/ij/plugins/DeepSea");
-    expect(useThemeOverride.getState().theme).toBe(`plugin:${ID}/deep-sea`);
-    expect(screen.queryByRole("listbox", { name: "IntelliJ themes" })).toBeNull();
+    expect(read).toHaveBeenCalledWith("/dg/plugins/NightOwl");
+    expect(useThemeOverride.getState().theme).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "JetBrains theme plugins" })).toBeNull();
   });
 
   it("offers a file when no IDE has theme plugins", async () => {

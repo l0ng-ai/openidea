@@ -248,7 +248,7 @@ describe("catalogs", () => {
   it("exist for exactly the supported locales", () => {
     expect(translated.length).toBeGreaterThan(0);
     expect(Object.keys(translations).sort()).toEqual(translated);
-    expect(Object.keys(texts).sort()).toEqual(translated);
+    expect(Object.keys(texts).sort()).toEqual([...SUPPORTED_LOCALES].sort());
   });
 
   it("translate source text into non-empty text", () => {

@@ -49,6 +49,7 @@ pub mod window;
 pub mod window_drag;
 pub mod window_group;
 pub mod workspace;
+pub mod wsl;
 
 use tauri_specta::collect_commands;
 
@@ -261,7 +262,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_open_external_log,
         vcs::vcs_log_details,
         vcs::vcs_log_details_batch,
-        vcs::vcs_log_index,
         vcs::vcs_revision_children,
         vcs::vcs_revision_files,
         vcs::vcs_commit_files,
@@ -535,6 +535,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_set_ssh_secret,
         db::db_trust_ssh_host,
         ssh::ssh_test,
+        wsl::wsl_distros,
+        wsl::wsl_resolve,
         ssh::ssh_set_secret,
         ssh::ssh_needs_secret,
         ssh::ssh_trust_host,

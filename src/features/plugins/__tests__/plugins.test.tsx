@@ -517,7 +517,7 @@ describe("PluginsPage", () => {
     );
     const imports = async () => {
       await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
-      const found = ["Import Theme from IntelliJ IDE…", "Import IntelliJ Theme from File…"].filter((name) =>
+      const found = ["Import Theme from JetBrains IDE…", "Import IntelliJ Theme from File…"].filter((name) =>
         screen.queryByRole("menuitem", { name }),
       );
       act(() => hideContextMenu());

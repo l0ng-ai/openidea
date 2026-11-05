@@ -1,19 +1,20 @@
 /**
- * Remote development: a window whose project lives on an SSH host. The backend
+ * Remote development: a window whose project lives on an SSH host or in a WSL distribution. The backend
  * (`openidea-server`) runs there and this window routes its commands to it
  * (platform/remote.ts).
  */
 import { registerActions } from "@/platform/actions";
 import { disconnectRemote, useRemote } from "@/platform/remote";
 import { lazyComponent } from "@/ui";
-import { maybeEditorService, registerOverlay, registerToolWindow } from "@/workbench/contributions";
+import { maybeEditorService, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
 import { reloadEnvironment } from "./environment";
+import { RemoteStatus } from "./RemoteStatus";
 import { closeConnectDialog, openConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
 
-/** The Ports tool window, while this window is connected to a remote host. */
+/** SSH tunnels are available while this window is connected to an SSH host. */
 function trackPortsWindow(): () => void {
   let off: (() => void) | null = null;
   const sync = (connected: boolean) => {
@@ -34,8 +35,8 @@ function trackPortsWindow(): () => void {
       usePorts.setState({ ports: [] });
     }
   };
-  sync(useRemote.getState().session !== null);
-  const unsubscribe = useRemote.subscribe((s) => sync(s.session !== null));
+  sync(useRemote.getState().session?.target.kind === "ssh");
+  const unsubscribe = useRemote.subscribe((s) => sync(s.session?.target.kind === "ssh"));
   return () => {
     unsubscribe();
     off?.();
@@ -46,6 +47,13 @@ export function activate(): () => void {
   const disposers = [
     trackPortsWindow(),
     registerOverlay({ id: "remote.connect", component: ConnectHost }),
+    registerStatusItem({
+      id: "remote.location",
+      title: "Remote Host",
+      align: "left",
+      priority: 100,
+      component: RemoteStatus,
+    }),
     registerActions([
       {
         id: "remote.connect",

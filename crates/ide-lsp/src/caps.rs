@@ -162,7 +162,8 @@ pub fn client_capabilities() -> Value {
             "callHierarchy": { "dynamicRegistration": false },
             "typeHierarchy": { "dynamicRegistration": false }
         },
-        "experimental": {}
+        // rust-analyzer: report when the project has loaded (`quiescent`).
+        "experimental": { "serverStatusNotification": true }
     })
 }
 

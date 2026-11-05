@@ -37,6 +37,16 @@ jobs:
             echo "::error::tag $TAG does not match tauri.conf.json version $app"
             exit 1
           fi
+      # A shipped plugin API is frozen: its WIT must be the snapshot api_frozen.rs checks later
+      # versions against (plugins/README.md, "Evolving the plugin API").
+      - name: Plugin API snapshot matches wit/
+        run: |
+          api() { sed -n 's/^package openidea:plugin@\(.*\);$/\1/p' "$1/plugin.wit"; }
+          snapshot=sdk/rust/openidea-plugin/tests/api/released
+          if [ "$(api wit)" != "$(api "$snapshot")" ]; then
+            echo "::error::plugin API $(api wit) ships without a snapshot ($snapshot is $(api "$snapshot")): copy wit/*.wit to $snapshot/"
+            exit 1
+          fi
       # The official plugins' public key (from PLUGIN_SIGNING_KEY, the seed
       # `openidea-plugin keygen` writes), built into the app: their packages
       # must carry its signature whatever the marketplace index lists. Without

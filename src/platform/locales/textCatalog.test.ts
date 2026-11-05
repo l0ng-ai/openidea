@@ -108,6 +108,7 @@ const UNTRANSLATED = new Set<string>([
   "loopvar,rangefunc",
   // SSH and run-target placeholders
   "SSH",
+  "WSL",
   "example.com",
   "java",
   "node",
