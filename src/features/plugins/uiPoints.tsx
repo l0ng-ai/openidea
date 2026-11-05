@@ -316,7 +316,12 @@ function registerView(pluginId: string, decl: ViewDecl, icon: string): () => voi
       decl.web ? (
         <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
       ) : (
-        <PluginView pluginId={pluginId} view={decl.id} label={decl.title} />
+        <PluginView
+          pluginId={pluginId}
+          view={decl.id}
+          label={decl.title}
+          itemMenu={(key) => pluginViewItemMenuItems(pluginId, decl.id, key)}
+        />
       ),
   });
 }
