@@ -63,7 +63,7 @@ import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
 import { qualifiedReference } from "./copyReference";
-import { symbolChain } from "./view/outline";
+import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
 import { fontZoom, setFontZoom, stepFontZoom } from "./cm/prefs";
@@ -414,12 +414,14 @@ function copyReference(view: EditorView, slot: EditorSlot) {
   const line = state.doc.lineAt(head);
   const meta = slot.model.getMeta();
   const outline = useOutline.getState()[slot.model.path] ?? [];
+  // A package is not a member to qualify: jdtls lists the whole `package …;` statement as one.
+  const chain = declarationChain(outline, line.number - 1, head - line.from).filter((i) => i.kind !== "package");
   const reference = qualifiedReference({
     language: meta.language,
     path: slot.model.path,
     root: useProject.getState().project?.root ?? null,
     text: state.doc.toString(),
-    chain: symbolChain(outline, line.number - 1, head - line.from).map((i) => i.name),
+    chain: chain.map((i) => i.name),
     line: line.number - 1,
   });
   recordClipboard(reference);

@@ -1,7 +1,7 @@
 /**
- * Edit › Copy Reference (⌥⇧⌘C): the fully qualified name of the symbol at
- * the caret, built from the file's outline (symbols enclosing the caret) and
- * the language's module conventions; `path:line` where there is no symbol.
+ * Edit › Copy Reference (⌥⇧⌘C): with the caret on a declaration's name, its
+ * fully qualified name, built from the file's outline and the language's module
+ * conventions; anywhere else `path:line`, as in IDEA.
  */
 
 export interface ReferenceInput {
@@ -11,7 +11,7 @@ export interface ReferenceInput {
   /** Project root, for project-relative paths and module names. */
   root: string | null;
   text: string;
-  /** Names of the outline symbols enclosing the caret, outermost first. */
+  /** Names of the outline symbols down to the one named at the caret, outermost first; empty off a name. */
   chain: string[];
   /** 0-based caret line. */
   line: number;
@@ -59,42 +59,37 @@ const declared = (text: string, re: RegExp) => re.exec(text)?.[1] ?? null;
 export function qualifiedReference(r: ReferenceInput): string {
   const fallback = `${relativePath(r.path, r.root)}:${r.line + 1}`;
   const chain = r.chain.filter(Boolean);
+  if (!chain.length) return fallback;
   switch (r.language) {
     case "java":
     case "groovy": {
-      if (!chain.length) return fallback;
       const pkg = declared(r.text, /^\s*package\s+([\w.]+)\s*;?/m);
       const [type, ...rest] = chain;
       const typePath = [pkg, type].filter(Boolean).join(".");
-      // `pkg.Outer.Inner#member`: the last symbol is the member unless the caret is in a type only.
+      // `pkg.Outer.Inner#member`: the last symbol is the member unless the caret is on a type's name.
       return rest.length ? `${[typePath, ...rest.slice(0, -1)].join(".")}#${rest[rest.length - 1]}` : typePath;
     }
     case "kotlin":
     case "scala": {
-      if (!chain.length) return fallback;
       const pkg = declared(r.text, /^\s*package\s+([\w.]+)/m);
       return [pkg, ...chain].filter(Boolean).join(".");
     }
-    case "csharp": {
-      if (!chain.length) return fallback;
+    case "csharp":
       return chain.join(".");
-    }
-    case "rust": {
-      if (!chain.length) return rustModulePath(r.path);
+    case "rust":
       return [rustModulePath(r.path), ...chain.map((n) => (n.startsWith("impl") ? rustImplType(n) : n))].join("::");
-    }
     case "python":
       return [pythonModulePath(r.path, r.root), ...chain].join(".");
     case "go": {
       const pkg = declared(r.text, /^\s*package\s+(\w+)/m) ?? stem(r.path);
-      return chain.length ? [pkg, ...chain].join(".") : fallback;
+      return [pkg, ...chain].join(".");
     }
     case "cpp":
     case "c":
     case "objective-cpp":
     case "php":
-      return chain.length ? chain.join("::") : fallback;
+      return chain.join("::");
     default:
-      return chain.length ? `${relativePath(r.path, r.root)}:${chain.join(".")}` : fallback;
+      return `${relativePath(r.path, r.root)}:${chain.join(".")}`;
   }
 }
