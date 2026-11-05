@@ -50,6 +50,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.expandToLevel5": [],
   "refactor.extractMethod": ["Meta+Alt+M"],
   "navigate.fileStructure": ["Meta+O"],
+  "db.goToColumn": ["Meta+O"],
   "find.inFile": [],
   "find.inPath": ["Ctrl+H"],
   "find.next": ["Meta+K"],

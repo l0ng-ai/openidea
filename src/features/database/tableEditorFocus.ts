@@ -1,6 +1,6 @@
 /**
- * The table editor that has focus, for Submit / Revert (⌘↩ / ⌥⌘Z). Not while a text field has
- * it: ⌘↩ there applies the field's own edit (the Value panel, the cell editor).
+ * The table editor that has focus, for Submit / Revert (⌘↩ / ⌥⌘Z) and Go to Column (⌘F12). Not
+ * while a text field has it: ⌘↩ there applies the field's own edit (the Value panel, the cell editor).
  */
 import { setContext } from "@/platform/context";
 
@@ -8,6 +8,7 @@ export interface TableEditorHandle {
   dirty: boolean;
   submit(): void;
   revert(): void;
+  showColumns(): void;
 }
 
 const handles = new WeakMap<Element, TableEditorHandle>();

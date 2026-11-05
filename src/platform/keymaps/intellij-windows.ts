@@ -351,6 +351,7 @@ export const intellijWindows: Record<string, string[]> = {
   "http.runAll": [],
   "db.execute": ["Ctrl+Enter"],
   // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).
+  "db.goToColumn": ["Ctrl+F12"],
   "db.submitChanges": ["Ctrl+Enter"],
   "db.revertChanges": ["Ctrl+Alt+Z"],
   "db.showToolWindow": [],

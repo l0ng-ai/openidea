@@ -22,6 +22,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "navigate.implementation": ["Meta+F12"],
   "navigate.typeDeclaration": [],
   "navigate.fileStructure": ["Meta+Shift+O"],
+  "db.goToColumn": ["Meta+Shift+O"],
   "navigate.relatedSymbol": [],
   "navigate.nextError": ["F8"],
   "navigate.prevError": ["Shift+F8"],
