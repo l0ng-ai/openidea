@@ -33,6 +33,7 @@ import { defineBuiltinUiPoints } from "./points";
 import { startViewUi } from "./uiPoints";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { IntellijThemesDialogHost } from "./IntellijThemesDialog";
+import { startWorkspaceContains } from "./workspaceContains";
 import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
 
 function registerPluginsPage(): () => void {
@@ -51,7 +52,10 @@ export function activateSettingsPages(): () => void {
   const disposers = [
     registerPluginsPage(),
     registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
-    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
+    registerOverlay({
+      id: "plugins.intellijThemes",
+      component: IntellijThemesDialogHost,
+    }),
     provideConsentDialog(),
     defineBuiltinUiPoints(),
     followPluginChanges(),
@@ -67,7 +71,10 @@ export function activate(): () => void {
   const disposers = [
     registerPluginsPage(),
     registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
-    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
+    registerOverlay({
+      id: "plugins.intellijThemes",
+      component: IntellijThemesDialogHost,
+    }),
     provideConsentDialog(),
     providePluginThemePreviews(),
     registerActions([
@@ -144,8 +151,13 @@ export function activate(): () => void {
     startPluginBridge(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
+    startWorkspaceContains(),
     // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).
-    registerEditorContribution({ id: "plugins.lineMarkers", order: 57, extensions: pluginLineMarkerGutter }),
+    registerEditorContribution({
+      id: "plugins.lineMarkers",
+      order: 57,
+      extensions: pluginLineMarkerGutter,
+    }),
     // Dev plugins (`<project>/.openidea/plugins`) depend on the open project.
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) void refreshPlugins();
