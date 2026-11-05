@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { ContextMenuHost, hideContextMenu } from "@/ui";
 import type { View, ViewEvent } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { bindingsFor, effectiveBindings, registerExtensionBindings, useKeymap } from "@/platform/keymap";
@@ -254,6 +255,31 @@ describe("PluginView", () => {
     expect(screen.getByText("1 namespace")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(events).toContainEqual({ kind: "button", id: "refresh" }));
+  });
+
+  it("opens the item menu on right-click", async () => {
+    const tree: View = {
+      toolbar: [],
+      body: {
+        kind: "tree",
+        value: [
+          { key: "ns", parent: null, label: "default", icon: null, detail: null, expandable: false, expanded: false },
+        ],
+      },
+      status: null,
+    };
+    setPluginsBackend(backendWith(() => tree));
+    const itemMenu = vi.fn((key: string) => (key === "ns" ? [{ label: "Describe", run: () => {} }] : []));
+    render(
+      <>
+        <PluginView pluginId="jobs" view="jobs" itemMenu={itemMenu} />
+        <ContextMenuHost />
+      </>,
+    );
+    await userEvent.pointer({ keys: "[MouseRight]", target: await screen.findByText("default") });
+    expect(itemMenu).toHaveBeenCalledWith("ns");
+    expect(await screen.findByText("Describe")).toBeTruthy();
+    hideContextMenu();
   });
 
   it("edits a table cell and renders again when the plugin refreshes", async () => {
