@@ -533,6 +533,7 @@ mod tests {
         "Julia",
         "Kotlin",
         "LiveScript",
+        "Log",
         "Lua",
         "mIRC",
         "Mathematica",

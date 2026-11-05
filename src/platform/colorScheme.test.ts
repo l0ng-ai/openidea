@@ -12,6 +12,13 @@ describe("color schemes", () => {
     expect(schemeTokens("light").get("--syn-keyword")).toBe("#0033b3");
     expect(schemeTokens("dark").get("--syn-keyword")).toBe("#cf8e6d");
     expect(schemeTokens("light").get("--bg-editor")).not.toMatch(/var\(/);
+    const dark = schemeTokens("dark");
+    expect(dark.get("--syn-python-builtin")).toBe("#8888c6");
+    expect(dark.get("--syn-python-predefined-definition")).toBe("#b200b2");
+    expect(dark.get("--syn-python-predefined-usage")).toBe("#b200b2");
+    expect(dark.get("--syn-python-instance-attribute")).toBe("#bcbec4");
+    expect(dark.get("--syn-python-fstring")).toBe("#a5c261");
+    expect(dark.get("--syn-python-bytes")).toBe("#a5c261");
   });
 
   it("gives PHP variables and function calls their own colours, as PhpStorm (#1532)", () => {

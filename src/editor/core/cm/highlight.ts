@@ -4,7 +4,10 @@
  * -effect`, set by Settings › Editor › Color Scheme overrides.
  */
 import { HighlightStyle, type TagStyle } from "@codemirror/language";
-import { tags as t, type Tag } from "@lezer/highlight";
+import { Tag, tags as t } from "@lezer/highlight";
+
+/** Log warnings: the UI warning colour, since no syntax token reads as one in every scheme. */
+export const logWarning = Tag.define("logWarning");
 
 function token(
   tag: Tag | Tag[],
@@ -86,6 +89,7 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token(t.url, "function", { italic: "italic" }),
   token(t.monospace, "markup-code"),
   token(t.contentSeparator, "keyword"),
+  { tag: logWarning, color: "var(--warning)" },
   { tag: t.inserted, color: "var(--vcs-added)" },
   { tag: t.deleted, color: "var(--danger)" },
   { tag: t.changed, color: "var(--vcs-modified)" },

@@ -86,6 +86,11 @@ const OWN_MODES = [
     load: () => import("./asciidoc").then((m) => new LanguageSupport(m.asciidocLanguage)),
   }),
   LanguageDescription.of({
+    name: "Log",
+    extensions: ["log"],
+    load: () => import("./log").then((m) => new LanguageSupport(m.logLanguage)),
+  }),
+  LanguageDescription.of({
     name: "Shell",
     load: async () => {
       const { shell } = await import("@codemirror/legacy-modes/mode/shell");

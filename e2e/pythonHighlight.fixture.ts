@@ -26,6 +26,9 @@ const attributes = {
   "PY.SELF_PARAMETER": { FOREGROUND: "aa7788" },
   "PY.BUILTIN_NAME": { FOREGROUND: "bb8899" },
   "PY.KEYWORD_ARGUMENT": { FOREGROUND: "cc99aa" },
+  "PY.STRING.F": { FOREGROUND: "aa8811" },
+  "PY.PREDEFINED_DEFINITION": { FOREGROUND: "bb9922" },
+  "PY.PREDEFINED_USAGE": { FOREGROUND: "ccaa33" },
   OPENIDEA_pyLocalVariable: { FOREGROUND: "aa1101" },
   OPENIDEA_pyGlobalVariable: { FOREGROUND: "aa2202" },
   OPENIDEA_pyInstanceAttribute: { FOREGROUND: "aa3303" },
@@ -52,6 +55,8 @@ new EditorView({
   parent: document.body,
   state: EditorState.create({
     doc: `MAX_SIZE: Final = 10
+type Alias = list[int]
+fstr = f"value={1}"
 name = "global"
 T = TypeVar("T")
 
@@ -69,9 +74,13 @@ class Foo[T]:
         self.instance_attr = value
         print(local, MAX_SIZE, name, T)
         self.run(whatever=1) # Comment
+        print(self.__doc__)
     @property
     def size(self) -> int:
         return self.instance_attr
+
+def unused(param):
+    return 1
 `,
     extensions: [
       support!,
