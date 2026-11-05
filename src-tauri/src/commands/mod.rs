@@ -354,6 +354,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_tomcat_update,
         run::run_test_reports,
         build::build_model,
+        build::gradle_link_projects,
+        build::gradle_unlink_projects,
         build::build_sync,
         build::gradle_dependencies,
         build::gradle_published_catalog,

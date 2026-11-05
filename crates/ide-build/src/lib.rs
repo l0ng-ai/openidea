@@ -20,7 +20,9 @@ mod xml;
 pub use gradle::{GradleModel, GradleProject, GradleTask};
 pub use gradle_deps::{GradleDependency, gradle_dependencies};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
-pub use sync::{SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_maven};
+pub use sync::{
+    SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_gradle_model, sync_maven,
+};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -38,13 +40,31 @@ pub enum BuildTool {
 #[serde(rename_all = "camelCase")]
 pub struct BuildModel {
     pub maven: Option<MavenModel>,
-    pub gradle: Option<GradleModel>,
+    #[serde(default)]
+    pub gradle: Vec<GradleModel>,
+}
+
+impl BuildModel {
+    /// Prefer the deepest linked build owning the module over a composite including it.
+    pub fn gradle_for_module(&self, root: &Path, module: &Path) -> Option<&GradleModel> {
+        let module = root.join(module);
+        self.gradle.iter().filter(|g| g.projects.iter().any(|p| root.join(&p.dir) == module)).min_by_key(|g| {
+            let dir = root.join(&g.dir);
+            std::cmp::Reverse(if module.starts_with(&dir) { dir.components().count() } else { 0 })
+        })
+    }
 }
 
 /// Static model of the builds under `root`, merged with the sync results cached in `cache_dir`.
 /// Parent POMs are looked up in `maven_repo` (the configured local repository), else the default one.
 pub fn load(root: &Path, cache_dir: &Path, maven_repo: Option<PathBuf>) -> BuildModel {
-    load_linked(root, cache_dir, maven_repo, &ide_core::settings::MavenSettings::default())
+    load_linked(
+        root,
+        cache_dir,
+        maven_repo,
+        &ide_core::settings::MavenSettings::default(),
+        &ide_core::settings::GradleSettings::default(),
+    )
 }
 
 /// Loads only linked Maven reactors, retaining an empty model so projects can be re-added.
@@ -53,6 +73,7 @@ pub fn load_linked(
     cache_dir: &Path,
     maven_repo: Option<PathBuf>,
     settings: &ide_core::settings::MavenSettings,
+    gradle_settings: &ide_core::settings::GradleSettings,
 ) -> BuildModel {
     let maven = maven::is_maven_project(root).then(|| {
         let profiles = sync::maven_profiles(cache_dir);
@@ -61,23 +82,50 @@ pub fn load_linked(
         sync::apply_maven_cache(root, cache_dir, &mut m);
         m
     });
-    let gradle = gradle::load(root).map(|mut g| {
-        sync::apply_gradle_cache(root, cache_dir, &mut g);
-        g
-    });
+    let gradle = gradle::load_linked(root, gradle_settings)
+        .into_iter()
+        .map(|mut g| {
+            sync::apply_gradle_cache(root, &gradle::cache_dir(cache_dir, &g.dir), &mut g);
+            g
+        })
+        .collect();
     BuildModel { maven, gradle }
 }
 
 /// Gradle project folders outside `root` as of the last sync (`includeFlat` siblings):
 /// extra content roots, as IDEA lists module roots beside the project folder.
 /// Reads only the sync's cached projects (no build script), so it is cheap enough for hot paths.
-pub fn gradle_external_roots(root: &Path, cache_dir: &Path) -> Vec<PathBuf> {
-    gradle::external_roots(root, sync::reported_gradle_projects(cache_dir).iter().map(|p| p.dir.as_str()))
+pub fn gradle_external_roots(
+    root: &Path,
+    cache_dir: &Path,
+    settings: &ide_core::settings::GradleSettings,
+) -> Vec<PathBuf> {
+    let builds = gradle::linked_dirs(root, settings);
+    let dirs: Vec<String> = builds
+        .iter()
+        .flat_map(|dir| {
+            std::iter::once(root.join(dir).to_string_lossy().into_owned()).chain(
+                sync::reported_gradle_projects(&gradle::cache_dir(cache_dir, dir))
+                    .iter()
+                    .map(|p| p.dir.clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    gradle::external_roots(root, dirs.iter().map(String::as_str))
 }
 
 /// Source, resource and build folders of the last Gradle sync, absolute.
-pub fn gradle_source_roots(cache_dir: &Path) -> Vec<(PathBuf, gradle::ReportedRoot)> {
-    gradle::reported_source_roots(&sync::reported_gradle_projects(cache_dir))
+pub fn gradle_source_roots(
+    root: &Path,
+    cache_dir: &Path,
+    settings: &ide_core::settings::GradleSettings,
+) -> Vec<(PathBuf, gradle::ReportedRoot)> {
+    let reported = gradle::linked_dirs(root, settings)
+        .iter()
+        .flat_map(|dir| sync::reported_gradle_projects(&gradle::cache_dir(cache_dir, dir)).as_ref().clone())
+        .collect::<Vec<_>>();
+    gradle::reported_source_roots(&reported)
 }
 
 /// A library the project depends on, as `groupId:artifactId:version`.
@@ -121,7 +169,7 @@ pub fn dependency_coordinates(root: &Path, model: &BuildModel) -> Vec<Dependency
             });
         }
     }
-    if let Some(g) = &model.gradle {
+    for g in &model.gradle {
         for script in g.projects.iter().filter_map(|p| p.build_file.as_ref()) {
             let Ok(text) = std::fs::read_to_string(root.join(script)) else { continue };
             out.extend(gradle::script_dependencies(&text).into_iter().map(|(group_id, artifact_id, version)| {
@@ -148,6 +196,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_linked_build_is_indexed_before_sync_and_disappears_when_unlinked() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let external = temp.path().join("external");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("settings.gradle"), "").unwrap();
+        let mut settings = ide_core::settings::GradleSettings {
+            linked_projects: Some(vec![external.to_string_lossy().into_owned()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            gradle_external_roots(&root, &temp.path().join("cache"), &settings),
+            [external.canonicalize().unwrap()]
+        );
+        settings.linked_projects = Some(vec![]);
+        assert!(gradle_external_roots(&root, &temp.path().join("cache"), &settings).is_empty());
+    }
+
+    #[test]
     fn detects_build_systems_and_build_files() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -158,7 +226,7 @@ mod tests {
         std::fs::write(root.join("build.gradle"), "").unwrap();
         let m = load(&root, &cache, None);
         assert_eq!(m.maven.unwrap().projects[0].pom, "svc/pom.xml");
-        assert_eq!(m.gradle.unwrap().projects[0].path, ":");
+        assert_eq!(m.gradle[0].projects[0].path, ":");
         assert!(affects_build(Path::new("a/pom.xml")) && affects_build(Path::new("settings.gradle.kts")));
         assert!(!affects_build(Path::new("src/Main.java")));
     }
@@ -205,7 +273,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let gradle = gradle::load(root);
+        let gradle = gradle::load(root).into_iter().collect();
         let model = BuildModel { maven: Some(maven), gradle };
         let names: Vec<String> = dependency_coordinates(root, &model)
             .into_iter()

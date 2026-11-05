@@ -8,6 +8,7 @@ import type { RunAnythingItem, RunAnythingProvider } from "@/workbench/contribut
 import {
   goalCompletions,
   gradleTaskConfig,
+  gradleProjectForKey,
   mavenGoalConfig,
   parseGoalLine,
   parseTaskLine,
@@ -25,19 +26,20 @@ const WORD: Record<BuildTool, string> = { maven: "mvn", gradle: "gradle" };
 export function lineTool(line: string): BuildTool | null {
   const model = useBuild.getState().model;
   if (model?.maven && COMMANDS.maven.test(line)) return "maven";
-  if (model?.gradle && COMMANDS.gradle.test(line)) return "gradle";
+  if (model?.gradle?.length && COMMANDS.gradle.test(line)) return "gradle";
   return null;
 }
 
 /** The project a line runs in: the given one, else the tool window's current one, else the first. */
-function projectFor(tool: BuildTool, key?: string | null) {
+function mavenProjectFor(key?: string | null) {
   const { model, current } = useBuild.getState();
-  if (tool === "maven") {
-    const projects = model?.maven?.projects ?? [];
-    return projects.find((p) => p.pom === (key ?? current.maven)) ?? projects[0];
-  }
-  const projects = model?.gradle?.projects ?? [];
-  return projects.find((p) => p.path === (key ?? current.gradle)) ?? projects[0];
+  const projects = model?.maven?.projects ?? [];
+  return projects.find((p) => p.pom === (key ?? current.maven)) ?? projects[0];
+}
+
+function gradleProjectFor(key?: string | null) {
+  const { model, current } = useBuild.getState();
+  return gradleProjectForKey(model?.gradle ?? [], key ?? current.gradle);
 }
 
 /** Runs goals / tasks typed for `tool` in a project; false when there is nothing to run. */
@@ -45,28 +47,27 @@ export function executeBuildLine(tool: BuildTool, text: string, projectKey?: str
   const { model, settings } = useBuild.getState();
   if (tool === "maven") {
     const maven = model?.maven;
-    const project = projectFor("maven", projectKey);
+    const project = mavenProjectFor(projectKey);
     const goals = parseGoalLine(text);
     if (!maven || !project || !("pom" in project) || !goals.length) return false;
     runConfig(mavenGoalConfig(project, goals, maven, settings.maven), "run");
   } else {
-    const gradle = model?.gradle;
-    const project = projectFor("gradle", projectKey);
+    const selected = gradleProjectFor(projectKey);
     const tasks = parseTaskLine(text);
-    if (!gradle || !project || "pom" in project || !tasks.length) return false;
-    runConfig(gradleTaskConfig(gradle, project, tasks, settings.gradle), "run");
+    if (!selected || !tasks.length) return false;
+    runConfig(gradleTaskConfig(selected.build, selected.project, tasks, settings.gradle), "run");
   }
   pushHistory(tool, text.replace(COMMANDS[tool], "").trim());
   return true;
 }
 
 function completions(tool: BuildTool, rest: string) {
-  const model = useBuild.getState().model;
   if (tool === "maven") {
-    const project = projectFor("maven");
+    const project = mavenProjectFor();
     return goalCompletions(rest, project && "pom" in project ? project.plugins : [], readHistory("maven"));
   }
-  return model?.gradle ? taskCompletions(rest, model.gradle, readHistory("gradle")) : [];
+  const selected = gradleProjectFor();
+  return selected ? taskCompletions(rest, selected.build, readHistory("gradle")) : [];
 }
 
 export const buildToolsRunAnything: RunAnythingProvider = {

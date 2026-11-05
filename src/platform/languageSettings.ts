@@ -103,6 +103,7 @@ export interface LanguagesValid {
     jdtlsJdk: string;
     jdtlsVmArgs: string;
     gradle: {
+      linkedProjects: string[] | null;
       jvm: string;
       distribution: "wrapper" | "local";
       home: string;
@@ -160,7 +161,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     jdk: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
-    gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
+    gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
     maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [], daemon: false, mvndHome: "" },
   },
   markdown: { previewFontSize: null },
@@ -292,6 +293,9 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
       gradle: {
+        linkedProjects: Array.isArray(gradle.linkedProjects)
+          ? gradle.linkedProjects.filter((p): p is string => typeof p === "string")
+          : null,
         jvm: text(gradle.jvm, d.java.gradle.jvm),
         distribution: oneOf(gradle.distribution, ["wrapper", "local"] as const, d.java.gradle.distribution),
         home: text(gradle.home, d.java.gradle.home),

@@ -249,6 +249,7 @@ async fn malicious_project_stays_editable_then_starts_in_place_after_trust() {
             ide_core::RequestId(472),
             false,
             vec![],
+            None,
             ops::Channel::new(|_| {}),
         )
     };

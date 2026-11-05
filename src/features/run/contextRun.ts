@@ -50,7 +50,8 @@ async function ensureConfigs() {
 export function projectContentRoots(): string[] {
   const own = validateProjectStructure(useProject.getState().settings?.projectStructure).contentRoots;
   // The build model keeps the folders of modules outside the project absolute.
-  const gradle = (useBuildModel.getState().model?.gradle?.projects ?? [])
+  const gradle = (useBuildModel.getState().model?.gradle ?? [])
+    .flatMap((g) => g.projects)
     .map((p) => p.dir)
     .filter((d) => isAbsolute(d));
   return [...new Set([...own, ...gradle])];

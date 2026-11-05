@@ -828,6 +828,8 @@ pub struct JavaSettings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GradleSettings {
+    /// Linked build directories; absent preserves automatic discovery, empty unlinks all builds.
+    pub linked_projects: Option<Vec<String>>,
     /// Empty = Project JDK; otherwise a JDK home.
     pub jvm: String,
     pub distribution: GradleDistribution,
@@ -1125,6 +1127,16 @@ mod gradle_settings_tests {
     use super::*;
 
     #[test]
+    fn absent_and_explicitly_empty_gradle_links_remain_distinct() {
+        let automatic: GradleSettings = serde_json::from_str("{}").unwrap();
+        let unlinked: GradleSettings = serde_json::from_str(r#"{"linkedProjects":[]}"#).unwrap();
+        assert_eq!(automatic.linked_projects, None);
+        assert_eq!(unlinked.linked_projects, Some(vec![]));
+        let restored: GradleSettings = serde_json::from_str(&serde_json::to_string(&unlinked).unwrap()).unwrap();
+        assert_eq!(restored.linked_projects, Some(vec![]));
+    }
+
+    #[test]
     fn defaults_and_round_trip() {
         let old: JavaSettings = serde_json::from_str(r#"{"jdk":"/jdk"}"#).unwrap();
         assert_eq!(old.gradle, GradleSettings::default());
@@ -1136,6 +1148,7 @@ mod gradle_settings_tests {
                 home: "/gradle".into(),
                 user_home: "/cache/gradle".into(),
                 run_using: GradleRunUsing::Ide,
+                linked_projects: Some(vec!["backend".into(), "../shared".into()]),
             };
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);
