@@ -226,6 +226,32 @@ it.each([null, "/outside/pom.xml", "/p/a/build.xml", "/p/../outside/pom.xml", "/
   },
 );
 
+it("links picked POMs that no reactor lists as independent top-level projects", async () => {
+  mocks.get.mockResolvedValue({
+    languages: { java: { maven: { unlinkedProjects: ["b/pom.xml"], linkedProjects: ["tools/pom.xml"] } } },
+  });
+  mocks.open.mockResolvedValue(["/p/stub/pom.xml", "/p/b/pom.xml", "/p/a/pom.xml", "/p/tools/pom.xml"]);
+  await act(async () => {
+    await executeAction("maven.addProjects");
+  });
+  expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ multiple: true }));
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", "[]");
+  expect(mocks.set).toHaveBeenCalledWith(
+    "project",
+    "languages.java.maven.linkedProjects",
+    '["tools/pom.xml","stub/pom.xml"]',
+  );
+});
+
+it("unlinking a linked independent project removes the link instead of hiding it", async () => {
+  mocks.get.mockResolvedValue({ languages: { java: { maven: { linkedProjects: ["a/pom.xml"] } } } });
+  await act(async () => {
+    await executeAction("maven.unlinkProjects", { pom: "a/pom.xml" });
+  });
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", "[]");
+  expect(mocks.set).not.toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", expect.anything());
+});
+
 const gradleBuild = (dir: string): GradleModel => ({
   dir,
   command: `/p/${dir}/gradlew`,

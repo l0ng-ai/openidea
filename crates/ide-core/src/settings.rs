@@ -866,6 +866,8 @@ pub enum GradleDistribution {
 pub struct MavenSettings {
     /// Project-relative root POMs removed from the Maven project model.
     pub unlinked_projects: Vec<String>,
+    /// Project-relative POMs outside the root reactor added as independent top-level projects.
+    pub linked_projects: Vec<String>,
     /// Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`.
     pub home: String,
     /// User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`.
