@@ -8,7 +8,9 @@
 use ide_workspace::RecentProject;
 
 /// Windows shows only a handful of custom destinations; keep the taskbar menu short.
+#[cfg(any(windows, test))]
 const MAX_ITEMS: usize = 10;
+#[cfg(windows)]
 const CATEGORY: &str = "Recent Projects";
 /// Marks a second-instance launch from a Jump List item, so it opens in the existing window.
 pub const OPEN_RECENT_ARG: &str = "--open-recent";
@@ -29,6 +31,7 @@ pub fn refresh(app: &tauri::AppHandle, items: Vec<RecentProject>) {
 }
 
 /// The entries a Jump List shows: newest first, capped at [`MAX_ITEMS`].
+#[cfg(any(windows, test))]
 pub(crate) fn visible_items(items: &[RecentProject]) -> Vec<(&str, &std::path::Path)> {
     items.iter().take(MAX_ITEMS).map(|item| (item.name.as_str(), item.path.0.as_path())).collect()
 }
