@@ -364,12 +364,18 @@ pub fn package_hash(dir: &Path, files: &[PathBuf]) -> std::io::Result<String> {
     sorted.dedup();
     let mut hasher = blake3::Hasher::new();
     for rel in sorted {
-        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update(hashed_path(rel).as_bytes());
         hasher.update(&[0]);
         hasher.update_reader(std::fs::File::open(dir.join(rel))?)?;
         hasher.update(&[0]);
     }
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// A package-relative path as hashed: `/`-separated on every OS, so a package has one digest
+/// (a walked `web\index.html` on Windows is `web/index.html` everywhere else).
+fn hashed_path(rel: &Path) -> String {
+    rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 #[cfg(test)]
@@ -479,5 +485,21 @@ mod tests {
         assert_ne!(h1, package_hash(tmp.path(), &["a".into(), "b".into()]).unwrap());
         let groups = by_risk(&caps(&["storage", "process:git", "net:x.io"]));
         assert_eq!(groups.iter().map(|g| g.0).collect::<Vec<_>>(), [Risk::High, Risk::Medium, Risk::Low]);
+    }
+
+    #[test]
+    fn hashes_paths_with_forward_slashes_on_every_os() {
+        assert_eq!(hashed_path(Path::new("web/index.html")), "web/index.html");
+        assert_eq!(hashed_path(Path::new("plugin.wasm")), "plugin.wasm");
+        #[cfg(windows)]
+        assert_eq!(hashed_path(Path::new(r"web\index.html")), "web/index.html");
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("web")).unwrap();
+        std::fs::write(tmp.path().join("web").join("index.html"), "<p>").unwrap();
+        // A walked path (native separators) hashes like the manifest's `/` spelling.
+        assert_eq!(
+            package_hash(tmp.path(), &[Path::new("web").join("index.html")]).unwrap(),
+            package_hash(tmp.path(), &["web/index.html".into()]).unwrap()
+        );
     }
 }
