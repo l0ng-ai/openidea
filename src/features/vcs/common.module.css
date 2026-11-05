@@ -143,6 +143,27 @@
   padding: 0 14px 6px;
   color: var(--fg-subtle);
 }
+.pushGrouping {
+  margin-left: auto;
+}
+.pushCommitDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 96px;
+  margin: 0 14px 8px;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.pushCommitMessage {
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .todoList {
   margin: 8px 0 0;
   padding-left: 18px;
