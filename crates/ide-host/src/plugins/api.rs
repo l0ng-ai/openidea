@@ -324,6 +324,16 @@ impl HostApi for PluginApi {
             .emit(client, PluginEvent::Notification { plugin_id: self.id().to_owned(), level, title, body });
     }
 
+    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
+        self.shared.sink.emit(client, PluginEvent::CopyToClipboard { plugin_id: self.id().to_owned(), text });
+        Ok(())
+    }
+
+    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
+        self.shared.sink.emit(client, PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
+    }
+
     fn status_item(&self, id: &str, item: Option<StatusItem>) {
         let key = (self.id().to_owned(), id.to_owned());
         {
@@ -416,6 +426,12 @@ impl HostApi for PluginApi {
             operation: info.operation,
             changed_files: u32::try_from(changed).unwrap_or(u32::MAX),
         }))
+    }
+
+    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
+        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(Vec::new()) };
+        let remotes = repo.remotes().map_err(failed)?;
+        Ok(remotes.into_iter().map(|r| (r.name, r.url)).collect())
     }
 
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError> {

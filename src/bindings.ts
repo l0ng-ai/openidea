@@ -5510,7 +5510,11 @@ export type PluginEvent =
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
  */
-{ type: "languagesChanged" };
+{ type: "languagesChanged" } | 
+/**  Copy `text` to the system clipboard. */
+{ type: "copyToClipboard"; pluginId: string; text: string } | 
+/**  Open `url` (`http(s)://`) in the system browser. */
+{ type: "openUrl"; pluginId: string; url: string };
 
 export type PluginInfo = {
 	id: string,

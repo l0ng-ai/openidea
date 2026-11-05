@@ -242,6 +242,24 @@ impl ui::Host for StoreData {
         self.host.status_item(&clip(id, 64), None);
         Ok(())
     }
+
+    fn copy_to_clipboard(&mut self, text: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Clipboard) {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.copy_to_clipboard(client.as_deref(), clip(text, crate::runtime::MAX_TEXT)).map_err(to_wit))
+    }
+
+    fn open_url(&mut self, url: String) -> Fallible<()> {
+        let trimmed = url.trim();
+        let valid = (trimmed.starts_with("https://") || trimmed.starts_with("http://")) && trimmed.len() <= 8192;
+        if !valid {
+            return Ok(Err(wit::Error::Invalid(format!("{url:?}: expected an http:// or https:// URL"))));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_url(client.as_deref(), trimmed.to_owned()).map_err(to_wit))
+    }
 }
 
 impl storage::Host for StoreData {
@@ -437,6 +455,14 @@ impl vcs::Host for StoreData {
         let root = self.table.get(&project)?.root.clone();
         let token = self.cancel.token();
         Ok(self.host.vcs_fetch(&root, &token).map_err(to_wit))
+    }
+
+    fn remotes(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<(String, String)>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.vcs_remotes(&root).map_err(to_wit))
     }
 }
 
