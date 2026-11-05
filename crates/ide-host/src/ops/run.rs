@@ -153,8 +153,12 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
             // this machine's toolchains and `PYTHONPATH` don't apply.
             let config = container::prepare(host, &project.root, target, config).await?;
             let encoding = settings.console.encoding;
-            let options =
-                StartOptions { encoding: Some(encoding).filter(|e| !e.trim().is_empty()), python_paths: Vec::new() };
+            let options = StartOptions {
+                encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
+                python_paths: Vec::new(),
+                // A folder on this machine: not in the container.
+                ruby_reporter: None,
+            };
             project.require_trust()?;
             return host.processes.start(
                 &project.root,
