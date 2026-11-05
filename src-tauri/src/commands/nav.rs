@@ -83,6 +83,18 @@ pub async fn web_goto(window: Window, state: State<'_, AppState>, doc: DocId, po
     ide_host::ops::nav::web_goto(&state.host, window.label(), doc, pos).await
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn index_goto(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    pos: Pos,
+    word: String,
+) -> IdeResult<Option<IndexGoto>> {
+    ide_host::ops::nav::index_goto(&state.host, window.label(), doc, pos, word).await
+}
+
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
 #[tauri::command]
 #[specta::specta]

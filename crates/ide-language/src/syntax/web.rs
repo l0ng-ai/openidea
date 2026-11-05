@@ -81,7 +81,7 @@ fn css_regions<'t>(grammar: &str, tree: &Tree, text: &'t str) -> Vec<(usize, &'t
 }
 
 /// Pre-order walk; `f` returns whether to descend.
-fn walk<'t>(n: Node<'t>, f: &mut dyn FnMut(Node<'t>) -> bool) {
+pub(crate) fn walk<'t>(n: Node<'t>, f: &mut dyn FnMut(Node<'t>) -> bool) {
     if !f(n) {
         return;
     }

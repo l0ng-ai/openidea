@@ -2,13 +2,17 @@ use super::doc::blocking;
 use crate::Host;
 use crate::Project;
 use crate::rpc::Dispatcher;
-use ide_core::{DocId, IdeResult, IpcPath, Location, Pos};
-use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
-use ide_language::{FileReference, WebReference};
+use ide_core::paths::{AliasMap, resolve_spec};
+use ide_core::{CancellationToken, DocId, IdeResult, IpcPath, Location, Pos, SymbolKind};
+use ide_index::{ExtensionCount, FileMatch, IndexStatus, ProjectIndex, SymbolFilter, SymbolMatch};
+use ide_language::{FileReference, ImportName, WebReference};
+use ide_syntax::{Locals, Snapshot as StructureSnapshot};
 use ide_workspace::file_refs::{self, PathCompletion};
+use ide_workspace::roots::alias_map;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 /// A web reference no language server resolves and where it points: `class="card"` →
 /// `.card` selectors, `id` → `#id` selectors, `href="#top"` → the element, `var(--x)` →
@@ -107,6 +111,203 @@ pub async fn web_goto(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeRes
     .await
 }
 
+/// Where the project index resolves a symbol to without a language server
+/// (docs/vue-ts-semantic-index.md): a local's definition, the import chain's
+/// declaration, a re-export's origin, or a component's file.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexGoto {
+    pub targets: Vec<Location>,
+    /// `certain`: the import chain names the target. `candidate`: a name
+    /// match (the component registry) — the UI labels it.
+    pub note: IndexNote,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum IndexNote {
+    Certain,
+    Candidate,
+}
+
+/// The languages whose `<script>` regions carry module facts.
+fn is_web_language(lang: &str) -> bool {
+    matches!(lang, "vue" | "svelte" | "html" | "htm" | "jsp")
+}
+
+/// Whether `path` is a single-file component module.
+fn is_component_file(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()), Some("vue" | "svelte"))
+}
+
+/// `my-widget` / `MyWidget` → `MyWidget`: how component tags name files.
+fn pascal_case(word: &str) -> String {
+    word.split(['-', '_'])
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut c = p.chars();
+            c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
+        })
+        .collect()
+}
+
+/// Go-to-definition from the project index: the local of a `<script>` region,
+/// the import chain's declaration (following re-exports), or a component's
+/// file. `word` is the identifier at `pos` (the caller's word at the caret).
+/// `None` when the index cannot answer — the caller falls back to symbol
+/// name matching.
+pub async fn index_goto(host: &Host, window: &str, doc: DocId, pos: Pos, word: String) -> IdeResult<Option<IndexGoto>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    let structure = project.structure.clone();
+    let documents = project.documents.clone();
+    let index = project.index.clone();
+    let root = project.root.clone();
+    blocking(move || {
+        let Ok(info) = documents.snapshot(doc) else { return Ok(None) };
+        if info.large || word.is_empty() {
+            return Ok(None);
+        }
+        let lang = info.language.clone();
+        let text = info.text;
+        let from: PathBuf = info.path.into();
+        let mut word = word;
+
+        // A local of a <script> region resolves in-file: the structure service
+        // cannot see regions (a .vue file's grammar is HTML).
+        if is_web_language(lang.as_str())
+            && let Some((region, region_pos)) = syntax.script_region_at(&lang, &text, pos)
+        {
+            let snap = StructureSnapshot::text(&region.language, &region.text);
+            let cancel = CancellationToken::new();
+            if let Ok(locals) = structure.locals(&snap, region_pos, &cancel) {
+                match locals {
+                    Locals::NoIdentifier => return Ok(None),
+                    Locals::Local { symbol } => {
+                        return Ok(Some(IndexGoto {
+                            targets: vec![Location {
+                                path: from.into(),
+                                range: region.shift(symbol.definition),
+                                uri: None,
+                            }],
+                            note: IndexNote::Certain,
+                        }));
+                    }
+                    Locals::NotLocal { name, .. } => word = name,
+                }
+            }
+        }
+
+        // The import chain: the word bound by an import names its module's export.
+        let facts = syntax.script_facts(&lang, &text);
+        let aliases = alias_map(&root, &from);
+        let exists = |p: &Path| index.has_file(p);
+        for import in &facts.imports {
+            // "" names the default export, "*" a namespace import (the module file).
+            let target_name = import.names.iter().find_map(|n| match n {
+                ImportName::Named { imported, local } if local == &word => Some(imported.clone()),
+                ImportName::Default { local } if local == &word => Some(String::new()),
+                ImportName::Namespace { local } if local == &word => Some("*".to_string()),
+                _ => None,
+            });
+            let Some(target_name) = target_name else { continue };
+            let Some(target) = resolve_spec(&from, &import.source, &aliases, &exists) else { continue };
+            if target_name == "*" {
+                return Ok(Some(IndexGoto { targets: vec![file_location(&index, &target)], note: IndexNote::Certain }));
+            }
+            let mut visited = HashSet::new();
+            if let Some(loc) = resolve_export(&index, &target, &target_name, &aliases, &mut visited, 0) {
+                return Ok(Some(IndexGoto { targets: vec![loc], note: IndexNote::Certain }));
+            }
+        }
+
+        // A module-level declaration of this file (script-setup state etc.):
+        // the scope analysis calls it not-local and the import chain is done.
+        if let Some(d) = facts.decls.iter().find(|d| d.name == word) {
+            return Ok(Some(IndexGoto {
+                targets: vec![Location { path: from.clone().into(), range: d.range, uri: None }],
+                note: IndexNote::Certain,
+            }));
+        }
+
+        // The component registry: a tag without an import (unplugin-style
+        // auto-imports) resolves by file name.
+        let component = pascal_case(&word);
+        if component != word || word.contains('-') {
+            let targets: Vec<Location> = index
+                .symbols_named(&component, Some(SymbolKind::Class), MAX_WEB_TARGETS)
+                .into_iter()
+                .filter(|m| m.name == component && is_component_file(m.path.as_ref()))
+                .map(|m| Location { path: m.path, range: m.range, uri: None })
+                .collect();
+            if !targets.is_empty() {
+                return Ok(Some(IndexGoto { targets, note: IndexNote::Candidate }));
+            }
+        }
+        Ok(None)
+    })
+    .await
+}
+
+/// The export named `name` of `target`, following re-export chains (depth-
+/// and cycle-limited); the file itself for a default export without a
+/// declaration, and for a component module.
+fn resolve_export(
+    index: &ProjectIndex,
+    target: &Path,
+    name: &str,
+    aliases: &AliasMap,
+    visited: &mut HashSet<PathBuf>,
+    depth: u32,
+) -> Option<Location> {
+    const MAX_DEPTH: u32 = 8;
+    if depth > MAX_DEPTH || !visited.insert(target.to_path_buf()) {
+        return None;
+    }
+    let facts = index.facts_of(target)?;
+    // A component module: the file is the component.
+    if is_component_file(target) {
+        return Some(file_location(index, target));
+    }
+    // The declaration itself, exported (or default) ones first.
+    if let Some(decl) = facts
+        .decls
+        .iter()
+        .find(|d| d.default && name.is_empty())
+        .or_else(|| facts.decls.iter().find(|d| d.exported && d.name == name))
+        .or_else(|| facts.decls.iter().find(|d| d.name == name))
+    {
+        return Some(Location { path: target.into(), range: decl.range, uri: None });
+    }
+    // A re-export names the next module; `export *` re-exports everything.
+    for re in &facts.reexports {
+        let reexports_name = re.names.iter().any(|n| match n {
+            ImportName::Named { imported, .. } => imported == name,
+            ImportName::Namespace { local } => local == "*" || local == name,
+            ImportName::Default { .. } => false,
+        });
+        if reexports_name {
+            let exists = |p: &Path| index.has_file(p);
+            if let Some(next) = resolve_spec(target, &re.source, aliases, &exists)
+                && let Some(loc) = resolve_export(index, &next, name, aliases, visited, depth + 1)
+            {
+                return Some(loc);
+            }
+        }
+    }
+    // A default export without a declaration (`export default {…}`): the file.
+    if name.is_empty() {
+        return Some(file_location(index, target));
+    }
+    None
+}
+
+/// A file-level target: the first declaration of its script, or the start.
+fn file_location(index: &ProjectIndex, path: &Path) -> Location {
+    let range = index.facts_of(path).and_then(|f| f.decls.first().map(|d| d.range)).unwrap_or_default();
+    Location { path: path.into(), range, uri: None }
+}
+
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
 pub async fn fs_resolve_reference(
     host: &Host,
@@ -175,6 +376,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("remove_recent", |c| async move { remove_recent(&c.host, &c.window, c.arg("path")?) });
     d.add("recent_files", |c| async move { recent_files(&c.host, &c.window) });
     d.add("web_goto", |c| async move { web_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await });
+    d.add("index_goto", |c| async move {
+        index_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("word")?).await
+    });
     d.add("fs_resolve_reference", |c| async move {
         fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
     });

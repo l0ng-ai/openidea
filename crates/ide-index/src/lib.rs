@@ -214,6 +214,17 @@ impl ProjectIndex {
         matching::symbols_named(&self.shared.data.read(), name, kind, limit)
     }
 
+    /// The semantic facts of an indexed file; `None` for files the index has
+    /// not reached (spec resolution treats those as missing).
+    pub fn facts_of(&self, path: &Path) -> Option<ide_language::Facts> {
+        self.shared.data.read().get(path).map(|e| e.facts.clone())
+    }
+
+    /// Whether `path` is an indexed file: import-spec resolution's `exists`.
+    pub fn has_file(&self, path: &Path) -> bool {
+        self.shared.data.read().get(path).is_some()
+    }
+
     /// Incrementally re-indexes changed paths (called from the vfs watcher).
     /// Cheap: the work is queued for the indexing thread.
     pub fn update(&self, changed: &[PathBuf], removed: &[PathBuf]) {

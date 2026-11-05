@@ -1409,3 +1409,95 @@ fn spelling_regions_cover_declared_names_only() {
         .collect();
     assert_eq!(names, ["Bird", "fly", "text"]);
 }
+
+// ---------------------------------------------------------------------------
+// Script regions and module facts (docs/vue-ts-semantic-index.md)
+
+fn render_names(names: &[crate::ImportName]) -> Vec<String> {
+    names
+        .iter()
+        .map(|n| match n {
+            crate::ImportName::Named { imported, local } if imported == local => imported.clone(),
+            crate::ImportName::Named { imported, local } => format!("{imported} as {local}"),
+            crate::ImportName::Default { local } => format!("default {local}"),
+            crate::ImportName::Namespace { local } => format!("* as {local}"),
+        })
+        .collect()
+}
+
+#[test]
+fn script_facts_of_a_typescript_source() {
+    let src = "import def, { a as b, c } from './x';\nimport type { T } from './y';\nimport * as ns from './z';\n\
+               export function fn() {}\nexport class C {}\nconst k = 1, k2 = 2;\n\
+               export { a } from './x';\nexport * from './y';\nexport * as ns2 from './z';\n";
+    let f = syntax().script_facts(&lang("typescript"), src);
+    assert_eq!(f.imports.len(), 3, "default+named, type-only, namespace");
+    assert_eq!(f.imports[0].source, "./x");
+    assert_eq!(render_names(&f.imports[0].names), ["default def", "a as b", "c"]);
+    assert_eq!(f.reexports.len(), 3);
+    assert_eq!(render_names(&f.reexports[2].names), ["* as ns2"]);
+    // Exported declarations are marked; plain ones are not.
+    let exported: Vec<&str> = f.decls.iter().filter(|d| d.exported).map(|d| d.name.as_str()).collect();
+    assert_eq!(exported, ["fn", "C"]);
+    let plain: Vec<&str> = f.decls.iter().filter(|d| !d.exported).map(|d| d.name.as_str()).collect();
+    assert_eq!(plain, ["k", "k2"]);
+    // `type_identifier` names (class) are extracted too.
+    assert!(f.decls.iter().any(|d| d.name == "C" && d.kind == SymbolKind::Class));
+}
+
+#[test]
+fn script_facts_of_a_vue_sfc() {
+    let src = "<template><div/></template>\n<script setup lang=\"ts\">\nimport { ref } from 'vue'\nconst n = ref(1)\n</script>\n\
+               <script>\nimport legacy from './legacy'\nexport default { name: 'X' }\n</script>\n\
+               <script lang=\"json\">{\"skipped\": true}</script>\n\
+               <script type=\"application/json\">{\"skipped\": true}</script>\n";
+    let f = syntax().script_facts(&lang("vue"), src);
+    // Two regions survive the lang/type rules; both imports are found.
+    let sources: Vec<&str> = f.imports.iter().map(|i| i.source.as_str()).collect();
+    assert_eq!(sources, ["vue", "./legacy"]);
+    // The second block's import is a default binding.
+    assert_eq!(render_names(&f.imports[1].names), ["default legacy"]);
+    // Ranges are document-absolute: `ref` sits on line 2 (0-based) of the document.
+    let r = f.imports[0].range;
+    assert_eq!(r.start.line, 2);
+    assert_eq!(src.lines().nth(r.start.line as usize).unwrap().trim_start(), "import { ref } from 'vue'");
+}
+
+#[test]
+fn script_regions_skip_typed_blocks() {
+    let src = "<html><body><script type=\"module\">var x = 1;</script>\
+               <script type=\"application/json\">{\"a\":1}</script>\
+               <script type=\"importmap\">{}</script>\
+               <script>var y = 2;</script></body></html>";
+    let regions = syntax().script_regions(&lang("html"), src);
+    assert_eq!(regions.len(), 2, "module and plain scripts; json/importmap skipped");
+    assert_eq!(regions[0].language.as_str(), "javascript");
+    let f = syntax().script_facts(&lang("html"), src);
+    let sources: Vec<&str> = f.imports.iter().map(|i| i.source.as_str()).collect();
+    assert!(sources.is_empty());
+}
+
+#[test]
+fn script_facts_of_a_vue_sfc_with_tsx_lang() {
+    let src = "<script setup lang=\"tsx\">\nconst App = () => <div/>\n</script>\n";
+    let regions = syntax().script_regions(&lang("vue"), src);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].language.as_str(), "tsx");
+}
+
+#[test]
+fn script_facts_empty_for_other_languages() {
+    assert!(syntax().script_facts(&lang("rust"), "fn main() {}").imports.is_empty());
+    assert!(syntax().script_facts(&lang("vue"), "<template><div/></template>").imports.is_empty());
+}
+
+#[test]
+fn script_facts_of_a_cjk_document() {
+    // UTF-16 columns survive the region shift (E8 regression).
+    let src = "<script setup lang=\"ts\">\nconst 名前 = '值'\nconst a = 名前\n</script>\n";
+    let f = syntax().script_facts(&lang("vue"), src);
+    let decls: Vec<&str> = f.decls.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(decls, ["名前", "a"]);
+    assert_eq!(f.decls[0].range.start.line, 1);
+    assert_eq!(f.decls[0].range.start.col, 6, "const 名前: the name starts after `const `");
+}

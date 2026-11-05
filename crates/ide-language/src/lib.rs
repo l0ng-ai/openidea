@@ -4,7 +4,7 @@
 //! (embedded at build time). Tree-sitter gives zero-config outline, folding
 //! and symbol tags; LSP/DAP configs are consumed by `ide-lsp` / `ide-dap`.
 
-use ide_core::{LanguageId, Range, SymbolKind};
+use ide_core::{LanguageId, Pos, Range, SymbolKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
@@ -299,4 +299,99 @@ pub struct SymbolTag {
     /// Enclosing symbol, e.g. class name for a method.
     pub container: Option<String>,
     pub range: Range,
+}
+
+/// Import/export/declaration facts of a TS/JS source, or of the `<script>`
+/// regions of a Vue SFC / HTML document: what the project index resolves
+/// cross-file navigation with when no language server is available
+/// (see `docs/vue-ts-semantic-index.md`). Ranges are document-absolute.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Facts {
+    /// Module-level declarations (functions, classes, types, variables).
+    pub decls: Vec<Decl>,
+    /// Import statements: what they bind and from where.
+    pub imports: Vec<Import>,
+    /// Re-exports (`export { x } from`, `export * from`).
+    pub reexports: Vec<Reexport>,
+}
+
+/// A module-level declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Decl {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// The name's range.
+    pub range: Range,
+    /// Declared with `export`, or inside an `export` statement.
+    pub exported: bool,
+    /// The module's default export (`export default …`): the target of a
+    /// default import.
+    pub default: bool,
+}
+
+/// One imported (or re-exported) binding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportName {
+    /// `import { a as b }`: imported name `a`, local binding `b`.
+    Named { imported: String, local: String },
+    /// `import d from`: the module's default export, bound to `d`.
+    Default { local: String },
+    /// `import * as ns`; `export * from` uses the local name `"*"`.
+    Namespace { local: String },
+}
+
+/// An import statement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Import {
+    pub names: Vec<ImportName>,
+    /// The module specifier as written (`'./x'` → `./x`).
+    pub source: String,
+    /// The statement's range.
+    pub range: Range,
+}
+
+/// A re-export: `export { x } from './y'`, `export * from`, `export * as ns from`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reexport {
+    pub names: Vec<ImportName>,
+    pub source: String,
+    /// The statement's range.
+    pub range: Range,
+}
+
+/// One `<script>` block of a Vue SFC / HTML document: what
+/// [`crate::Syntax::script_facts`] parses per block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRegion {
+    /// Byte offset of `text` within the document.
+    pub base: usize,
+    /// The document line containing `base` (0-based) and its UTF-16 column
+    /// there: what [`ScriptRegion::shift`] adds to region-relative positions.
+    pub base_line: u32,
+    pub base_col: u32,
+    /// The language the block's `lang` attribute picks.
+    pub language: LanguageId,
+    /// The script text.
+    pub text: String,
+}
+
+impl ScriptRegion {
+    /// A region-relative range in document coordinates: the region's first
+    /// line maps onto the document line containing `base` (its columns are
+    /// offset by the base column), later lines keep their columns.
+    pub fn shift(&self, r: Range) -> Range {
+        let shift = |p: Pos| {
+            if p.line == 0 {
+                Pos::new(self.base_line, self.base_col + p.col)
+            } else {
+                Pos::new(self.base_line + p.line, p.col)
+            }
+        };
+        Range::new(shift(r.start), shift(r.end))
+    }
 }

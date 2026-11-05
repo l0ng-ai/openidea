@@ -1,6 +1,7 @@
 //! In-memory index: one slot per file, symbols stored with their file.
 
 use ide_core::{Range, SymbolKind};
+use ide_language::Facts;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,9 @@ pub(crate) struct FileRecord {
     pub size: u64,
     pub hash: [u8; 32],
     pub symbols: Vec<StoredSymbol>,
+    /// Import/export/declaration facts of TS/JS sources and the `<script>`
+    /// regions of Vue SFCs / HTML documents; empty for other languages.
+    pub facts: Facts,
     /// Matched by an ignore file: listed by name only (no hash, no symbols).
     pub ignored: bool,
 }
@@ -74,6 +78,7 @@ pub(crate) struct FileEntry {
     pub size: u64,
     pub hash: [u8; 32],
     pub symbols: Box<[Sym]>,
+    pub facts: Facts,
     pub ignored: bool,
 }
 
@@ -103,6 +108,7 @@ impl FileEntry {
             size: record.size,
             hash: record.hash,
             symbols,
+            facts: record.facts,
             ignored: record.ignored,
         }
     }
@@ -120,6 +126,7 @@ impl FileEntry {
             mtime: self.mtime,
             size: self.size,
             hash: self.hash,
+            facts: self.facts.clone(),
             symbols: self
                 .symbols
                 .iter()

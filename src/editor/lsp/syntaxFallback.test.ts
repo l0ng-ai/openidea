@@ -22,6 +22,7 @@ const cmd = {
   syntaxIdentifiers: vi.fn((): R<unknown> => ok([])),
   syntaxErrors: vi.fn((): R<unknown> => ok({ errors: [], truncated: false })),
   findSymbols: vi.fn((): R<SymbolMatch[]> => ok([])),
+  indexGoto: vi.fn((): R<unknown> => ok(null)),
   applyWorkspaceEdit: vi.fn((): R<unknown> => ok(null)),
 };
 
@@ -679,4 +680,75 @@ describe("same-document fragment navigation", () => {
       expect(openFile).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("declarationFallback via the project index", () => {
+  const doc = { doc: 7, path: "/p/App.vue", language: "vue" };
+  const text = Text.of(["<template>", "  <UserCard/>", "</template>"]);
+
+  beforeEach(() => {
+    cmd.syntaxSupport.mockReturnValue(ok({ tree: false, locals: false }));
+    cmd.findSymbols.mockClear();
+  });
+  afterEach(() => {
+    cmd.syntaxSupport.mockReturnValue(ok({ tree: true, locals: true }));
+    cmd.indexGoto.mockReturnValue(ok(null));
+  });
+
+  it("answers for vue from indexGoto before the grammar gate rejects the language", async () => {
+    cmd.indexGoto.mockReturnValueOnce(
+      ok({ targets: [{ path: "/p/UserCard.vue", range: r(0, 0, 8), uri: null }], note: "certain" }),
+    );
+    expect(await fb.declarationFallback(doc, text, { line: 1, col: 3 })).toEqual({
+      kind: "targets",
+      targets: [{ path: "/p/UserCard.vue", range: r(0, 0, 8), uri: null }],
+      ambiguous: false,
+      note: fb.INDEX_NOTE,
+    });
+    expect(cmd.indexGoto).toHaveBeenCalledWith(7, { line: 1, col: 3 }, "UserCard");
+    expect(cmd.findSymbols).not.toHaveBeenCalled();
+  });
+
+  it("prefers the import chain over name matching for typescript too", async () => {
+    const ts = { doc: 8, path: "/p/a.ts", language: "typescript" };
+    const tsText = Text.of(["import { get } from './api';", "get('/x');"]);
+    cmd.syntaxLocals.mockReturnValueOnce(ok({ status: "notLocal", name: "get", range: r(1, 0, 3), reason: "member" }));
+    cmd.indexGoto.mockReturnValueOnce(
+      ok({ targets: [{ path: "/p/api/client.ts", range: r(2, 0, 3), uri: null }], note: "certain" }),
+    );
+    expect(await fb.declarationFallback(ts, tsText, { line: 1, col: 0 })).toEqual({
+      kind: "targets",
+      targets: [{ path: "/p/api/client.ts", range: r(2, 0, 3), uri: null }],
+      ambiguous: false,
+      note: fb.INDEX_NOTE,
+    });
+    expect(cmd.findSymbols).not.toHaveBeenCalled();
+  });
+
+  it("falls through to symbol matching when the index cannot answer", async () => {
+    const ts = { doc: 8, path: "/p/a.ts", language: "typescript" };
+    const tsText = Text.of(["import { get } from './api';", "foo();"]);
+    cmd.syntaxLocals.mockReturnValueOnce(ok({ status: "notLocal", name: "foo", range: r(1, 0, 3), reason: "member" }));
+    cmd.findSymbols.mockReturnValueOnce(
+      ok([
+        {
+          name: "foo",
+          kind: "function",
+          container: null,
+          path: "/p/lib.ts",
+          relPath: "lib.ts",
+          range: r(3, 0, 3),
+          score: 0,
+          indices: [],
+        },
+      ]),
+    );
+    const res = await fb.declarationFallback(ts, tsText, { line: 1, col: 0 });
+    expect(res.kind === "targets" && res.targets[0]!.path).toBe("/p/lib.ts");
+    expect(cmd.indexGoto).toHaveBeenCalled();
+  });
+
+  it("answers unsupported for vue when the index cannot answer", async () => {
+    expect(await fb.declarationFallback(doc, text, { line: 1, col: 3 })).toEqual({ kind: "unsupported" });
+  });
 });

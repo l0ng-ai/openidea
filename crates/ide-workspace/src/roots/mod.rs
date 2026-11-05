@@ -9,9 +9,11 @@ mod detect;
 mod gradle;
 mod java;
 mod maven;
+mod tsconfig;
 
 pub use detect::{affects_roots, detect};
 pub use java::unmanaged_java_source_paths;
+pub use tsconfig::alias_map;
 
 use ide_core::settings::ProjectStructureSettings;
 use serde::{Deserialize, Serialize};
