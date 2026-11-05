@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
+import { logWarning } from "./highlight";
 import { findLanguageDescription, loadSupport } from "./languages";
 
 describe("language modes", () => {
@@ -55,6 +56,45 @@ describe("language modes", () => {
       const support = await loadSupport(description!);
       expect(support?.language).toBeTruthy();
     }
+  });
+
+  it("highlights log levels, timestamps, exception names and stack frames", async () => {
+    const description = findLanguageDescription("Log", "/var/log/server.log");
+    expect(description?.name).toBe("Log");
+    const support = await loadSupport(description!);
+    const doc = [
+      "2024-05-01 12:00:00,123 ERROR [main] Boom: java.lang.IllegalStateException: bad",
+      "\tat com.acme.Main.run(Main.java:42)",
+      "\t... 3 more",
+      "12:00:01.5 [warn] retry https://acme.test/x",
+      "ts=1 level=info msg=started",
+      "INFOS and errors stay plain, DEBUG does not",
+    ].join("\n");
+    const highlighter = tagHighlighter([
+      { tag: t.invalid, class: "error" },
+      { tag: logWarning, class: "warn" },
+      { tag: t.string, class: "info" },
+      { tag: t.comment, class: "dim" },
+      { tag: t.number, class: "time" },
+      { tag: t.typeName, class: "type" },
+      { tag: t.link, class: "link" },
+    ]);
+    const highlighted: [string, string][] = [];
+    highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) => {
+      highlighted.push([doc.slice(from, to), style]);
+    });
+    expect(highlighted).toEqual([
+      ["2024-05-01 12:00:00,123", "time"],
+      ["ERROR", "error"],
+      ["java.lang.IllegalStateException", "type"],
+      ["\tat com.acme.Main.run(Main.java:42)", "dim"],
+      ["\t... 3 more", "dim"],
+      ["12:00:01.5", "time"],
+      ["warn", "warn"],
+      ["https://acme.test/x", "link"],
+      ["info", "info"],
+      ["DEBUG", "dim"],
+    ]);
   });
 
   it("assigns highlight tags to AsciiDoc syntax", async () => {

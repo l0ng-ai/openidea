@@ -1007,6 +1007,19 @@ pub async fn vcs_diff_revisions(
     blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.diff_revisions(&from, &to))).await
 }
 
+/// Added and deleted lines between two revisions. `paths` limits the diff; empty diffs every file.
+pub async fn vcs_diff_numstat(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    from: String,
+    to: String,
+    paths: Vec<String>,
+) -> IdeResult<Vec<FileLineStats>> {
+    let project = LogAccess::new(host, window, repo.as_deref());
+    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.diff_numstat(&from, &to, &paths))).await
+}
+
 /// The best common ancestor of `a` and `b` (`git merge-base`), if any: the New Pull
 /// Request tab's three-dot diff.
 pub async fn vcs_merge_base(
@@ -1356,6 +1369,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("vcs_diff_revisions", |c| async move {
         vcs_diff_revisions(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?).await
+    });
+    d.add("vcs_diff_numstat", |c| async move {
+        vcs_diff_numstat(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("paths")?).await
     });
     d.add("vcs_merge_base", |c| async move {
         vcs_merge_base(&c.host, &c.window, c.arg("repo")?, c.arg("a")?, c.arg("b")?).await

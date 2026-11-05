@@ -324,7 +324,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-235 themeable tokens: 121 in the UI theme file, 114 in the editor colour scheme file.
+240 themeable tokens: 121 in the UI theme file, 119 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -436,11 +436,16 @@ a token.
 | `--syn-constant` | `#c77dbb` | `#871094` |
 | `--syn-python-local-variable` | `var(--syn-variable)` | `var(--syn-variable)` |
 | `--syn-python-global-variable` | `var(--syn-global)` | `var(--syn-global)` |
-| `--syn-python-instance-attribute` | `var(--syn-property)` | `var(--syn-property)` |
+| `--syn-python-instance-attribute` | `var(--syn-variable)` | `var(--syn-variable)` |
 | `--syn-python-class-attribute` | `var(--syn-property)` | `var(--syn-property)` |
 | `--syn-python-constant` | `var(--syn-constant)` | `var(--syn-constant)` |
 | `--syn-python-property` | `var(--syn-property)` | `var(--syn-property)` |
 | `--syn-python-type-parameter` | `var(--syn-type)` | `var(--syn-type)` |
+| `--syn-python-builtin` | `var(--syn-builtin)` | `var(--syn-builtin)` |
+| `--syn-python-predefined-definition` | `var(--syn-predefined)` | `var(--syn-predefined)` |
+| `--syn-python-predefined-usage` | `var(--syn-predefined)` | `var(--syn-predefined)` |
+| `--syn-python-fstring` | `#a5c261` | `var(--syn-string)` |
+| `--syn-python-bytes` | `#a5c261` | `var(--syn-string)` |
 | `--syn-builtin` | `#8888c6` | `#000080` |
 | `--syn-self` | `#94558d` | `#94558d` |
 | `--syn-keyword-arg` | `#aa4926` | `#660099` |

@@ -13,6 +13,7 @@ import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { selectionMarks } from "@/editor/core/cm/selectionMarks";
+import { seamlessSelection } from "@/editor/core/cm/selectionLayer";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { tx } from "@/platform/i18n";
 import type { NotebookSession } from "./session";
@@ -45,6 +46,7 @@ export function CellEditor({
       lineNumbers(),
       drawSelection(),
       selectionMarks,
+      seamlessSelection(),
       highlightActiveLine(),
       highlightSpecialChars(),
       bracketMatching(),

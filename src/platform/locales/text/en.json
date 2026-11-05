@@ -25,5 +25,10 @@
   "Ruff formatting failed": "Ruff formatting failed",
   "Ruff formatting timed out": "Ruff formatting timed out",
   "Ruff configuration path does not exist: {path}": "Ruff configuration path does not exist: {path}",
-  "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}": "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}"
+  "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}": "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}",
+  "Show lines added and deleted": "Show lines added and deleted",
+  "{added} line added": "{added} line added",
+  "{added} lines added": "{added} lines added",
+  "{removed} line deleted": "{removed} line deleted",
+  "{removed} lines deleted": "{removed} lines deleted"
 }
