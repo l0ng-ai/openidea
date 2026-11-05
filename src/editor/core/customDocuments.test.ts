@@ -481,6 +481,24 @@ describe("custom editor document lifetime", () => {
     expect(findTab(useTabs.getState(), input().key)).toBeNull();
   });
 
+  it("autosaves when the application is deactivated while focus is in a frame", async () => {
+    ctrl.stop();
+    let deactivated = () => {};
+    ctrl = new EditorController({
+      ...createMemoryBackend(),
+      onApplicationDeactivated: (handler) => {
+        deactivated = handler;
+        return () => {};
+      },
+    });
+    ctrl.start();
+    const doc = await open();
+    useProject.setState({ settings: { files: { autoSave: true } } as never });
+    // Focus inside a plugin's frame: the window's own blur has already fired, before the edit.
+    deactivated();
+    await vi.waitFor(() => expect(doc.saved).toBe("edited"));
+  });
+
   it("does not prompt or blur-autosave a document until execution has drained", async () => {
     const doc = await open();
     useProject.setState({ settings: { files: { autoSave: true } } as never });

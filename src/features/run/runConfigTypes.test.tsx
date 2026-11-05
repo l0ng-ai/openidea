@@ -676,7 +676,12 @@ describe("debug-only types (Remote JVM Debug)", () => {
     debugOnly: true,
     debugAdapter: "java-debug",
     fields: [
-      { key: "port", label: "Port", validate: (v) => (/^\d+$/.test(v) ? null : "Port must be a number") },
+      {
+        key: "port",
+        label: "Port",
+        required: true,
+        validate: (v) => (/^\d+$/.test(v) ? null : "Port must be a number"),
+      },
       { key: "agent", label: "Agent", control: "output", value: (p) => `address=*:${p.port ?? ""}` },
     ],
     commandLine: () => null,
@@ -703,6 +708,10 @@ describe("debug-only types (Remote JVM Debug)", () => {
     expect(screen.queryByText("Command line")).toBeNull();
     fireEvent.change(screen.getByLabelText("Port"), { target: { value: "x" } });
     expect(screen.getByRole("alert").textContent).toBe("Port must be a number");
+    // Emptying the only field keeps the form: there is no command line to edit instead.
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "" } });
+    expect(screen.getByRole("alert").textContent).toBe("Port is required");
+    expect(screen.queryByLabelText("Command")).toBeNull();
   });
 
   it("are valid without a command, get the type's adapter and are not run", async () => {

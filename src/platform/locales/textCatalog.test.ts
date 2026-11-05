@@ -86,6 +86,7 @@ const BUILT_AT_RUNTIME = new Set<string>([]);
 const UNTRANSLATED = new Set<string>([
   "dotnet test",
   "netcoredbg (.NET)",
+  "php-debug (PHP)",
   // Product names
   "Cargo",
   "CMake",

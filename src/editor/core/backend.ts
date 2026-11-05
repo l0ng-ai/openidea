@@ -21,6 +21,7 @@ import {
   type SyntaxHighlights,
   type TextChange,
 } from "@/platform/ipc";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import { EditorState } from "@codemirror/state";
 import { customRegions } from "./cm/regions";
@@ -61,6 +62,11 @@ export interface DocBackend {
   /** Files changed on disk (used to refresh nothing but closed-file state). */
   onFsChanged?(handler: (e: { removed: string[] }) => void): () => void;
   /**
+   * Every OpenIDEA window lost focus to another application. Also seen while focus is in a frame
+   * (a plugin's web view), which hides the window's own `blur`.
+   */
+  onApplicationDeactivated?(handler: () => void): () => void;
+  /**
    * An open document's language changed (Settings › File Types, Override File
    * Type), or its own mode (`DocumentInfo.uiMode`).
    */
@@ -86,6 +92,11 @@ export const ipcBackend: DocBackend = {
   onPatched: (h) => onIdeEvent("docPatched", (e) => h(e)),
   onDirty: (h) => onIdeEvent("docDirty", (e) => h(e)),
   onFsChanged: (h) => onIdeEvent("fsChanged", (e) => h(e)),
+  onApplicationDeactivated: (h) => {
+    if (!isTauri()) return () => {};
+    const listener = getCurrentWebviewWindow().listen("ide://application-deactivated", () => h());
+    return () => void listener.then((unlisten) => unlisten());
+  },
   onLanguage: (h) => onIdeEvent("docLanguage", (e) => h(e)),
 };
 

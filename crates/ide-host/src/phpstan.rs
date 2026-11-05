@@ -611,7 +611,7 @@ mod tests {
     }
 
     /// A project with PHPStan whose PHP logs each run, waits `pause` seconds, prints `stderr` and
-    /// reports `report`.
+    /// reports `report`. `pause` is read before the run is logged, so a test that sees the run can change it.
     #[cfg(unix)]
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -634,8 +634,8 @@ mod tests {
             // Named php8.5: the selected PHP runs vendor/bin/phpstan, whatever its name.
             let php = base.join("php/php8.5");
             std::fs::create_dir_all(php.parent().unwrap()).unwrap();
-            let script = "#!/bin/sh\nshift\necho \"$XDEBUG_MODE $*\" >> runs.log\n\
-                sleep \"$(cat pause 2>/dev/null || echo 0)\"\ncat stderr >&2 2>/dev/null\ncat report\n";
+            let script = "#!/bin/sh\nshift\npause=\"$(cat pause 2>/dev/null || echo 0)\"\n\
+                echo \"$XDEBUG_MODE $*\" >> runs.log\nsleep \"$pause\"\ncat stderr >&2 2>/dev/null\ncat report\n";
             std::fs::write(&php, script).unwrap();
             std::fs::set_permissions(&php, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::create_dir_all(root.join(".openidea")).unwrap();
