@@ -1,0 +1,66 @@
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { syntaxHighlighting } from "@codemirror/language";
+import { openideaHighlightStyle } from "../src/editor/core/cm/highlight";
+import { findLanguageDescription, loadSupport } from "../src/editor/core/cm/languages";
+import { semanticExtension } from "../src/editor/lsp/semantic";
+import { lspDoc } from "../src/editor/lsp/lsp";
+import { lspTheme } from "../src/editor/lsp/theme";
+import { parseIcls } from "../src/platform/icls";
+import { schemeCss } from "../src/platform/colorScheme";
+import type { EditorDocContext } from "../src/editor/api";
+
+const attributes = {
+  TEXT: { FOREGROUND: "ddeeff", BACKGROUND: "101820" },
+  "PY.KEYWORD": { FOREGROUND: "112233" },
+  "PY.FUNC_DEFINITION": { FOREGROUND: "224466" },
+  "PY.NESTED_FUNC_DEFINITION": { FOREGROUND: "335577" },
+  DEFAULT_FUNCTION_CALL: { FOREGROUND: "446688" },
+  DEFAULT_LINE_COMMENT: { FOREGROUND: "667788" },
+  DEFAULT_BLOCK_COMMENT: { FOREGROUND: "aabbcc" },
+  "PY.METHOD_CALL": { FOREGROUND: "557799" },
+  "PY.DOC_COMMENT": { FOREGROUND: "6688aa", EFFECT_TYPE: "1" },
+  "PY.STRING.B": { FOREGROUND: "7799bb", FONT_TYPE: "1" },
+  "PY.VALID_STRING_ESCAPE": { FOREGROUND: "88aacc" },
+  "PY.ANNOTATION": { FOREGROUND: "99bbdd", BACKGROUND: "182838" },
+  "PY.SELF_PARAMETER": { FOREGROUND: "aa7788" },
+  "PY.BUILTIN_NAME": { FOREGROUND: "bb8899" },
+  "PY.KEYWORD_ARGUMENT": { FOREGROUND: "cc99aa" },
+};
+const xml = `<scheme name="Python" parent_scheme="Darcula"><attributes>${Object.entries(attributes)
+  .map(
+    ([key, values]) =>
+      `<option name="${key}"><value>${Object.entries(values)
+        .map(([name, value]) => `<option name="${name}" value="${value}"/>`)
+        .join("")}</value></option>`,
+  )
+  .join("")}</attributes></scheme>`;
+const style = document.createElement("style");
+style.textContent =
+  schemeCss("custom-python", {}, null, { "custom-python": parseIcls(xml).scheme }) +
+  "body { margin: 24px; background: #101820; color: #ddeeff; } .cm-editor { font: 14px/1.6 monospace; }";
+document.head.append(style);
+const support = await loadSupport(findLanguageDescription("Python", "demo.py")!);
+new EditorView({
+  parent: document.body,
+  state: EditorState.create({
+    doc: `def outer(x):
+    """Syntax Highlighting Demo"""
+    def nested(y):
+        print(y + 1)
+    nested(x)
+
+class Foo:
+    def __init__(self: Foo):
+        value = b"newline:\\n"
+        self.run(whatever=1) # Comment
+`,
+    extensions: [
+      support!,
+      syntaxHighlighting(openideaHighlightStyle),
+      lspTheme,
+      lspDoc.of({ language: "python" } as EditorDocContext),
+      ...(new URLSearchParams(location.search).has("baseline") ? [] : [semanticExtension()]),
+    ],
+  }),
+});
