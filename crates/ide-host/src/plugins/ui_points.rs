@@ -5,9 +5,10 @@
 //!
 //! ```toml
 //! [[contributes.menus]]
-//! menu = "editor.context"          # projectView.context, editorTab.context, tools
+//! menu = "editor.context"          # projectView.context, editorTab.context, tools, view.item.context
 //! command = "check"
 //! when = "editorLang == java"
+//! # view = "<view id>"             # required for (only allowed on) view.item.context
 //!
 //! [[contributes.keymaps]]
 //! command = "check"
