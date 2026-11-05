@@ -211,8 +211,10 @@ impl PluginEngine {
     /// Rejects a component this host can't run, with a message that says what
     /// to do: one importing interfaces outside the plugin API and WASI, or one
     /// built for a plugin API this host doesn't implement (another major, or a
-    /// newer minor). Returns the API version the component was built for
-    /// (`None`: it uses no plugin interface).
+    /// newer minor), or one that doesn't link: an import the host lacks or
+    /// declares with another type (same API version, different WIT), or a
+    /// missing plugin export. Returns the API version the component was built
+    /// for (`None`: it uses no plugin interface).
     pub fn check_component(&self, component: &Component) -> Result<Option<semver::Version>, String> {
         let ty = component.component_type();
         let imports: Vec<String> = ty.imports(&self.engine).map(|(name, _)| name.to_owned()).collect();
@@ -229,8 +231,18 @@ impl PluginEngine {
         if let Some(v) = &built_for {
             check_api(v, &host_api())?;
         }
+        let pre = self.linker.instantiate_pre(component).map_err(|e| link_error(&format!("{e:#}")))?;
+        bindings::PluginIndices::new(&pre).map_err(|e| link_error(&format!("{e:#}")))?;
         Ok(built_for)
     }
+}
+
+/// Explains a component that doesn't link against this host's plugin API.
+fn link_error(detail: &str) -> String {
+    format!(
+        "the component doesn't match the plugin API of this IDE ({API_VERSION}): {detail}. \
+         If it was built for a newer OpenIDEA, update OpenIDEA; otherwise rebuild it with the {API_VERSION} SDK"
+    )
 }
 
 /// Interface names of the plugin API start with this (`openidea:plugin/log@1.0.0`).
@@ -542,11 +554,7 @@ impl Runtime {
         arm(&mut store, &setup.limits, setup.limits.timeout).map_err(|e| e.to_string())?;
         let api_hint = |e: wasmtime::Error| {
             let msg = describe_trap(&e, &setup.limits);
-            if msg.contains("openidea:plugin/") {
-                format!("{msg} (the component was built for a different plugin API; this IDE runs API {API_VERSION})")
-            } else {
-                msg
-            }
+            if msg.contains("openidea:plugin/") { link_error(&msg) } else { msg }
         };
         let pre = engine.linker.instantiate_pre(component).map_err(api_hint)?;
         let plugin_indices = bindings::PluginIndices::new(&pre).map_err(api_hint)?;
