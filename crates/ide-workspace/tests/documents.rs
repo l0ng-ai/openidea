@@ -381,6 +381,21 @@ fn external_changes() {
     f.docs.on_disk_changed(&[f.root.join("other.txt")]);
 }
 
+/// An IDE operation that rewrites a file with the same length and mtime still refreshes
+/// the clean buffer.
+#[test]
+fn own_disk_change_preserving_length_and_mtime_reloads_a_clean_document() {
+    let f = fixture();
+    let path = f.root.join("stamp.txt");
+    fs::write(&path, "first").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, "other").unwrap();
+    fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+    f.docs.sync_after_disk_change();
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "other");
+}
+
 /// An external write that keeps the byte length and the mtime (timestamp-preserving
 /// tools, coarse-granularity filesystems) leaves the `(mtime, length)` stamp equal:
 /// the OS event is still authoritative, so a clean document reloads.

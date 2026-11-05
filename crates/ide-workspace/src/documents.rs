@@ -891,6 +891,7 @@ impl Documents {
                 // dedup: the former's disk bytes legitimately differ from the buffer text,
                 // the latter warn once per disk state.
                 if unchanged
+                    && (!force_clean || st.dirty)
                     && (dedup
                         || st.dirty
                         || st.native_to_ascii

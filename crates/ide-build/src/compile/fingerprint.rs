@@ -5,15 +5,19 @@ use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::time::SystemTime;
 
+/// `(byte length, mtime, blake3 hex)`; the hash is recorded for files inside the project only.
+type Stamp = (u64, SystemTime, Option<String>);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchFingerprint {
     version: u32,
     parameters: String,
-    /// Per input: `(byte length, mtime, blake3-of-content)` for regular files, `None` for
+    /// Per input: a [`Stamp`] for regular files, `None` for
     /// directories and inputs that cannot be resolved. The content hash catches external
     /// edits that preserve both length and mtime (timestamp-preserving tools, coarse
-    /// timestamp granularity), which `(length, mtime)` alone would miss.
-    files: BTreeMap<PathBuf, Option<(u64, SystemTime, String)>>,
+    /// timestamp granularity), which `(length, mtime)` alone would miss. Only files inside
+    /// the project are hashed; toolchain inputs such as the JDK's `lib/modules` keep the stamp.
+    files: BTreeMap<PathBuf, Option<Stamp>>,
 }
 
 /// `blake3` hex of a file's bytes, streamed in chunks so memory stays bounded. An
@@ -38,8 +42,9 @@ fn content_hash(path: &Path) -> IdeResult<String> {
 }
 
 fn scan(
+    root: &Path,
     path: &Path,
-    files: &mut BTreeMap<PathBuf, Option<(u64, SystemTime, String)>>,
+    files: &mut BTreeMap<PathBuf, Option<Stamp>>,
     ancestors: &mut HashSet<PathBuf>,
     cancel: &CancellationToken,
 ) -> IdeResult<()> {
@@ -62,11 +67,12 @@ fn scan(
         // Directory mtimes change on irrelevant JDT writes. File paths detect additions/deletions.
         files.insert(path.to_path_buf(), None);
         for entry in fs::read_dir(path)? {
-            scan(&entry?.path(), files, ancestors, cancel)?;
+            scan(root, &entry?.path(), files, ancestors, cancel)?;
         }
         ancestors.remove(&canonical);
     } else if meta.is_file() {
-        files.insert(path.to_path_buf(), Some((meta.len(), meta.modified()?, content_hash(path)?)));
+        let hash = if path.starts_with(root) { Some(content_hash(path)?) } else { None };
+        files.insert(path.to_path_buf(), Some((meta.len(), meta.modified()?, hash)));
     } else {
         return Err(IdeError::internal("unsupported launch input file"));
     }
@@ -171,7 +177,7 @@ pub fn launch_fingerprint(
             .map_err(|e| IdeError::internal(e.to_string()))?;
     let mut files = BTreeMap::new();
     for path in inputs {
-        scan(&path, &mut files, &mut HashSet::new(), cancel)?;
+        scan(root, &path, &mut files, &mut HashSet::new(), cancel)?;
     }
     // Store project inputs relative to the project, including each file's relative path.
     let files = files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect();
