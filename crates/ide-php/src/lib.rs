@@ -10,11 +10,15 @@
 //! columns at the crate edge (`ide-core::text`). Mago works in byte offsets, so
 //! the syntax layer converts between the two.
 //!
-//! So far the crate only holds [`probe`], the declaration outline used by the
-//! Mago test-drive (`examples/parse_corpus.rs`, results in
-//! `docs/php-engine/spike.md`).
+//! Modules so far:
+//!
+//! - [`syntax`]: parsed files ([`syntax::ParsedFile`]), byte ⇄ UTF-16
+//!   conversion ([`syntax::LineIndex`]) and the per-document parse cache.
+//! - [`probe`]: the declaration outline used by the Mago test-drive
+//!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
 pub mod probe;
+pub mod syntax;
 
 /// Re-exports of the pinned Mago crates, so later phases and the examples use
 /// exactly the versions this crate was built against.

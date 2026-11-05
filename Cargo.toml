@@ -70,6 +70,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # text & fs
 ropey = "1.6"
+self_cell = "1"
 encoding_rs = "0.8"
 chardetng = "0.1"
 ignore = "0.4"

@@ -94,7 +94,7 @@ The design:
 
 ## Plan 1: Syntax, summaries, index
 
-- [ ] Phase 1.1: Syntax adapter
+- [x] Phase 1.1: Syntax adapter
       Add an `ide_php::syntax` module:
   - Parse with Mago and convert between byte offsets and `ide-text` UTF-16 positions.
   - Add a `ParsedFile` with the AST, errors and line index.
