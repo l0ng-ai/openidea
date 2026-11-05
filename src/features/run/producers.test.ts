@@ -226,6 +226,15 @@ describe("single-file producers (scratches)", () => {
   it("Ruby, PHP, Perl, Lua, R, Swift, Dart, Elixir, Scala CLI, Kotlin script", () => {
     expect(run(scratch("a.rb"))).toMatchObject({ command: "/bin/ruby", args: ["a.rb"] });
     expect(run(scratch("a.php"))).toMatchObject({ command: "/bin/php", args: ["a.php"] });
+    // The PHP chosen in Settings wins over the PATH one, also with no PHP on PATH (#1555).
+    const php81 = "/opt/homebrew/opt/php@8.1/bin/php";
+    expect(run(scratch("a.php"), { ...ALL, php: php81 })).toMatchObject({ command: php81, args: ["a.php"] });
+    expect(run(scratch("a.php"), env({}, { php: php81 }))).toMatchObject({ command: php81, args: ["a.php"] });
+    expect(run(scratch("tool", "#!/usr/bin/env php\n<?php echo 1;"), { ...ALL, php: php81 })).toMatchObject({
+      command: php81,
+      args: ["tool"],
+    });
+    expect(produceContext(scratch("a.php"), env({}))!.missing!.body).toMatch(/Settings › Languages & Frameworks › PHP/);
     expect(run(scratch("a.pl"))).toMatchObject({ command: "/bin/perl" });
     expect(run(scratch("a.lua"))).toMatchObject({ command: "/bin/lua" });
     expect(run(scratch("a.R"))).toMatchObject({ command: "/bin/Rscript", args: ["a.R"] });
