@@ -29,4 +29,4 @@ install-hint = "Install phpactor (https://phpactor.readthedocs.io/en/master/usag
 [debugger]
 adapter = "php-debug"
 command = "php-debug-adapter"
-install-hint = "Install vscode-php-debug (Xdebug) as `php-debug-adapter` (e.g. via mason.nvim) and enable Xdebug"
+install-hint = "Install PHP Debug (Xdebug) in Settings › Languages & Frameworks › Language Servers, and enable Xdebug"

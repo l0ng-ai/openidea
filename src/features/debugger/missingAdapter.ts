@@ -12,6 +12,7 @@ const INSTALLABLE: Record<string, { tool: string; title: string }> = {
   "js-debug": { tool: "js-debug", title: "The JavaScript debugger (vscode-js-debug) is not installed" },
   delve: { tool: "delve", title: "Delve is not installed" },
   codelldb: { tool: "codelldb", title: "CodeLLDB is not installed" },
+  "php-debug": { tool: "php-debug", title: "PHP Debug (Xdebug) is not installed" },
 };
 
 export interface MissingAdapter {
