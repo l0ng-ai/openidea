@@ -132,6 +132,27 @@ Object.assign(ATTRIBUTE_NAMES, {
   PHP_TAG: "php.scriptTag",
 });
 
+Object.assign(ATTRIBUTE_NAMES, {
+  "PY.ANNOTATION": "pyAnnotation",
+  "PY.PARENTHS": "pyParentheses",
+  "PY.BRACKETS": "pyBrackets",
+  "PY.BRACES": "pyBraces",
+  "PY.KEYWORD": "keyword",
+  "PY.FUNC_DEFINITION": "functionDeclaration",
+  "PY.NESTED_FUNC_DEFINITION": "pyNestedFunction",
+  "PY.METHOD_CALL": "pyMethodCall",
+  "PY.DOC_COMMENT": "pyDocstring",
+  "PY.BUILTIN_NAME": "pyBuiltin",
+  "PY.DECORATOR": "pyDecorator",
+  "PY.SELF_PARAMETER": "pySelf",
+  "PY.KEYWORD_ARGUMENT": "pyKeywordArg",
+  "PY.PREDEFINED_DEFINITION": "pyPredefinedDefinition",
+  "PY.PREDEFINED_USAGE": "pyPredefinedUsage",
+  "PY.STRING.B": "pyBytes",
+  "PY.VALID_STRING_ESCAPE": "escape",
+  "PY.OPERATION_SIGN": "operator",
+});
+
 const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
   CARET_COLOR: ["caret", "foreground"],
   CARET_ROW_COLOR: ["caretRow", "background"],
@@ -151,13 +172,24 @@ for (const attr of ATTRIBUTES)
 
 const EFFECTS: Record<string, TextAttributesOverride["effect"]> = {
   "0": "underline",
-  "1": "wave",
   "3": "strikeout",
-  "4": "underline",
+  "4": "wave",
+  "5": "underline",
+  "6": "underline",
 };
 const children = (el: Element, tag: string) => Array.from(el.children).filter((e) => e.tagName === tag);
 const color = (v: string | null): string | undefined =>
   v && /^[0-9a-f]{1,6}$/i.test(v) ? `#${v.padStart(6, "0").toLowerCase()}` : undefined;
+
+function orderedAttributes(section: Element): Element[] {
+  const entries = children(section, "option");
+  if (!entries.some((e) => e.getAttribute("name")?.startsWith("PY."))) return entries;
+  const priority = (e: Element) =>
+    e.getAttribute("name")?.startsWith("PY.") ? 2 : e.getAttribute("name")?.startsWith("DEFAULT_") ? 1 : 0;
+  return entries
+    .filter((e) => e.getAttribute("name") !== "DEFAULT_BLOCK_COMMENT")
+    .sort((a, b) => priority(a) - priority(b));
+}
 
 export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: number; skipped: number } {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -203,7 +235,7 @@ export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: nu
         } else skipped++;
       }
     if (section.tagName === "attributes")
-      for (const entry of children(section, "option")) {
+      for (const entry of orderedAttributes(section)) {
         const name = entry.getAttribute("name") ?? "";
         const id = Object.hasOwn(ATTRIBUTE_NAMES, name) ? ATTRIBUTE_NAMES[name] : undefined;
         if (!id) {
@@ -218,6 +250,7 @@ export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: nu
         const attr = ATTRIBUTES.find((a) => a.id === id)!;
         // An explicit TextAttributes value defaults to Font.PLAIN, not the last alias's style.
         if (attr.token) merge(id, { bold: false, italic: false });
+        if (name.startsWith("PY.")) merge(id, { effect: "none" });
         for (const option of children(value, "option")) {
           const name = option.getAttribute("name");
           const raw = option.getAttribute("value");

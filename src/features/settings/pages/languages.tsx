@@ -153,6 +153,8 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "php",
       "composer",
       "phpunit",
+      "phpstan",
+      "phpstan.neon",
       "xampp",
       "herd",
       "homebrew",

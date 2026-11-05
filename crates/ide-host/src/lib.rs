@@ -10,6 +10,7 @@ mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;
 pub mod ops;
+mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
@@ -228,6 +229,9 @@ impl Host {
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();
         }
+        if let Some(phpstan) = &project.phpstan {
+            phpstan.stop();
+        }
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
         project.notebooks.stop_admission();
@@ -348,6 +352,9 @@ impl Host {
         for project in &projects {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
+            }
+            if let Some(phpstan) = &project.phpstan {
+                phpstan.stop();
             }
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();

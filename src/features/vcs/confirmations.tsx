@@ -44,14 +44,20 @@ async function confirmFiles(op: FileOperation["kind"], files: string[]): Promise
   const root = useVcs.getState().root ?? "";
   const add = op === "created";
   const n = files.length;
-  const what = n === 1 ? "file" : `${n} files`;
   const list = files
     .slice(0, 10)
     .map((f) => relTo(root, f))
     .join("\n");
+  const question = add
+    ? n === 1
+      ? tx("Do you want to add the following file to Git?")
+      : tx`Do you want to add the following ${n} files to Git?`
+    : n === 1
+      ? tx("Do you want to remove the following file from Git?")
+      : tx`Do you want to remove the following ${n} files from Git?`;
   const r = await ask({
     title: add ? "Add File to Git" : "Remove File from Git",
-    body: `${add ? `Do you want to add the following ${what} to Git?` : `Do you want to remove the following ${what} from Git?`}\n${list}${n > 10 ? "\n…" : ""}`,
+    body: `${question}\n${list}${n > 10 ? "\n…" : ""}`,
     checkbox: "Don't ask again",
     width: 480,
     buttons: [{ id: "ok", label: add ? "Add" : "Remove", primary: true }],
