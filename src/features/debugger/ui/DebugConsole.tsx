@@ -16,7 +16,16 @@ import {
   type FindOptions,
   type FindResult,
 } from "@/ui/consoleFind";
-import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
+import {
+  appendConsole,
+  clearConsole,
+  evaluate,
+  isLive,
+  readsProgramInput,
+  sendProgramInput,
+  useDebug,
+  type DebugSession,
+} from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
@@ -245,6 +254,16 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   }, [findOpen, current, virtualizer]);
 
   const submit = async () => {
+    if (readsProgramInput(session)) {
+      // Like the Run console: the line as typed, empty or not, goes to the program.
+      setInput("");
+      try {
+        await sendProgramInput(session, `${input}\n`);
+      } catch (err) {
+        appendConsole(session.id, "stderr", `${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      return;
+    }
     const e = input.trim();
     if (!e) return;
     pushHistory("console", e);
@@ -466,10 +485,16 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                 value={input}
                 onChange={(e) => {
                   setInput(e.target.value);
-                  completion.onInput();
+                  if (!readsProgramInput(session)) completion.onInput();
                 }}
                 onKeyDown={onKeyDown}
-                placeholder={isLive(session) ? "Evaluate in the debug console" : "Session finished"}
+                placeholder={
+                  !isLive(session)
+                    ? "Session finished"
+                    : readsProgramInput(session)
+                      ? "Input for the program (pause to evaluate)"
+                      : "Evaluate in the debug console"
+                }
                 disabled={!isLive(session)}
                 aria-label={tx("Debug console input")}
                 spellCheck={false}
