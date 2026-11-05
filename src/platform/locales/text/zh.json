@@ -6212,6 +6212,8 @@
   "Unsafe query: 'Drop' statement deletes the database with all its data": "不安全的查询：'Drop' 语句会删除该数据库及其所有数据",
   "Unsafe query: 'Drop' statement deletes the schema with all its objects": "不安全的查询：'Drop' 语句会删除该模式及其所有对象",
   "Unsafe query: 'Alter' statement drops a column with all its data": "不安全的查询：'Alter' 语句会删除一列及其所有数据",
+  "1 row changed. Commit or roll back?": "已更改 1 行。提交还是回滚？",
+  "{rows} rows changed. Commit or roll back?": "已更改 {rows} 行。提交还是回滚？",
   "Unsafe query: 'Alter' statement drops a partition with all its data": "不安全的查询：'Alter' 语句会删除一个分区及其所有数据",
   "Unsafe query: 'Alter' statement clears all data in a partition": "不安全的查询：'Alter' 语句会清除一个分区中的所有数据",
   "Unsafe query: 'Alter' statement deletes the history of all rows": "不安全的查询：'Alter' 语句会删除所有行的历史记录",

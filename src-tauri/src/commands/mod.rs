@@ -582,6 +582,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_finish_transaction,
         db::db_statements,
         db::db_execute,
+        db::db_execute_held,
+        db::db_finish_held,
         db::db_table_page,
         db::db_apply_edits,
         db::db_console_path,

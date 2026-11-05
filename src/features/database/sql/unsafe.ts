@@ -11,6 +11,8 @@
  * each operator is supported once and combines with the others. Anything
  * uncertain (data, functions, collations, dialect differences) counts as not
  * constant, so the check never warns about a statement it cannot prove unsafe.
+ * The one exception is a column compared with itself (`id = id`): true on
+ * every row but those where it is NULL, which a key never is.
  */
 import type { DbDriver } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -100,12 +102,68 @@ function closing(tokens: readonly Token[], open: number): number {
   return -1;
 }
 
-function check(tokens: readonly Token[]): UnsafeStatement | null {
+/** A statement as it runs: its tokens, their depths, its verb's index and its WITH clause's queries. */
+interface Parts {
+  tokens: readonly Token[];
+  depth: number[];
+  /** -1 when there is none (a WITH clause alone). */
+  verb: number;
+  queries: Token[][];
+}
+
+/**
+ * The statement `tokens` runs, read past parentheses (`(DELETE FROM t)`) and
+ * `EXPLAIN ANALYZE` (which runs it); `null` for a plain EXPLAIN, which does not.
+ */
+function parts(tokens: readonly Token[]): Parts | null {
   if (!tokens.length) return null;
-  // `(DELETE FROM t)`
-  if (wrapped(tokens)) return check(tokens.slice(1, -1));
-  if (isWord(tokens[0], "EXPLAIN")) return explained(tokens);
+  if (wrapped(tokens)) return parts(tokens.slice(1, -1));
+  if (isWord(tokens[0], "EXPLAIN")) {
+    const target = explained(tokens);
+    return target && parts(target);
+  }
   const depth = depths(tokens);
+  if (!isWord(tokens[0], "WITH")) return { tokens, depth, verb: 0, queries: [] };
+  // The statement's own verb: the first word at depth 0 after the WITH clause's queries.
+  const verb = tokens.findIndex((t, i) => i > 0 && depth[i] === 0 && t.kind === "word" && STATEMENT.has(t.upper));
+  // A query of the WITH clause can modify data itself: `WITH d AS (DELETE FROM t RETURNING *) SELECT …`.
+  const queries: Token[][] = [];
+  for (let i = 1; i < (verb < 0 ? tokens.length : verb); i++) {
+    if (tokens[i]!.text !== "(" || depth[i] !== 0) continue;
+    const close = closing(tokens, i);
+    if (close < 0) break;
+    // A query follows AS [[NOT] MATERIALIZED]; other parentheses list the columns.
+    if (isWord(tokens[i - 1], "AS") || isWord(tokens[i - 1], "MATERIALIZED")) queries.push(tokens.slice(i + 1, close));
+    i = close;
+  }
+  return { tokens, depth, verb, queries };
+}
+
+/** Verbs of statements that change rows (a console shows how many before committing). */
+const CHANGES_ROWS = new Set(["DELETE", "UPDATE", "MERGE"]);
+
+/**
+ * Whether `text` deletes or updates rows: a DELETE, UPDATE or MERGE, also
+ * inside parentheses, a WITH clause's queries and EXPLAIN ANALYZE.
+ */
+export function changesRows(text: string, driver: DbDriver): boolean {
+  const changes = (tokens: readonly Token[]): boolean => {
+    const p = parts(tokens);
+    if (!p) return false;
+    return p.queries.some(changes) || (p.verb >= 0 && CHANGES_ROWS.has(p.tokens[p.verb]!.upper));
+  };
+  return changes(lex(text, driver).tokens.filter((t) => t.text !== ";"));
+}
+
+function check(all: readonly Token[]): UnsafeStatement | null {
+  const p = parts(all);
+  if (!p) return null;
+  for (const q of p.queries) {
+    const found = check(q);
+    if (found) return found;
+  }
+  const { tokens, depth, verb } = p;
+  if (verb < 0) return null;
   const last = tokens.at(-1)!;
   const whole = (kind: UnsafeStatement["kind"], reason: UnsafeStatement["reason"]): UnsafeStatement => ({
     kind,
@@ -113,24 +171,6 @@ function check(tokens: readonly Token[]): UnsafeStatement | null {
     from: tokens[0]!.from,
     to: last.to,
   });
-  // The statement's own verb: the first word at depth 0 (after a WITH clause's queries).
-  let verb = 0;
-  if (isWord(tokens[0], "WITH")) {
-    verb = tokens.findIndex((t, i) => i > 0 && depth[i] === 0 && t.kind === "word" && STATEMENT.has(t.upper));
-    // A query of the WITH clause can modify data itself: `WITH d AS (DELETE FROM t RETURNING *) SELECT …`.
-    for (let i = 1; i < (verb < 0 ? tokens.length : verb); i++) {
-      if (tokens[i]!.text !== "(" || depth[i] !== 0) continue;
-      const close = closing(tokens, i);
-      if (close < 0) break;
-      // A query follows AS [[NOT] MATERIALIZED]; other parentheses list the columns.
-      if (isWord(tokens[i - 1], "AS") || isWord(tokens[i - 1], "MATERIALIZED")) {
-        const found = check(tokens.slice(i + 1, close));
-        if (found) return found;
-      }
-      i = close;
-    }
-    if (verb < 0) return null;
-  }
   const v = tokens[verb]!.kind === "word" ? tokens[verb]!.upper : "";
   if (v === "TRUNCATE") return whole("truncate", "clears-table");
   if (v === "DROP") {
@@ -160,7 +200,7 @@ function check(tokens: readonly Token[]): UnsafeStatement | null {
  * The statement an EXPLAIN runs: `EXPLAIN ANALYZE …` / `EXPLAIN (ANALYZE, …) …`
  * execute it; a plain EXPLAIN (or `EXPLAIN (ANALYZE false)`) only plans it.
  */
-function explained(tokens: readonly Token[]): UnsafeStatement | null {
+function explained(tokens: readonly Token[]): readonly Token[] | null {
   let i = 1;
   let analyze = false;
   if (tokens[1]?.text === "(") {
@@ -177,7 +217,7 @@ function explained(tokens: readonly Token[]): UnsafeStatement | null {
     if (tokens[i]!.upper !== "VERBOSE") analyze = true;
     i++;
   }
-  return analyze ? check(tokens.slice(i)) : null;
+  return analyze ? tokens.slice(i) : null;
 }
 
 /**
@@ -322,6 +362,19 @@ function evaluate(tokens: readonly Token[]): Truth {
 }
 
 const key = (tokens: readonly Token[]) => tokens.map((t) => t.upper).join(" ");
+
+/**
+ * Whether two operands are the same column expression, so `a = b` holds on
+ * every row where it is not NULL (a primary key never is): `id = id`,
+ * `t."Id" >= t."Id"`. Function calls and subqueries may differ between
+ * copies (`random() = random()`), so they never count.
+ */
+function sameOperand(a: readonly Token[], b: readonly Token[]): boolean {
+  if (!a.length || a.length !== b.length || key(a) !== key(b)) return false;
+  // Constants compare by value (`NULL = NULL` is unknown).
+  if (value(a) !== undefined) return false;
+  return !a.some((t, i) => (t.text === "(" && a[i - 1]?.kind === "word") || isWord(t, "SELECT"));
+}
 
 /** `e IS NULL OR e IS NOT NULL` (any order, among other branches): true for every row. */
 function coversNull(branches: readonly Token[][]): boolean {
@@ -557,7 +610,9 @@ function term(tokens: readonly Token[]): Truth {
     const rest = tokens.slice(is + (not ? 2 : 1));
     const left = tokens.slice(0, is);
     if (isWord(rest[0], "DISTINCT") && isWord(rest[1], "FROM")) {
-      const same = nullSafeEqual(value(left), value(rest.slice(2)));
+      const right = rest.slice(2);
+      // NULL is not distinct from NULL: `x IS NOT DISTINCT FROM x` holds on every row.
+      const same = sameOperand(left, right) || nullSafeEqual(value(left), value(right));
       return same === null ? null : same === not;
     }
     if (rest.length !== 1 || rest[0]!.kind !== "word") return null;
@@ -579,9 +634,14 @@ function term(tokens: readonly Token[]): Truth {
     const not = negated(between);
     const and = tokens.findIndex((t, i) => i > between && depth[i] === 0 && isWord(t, "AND"));
     if (and < 0) return null;
-    const v = value(tokens.slice(0, not ? between - 1 : between));
-    const lo = compare(v, value(tokens.slice(between + 1, and)), false);
-    const hi = compare(v, value(tokens.slice(and + 1)), false);
+    const operand = tokens.slice(0, not ? between - 1 : between);
+    const low = tokens.slice(between + 1, and);
+    const high = tokens.slice(and + 1);
+    // `x BETWEEN x AND x`, like `x = x`.
+    if (sameOperand(operand, low) && sameOperand(operand, high)) return !not;
+    const v = value(operand);
+    const lo = compare(v, value(low), false);
+    const hi = compare(v, value(high), false);
     if (lo === undefined || hi === undefined) return null;
     return lo >= 0 && hi <= 0 ? !not : not;
   }
@@ -624,13 +684,17 @@ function term(tokens: readonly Token[]): Truth {
     // MySQL's null-safe `<=>` lexes as `<=` `>`.
     const next = tokens[op + 1];
     if (tokens[op]!.text === "<=" && next?.text === ">" && next.from === tokens[op]!.to)
-      return nullSafeEqual(value(tokens.slice(0, op)), value(tokens.slice(op + 2)));
-    const c = compare(
-      value(tokens.slice(0, op)),
-      value(tokens.slice(op + 1)),
-      ["=", "<>", "!="].includes(tokens[op]!.text),
-    );
-    return c === undefined ? null : COMPARE[tokens[op]!.text]!(c);
+      return (
+        sameOperand(tokens.slice(0, op), tokens.slice(op + 2)) ||
+        nullSafeEqual(value(tokens.slice(0, op)), value(tokens.slice(op + 2)))
+      );
+    const left = tokens.slice(0, op);
+    const right = tokens.slice(op + 1);
+    const symbol = tokens[op]!.text;
+    const c = compare(value(left), value(right), ["=", "<>", "!="].includes(symbol));
+    if (c !== undefined) return COMPARE[symbol]!(c);
+    // `id = id` is true (`id <> id` false) on every row where id is not NULL.
+    return sameOperand(left, right) ? COMPARE[symbol]!(0) : null;
   }
 
   // A bare constant: numbers are true unless 0 (MySQL, SQLite). NULL is unknown, not false:

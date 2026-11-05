@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EditorDocContext } from "@/editor/api";
 import { consoleExtension, executeInView } from "./console";
 import { unsafeStatement } from "./sql/unsafe";
-import { executeConsole, type ConfirmUnsafe } from "./store";
+import { executeConsole, type ConfirmChanges, type ConfirmUnsafe } from "./store";
+import type { DbStatementOutcome } from "@/platform/ipc";
 
 // No backend here: the console bar's data source read would fail and log an error.
 vi.mock("./store", async (original) => ({
@@ -100,5 +101,51 @@ describe("unsafe query warning", () => {
     await second.done;
     expect(second.answer()).toBe(true);
     expect(banner(view)).toBeNull();
+  });
+
+  /** Runs a DELETE that changed `rows` through `executeInView`, recording the Commit / Roll Back answer. */
+  function change(view: EditorView, path: string, rows: number) {
+    let answer: boolean | undefined;
+    vi.mocked(executeConsole).mockImplementationOnce(async (_p, _t, _f, _to, _unsafe, confirm?: ConfirmChanges) => {
+      const outcome: DbStatementOutcome = {
+        statement: { from: FROM, to: TO, text: DOC.slice(FROM, TO) },
+        result: { statement: "", columns: [], rows: [], affected: rows, hasMore: false, elapsedMs: 1, executionMs: 1 },
+        error: null,
+      };
+      answer = await confirm!([outcome], rows);
+      return [outcome];
+    });
+    const done = executeInView(view, path);
+    return { done, answer: () => answer };
+  }
+
+  it("says how many rows a run changed and commits or rolls them back", async () => {
+    const view = open("/p/changes.sql");
+    const first = change(view, "/p/changes.sql", 3);
+    await flush();
+    expect(banner(view)?.textContent).toContain("3 rows changed. Commit or roll back?");
+    // Editing keeps the question: the rows are already changed.
+    view.dispatch({ changes: { from: 0, insert: "-- note\n" } });
+    expect(banner(view)).not.toBeNull();
+    button(view, "Commit").click();
+    await first.done;
+    expect(first.answer()).toBe(true);
+    expect(banner(view)).toBeNull();
+
+    const second = change(view, "/p/changes.sql", 1);
+    await flush();
+    expect(banner(view)?.textContent).toContain("1 row changed. Commit or roll back?");
+    button(view, "Roll Back").click();
+    await second.done;
+    expect(second.answer()).toBe(false);
+  });
+
+  it("rolls back when the console closes while it asks", async () => {
+    const view = open("/p/closed.sql");
+    const pending = change(view, "/p/closed.sql", 2);
+    await flush();
+    view.destroy();
+    await pending.done;
+    expect(pending.answer()).toBe(false);
   });
 });

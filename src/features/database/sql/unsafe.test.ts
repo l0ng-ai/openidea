@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { unsafeMessage, unsafeStatement } from "./unsafe";
+import { changesRows, unsafeMessage, unsafeStatement } from "./unsafe";
 
 const check = (text: string) => unsafeStatement(text, "postgres");
 
@@ -50,7 +50,6 @@ describe("unsafeStatement", () => {
       "DELETE FROM t WHERE id = 1",
       "DELETE FROM t WHERE 1 = 1 AND id = 3",
       "delete from t where 1 = 0 or id = 2",
-      "delete from t where id = id",
       "delete from t where x between 1 and 2",
       "delete from t where 1 = 2",
       "update t set a = 1 where current of c",
@@ -110,7 +109,6 @@ describe("unsafeStatement", () => {
       "id IS NULL OR name IS NOT NULL",
       "NULL",
       "0",
-      "id = id",
       "x BETWEEN 1 AND 3",
     ])
       expect(check(`delete from t where ${where}`), where).toBeNull();
@@ -173,7 +171,6 @@ describe("unsafeStatement", () => {
       "NOT (NULL)",
       "NULL IS UNKNOWN",
       "1 <=> NULL",
-      "id <=> id",
       "1 IS DISTINCT FROM 1",
       "1.5::int = 2",
       "'1'::int = 1",
@@ -183,6 +180,36 @@ describe("unsafeStatement", () => {
       "9007199254740993 = 9007199254740992",
       "0.1 + 0.2 <> 0.3",
       "0x1 = 1",
+    ])
+      expect(check(`delete from t where ${where}`), where).toBeNull();
+  });
+
+  it("flags a column compared with itself", () => {
+    const text = "DELETE FROM t_arrangement_request WHERE arrangement_request_id = arrangement_request_id";
+    const u = check(text)!;
+    expect(u).toMatchObject({ kind: "delete", reason: "always-true" });
+    expect(text.slice(u.from, u.to)).toBe("arrangement_request_id = arrangement_request_id");
+    for (const where of [
+      "t.a >= t.a",
+      'a."Id" <= a."Id"',
+      "id = id AND 1 = 1",
+      "NOT (id <> id)",
+      "x BETWEEN x AND x",
+      "a IS NOT DISTINCT FROM a",
+      "a <=> a",
+      "status = 2 OR id = id",
+    ])
+      expect(check(`delete from t where ${where}`), where).toMatchObject({ reason: "always-true" });
+    for (const where of [
+      "t.id = id",
+      "id = id + 0",
+      "id <> id",
+      "a IS DISTINCT FROM a",
+      "random() = random()",
+      "now() = now()",
+      "(select max(id) from u) = (select max(id) from u)",
+      "x BETWEEN x AND 10",
+      "status = 2 AND id = id",
     ])
       expect(check(`delete from t where ${where}`), where).toBeNull();
   });
@@ -247,6 +274,31 @@ describe("unsafeStatement", () => {
     expect(check("WITH x AS (SELECT 1) DELETE FROM t")).toMatchObject({ kind: "delete", reason: "no-where" });
     expect(check("with x as (select id from u where true) delete from t where id in (select id from x)")).toBeNull();
     expect(check("/* cleanup */ DELETE FROM t -- all of it")).toMatchObject({ reason: "no-where" });
+  });
+});
+
+describe("changesRows", () => {
+  it("finds DELETE, UPDATE and MERGE, also nested", () => {
+    const changes = (text: string) => changesRows(text, "postgres");
+    for (const text of [
+      "DELETE FROM t WHERE id = 1",
+      "update t set a = 1",
+      "MERGE INTO t USING u ON t.id = u.id WHEN MATCHED THEN DELETE",
+      "(DELETE FROM t WHERE id = 1)",
+      "EXPLAIN ANALYZE UPDATE t SET a = 1",
+      "WITH d AS (DELETE FROM t WHERE id = 1 RETURNING *) SELECT * FROM d",
+      "WITH x AS (SELECT 1) UPDATE t SET a = 1",
+    ])
+      expect(changes(text), text).toBe(true);
+    for (const text of [
+      "SELECT * FROM t",
+      "INSERT INTO t VALUES (1)",
+      "EXPLAIN DELETE FROM t",
+      "SELECT 'DELETE FROM t'",
+      "TRUNCATE t",
+      "WITH x AS (SELECT 1) SELECT * FROM x",
+    ])
+      expect(changes(text), text).toBe(false);
   });
 });
 

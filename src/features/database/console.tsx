@@ -22,6 +22,7 @@ import {
   Decoration,
   EditorView,
   GutterMarker,
+  ViewPlugin,
   WidgetType,
   gutter,
   showPanel,
@@ -57,6 +58,7 @@ import {
   sourceById,
   targetLabel,
   useDatabase,
+  type ConfirmChanges,
   type ConfirmUnsafe,
 } from "./store";
 import styles from "./Database.module.css";
@@ -78,8 +80,13 @@ interface RunMark {
   ms: number | null;
 }
 
-/** An unsafe statement waiting for Execute / Execute and Suppress (IDEA's warning banner). */
-interface UnsafeMark {
+/**
+ * A run waiting for an answer in the banner under the editor: an unsafe
+ * statement (IDEA's warning: Execute / Execute and Suppress), or the rows a
+ * DELETE / UPDATE changed in its still open transaction (Commit / Roll Back).
+ */
+interface AskMark {
+  kind: "unsafe" | "changes";
   from: number;
   to: number;
   message: string;
@@ -89,21 +96,24 @@ interface RunState {
   marks: readonly RunMark[];
   /** Message of the bottom error banner (`null`: hidden). */
   banner: string | null;
-  unsafe?: UnsafeMark | null;
+  ask?: AskMark | null;
 }
 
 const setRun = StateEffect.define<RunState>();
-const setUnsafe = StateEffect.define<UnsafeMark | null>();
+const setAsk = StateEffect.define<AskMark | null>();
 
 const runField = StateField.define<RunState>({
   create: () => ({ marks: [], banner: null }),
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setRun)) value = { ...e.value, unsafe: value.unsafe };
-    for (const e of tr.effects) if (e.is(setUnsafe)) value = { ...value, unsafe: e.value };
+    for (const e of tr.effects) if (e.is(setRun)) value = { ...e.value, ask: value.ask };
+    for (const e of tr.effects) if (e.is(setAsk)) value = { ...value, ask: e.value };
     if (!tr.docChanged) return value;
+    const a = value.ask;
     // Any edit while the unsafe-query banner waits cancels that run (`cancelUnsafeOnEdit`): the
     // statement it would run was read before the edit, and marks would land on shifted lines.
-    if (value.unsafe) value = { ...value, unsafe: null };
+    // Changes already made stay up for Commit / Roll Back.
+    if (a?.kind === "unsafe") value = { ...value, ask: null };
+    else if (a) value = { ...value, ask: { ...a, from: tr.changes.mapPos(a.from), to: tr.changes.mapPos(a.to) } };
     // Editing a statement drops its mark.
     const marks: RunMark[] = [];
     for (const m of value.marks) {
@@ -129,20 +139,18 @@ const runField = StateField.define<RunState>({
         if (m.ms !== null)
           ranges.push(Decoration.widget({ widget: new TimingWidget(m.ms), side: 1 }).range(m.timingAt));
       }
-      const u = st.unsafe;
+      const u = unsafeOf(st);
       if (u && u.from < u.to) ranges.push(Decoration.mark({ class: "cm-openidea-db-warning" }).range(u.from, u.to));
       return Decoration.set(ranges, true);
     }),
-    showPanel.from(f, (st) =>
-      st.unsafe ? unsafeBanner(st.unsafe.message) : st.banner ? errorBanner(st.banner) : null,
-    ),
+    showPanel.from(f, (st) => (st.ask ? askBanner(st.ask) : st.banner ? errorBanner(st.banner) : null)),
     // The editor's hover shows the run errors and the unsafe-query warning like other problems.
     problemProviders.compute([f], (state) => {
       const st = state.field(f);
       const problems: ContributedProblem[] = [];
       for (const m of st.marks)
         if (m.error && m.from < m.to) problems.push({ from: m.from, to: m.to, severity: "error", message: m.error });
-      const u = st.unsafe;
+      const u = unsafeOf(st);
       if (u && u.from < u.to) problems.push({ from: u.from, to: u.to, severity: "warning", message: u.message });
       return () => problems;
     }),
@@ -195,11 +203,12 @@ const runGutter = gutter({
   markers: (view) => {
     const st = view.state.field(runField);
     const doc = view.state.doc;
-    const unsafeLine = st.unsafe && st.unsafe.from <= doc.length ? doc.lineAt(st.unsafe.from).from : -1;
+    const unsafe = unsafeOf(st);
+    const unsafeLine = unsafe && unsafe.from <= doc.length ? doc.lineAt(unsafe.from).from : -1;
     const ranges = st.marks
       .filter((m) => m.from <= doc.length && doc.lineAt(m.from).from !== unsafeLine)
       .map((m) => new RunMarker(m.error).range(doc.lineAt(m.from).from));
-    if (st.unsafe && unsafeLine >= 0) ranges.push(new RunMarker(null, st.unsafe.message).range(unsafeLine));
+    if (unsafe && unsafeLine >= 0) ranges.push(new RunMarker(null, unsafe.message).range(unsafeLine));
     return RangeSet.of(ranges, true);
   },
 });
@@ -224,24 +233,28 @@ function errorBanner(message: string) {
   };
 }
 
-type UnsafeChoice = "execute" | "suppress" | "cancel";
+/** The unsafe-query warning of `st`, marked in the text, the gutter and the hover. */
+const unsafeOf = (st: RunState) => (st.ask?.kind === "unsafe" ? st.ask : null);
 
-/** The answer to the unsafe-query banner shown in a view. */
-const unsafeAnswers = new WeakMap<EditorView, (choice: UnsafeChoice) => void>();
+/** Execute / Commit, Execute and Suppress, or cancel / Roll Back (the close button). */
+type AskChoice = "execute" | "suppress" | "cancel";
+
+/** The answer to the banner a view asks with. */
+const askAnswers = new WeakMap<EditorView, (choice: AskChoice) => void>();
 /** Consoles whose unsafe queries run without asking (Execute and Suppress), until the app restarts. */
 const unsafeSuppressed = new Set<string>();
 
-function unsafeBanner(message: string) {
+function askBanner(mark: AskMark) {
   return (view: EditorView): Panel => {
     const dom = document.createElement("div");
     dom.className = "cm-openidea-db-banner cm-openidea-db-banner-warning";
     dom.setAttribute("role", "alert");
     const text = document.createElement("span");
     text.className = "cm-openidea-db-banner-text";
-    text.textContent = message;
-    text.dataset.tooltip = message;
-    const answer = (choice: UnsafeChoice) => unsafeAnswers.get(view)?.(choice);
-    const action = (label: string, choice: UnsafeChoice) => {
+    text.textContent = mark.message;
+    text.dataset.tooltip = mark.message;
+    const answer = (choice: AskChoice) => askAnswers.get(view)?.(choice);
+    const action = (label: string, choice: AskChoice) => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "cm-openidea-db-banner-action";
@@ -252,40 +265,80 @@ function unsafeBanner(message: string) {
     const close = document.createElement("button");
     close.type = "button";
     close.className = "cm-openidea-db-banner-close";
-    close.setAttribute("aria-label", tx("Close"));
+    close.setAttribute("aria-label", tx(mark.kind === "unsafe" ? "Close" : "Roll Back"));
     close.appendChild(iconNode("close", 14));
     close.onclick = () => answer("cancel");
-    dom.append(text, action(tx("Execute"), "execute"), action(tx("Execute and Suppress"), "suppress"), close);
+    const actions =
+      mark.kind === "unsafe"
+        ? [action(tx("Execute"), "execute"), action(tx("Execute and Suppress"), "suppress")]
+        : [action(tx("Commit"), "execute"), action(tx("Roll Back"), "cancel")];
+    dom.append(text, ...actions, close);
     return { dom, top: false };
   };
 }
 
-/** Editing the console while the unsafe-query banner waits cancels the run (`runField` hides the banner). */
-const cancelUnsafeOnEdit = EditorView.updateListener.of((u) => {
-  if (u.docChanged) unsafeAnswers.get(u.view)?.("cancel");
-});
+/**
+ * Editing the console while the unsafe-query banner waits cancels the run
+ * (`runField` hides the banner); closing it cancels whatever it asks (changes
+ * waiting for Commit are rolled back).
+ */
+const cancelAskOnEdit = [
+  EditorView.updateListener.of((u) => {
+    if (u.docChanged && u.startState.field(runField).ask?.kind === "unsafe") askAnswers.get(u.view)?.("cancel");
+  }),
+  ViewPlugin.define((view) => ({
+    destroy: () => {
+      closedViews.add(view);
+      askAnswers.get(view)?.("cancel");
+    },
+  })),
+];
+/** Views destroyed with a question open: nothing more to dispatch to them. */
+const closedViews = new WeakSet<EditorView>();
+
+/** Shows `mark` in the banner and waits for the answer. */
+function ask(view: EditorView, mark: AskMark): Promise<AskChoice> {
+  askAnswers.get(view)?.("cancel");
+  return new Promise<AskChoice>((resolve) => {
+    askAnswers.set(view, (choice) => {
+      askAnswers.delete(view);
+      if (!closedViews.has(view) && view.state.field(runField, false)?.ask) view.dispatch({ effects: setAsk.of(null) });
+      resolve(choice);
+    });
+    view.dispatch({ effects: setAsk.of(mark) });
+  });
+}
 
 /** Shows the unsafe-query banner for `statement` and waits for the answer (true: run it). */
 function confirmUnsafe(view: EditorView, path: string): ConfirmUnsafe {
-  return (statement, unsafe) => {
-    if (unsafeSuppressed.has(path)) return Promise.resolve(true);
-    unsafeAnswers.get(view)?.("cancel");
-    return new Promise<boolean>((resolve) => {
-      unsafeAnswers.set(view, (choice) => {
-        unsafeAnswers.delete(view);
-        if (choice === "suppress") unsafeSuppressed.add(path);
-        if (view.state.field(runField, false)?.unsafe) view.dispatch({ effects: setUnsafe.of(null) });
-        resolve(choice !== "cancel");
-      });
-      const len = view.state.doc.length;
-      view.dispatch({
-        effects: setUnsafe.of({
-          from: Math.min(len, statement.from + unsafe.from),
-          to: Math.min(len, statement.from + unsafe.to),
-          message: unsafeMessage(unsafe),
-        }),
-      });
+  return async (statement, unsafe) => {
+    if (unsafeSuppressed.has(path)) return true;
+    const len = view.state.doc.length;
+    const choice = await ask(view, {
+      kind: "unsafe",
+      from: Math.min(len, statement.from + unsafe.from),
+      to: Math.min(len, statement.from + unsafe.to),
+      message: unsafeMessage(unsafe),
     });
+    if (choice === "suppress") unsafeSuppressed.add(path);
+    return choice !== "cancel";
+  };
+}
+
+/** Marks what ran, says how many rows it changed and waits for Commit (true) or Roll Back. */
+function confirmChanges(view: EditorView): ConfirmChanges {
+  return async (outcomes, rows) => {
+    markOutcomes(view, outcomes);
+    const len = view.state.doc.length;
+    const message =
+      rows === 1 ? tx`1 row changed. Commit or roll back?` : tx`${rows} rows changed. Commit or roll back?`;
+    const choice = await ask(view, {
+      kind: "changes",
+      from: Math.min(len, outcomes[0]!.statement.from),
+      to: Math.min(len, outcomes.at(-1)!.statement.to),
+      message,
+    });
+    return choice === "execute";
   };
 }
 
@@ -309,7 +362,14 @@ export function markOutcomes(view: EditorView, outcomes: readonly DbStatementOut
 /** Runs the statement at the caret (or the selected ones) of `view`. */
 export async function executeInView(view: EditorView, path: string) {
   const sel = view.state.selection.main;
-  const outcomes = await executeConsole(path, view.state.doc.toString(), sel.from, sel.to, confirmUnsafe(view, path));
+  const outcomes = await executeConsole(
+    path,
+    view.state.doc.toString(),
+    sel.from,
+    sel.to,
+    confirmUnsafe(view, path),
+    confirmChanges(view),
+  );
   if (outcomes.length) markOutcomes(view, outcomes);
 }
 
@@ -627,7 +687,7 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     consolePath.of(ctx.path),
     runField,
     runGutter,
-    cancelUnsafeOnEdit,
+    cancelAskOnEdit,
     showPanel.of(consolePanel(ctx.path)),
     EditorState.languageData.of(() => [
       { openideaCompletion: completionSource(ctx.path), [TEMPLATE_CONTEXT_KEY]: templateContextsAt(ctx.path) },
