@@ -735,6 +735,11 @@ impl Documents {
         self.with_doc(doc, |st| Ok(st.dirty))
     }
 
+    /// Path and version for navigation queries, without copying document text.
+    pub fn identity(&self, doc: DocId) -> IdeResult<(PathBuf, u32)> {
+        self.with_doc(doc, |st| Ok((st.path.clone(), st.doc.version())))
+    }
+
     /// Current generation without copying the document text.
     pub fn version(&self, doc: DocId) -> IdeResult<u32> {
         self.with_doc(doc, |st| Ok(st.doc.version()))

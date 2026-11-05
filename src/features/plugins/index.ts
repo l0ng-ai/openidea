@@ -1,3 +1,5 @@
+import { startPluginNavigation } from "./navigation";
+import { startPluginPresentation } from "./presentation";
 /**
  * Plugins: Settings › Plugins (installed list, enable/disable, install from
  * disk with a permission page, uninstall, theme selection) and the runtime
@@ -133,6 +135,8 @@ export function activate(): () => void {
       },
     ]),
     startPluginBridge(),
+    startPluginNavigation(),
+    startPluginPresentation(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
     // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).

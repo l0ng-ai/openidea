@@ -204,6 +204,17 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
+    if kind == GotoKind::Definition
+        && let Some(plugins) = crate::plugins::editor_plugin_host()
+    {
+        let project = host.project(window)?;
+        let (path, version) = project.documents.identity(doc)?;
+        if let Some(found) = plugins.navigation_at(&project.root, &path, version, pos, Some(window), |p| {
+            project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
+        }) {
+            return Ok(found.targets);
+        }
+    }
     let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
     if kind != GotoKind::Definition {
         return result;

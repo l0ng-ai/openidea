@@ -1,0 +1,26 @@
+package openidea:plugin@1.0.0;
+
+/// Optional, bounded document indexing. Runs in cancellable background batches;
+/// clicks resolve the published symbolic edges without calling the component.
+interface document-indexer {
+    use types.{range};
+    record symbol { name: string, kind: string, container: option<string>, span: range }
+    record document { path: string, text: string, symbols: list<symbol> }
+    record anchor { key: string, span: range }
+    record alias { prefix: string, target: string }
+    record region { language: string, span: range }
+    record presentation {
+        icon: option<string>,
+        linked-only: bool,
+        markers: list<anchor>,
+        regions: list<region>,
+    }
+    record edges {
+        definitions: list<anchor>,
+        references: list<anchor>,
+        aliases: list<alias>,
+        presentation: presentation,
+    }
+    index: func(doc: document) -> edges;
+}
+world indexing { export document-indexer; }

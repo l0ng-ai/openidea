@@ -150,6 +150,14 @@ is loaded. Menus, shortcuts and status bar items refer to the plugin's
 declared commands. A plugin shortcut never takes a keystroke the IDE (or the
 user) already uses; the user can rebind it in the keymap editor.
 
+### Background associations
+
+`[[contributes.documentIndexers]]` declares file `extensions` and requires the optional
+SDK `DocumentIndexer` export. It publishes cross-file associations, source ranges
+and embedded SQL regions in background batches, not on the editing path. See
+[Background document indexers](../docs/plugins/indexing.md). Existing `providers`
+and `fileIcons` contributions remain available alongside it.
+
 ### Activation
 
 Code is instantiated lazily: when one of the plugin's commands runs, or when

@@ -189,6 +189,43 @@ impl ProjectIndex {
         out
     }
 
+    /// Reuse indexed syntax tags only for the exact text snapshot. Unsaved or
+    /// not-yet-indexed contents fall back to the caller's parser.
+    pub fn symbols_for_text(&self, path: &Path, text: &str) -> Option<Vec<ide_language::SymbolTag>> {
+        let hash = blake3::hash(text.as_bytes());
+        let data = self.shared.data.read();
+        let file = data.get(path)?;
+        if &file.hash != hash.as_bytes() {
+            return None;
+        }
+        Some(
+            file.symbols
+                .iter()
+                .map(|s| ide_language::SymbolTag {
+                    name: s.name.to_string(),
+                    kind: s.kind,
+                    container: s.container.as_ref().map(ToString::to_string),
+                    range: s.range,
+                })
+                .collect(),
+        )
+    }
+
+    /// Bounded file inventory for background plugin indexers; honors the same
+    /// project/exclude scope as search and never walks the filesystem.
+    pub fn files_with_extensions(&self, extensions: &[String], limit: usize) -> Vec<PathBuf> {
+        self.shared
+            .data
+            .read()
+            .files
+            .iter()
+            .flatten()
+            .filter(|f| f.path.extension().and_then(|e| e.to_str()).is_some_and(|e| extensions.iter().any(|x| x == e)))
+            .take(limit)
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
     /// Fuzzy file search. IDEA-like ranking: file-name matches beat directory
     /// matches; `/` in the query matches path segments; recently opened files boost.
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {

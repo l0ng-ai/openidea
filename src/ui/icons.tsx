@@ -1117,3 +1117,8 @@ export function folderIconName(kind: FolderKind = "plain"): IconName {
       return "folder";
   }
 }
+
+/** Validated built-in and registered, sanitized plugin icons. */
+export function isIconName(name: string): name is IconName {
+  return iconPath(name) !== undefined;
+}

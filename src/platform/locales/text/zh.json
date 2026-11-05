@@ -6183,5 +6183,9 @@
   "Plugin update available": "有插件可更新",
   "{length} plugin updates available": "{length} 个插件可更新",
   "Updated {updated} plugins": "已更新 {updated} 个插件",
-  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "此版本的签名密钥与已安装的版本不同，且发布者之前的密钥没有为它背书。只有在确认发布者更换了密钥时才继续。"
+  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "此版本的签名密钥与已安装的版本不同，且发布者之前的密钥没有为它背书。只有在确认发布者更换了密钥时才继续。",
+  "Choose Mapping Target": "选择映射目标",
+  "Plugin navigation indexing incomplete": "插件导航索引未完成",
+  "Choose Declaration": "选择声明",
+  "Go to mapping: {target}": "跳转到映射：{target}"
 }

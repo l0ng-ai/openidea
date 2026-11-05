@@ -1,7 +1,8 @@
+import { usePluginFileIcon, usePluginPresentations, watchPluginPresentation } from "./pluginPresentation";
 /** Visible-file JVM presentation: one bounded IPC batch, shared cache and watcher. */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
-import { fileIconName, useFileIconRevision, type IconName } from "@/ui/icons";
+import { fileIconName, isIconName, useFileIconRevision, type IconName } from "@/ui/icons";
 import { call, commands, isTauri, onIdeEvent, type JvmPresentation } from "./ipc";
 import { basename, relativePath, useProject } from "./project";
 import { rootFor, type RootFolder } from "./languageSettings";
@@ -162,7 +163,8 @@ export function useFilePresentation(path: string, mtime?: number | null) {
   const roots = useEffectiveRoots();
   const root = useProject((s) => s.project?.root ?? null);
   const build = useProjectPresentation();
-  const icon = presentationIcon(path, info, roots, root, build.spring);
+  const pluginIcon = usePluginFileIcon(path);
+  const icon = pluginIcon ?? presentationIcon(path, info, roots, root, build.spring);
   return { icon, runnable: !!info?.runnable && icon !== "spring-boot" && icon !== "jvm-test" };
 }
 
@@ -170,11 +172,12 @@ export function useFilePresentation(path: string, mtime?: number | null) {
 export function useFilePresentationIcons(paths: readonly string[]) {
   const key = JSON.stringify(paths);
   useEffect(() => {
-    const disposers = (JSON.parse(key) as string[]).map(mount);
+    const disposers = (JSON.parse(key) as string[]).flatMap((p) => [mount(p), watchPluginPresentation(p)]);
     return () => disposers.forEach((dispose) => dispose());
   }, [key]);
   const entries = cache((s) => s.entries);
   const iconRevision = useFileIconRevision();
+  const pluginEntries = usePluginPresentations((s) => s.entries);
   const roots = useEffectiveRoots();
   const root = useProject((s) => s.project?.root ?? null);
   const build = useProjectPresentation();
@@ -183,10 +186,12 @@ export function useFilePresentationIcons(paths: readonly string[]) {
       new Map(
         (JSON.parse(key) as string[]).map((path) => [
           path,
-          presentationIcon(path, entries.get(path), roots, root, build.spring),
+          pluginEntries.get(path)?.icon && isIconName(pluginEntries.get(path)!.icon!)
+            ? (pluginEntries.get(path)!.icon! as IconName)
+            : presentationIcon(path, entries.get(path), roots, root, build.spring),
         ]),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- iconRevision: the file icon theme changed
-    [key, entries, roots, root, build.spring, iconRevision],
+    [key, entries, pluginEntries, roots, root, build.spring, iconRevision],
   );
 }
