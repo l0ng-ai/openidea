@@ -3,6 +3,7 @@
 //! wraps one [`Host`] and adds windows and menus; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
+pub mod analysis_scheduler;
 pub mod data_dirs;
 pub mod environment;
 mod formatter;
