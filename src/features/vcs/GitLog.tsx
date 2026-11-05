@@ -1263,16 +1263,20 @@ function CommitList() {
       ),
     [all, heads, headCommit],
   );
+  const keep = useMemo(
+    () =>
+      opts.collapseLinear || fragments.collapsed.size
+        ? new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])
+        : null,
+    [opts.collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
+  );
   const {
     commits,
     rows,
     linear,
     collapsed,
     graph: displayedGraph,
-  } = useMemo(
-    () => presentLogGraph(all, opts, fragments, new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])),
-    [all, opts, fragments, headKeys, selection, bookmarks],
-  );
+  } = useMemo(() => presentLogGraph(all, opts, fragments, keep ?? new Set()), [all, opts, fragments, keep]);
   const { edges: highlighted, nodes: highlightedNodes } = useMemo(() => {
     const empty = { edges: new Set<string>(), nodes: new Set<string>() };
     if (!hoverColor) return empty;
@@ -1321,8 +1325,9 @@ function CommitList() {
   const onlyCurrent = filterBranches.length > 0 && filterBranches.every((b) => b === "HEAD" || b === currentBranch);
   const onBranch = useMemo(() => {
     if (!opts.highlightCurrentBranch || onlyCurrent) return null;
-    const reach = new Set<string>();
-    for (const head of headKeys) for (const id of reachableFrom(all.map(graphCommit), head)) reach.add(id);
+    const reach = all.some((c) => c.onCurrentBranch == null)
+      ? reachableFrom(all.map(graphCommit), headKeys)
+      : new Set<string>();
     for (const c of all) {
       if (c.onCurrentBranch === true) reach.add(commitKey(c));
       else if (c.onCurrentBranch === false) reach.delete(commitKey(c));

@@ -994,6 +994,13 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
         before ? streams.map((stream, i) => [...stream, ...(currentStreams[i] ?? [])]) : streams,
         before || joined || s.seek || (replace && s.commits.length) ? Number.MAX_SAFE_INTEGER : limit,
       );
+      if (replace && roots.length > 1 && s.commits.length && !s.seek) {
+        // Keep the loaded window through its last surviving commit. Older candidates
+        // from each repository are fetched again when paging.
+        const loadedKeys = new Set(s.commits.map(commitKey));
+        const last = page.findLastIndex((c) => loadedKeys.has(commitKey(c)));
+        page.length = Math.min(page.length, Math.max(limit, last + 1));
+      }
       const cur = logState(id);
       if (cur.generation !== gen) return;
       if (replace && results.length > 0 && failures.length === results.length && cur.commits.length) {
