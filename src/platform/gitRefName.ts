@@ -4,7 +4,9 @@
 export const BRANCH_CLEANUP_SYMBOL = "-";
 
 // Characters and sequences git forbids that cannot be repaired by substitution are dropped.
-const DROP = /^\.|^-|^\/|[~:^?*"[\\]+|(?:@\{)+|\/(?=\/)|(?:\.(?=\.))+|\.(?=\/)|(?<=\/)\./g;
+const DROP = /^\.|^-|^\/|[~:^?*"[\\]+|(?:@\{)+|\/(?=\/)|(?:\.(?=\.))+|\.(?=\/)/g;
+// IntelliJ drops a dot after a slash with a lookbehind, which pre-16.4 WebKit cannot parse.
+const DOT_AFTER_SLASH = /\/\./g;
 // A run of whitespace / control characters becomes one separator. It also absorbs separators
 // mixed into or next to it, so pressing Space again after the substituted one doesn't stack them (IntelliJ
 // collapses only spaces typed in one go).
@@ -12,7 +14,7 @@ const SEPARATOR = BRANCH_CLEANUP_SYMBOL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const REPLACE = new RegExp(`(?:${SEPARATOR}|[ \\p{Cc}])*[ \\p{Cc}](?:${SEPARATOR}|[ \\p{Cc}])*`, "gu");
 
 function cleanOnce(name: string): string {
-  return name.replace(DROP, "").replace(REPLACE, BRANCH_CLEANUP_SYMBOL);
+  return name.replace(DROP, "").replace(DOT_AFTER_SLASH, "/").replace(REPLACE, BRANCH_CLEANUP_SYMBOL);
 }
 
 /**
