@@ -19,6 +19,7 @@ export type PythonSymbolKind =
   | "constant"
   | "property"
   | "typeParameter"
+  | "unusedParameter"
   | "builtin";
 
 const PYTHON_CLASSES: Record<PythonSymbolKind, string> = {
@@ -32,6 +33,7 @@ const PYTHON_CLASSES: Record<PythonSymbolKind, string> = {
   constant: "cm-sem-constant cm-sem-python-constant",
   property: "cm-sem-property cm-sem-python-property",
   typeParameter: "cm-sem-typeParameter cm-sem-python-type-parameter",
+  unusedParameter: "cm-sem-parameter cm-sem-unused",
   builtin: "cm-sem-builtin cm-sem-python-builtin",
 };
 
@@ -91,6 +93,7 @@ const KIND_PRIORITY: Record<PythonSymbolKind, number> = {
   globalVariable: 70,
   typeParameter: 90,
   parameter: 80,
+  unusedParameter: 80,
   property: 80,
   constant: 70,
   classAttribute: 60,
@@ -104,6 +107,33 @@ const KIND_PRIORITY: Record<PythonSymbolKind, number> = {
 function scope(node: SyntaxNode | null): SyntaxNode | null {
   for (; node; node = node.parent) if (SCOPE_NODES.has(node.name)) return node;
   return null;
+}
+
+const STUB_STATEMENTS = new Set(["PassStatement", "RaiseStatement"]);
+
+/**
+ * Whether the parameters `fn` doesn't read count as unused. Not for stubs (a body of only a
+ * docstring, `...`, `pass` or `raise`), `@abstractmethod` / `@overload` / `@override`, dunder
+ * methods or methods of a class with bases: those signatures are dictated elsewhere.
+ */
+function checksUnusedParameters(fn: SyntaxNode, doc: Text): boolean {
+  if (fn.name !== "FunctionDefinition") return true;
+  const name = directName(fn);
+  if (name && /^__\w+__$/.test(doc.sliceString(name.from, name.to))) return false;
+  if (fn.parent?.name === "DecoratedStatement")
+    for (let d = fn.parent.firstChild; d; d = d.nextSibling)
+      if (d.name === "Decorator" && /\b(?:abstractmethod|overload|override)\b/.test(doc.sliceString(d.from, d.to)))
+        return false;
+  const owner = scope(fn.parent);
+  if (owner?.name === "ClassDefinition" && owner.getChild("ArgList")) return false;
+  const body = fn.getChild("Body");
+  for (let st = body?.firstChild; st; st = st.nextSibling) {
+    if (st.name === ":" || st.name === "Comment" || STUB_STATEMENTS.has(st.name)) continue;
+    const only = st.name === "ExpressionStatement" ? st.firstChild : null;
+    if (only && !only.nextSibling && (only.name === "String" || only.name === "Ellipsis")) continue;
+    return true;
+  }
+  return false;
 }
 
 function enclosingClass(node: SyntaxNode | null): SyntaxNode | null {
@@ -340,6 +370,24 @@ export function pythonSymbolKinds(tree: Tree, doc: Text): Map<string, PythonSymb
     },
   });
 
+  const usedParameters = new Set<string>();
+  tree.iterate({
+    enter(cursor) {
+      const node = cursor.node;
+      if (node.name !== "VariableName" || hasAncestor(node, "ParamList")) return;
+      const name = text(node);
+      let crossedFunction = false;
+      for (let current = scope(node); current; current = scope(current.parent)) {
+        if (FUNCTION_SCOPES.has(current.name)) crossedFunction = true;
+        const kind = bindings.get(key(current))?.get(name);
+        if (!kind) continue;
+        if (crossedFunction && current.name === "ClassDefinition" && kind !== "typeParameter") continue;
+        if (kind === "parameter") usedParameters.add(`${key(current)}:${name}`);
+        break;
+      }
+    },
+  });
+
   const resolve = (
     node: SyntaxNode,
     name: string,
@@ -394,6 +442,18 @@ export function pythonSymbolKinds(tree: Tree, doc: Text): Map<string, PythonSymb
   const kindFor = (node: SyntaxNode): PythonSymbolKind | undefined => {
     const name = text(node);
     if (node.name === "PropertyName") return memberKind(node, name);
+    if (node.parent?.name === "ParamList") {
+      const owner = scope(node);
+      if (
+        owner &&
+        name !== "self" &&
+        name !== "cls" &&
+        !name.startsWith("_") &&
+        !usedParameters.has(`${key(owner)}:${name}`) &&
+        checksUnusedParameters(owner, doc)
+      )
+        return "unusedParameter";
+    }
     const start = node.parent?.name === "FunctionDefinition" ? scope(node.parent.parent) : scope(node);
     const resolved = resolve(node, name, start);
     if (resolved) return resolved;
@@ -423,8 +483,34 @@ export function pythonSyntaxRanges(
   tree.iterate({
     enter(cursor) {
       const node = cursor.node;
-      if (!["VariableName", "PropertyName", "String", "Escape", "(", ")", "[", "]", "{", "}"].includes(node.name))
+      if (
+        ![
+          "VariableName",
+          "PropertyName",
+          "String",
+          "FormatString",
+          "type",
+          "Escape",
+          "(",
+          ")",
+          "[",
+          "]",
+          "{",
+          "}",
+        ].includes(node.name)
+      )
         return;
+      if (node.name === "FormatString") {
+        const className = "cm-sem-python-fstring";
+        let from = node.from;
+        for (let child = node.firstChild; child; child = child.nextSibling) {
+          if (child.name !== "FormatReplacement") continue;
+          if (child.from > from) ranges.push({ from, to: child.from, className, source: "pythonSyntax" });
+          from = child.to;
+        }
+        if (from < node.to) ranges.push({ from, to: node.to, className, source: "pythonSyntax" });
+        return;
+      }
       const text = doc.sliceString(node.from, node.to);
       const symbol = symbols.get(`${node.from}:${node.to}`);
       let style: string | undefined;
@@ -433,7 +519,7 @@ export function pythonSyntaxRanges(
       else if (["[", "]"].includes(node.name)) style = "python-brackets";
       else if (["{", "}"].includes(node.name)) style = "python-braces";
       else if (node.name === "VariableName") {
-        if (symbol === "typeParameter") className = pythonSymbolClasses(symbol);
+        if (symbol === "typeParameter" || symbol === "unusedParameter") className = pythonSymbolClasses(symbol);
         else if (node.parent?.name === "FunctionDefinition") {
           if (symbol === "property") className = pythonSymbolClasses(symbol);
           else
@@ -467,6 +553,7 @@ export function pythonSyntaxRanges(
         if (docstring && !/^[bf]/i.test(text)) style = "python-docstring";
         else if (/^[rub]*b[rub]*['"]/i.test(text)) style = "python-bytes";
       } else if (node.name === "Escape") style = "python-escape";
+      else if (node.name === "type" && node.parent?.name === "TypeDefinition") style = "keyword";
       if (style) className = `cm-sem-${style}`;
       if (className) ranges.push({ from: node.from, to: node.to, className, source: "pythonSyntax" });
       if (style === "python-docstring") return false;

@@ -30,6 +30,7 @@
   "Predefined name usage": "预定义名称引用",
   "Predefined function definition": "预定义函数定义",
   "Byte string": "字节字符串",
+  "F-string": "F 字符串",
   "Nested function definition": "嵌套函数定义",
   "Local variable": "局部变量",
   "Global variable": "全局变量",

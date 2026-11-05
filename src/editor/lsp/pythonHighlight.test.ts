@@ -50,6 +50,71 @@ class Foo:
     );
   });
 
+  it("marks unused parameters and highlights type and f-string keywords", async () => {
+    const state = await parse(`type Alias = list[int]
+s = f"value={1}"
+def used(x):
+    return x
+def unused(param):
+    return 1
+def skipped(self, _hidden):
+    return 1
+`);
+    const tree = syntaxTree(state);
+    const kinds = pythonSymbolKinds(tree, state.doc);
+    const kindOf = (name: string) =>
+      [...kinds]
+        .filter(([range]) => {
+          const [from, to] = range.split(":").map(Number);
+          return state.doc.sliceString(from!, to!) === name;
+        })
+        .map(([, kind]) => kind);
+    expect(kindOf("param")).toEqual(["unusedParameter"]);
+    expect(kindOf("x")).toEqual(["parameter", "parameter"]);
+    expect(kindOf("self")).toEqual(["parameter"]);
+    expect(kindOf("_hidden")).toEqual(["parameter"]);
+
+    // Signatures dictated elsewhere: stubs, abstract / overloaded methods, dunders, overrides.
+    const stubs = await parse(`from abc import abstractmethod
+class Plain:
+    def method(self, unused_a):
+        return 1
+    def stub(self, stub_a):
+        """Doc."""
+        ...
+    def todo(self, todo_a):
+        raise NotImplementedError
+    def nothing(self, pass_a): pass
+    @abstractmethod
+    def abstract(self, abstract_a):
+        return 1
+    def __exit__(self, exc_type, exc, tb):
+        return None
+class Child(Plain):
+    def method(self, override_a):
+        return 2
+`);
+    const stubKinds = pythonSymbolKinds(syntaxTree(stubs), stubs.doc);
+    const stubKindOf = (name: string) =>
+      [...stubKinds]
+        .filter(([range]) => {
+          const [from, to] = range.split(":").map(Number);
+          return stubs.doc.sliceString(from!, to!) === name;
+        })
+        .map(([, kind]) => kind);
+    expect(stubKindOf("unused_a")).toEqual(["unusedParameter"]);
+    for (const name of ["stub_a", "todo_a", "pass_a", "abstract_a", "exc_type", "tb", "override_a"])
+      expect(stubKindOf(name), name).toEqual(["parameter"]);
+
+    const ranges = pythonSyntaxRanges(tree, state.doc, kinds);
+    const styles = ranges.map((r) => [state.doc.sliceString(r.from, r.to), r.className]);
+    expect(styles).toContainEqual(["param", "cm-sem-parameter cm-sem-unused"]);
+    expect(styles).toContainEqual(["type", "cm-sem-keyword"]);
+    const fstring = ranges.filter((r) => r.className === "cm-sem-python-fstring");
+    expect(fstring.length).toBeGreaterThan(0);
+    expect(fstring.some((r) => state.doc.sliceString(r.from, r.to).includes("value="))).toBe(true);
+  });
+
   it("lets server classification override the local builtin guess", async () => {
     const state = await parse("print(1)");
     const ranges = semanticRanges(
