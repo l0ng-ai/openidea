@@ -504,13 +504,24 @@ impl Tools {
         if self.platform.os != Os::Windows {
             return self.which_any(&["python3", "python"]);
         }
-        ["python", "py", "python3"].into_iter().filter_map(|c| self.which(c)).find(|p| {
-            !is_app_execution_alias(p) || {
-                let mut c = self.python_command(p);
-                c.arg("--version");
-                run_quiet(c, Duration::from_secs(5)).is_some_and(|(ok, _)| ok)
-            }
-        })
+        ["python", "py", "python3"]
+            .into_iter()
+            .flat_map(|command| {
+                std::env::split_paths(&self.system_path).filter_map(move |dir| {
+                    if dir.as_os_str().is_empty() {
+                        return None;
+                    }
+                    let search = std::env::join_paths([dir]).ok()?;
+                    ide_core::tool_path::find_command(command, &search, &self.root)
+                })
+            })
+            .find(|p| {
+                !is_app_execution_alias(p) || {
+                    let mut c = self.python_command(p);
+                    c.arg("--version");
+                    run_quiet(c, Duration::from_secs(5)).is_some_and(|(ok, _)| ok)
+                }
+            })
     }
 
     /// Executable `cmd` inside `dir`, honouring Windows suffixes.
