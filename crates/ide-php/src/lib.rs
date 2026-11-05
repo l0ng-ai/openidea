@@ -30,9 +30,14 @@
 //! - [`stubs`]: built-in declarations from the bundled phpstorm-stubs
 //!   ([`stubs::BundledStubs`]), filtered by PHP version and enabled
 //!   extensions ([`stubs::StubFilter`]).
+//! - [`engine`]: the engine of one open project ([`engine::PhpEngine`]):
+//!   a background worker that keeps the indexes up to date with the layout
+//!   and watcher batches, dumb-mode and readiness events, and open
+//!   documents overriding the disk.
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
+pub mod engine;
 pub mod index;
 pub mod names;
 pub mod probe;

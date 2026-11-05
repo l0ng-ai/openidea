@@ -47,7 +47,7 @@ use std::time::UNIX_EPOCH;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use rayon::prelude::*;
 use redb::backends::InMemoryBackend;
-use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableError};
+use redb::{Database, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableError};
 use serde::{Deserialize, Serialize};
 
 use crate::names::NameKind;
@@ -345,6 +345,23 @@ impl PhpIndex {
             out.push(item.map_err(internal)?.0.value().to_owned());
         }
         Ok(out)
+    }
+
+    /// How many files and declarations (class-likes, functions and
+    /// constants, counting each declaring file) the index holds.
+    pub fn counts(&self) -> IdeResult<(u64, u64)> {
+        let txn = self.db.begin_read().map_err(internal)?;
+        let files = match txn.open_table(FILES) {
+            Ok(t) => t.len().map_err(internal)?,
+            Err(TableError::TableDoesNotExist(_)) => 0,
+            Err(e) => return Err(internal(e)),
+        };
+        let decls = match txn.open_multimap_table(FQNS) {
+            Ok(t) => t.len().map_err(internal)?,
+            Err(TableError::TableDoesNotExist(_)) => 0,
+            Err(e) => return Err(internal(e)),
+        };
+        Ok((files, decls))
     }
 
     /// The stored record of a file.

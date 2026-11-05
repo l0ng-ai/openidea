@@ -55,6 +55,8 @@ pub struct Project {
     /// Native notebooks and owned kernels, scoped to this project incarnation.
     pub notebooks: Arc<crate::notebook::NotebookService>,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
+    /// The native PHP engine, while Settings › PHP › Engine is `Native`.
+    pub php: Arc<crate::php::PhpEngineSlot>,
     pub(crate) watcher: Watcher,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
@@ -116,6 +118,8 @@ impl Host {
             })?;
         }
         let project_key = project_key(&root);
+        // The index and the PHP engine both report dumb mode; the UI sees them merged.
+        let index_states = crate::php::IndexStates::new(sink.clone(), 2);
         let index = ProjectIndex::open(
             &root,
             &self.local_data_dir.join("index").join(&project_key),
@@ -123,7 +127,7 @@ impl Host {
             excludes.clone(),
             languages.clone(),
             self.syntax(),
-            sink.clone(),
+            index_states.producer(0),
         )?;
         mark("index");
         let lsp = LspManager::new(root.clone(), languages.clone(), sink.clone());
@@ -283,6 +287,13 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(kotlin_bridge.clone());
+        let php = Arc::new(crate::php::PhpEngineSlot::new(
+            &root,
+            &self.local_data_dir.join("cache").join(&project_key),
+            index_states.producer(1),
+            documents.clone(),
+        ));
+        documents.add_observer(Arc::new(crate::php::PhpObserver(php.clone())));
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
@@ -303,6 +314,7 @@ impl Host {
             let lsp = lsp.clone();
             let trusted = trusted.clone();
             let build_cache = build_cache.clone();
+            let php = php.clone();
             Watcher::start(
                 &root.clone(),
                 excludes.clone(),
@@ -312,6 +324,7 @@ impl Host {
                     let (ignored, ignored_gone) = ignored_changes(batch);
                     index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
+                    php.files_changed(&changed, &batch.removed);
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
                     if composer_changed(&root, changed.iter().chain(&batch.removed)) {
@@ -477,6 +490,7 @@ impl Host {
             agents,
             notebooks,
             kotlin_bridge: Some(kotlin_bridge),
+            php,
             watcher,
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
@@ -507,6 +521,8 @@ impl Host {
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.start(&self.runtime);
         }
+        // Only when Settings › PHP › Engine asks for it; returns at once (it indexes in the background).
+        project.php.apply(&project.settings.effective());
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
         }
@@ -587,6 +603,13 @@ impl Host {
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
+        // Never started: LightEdit has no project to index.
+        let php = Arc::new(crate::php::PhpEngineSlot::new(
+            &dir,
+            &self.local_data_dir.join("cache").join(&project_key),
+            sink.clone(),
+            documents.clone(),
+        ));
         let project = Arc::new(Project {
             trusted: Arc::new(AtomicBool::new(false)),
             sink,
@@ -611,6 +634,7 @@ impl Host {
             agents,
             notebooks,
             kotlin_bridge: None,
+            php,
             watcher,
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),

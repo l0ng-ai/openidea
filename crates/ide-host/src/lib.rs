@@ -10,6 +10,7 @@ mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;
 pub mod ops;
+pub mod php;
 pub mod plugins;
 mod project;
 mod proxy;
@@ -192,6 +193,7 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.php.shutdown();
             project.documents.clear_workspace_edit_history();
             project.agents.shutdown();
             project.notebooks.stop_admission();
@@ -285,6 +287,7 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.php.shutdown();
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();

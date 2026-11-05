@@ -30,6 +30,7 @@ ide-spell.workspace = true
 ide-terminal.workspace = true
 ide-run.workspace = true
 ide-sdk.workspace = true
+ide-php.workspace = true
 ide-http.workspace = true
 reqwest.workspace = true
 ignore.workspace = true

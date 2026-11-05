@@ -5390,6 +5390,13 @@ export type PathCompletion = {
 	dir: boolean,
 };
 
+/**  Settings › PHP › Engine. */
+export type PhpEngineKind = 
+/**  The Intelephense language server. */
+"intelephense" | 
+/**  The built-in engine: indexes the project in-process. */
+"native";
+
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
@@ -5408,6 +5415,11 @@ export type PhpSettings = {
 	 *  `composer.json` (`wordpress`).
 	 */
 	stubs?: string[],
+	/**
+	 *  Which engine answers code insight for PHP: the Intelephense language server
+	 *  or the built-in native engine (`ide-php`).
+	 */
+	engine?: PhpEngineKind,
 };
 
 /**  The focused editor when a plugin command is invoked. */

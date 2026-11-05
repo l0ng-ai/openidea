@@ -4287,6 +4287,7 @@ dependencies = [
  "ide-language",
  "ide-lsp",
  "ide-notebook",
+ "ide-php",
  "ide-plugin",
  "ide-remote",
  "ide-run",

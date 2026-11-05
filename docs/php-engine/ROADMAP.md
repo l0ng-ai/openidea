@@ -157,7 +157,7 @@ The design:
 
   Tests: `strlen` and `ArrayIterator` are present, and a PHP 8.3-only function is hidden at 8.1.
 
-- [ ] Phase 1.8: Engine in the project
+- [x] Phase 1.8: Engine in the project
       Add `PhpEngine` (with `open`, `shutdown` and `status`) as a field of `Project` in `crates/ide-host/src/project.rs`:
   - Register a `DocumentObserver` so open buffers override disk contents.
   - Forward watcher batches so the indexes are updated.

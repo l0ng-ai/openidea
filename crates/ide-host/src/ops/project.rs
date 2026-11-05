@@ -202,6 +202,19 @@ pub fn set_settings(
             }
         });
     }
+    // Settings › PHP › Engine starts or stops the native engine; include paths and
+    // excluded folders rescan it.
+    let php = ["languages", "languages.php", "files", "projectStructure"]
+        .iter()
+        .any(|k| key == *k || key.starts_with(&format!("{k}.")));
+    if php {
+        let affected = affected();
+        host.runtime.spawn_blocking(move || {
+            for project in affected.into_iter().filter(|p| !p.light) {
+                project.php.apply(&project.settings.effective());
+            }
+        });
+    }
     let roots_changed = current.as_ref().filter(|_| roots_changed && project_scope).map(|p| p.root.clone().into());
     Ok(SettingsApplied { settings: host.with_proxy_password(settings), project_scope, roots_changed })
 }
