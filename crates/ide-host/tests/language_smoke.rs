@@ -1068,3 +1068,56 @@ const PHP: Checks = Checks {
 async fn php() {
     smoke("php", PHP).await;
 }
+
+/// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
+/// server: the checks it answers so far, the Structure view and go to definition of class names (in
+/// a `new`, an `extends` and a `use` import). Not ignored: it needs nothing installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn php_native() {
+    let smoke = Smoke::start("php", &PHP).await;
+    ops::project::set_settings(
+        &smoke.host,
+        WINDOW,
+        ide_workspace::settings::SettingsScope::Project,
+        "languages.php.engine",
+        "\"native\"",
+    )
+    .unwrap();
+    let project = smoke.host.project(WINDOW).unwrap();
+    let engine =
+        smoke.retry("native engine", smoke.warm_up, || async { project.php.engine().ok_or("not started") }).await;
+    assert!(engine.wait_idle(smoke.warm_up), "the native engine finishes indexing");
+
+    // The Structure view comes from the engine: its items carry PHP signatures.
+    let (file, symbols) = PHP.outline;
+    smoke.outline(file, symbols).await;
+    let (doc, _) = smoke.doc(file).await;
+    let items = ops::doc::doc_outline(&smoke.host, WINDOW, doc).await.unwrap();
+    let add = items.iter().flat_map(|i| &i.children).find(|i| i.name == "add").expect("Library::add");
+    assert_eq!(add.detail.as_deref(), Some(r"(App\Model\Book $book): void"));
+
+    smoke
+        .definition(
+            at("bin/library.php", "new Book('978-0441013593'", "Book"),
+            at("src/Model/Book.php", "final class Book", "Book"),
+        )
+        .await;
+    smoke
+        .definition(
+            at("src/Repository/BookRepository.php", "class BookRepository extends", "AbstractRepository"),
+            at("src/Repository/AbstractRepository.php", "abstract class AbstractRepository", "AbstractRepository"),
+        )
+        .await;
+    smoke
+        .definition(
+            at("src/Library.php", r"use App\Support\Collection;", "Collection"),
+            at("src/Support/Collection.php", "final class Collection", "Collection"),
+        )
+        .await;
+    let servers = ops::lsp::lsp_servers(&smoke.host, WINDOW).unwrap_or_default();
+    assert!(
+        !servers.iter().any(|s| s.name.to_ascii_lowercase().contains("intelephense")),
+        "Intelephense isn't started under the native engine: {:?}",
+        servers.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+}

@@ -42,6 +42,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::index::{IndexStats, PhpIndex};
 use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
+use crate::stubs::{BundledStubs, StubFilter, StubSet};
 use crate::summary::FileSummary;
 use crate::syntax::{ParseCache, ParsedFile};
 
@@ -59,6 +60,8 @@ pub struct EngineConfig {
     pub cache_dir: PathBuf,
     /// The project folder, include paths and excluded folders.
     pub layout: LayoutConfig,
+    /// The PHP version and stub sets the built-in declarations are filtered by.
+    pub stubs: StubFilter,
 }
 
 /// What the engine is doing.
@@ -141,6 +144,8 @@ struct Shared {
     indexing: AtomicBool,
     documents: Mutex<HashMap<DocId, OpenDocument>>,
     parses: ParseCache,
+    /// The stub filter and the stub set built for it (on first use).
+    stubs: Mutex<(StubFilter, Option<Arc<StubSet>>)>,
 }
 
 impl PhpEngine {
@@ -169,6 +174,7 @@ impl PhpEngine {
             indexing: AtomicBool::new(false),
             documents: Mutex::new(HashMap::new()),
             parses: ParseCache::new(),
+            stubs: Mutex::new((config.stubs, None)),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -255,6 +261,40 @@ impl PhpEngine {
         }
     }
 
+    /// Applies a new PHP version or set of enabled extensions to the
+    /// built-in declarations.
+    pub fn set_stub_filter(&self, filter: StubFilter) {
+        let mut stubs = self.shared.stubs.lock();
+        if stubs.0 != filter {
+            *stubs = (filter, None);
+            drop(stubs);
+            self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The built-in declarations the project sees (built on first use, which
+    /// unpacks and parses the bundled stubs once per process).
+    pub fn stubs(&self) -> Arc<StubSet> {
+        let filter = {
+            let stubs = self.shared.stubs.lock();
+            if let Some(set) = &stubs.1 {
+                return set.clone();
+            }
+            stubs.0.clone()
+        };
+        let set = Arc::new(BundledStubs::get().summaries(&filter));
+        let mut stubs = self.shared.stubs.lock();
+        if stubs.0 == filter {
+            stubs.1 = Some(set.clone());
+        }
+        set
+    }
+
+    /// The directory built-in stub files are written to for navigation.
+    pub fn stub_dir(&self) -> PathBuf {
+        self.shared.cache_dir.join("stubs")
+    }
+
     /// Loads the layout again and brings the indexes up to date.
     pub fn rescan(&self) {
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
@@ -335,6 +375,11 @@ impl PhpEngine {
     pub fn open_document(&self, path: &Path) -> Option<OpenDocument> {
         let path = normalize(path);
         self.shared.documents.lock().values().find(|d| d.path == path).cloned()
+    }
+
+    /// The path of an open document (normalized).
+    pub fn document_path(&self, doc: DocId) -> Option<PathBuf> {
+        self.shared.documents.lock().get(&doc).map(|d| d.path.clone())
     }
 
     /// The parse of the current version of an open document.

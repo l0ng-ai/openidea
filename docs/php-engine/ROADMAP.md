@@ -174,7 +174,7 @@ The design:
 
   Tests: dispatch with a mock service, and that the LSP path is unchanged when no service is registered.
 
-- [ ] Phase 1.10: Symbols and class/function navigation
+- [x] Phase 1.10: Symbols and class/function navigation
       Answer these requests natively:
   - document symbols, which feed `doc_outline`
   - workspace symbols, using the short-name index with fuzzy matching (reuse nucleo as `ide-index` does)

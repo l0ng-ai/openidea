@@ -47,7 +47,9 @@ use std::time::UNIX_EPOCH;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use rayon::prelude::*;
 use redb::backends::InMemoryBackend;
-use redb::{Database, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableError};
+use redb::{
+    Database, Durability, ReadableDatabase, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, TableError,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::names::NameKind;
@@ -104,8 +106,9 @@ impl Decl {
         short_name(&self.fqn)
     }
 
+    /// The declaring file, with the platform's separators.
     pub fn path(&self) -> PathBuf {
-        PathBuf::from(&self.file)
+        key_path(&self.file)
     }
 }
 
@@ -393,6 +396,26 @@ impl PhpIndex {
         self.multimap(SHORT_NAMES, &name.to_ascii_lowercase())
     }
 
+    /// Every distinct lower-case short name in the index (for fuzzy symbol
+    /// search: score the keys, then look up the few that match with
+    /// [`by_short_name`](Self::by_short_name)). Sorted.
+    pub fn short_names(&self, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let txn = self.db.begin_read().map_err(internal)?;
+        let table = match txn.open_multimap_table(SHORT_NAMES) {
+            Ok(t) => t,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(internal(e)),
+        };
+        let mut out = Vec::new();
+        for (i, item) in table.iter().map_err(internal)?.enumerate() {
+            if i % 4096 == 0 && cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            out.push(item.map_err(internal)?.0.value().to_owned());
+        }
+        Ok(out)
+    }
+
     /// The class-likes that directly extend or implement `fqn`.
     pub fn direct_subclasses(&self, fqn: &str) -> IdeResult<Vec<Decl>> {
         self.multimap(SUBCLASSES, &trim_fqn(fqn).to_ascii_lowercase())
@@ -505,6 +528,11 @@ fn internal(e: impl std::fmt::Display) -> IdeError {
 pub fn path_key(path: &Path) -> String {
     let key = path.to_string_lossy();
     if cfg!(windows) { key.replace('\\', "/") } else { key.into_owned() }
+}
+
+/// The path a [`path_key`] stands for, with the platform's separators.
+pub fn key_path(key: &str) -> PathBuf {
+    if cfg!(windows) { PathBuf::from(key.replace('/', "\\")) } else { PathBuf::from(key) }
 }
 
 fn trim_fqn(fqn: &str) -> &str {

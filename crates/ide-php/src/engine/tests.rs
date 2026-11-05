@@ -31,6 +31,7 @@ impl Fixture {
         EngineConfig {
             cache_dir: self.cache.clone(),
             layout: LayoutConfig { root: self.root.clone(), ..LayoutConfig::default() },
+            stubs: StubFilter::default(),
         }
     }
 

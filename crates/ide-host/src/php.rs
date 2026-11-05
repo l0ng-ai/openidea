@@ -14,9 +14,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ide_core::settings::{PhpEngineKind, Settings};
-use ide_core::{DocId, EventSink, IdeEvent, SharedSink};
+use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, SharedSink};
+use ide_lsp::types::{GotoKind, WorkspaceSymbol};
+
+use crate::language_service::Answer;
 use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
 use ide_php::project::LayoutConfig;
+use ide_php::stubs::StubFilter;
 use ide_text::AppliedChange;
 use ide_workspace::documents::DocumentObserver;
 use ide_workspace::{DocumentInfo, Documents};
@@ -75,10 +79,17 @@ impl PhpEngineSlot {
         let config = layout_config(&self.root, settings);
         let current = self.engine();
         match (wanted(settings), current) {
-            (true, Some(engine)) => engine.set_layout_config(config),
+            (true, Some(engine)) => {
+                engine.set_layout_config(config);
+                engine.set_stub_filter(StubFilter::from_settings(&self.root, settings));
+            }
             (true, None) => {
                 let engine = match PhpEngine::open(
-                    EngineConfig { cache_dir: self.cache_dir.clone(), layout: config },
+                    EngineConfig {
+                        cache_dir: self.cache_dir.clone(),
+                        layout: config,
+                        stubs: StubFilter::from_settings(&self.root, settings),
+                    },
                     self.sink.clone(),
                 ) {
                     Ok(engine) => engine,
@@ -164,12 +175,44 @@ impl DocumentObserver for PhpObserver {
 /// The engine as the PHP [`LanguageService`](crate::language_service::LanguageService):
 /// registered for `php` in every project, it answers only while the engine
 /// runs (Settings › PHP › Engine is `Native`); otherwise requests go to
-/// Intelephense. The requests it answers natively are added feature by feature.
-pub(crate) struct PhpService(
-    #[expect(dead_code, reason = "read once requests are answered (phase 1.10)")] pub(crate) Arc<PhpEngineSlot>,
-);
+/// Intelephense. The requests it answers natively are added feature by feature:
+/// so far document and workspace symbols, and goto definition of class-like,
+/// function and constant names.
+pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
-impl crate::language_service::LanguageService for PhpService {}
+/// The most workspace symbols one query returns.
+const WORKSPACE_SYMBOLS: usize = 200;
+
+impl crate::language_service::LanguageService for PhpService {
+    fn document_symbols(&self, doc: DocId) -> Answer<Option<Vec<OutlineItem>>> {
+        let items = self.0.engine()?.document_symbols(doc)?;
+        Some(Ok(Some(items)))
+    }
+
+    fn workspace_symbols(&self, query: &str, cancel: &CancellationToken) -> Answer<Vec<WorkspaceSymbol>> {
+        let engine = self.0.engine()?;
+        let symbols = engine.workspace_symbols(query, WORKSPACE_SYMBOLS, cancel).map(|symbols| {
+            symbols
+                .into_iter()
+                .map(|s| WorkspaceSymbol {
+                    name: s.name,
+                    kind: s.kind,
+                    container: s.container,
+                    location: Location::file(s.path, s.range),
+                })
+                .collect()
+        });
+        Some(symbols)
+    }
+
+    fn goto(&self, doc: DocId, pos: Pos, kind: GotoKind) -> Answer<Vec<Location>> {
+        if !matches!(kind, GotoKind::Definition | GotoKind::Declaration) {
+            return None;
+        }
+        let targets = self.0.engine()?.definition(doc, pos)?;
+        Some(Ok(targets.into_iter().map(|t| Location::file(t.path, t.range)).collect()))
+    }
+}
 
 /// Merges the `IndexState` events of several producers (the project index,
 /// the PHP engine) into one: indexing while any of them is, with the counts

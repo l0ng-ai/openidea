@@ -4506,6 +4506,7 @@ dependencies = [
  "mago-span",
  "mago-syntax",
  "mago-syntax-core",
+ "nucleo-matcher",
  "parking_lot",
  "postcard",
  "rayon",

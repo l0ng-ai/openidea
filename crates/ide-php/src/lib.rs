@@ -34,12 +34,15 @@
 //!   a background worker that keeps the indexes up to date with the layout
 //!   and watcher batches, dumb-mode and readiness events, and open
 //!   documents overriding the disk.
+//! - [`navigate`]: document symbols, fuzzy workspace symbols and goto
+//!   definition of class-like, function and constant names.
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
 pub mod engine;
 pub mod index;
 pub mod names;
+pub mod navigate;
 pub mod probe;
 pub mod project;
 pub mod stubs;

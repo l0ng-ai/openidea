@@ -42,7 +42,7 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use ide_core::settings::Settings;
@@ -131,6 +131,13 @@ impl StubFilter {
     /// Whether the stub set (a top-level folder) is enabled.
     pub fn includes_extension(&self, extension: &str) -> bool {
         self.extensions.as_ref().is_none_or(|enabled| enabled.contains(&ide_sdk::php::stub_key(extension)))
+    }
+}
+
+impl Default for StubFilter {
+    /// Every stub set at the latest PHP version.
+    fn default() -> Self {
+        Self::all_extensions(PhpVersion::LATEST)
     }
 }
 
@@ -242,6 +249,29 @@ impl BundledStubs {
     /// The text of a stub file.
     pub fn source(&self, path: &str) -> Option<&str> {
         self.by_path.get(path).map(|&i| &*self.files[i].text)
+    }
+
+    /// The stub file's path on disk once [materialized](Self::materialize)
+    /// below `dir`: `dir/<STUBS_TAG>/<path>`.
+    pub fn stub_path(dir: &Path, path: &str) -> PathBuf {
+        let mut out = dir.join(STUBS_TAG);
+        out.extend(path.split('/'));
+        out
+    }
+
+    /// Writes the bundled stub file `path` below `dir` (see
+    /// [`stub_path`](Self::stub_path)) unless it is already there with the
+    /// same length, so goto definition can open built-in declarations as
+    /// ordinary read-only files. `None` for an unknown path or a write error.
+    pub fn materialize(dir: &Path, path: &str) -> Option<PathBuf> {
+        let text = Self::get().source(path)?;
+        let target = Self::stub_path(dir, path);
+        let current = std::fs::metadata(&target).ok().map(|m| m.len());
+        if current != Some(text.len() as u64) {
+            std::fs::create_dir_all(target.parent()?).ok()?;
+            std::fs::write(&target, text).map_err(|e| tracing::warn!("php stubs {}: {e}", target.display())).ok()?;
+        }
+        Some(target)
     }
 
     /// The unfiltered summary of a stub file: every declaration, whatever
