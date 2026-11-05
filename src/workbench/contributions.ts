@@ -1460,6 +1460,42 @@ export const useDebugRunSessions = create<{
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
 
 // ---------------------------------------------------------------------------
+// Processes a closing window or project would terminate. Features that own
+// child processes (Run/Debug sessions) publish them here, so the close guard can
+// ask first (IDEA's "Terminate processes?").
+
+export interface RunningProcess {
+  /** Configuration or session name shown in the prompt. */
+  name: string;
+}
+
+export interface RunningProcessesProvider {
+  id: string;
+  /** Processes this feature is running in the window right now. */
+  running(): RunningProcess[] | Promise<RunningProcess[]>;
+}
+
+const runningProcessesProviders = new Map<string, RunningProcessesProvider>();
+
+export function registerRunningProcessesProvider(p: RunningProcessesProvider): () => void {
+  runningProcessesProviders.set(p.id, p);
+  return () => {
+    if (runningProcessesProviders.get(p.id) === p) runningProcessesProviders.delete(p.id);
+  };
+}
+
+/** Live processes of every provider, one entry per name. */
+export async function runningProcesses(): Promise<RunningProcess[]> {
+  const all = (await Promise.all([...runningProcessesProviders.values()].map((p) => p.running()))).flat();
+  const seen = new Set<string>();
+  return all.filter((p) => {
+    if (!p.name || seen.has(p.name)) return false;
+    seen.add(p.name);
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // "Get from Version Control" sources besides a plain URL (IDEA: GitHub, GitLab…),
 // listed in the Clone Repository dialog's sidebar.
 
