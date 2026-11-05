@@ -141,7 +141,10 @@ class OverviewLane {
           // Marks landing on the same lane pixel collapse into one.
           const px = Math.floor(a.top * scale);
           const top = pos(a.top);
-          const height = fit ? Math.round(b.bottom - a.top) : +(((b.bottom - a.top) / contentHeight) * 100).toFixed(3);
+          // A `full` mark runs from the top of its first line to the top of its last, as IDEA's
+          // error stripe (EditorMarkupModelImpl.offsetsToYPositions): one line is a min-height dash.
+          const span = (m.kind === "full" ? b.top : b.bottom) - a.top;
+          const height = fit ? Math.round(span) : +((span / contentHeight) * 100).toFixed(3);
           const key = `${px}:${m.color}:${m.kind ?? "line"}`;
           const prev = rows.get(key);
           if (!prev || (m.priority ?? 0) > (prev.mark.priority ?? 0) || height > prev.height)

@@ -240,7 +240,8 @@ export interface ScrollbarMark {
   color: string;
   /**
    * `line` (default): 4px-wide bar on the lane; `thin`: 2px bar (search hits, occurrences);
-   * `full`: the lane's whole width (IDEA's diff and merge error stripe).
+   * `full`: the lane's whole width, from the top of the first line to the top of the last (IDEA's
+   * diff and merge error stripe, so a one-line change is a min-height dash).
    */
   kind?: "line" | "thin" | "full";
   /** Shown on hover. */
