@@ -765,7 +765,11 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
             };
         }
         if (interp === "php" && env.php)
-          return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [...sb.slice(1), s.arg]) };
+          return {
+            name: s.file,
+            scope: "file",
+            config: fileConfig(s, "php", env.php, [...sb.slice(1), s.arg], "php-debug"),
+          };
         const t = sb[0]!.startsWith("/") ? { command: sb[0]!, name: interp } : pick(env, [interp]);
         if (!t) return { name: s.file, scope: "file", missing: missing(lang, s.file, [interp]) };
         const kind = /^(ba|z|k|da|fi)?sh$/.test(interp) ? "shell" : interp === "node" ? "node" : interp;
@@ -809,8 +813,8 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       // Sources roots go on the load path (`-Ilib`), as `rake test` does; paths are project-relative.
       return simple(lang, s, env, lang, () => [...(s.inProject ? rubyLoadPath(currentRoots()) : []), s.arg]);
     case "php":
-      if (env.php) return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [s.arg]) };
-      return simple(lang, s, env, lang, () => [s.arg]);
+      if (env.php) return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [s.arg], "php-debug") };
+      return simple(lang, s, env, lang, () => [s.arg], "php-debug");
     case "perl":
     case "lua":
     case "swift":
