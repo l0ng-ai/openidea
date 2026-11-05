@@ -52,6 +52,43 @@ pub fn composer_level(root: &Path) -> Option<PhpLanguageLevel> {
         .map(|v| PhpLanguageLevel::new(v, PhpLevelSource::Require))
 }
 
+/// Why `composer install` is due in a Composer project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposerInstall {
+    /// No `vendor/autoload.php`.
+    Missing,
+    /// A package of `composer.lock` is not installed, or at another version.
+    Outdated,
+}
+
+/// The Composer project `file` belongs to (the nearest `composer.json` at or below `root`), and
+/// whether its dependencies need `composer install`.
+pub fn composer_install(file: &Path, root: &Path) -> Option<(PathBuf, ComposerInstall)> {
+    let dir = file.ancestors().filter(|d| d.starts_with(root)).find(|d| d.join("composer.json").is_file())?;
+    let composer: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("composer.json")).ok()?).ok()?;
+    let vendor = dir.join(composer.pointer("/config/vendor-dir").and_then(Value::as_str).unwrap_or("vendor"));
+    if !vendor.join("autoload.php").is_file() {
+        return Some((dir.to_path_buf(), ComposerInstall::Missing));
+    }
+    let read = |path: PathBuf| std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let lock = read(dir.join("composer.lock"))?;
+    let installed = read(vendor.join("composer/installed.json")).unwrap_or(Value::Null);
+    // Composer 2 writes `{"packages": [...], "dev": bool}`, Composer 1 the list itself.
+    let packages = installed.get("packages").unwrap_or(&installed).as_array().cloned().unwrap_or_default();
+    let versions: std::collections::HashMap<&str, &str> =
+        packages.iter().filter_map(|p| Some((p.get("name")?.as_str()?, p.get("version")?.as_str()?))).collect();
+    let dev = installed.get("dev").and_then(Value::as_bool).unwrap_or(true);
+    let sections: &[&str] = if dev { &["packages", "packages-dev"] } else { &["packages"] };
+    let outdated = sections
+        .iter()
+        .filter_map(|section| lock.get(*section).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|p| Some((p.get("name")?.as_str()?, p.get("version")?.as_str()?)))
+        .any(|(name, version)| versions.get(name) != Some(&version));
+    outdated.then(|| (dir.to_path_buf(), ComposerInstall::Outdated))
+}
+
 /// Gives each PHP version its own Intelephense workspace storage (below `data_dir`).
 /// Intelephense keeps the built-in functions of the version a workspace was first indexed
 /// with in that storage, and reuses them after the version changes. Without a version, or
@@ -225,6 +262,39 @@ fn lower_bound(alternative: &str) -> Option<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composer_install_is_due_without_vendor_or_when_the_lock_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let app = root.join("app");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        let file = app.join("src/Kernel.php");
+        assert_eq!(composer_install(&file, root), None, "not a Composer project");
+        std::fs::write(app.join("composer.json"), r#"{"config": {"vendor-dir": "lib"}}"#).unwrap();
+        assert_eq!(composer_install(&file, root), Some((app.clone(), ComposerInstall::Missing)));
+        std::fs::create_dir_all(app.join("lib/composer")).unwrap();
+        std::fs::write(app.join("lib/autoload.php"), "<?php").unwrap();
+        assert_eq!(composer_install(&file, root), None, "installed, no lock to compare with");
+        let lock = r#"{"packages": [{"name": "a/a", "version": "v1.2.0"}], "packages-dev": [{"name": "t/t", "version": "10.0.0"}]}"#;
+        std::fs::write(app.join("composer.lock"), lock).unwrap();
+        let installed = |packages: &str, dev: bool| {
+            let json = format!(r#"{{"packages": [{packages}], "dev": {dev}}}"#);
+            std::fs::write(app.join("lib/composer/installed.json"), json).unwrap();
+            composer_install(&file, root)
+        };
+        let a = r#"{"name": "a/a", "version": "v1.2.0"}"#;
+        let t = r#"{"name": "t/t", "version": "10.0.0"}"#;
+        assert_eq!(installed(&format!("{a},{t}"), true), None);
+        assert_eq!(installed(a, false), None, "`--no-dev` leaves out the dev packages");
+        assert_eq!(installed(a, true), Some((app.clone(), ComposerInstall::Outdated)), "a dev package is missing");
+        let old = r#"{"name": "a/a", "version": "v1.1.0"}"#;
+        assert_eq!(installed(&format!("{old},{t}"), true), Some((app.clone(), ComposerInstall::Outdated)));
+        // Composer 1 lists the packages at the top level.
+        std::fs::write(app.join("lib/composer/installed.json"), format!("[{a},{t}]")).unwrap();
+        assert_eq!(composer_install(&file, root), None);
+        assert_eq!(composer_install(&root.join("other.php"), root), None, "outside the Composer project");
+    }
 
     fn level(composer: Option<&str>, explicit: &str) -> Option<String> {
         levels(composer, explicit).0.map(|l| l.version)

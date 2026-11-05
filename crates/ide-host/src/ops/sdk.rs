@@ -96,6 +96,33 @@ pub async fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) ->
     .map_err(join_err)
 }
 
+/// The Composer project `path` belongs to, when its dependencies need `composer install`.
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerInstallState {
+    pub root: ide_core::IpcPath,
+    pub reason: ide_sdk::php::ComposerInstall,
+}
+
+/// `None` in an untrusted project too: `composer install` runs the project's scripts.
+pub async fn sdk_php_composer_install(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+) -> IdeResult<Option<ComposerInstallState>> {
+    let project = host.project(window)?;
+    if !project.is_trusted() {
+        return Ok(None);
+    }
+    let root = project.root.clone();
+    tokio::task::spawn_blocking(move || {
+        ide_sdk::php::composer_install(&path, &root)
+            .map(|(root, reason)| ComposerInstallState { root: ide_core::IpcPath::from(root), reason })
+    })
+    .await
+    .map_err(join_err)
+}
+
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
 pub async fn sdk_project_libraries(host: &Host, window: &str) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
@@ -210,6 +237,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add(
         "sdk_php_language_level",
         |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?).await },
+    );
+    d.add(
+        "sdk_php_composer_install",
+        |c| async move { sdk_php_composer_install(&c.host, &c.window, c.arg("path")?).await },
     );
     d.add("sdk_project_libraries", |c| async move { sdk_project_libraries(&c.host, &c.window).await });
     d.add("sdk_locate_tools", |c| async move {

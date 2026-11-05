@@ -400,6 +400,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         sdk::sdk_python_effective,
         sdk::sdk_php_effective,
         sdk::sdk_php_language_level,
+        sdk::sdk_php_composer_install,
         sdk::sdk_project_libraries,
         sdk::sdk_locate_tools,
         sdk::sdk_python_create_venv,
