@@ -89,7 +89,7 @@ The design:
 
   If Mago can't be used (licence, API or recovery problems), block the phase and explain why.
 
-- [ ] Phase 0.6: Comparison harness
+- [x] Phase 0.6: Comparison harness
       Add `crates/ide-php/tests/differential.rs` (ignored; needs Intelephense and the corpora). Over N sampled identifier positions in a corpus, it asks Intelephense (through `ide-lsp`) and the engine (through its public API, once that exists) for definition and hover. It writes a JSON and Markdown report of agreements and differences to `target/php-differential/`. Until the engine answers, only the Intelephense side and the report format run. Test: the report is produced on `fixtures/php-app`.
 
 ## Plan 1: Syntax, summaries, index

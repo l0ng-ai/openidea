@@ -25,4 +25,7 @@ pub mod mago {
     pub use mago_phpdoc_syntax as phpdoc;
     pub use mago_span as span;
     pub use mago_syntax as syntax;
+    /// Lexer input (`syntax_core::input::Input`) for driving
+    /// `syntax::lexer::Lexer` directly.
+    pub use mago_syntax_core as syntax_core;
 }

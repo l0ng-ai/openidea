@@ -4488,13 +4488,22 @@ dependencies = [
 name = "ide-php"
 version = "0.1.36"
 dependencies = [
+ "dunce",
  "ide-core",
+ "ide-language",
+ "ide-lsp",
+ "ide-text",
  "mago-allocator",
  "mago-database",
  "mago-names",
  "mago-phpdoc-syntax",
  "mago-span",
  "mago-syntax",
+ "mago-syntax-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
