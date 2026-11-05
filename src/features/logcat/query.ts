@@ -38,10 +38,13 @@ export interface LogFilter {
   error: string | null;
 }
 
+/** `message` is also the name of a translated UI text, so name the field once. */
+const MESSAGE_FIELD: QueryField = "message";
+
 const FIELD_ALIASES: Record<string, QueryField> = {
   tag: "tag",
-  message: "message",
-  msg: "message",
+  message: MESSAGE_FIELD,
+  msg: MESSAGE_FIELD,
   pid: "pid",
   level: "level",
 };
