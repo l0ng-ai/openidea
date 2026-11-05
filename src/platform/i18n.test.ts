@@ -89,6 +89,8 @@ describe("t / locales", () => {
     expect(resolveLocale("fr-CA")).toBe("fr");
     expect(resolveLocale("pl_PL")).toBe("pl");
     expect(resolveLocale("pl-PL")).toBe("pl");
+    expect(resolveLocale("es-MX")).toBe("es");
+    expect(resolveLocale("es_MX")).toBe("es");
     expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
@@ -206,6 +208,14 @@ describe("t / locales", () => {
     expect(t("common.cancel")).toBe("Anuluj");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 skrót");
     expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
+  });
+
+  it("loads the Spanish catalogs", async () => {
+    await setLocale("es-MX");
+    expect(useI18n.getState().locale).toBe("es");
+    expect(t("common.cancel")).toBe("Cancelar");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 atajo");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 atajos");
   });
 
   it("lists keys by prefix", () => {
