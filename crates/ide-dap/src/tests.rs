@@ -1109,6 +1109,23 @@ async fn kotlin_official_release_ten_no_delay_runs() {
     }
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn netcoredbg_windows_source_paths_round_trip() {
+    let client = "D:/work/LoginController.cs";
+    let native = r"D:\work\LoginController.cs";
+    let h = harness(Script { source_path: Some(native.into()), ..Script::default() });
+    let path = PathBuf::from(client);
+    h.manager.set_breakpoints(path.clone(), vec![bp(25)]).await.unwrap();
+    let mut cfg = config();
+    cfg.adapter = "netcoredbg".into();
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], native);
+    let frames = h.manager.stack_trace(id, 1).await.unwrap();
+    assert_eq!(frames[0].path.as_deref(), Some(path.as_path()));
+    h.manager.stop(id).await.unwrap();
+}
+
 #[tokio::test]
 async fn java_windows_source_paths_for_launch_and_attach() {
     for request in ["launch", "attach"] {
