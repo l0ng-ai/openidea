@@ -726,6 +726,35 @@ fn shell_unwrapped(argv: &[&str]) -> String {
 
 /// The codex answer for an ACP `session/request_permission` result; a cancelled or
 /// unknown outcome declines.
+/// The `content` of an accepted elicitation for `schema` (its `requestedSchema`): every
+/// property's default, else the allowing option of a choice (`allow`, `accept`, ...; else
+/// the first option), else `true` for a boolean. An empty form would read as no decision,
+/// so the approval would count as declined (OpenIDEA's own server asks for `decision: allow`).
+pub(super) fn accept_content(schema: Option<&Value>) -> Value {
+    const ALLOWING: [&str; 6] = ["allow", "accept", "approve", "yes", "ok", "true"];
+    let mut content = serde_json::Map::new();
+    let properties = schema.and_then(|s| s.get("properties")).and_then(Value::as_object);
+    for (name, property) in properties.into_iter().flatten() {
+        if let Some(default) = property.get("default") {
+            content.insert(name.clone(), default.clone());
+            continue;
+        }
+        let options: Vec<&Value> = match (property.get("enum"), property.get("oneOf").or_else(|| property.get("anyOf")))
+        {
+            (Some(Value::Array(values)), _) => values.iter().collect(),
+            (_, Some(Value::Array(variants))) => variants.iter().filter_map(|v| v.get("const")).collect(),
+            _ => Vec::new(),
+        };
+        let allowing = |v: &&&Value| v.as_str().is_some_and(|s| ALLOWING.contains(&s.to_ascii_lowercase().as_str()));
+        if let Some(choice) = options.iter().find(allowing).or(options.first()) {
+            content.insert(name.clone(), (*choice).clone());
+        } else if property.get("type").and_then(Value::as_str) == Some("boolean") {
+            content.insert(name.clone(), Value::Bool(true));
+        }
+    }
+    Value::Object(content)
+}
+
 pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> Value {
     let chosen = outcome.pointer("/outcome/optionId").and_then(Value::as_str);
     let selected = outcome.pointer("/outcome/outcome").and_then(Value::as_str) == Some("selected");

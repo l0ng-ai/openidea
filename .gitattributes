@@ -1,0 +1,2 @@
+# Bundled agent skills are embedded in the binary: the same text on every platform.
+crates/ide-mcp/skills/** text eol=lf

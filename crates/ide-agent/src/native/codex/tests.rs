@@ -26,6 +26,25 @@ fn models() -> Vec<ModelInfo> {
 }
 
 #[test]
+fn accepted_elicitations_choose_the_allowing_option() {
+    // OpenIDEA's MCP server, either protocol revision.
+    let new = json!({ "type": "object", "required": ["decision"], "properties": { "decision": {
+        "type": "string", "oneOf": [{ "const": "allow", "title": "Allow" }, { "const": "deny", "title": "Deny" }] } } });
+    assert_eq!(accept_content(Some(&new)), json!({ "decision": "allow" }));
+    let old = json!({ "type": "object", "properties": { "decision": {
+        "type": "string", "enum": ["deny", "allow"], "enumNames": ["Deny", "Allow"] } } });
+    assert_eq!(accept_content(Some(&old)), json!({ "decision": "allow" }));
+    // Defaults win; other choices take their first option; booleans are true.
+    let other = json!({ "properties": {
+        "mode": { "type": "string", "enum": ["fast", "slow"] },
+        "remember": { "type": "boolean" },
+        "name": { "type": "string", "default": "x" },
+        "free": { "type": "string" } } });
+    assert_eq!(accept_content(Some(&other)), json!({ "mode": "fast", "remember": true, "name": "x" }));
+    assert_eq!(accept_content(None), json!({}));
+}
+
+#[test]
 fn settings_follow_the_thread_and_the_models() {
     let models = models();
     let result = json!({"model": "big", "reasoningEffort": null, "approvalPolicy": "untrusted",

@@ -58,6 +58,8 @@ pub struct Settings {
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
+    /// Tools › MCP Server (global only).
+    pub mcp: crate::mcp::McpSettings,
     pub cmake: CMakeSettings,
     /// Tools › Agents › Chat.
     pub agents: AgentSettings,
@@ -228,6 +230,7 @@ impl Default for Settings {
             ssh: SshSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
+            mcp: crate::mcp::McpSettings::default(),
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
             plugins: BTreeMap::new(),

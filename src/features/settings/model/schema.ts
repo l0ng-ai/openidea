@@ -21,6 +21,7 @@ import { EDITOR_EXTRA_DEFAULTS, validateEditorExtras, type EditorExtras } from "
 import { DEFAULT_WORKFLOW, validateWorkflow, type WorkflowSettings } from "@/platform/workflowSettings";
 import { DEFAULT_INSPECTIONS, validateInspections, type InspectionSettingsValid } from "@/platform/inspections";
 import { DEFAULT_PROXY, validateProxy, type ProxySettingsValid } from "@/platform/proxySettings";
+import { DEFAULT_MCP, validateMcp, type McpSettingsValid } from "@/platform/mcp";
 import {
   DEFAULT_APPEARANCE_EXTRAS,
   DEFAULT_GENERAL_EXTRAS,
@@ -83,6 +84,8 @@ export interface ValidSettings extends WorkflowSettings {
   notifications: NotificationsValid;
   /** System Settings › HTTP Proxy (global). */
   proxy: ProxySettingsValid;
+  /** Tools › MCP Server (global). */
+  mcp: McpSettingsValid;
   languages: LanguagesValid;
   cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
@@ -154,6 +157,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   customKeymaps: {},
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
+  mcp: DEFAULT_MCP,
   languages: DEFAULT_LANGUAGES,
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
@@ -260,6 +264,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     customKeymaps,
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
+    mcp: validateMcp(root.mcp),
     languages: validateLanguages(root.languages),
     cmake: validateCMake(root.cmake),
     projectStructure: validateProjectStructure(root.projectStructure),

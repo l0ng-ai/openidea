@@ -905,7 +905,9 @@ impl CodexShim {
                 let message = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 let accept = match params.get("mode").and_then(Value::as_str) {
                     Some("url") => json!({ "action": "accept" }),
-                    _ => json!({ "action": "accept", "content": {} }),
+                    _ => {
+                        json!({ "action": "accept", "content": translate::accept_content(params.get("requestedSchema")) })
+                    }
                 };
                 let choices = [
                     Choice {

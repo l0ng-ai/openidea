@@ -13,6 +13,7 @@ mod linux_window_state;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
+mod mcp;
 mod menu;
 mod plugin_web;
 mod remote_dev;
@@ -168,6 +169,8 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
+        mcp::apply_settings(app.handle());
+        mcp::offer_to_agents(app.handle());
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
@@ -198,6 +201,7 @@ pub fn run() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
                 if let Some(state) = window.try_state::<AppState>() {
+                    state.mcp_pending.window_closed(window.label());
                     state.close_project(window.label());
                 }
             }
@@ -226,6 +230,7 @@ pub fn run() {
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
+                state.mcp.shutdown();
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }

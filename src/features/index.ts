@@ -50,6 +50,7 @@ import { activate as deployment, activateDeploymentWindow } from "./deployment";
 import { activate as agents, activateSettingsPages as agentsPages } from "./agents";
 import { activate as vim, activateSettingsPages as vimPages } from "./vim";
 import { activate as ssh } from "./ssh";
+import { activate as mcp } from "./mcp";
 import { activate as remoteDev } from "./remote-dev";
 
 type Activate = () => void | (() => void);
@@ -96,6 +97,7 @@ const features: Array<[string, Activate]> = [
   ["agents", agents],
   ["vim", vim],
   ["ssh", ssh],
+  ["mcp", mcp],
   ["remote-dev", remoteDev],
 ];
 

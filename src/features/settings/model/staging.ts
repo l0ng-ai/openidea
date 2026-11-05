@@ -46,6 +46,8 @@ export interface SettingsDialogState {
   scopes: Record<string, Scope>;
   saving: boolean;
   error: string | null;
+  /** Bumped by Reset, so a page's local drafts (text not staged yet) are dropped too. */
+  resets: number;
   pagesLoading: boolean;
 }
 
@@ -67,6 +69,7 @@ export const useSettingsDialog = create<SettingsDialogState>(() => ({
   scopes: {},
   saving: false,
   error: null,
+  resets: 0,
   pagesLoading: false,
 }));
 
@@ -230,6 +233,7 @@ export function resetPage(page: string) {
     stagedSecrets: page === SSH_SETTINGS_PAGE ? {} : s.stagedSecrets,
     stagedExternal: Object.fromEntries(Object.entries(s.stagedExternal).filter(([, c]) => c.page !== page)),
     error: null,
+    resets: s.resets + 1,
   }));
 }
 

@@ -5,7 +5,7 @@
  */
 import { create } from "zustand";
 import type { Changelist, ChangelistState, FileStatus } from "@/bindings";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { setLocalChanges, type LocalChangelist } from "@/workbench/contributions";
 import type { CheckState } from "./changes";
@@ -153,6 +153,7 @@ export function updateChangelists(fn: (s: ChangelistState) => ChangelistState) {
   useChangelists.setState({ state: next });
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
+    saveTimer = undefined;
     if (useChangelists.getState().loaded && isTauri())
       void call(commands.vcsChangelistsSave(useChangelists.getState().state)).catch(() => undefined);
   }, 250);
@@ -203,6 +204,7 @@ export function installChangelists(): () => void {
     if (root === loadedFor) return;
     loadedFor = root;
     clearTimeout(saveTimer);
+    saveTimer = undefined;
     useChangelists.setState({ state: initialChangelists(), loaded: false });
     if (!root || !isTauri()) return;
     void call(commands.vcsChangelistsLoad())
@@ -222,6 +224,21 @@ export function installChangelists(): () => void {
   const offVcs = useVcs.subscribe((s, p) => {
     if (s.status !== p.status) sync();
   });
+  // The MCP changelist tools write the file and then emit `vcsChanged`: pick their state up
+  // unless an edit of ours is still to be saved.
+  const offReload = isTauri()
+    ? onIdeEvent("vcsChanged", () => {
+        const root = loadedFor;
+        if (!root || saveTimer !== undefined || !useChangelists.getState().loaded) return;
+        void call(commands.vcsChangelistsLoad())
+          .then((state) => {
+            if (loadedFor !== root || saveTimer !== undefined) return;
+            if (JSON.stringify(state) !== JSON.stringify(useChangelists.getState().state))
+              useChangelists.setState({ state });
+          })
+          .catch(() => undefined);
+      })
+    : () => undefined;
   let clearPublished: (() => void) | null = null;
   const publish = () => {
     const { status, root, available } = useVcs.getState();
@@ -242,9 +259,11 @@ export function installChangelists(): () => void {
   return () => {
     offProject();
     offVcs();
+    offReload();
     offPublishVcs();
     offPublishLists();
     clearPublished?.();
     clearTimeout(saveTimer);
+    saveTimer = undefined;
   };
 }

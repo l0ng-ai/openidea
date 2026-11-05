@@ -13,6 +13,7 @@ pub mod inspection_settings;
 pub mod ipc_path;
 pub mod java_runtime;
 pub mod jsonc;
+pub mod mcp;
 pub mod output_encoding;
 pub mod process;
 pub mod project_dir;
