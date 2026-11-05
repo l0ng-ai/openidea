@@ -237,7 +237,13 @@ fn c8(root: &Path, config: &RunConfig, dir: &Path, out: &Path) -> CoveragePrepar
 
 /// Loaded first (`ide_run::ruby_preload`) when the project never starts SimpleCov itself.
 const SIMPLECOV_PRELOAD: &str = r#"# Written by OpenIDEA for Run with Coverage.
-require "simplecov"
+begin
+  require "simplecov"
+rescue LoadError
+  # `bundle exec` is a Ruby process too and loads this before Bundler puts the project's gems on
+  # the load path; the Ruby it starts loads bundler/setup first and finds SimpleCov.
+  return
+end
 SimpleCov.coverage_dir(ENV.fetch("OPENIDEA_COVERAGE_DIR"))
 SimpleCov.start do
   add_filter %r{^/(test|spec|features)/}
@@ -450,6 +456,27 @@ mod tests {
             prepare(dir.path(), &cfg("cargo", "cargo", &["build"]), dir.path()),
             CoveragePrepared::Unsupported { .. }
         ));
+    }
+
+    /// `bundle exec` loads the preload before Bundler sets up the project's gems: without SimpleCov
+    /// on the load path it must step aside instead of failing the launcher.
+    #[test]
+    fn simplecov_preload_tolerates_a_ruby_without_the_gem() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out dir");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("openidea_simplecov.rb"), SIMPLECOV_PRELOAD).unwrap();
+        let status = std::process::Command::new("ruby")
+            .args(["-e", "exit 0"])
+            .env("RUBYLIB", &out)
+            .env("RUBYOPT", "-ropenidea_simplecov")
+            .env("OPENIDEA_COVERAGE_DIR", &out)
+            .env("GEM_HOME", dir.path().join("empty gems"))
+            .env("GEM_PATH", dir.path().join("empty gems"))
+            .status();
+        // No Ruby on this machine: nothing to check.
+        let Ok(status) = status else { return };
+        assert!(status.success());
     }
 
     #[test]
