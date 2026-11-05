@@ -251,6 +251,38 @@
   cursor: text;
 }
 
+/* Find bar (⌘F), as in the Run console. */
+.find {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+.findField {
+  flex: 0 1 360px;
+  min-width: 160px;
+}
+.findCount {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding: 0 6px;
+  white-space: nowrap;
+  min-width: 56px;
+}
+.findCountNone {
+  color: var(--danger);
+}
+.findSpacer {
+  flex: 1;
+}
+.findMatch {
+  border-radius: 2px;
+}
+
 /* Soft-Wrap off: long lines scroll horizontally. */
 .noWrap {
   white-space: pre;
