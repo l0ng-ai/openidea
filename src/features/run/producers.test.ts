@@ -425,7 +425,7 @@ describe("single-file producers (scratches)", () => {
     });
     expect(produceContext(input(), ALL)!.config!.kind).toBe("java-file");
     const p = produceContext(input(["/work/billing", svc]), ALL)!;
-    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: null });
     expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
   });
 
@@ -487,7 +487,8 @@ describe("single-file producers (scratches)", () => {
             kind: "spring-boot",
             name: "DromaraApplication",
             command: "java",
-            cwd: module,
+            module,
+            cwd: null,
           });
           expect(p!.config!.args).toEqual(["-cp", "${classpath}", "org.dromara.DromaraApplication"]);
         }
@@ -503,7 +504,7 @@ describe("single-file producers (scratches)", () => {
     it("Kotlin and test classes use the build that contains them", () => {
       const kt = "package demo\n\nfun main() {\n  println(1)\n}\n";
       const p = produceContext(at("backend/app/src/main/kotlin/demo/App.kt", nested("gradle", "backend"), kt, 3), ALL)!;
-      expect(p.config).toMatchObject({ kind: "application", cwd: "backend/app" });
+      expect(p.config).toMatchObject({ kind: "application", module: "backend/app", cwd: null });
       expect(p.config!.args.at(-1)).toBe("demo.AppKt");
       const test = "package demo;\nclass AppTest {\n  @Test\n  void works() {\n  }\n}\n";
       const t = produceContext(
