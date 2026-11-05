@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { ContextMenuHost, hideContextMenu } from "@/ui";
 import type { View, ViewEvent } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { bindingsFor, effectiveBindings, registerExtensionBindings, useKeymap } from "@/platform/keymap";
 import { createMemoryPluginsBackend, setPluginsBackend, type PluginsBackend } from "../backend";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, syncUiContributions } from "../projection";
-import { pluginMenuItems, withPluginSetting } from "../uiPoints";
+import { pluginMenuItems, pluginViewItemMenuItems, withPluginSetting } from "../uiPoints";
 import { matchesPattern } from "../views/customEditor";
 import { FRAME_CSP, FRAME_TAG, frameDocument, frameTheme, type FrameTheme } from "../views/frame";
 import { PluginView, treeNodes, wantedViewport } from "../views/PluginView";
@@ -192,9 +193,43 @@ describe("plugin menus", () => {
     expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([]);
     off();
   });
+
+  it("projects view item menu entries with the item key as argument", () => {
+    const off = registerAction({ id: "plugin.k.logs", title: "Logs", run: () => {} });
+    syncUiContributions(
+      [
+        {
+          pluginId: "k",
+          point: "menus",
+          key: "view.item.context/res/logs",
+          decl: {
+            menu: "view.item.context",
+            view: "res",
+            command: "logs",
+            when: "viewItemKind == pod",
+          },
+        },
+      ],
+      [
+        { id: "k", name: "K", status: "active", enabled: true } as unknown as Parameters<
+          typeof syncUiContributions
+        >[1][number],
+      ],
+    );
+    expect(pluginViewItemMenuItems("k", "res", "pod:default:nginx")).toEqual([
+      { kind: "action", action: "plugin.k.logs", arg: "pod:default:nginx" },
+    ]);
+    expect(pluginViewItemMenuItems("k", "res", "svc:default/web")).toEqual([]);
+    expect(pluginViewItemMenuItems("k", "other", "pod:x")).toEqual([]);
+    expect(pluginViewItemMenuItems("other", "res", "pod:x")).toEqual([]);
+    expect(pluginMenuItems("projectView", ["/p/a"])).toEqual([]);
+    off();
+  });
 });
 
 describe("PluginView", () => {
+  afterEach(() => hideContextMenu());
+
   it("renders a tree and sends expand / activate", async () => {
     const events: ViewEvent[] = [];
     const tree: View = {
@@ -222,6 +257,59 @@ describe("PluginView", () => {
     expect(screen.getByText("1 namespace")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(events).toContainEqual({ kind: "button", id: "refresh" }));
+  });
+
+  it("opens the item menu on right-click", async () => {
+    const tree: View = {
+      toolbar: [],
+      body: {
+        kind: "tree",
+        value: [
+          { key: "ns", parent: null, label: "default", icon: null, detail: null, expandable: false, expanded: false },
+        ],
+      },
+      status: null,
+    };
+    setPluginsBackend(backendWith(() => tree));
+    const itemMenu = vi.fn((key: string) => (key === "ns" ? [{ label: "Describe", run: () => {} }] : []));
+    render(
+      <>
+        <PluginView pluginId="jobs" view="jobs" itemMenu={itemMenu} />
+        <ContextMenuHost />
+      </>,
+    );
+    await userEvent.pointer({ keys: "[MouseRight]", target: await screen.findByText("default") });
+    expect(itemMenu).toHaveBeenCalledWith("ns");
+    expect(await screen.findByText("Describe")).toBeTruthy();
+  });
+
+  it("opens the item menu on a list row, and none when it has no entries", async () => {
+    const list: View = {
+      toolbar: [],
+      body: {
+        kind: "list",
+        value: [
+          { key: "a", label: "Alpha", icon: null, detail: null },
+          { key: "b", label: "Beta", icon: null, detail: null },
+        ],
+      },
+      status: null,
+    };
+    setPluginsBackend(backendWith(() => list));
+    const itemMenu = vi.fn((key: string) => (key === "a" ? [{ label: "Open Alpha", run: () => {} }] : []));
+    render(
+      <>
+        <PluginView pluginId="jobs" view="jobs" itemMenu={itemMenu} />
+        <ContextMenuHost />
+      </>,
+    );
+    await userEvent.pointer({ keys: "[MouseRight]", target: await screen.findByText("Alpha") });
+    expect(itemMenu).toHaveBeenCalledWith("a");
+    expect(await screen.findByText("Open Alpha")).toBeTruthy();
+    hideContextMenu();
+    await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByText("Beta") });
+    expect(itemMenu).toHaveBeenCalledWith("b");
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("edits a table cell and renders again when the plugin refreshes", async () => {
