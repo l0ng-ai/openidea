@@ -24,7 +24,7 @@ describe("contributed problems in the hover", () => {
   it("shows the problem under the pointer with its severity icon and no quick-fix links", async () => {
     const tip = await hoverSource(editor(), 21);
     expect(tip).toMatchObject({ pos: 20, end: 23 });
-    const { dom } = tip!.create(view!);
+    const { dom } = tip!.create();
     const row = dom.querySelector(".cm-lsp-diag-warning")!;
     expect(row.querySelector(".cm-lsp-diag-message")?.textContent).toBe("Unsafe query");
     expect(row.querySelector(".cm-lsp-diag-icon")).not.toBeNull();
