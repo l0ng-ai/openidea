@@ -648,6 +648,14 @@ function HeaderRow({
     <header
       className={clsx(styles.header, tw.headerContent && styles.headerTabbed)}
       onDoubleClick={(e) => e.target === e.currentTarget && toggleMaximizeToolWindow(tw.id)}
+      onMouseDown={(e) => {
+        // A middle click on the header hides the window (like the Hide button).
+        // Not a press on the header's tabs or buttons, which close and act
+        // themselves: their event would otherwise hide the whole window too.
+        if (e.button !== 1 || (e.target as Element).closest('button, a, [role="tablist"], [role="separator"]')) return;
+        e.preventDefault();
+        hideToolWindow(tw.id);
+      }}
     >
       {!showTitle ? null : titleItems.length > 0 ? (
         <>
