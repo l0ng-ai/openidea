@@ -165,6 +165,16 @@ impl PluginHost {
         self.save_state();
     }
 
+    /// The marketplace's plugins: read again when `refresh`, else the last index
+    /// read. Reads it when none has been read yet (first run, nothing cached).
+    pub fn market_listing(&self, refresh: bool) -> IdeResult<Vec<MarketPlugin>> {
+        if refresh || (self.market.read().is_none() && self.market_url().is_some()) {
+            self.refresh_market()
+        } else {
+            Ok(self.market_plugins())
+        }
+    }
+
     /// Reads the index again, keeps it, and applies its revocations. Announces
     /// updates of installed plugins it hasn't announced yet.
     pub fn refresh_market(&self) -> IdeResult<Vec<MarketPlugin>> {

@@ -813,6 +813,13 @@ export const commands = {
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
+	/**
+	 *  Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.
+	 * 
+	 *  macOS WebKit can deliver a tap's `mousedown` after the button is already up. AppKit would then run
+	 *  its drag loop with no release left to end it, and the window follows the pointer until the next click.
+	 */
+	windowStartDrag: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_start_drag")),
 	/**  What this window was opened for (taken once). */
 	windowTakeLaunch: () => __TAURI_INVOKE<{
 	/**  Project folder to open. */
@@ -1001,7 +1008,7 @@ export const commands = {
 	pluginWebReadFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_web_read_file", { path })),
 	/**  Gutter markers of plugin `line-markers` providers for an open document. */
 	pluginLineMarkers: (doc: DocId) => typedError<LineMarkerInfo[], IdeError>(__TAURI_INVOKE("plugin_line_markers", { doc })),
-	/**  The marketplace's plugins: read again when `refresh`, else the last index read. */
+	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
 	/**  Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default). */

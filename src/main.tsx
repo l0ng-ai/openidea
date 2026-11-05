@@ -15,11 +15,14 @@ import {
 import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging } from "./platform/errorLog";
+import { guessOs } from "./platform/platformInfo";
+import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { installPointerFocus } from "./platform/pointerFocus";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
+import { installWindowDrag } from "./workbench/window-drag";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -29,6 +32,8 @@ if (import.meta.env.DEV && isTauri()) {
 }
 
 installRepeatedDoubleClick();
+if (guessOs() === "macos") installReorderedTapClick();
+installWindowDrag();
 installPointerFocus();
 installErrorLogging();
 

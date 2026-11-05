@@ -473,7 +473,7 @@ pub async fn plugin_web_read_file(path: PathBuf) -> IdeResult<String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
-/// The marketplace's plugins: read again when `refresh`, else the last index read.
+/// The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_market(
@@ -481,7 +481,7 @@ pub async fn plugin_market(
     refresh: bool,
 ) -> IdeResult<Vec<ide_host::plugins::MarketPlugin>> {
     let host = state.plugins.clone();
-    blocking(move || if refresh { host.refresh_market() } else { Ok(host.market_plugins()) }).await
+    blocking(move || host.market_listing(refresh)).await
 }
 
 #[tauri::command]
