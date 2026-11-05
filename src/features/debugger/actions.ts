@@ -299,7 +299,10 @@ async function startConfig(arg: unknown) {
   }
   const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
   const prepared = dotnet ? await call(commands.runDotnetResolve(config, true)) : config;
-  const launch = launchConfigFor(prepared, root);
+  // php-debug starts the PHP chosen in Settings unless the command names one.
+  const php =
+    config.debugAdapter === "php-debug" && isTauri() ? await call(commands.sdkPhpEffective()).catch(() => null) : null;
+  const launch = launchConfigFor(prepared, root, php);
   if (!launch) {
     notifications().notify({
       group: "run",
