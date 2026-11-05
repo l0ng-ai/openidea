@@ -3,7 +3,9 @@ name: Language smoke
 # with a quick fix, an intention, formatting, rename) per language, against the language
 # server the app starts by default: crates/ide-host/tests/language_smoke.rs.
 # Then running and testing each fixture through the run store and openidea-server
-# (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts.
+# (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts; and debugging its
+# entry point with the debugger the IDE installs (breakpoint, frames, variables, evaluate,
+# Step Over, Resume): smoke/debug.test.ts.
 on:
   push:
     branches: [main]
@@ -17,6 +19,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/features/run/**"
+      - "src/features/debugger/**"
       - "src/platform/**"
       - "smoke/**"
       - "package.json"
@@ -108,3 +111,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo build --locked -p ide-host --bin openidea-server
       - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
+      - run: pnpm smoke smoke/debug.test.ts -t "^${{ matrix.language }}$"
+        # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.
+        env: { GITHUB_TOKEN: "${{ github.token }}" }

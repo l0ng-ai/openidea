@@ -3,6 +3,7 @@
  * JSON-RPC with `Content-Length` framing over the server's stdin / stdout.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const PROTOCOL_VERSION = 2;
@@ -35,6 +36,8 @@ export class Server {
   private constructor(private readonly child: ChildProcessWithoutNullStreams) {
     child.stdout.on("data", (chunk: Buffer) => this.receive(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
+      // The whole log, when asked for (OPENIDEA_SMOKE_LOG=<file>; OPENIDEA_LOG sets its level).
+      if (process.env.OPENIDEA_SMOKE_LOG) appendFileSync(process.env.OPENIDEA_SMOKE_LOG, chunk);
       this.stderr.push(chunk.toString());
       if (this.stderr.length > 200) this.stderr.shift();
     });
