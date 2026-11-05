@@ -804,8 +804,11 @@ impl Tools {
                 c.args(["list", "--exact", gem]);
                 match run_quiet(c, Duration::from_secs(10)) {
                     Some((true, out)) if out.contains(&format!("{gem} (")) => {
-                        let path = self.which(main).unwrap_or(gem_cmd);
-                        (ToolStatus::OnPath, Some(path), parse_version(&out))
+                        // Homebrew's Ruby keeps its gem bindir off PATH: ask the Ruby where it is.
+                        match self.gem_executable(main) {
+                            Some(path) => (ToolStatus::OnPath, Some(path), parse_version(&out)),
+                            None => (ToolStatus::Missing, None, None),
+                        }
                     }
                     _ => (ToolStatus::Missing, None, None),
                 }
@@ -990,6 +993,22 @@ impl Tools {
             })
         });
         self.write_manifest(spec.name, &Manifest { version, source: Some(module.to_string()) })
+    }
+
+    /// Where the project's Ruby installs gem executables (`Gem.bindir`, `Gem.user_dir`'s `bin`).
+    fn gem_bin_dirs(&self) -> Vec<PathBuf> {
+        let Some(ruby) = self.which("ruby") else { return Vec::new() };
+        let mut c = self.command_in_project(ruby);
+        c.args(["-e", ide_core::tool_path::RUBY_GEM_BIN_SCRIPT]);
+        match run_quiet(c, Duration::from_secs(10)) {
+            Some((true, out)) => ide_core::tool_path::gem_bin_dirs(&out),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An installed gem's executable: on the search path, else in one of the Ruby's gem bin directories.
+    fn gem_executable(&self, cmd: &str) -> Option<PathBuf> {
+        self.which(cmd).or_else(|| self.gem_bin_dirs().iter().find_map(|d| self.exe_in(d, cmd)))
     }
 
     /// `gem install` into the active Ruby, then makes version-manager shims see the new executable.

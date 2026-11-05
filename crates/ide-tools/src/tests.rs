@@ -597,17 +597,22 @@ fn ruby_lsp_installs_into_the_project_ruby_not_a_private_gem_home() {
     let project = env._tmp.path().join("project");
     fs::create_dir_all(&project).unwrap();
     let marker = env._tmp.path().join("installed");
+    // Homebrew's Ruby: the gem bindir is not on the search path; only the Ruby knows it.
+    let bindir = env._tmp.path().join("gems/bin");
+    fs::create_dir_all(&bindir).unwrap();
+    env.script(&env.sys, "ruby", &format!("echo '{}'", bindir.display()));
     // `gem list --exact ruby-lsp` knows the gem once `gem install ruby-lsp` ran, in the cwd it was given.
     env.script(
         &env.sys,
         "gem",
         &format!(
             r#"case "$1" in
-install) echo "$PWD $@" > '{m}' ;;
+install) echo "$PWD $@" > '{m}'; printf '#!/bin/sh\n' > '{b}/ruby-lsp'; /bin/chmod +x '{b}/ruby-lsp' ;;
 list) [ -f '{m}' ] && echo "ruby-lsp (0.26.11)" ;;
 uninstall) /bin/rm -f '{m}' ;;
 esac"#,
-            m = marker.display()
+            m = marker.display(),
+            b = bindir.display()
         ),
     );
     let tools = env.tools().with_work_dir(Some(project.clone()));
@@ -615,6 +620,8 @@ esac"#,
     let info = tools.install("ruby-lsp", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.status, ToolStatus::OnPath);
     assert_eq!(info.version.as_deref(), Some("0.26.11"));
+    // Found in the Ruby's own bindir, not reported as the `gem` command.
+    assert_eq!(info.path.as_deref(), Some(bindir.join("ruby-lsp").as_path()));
     // Run in the project (so a version manager picks its Ruby), into the Ruby's own gem home.
     let log = fs::read_to_string(&marker).unwrap();
     assert!(log.starts_with(&*project.canonicalize().unwrap().to_string_lossy()), "{log}");
