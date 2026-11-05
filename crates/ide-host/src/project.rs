@@ -1197,7 +1197,7 @@ pub(crate) fn jdtls_maven_import(
     if maven.unlinked_projects.is_empty() && gradle.linked_projects.is_none() {
         return (Vec::new(), None);
     }
-    let model = ide_build::maven::load(root);
+    let model = ide_build::maven::load_linked(root, maven);
     let unlinked = ide_build::maven::UnlinkedProjects::from_model(&model, maven);
     let excluded = unlinked.poms().map(PathBuf::from).collect();
     let poms = unlinked.import_poms(&model).or_else(|| {

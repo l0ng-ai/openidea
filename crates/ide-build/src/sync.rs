@@ -283,7 +283,12 @@ pub fn sync_maven(
     cancel: &CancellationToken,
     progress: &dyn Fn(SyncProgress),
 ) -> IdeResult<()> {
-    let mut model = maven::load_with_profiles(root, &options.profiles);
+    let mut model = maven::load_with_linked(
+        root,
+        maven::default_local_repo(),
+        &options.profiles,
+        &options.maven_settings.linked_projects,
+    );
     maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);
     std::fs::create_dir_all(cache_dir)?;
     let mut cache = MavenCache {

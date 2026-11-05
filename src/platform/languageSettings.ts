@@ -116,6 +116,7 @@ export interface LanguagesValid {
       userSettings: string;
       localRepository: string;
       unlinkedProjects: string[];
+      linkedProjects: string[];
       daemon: boolean;
       mvndHome: string;
     };
@@ -162,7 +163,15 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     jdtlsJdk: "",
     jdtlsVmArgs: "",
     gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
-    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [], daemon: false, mvndHome: "" },
+    maven: {
+      home: "",
+      userSettings: "",
+      localRepository: "",
+      unlinkedProjects: [],
+      linkedProjects: [],
+      daemon: false,
+      mvndHome: "",
+    },
   },
   markdown: { previewFontSize: null },
 };
@@ -307,6 +316,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
+        linkedProjects: folders(maven.linkedProjects),
         daemon: bool(maven.daemon, d.java.maven.daemon),
         mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
       },
