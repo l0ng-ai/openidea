@@ -170,3 +170,32 @@ describe("mouse navigation", () => {
     }
   });
 });
+
+describe("force click (macOS trackpad)", () => {
+  function force(type: string, init: MouseEventInit = {}) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+    view.contentDOM.dispatchEvent(event);
+    return event;
+  }
+
+  it("keeps the system Look Up popover away", () => {
+    expect(force("webkitmouseforcewillbegin").defaultPrevented).toBe(true);
+  });
+
+  it("goes to the declaration under the pointer, like ⌘-click", async () => {
+    const event = force("webkitmouseforcedown");
+    await vi.waitFor(() => expect(openFile).toHaveBeenCalledOnce());
+    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 9 }, "definition");
+    expect(view.state.selection.main.head).toBe(9);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it.each([{ metaKey: true }, { altKey: true }, { ctrlKey: true }, { shiftKey: true }])(
+    "leaves a modified force click to the click gesture: %o",
+    async (mods) => {
+      force("webkitmouseforcedown", mods);
+      await Promise.resolve();
+      expect(lspGoto).not.toHaveBeenCalled();
+    },
+  );
+});

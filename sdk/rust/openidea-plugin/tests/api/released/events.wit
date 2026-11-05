@@ -1,4 +1,4 @@
-package openidea:plugin@1.0.0;
+package openidea:plugin@1.1.0;
 
 /// Workbench events, delivered in batches to `event-handler.handle`.
 interface events {
