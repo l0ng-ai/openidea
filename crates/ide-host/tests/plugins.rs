@@ -1942,16 +1942,24 @@ fn view_item_menus_name_a_declared_view() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
 
-    let ok = hello_variant(
-        tmp.path(),
-        with_menu("menu = \"view.item.context\"\nview = \"greetings\"\nwhen = \"viewItemKind == English\""),
-    );
+    let second_view =
+        "[[contributes.views]]\nid = \"more\"\ntitle = \"More\"\nicon = \"plugin\"\nlocation = \"right\"\n";
+    let ok = hello_variant(tmp.path(), |m| {
+        let on_greetings =
+            with_menu("menu = \"view.item.context\"\nview = \"greetings\"\nwhen = \"viewItemKind == English\"")(m);
+        let on_more = with_menu("menu = \"view.item.context\"\nview = \"more\"")("");
+        format!("{on_greetings}\n{second_view}\n{on_more}")
+    });
     assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
     let item = f.host.ui_items("menus").into_iter().find(|i| i.decl["menu"] == "view.item.context").unwrap();
     assert_eq!(
         (item.key.as_str(), item.decl["view"].as_str()),
         ("view.item.context/greetings/word-count", Some("greetings"))
     );
+    let keys: Vec<String> = f.host.ui_items("menus").into_iter().map(|i| i.key).collect();
+    for view in ["greetings", "more"] {
+        assert!(keys.contains(&format!("view.item.context/{view}/word-count")), "{keys:?}");
+    }
     f.host.uninstall("hello").unwrap();
 
     for (extra, message) in [
