@@ -436,6 +436,30 @@ export function registerDebugActions(): () => void {
         await report(tx("Pause failed"), call(commands.debugPause(s.id, thread)));
       },
     },
+    {
+      id: "debug.hotReload",
+      title: "Hot Reload",
+      category: "Debug",
+      icon: "hot-reload",
+      description: "Flutter: inject the changed sources into the running app",
+      when: "debugSessionRunning && debugSessionDart",
+      run: () => {
+        const s = activeSession();
+        if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id)));
+      },
+    },
+    {
+      id: "debug.hotRestart",
+      title: "Hot Restart",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: restart the app, discarding its state",
+      when: "debugSessionRunning && debugSessionDart",
+      run: () => {
+        const s = activeSession();
+        if (s) void report("Hot Restart failed", call(commands.debugHotRestart(s.id)));
+      },
+    },
     step("debug.stepOver", "Step Over", "over", "step-over"),
     step("debug.stepInto", "Step Into", "into", "step-into"),
     step("debug.stepOut", "Step Out", "out", "step-out"),
