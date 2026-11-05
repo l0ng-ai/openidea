@@ -137,7 +137,8 @@ fn linked_gradle_paths(
             }
         }
     } else {
-        linked.retain(|path| !paths.contains(path));
+        let unlinked: Vec<String> = paths.iter().map(|p| ide_build::gradle::linked_project_key(root, p)).collect();
+        linked.retain(|path| !paths.contains(path) && !unlinked.contains(path));
     }
     Ok(linked)
 }
