@@ -78,7 +78,7 @@ The design:
 
   Keep it small: about 15 files.
 
-- [ ] Phase 0.4: Intelephense baseline smoke test
+- [x] Phase 0.4: Intelephense baseline smoke test
       Add a `php` case to `crates/ide-host/tests/language_smoke.rs` using the existing `Checks` table: definition, references, hover, completion, diagnostic, rename (if the free tier supports it; otherwise mark it as unsupported the way other languages do), format, signature and structure, on `fixtures/php-app`. It runs with `cargo test -p ide-host --test language_smoke -- --ignored --exact php` and must pass with Intelephense installed. This is the baseline the engine has to match.
 
 - [ ] Phase 0.5: Mago test-drive and `ide-php` skeleton

@@ -41,6 +41,7 @@ env:
   JDTLS: 1.63.0-202610191322
   KOTLIN_LSP: 263.7084.0
   GRADLE: 8.14.3
+  INTELEPHENSE: 1.18.5
 
 jobs:
   smoke:
@@ -48,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin]
+        language: [typescript, python, rust, go, java, kotlin, php]
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
@@ -67,6 +68,10 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - if: matrix.language == 'typescript'
         run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
+
+      # Without a licence key: the free features are the PHP engine's baseline.
+      - if: matrix.language == 'php'
+        run: npm install --global "intelephense@$INTELEPHENSE"
 
       - if: matrix.language == 'python'
         uses: actions/setup-python@v5
@@ -105,6 +110,10 @@ jobs:
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
 
-      - run: pnpm install --frozen-lockfile
-      - run: cargo build --locked -p ide-host --bin openidea-server
-      - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
+      # PHP has no run smoke yet (no PHP interpreter in this job).
+      - if: matrix.language != 'php'
+        run: pnpm install --frozen-lockfile
+      - if: matrix.language != 'php'
+        run: cargo build --locked -p ide-host --bin openidea-server
+      - if: matrix.language != 'php'
+        run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
