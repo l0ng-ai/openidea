@@ -215,7 +215,7 @@ fn builds_nested_in_a_folder_of_repositories() {
     assert_eq!(app.name, "DromaraApplication");
     assert_eq!(app.kind, "spring-boot");
     assert_eq!(cmdline(app), "java -cp ${classpath} org.dromara.DromaraApplication");
-    assert_eq!(app.cwd.as_deref(), Some(Path::new("RuoYi-Vue-Plus/ruoyi-admin")));
+    assert_eq!(app.cwd, None);
     assert_eq!(app.extras.module.as_deref(), Some("RuoYi-Vue-Plus/ruoyi-admin"));
     assert_eq!(app.debug_adapter.as_deref(), Some("java-debug"));
     let package = find(&c, "maven:package:RuoYi-Vue-Plus");
@@ -258,7 +258,7 @@ fn spring_boot_application_of_a_repository_nested_one_or_two_levels_down() {
         let module = format!("{prefix}ruoyi-ai/ruoyi-admin");
         let app = find(&c, &format!("application:{module}:org.ruoyi.RuoYiAIApplication"));
         assert_eq!((app.name.as_str(), app.kind.as_str()), ("RuoYiAIApplication", "spring-boot"), "{prefix}");
-        assert_eq!(app.cwd.as_deref(), Some(Path::new(&module)));
+        assert_eq!((app.cwd.as_deref(), app.extras.module.as_deref()), (None, Some(module.as_str())), "{prefix}");
         assert!(ids(&c).contains(&format!("maven:spring-boot:run:{prefix}ruoyi-ai").as_str()), "{prefix}");
     }
 }
@@ -295,9 +295,9 @@ fn nested_builds_of_every_kind_and_depth() {
     }
     assert!(find(&c, "gradle:test:services/api").is_test);
     let api = find(&c, "application:services/api/app:com.acme.ApiKt");
-    assert_eq!(api.cwd.as_deref(), Some(Path::new("services/api/app")));
+    assert_eq!((api.cwd.as_deref(), api.extras.module.as_deref()), (None, Some("services/api/app")));
     let billing = find(&c, "application:billing:Billing");
-    assert_eq!(billing.cwd.as_deref(), Some(Path::new("billing")));
+    assert_eq!((billing.cwd.as_deref(), billing.extras.module.as_deref()), (None, Some("billing")));
     let builds: Vec<&str> =
         ids(&c).into_iter().filter(|id| id.starts_with("maven:package") || id.starts_with("gradle:build")).collect();
     assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing"]);
@@ -727,6 +727,40 @@ fn cmake_profile_build_configures_only_without_a_cache() {
             assert_eq!(find(&configs, "cmake:profile:0:test").extras.before_launch[0].target, build.id);
         }
     }
+}
+
+#[test]
+fn php_phpunit_project() {
+    let dir = project(&[
+        (
+            "composer.json",
+            r#"{"require-dev":{"phpunit/phpunit":"^11"},"scripts":{"test":"phpunit","post-install-cmd":"x","lint":"phpcs"}}"#,
+        ),
+        ("phpunit.xml.dist", "<phpunit/>"),
+        ("vendor/bin/phpunit", ""),
+        ("vendor/bin/phpunit.bat", ""),
+    ]);
+    let c = detect(dir.path());
+    // PHPUnit comes before the generic `composer test` so it is the default test runner.
+    assert_eq!(ids(&c), ["composer:lint", "phpunit", "composer:test"]);
+    let phpunit = find(&c, "phpunit");
+    // Windows runs the `.bat` launcher; the extensionless file is a shebang script.
+    assert_eq!(cmdline(phpunit), if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" });
+    assert_eq!(phpunit.kind, "phpunit");
+    assert!(phpunit.is_test);
+    assert_eq!(phpunit.debug_adapter.as_deref(), Some("php-debug"));
+    assert!(find(&c, "composer:test").is_test);
+    assert!(!find(&c, "composer:lint").is_test);
+}
+
+#[test]
+fn php_detection_needs_a_marker() {
+    let dir = project(&[("index.php", "<?php")]);
+    assert!(detect(dir.path()).is_empty());
+    let dir = project(&[("phpunit.xml", "<phpunit/>")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "phpunit")), "phpunit");
+    let dir = project(&[("composer.json", "{}")]);
+    assert!(detect(dir.path()).is_empty());
 }
 
 #[test]

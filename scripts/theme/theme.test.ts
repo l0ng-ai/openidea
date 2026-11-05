@@ -5,16 +5,18 @@ import {
   convertIntellijTheme,
   ICLS_ATTRIBUTES,
   ICLS_COLORS,
+  intellijThemePackage,
   pluginManifest,
   UI_KEYS,
-} from "./intellij.ts";
+} from "../../src/features/plugins/intellijTheme.ts";
 import { referenceMarkdown, stripJsonComments, themeTokenGroups, tokenSets, withReference } from "./tokens.ts";
 
 const read = (p: string) => readFileSync(p, "utf8");
 const css = read("src/styles/tokens.css");
 const groups = themeTokenGroups(css);
 const sets = tokenSets(groups);
-const TEMPLATE = "templates/theme-plugin";
+// The official Harbor Night theme, where new themes start (`openidea-plugin new --template theme`).
+const TEMPLATE = "plugins/official/harbor-night";
 const themeSrc = read(`${TEMPLATE}/themes/harbor-night.theme.json`);
 const schemeSrc = read(`${TEMPLATE}/themes/harbor-night.scheme.json`);
 const theme = JSON.parse(stripJsonComments(themeSrc)) as { id: string; kind: string; tokens: Record<string, string> };
@@ -47,7 +49,7 @@ describe("theme token reference", () => {
 describe("theme plugin template", () => {
   it("sets every UI token in the theme file and every editor token in the scheme file", () => {
     // A failure here means tokens.css gained (or lost) a themeable token:
-    // add it to templates/theme-plugin/themes/*.json, then run pnpm gen:theme-docs.
+    // add it to plugins/official/harbor-night/themes/*.json, then run pnpm gen:theme-docs.
     expect(sorted(Object.keys(theme.tokens))).toEqual(sorted(sets.ui));
     expect(sorted(Object.keys(scheme.tokens))).toEqual(sorted(sets.scheme));
   });
@@ -89,6 +91,8 @@ describe("IntelliJ theme import", () => {
       "Button": { "default": { "startBackground": "accent" } },
       "Popup.background": "#181f28",
       "Label.infoForeground": "#80888F80",
+      "EditorTabs": { "underlineColor": "#405060", "underlinedBorderColor": "#bd93f9" },
+      "CompletionPopup.matchForeground": "#ff79c6",
       "Tree": { "rowHeight": 24 }
     }
   }`;
@@ -97,6 +101,7 @@ describe("IntelliJ theme import", () => {
     <option name="CARET_COLOR" value="ffcc00" />
     <option name="LINE_NUMBERS_COLOR" value="0" />
     <option name="UNKNOWN_KEY" value="123456" />
+    <option name="GUTTER_BACKGROUND" value="313335" />
   </colors>
   <attributes>
     <option name="DEFAULT_KEYWORD">
@@ -124,11 +129,14 @@ describe("IntelliJ theme import", () => {
       </value>
     </option>
     <option name="DEFAULT_CONSTANT" baseAttributes="DEFAULT_IDENTIFIER" />
+    <option name="DEFAULT_INSTANCE_FIELD">
+      <value />
+    </option>
   </attributes>
 </scheme>`;
 
   it("maps ui keys, named colours and wildcards", () => {
-    const { theme: t, scheme: s } = convertIntellijTheme(themeJson);
+    const { theme: t, scheme: s } = convertIntellijTheme(stripJsonComments(themeJson));
     expect(t).toMatchObject({ id: "deep-sea", name: "Deep Sea", kind: "dark" });
     expect(t.tokens["--bg-app"]).toBe("#101820"); // *.background → named colour
     expect(t.tokens["--accent"]).toBe("#33aaff");
@@ -136,6 +144,9 @@ describe("IntelliJ theme import", () => {
     expect(t.tokens["--bg-selected"]).toBe("#203040");
     expect(t.tokens["--fg-muted"]).toBe("#80888f80");
     expect(t.tokens["--fg"]).toBe("#c0c8d0");
+    // Islands borders the selected tab with underlinedBorderColor.
+    expect(t.tokens["--border-tab-selected"]).toBe("#bd93f9");
+    expect(t.tokens["--fg-completion-match"]).toBe("#ff79c6");
     expect(s).toBeNull();
   });
 
@@ -163,20 +174,77 @@ describe("IntelliJ theme import", () => {
       "--syn-comment-style": "italic",
       "--fg-editor": "#a9b7c6",
       "--bg-editor": "#2b2b2b",
+      // GUTTER_BACKGROUND is the classic UI's: the gutter keeps the editor's background.
       "--bg-editor-gutter": "#2b2b2b",
       "--wave-error": "#ff0000",
       "--editor-error-decoration": "underline wavy #ff0000",
+      // <value />: plain text, not the parent scheme's colour.
+      "--syn-property": "#a9b7c6",
     });
     expect(s.tokens["--syn-constant"]).toBeUndefined();
   });
 
   it("produces an installable package", () => {
-    const c = convertIntellijTheme(themeJson.replace('"dark": true,', ""), icls.replace("Darcula", "Default"), "sea");
+    const light = stripJsonComments(themeJson.replace('"dark": true,', ""));
+    const c = convertIntellijTheme(light, icls.replace("Darcula", "Default"), "sea");
     expect(c.theme.kind).toBe("light");
     expect(c.theme.id).toBe("sea");
     expect(c.theme.tokens["--bg-island"]).toBe("#101820"); // ToolWindow ← *.background wins over the editor
-    const toml = pluginManifest(c, "Someone", "DeepSea.theme.json");
+    const info = {
+      id: "theme-sea",
+      name: 'Sea "Deep"',
+      version: "1.0.0",
+      description: "a\\b\nc",
+      authors: ["Someone"],
+    };
+    const toml = pluginManifest(info, [c], "Converted from\nDeepSea.theme.json");
+    expect(toml).toContain("# Converted from DeepSea.theme.json\n");
     expect(toml).toContain('id = "theme-sea"');
+    expect(toml).toContain('name = "Sea \\"Deep\\""');
+    expect(toml).toContain('description = "a\\\\b\\u000ac"');
+    expect(toml).toContain('engines.openidea = "^1.0"');
     expect(toml).toContain('editor-scheme = "themes/sea.scheme.json"');
+  });
+
+  it("turns a theme plugin into one package with all its themes", () => {
+    const deep = stripJsonComments(themeJson);
+    const pkg = intellijThemePackage({
+      name: "Deep Sea Themes",
+      pluginId: "com.example.DeepSea",
+      version: "2.3",
+      vendor: "Someone",
+      themes: [
+        { id: "deep-sea-id", theme: deep, editorScheme: icls },
+        { id: "copy-id", theme: deep, editorScheme: null },
+        { id: "light-id", theme: '{"name":"Shallow","dark":false}', editorScheme: null },
+      ],
+    });
+    expect(pkg.id).toBe("intellij.com-example-deepsea");
+    expect(pkg.files.map((f) => f.path)).toEqual([
+      "plugin.toml",
+      "themes/deep-sea.theme.json",
+      "themes/deep-sea.scheme.json",
+      "themes/deep-sea-2.theme.json",
+      "themes/shallow.theme.json",
+    ]);
+    const manifest = pkg.files[0]!.text;
+    expect(manifest).toContain('version = "2.3.0"');
+    expect(manifest).toContain('authors = ["Someone"]');
+    expect(manifest.match(/\[\[contributes\.themes\]\]/g)).toHaveLength(3);
+    const shallow = JSON.parse(pkg.files[4]!.text) as { id: string; kind: string };
+    expect(shallow).toMatchObject({ id: "shallow", kind: "light" });
+    expect(
+      intellijThemePackage({
+        name: "X",
+        pluginId: null,
+        version: "SNAPSHOT",
+        vendor: null,
+        themes: [{ id: "x", theme: "{}", editorScheme: null }],
+      }).files[0]!.text,
+    ).toContain('version = "1.0.0"');
+    expect(() =>
+      intellijThemePackage({ name: "Empty", pluginId: null, version: null, vendor: null, themes: [] }),
+    ).toThrow();
+    expect(() => convertIntellijTheme("[1]")).toThrow("Not an IntelliJ theme");
   });
 });

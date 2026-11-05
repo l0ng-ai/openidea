@@ -17,9 +17,31 @@ import styles from "./Session.module.css";
 
 const marked = new Marked({ gfm: true, breaks: true });
 
+/** Rendered messages by text, least recently used first: reopening a conversation renders it again. */
+const rendered = new Map<string, string>();
+const RENDERED_MAX = 500;
+
 export function markdownHtml(text: string): string {
+  let html = rendered.get(text);
+  if (html === undefined) {
+    html = renderHtml(text);
+    if (rendered.size >= RENDERED_MAX) rendered.delete(rendered.keys().next().value!);
+  } else rendered.delete(text);
+  rendered.set(text, html);
+  return html;
+}
+
+function renderHtml(text: string): string {
   const html = marked.parse(text, { async: false }) as string;
-  const root = DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, RETURN_DOM: true }) as HTMLElement;
+  // Replies can quote repository content. Styles would reach the whole IDE, and the click
+  // handlers below trust `data-copy` / `data-path`, which only `enhance` may set.
+  const root = DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    RETURN_DOM: true,
+    FORBID_TAGS: ["style", "form"],
+    FORBID_ATTR: ["style"],
+    ALLOW_DATA_ATTR: false,
+  }) as HTMLElement;
   root.querySelectorAll("li").forEach(wrapLooseText);
   return root.innerHTML;
 }

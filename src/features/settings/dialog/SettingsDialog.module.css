@@ -63,6 +63,15 @@
   flex-direction: column;
   min-height: 0;
 }
+.loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
 .pageHeader {
   flex: none;
   display: flex;
@@ -202,6 +211,19 @@
   min-width: 0;
   background: var(--bg-dialog, var(--bg-elev));
   color: var(--fg);
+}
+/* Linux: on Wayland GTK draws the frameless window's shadow (`decorate_csd` in
+   windows.rs), but frameless X11 windows have none, so mark the edge in CSS. */
+.windowEdge {
+  position: relative;
+}
+.windowEdge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--border-window);
 }
 .windowBody {
   flex: 1;

@@ -56,6 +56,7 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
         ui_mode: None,
         framework_ui_modes: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: vec![server],
         debugger: None,
@@ -101,8 +102,13 @@ async fn intellij_java_formatter_preserves_manual_breaks_and_wraps_long_lines() 
         async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
     })
     .await;
-    let edits =
-        mgr.format(doc, None, ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false }).await;
+    let edits = mgr
+        .format(
+            doc,
+            None,
+            ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false, tool: None },
+        )
+        .await;
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
     let mut document = ide_text::Document::new(source);
     document.apply_edits(&edits.unwrap()).unwrap();
@@ -124,9 +130,13 @@ async fn missing_binary_is_reported_with_install_hint() {
         install_hint: Some("npm i -g nope-ls".into()),
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
+        pinned: None,
     };
     let (mgr, events) = manager(dir.path(), LanguageRegistry::from_configs(vec![lang("nope", "nope", server)]));
     let path = dir.path().join("a.nope");
@@ -234,7 +244,7 @@ async fn ruff_next_to_basedpyright_end_to_end() {
     .await;
     assert!(codes.iter().any(|c| c == "F401") && codes.iter().any(|c| c == "I001"), "{codes:?}");
 
-    let options = ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false };
+    let options = ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false, tool: None };
     let edits = mgr.format(doc, None, options).await.unwrap();
     assert!(!edits.is_empty() && edits.iter().all(|e| e.range.start.line == 3), "{edits:?}");
 
@@ -390,9 +400,13 @@ async fn typescript_language_server_end_to_end() {
         install_hint: None,
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
+        pinned: None,
     };
     let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![lang("typescript", "ts", server)]));
     let doc = DocId::next();
@@ -436,9 +450,13 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         install_hint: None,
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
+        pinned: None,
     }
 }
 

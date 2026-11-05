@@ -88,7 +88,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-pub(crate) fn rename(from: &Path, to: &Path) -> IdeResult<()> {
+pub(crate) fn validate_rename(from: &Path, to: &Path) -> IdeResult<()> {
     if !exists(from) {
         return Err(not_found(from));
     }
@@ -98,6 +98,14 @@ pub(crate) fn rename(from: &Path, to: &Path) -> IdeResult<()> {
     // A case-only rename on a case-insensitive file system sees `to` as existing.
     if exists(to) && !same_file(from, to) {
         return Err(already_exists(to));
+    }
+    Ok(())
+}
+
+pub(crate) fn rename(from: &Path, to: &Path) -> IdeResult<()> {
+    validate_rename(from, to)?;
+    if from == to {
+        return Ok(());
     }
     ensure_parent(to)?;
     match fs::rename(from, to) {

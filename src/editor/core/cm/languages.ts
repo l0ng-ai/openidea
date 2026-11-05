@@ -5,6 +5,7 @@
  * and indentation fall back to the backend definition when the mode lacks them.
  */
 import { EditorState, Prec, type Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   LRLanguage,
   LanguageDescription,
@@ -22,8 +23,10 @@ import { JS_TAGS } from "./jsTags";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
+let infosBackend: DocBackend | null = null;
 
 export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, LanguageInfo>> {
+  infosBackend = backend;
   return (infosPromise ??= backend
     .languages()
     .then((list) => (infos = new Map(list.map((l) => [l.id, l]))))
@@ -36,6 +39,15 @@ export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, Lang
 
 export function languageInfo(id: string): LanguageInfo | undefined {
   return infos?.get(id);
+}
+
+/**
+ * The language list changed (a plugin added or removed languages): fetch it
+ * again. Open documents follow through their `docLanguage` events.
+ */
+export function refreshLanguageInfos(): Promise<unknown> {
+  infosPromise = null;
+  return infosBackend ? loadLanguageInfos(infosBackend) : Promise.resolve();
 }
 
 /** Test hook. */
@@ -108,6 +120,21 @@ const OWN_MODES = [
     name: "Astro",
     extensions: ["astro"],
     load: () => import("./astro").then((m) => m.astro()),
+  }),
+  LanguageDescription.of({
+    name: "YAML",
+    alias: ["yml"],
+    extensions: ["yaml", "yml"],
+    load: async () => {
+      const support = await languageData.find((l) => l.name === "YAML")!.load();
+      // @lezer/yaml can give a mapping that follows comment lines an inverted range when it
+      // lands on a tree buffer boundary (1024 entries by default); highlighting then skips
+      // the whole mapping. Larger buffers keep ordinary YAML files in one.
+      return new LanguageSupport(
+        (support.language as LRLanguage).configure({ bufferLength: 1 << 16 }),
+        support.support,
+      );
+    },
   }),
 ];
 
@@ -238,6 +265,12 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
+  PHP: {
+    "; ,": t.separator,
+    "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,
+    "MethodDeclaration/Name FunctionDefinition/Name": t.function(t.definition(t.variableName)),
+    "PropertyDeclaration/VariableDeclarator/VariableName": t.definition(t.propertyName),
+  },
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,
@@ -247,8 +280,14 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
-  if (!extra || !(support.language instanceof LRLanguage)) return support;
-  const patched = new LanguageSupport(support.language.configure({ props: [styleTags(extra)] }), support.support);
+  const language =
+    extra && support.language instanceof LRLanguage
+      ? support.language.configure({ props: [styleTags(extra)] })
+      : support.language;
+  const patched = new LanguageSupport(language, [
+    support.support,
+    EditorView.editorAttributes.of({ "data-language": desc.name }),
+  ]);
   // `loadedSupport` reads `desc.support` synchronously; keep it on the patched instance.
   (desc as { support: LanguageSupport | undefined }).support = patched;
   return patched;

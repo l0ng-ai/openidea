@@ -49,19 +49,25 @@ function patchTab(id: number, patch: Partial<FindTab>) {
   useFindWindow.setState((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
 }
 
+export interface OpenInFindWindowOptions {
+  replacement?: string | null;
+  preserveCase?: boolean;
+  /** IDEA's "Open results in new tab": keep the active tab instead of replacing it. */
+  newTab?: boolean;
+  deps?: FindDeps;
+}
+
 export function openInFindWindow(
   query: SearchQuery,
   title: string,
-  replacement: string | null = null,
-  deps = ipcFindDeps(),
-  preserveCase = false,
+  { replacement = null, preserveCase = false, newTab = false, deps = ipcFindDeps() }: OpenInFindWindowOptions = {},
 ) {
   const id = nextTab++;
   const session = new FindSession(deps, (state) => patchTab(id, { state }));
   sessions.set(id, session);
   useFindWindow.setState((s) => {
     const tab: FindTab = { id, title, query, replacement, preserveCase, state: IDLE };
-    const reused = s.tabs.find((t) => t.id === s.active && !t.pinned);
+    const reused = newTab ? undefined : s.tabs.find((t) => t.id === s.active && !t.pinned);
     if (reused) {
       sessions.get(reused.id)?.dispose();
       sessions.delete(reused.id);
@@ -82,15 +88,17 @@ export function openInFindWindow(
 
 /** Use the normal Find session/tab lifecycle for live editor results. */
 export function openEditorResults(source: FindResultsSource) {
-  const id = openInFindWindow(source.query, source.title, null, {
-    validate: async () => {},
-    nextRequestId,
-    cancel: () => {},
-    start: async (_request, _query, onFile) => {
-      const file = source.read();
-      const matches = countFileMatches(file);
-      if (matches) onFile(file);
-      return { files: matches ? 1 : 0, matches, limitHit: false, cancelled: false, elapsedMs: 0 };
+  const id = openInFindWindow(source.query, source.title, {
+    deps: {
+      validate: async () => {},
+      nextRequestId,
+      cancel: () => {},
+      start: async (_request, _query, onFile) => {
+        const file = source.read();
+        const matches = countFileMatches(file);
+        if (matches) onFile(file);
+        return { files: matches ? 1 : 0, matches, limitHit: false, cancelled: false, elapsedMs: 0 };
+      },
     },
   });
   patchTab(id, { editorResults: true });

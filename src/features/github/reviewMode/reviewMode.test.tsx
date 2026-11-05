@@ -24,7 +24,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
-      ghApi: (req: unknown) => ghApi(req),
+      ghApi: (_repo: unknown, req: unknown) => ghApi(req),
       vcsFileAt: () => ok(HEAD),
       vcsDiffHunks: (a: string, b: string) => Promise.resolve(diffHunks(a, b)),
       vcsConfigGet: (_repo: string | null, key: string) => ok(config[key] ?? null),
@@ -295,6 +295,8 @@ beforeEach(() => {
       coordinates: { owner: "o", name: "r" },
       repository: { id: "R1", viewerPermission: "READ" } as GHRepository,
       currentUser: me,
+      root: null,
+      remotes: [],
     },
   });
   useReviewModeSettings.setState({ enabled: true, threads: "unresolved" });

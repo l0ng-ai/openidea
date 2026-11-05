@@ -269,6 +269,7 @@ const TYPES: Record<DbDriver, string[]> = {
     "bit",
     "varbinary(max)",
   ],
+  clickhouse: ["UInt64", "Int64", "Float64", "String", "Bool", "Date", "DateTime", "UUID", "Nullable(String)"],
 };
 
 interface ModifyProps {
@@ -328,7 +329,8 @@ function ModifyTableForm({
   const driver = driverOf(id);
   const [name, setName] = useState(table ?? "table_name");
   const [columns, setColumns] = useState<ColumnDraft[]>(() => {
-    if (!initial) return [{ ...blankColumn(driver, 1), name: "id", primaryKey: true, notNull: true }];
+    if (!initial)
+      return [{ ...blankColumn(driver, 1), name: "id", primaryKey: driver !== "clickhouse", notNull: true }];
     const drafts = initial.map(draftOf);
     if (addColumn) drafts.push(blankColumn(driver, drafts.length + 1));
     return drafts;
@@ -448,14 +450,18 @@ function ModifyTableForm({
                   disabled={current.dropped || locked}
                   onChange={(e) => patch({ dataType: e.target.value })}
                 />
-                <span />
-                <Checkbox
-                  checked={current.notNull}
-                  disabled={current.dropped || locked}
-                  onChange={(notNull) => patch({ notNull })}
-                  label="Not null"
-                />
-                {!table && (
+                {driver !== "clickhouse" && (
+                  <>
+                    <span />
+                    <Checkbox
+                      checked={current.notNull}
+                      disabled={current.dropped || locked}
+                      onChange={(notNull) => patch({ notNull })}
+                      label="Not null"
+                    />
+                  </>
+                )}
+                {!table && driver !== "clickhouse" && (
                   <>
                     <span />
                     <Checkbox

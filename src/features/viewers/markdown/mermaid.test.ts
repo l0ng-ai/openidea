@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderMarkdown } from "./render";
-import { hasMermaid, renderMermaidIn, resetMermaidForTests, subscribeTheme, themeKey } from "./mermaid";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
+import { hasMermaid, renderMermaidIn, resetMermaidForTests } from "./mermaid";
 
 const m = vi.hoisted(() => ({
   loads: 0,

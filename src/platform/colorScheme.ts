@@ -32,6 +32,8 @@ export interface AttributeDef {
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
   defaultItalic?: boolean;
+  /** CodeMirror language name; unset attributes are language defaults. */
+  language?: string;
 }
 
 const syn = (id: string, name: string, path: string[], token: string): AttributeDef => ({
@@ -45,7 +47,7 @@ const syn = (id: string, name: string, path: string[], token: string): Attribute
 const LD = "Language Defaults";
 
 /** IDEA-style attribute tree: General, Language Defaults, then languages. */
-export const ATTRIBUTES: readonly AttributeDef[] = [
+const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
@@ -113,6 +115,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
+  syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
   syn("constant", "Identifiers › Constant", [LD], "constant"),
   syn("field", "Identifiers › Instance field", [LD], "property"),
   { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
@@ -149,6 +152,26 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   syn("mdCode", "Code span", ["Markdown"], "markup-code"),
   syn("mdLink", "Link", ["Markdown"], "link"),
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
+];
+
+const SCHEME_LANGUAGES = { java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+
+export const ATTRIBUTES: readonly AttributeDef[] = [
+  ...BASE_ATTRIBUTES,
+  ...Object.entries(SCHEME_LANGUAGES).flatMap(([id, language]) =>
+    BASE_ATTRIBUTES.filter((a) => a.path[0] === LD && !/^(semantic|bracket)\d$/.test(a.id)).map((a) => ({
+      ...a,
+      id: `${id}.${a.id}`,
+      path: [language, ...a.path.slice(1)],
+      language,
+    })),
+  ),
+  ...[
+    ["brackets", "Brackets", "bracket"],
+    ["separator", "Comma and semicolon", "separator"],
+    ["scriptTag", "PHP tags", "processing-instruction"],
+    ["staticField", "Static field", "static-property"],
+  ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
 ];
 
 // --- scheme base values ------------------------------------------------------
@@ -259,6 +282,25 @@ export function effectiveScheme(
   return themeScheme(root);
 }
 
+/** Light or dark: a built-in scheme's theme kind, a custom scheme's parent (null: unknown). */
+export function schemeKind(id: string | undefined, customs: CustomColorSchemes = {}): "light" | "dark" | null {
+  if (isBuiltinTheme(id)) return themeKind(id);
+  return (id && customSchemes(customs)[id]?.parent) || null;
+}
+
+/**
+ * The scheme setting once the IDE theme has turned `kind`, or null to keep it: a chosen scheme
+ * of the other kind gives way to the theme's own, so a light theme doesn't keep a dark editor.
+ */
+export function schemeAfterThemeChange(
+  setting: string | undefined,
+  kind: "light" | "dark",
+  customs: CustomColorSchemes = {},
+): string | null {
+  const current = schemeKind(setting, customs);
+  return current && current !== kind ? "theme-default" : null;
+}
+
 /** Scheme belonging to the active IDE theme (`data-theme` / `data-contrast`). */
 export function themeScheme(
   root: HTMLElement | null = typeof document !== "undefined" ? document.documentElement : null,
@@ -284,10 +326,12 @@ const EFFECT_CSS: Record<string, (c: string) => string> = {
 /** Declarations for the overrides of one scheme. */
 export function overrideDeclarations(
   overrides: Record<string, TextAttributesOverride> | undefined,
+  language?: string,
 ): Array<[string, string]> {
   const out: Array<[string, string]> = [];
   if (!overrides) return out;
   for (const attr of ATTRIBUTES) {
+    if (attr.language !== language) continue;
     const o = overrides[attr.id];
     if (!o) continue;
     if (isHexColor(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
@@ -382,5 +426,15 @@ export function schemeCss(
   const body = decls
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
-  return body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
+  let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
+  for (const language of Object.values(SCHEME_LANGUAGES)) {
+    const languageBody = [
+      ...overrideDeclarations(valid[id]?.attributes, language),
+      ...overrideDeclarations(overrides?.[id], language),
+    ]
+      .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
+      .map(([k, v]) => `  ${k}: ${v} !important;`);
+    if (languageBody.length) css += `.cm-editor[data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
+  }
+  return css;
 }

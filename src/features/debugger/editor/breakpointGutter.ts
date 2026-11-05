@@ -35,6 +35,7 @@ import styles from "./editor.module.css";
 export type BreakpointLook =
   | "normal"
   | "disabled"
+  | "muted"
   | "unverified"
   | "verified"
   | "conditional"
@@ -47,7 +48,9 @@ export type BreakpointLook =
   | "fieldVerified";
 
 export function lookOf(b: BreakpointEntry, status: BreakpointStatus | undefined, muted: boolean, running: boolean) {
-  if (!b.enabled || muted) return "disabled";
+  if (!b.enabled) return "disabled";
+  // Mute Breakpoints: IDEA's grey dot, so it isn't taken for a disabled breakpoint.
+  if (muted) return "muted";
   if (running && status && !status.verified) return "unverified";
   if (!suspends(b)) return "log";
   if (isConditional(b)) return "conditional";
@@ -61,7 +64,8 @@ export function specialLook(
   muted: boolean,
   running: boolean,
 ): BreakpointLook {
-  if (!b.enabled || muted) return b.kind === "method" ? "methodDisabled" : "fieldDisabled";
+  if (!b.enabled) return b.kind === "method" ? "methodDisabled" : "fieldDisabled";
+  if (muted) return "muted";
   if (running && status && !status.verified) return "unverified";
   if (running && status?.verified) return b.kind === "method" ? "methodVerified" : "fieldVerified";
   return b.kind;
@@ -81,7 +85,7 @@ class BreakpointMarker extends GutterMarker {
 }
 
 const bpLine = Decoration.line({ class: styles.bpLine });
-const DISABLED_LOOKS = new Set<BreakpointLook>(["disabled", "methodDisabled", "fieldDisabled"]);
+const DISABLED_LOOKS = new Set<BreakpointLook>(["disabled", "muted", "methodDisabled", "fieldDisabled"]);
 
 const setMarkers = StateEffect.define<RangeSet<BreakpointMarker>>();
 

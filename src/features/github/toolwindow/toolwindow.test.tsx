@@ -3,7 +3,7 @@ import { act, render, screen } from "@testing-library/react";
 import { getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import * as ipc from "@/platform/ipc";
-import { useContributions } from "@/workbench/contributions";
+import { provideToolWindowService, useContributions, type ToolWindowService } from "@/workbench/contributions";
 import { activate } from "../index";
 import { setCurrentRepository } from "../api/client";
 import type { GHRepository, GHUser } from "../api/types";
@@ -114,6 +114,14 @@ describe("tool window", () => {
       expect(getAction(id), id).toBeDefined();
   });
 
+  it("opens the tool window for Change Repository or Account while not connected", async () => {
+    const show = vi.fn();
+    provideToolWindowService({ show } as unknown as ToolWindowService);
+    useGhRepository.setState({ availability: { kind: "notInstalled" } });
+    await getAction("github.changeRepository")!.run({ arg: undefined, ctx: { projectOpen: true } });
+    expect(show).toHaveBeenCalledWith("pullRequests", true);
+  });
+
   it("shows gh's state when it is not ready", () => {
     useGhRepository.setState({ availability: { kind: "notInstalled" } });
     render(<PullRequestsToolWindow />);
@@ -150,7 +158,13 @@ describe("tool window", () => {
       useGhRepository.setState({
         availability: { kind: "ready", repo: {} as never, login: "me" },
         remotes: [{ owner: "org", name: "app", remote: "origin", url: "" }],
-        connection: { coordinates: { owner: "org", name: "app" }, repository, currentUser: me },
+        connection: {
+          coordinates: { owner: "org", name: "app" },
+          repository,
+          currentUser: me,
+          root: null,
+          remotes: [],
+        },
       });
       render(
         <>
@@ -161,7 +175,7 @@ describe("tool window", () => {
     });
     expect(screen.getByRole("tab", { name: /app/ })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "Search pull requests" })).toBeTruthy();
-    const body = JSON.parse(ghApi.mock.calls[0]![0].body!) as { variables: { query: string; pageSize: number } };
+    const body = JSON.parse(ghApi.mock.calls[0]![1].body!) as { variables: { query: string; pageSize: number } };
     // First run: every open pull request.
     expect(body.variables).toMatchObject({ query: "type:pr repo:org/app is:open", pageSize: 50 });
     await act(async () => openPullRequestTab(4));

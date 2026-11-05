@@ -1,6 +1,8 @@
 //! `openidea-server --stdio`: the IDE backend for remote development, serving
 //! one desktop client over stdin / stdout (started by the client over SSH).
 
+use ide_host::plugins::remote::{RemotePluginLanguages, SYNC_COMMAND};
+use ide_host::plugins::remote_host::RemotePlugins;
 use ide_host::rpc::{self, Dispatcher};
 use ide_host::{Host, HostConfig};
 use ide_language::LanguageRegistry;
@@ -51,8 +53,12 @@ async fn run(base: PathBuf) -> i32 {
             return 1;
         }
     };
+    // The desktop's plugin languages (`plugin_sync_languages`); programs pinned on this machine.
+    let plugin_languages = RemotePluginLanguages::new(Some(&data_dir));
+    languages.attach_plugins(plugin_languages.store().clone());
     let peer = Arc::new(OnceLock::new());
     let sink_peer = peer.clone();
+    let plugins_data = data_dir.clone();
     let host = Arc::new(Host::new(HostConfig {
         config_dir,
         local_data_dir: data_dir.clone(),
@@ -64,8 +70,31 @@ async fn run(base: PathBuf) -> i32 {
         runtime: tokio::runtime::Handle::current(),
         project_environment: true,
     }));
+    // The desktop's code plugins run here, next to the project (`plugin_sync_packages`).
+    let plugins = match RemotePlugins::start(&plugins_data, &host, peer.clone()) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!("plugins are unavailable: {e}");
+            None
+        }
+    };
     tracing::info!("openidea-server {} ready", env!("CARGO_PKG_VERSION"));
-    rpc::serve(host.clone(), Dispatcher::standard(), peer, tokio::io::stdin(), tokio::io::stdout()).await;
+    let mut dispatcher = Dispatcher::standard();
+    if let Some(plugins) = &plugins {
+        plugins.register(&mut dispatcher);
+    }
+    dispatcher.add(SYNC_COMMAND, move |c| {
+        let remote = plugin_languages.clone();
+        async move {
+            let report = remote.sync(c.arg("languages")?);
+            c.host.plugin_languages_changed();
+            Ok(report)
+        }
+    });
+    rpc::serve(host.clone(), dispatcher, peer, tokio::io::stdin(), tokio::io::stdout()).await;
+    if let Some(plugins) = &plugins {
+        plugins.host().shutdown();
+    }
     // `process::exit` skips destructors: nothing started for the client may outlive it.
     if tokio::time::timeout(std::time::Duration::from_secs(10), host.shutdown()).await.is_err() {
         tracing::warn!("language servers did not shut down in time");

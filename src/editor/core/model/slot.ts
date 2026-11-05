@@ -23,6 +23,7 @@ import {
   _removeEditor,
   documentSynced,
   isExternalChange,
+  transientChange,
   type EditorDocContext,
   type TextEditorHandle,
 } from "@/editor/api";
@@ -199,6 +200,7 @@ export class EditorSlot {
   private onTransactions(trs: readonly Transaction[], view: EditorView) {
     view.update(trs);
     let selection = false;
+    let reformatted = false;
     let navigatedFrom: { line: number; col: number } | undefined;
     for (const tr of trs) {
       if (!navigatedFrom && tr.selection && isNavigation(tr)) {
@@ -206,7 +208,7 @@ export class EditorSlot {
         const line = tr.startState.doc.lineAt(head);
         navigatedFrom = { line: line.number - 1, col: head - line.from };
       }
-      if (tr.docChanged && !isExternalChange(tr)) {
+      if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange)) {
         this.model.onLocal(tr.changes, this);
         if (
           tr.isUserEvent("input") ||
@@ -217,8 +219,10 @@ export class EditorSlot {
         )
           this.host.onUserEdit(this, tr);
       }
+      if (tr.docChanged && tr.isUserEvent("format.reformat")) reformatted = true;
       if (tr.selection || tr.docChanged) selection = true;
     }
+    if (reformatted) this.model.redetectIndent();
     if (selection) this.host.onSelection(this, navigatedFrom);
   }
 
@@ -231,6 +235,7 @@ export class EditorSlot {
     const tr = this.state.update(spec);
     this.state = tr.state;
     if (tr.docChanged) this.model.onLocal(tr.changes, this);
+    if (tr.docChanged && tr.isUserEvent("format.reformat")) this.model.redetectIndent();
   }
 
   /** Applies changes that are already in the model (other slot / backend). */

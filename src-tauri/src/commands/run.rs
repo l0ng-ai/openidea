@@ -64,6 +64,34 @@ pub fn run_save_configs(
     ide_host::ops::run::save_configs(&state.host, window.label(), &configs, &removed_detected_ids.unwrap_or_default())
 }
 
+/// Temporary configurations as they are kept between sessions: without what settings derived.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_without_derived(
+    window: Window,
+    state: State<'_, AppState>,
+    configs: Vec<RunConfig>,
+) -> IdeResult<Vec<RunConfig>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::run::without_derived(&host, &label, configs))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+}
+
+/// Kept temporary configurations with the current settings applied.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_apply_settings(
+    window: Window,
+    state: State<'_, AppState>,
+    configs: Vec<RunConfig>,
+) -> IdeResult<Vec<RunConfig>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::run::apply_settings(&host, &label, configs))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn run_start(
@@ -121,6 +149,28 @@ pub fn run_save_templates(window: Window, state: State<'_, AppState>, templates:
     ide_host::ops::run::run_save_templates(&state.host, window.label(), templates)
 }
 
+/// Project files run configurations can be imported from (`.vscode/launch.json`).
+#[tauri::command]
+#[specta::specta]
+pub fn run_import_sources(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_run::import::RunImportSource>> {
+    ide_host::ops::run::run_import_sources(&state.host, window.label())
+}
+
+/// Configurations read from `source`, not saved; names already in `existing` are skipped.
+#[tauri::command]
+#[specta::specta]
+pub fn run_import_configs(
+    window: Window,
+    state: State<'_, AppState>,
+    source: ide_run::import::RunImportSource,
+    existing: Vec<RunConfig>,
+) -> IdeResult<ide_run::import::RunImport> {
+    ide_host::ops::run::run_import_configs(&state.host, window.label(), source, existing)
+}
+
 /// The environment runs inherit when "Include system environment variables" is on.
 #[tauri::command]
 #[specta::specta]
@@ -137,6 +187,18 @@ pub async fn run_gradle_jvm_args_script(
     jvm_args: Vec<String>,
 ) -> IdeResult<String> {
     ide_host::ops::run::run_gradle_jvm_args_script(&state.host, window.label(), jvm_args).await
+}
+
+/// Writes one of the IDE's Gradle init scripts where the build runs; returns its path.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_gradle_init_script(
+    window: Window,
+    state: State<'_, AppState>,
+    name: String,
+    text: String,
+) -> IdeResult<String> {
+    ide_host::ops::run::run_gradle_init_script(&state.host, window.label(), name, text).await
 }
 
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
@@ -177,6 +239,18 @@ pub async fn run_tomcat_build(
     config: RunConfig,
 ) -> IdeResult<Option<RunConfig>> {
     ide_host::ops::run::run_tomcat_build(&state.host, window.label(), config).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn run_tomcat_sync(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+    module: std::path::PathBuf,
+    class_paths: Vec<String>,
+    resources_only: bool,
+) -> IdeResult<bool> {
+    ide_host::ops::run::run_tomcat_sync(&state.host, window.label(), config, module, class_paths, resources_only).await
 }
 #[tauri::command]
 #[specta::specta]

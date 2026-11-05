@@ -47,6 +47,7 @@ export function attachPanZoom(viewport: HTMLElement): void {
   });
   viewport.addEventListener("pointermove", (e) => {
     if (!drag || drag.id !== e.pointerId) return;
+    if (!(e.buttons & 1)) return end(e);
     apply({ ...view, x: view.x + e.clientX - drag.x, y: view.y + e.clientY - drag.y });
     drag = { ...drag, x: e.clientX, y: e.clientY };
   });

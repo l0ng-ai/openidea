@@ -230,6 +230,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
   const databases = useDatabase((s) => s.databases);
   const boundId = bound ? splitTarget(bound).id : null;
+  const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
   useEffect(() => {
     if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
       void loadDatabases(boundId);
@@ -291,18 +292,22 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         options={ROW_LIMITS.map((v) => ({ value: v, label: tx`${Number(v).toLocaleString("en")} rows` }))}
         onChange={(v) => useDatabase.setState({ maxRows: Number(v) })}
       />
-      <span className={styles.toolbarSeparator} />
-      <Select
-        aria-label="Transaction mode"
-        value={manual ? "manual" : "auto"}
-        options={[
-          { value: "auto", label: "Tx: Auto" },
-          { value: "manual", label: "Tx: Manual" },
-        ]}
-        onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
-        disabled={!bound}
-      />
-      {manual && (
+      {supportsTransactions && (
+        <>
+          <span className={styles.toolbarSeparator} />
+          <Select
+            aria-label="Transaction mode"
+            value={manual ? "manual" : "auto"}
+            options={[
+              { value: "auto", label: "Tx: Auto" },
+              { value: "manual", label: "Tx: Manual" },
+            ]}
+            onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
+            disabled={!bound}
+          />
+        </>
+      )}
+      {supportsTransactions && manual && (
         <>
           <IconButton
             icon="commit"

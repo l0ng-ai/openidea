@@ -55,11 +55,15 @@ function buildTree(): Node[] {
 
 const TREE = buildTree();
 
-/** CSS custom properties of a scheme plus pending overrides (for the preview). */
+/**
+ * CSS custom properties of a scheme plus pending overrides (for the preview); with
+ * `language`, that language's own colours on top, as its editors show them.
+ */
 function previewVars(
   id: string,
   o: Record<string, TextAttributesOverride> | undefined,
   customs: CustomColorSchemes,
+  language?: string,
 ): CSSProperties {
   const vars: Record<string, string> = {};
   const tokens = resolvedSchemeTokens(id, customs);
@@ -74,6 +78,10 @@ function previewVars(
       vars[k] = v;
   vars["--bg-editor"] = tokens.get("--bg-editor") ?? tokens.get("--bg-island") ?? "";
   for (const [key, value] of overrideDeclarations(o)) vars[key] = value;
+  if (language) {
+    for (const [key, value] of overrideDeclarations(customs[id]?.attributes, language)) vars[key] = value;
+    for (const [key, value] of overrideDeclarations(o, language)) vars[key] = value;
+  }
   return vars as CSSProperties;
 }
 
@@ -89,6 +97,8 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
     fontStyle: `var(--syn-${t}-italic, ${t === "comment" ? "var(--syn-comment-style)" : t === "doc-comment" || t === "docstring" ? "italic" : "inherit"})`,
     backgroundColor: `var(--syn-${t}-bg, transparent)`,
     textDecoration: `var(--syn-${t}-effect, none)`,
+    // WebKit takes a decoration with a style or colour only through the prefixed property.
+    ...({ WebkitTextDecoration: `var(--syn-${t}-effect, none)` } as CSSProperties),
   };
 }
 
@@ -274,9 +284,10 @@ function ColorSchemePage() {
   const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
   const attr = ATTRIBUTES.find((a) => a.id === selected);
+  const language = attr?.language;
   const vars = useMemo(
-    () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
-    [id, mine, customs, weight, boldFontWeight],
+    () => ({ ...previewVars(id, mine, customs, language), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
+    [id, mine, customs, language, weight, boldFontWeight],
   );
   const update = (attrId: string, v: TextAttributesOverride | undefined) => {
     const next: Overrides = { ...(overrides ?? {}) };

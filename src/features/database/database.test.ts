@@ -102,6 +102,12 @@ describe("export formats", () => {
     );
   });
 
+  it("preserves backslashes in ClickHouse SQL exports", () => {
+    expect(exportData("sql", { ...data, driver: "clickhouse", rows: [["1", "C:\\new\\file's"]] })).toBe(
+      `INSERT INTO "order items" (id, name) VALUES (1, 'C:\\\\new\\\\file''s');`,
+    );
+  });
+
   it("writes a Markdown table, numbers right-aligned", () => {
     expect(exportData("markdown", { ...data, rows: [["1", "a|b"]] })).toBe(
       "| id | name |\n| --: | --- |\n| 1 | a\\|b |",
@@ -184,7 +190,9 @@ describe("data source types", () => {
     });
     expect(vendorPreset(vendorById("postgres")!)).toEqual({ driver: "postgres", vendor: "", port: 5432 });
     expect(vendorPreset(vendorById("supabase")!).ssl).toBe("require");
-    expect(VENDORS.every((v) => ["postgres", "mysql", "sqlite", "sqlServer"].includes(v.driver))).toBe(true);
+    expect(VENDORS.every((v) => ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse"].includes(v.driver))).toBe(
+      true,
+    );
     const labels = VENDORS.map((v) => v.label);
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
@@ -226,6 +234,36 @@ describe("data source types", () => {
     });
     expect(parseSourceUrl("redshift://r.example:5439/dev")?.source.vendor).toBe("redshift");
     expect(parseSourceUrl("postgresql://h:70000/db")).toBeNull();
+  });
+
+  it("adds ClickHouse with native HTTP defaults and HTTPS cloud URLs", () => {
+    expect(vendorPreset(vendorById("clickhouse")!)).toEqual({
+      driver: "clickhouse",
+      vendor: "",
+      port: 8123,
+      user: "default",
+      database: "default",
+      ssl: "disable",
+    });
+    expect(sourceUrl({ driver: "clickhouse", host: "localhost", database: "default" })).toBe(
+      "http://localhost:8123/default",
+    );
+    expect(sourceUrl({ driver: "clickhouse", host: "db.example", ssl: "verifyFull", database: "analytics" })).toBe(
+      "https://db.example:8443/analytics",
+    );
+    const parsed = parseSourceUrl("https://reader:s%40cret@db.example:8443/analytics?max_execution_time=30");
+    expect(parsed?.source).toMatchObject({
+      driver: "clickhouse",
+      host: "db.example",
+      port: 8443,
+      database: "analytics",
+      user: "reader",
+      ssl: "verifyFull",
+    });
+    expect(parsed?.password).toBe("s@cret");
+    expect(parseSourceUrl("http://localhost/default")?.source.ssl).toBe("disable");
+    expect(parseSourceUrl("jdbc:clickhouse://localhost/default")?.source.driver).toBe("clickhouse");
+    expect(parseSourceUrl("https://db.example/default?sslmode=disable")?.source.ssl).toBe("verifyFull");
   });
 });
 

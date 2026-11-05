@@ -1,8 +1,17 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  Fragment,
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentChange, AgentEntry, AgentImage, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
+import type { AgentChange, AgentEntry, AgentImage, AgentLimit, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -28,7 +37,7 @@ import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
-import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
+import { canSend, costLabel, emptyDraft, limitLabel, retryParts, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
@@ -92,14 +101,17 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
   );
   useEffect(() => {
-    void loadEntries(id).catch(() => undefined);
+    // Loaded entries are kept current by the task's events: reopening the tab needn't fetch them again.
+    if (!useAgents.getState().entries.has(id)) void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
   }, [id]);
   useEffect(() => {
     if (!docked || !changesOpen) return markVisible(id);
   }, [id, docked, changesOpen]);
   useEffect(() => {
-    if (view) void loadEntries(id, view).catch(() => undefined);
+    if (view && !useAgents.getState().entries.has(entriesKey(id, view))) {
+      void loadEntries(id, view).catch(() => undefined);
+    }
   }, [id, view]);
   const openSubagent = (sub: string) => setPath((p) => [...p, sub]);
   const [finding, setFinding] = useState(false);
@@ -287,17 +299,41 @@ function Header({
   );
 }
 
-/** Context use (when the agent reports it) and the time spent on the task. */
+/**
+ * Context use, usage limits and cost (when the agent reports them) and the time spent on
+ * the task, each as Settings › Tools › Agents › Chat allows.
+ */
 function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const tx = useTx();
+  const show = useProject((s) => s.settings?.agents);
   const busy = isBusy(task.status);
   const now = useNow(busy ? 1000 : 60_000);
-  const usage = task.usage;
-  const work = entries ? workTime(entries, busy ? now : null) : 0;
+  const usage = show?.showContextUsage !== false ? task.usage : null;
+  const reported = useAgents((s) => s.limits.get(task.provider));
+  const limits = show?.showUsageLimits !== false ? (reported ?? []) : [];
+  const cost = show?.showCost === true ? task.usage?.cost : null;
+  const work = show?.showWorkTime !== false && entries ? workTime(entries, busy ? now : null) : 0;
   return (
     <span className={styles.meters}>
       {usage && <Usage usage={usage} />}
+      {limits.map((l) => (
+        <Limit key={l.window} limit={l} now={now} />
+      ))}
+      {cost && <span title={tx("What the session has cost so far, as the agent reports it")}>{costLabel(cost)}</span>}
       {work >= 1000 && <span title={tx("Time the agent spent on this task")}>{formatDuration(work)}</span>}
+    </span>
+  );
+}
+
+/** A usage-limit window: "5h 19%", when it resets in the tooltip. */
+function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
+  const label = limitLabel(limit, now);
+  return (
+    <span className={styles.meter} title={label.detail} aria-label={label.detail}>
+      <span className={styles.usageBar} aria-hidden>
+        <span style={{ width: `${label.percent}%` }} />
+      </span>
+      {label.short}
     </span>
   );
 }
@@ -388,6 +424,9 @@ interface StreamProps {
   onCloseFind: () => void;
 }
 
+/** Entries rendered at a time when a conversation opens at its end. */
+const ENTRY_BATCH = 40;
+
 function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
@@ -395,6 +434,13 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const positions = useAgents.getState().scrollPositions;
   const position = useRef(positions.get(key) ?? { top: 0, stick: true });
   const restored = useRef(false);
+  // Opened at the end, the last entries come first and the earlier ones follow in batches:
+  // reopening a long conversation paints at once. A kept offset needs them all.
+  const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
+  const start = finding || !entries ? 0 : Math.max(0, entries.length - shown);
+  useEffect(() => {
+    if (start > 0) startTransition(() => setShown((n) => n + ENTRY_BATCH));
+  }, [start]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null) return;
@@ -446,16 +492,18 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         {entries === null ? (
           <Spinner />
         ) : (
-          entries.map((entry, i) => (
-            <Entry
-              key={i}
-              task={task}
-              entry={entry}
-              turn={turns?.get(i) ?? null}
-              turnCount={turns?.size ?? 0}
-              onOpenSubagent={onOpenSubagent}
-            />
-          ))
+          entries
+            .slice(start)
+            .map((entry, i) => (
+              <Entry
+                key={start + i}
+                task={task}
+                entry={entry}
+                turn={turns?.get(start + i) ?? null}
+                turnCount={turns?.size ?? 0}
+                onOpenSubagent={onOpenSubagent}
+              />
+            ))
         )}
         {subagent && subagentWorking(subagent.status) && (
           <div className={styles.working}>
@@ -1123,39 +1171,66 @@ function WorkingSubagents({ entries, onOpen }: { entries: AgentEntry[] | null; o
 /** Agent-written titles with the task's own folder dropped from paths. */
 const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
 
-function PermissionLine({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry, { type: "permission" }> }) {
+type PermissionEntry = Extract<AgentEntry, { type: "permission" }>;
+
+/**
+ * The answers to an open permission request. A request without options (some agents send
+ * none) can still be cancelled, so the agent doesn't wait for an answer it can't get.
+ */
+function PermissionAnswers({
+  task,
+  entry,
+  className,
+}: {
+  task: AgentTask;
+  entry: PermissionEntry;
+  className?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const answer = (option: string | null) => {
+    setBusy(true);
+    void respond(task.id, entry.id, option).finally(() => setBusy(false));
+  };
+  return (
+    <span className={className}>
+      {entry.options.length ? (
+        entry.options.map((o) => (
+          <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
+            {o.name}
+          </button>
+        ))
+      ) : (
+        <button type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(null)}>
+          <T>Cancel</T>
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** A permission request in the conversation; while open, answered right there as in the banner. */
+function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEntry }) {
   return (
     <div className={styles.permissionLine}>
       <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
-      <span className={styles.permissionTitle}>{shortTitle(task, entry.title)}</span>
+      <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
+        {shortTitle(task, entry.title)}
+      </span>
       <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
+      {!entry.chosen && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
     </div>
   );
 }
 
 /** The open permission request, as an editor notification banner above the conversation. */
 function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
-  const [busy, setBusy] = useState(false);
-  const entry = entries?.find(
-    (e): e is Extract<AgentEntry, { type: "permission" }> => e.type === "permission" && !e.chosen,
-  );
+  const entry = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen);
   if (!entry) return null;
-  const answer = (option: string | null) => {
-    setBusy(true);
-    void respond(task.id, entry.id, option).finally(() => setBusy(false));
-  };
   return (
     <div className={styles.banner} role="alert" aria-label={entry.title}>
       <Icon name="warning" size={16} />
-      <span className={styles.bannerText} title={entry.title}>
-        {shortTitle(task, entry.title)}
-      </span>
-      <span className={styles.bannerSpacer} />
-      {entry.options.map((o) => (
-        <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
-          {o.name}
-        </button>
-      ))}
+      <span className={styles.bannerText}>{shortTitle(task, entry.title)}</span>
+      <PermissionAnswers task={task} entry={entry} className={styles.bannerActions} />
     </div>
   );
 }
@@ -1220,11 +1295,7 @@ function SessionComposer({
         toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
         actions={
           <>
-            {busy && (
-              <Button size="small" icon="stop" onClick={() => void cancelTask(task.id)}>
-                Stop
-              </Button>
-            )}
+            {busy && <IconButton icon="stop" title="Stop" size="small" onClick={() => void cancelTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}
@@ -1383,7 +1454,7 @@ function ChangesPane({
             onActivate={(c) => void openChangeDiff(task, c.path)}
             renderNode={(c) => (
               <span className={styles.change} title={c.relPath}>
-                <Icon name={fileIconName(basename(c.path))} size={16} />
+                <Icon name={fileIconName(basename(c.path), c.path)} size={16} />
                 <span className={styles.changeName} style={{ color: KIND_COLOR[c.kind] }}>
                   {basename(c.path)}
                 </span>

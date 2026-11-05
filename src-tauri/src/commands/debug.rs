@@ -72,6 +72,20 @@ pub async fn debug_evaluate(
     ide_host::ops::debug::debug_evaluate(&state.host, "", session, frame_id, expression).await
 }
 
+/// Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16).
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_completions(
+    state: State<'_, AppState>,
+    session: DebugSessionId,
+    frame_id: Option<i64>,
+    text: String,
+    line: u32,
+    column: u32,
+) -> IdeResult<Vec<ide_dap::DebugCompletion>> {
+    ide_host::ops::debug::debug_completions(&state.host, "", session, frame_id, text, line, column).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_resume(state: State<'_, AppState>, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
@@ -82,6 +96,18 @@ pub async fn debug_resume(state: State<'_, AppState>, session: DebugSessionId, t
 #[specta::specta]
 pub async fn debug_pause(state: State<'_, AppState>, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
     ide_host::ops::debug::debug_pause(&state.host, "", session, thread_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_hot_reload(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
+    ide_host::ops::debug::debug_hot_reload(&state.host, "", session).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_hot_restart(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
+    ide_host::ops::debug::debug_hot_restart(&state.host, "", session).await
 }
 
 #[tauri::command]

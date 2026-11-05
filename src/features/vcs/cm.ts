@@ -36,7 +36,7 @@ import { fontExtension } from "@/editor/core/cm/setup";
 import { caretStyles, findLocals, findStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
-import { hasInnerFragments } from "./diffOptions";
+import { getDiffInsights, hasInnerFragments } from "./diffOptions";
 
 /** IDEA's change types (TextDiffType): both sides have text, only the new side, only the old side. */
 export type DiffKind = "modified" | "inserted" | "deleted";
@@ -142,6 +142,10 @@ function wordDeco(view: EditorView): DecorationSet {
   const isA = info.side === "a";
   const { from: vpFrom, to: vpTo } = view.viewport;
   const builder = new RangeSetBuilder<Decoration>();
+  const moved = getDiffInsights(info.chunks)
+    .moves.map((m) => (isA ? { from: m.fromA, to: m.toA } : { from: m.fromB, to: m.toB }))
+    .sort((a, b) => a.from - b.from);
+  let moveIndex = 0;
   for (const chunk of info.chunks) {
     const base = isA ? chunk.fromA : chunk.fromB;
     if (base > vpTo) break;
@@ -149,8 +153,20 @@ function wordDeco(view: EditorView): DecorationSet {
     for (const c of chunk.changes) {
       const [from, to] = isA ? [c.fromA, c.toA] : [c.fromB, c.toB];
       const kind = kindOf(c.fromA !== c.toA, c.fromB !== c.toB);
-      if (from < to) builder.add(base + from, base + to, wordDecos[kind]);
-      else builder.add(base + from, base + from, emptyWordDecos[kind]);
+      let cursor = base + from;
+      const end = base + to;
+      while (moveIndex < moved.length && moved[moveIndex]!.to <= cursor) moveIndex++;
+      if (from === to) {
+        if (!moved[moveIndex] || moved[moveIndex]!.from > cursor) builder.add(cursor, cursor, emptyWordDecos[kind]);
+        continue;
+      }
+      // Moved ranges have their own comparison against the actual counterpart.
+      for (let i = moveIndex; i < moved.length && moved[i]!.from < end; i++) {
+        const move = moved[i]!;
+        if (move.from > cursor) builder.add(cursor, Math.min(move.from, end), wordDecos[kind]);
+        cursor = Math.max(cursor, move.to);
+      }
+      if (cursor < end) builder.add(cursor, end, wordDecos[kind]);
     }
   }
   return builder.finish();
@@ -186,7 +202,7 @@ function changedGutterMarkers(state: EditorState): RangeSet<GutterMarker> {
 }
 
 /** Recomputes `build` when the document, viewport or chunks change. */
-const chunkDecorations = (build: (view: EditorView) => DecorationSet) =>
+export const chunkDecorations = (build: (view: EditorView) => DecorationSet) =>
   ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
@@ -254,9 +270,10 @@ export const viewerTheme = EditorView.theme(
     "&.cm-openidea-ligatures .cm-scroller": { fontVariantLigatures: "normal" },
     ".cm-content": { caretColor: "var(--caret, var(--fg-strong))", WebkitUserSelect: "text", userSelect: "text" },
     ...caretStyles,
-    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-      backgroundColor: "var(--bg-selected-strong)",
-    },
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection, .cm-openidea-selected, &.cm-focused .cm-openidea-selected":
+      {
+        backgroundColor: "var(--bg-selected-strong)",
+      },
     ".cm-activeLine": { backgroundColor: "var(--bg-current-line)" },
     ".cm-gutters": {
       backgroundColor: "var(--bg-app)",

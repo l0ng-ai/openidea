@@ -1,6 +1,6 @@
 /** Session state of the deployment feature: the Sync dialog, the SSH secret prompt and the Remote Host tree. */
 import { create } from "zustand";
-import type { TransferReport, RemoteEntry, RequestId, SyncEntry } from "@/platform/ipc";
+import type { TransferReport, ResolvedMapping, RemoteEntry, RequestId, SyncEntry } from "@/platform/ipc";
 import type { FocusedPart, SyncChoice } from "./model";
 
 export const REMOTE_HOST_WINDOW = "remoteHost";
@@ -29,6 +29,7 @@ export interface SecretPrompt {
 export interface RemoteTreeState {
   source: string | null;
   root: string | null;
+  mappings: ResolvedMapping[];
   error: string | null;
   listings: Record<string, RemoteEntry[]>;
   folderErrors: Record<string, string>;
@@ -56,6 +57,7 @@ export const useDeployment = create<DeploymentState>(() => ({
 export const EMPTY_TREE: RemoteTreeState = {
   source: null,
   root: null,
+  mappings: [],
   error: null,
   listings: {},
   folderErrors: {},

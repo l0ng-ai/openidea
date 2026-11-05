@@ -5,6 +5,9 @@ const ipc = vi.hoisted(() => ({
   runSaveConfigs: vi.fn(),
   runConfigs: vi.fn(),
   runTemplates: vi.fn(async () => ({ status: "ok", data: [] })),
+  runImportSources: vi.fn(async () => ({ status: "ok", data: [] })),
+  runWithoutDerived: vi.fn(async (configs: unknown) => ({ status: "ok", data: configs })),
+  runApplySettings: vi.fn(async (configs: unknown) => ({ status: "ok", data: configs })),
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
@@ -16,7 +19,7 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { ConfigChooserOverlay } from "./ConfigChooser";
-import { canDeleteConfig, deleteConfig, loadConfigs, resetRuns, useRun } from "./store";
+import { adoptTemporary, canDeleteConfig, deleteConfig, loadConfigs, resetRuns, useRun } from "./store";
 import { registerBuiltinTypes } from "./types";
 
 const config = (kind = "npm"): RunConfig => ({
@@ -123,4 +126,44 @@ it("Cancel discards a pending detected removal", () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
   expect(useRun.getState().configs).toEqual([config()]);
+});
+
+const temporaryOf = () =>
+  JSON.parse(localStorage.getItem("openidea.run.temporary.v2:/test-removal") ?? "[]") as RunConfig[];
+const mainGo: RunConfig = { ...config("go"), id: "go:file:/test-removal/app/main.go", name: "main.go" };
+
+it("removes a temporary configuration from Edit Configurations for good", async () => {
+  adoptTemporary(mainGo);
+  useRun.setState({ editTarget: mainGo.id });
+  render(<EditConfigsOverlay />);
+  fireEvent.click(screen.getByRole("treeitem", { name: "main.go" }));
+  fireEvent.click(screen.getByRole("button", { name: "Remove Configuration" }));
+  fireEvent.click(screen.getByRole("button", { name: "OK" }));
+  await waitFor(() => expect(useRun.getState().editorOpen).toBe(false));
+  // Not a suppressed detection: it was never detected by the backend.
+  expect(ipc.runSaveConfigs).toHaveBeenCalledWith([], []);
+  expect(temporaryOf()).toEqual([]);
+  await act(() => loadConfigs());
+  expect(useRun.getState().configs.map((c) => c.id)).toEqual(["npm:app"]);
+  expect(useRun.getState().temporary).toEqual([]);
+});
+
+it("keeps unedited temporary configurations temporary and saves edited ones", async () => {
+  const goal: RunConfig = { ...config("maven"), id: "maven:goal:pom.xml:test", name: "app [test]", detected: false };
+  const other: RunConfig = {
+    ...config("maven"),
+    id: "maven:goal:pom.xml:verify",
+    name: "app [verify]",
+    detected: false,
+  };
+  adoptTemporary(goal);
+  adoptTemporary(other);
+  useRun.setState({ editTarget: other.id });
+  render(<EditConfigsOverlay />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "verify app" } });
+  fireEvent.click(screen.getByRole("button", { name: "OK" }));
+  await waitFor(() => expect(useRun.getState().editorOpen).toBe(false));
+  expect(ipc.runSaveConfigs).toHaveBeenCalledWith([expect.objectContaining({ id: other.id, name: "verify app" })], []);
+  expect(useRun.getState().temporary).toEqual([goal.id]);
+  expect(temporaryOf().map((c) => c.id)).toEqual([goal.id]);
 });

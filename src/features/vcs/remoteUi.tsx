@@ -1,5 +1,5 @@
 /** Update Project and Push dialogs. */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { BranchInfo, Commit, PushTags, RemoteOp } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -10,6 +10,7 @@ import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
+import { PushChanges, pushChangesKey } from "./PushChanges";
 import { currentRepo, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
 
@@ -95,6 +96,18 @@ export function outgoingQuery(upstream: string | null): { branch: string; range:
   return upstream ? { branch: "HEAD", range: "@{u}..HEAD", limit: 1000 } : { branch: "HEAD", range: null, limit: 50 };
 }
 
+/**
+ * Outgoing commits of one repository in the multi-repository Push dialog. `@{u}` no
+ * longer resolves once the upstream branch was deleted on the remote (the tracking
+ * config remains, `upstream_of` still reports it), so the range query falls back to
+ * recent history and the repository stays in the list, pushable.
+ */
+export async function pushRepoCommits(root: string, branch: BranchInfo): Promise<Commit[]> {
+  if (!branch.head) return [];
+  const q = outgoingQuery(branch.upstream);
+  return logOf(q.branch, q.limit, q.range, root).catch(() => logOf(q.branch, 50, null, root));
+}
+
 export interface PushTarget {
   /** Local branch to push (default: the current one). */
   branch?: string;
@@ -136,11 +149,16 @@ interface PushNode {
   children?: PushNode[];
 }
 
+// A long outgoing list scrolls inside the dialog instead of growing it to the screen (IDEA: 800×450 centre panel).
+const PUSH_DIALOG_MAX_HEIGHT = 720;
+
 function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const roots = useVcs((s) => s.roots);
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // The selected row: a repository shows all its outgoing changes, a commit its own.
+  const [shown, setShown] = useState<PushNode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
   const [pushTags, setPushTags] = useState(false);
@@ -148,13 +166,12 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let alive = true;
-    // A repository that cannot be read (e.g. its upstream branch was deleted) is left out.
+    // A repository whose branch info cannot be read is left out; a deleted upstream
+    // branch falls back to recent history (pushRepoCommits) and stays pushable.
     Promise.allSettled(
       roots.map(async (root) => {
         const branch = await call(commands.vcsBranchInfo(root));
-        const q = outgoingQuery(branch.upstream);
-        const commits = branch.head ? await logOf(q.branch, q.limit, q.range, root) : [];
-        return { root, branch, commits };
+        return { root, branch, commits: await pushRepoCommits(root, branch) };
       }),
     ).then((results) => {
       if (!alive) return;
@@ -205,12 +222,17 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
     children: repo.commits.map((commit) => ({ key: `${repo.root}:${commit.id}`, repo, commit })),
   }));
 
+  const shownRepo = shown?.repo ?? (repos?.length === 1 ? repos[0]! : null);
+  const shownCommits = useMemo(() => (shown?.commit ? [shown.commit] : (shownRepo?.commits ?? [])), [shown, shownRepo]);
+
   return (
     <Dialog
       open
       title="Push Commits"
       onClose={onClose}
-      width={620}
+      width={repos?.some((r) => r.commits.length) ? 860 : 620}
+      maxHeight={PUSH_DIALOG_MAX_HEIGHT}
+      className={styles.pushDialog}
       resizable="both"
       footerStart={
         <>
@@ -262,6 +284,9 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
                 return s;
               })
             }
+            selected={new Set(shown ? [shown.key] : [])}
+            multiSelect={false}
+            onSelectionChange={(_sel, lead) => setShown(lead)}
             rowHeight={22}
             aria-label="Outgoing commits"
             className={styles.boxList}
@@ -301,6 +326,9 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
           />
         )}
       </div>
+      {shownRepo && (
+        <PushChanges key={pushChangesKey(shownRepo.root, shownCommits)} repo={shownRepo.root} commits={shownCommits} />
+      )}
     </Dialog>
   );
 }
@@ -310,6 +338,12 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [branch] = useState(() => useVcs.getState().branch);
   const [branches] = useState(() => useVcs.getState().branches);
   const [commits, setCommits] = useState<Commit[] | null>(null);
+  // The commit whose changes are shown; -1: all outgoing commits.
+  const [shownCommit, setShownCommit] = useState(-1);
+  const shownCommits = useMemo(
+    () => (commits && shownCommit >= 0 && commits[shownCommit] ? [commits[shownCommit]] : (commits ?? [])),
+    [commits, shownCommit],
+  );
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
   const [remotes, setRemotes] = useState<string[]>([]);
@@ -411,7 +445,9 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
       open
       title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
       onClose={onClose}
-      width={620}
+      width={commits?.length ? 860 : 620}
+      maxHeight={PUSH_DIALOG_MAX_HEIGHT}
+      className={styles.pushDialog}
       resizable="both"
       footerStart={
         <>
@@ -495,6 +531,8 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           <List
             items={commits}
             getKey={(c) => c.id}
+            activeIndex={shownCommit}
+            onActiveChange={setShownCommit}
             rowHeight={22}
             aria-label="Outgoing commits"
             className={styles.boxList}
@@ -510,6 +548,12 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           />
         )}
       </div>
+      <PushChanges
+        key={pushChangesKey(repo, shownCommits)}
+        repo={repo}
+        commits={shownCommits}
+        onShowAll={shownCommit >= 0 && (commits?.length ?? 0) > 1 ? () => setShownCommit(-1) : undefined}
+      />
     </Dialog>
   );
 }

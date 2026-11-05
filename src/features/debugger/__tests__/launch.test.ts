@@ -79,6 +79,27 @@ describe("run config → launch config", () => {
     expect(extra(globalPytest).python).toBe("python3");
   });
 
+  it("debugpy: uv / poetry run the debuggee in the project's environment", () => {
+    const debug = (command: string, args: string[]) =>
+      launchConfigFor(rc({ kind: "python", command, args, debugAdapter: "debugpy" }), "/p")!;
+
+    const script = debug("uv", ["run", "python", "main.py", "-v"]);
+    expect(script.program).toBe("/p/main.py");
+    expect(script.args).toEqual(["-v"]);
+    expect(extra(script)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python3" });
+    expect(extra(script).module).toBeUndefined();
+
+    const mod = debug("poetry", ["run", "python3", "-m", "app"]);
+    expect(extra(mod)).toMatchObject({ module: "app", python: ["poetry", "run", "python3"] });
+
+    const tool = debug("uv", ["run", "pytest", "-x"]);
+    expect(extra(tool)).toMatchObject({ module: "pytest", python: ["uv", "run", "python"] });
+    expect(tool.args).toEqual(["-x"]);
+
+    const django = debug("pdm", ["run", "python", "manage.py", "runserver"]);
+    expect(extra(django)).toMatchObject({ django: true, python: ["pdm", "run", "python"] });
+  });
+
   it("js-debug: npm scripts run through the package manager, node scripts directly", () => {
     const npm = launchConfigFor(
       rc({ kind: "npm", command: "pnpm", args: ["run", "dev"], cwd: "web", debugAdapter: "js-debug" }),

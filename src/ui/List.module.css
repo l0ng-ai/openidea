@@ -3,6 +3,9 @@
   min-height: 0;
   overflow: auto;
   outline: none;
+  /* Rows are controls: a page that opts into text selection must not select them on drag / ⌘A. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 .list::-webkit-scrollbar {
   width: 10px;

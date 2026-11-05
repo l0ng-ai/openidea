@@ -633,7 +633,7 @@ function RecentLocationsDialog() {
           renderItem={(l) => (
             <div className={styles.location}>
               <div className={styles.locationHeader}>
-                <Icon name={fileIconName(basename(l.rel))} size={14} className={styles.icon} />
+                <Icon name={fileIconName(basename(l.rel), l.rel)} size={14} className={styles.icon} />
                 <HighlightedText
                   className={styles.locationName}
                   text={basename(l.rel)}

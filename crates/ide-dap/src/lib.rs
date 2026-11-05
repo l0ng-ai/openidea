@@ -212,6 +212,19 @@ pub struct Variable {
     pub evaluate_name: Option<String>,
 }
 
+/// A completion the adapter offers for an expression (DAP `completions`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugCompletion {
+    pub label: String,
+    /// What to insert, when it differs from `label`.
+    pub text: Option<String>,
+    /// DAP item type: `method`, `field`, `variable`, `class`, `keyword`, …
+    pub kind: Option<String>,
+    pub detail: Option<String>,
+    pub sort_text: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum StepKind {
@@ -287,6 +300,23 @@ pub struct DebugManager {
     exception_choices: Mutex<BTreeMap<String, bool>>,
     function_breakpoints: Mutex<Vec<FunctionBreakpoint>>,
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
+}
+
+/// Whether the debugged project depends on the Flutter SDK, so it must go
+/// through `flutter debug_adapter` instead of the plain Dart one.
+///
+/// `dart debug_adapter` cannot start a program that imports `dart:ui`, and only
+/// the Flutter adapter answers `hotReload` / `hotRestart`. `dir` is the launch
+/// `cwd`; the program's own directory is tried first because a module inside a
+/// larger repository has its `pubspec.yaml` above the program, not above `cwd`.
+fn is_flutter_project(dir: &Path, program: Option<&Path>) -> bool {
+    let mut start: Vec<&Path> = program.and_then(Path::parent).into_iter().collect();
+    start.push(dir);
+    start
+        .iter()
+        .filter_map(|d| d.ancestors().take(6).find(|a| a.join("pubspec.yaml").is_file()))
+        .filter_map(|root| std::fs::read_to_string(root.join("pubspec.yaml")).ok())
+        .any(|s| s.contains("sdk: flutter"))
 }
 
 fn no_session(s: DebugSessionId) -> IdeError {
@@ -557,6 +587,10 @@ impl DebugManager {
         custom_command: impl FnOnce(&str) -> Option<String>,
     ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
+        // An IDE-side marker (never sent to the adapter): the session is a Flutter
+        // one regardless of what the working directory holds.
+        let force_flutter =
+            arguments.as_object_mut().and_then(|o| o.remove("__flutter")).and_then(|v| v.as_bool()).unwrap_or(false);
         let cwd = config
             .cwd
             .clone()
@@ -576,15 +610,25 @@ impl DebugManager {
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
-        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy).
+        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy),
+        // or with the launcher's when the debuggee runs through a manager (`uv run python`).
         if config.adapter == "debugpy" {
-            let python = match arguments.get("python") {
-                Some(Value::String(p)) => Some(p.clone()),
-                Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_owned),
+            let python = match (arguments.get("debugLauncherPython"), arguments.get("python")) {
+                (Some(Value::String(p)), _) | (_, Some(Value::String(p))) => Some(p.clone()),
+                (_, Some(Value::Array(a))) => a.first().and_then(Value::as_str).map(str::to_owned),
                 _ => None,
             };
             if let Some(python) = python {
                 spec.command = python;
+            }
+        }
+        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
+        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
+        // is Flutter-only). Plain Dart projects keep the configured `dart`.
+        if config.adapter == "dart" && spec.command == "dart" {
+            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
+            if force_flutter || is_flutter_project(&cwd, program) {
+                spec.command = "flutter".into();
             }
         }
         let id = DebugSessionId::next();
@@ -638,8 +682,19 @@ impl DebugManager {
         {
             arguments["project"] = json!(real);
         }
-        if config.adapter == "codelldb" && arguments.get("sourceLanguages").is_none() {
-            arguments["sourceLanguages"] = json!(["rust"]);
+        if config.adapter == "codelldb" {
+            if arguments.get("sourceLanguages").is_none() {
+                arguments["sourceLanguages"] = json!(["rust"]);
+            }
+            // The Debug Console and Evaluate Expression take expressions, as with every other
+            // debugger; LLDB commands still run with a leading backtick.
+            match arguments.get_mut("_adapterSettings") {
+                None => arguments["_adapterSettings"] = json!({"consoleMode": "evaluate"}),
+                Some(Value::Object(settings)) => {
+                    settings.entry("consoleMode").or_insert_with(|| json!("evaluate"));
+                }
+                Some(_) => {}
+            }
         }
         let port = debug_server.map(|s| s.port);
         self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, port).await
@@ -1157,6 +1212,47 @@ impl DebugManager {
         })
     }
 
+    /// Completions for `text` at `line` / `column` (0-based, UTF-16) in the frame's scope; none
+    /// when the adapter doesn't offer them.
+    pub async fn completions(
+        &self,
+        s: DebugSessionId,
+        frame_id: Option<i64>,
+        text: String,
+        line: u32,
+        column: u32,
+    ) -> IdeResult<Vec<DebugCompletion>> {
+        let session = self.session(s)?;
+        if !session.supports("supportsCompletionsRequest") {
+            return Ok(Vec::new());
+        }
+        let mut args = json!({ "text": text, "line": line + 1, "column": column + 1 });
+        if let Some(f) = frame_id {
+            args["frameId"] = f.into();
+        }
+        let body = session.conn.request_timeout("completions", args, REQUEST_TIMEOUT).await?;
+        let text =
+            |v: &Value, key: &str| v.get(key).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned);
+        Ok(body
+            .get("targets")
+            .and_then(Value::as_array)
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter_map(|t| {
+                        Some(DebugCompletion {
+                            label: text(t, "label")?,
+                            text: text(t, "text"),
+                            kind: text(t, "type"),
+                            detail: text(t, "detail"),
+                            sort_text: text(t, "sortText"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
@@ -1167,6 +1263,19 @@ impl DebugManager {
 
     pub async fn pause(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         self.session(s)?.conn.request_timeout("pause", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        Ok(())
+    }
+
+    /// Flutter's DAP adapter: injects the changed sources into the running app.
+    /// Not part of the DAP standard; adapters that do not know the request reject it.
+    pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
+        Ok(())
+    }
+
+    /// Flutter's DAP adapter: restarts the app without preserving state.
+    pub async fn hot_restart(&self, s: DebugSessionId) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotRestart", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
         Ok(())
     }
 

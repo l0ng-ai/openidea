@@ -392,7 +392,7 @@ export class DocModel {
 
   /** Per-file indentation chosen from the status bar; wins over settings until the file is closed. */
   indentOverride: { tabSize: number; insertSpaces: boolean } | null = null;
-  /** Indentation detected in the file's text at open time. */
+  /** Indentation detected in the file's text at open time and after Reformat Code. */
   detectedIndent: { insertSpaces: boolean; size?: number } | null = null;
   /** Last tree-sitter highlighting, for slots opened before the next refresh. */
   private highlights: { counter: number; value: SyntaxHighlights } | null = null;
@@ -416,6 +416,19 @@ export class DocModel {
     const lang = this.info ? prefsOf(this.settings()).codeStyle.languages[this.info.id] : undefined;
     if (!lang || (lang.useTab === undefined && lang.tabSize === undefined && lang.indent === undefined)) return null;
     return effectiveIndent(this.settings(), this.info, this.editorconfig, null);
+  }
+
+  /**
+   * Detects the indents again after Reformat Code rewrote them: tabs written by
+   * the formatter then render at the Code Style tab size and new lines indent
+   * like them, instead of following the indents detected at open time.
+   */
+  redetectIndent() {
+    const detected = detectIndent(this.sync.localText.sliceString(0, 200_000));
+    const current = this.detectedIndent;
+    if (detected?.insertSpaces === current?.insertSpaces && detected?.size === current?.size) return;
+    this.detectedIndent = detected;
+    this.applySettings();
   }
 
   /** Soft wraps toggled for this file (wins over settings until the file is closed). */
@@ -580,7 +593,7 @@ export class DocModel {
 
   // --- saving -----------------------------------------------------------------
 
-  save(reason: "explicit" | "auto"): Promise<void> {
+  save(reason: "explicit" | "auto" | "exact"): Promise<void> {
     const run = async () => {
       if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
       const slot = this.primarySlot();
@@ -594,7 +607,7 @@ export class DocModel {
         }
       }
       const files: FileSettings | undefined = this.manager.settings()?.files;
-      if (slot && !this.closed) {
+      if (slot && !this.closed && reason !== "exact") {
         const state = slot.currentState();
         const protectLines = new Set<number>();
         // Like IDEA's "keep trailing spaces on caret line": never strip under a visible caret.

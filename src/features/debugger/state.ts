@@ -23,6 +23,7 @@ import {
   type ThreadInfo,
   type Variable,
 } from "@/platform/ipc";
+import { confirmTerminate } from "@/workbench/confirmTerminate";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
@@ -38,6 +39,8 @@ export interface DebugSession {
   /** Originating configuration, retained for toolbar targeting and prepared debug reruns. */
   runConfig?: RunConfig;
   startedAt?: number;
+  /** When it terminated. */
+  endedAt?: number;
   adapter: string;
   parent: DebugSessionId | null;
   /** Launch configuration (root sessions), used by Rerun. */
@@ -223,14 +226,56 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   return event.kind === "started" ? adoptSession(id, { name: event.name, adapter: event.adapter }) : adoptSession(id);
 }
 
-/** A start finished (`id` on success): sessions no start claimed are failed starts' leftovers. */
-function settleStart(id: DebugSessionId | null) {
+/**
+ * A start finished (`id` on success): sessions no start claimed are failed starts' leftovers,
+ * kept as terminated or, with `discard`, removed.
+ */
+function settleStart(id: DebugSessionId | null, discard = false) {
   pendingStarts = Math.max(0, pendingStarts - 1);
   if (id != null) provisional.delete(id);
   if (pendingStarts > 0) return;
   const leftovers = [...provisional];
   provisional.clear();
+  if (discard) {
+    useDebug.setState((st) => {
+      const sessions = { ...st.sessions };
+      const console = { ...st.console };
+      for (const s of leftovers) {
+        delete sessions[s];
+        delete console[s];
+        ansiStreams.delete(s);
+      }
+      return { sessions, console, active: st.active != null && sessions[st.active] ? st.active : null };
+    });
+    publishContext();
+    return;
+  }
   for (const s of leftovers) if (isLive(useDebug.getState().sessions[s])) markTerminated(s);
+}
+
+/** Drops finished sessions; running ones stay (multiple concurrent sessions are fine). */
+function dropFinished() {
+  useDebug.setState((s) => {
+    const sessions = Object.fromEntries(Object.entries(s.sessions).filter(([, v]) => isLive(v)));
+    const consoleLines = Object.fromEntries(Object.entries(s.console).filter(([k]) => sessions[+k]));
+    for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
+    return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
+  });
+  publishContext();
+}
+
+/**
+ * A JDWP agent in server mode listens again, on a new port, when its debugger detaches; a
+ * debugger that detaches as the JVM exits leaves an announcement of a JVM about to be gone.
+ * An attach to `process` this soon after a session on it ended may be to such a JVM.
+ */
+const RELISTEN_MS = 3000;
+function justDetached(process: RunId | null | undefined): boolean {
+  if (process == null) return false;
+  const now = Date.now();
+  return Object.values(useDebug.getState().sessions).some(
+    (s) => s.process === process && s.status === "terminated" && s.endedAt != null && now - s.endedAt < RELISTEN_MS,
+  );
 }
 
 export function publishContext() {
@@ -283,6 +328,8 @@ export function publishContext() {
   setContext("debugSessionActive", anyLive);
   setContext("debugSessionRunning", s?.status === "running");
   setContext("debugSessionPaused", s?.status === "paused");
+  // Dart and Flutter sessions: Hot Reload / Hot Restart.
+  setContext("debugSessionDart", !!s && rootOf(s).adapter === "dart");
   setContext("debugCanRerun", !!s && !!(rootOf(s).runConfig || rootOf(s).launch));
   setContext(
     "debugCanHotSwap",
@@ -460,14 +507,10 @@ export async function startSession(
     notifications().notify({ group: "run", level: "warning", title: "Debugging needs the desktop app" });
     return null;
   }
-  // Drop finished sessions; keep running ones (multiple concurrent sessions are fine).
-  useDebug.setState((s) => {
-    const sessions = Object.fromEntries(Object.entries(s.sessions).filter(([, v]) => isLive(v)));
-    const consoleLines = Object.fromEntries(Object.entries(s.console).filter(([k]) => sessions[+k]));
-    for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
-    return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
-  });
-  publishContext();
+  // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
+  const afterDetach = justDetached(options.process);
+  const previousActive = useDebug.getState().active;
+  if (!afterDetach) dropFinished();
   try {
     if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -482,6 +525,7 @@ export async function startSession(
     const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
+    if (afterDetach) dropFinished();
     if (options.preparation?.signal.aborted) {
       await call(commands.debugStop(id)).catch(() => undefined);
       settleStart(id);
@@ -526,7 +570,16 @@ export async function startSession(
     void syncSpecial();
     return id;
   } catch (e) {
-    settleStart(null);
+    settleStart(null, afterDetach);
+    if (afterDetach) {
+      // The JVM that announced the port ended as its previous debugger detached.
+      console.info("Debugger not attached: the JVM is gone", { name: launch.name, error: e });
+      const { sessions, active } = useDebug.getState();
+      if (active == null && previousActive != null && sessions[previousActive])
+        useDebug.setState({ active: previousActive });
+      publishContext();
+      return null;
+    }
     if (options.preparation?.signal.aborted || isCancelled(e)) return null;
     if (options.preparation)
       appendConsole(options.preparation.id, "stderr", (e instanceof Error ? e.message : String(e)) + "\n");
@@ -582,6 +635,51 @@ export async function stopSession(id: DebugSessionId, options: { stopProcess?: b
     await call(commands.runStop(root.process)).catch(() => undefined);
 }
 
+/**
+ * Closes a session's tab: a live session is stopped first once the user agrees (the Run
+ * tab's question), then the window forgets it — and its children.
+ */
+export async function closeSessionTab(id: DebugSessionId): Promise<boolean> {
+  const s = useDebug.getState().sessions[id];
+  if (!s) return false;
+  if (isLive(s)) {
+    if (workflowSettings().run.confirmTerminate && !(await confirmTerminate(s.name))) return false;
+    await stopSession(s.id);
+  }
+  removeSession(s.id);
+  return true;
+}
+
+/** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
+export function removeSession(id: DebugSessionId) {
+  const st = useDebug.getState();
+  const gone = new Set<DebugSessionId>([id]);
+  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+
+  const order = Object.values(st.sessions).map((s) => s.id);
+  const sessions: Record<number, DebugSession> = {};
+  for (const s of Object.values(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
+  const console = { ...st.console };
+  for (const goneId of gone) delete console[goneId];
+  const at = order.indexOf(id);
+  const neighbour =
+    order
+      .slice(0, at)
+      .reverse()
+      .find((n) => sessions[n]) ??
+    order.slice(at + 1).find((n) => sessions[n]) ??
+    null;
+
+  useDebug.setState({
+    sessions,
+    active: st.active != null && sessions[st.active] ? st.active : neighbour,
+    console,
+  });
+  for (const goneId of gone) owned.delete(goneId);
+  updateExecutionPoint();
+  publishContext();
+}
+
 export async function rerunSession(id: DebugSessionId) {
   const s = useDebug.getState().sessions[id];
   if (!s) return;
@@ -612,7 +710,7 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
 }
 
 function markTerminated(id: DebugSessionId) {
-  patch(id, { status: "terminated", frames: [], selectedFrame: null, stoppedThread: null });
+  patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
   if (st.active === id) {
     // Prefer another live session (e.g. the parent of a finished child).

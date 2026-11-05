@@ -6,14 +6,22 @@ import type { SortKey } from "./model";
 /** The title's "Project ▾" pane switcher (IDEA: Project / Project Files / Open Files / …). */
 export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
   const mode = useProjectTree((s) => s.mode);
+  const unity = useProjectTree((s) => s.unity);
   return {
     label: VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "Project",
-    items: VIEW_MODES.map(([id, label]) => ({ id, label, checked: id === mode, run: () => setViewMode(id) })),
+    items: VIEW_MODES.filter(([id]) => id !== "unity" || unity).map(([id, label]) => ({
+      id,
+      label,
+      checked: id === mode,
+      run: () => setViewMode(id),
+    })),
   };
 }
 
 /** The on / off view options. */
-export type ToggleOption = { [K in keyof ViewOptions]: ViewOptions[K] extends boolean ? K : never }[keyof ViewOptions];
+export type ToggleOption = {
+  [K in keyof ViewOptions]-?: ViewOptions[K] extends boolean ? K : never;
+}[keyof ViewOptions];
 
 export const OPTION_LABELS: Array<[ToggleOption, string]> = [
   ["showHidden", "Show Hidden Files"],
@@ -54,8 +62,15 @@ export const SORT_LABELS: Array<[SortKey, string]> = [
 /** View options in the header's "⋮" menu (IDEA: Project › Options › Appearance / Behavior). */
 export function useProjectHeaderMenu(): MenuItem[] {
   const options = useProjectTree((s) => s.options);
+  const unity = useProjectTree((s) => s.mode === "unity");
   return [
     { kind: "header", label: "Appearance" },
+    ...(unity
+      ? [
+          option("showUnityMeta", "Show Meta Files", options),
+          option("showUnityGenerated", "Show Generated Files", options),
+        ]
+      : []),
     ...OPTION_LABELS.slice(0, 5).map(([key, label]) => option(key, label, options)),
     { kind: "separator" },
     ...SORT_LABELS.map(([sortBy, label]): MenuItem => ({

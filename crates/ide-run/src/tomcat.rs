@@ -203,6 +203,148 @@ pub fn explode(war: &Path, destination: &Path, resources_only: bool) -> IdeResul
     remove_stale(destination, destination, &expected, resources_only)
 }
 
+/// Updates the exploded artifact deployment from the module's own class output directories and
+/// its web resources ([`web_sources`]), file by file and only what changed, instead of
+/// rebuilding and re-exploding the WAR. `module` and `class_paths` are absolute.
+/// `Ok(false)`: not possible this way (not deployed from the artifact yet, the module's output
+/// isn't on the classpath, or a module it depends on was compiled since the last update, whose
+/// archive in `WEB-INF/lib` would be stale) — rebuild the WAR instead.
+pub fn sync_outputs(base: &Path, module: &Path, class_paths: &[PathBuf], resources_only: bool) -> IdeResult<bool> {
+    let dest = base.join("deployment");
+    let manifest = base.join("synced-files.json");
+    let since = [base.join("artifact-path.txt"), manifest.clone()]
+        .iter()
+        .filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
+        .max();
+    let Some(since) = since else { return Ok(false) };
+    if !dest.join("WEB-INF").is_dir() {
+        return Ok(false);
+    }
+    let (own, others): (Vec<&PathBuf>, Vec<&PathBuf>) =
+        class_paths.iter().filter(|p| p.is_dir()).partition(|p| p.starts_with(module));
+    if own.is_empty() || others.iter().any(|d| modified_since(d, since)) {
+        return Ok(false);
+    }
+    let previous: Vec<String> =
+        fs::read(&manifest).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mut current = std::collections::BTreeSet::new();
+    let classes = dest.join("WEB-INF/classes");
+    for dir in own {
+        sync_tree(dir, dir, &classes, Path::new("WEB-INF/classes"), resources_only, &mut current)?;
+    }
+    for (dir, target) in web_sources(module) {
+        if dir.is_dir() {
+            sync_tree(&dir, &dir, &dest.join(&target), &target, resources_only, &mut current)?;
+        }
+    }
+    for rel in previous.iter().filter(|p| !current.contains(*p)) {
+        let path = dest.join(rel);
+        if path.is_file() {
+            fs::remove_file(path)?;
+        }
+    }
+    fs::write(manifest, serde_json::to_vec(&current).map_err(invalid)?)?;
+    Ok(true)
+}
+
+/// The folders whose files the WAR puts at its root (or under the second path): the web app
+/// folder (`src/main/webapp`, maven-war-plugin's `warSourceDirectory`, Gradle's
+/// `webAppDirName` / `webAppDirectory`), then maven-war-plugin's `webResources`.
+pub fn web_sources(module: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let rel = |dir: &str| {
+        let dir = ["${project.basedir}/", "${basedir}/"].iter().find_map(|p| dir.strip_prefix(p)).unwrap_or(dir);
+        module.join(dir.trim())
+    };
+    if let Ok(pom) = fs::read_to_string(module.join("pom.xml"))
+        && let Some(war) = war_plugin(&pom)
+    {
+        let mut out = vec![(rel(tag(war, "warSourceDirectory").unwrap_or("src/main/webapp")), PathBuf::new())];
+        let mut rest = tag_block(war, "webResources").unwrap_or_default();
+        while let Some(start) = rest.find("<resource>") {
+            let end = rest[start..].find("</resource>").map_or(rest.len(), |e| start + e);
+            let resource = &rest[start..end];
+            if let Some(dir) = tag(resource, "directory") {
+                out.push((rel(dir), PathBuf::from(tag(resource, "targetPath").unwrap_or_default())));
+            }
+            rest = &rest[end..];
+        }
+        return out;
+    }
+    let gradle = ["build.gradle", "build.gradle.kts"].iter().find_map(|f| fs::read_to_string(module.join(f)).ok());
+    let web_app_dir = gradle.as_deref().and_then(|text| {
+        text.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .find(|l| l.contains("webAppDirName") || l.contains("webAppDirectory"))
+            .and_then(|l| l.split(['"', '\'']).nth(1).map(str::to_owned))
+    });
+    vec![(rel(web_app_dir.as_deref().unwrap_or("src/main/webapp")), PathBuf::new())]
+}
+
+/// The `<plugin>` element of maven-war-plugin in `pom`, if it is configured there.
+fn war_plugin(pom: &str) -> Option<&str> {
+    let at = pom.find("<artifactId>maven-war-plugin</artifactId>")?;
+    let start = pom[..at].rfind("<plugin>")?;
+    let end = pom[at..].find("</plugin>").map_or(pom.len(), |e| at + e);
+    Some(&pom[start..end])
+}
+
+/// The text of the first `<name>` element in `xml`.
+fn tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    tag_block(xml, name).map(str::trim).filter(|t| !t.is_empty())
+}
+
+fn tag_block<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = xml.find(&open)? + open.len();
+    let end = start + xml[start..].find(&format!("</{name}>"))?;
+    Some(&xml[start..end])
+}
+
+fn modified_since(dir: &Path, since: std::time::SystemTime) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else { return false };
+    entries.flatten().any(|e| match e.file_type() {
+        Ok(t) if t.is_dir() => modified_since(&e.path(), since),
+        Ok(t) if t.is_file() => e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m > since),
+        _ => false,
+    })
+}
+
+/// Copies changed files of `from` (below `root`) to `to`; unchanged files keep their timestamps,
+/// so Tomcat only reloads when a class really changed. Records each source file as `prefix/rel`.
+fn sync_tree(
+    root: &Path,
+    from: &Path,
+    to: &Path,
+    prefix: &Path,
+    resources_only: bool,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> IdeResult<()> {
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            sync_tree(root, &path, to, prefix, resources_only, seen)?;
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        let rel = path.strip_prefix(root).map_err(invalid)?;
+        seen.insert(prefix.join(rel).to_string_lossy().replace('\\', "/"));
+        if resources_only && rel.extension().is_some_and(|e| e == "class") {
+            continue;
+        }
+        let target = to.join(rel);
+        let bytes = fs::read(&path)?;
+        if fs::read(&target).ok().as_deref() != Some(&bytes) {
+            fs::create_dir_all(target.parent().unwrap_or(to))?;
+            fs::write(target, bytes)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: bool) -> IdeResult<PathBuf> {
     let p = &config.extras.params;
     match p.get("deployment").map(String::as_str).unwrap_or("artifact") {
@@ -438,6 +580,131 @@ mod tests {
         c.extras.params.insert("deploymentPath".into(), "WebContent".into());
         assert!(deployment(tmp.path(), &base, &c, false).unwrap().ends_with("WebContent"));
     }
+    #[test]
+    fn updates_the_exploded_deployment_from_module_outputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (base, module) = (root.join("base"), root.join("web"));
+        let (dest, out, dep) =
+            (base.join("deployment"), module.join("target/classes"), root.join("core/target/classes"));
+        let webapp = module.join("src/main/webapp");
+        for dir in [dest.join("WEB-INF/classes/a"), out.join("a"), webapp.clone(), dep.clone()] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        for (path, text) in [
+            (dest.join("WEB-INF/classes/a/Same.class"), "same"),
+            (dest.join("WEB-INF/classes/a/App.class"), "old"),
+            (dest.join("index.jsp"), "old"),
+            (out.join("a/Same.class"), "same"),
+            (out.join("a/App.class"), "new"),
+            (out.join("app.properties"), "new"),
+            (webapp.join("index.jsp"), "new"),
+        ] {
+            fs::write(path, text).unwrap();
+        }
+        let paths = [out.clone(), dep.clone(), root.join("lib.jar")];
+        // Not deployed from the artifact yet.
+        assert!(!sync_outputs(&base, &module, &paths, false).unwrap());
+        fs::write(base.join("artifact-path.txt"), "web.war").unwrap();
+        let same = || fs::metadata(dest.join("WEB-INF/classes/a/Same.class")).unwrap().modified().unwrap();
+        let before = same();
+
+        assert!(sync_outputs(&base, &module, &paths, true).unwrap());
+        assert_eq!(fs::read_to_string(dest.join("WEB-INF/classes/a/App.class")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(dest.join("WEB-INF/classes/app.properties")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(dest.join("index.jsp")).unwrap(), "new");
+
+        assert!(sync_outputs(&base, &module, &paths, false).unwrap());
+        assert_eq!(fs::read_to_string(dest.join("WEB-INF/classes/a/App.class")).unwrap(), "new");
+        assert_eq!(same(), before);
+
+        fs::remove_file(out.join("app.properties")).unwrap();
+        assert!(sync_outputs(&base, &module, &paths, false).unwrap());
+        assert!(!dest.join("WEB-INF/classes/app.properties").exists());
+        assert!(dest.join("WEB-INF/classes/a/Same.class").exists());
+
+        // A dependency module compiled since: its archive in WEB-INF/lib is stale.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        fs::File::create(dep.join("Core.class")).unwrap().set_modified(later).unwrap();
+        assert!(!sync_outputs(&base, &module, &paths, false).unwrap());
+    }
+    #[test]
+    fn web_sources_follow_the_war_plugin_and_gradle_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = tmp.path();
+        let rel = |sources: Vec<(PathBuf, PathBuf)>| -> Vec<(String, String)> {
+            sources
+                .into_iter()
+                .map(|(d, t)| {
+                    let d = d.strip_prefix(module).unwrap().to_string_lossy().replace('\\', "/");
+                    (d, t.to_string_lossy().into_owned())
+                })
+                .collect()
+        };
+        assert_eq!(rel(web_sources(module)), [("src/main/webapp".to_owned(), String::new())]);
+
+        // An Eclipse-style layout: the JSPs come in through webResources.
+        fs::write(
+            module.join("pom.xml"),
+            r#"<project><build><plugins>
+              <plugin><artifactId>maven-compiler-plugin</artifactId></plugin>
+              <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-war-plugin</artifactId>
+                <configuration>
+                  <warSourceDirectory>${basedir}/web</warSourceDirectory>
+                  <webResources>
+                    <resource><directory>WebContent</directory><includes><include>**/*</include></includes></resource>
+                    <resource><directory>extra</directory><targetPath>static</targetPath></resource>
+                  </webResources>
+                </configuration>
+              </plugin>
+            </plugins></build></project>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            rel(web_sources(module)),
+            [
+                ("web".to_owned(), String::new()),
+                ("WebContent".to_owned(), String::new()),
+                ("extra".to_owned(), "static".to_owned())
+            ]
+        );
+
+        fs::remove_file(module.join("pom.xml")).unwrap();
+        fs::write(
+            module.join("build.gradle"),
+            "plugins { id 'war' }\n// webAppDirName = 'old'\nwebAppDirName = 'WebContent'\n",
+        )
+        .unwrap();
+        assert_eq!(rel(web_sources(module)), [("WebContent".to_owned(), String::new())]);
+    }
+
+    #[test]
+    fn updates_web_resources_outside_src_main_webapp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (base, module) = (root.join("base"), root.join("web"));
+        let (dest, out) = (base.join("deployment"), module.join("target/classes"));
+        for dir in [dest.join("WEB-INF/classes"), out.clone(), module.join("WebContent/jsp")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(
+            module.join("pom.xml"),
+            "<project><plugin><artifactId>maven-war-plugin</artifactId><configuration><webResources>\
+             <resource><directory>WebContent</directory></resource></webResources></configuration></plugin></project>",
+        )
+        .unwrap();
+        fs::write(dest.join("index.jsp"), "old").unwrap();
+        fs::write(module.join("WebContent/jsp/list.jsp"), "new").unwrap();
+        fs::write(base.join("artifact-path.txt"), "web.war").unwrap();
+
+        assert!(sync_outputs(&base, &module, std::slice::from_ref(&out), true).unwrap());
+        assert_eq!(fs::read_to_string(dest.join("jsp/list.jsp")).unwrap(), "new");
+        // Files the WAR brought that no source here maps to stay.
+        assert_eq!(fs::read_to_string(dest.join("index.jsp")).unwrap(), "old");
+    }
+
     #[test]
     fn deployment_errors_identify_the_checked_path() {
         let tmp = tempfile::tempdir().unwrap();

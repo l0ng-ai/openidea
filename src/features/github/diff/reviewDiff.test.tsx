@@ -14,7 +14,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       fsProbe: () => Promise.resolve({ status: "error", error: "none" }),
       vcsFileAt: (_path: string, rev: string) => Promise.resolve({ status: "ok", data: texts[rev] ?? "" }),
-      ghApi: (req: unknown) => ghApi(req),
+      ghApi: (_repo: unknown, req: unknown) => ghApi(req),
     },
   };
 });
@@ -158,6 +158,8 @@ beforeEach(() => {
       coordinates: { owner: "o", name: "r" },
       repository: { id: "R1", viewerPermission: "READ" } as GHRepository,
       currentUser: me,
+      root: null,
+      remotes: [],
     },
   });
   setPullRequestData(

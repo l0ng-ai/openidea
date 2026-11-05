@@ -8,8 +8,11 @@ use ide_agent::{
     AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
     NewAgentTask,
 };
-use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
+use ide_core::error::ErrorKind;
+use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
 use ide_tools::InstallEvent;
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex};
 
 /// Streams the project's agent events to this window; returns every task.
 pub fn subscribe(host: &Host, window: &str, on_event: Emit<AgentEvent>) -> IdeResult<Vec<AgentTask>> {
@@ -21,6 +24,24 @@ pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
     let mut providers = host.project(window)?.agents.providers();
     ide_agent::registry::mark_updates(&registry_paths(host), &mut providers);
     Ok(providers)
+}
+
+/// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+/// built-in's driver and arguments), or returns it to auto-detection with `None`.
+pub fn set_command(host: &Host, window: &str, id: String, command: Option<String>) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.set_builtin_command(&id, command)
+}
+
+/// Environment variables built-in agent `id` starts with; empty clears them.
+pub fn set_env(
+    host: &Host,
+    window: &str,
+    id: String,
+    env: std::collections::BTreeMap<String, String>,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.set_builtin_env(&id, env)
 }
 
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
@@ -40,7 +61,39 @@ pub async fn registry_list(host: &Host, _window: &str, request: RequestId) -> Id
     let result =
         tokio::task::spawn_blocking(move || ide_agent::registry::list(&paths, &cancel)).await.map_err(join_err);
     host.end_request(request);
-    result?
+    let mut registry = result??;
+    let installing = installing();
+    for agent in &mut registry.agents {
+        agent.installing = installing.contains(&agent.id);
+    }
+    Ok(registry)
+}
+
+/// Registry installs in progress, by agent id. An install outlives the Settings page
+/// that started it, so a second one of the same agent is refused rather than racing it
+/// for the same folder.
+static INSTALLING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+fn installing() -> std::sync::MutexGuard<'static, HashSet<String>> {
+    INSTALLING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Marks agent `id` as installing until dropped.
+struct Installing(String);
+
+impl Installing {
+    fn begin(id: &str) -> IdeResult<Self> {
+        if !installing().insert(id.to_owned()) {
+            return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{id} is already being installed")));
+        }
+        Ok(Self(id.to_owned()))
+    }
+}
+
+impl Drop for Installing {
+    fn drop(&mut self) {
+        installing().remove(&self.0);
+    }
 }
 
 /// Installs the registry's current version of agent `id` (also to update it), streaming
@@ -54,11 +107,43 @@ pub async fn registry_install(
     on_event: Channel<InstallEvent>,
 ) -> IdeResult<()> {
     let paths = registry_paths(host);
+    let installing = Installing::begin(&id)?;
     let cancel = host.begin_request(request);
+    // Also a background task of every project window, so it stays visible and can be
+    // stopped there once the Settings page is closed.
+    let task = TaskId::next();
+    let title = format!("Installing {id}");
+    let sinks: Vec<SharedSink> = host.projects().iter().map(|p| p.sink.clone()).collect();
+    let report = move |message: Option<String>, fraction: Option<f32>, done: bool| {
+        for sink in &sinks {
+            sink.emit(IdeEvent::Task {
+                id: task,
+                title: title.clone(),
+                message: message.clone(),
+                fraction,
+                done,
+                cancellable: !done,
+            });
+        }
+    };
     let result = tokio::task::spawn_blocking(move || {
-        ide_agent::registry::install(&paths, &id, &cancel, &|e| {
+        let _installing = installing;
+        let _cancel = ide_core::task::on_cancel(task, {
+            let cancel = cancel.clone();
+            move || cancel.cancel()
+        });
+        report(None, None, false);
+        let result = ide_agent::registry::install(&paths, &id, &cancel, &|e| {
+            match &e {
+                InstallEvent::Line { text } => report(Some(text.clone()), None, false),
+                InstallEvent::Progress { fraction, message } => {
+                    report(Some(message.clone()), fraction.map(|f| f as f32), false)
+                }
+            }
             let _ = on_event.send(e);
-        })
+        });
+        report(None, Some(1.0), true);
+        result
     })
     .await
     .map_err(join_err);
@@ -187,6 +272,8 @@ pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
     d.add("agent_providers", |c| async move { providers(&c.host, &c.window) });
+    d.add("agent_set_command", |c| async move { set_command(&c.host, &c.window, c.arg("id")?, c.arg("command")?) });
+    d.add("agent_set_env", |c| async move { set_env(&c.host, &c.window, c.arg("id")?, c.arg("env")?) });
     d.add("agent_registry_list", |c| async move { registry_list(&c.host, &c.window, c.arg("request")?).await });
     d.add("agent_registry_install", |c| async move {
         registry_install(&c.host, &c.window, c.arg("id")?, c.arg("request")?, c.sender("onEvent")?).await
@@ -243,6 +330,20 @@ fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_installs_once_at_a_time() {
+        let first = Installing::begin("test-agent").unwrap();
+        assert!(installing().contains("test-agent"));
+        let again = Installing::begin("test-agent").err().unwrap();
+        assert_eq!(again.kind, ErrorKind::AlreadyExists);
+        let other = Installing::begin("test-other-agent").unwrap();
+        drop(first);
+        assert!(!installing().contains("test-agent"));
+        drop(Installing::begin("test-agent").unwrap());
+        drop(other);
+    }
+
     #[test]
     fn agent_roots_are_exact_window_or_workspace_members() {
         let tmp = tempfile::tempdir().unwrap();

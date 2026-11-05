@@ -22,15 +22,23 @@ Paths in an existing manifest may be relative to the workspace directory. New an
 
 Linked folders appear as roots in Project view and participate in indexing, Find in Files, Git repository discovery and language-server root selection. Detected and saved run configurations have project-qualified names and use their member's working directory and launch settings. Build Project combines the linked projects' build plans; Compile File targets its owning project. Workspace editor/settings state belongs to its own directory. Each member retains its repository and project configuration.
 
-The specialized Maven/Gradle tool-window model still describes the workspace directory itself; it does not yet aggregate independent member models. Workspace creation and management currently target local folders.
+The specialized Maven/Gradle tool-window model still describes the workspace directory itself; it does not yet aggregate independent member models. Workspace creation and management currently target local folders. To link independent Gradle builds in one Gradle tree, open their parent folder as an ordinary project instead of creating a Workspace manifest, then use **Link Gradle Projects…** in the Gradle toolbar or Find Action.
+
+## Linked Gradle builds in a project
+
+In an ordinary project window, **Link Gradle Projects…** accepts one or more `settings.gradle`, `settings.gradle.kts`, `build.gradle`, or `build.gradle.kts` files. Each linked build has its own root in the Gradle tool window. Its tasks, dependencies, wrapper, working directory and sync cache stay separate, even when another build has the same `:app` project or task names. Included builds remain under the build that includes them.
+
+Right-click a build root for **Reload Gradle Project** or **Unlink Gradle Project**. Unlinking only removes the IDE connection; it does not delete files or saved run configurations. The Link button remains available after the last build is unlinked. Linked builds may live outside the opened folder.
+
+Links are saved in project settings as `languages.java.gradle.linkedProjects`. Until links are configured, existing automatic discovery is unchanged. An explicit empty list means that no Gradle builds are linked. Opening the project again restores its links. A folder first opened by an older version may need one fresh sync because independent builds now have separate caches.
 
 ## Window group
 
 Open two project windows, then use **Window → Merge All Project Windows**. The project tabs occupy their own row below the main toolbar. Click a tab or use **Next/Previous Project Tab** to switch; drag tabs to reorder them. The default shortcuts are ⌥⌘PageDown/PageUp on macOS and Ctrl+Alt+PageDown/PageUp on Windows/Linux.
 
-Use the tab's close button to close that project, or **Move Tab to New Window** to detach the current tab. Closing uses the existing unsaved-changes guard. Quit visits project windows in sequence so a hidden project's prompt is visible. Groups restore when **Reopen last project** is enabled.
+Use the tab's close button to close that project, or **Move Tab to New Window** to detach the current tab. Right-click a tab for **Close Other Tabs**, **Close Tabs to the Left** and **Close Tabs to the Right**, which close the projects one at a time and keep the clicked tab; cancelling one project's unsaved-changes prompt leaves it and the rest open. The same commands are in the Command Palette and can be assigned shortcuts. Closing uses the existing unsaved-changes guard. Quit visits project windows in sequence so a hidden project's prompt is visible. Groups restore when **Reopen last project** is enabled.
 
-The grouping model lives in `ide-workspace`, independently of project ownership. The desktop adapter keeps each member's WebView and backend services alive, presents the selected window at the group's position/size, and hides its peers. This is an application-drawn tab strip, not the macOS native tab strip. Its persistence is application-local in `window-groups.json`. Language servers, terminals, editor buffers and settings remain independent between group members.
+The grouping model lives in `ide-workspace`, independently of project ownership. The desktop adapter keeps each member's WebView and backend services alive, presents the selected window at the group's position/size, and hides its peers. Hidden members are kept at the selected window's frame and display (and follow it after a move or resize), so switching projects only changes which window is visible. This is an application-drawn tab strip, not the macOS native tab strip. Its persistence is application-local in `window-groups.json`. Language servers, terminals, editor buffers and settings remain independent between group members.
 
 ## Validation
 

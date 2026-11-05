@@ -8,7 +8,7 @@
 
 use ide_core::process::executable_names;
 use ide_core::{IdeError, IdeResult};
-use ide_language::{DebuggerConfig, LanguageRegistry};
+use ide_language::{DebuggerConfig, LanguageRegistry, ProgramPin};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -44,6 +44,8 @@ pub struct AdapterSpec {
     /// `host:port` of an adapter inside another program (the Godot editor): connected to
     /// when it accepts, else `command` is started.
     pub connect: Option<String>,
+    /// A plugin language's adapter: start exactly this approved program.
+    pub pinned: Option<ProgramPin>,
 }
 
 /// Built-in adapters used when no language definition names `adapter`.
@@ -55,6 +57,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         transport: transport.to_owned(),
         connect: None,
         install_hint: Some(hint.to_owned()),
+        pinned: None,
     };
     Some(match adapter {
         "codelldb" => cfg(
@@ -69,7 +72,13 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install the Kotlin Debug Adapter from Settings > Language Servers",
         ),
-        "debugpy" => cfg("python3", &["-m", "debugpy.adapter"], "stdio", "pip install debugpy"),
+        // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
+        "debugpy" => cfg(
+            if cfg!(windows) { "python" } else { "python3" },
+            &["-m", "debugpy.adapter"],
+            "stdio",
+            "pip install debugpy",
+        ),
         "js-debug" => cfg(
             "js-debug-adapter",
             // Without a host it listens on `localhost`, which may resolve to ::1 only.
@@ -133,6 +142,7 @@ pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
         env: Vec::new(),
         server_host: None,
         connect: config.connect.clone(),
+        pinned: config.pinned.clone(),
     }
 }
 
@@ -426,12 +436,20 @@ impl AdapterLauncher for ProcessLauncher {
             if is_plugin_bundle(&spec.command) {
                 return Err(not_standalone(&spec));
             }
-            let (command, cwd) = (spec.command.clone(), spec.cwd.clone());
-            let binary = tokio::task::spawn_blocking(move || resolve_binary(&command, &cwd))
-                .await
-                .ok()
-                .flatten()
-                .ok_or_else(|| missing(&spec))?;
+            let binary = match spec.pinned.clone() {
+                Some(pin) => tokio::task::spawn_blocking(move || pin.verify().map(Path::to_path_buf))
+                    .await
+                    .map_err(|e| IdeError::internal(e.to_string()))?
+                    .map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))?,
+                None => {
+                    let (command, cwd) = (spec.command.clone(), spec.cwd.clone());
+                    tokio::task::spawn_blocking(move || resolve_binary(&command, &cwd))
+                        .await
+                        .ok()
+                        .flatten()
+                        .ok_or_else(|| missing(&spec))?
+                }
+            };
             let port = match spec.transport {
                 // An embedded adapter started without `${port}` listens on its usual address.
                 Transport::Tcp => match &embedded {

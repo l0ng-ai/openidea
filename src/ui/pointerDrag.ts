@@ -64,6 +64,29 @@ export function isOutsideWindow(
   return x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom;
 }
 
+export type DropEdge = "left" | "right" | "top" | "bottom";
+
+/**
+ * Where a drop at (`x`, `y`) over `rect` lands: the nearest edge when within its
+ * outer quarter (a tab dropped there splits off a new pane), else the middle.
+ */
+export function dropZoneAt(
+  x: number,
+  y: number,
+  rect: { left: number; top: number; width: number; height: number },
+): DropEdge | "center" {
+  const fx = (x - rect.left) / Math.max(1, rect.width);
+  const fy = (y - rect.top) / Math.max(1, rect.height);
+  const edges: Array<[DropEdge, number]> = [
+    ["left", fx],
+    ["right", 1 - fx],
+    ["top", fy],
+    ["bottom", 1 - fy],
+  ];
+  const [edge, dist] = edges.reduce((a, b) => (b[1] < a[1] ? b : a));
+  return dist < 0.25 ? edge : "center";
+}
+
 export function dragSession(data: DragData): DragSession {
   let current: DropTarget | null = null;
   const enter = (t: DropTarget | null) => {
@@ -123,6 +146,9 @@ export function startPointerDrag(
   const session = dragSession(data);
   const onMove = (ev: PointerEvent) => {
     if (!ghost) {
+      // macOS WebKit can deliver a tap's pointerup before its pointerdown, so a
+      // press with no button held would otherwise start a phantom drag.
+      if (!(ev.buttons & 1)) return onCancel();
       if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD) return;
       const r = source.getBoundingClientRect();
       ghost = source.cloneNode(true) as HTMLElement;
@@ -131,6 +157,8 @@ export function startPointerDrag(
       ghost.classList.add(styles.ghost!);
       ghost.setAttribute("aria-hidden", "true");
       Object.assign(ghost.style, {
+        // Inline: the copied classes (a tab's `position: relative`) can load after `.ghost`.
+        position: "fixed",
         left: `${r.left}px`,
         top: `${r.top}px`,
         width: `${r.width}px`,
@@ -140,6 +168,8 @@ export function startPointerDrag(
       document.documentElement.classList.add(styles.dragging!);
       opts.onStart?.();
     }
+    // Late moves after release may still precede the pointerup; ignore, don't cancel the drop.
+    if (!(ev.buttons & 1)) return;
     ghost.style.transform = `translate(${ev.clientX - start.x}px, ${ev.clientY - start.y}px)`;
     ghost.classList.toggle(styles.noTarget!, !session.move(ev.clientX, ev.clientY));
   };

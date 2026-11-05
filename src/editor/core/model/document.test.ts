@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { language as languageFacet } from "@codemirror/language";
+import { indentUnit, language as languageFacet } from "@codemirror/language";
 import { registerSaveParticipant, remoteChange } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
@@ -54,6 +54,33 @@ describe("DocumentManager + slots", () => {
     const split = new EditorSlot(model, "t2", host, { from: first });
     for (const slot of [first, split])
       expect(formatOptionsOf(slot.currentState())).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
+  it("detects the indents again after Reformat Code rewrote them", async () => {
+    const settings = {
+      editor: {
+        codeStyle: {
+          languages: { java: { useTab: true, tabSize: 1, indent: 1 } },
+          detectIndents: true,
+          editorconfig: false,
+        },
+      },
+    };
+    const { manager } = setup({ "/p/A.java": "class A {\n    int x;\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const first = new EditorSlot(model, "t1", host);
+    const split = new EditorSlot(model, "t2", host, { from: first });
+    expect(first.currentState().tabSize).toBe(4);
+    // Typing keeps the indents detected when the file was opened.
+    first.dispatchLocal({ changes: { from: 10, to: 14, insert: "\t" }, userEvent: "input.type" });
+    expect(first.currentState().tabSize).toBe(4);
+    first.dispatchLocal({ changes: { from: 10, to: 11, insert: "    " }, userEvent: "undo" });
+    first.dispatchLocal({ changes: { from: 10, to: 14, insert: "\t" }, userEvent: "format.reformat" });
+    for (const slot of [first, split]) {
+      expect(slot.currentState().tabSize).toBe(1);
+      expect(slot.currentState().facet(indentUnit)).toBe("\t");
+    }
+    expect(useDocMeta.getState()["/p/A.java"]?.indent).toEqual({ tabSize: 1, insertSpaces: false });
   });
 
   it("shares one document between split slots and syncs edits to the backend", async () => {

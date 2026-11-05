@@ -37,6 +37,12 @@ impl Env {
         fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         archive::make_executable(&p).unwrap();
     }
+
+    #[cfg(windows)]
+    fn script(&self, dir: &Path, name: &str, body: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join(format!("{name}.cmd")), format!("@echo off\r\n{body}\r\n")).unwrap();
+    }
 }
 
 fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
@@ -56,9 +62,9 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.1"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.2"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.1.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.2.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
@@ -71,7 +77,7 @@ fn bundled_lombok_is_available_offline_and_repairs_missing_or_corrupt_files() {
     let env = Env::new();
     let data = env.root.parent().unwrap();
     let agent = managed_bundle(data, "lombok").unwrap();
-    let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+    let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
     assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
     for contents in [None, Some(b"incomplete jar".as_slice())] {
         if let Some(contents) = contents {
@@ -93,7 +99,7 @@ fn concurrent_windows_get_the_same_complete_bundled_lombok() {
         let windows: Vec<_> = (0..8).map(|_| scope.spawn(|| managed_bundle(data, "lombok").unwrap())).collect();
         let paths: Vec<_> = windows.into_iter().map(|window| window.join().unwrap()).collect();
         assert!(paths.iter().all(|path| path == &paths[0]));
-        let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+        let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
         assert_eq!(sources::sha256_file(&paths[0]).unwrap(), checksum);
     });
 }
@@ -698,4 +704,46 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     }
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();
     assert!(!env.root.join("rust-analyzer").exists());
+}
+
+/// Windows has `python.exe` and `py`, not `python3.exe`; the `WindowsApps` aliases only count
+/// when the Store's Python behind them runs.
+#[test]
+fn windows_python_skips_store_aliases_that_do_not_run() {
+    let env = Env::new();
+    let aliases = env.sys.parent().unwrap().join("Microsoft").join("WindowsApps");
+    env.script(&aliases, "python", "exit 9009");
+    env.script(&aliases, "python3", "exit 9009");
+    env.script(&env.sys, "py", "echo Python 3.12.0");
+    let windows = Platform { os: Os::Windows, arch: platform::Arch::X64 };
+    let found = || {
+        let dirs = std::env::join_paths([aliases.clone(), env.sys.clone()]).unwrap();
+        Tools::with_paths(env.root.clone(), dirs, windows).python().map(|python| {
+            let dir = python.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+            format!("{dir}/{}", python.file_stem().unwrap().to_string_lossy())
+        })
+    };
+    assert_eq!(found().as_deref(), Some("sysbin/py"));
+    fs::remove_file(env.sys.join(if cfg!(windows) { "py.cmd" } else { "py" })).unwrap();
+    assert_eq!(found(), None, "only broken aliases are available");
+    env.script(&env.sys, "python3", "echo Python 3.12.0");
+    assert_eq!(found().as_deref(), Some("sysbin/python3"), "python3 is the final fallback");
+    env.script(&env.sys, "python", "echo Python 3.12.0");
+    assert_eq!(found().as_deref(), Some("sysbin/python"), "a broken alias must not hide a later interpreter");
+    env.script(&aliases, "python", "echo Python 3.13.0");
+    assert_eq!(found().as_deref(), Some("WindowsApps/python"), "the Store's Python runs");
+}
+
+#[cfg(unix)]
+#[test]
+fn python_probes_run_in_an_empty_private_directory() {
+    let env = Env::new();
+    // A stand-in interpreter that reports where it was started.
+    env.script(&env.sys, "python3", "pwd; ls -A");
+    let tools = env.tools();
+    let python = tools.python().unwrap();
+    let out = tools.python_command(&python).output().unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let dir = env.root.join(".python-cwd");
+    assert_eq!(out.trim(), dir.canonicalize().unwrap().to_string_lossy());
 }

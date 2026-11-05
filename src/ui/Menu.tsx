@@ -13,7 +13,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import { getAction, isActionEnabled, executeAction } from "@/platform/actions";
+import { getAction, isActionEnabled, executeActionFrom, actionToggled } from "@/platform/actions";
 import { useContextKeys } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, type IconName } from "./icons";
@@ -45,6 +45,8 @@ export type MenuItem =
       checked?: boolean;
       danger?: boolean;
       run?: () => void;
+      /** The pointer or the keyboard made it the active item (not on opening the menu). */
+      onActive?: () => void;
       submenu?: MenuItem[];
     };
 
@@ -58,6 +60,7 @@ interface Resolved {
   checked?: boolean;
   danger?: boolean;
   run?: () => void;
+  onActive?: () => void;
   submenu?: MenuItem[];
 }
 
@@ -83,7 +86,8 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
         icon: item.icon ?? a.icon,
         shortcut: shortcutLabel(item.action),
         disabled: !!item.disabled || !isActionEnabled(a),
-        run: () => void executeAction(item.action, item.arg),
+        checked: actionToggled(a),
+        run: () => void executeActionFrom("menu", item.action, item.arg),
       });
       return;
     }
@@ -121,15 +125,29 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   const [subAnchor, setSubAnchor] = useState<HTMLElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Pointer movement highlights a row without focusing it. Focusing on every
+  // enter drops the hover paint in the Windows webview, so the menu looks frozen.
+  const pointerHover = useRef(false);
+  // Row the pointer last entered: pointerenter and mouseenter both report it.
+  const hovered = useRef(-1);
   const setOpenSub = (i: number | null) => {
     setSubAnchor(i === null ? null : (itemRefs.current[i] ?? null));
     setOpenSubIndex(i);
   };
 
   useLayoutEffect(() => {
-    if (active >= 0 && openSub === null) itemRefs.current[active]?.focus({ preventScroll: false });
+    if (pointerHover.current) {
+      pointerHover.current = false;
+      return;
+    }
+    if (active >= 0 && openSub === null) itemRefs.current[active]?.focus({ preventScroll: true });
   }, [active, openSub]);
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
+
+  const focusItem = (i: number) => {
+    setActive(i);
+    resolved[i]?.onActive?.();
+  };
 
   const move = (delta: number, from = active) => {
     const n = resolved.length;
@@ -138,7 +156,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
     for (let step = 0; step < n; step++) {
       i = (i + delta + n) % n;
       if (selectable(resolved[i])) {
-        setActive(i);
+        focusItem(i);
         return;
       }
     }
@@ -154,6 +172,20 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
     }
     onDone();
     item!.run?.();
+  };
+
+  const hover = (i: number) => {
+    const item = resolved[i];
+    if (!item || item.disabled || item.kind !== "item") return;
+    if (hovered.current !== i) {
+      hovered.current = i;
+      if (i !== active) {
+        pointerHover.current = true;
+        focusItem(i);
+      }
+    }
+    clearTimeout(hoverTimer.current);
+    hoverTimer.current = setTimeout(() => setOpenSub(item.submenu ? i : null), item.submenu ? 120 : 200);
   };
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
@@ -190,7 +222,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
             const i = (active + s + n) % n;
             const r = resolved[i]!;
             if (selectable(r) && r.label.toLowerCase().startsWith(ch)) {
-              setActive(i);
+              focusItem(i);
               break;
             }
           }
@@ -232,12 +264,10 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
                 r.disabled && styles.disabled,
                 r.danger && styles.danger,
               )}
-              onPointerEnter={() => {
-                if (r.disabled) return;
-                setActive(i);
-                clearTimeout(hoverTimer.current);
-                hoverTimer.current = setTimeout(() => setOpenSub(hasSub ? i : null), hasSub ? 120 : 200);
-              }}
+              onPointerEnter={() => hover(i)}
+              onMouseEnter={() => hover(i)}
+              onPointerLeave={() => (hovered.current = -1)}
+              onMouseLeave={() => (hovered.current = -1)}
               onClick={() => activate(i)}
             >
               <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>

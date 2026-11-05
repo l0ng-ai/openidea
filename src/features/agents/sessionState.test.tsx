@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
+import { useProject } from "@/platform/project";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor } from "./SessionEditor";
@@ -9,16 +10,26 @@ import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 import styles from "./Session.module.css";
 
-const backend = vi.hoisted(() => ({ entries: new Map<string, AgentEntry[]>(), changes: [] as AgentChange[] }));
+const backend = vi.hoisted(() => ({
+  entries: new Map<string, AgentEntry[]>(),
+  changes: [] as AgentChange[],
+  answers: [] as Array<[string, number, string | null]>,
+  fetched: [] as string[],
+}));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: {
-    agentEntries: async (id: string, sub: string | null) => ({
-      status: "ok",
-      data: backend.entries.get(sub ? `${id}/${sub}` : id) ?? [],
-    }),
+    agentEntries: async (id: string, sub: string | null) => {
+      const key = sub ? `${id}/${sub}` : id;
+      backend.fetched.push(key);
+      return { status: "ok", data: backend.entries.get(key) ?? [] };
+    },
     agentChanges: async () => ({ status: "ok", data: backend.changes }),
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
+    agentRespond: async (task: string, permission: number, option: string | null) => {
+      backend.answers.push([task, permission, option]);
+      return { status: "ok", data: null };
+    },
   },
 }));
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -92,7 +103,105 @@ beforeEach(() => {
   });
 });
 
+describe("a pending question", () => {
+  it("shows the whole question in the banner, with every answer, and sends the chosen one", async () => {
+    const question =
+      'Scenario 4 ("follows the TR") still leaves the "About your request" section empty after two rewrites.\nHow should we continue?';
+    const entries: AgentEntry[] = [
+      {
+        type: "permission",
+        id: 7,
+        title: question,
+        options: [
+          { id: "a", name: "Ship it as is and record it (Recommended)", kind: "allow_once" },
+          { id: "b", name: "Detect the request in code", kind: "allow_once" },
+          { id: "c", name: "Skip", kind: "reject_once" },
+        ],
+        chosen: null,
+      },
+    ];
+    backend.entries.set("A", entries);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const banner = await screen.findByRole("alert", { name: question });
+    expect(banner.querySelector(`.${styles.bannerText}`)?.textContent).toBe(question);
+    const answers = within(banner.querySelector<HTMLElement>(`.${styles.bannerActions}`)!).getAllByRole("button");
+    expect(answers.map((b) => b.textContent)).toEqual([
+      "Ship it as is and record it (Recommended)",
+      "Detect the request in code",
+      "Skip",
+    ]);
+    fireEvent.click(answers[1]!);
+    await waitFor(() => expect(backend.answers).toEqual([["A", 7, "b"]]));
+  });
+});
+
+describe("a pending permission request in the conversation", () => {
+  it("is answered from its line too, and one without options can be cancelled", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 3,
+        title: "ls d:/project",
+        options: [
+          { id: "once", name: "Allow once", kind: "allow_once" },
+          { id: "reject", name: "Reject", kind: "reject_once" },
+        ],
+        chosen: null,
+      },
+    ]);
+    backend.entries.set("B", [
+      { type: "permission", id: 4, title: "The agent asks for permission", options: [], chosen: null },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    const { unmount } = render(<SessionEditor input={input("A")} />);
+    const line = (await screen.findAllByText("ls d:/project")).find((e) =>
+      e.classList.contains(styles.permissionTitle!),
+    )!.parentElement!;
+    const answers = within(line.querySelector<HTMLElement>(`.${styles.permissionAnswers}`)!).getAllByRole("button");
+    expect(answers.map((b) => b.textContent)).toEqual(["Allow once", "Reject"]);
+    fireEvent.click(answers[0]!);
+    await waitFor(() => expect(backend.answers).toEqual([["A", 3, "once"]]));
+    unmount();
+
+    render(<SessionEditor input={input("B")} />);
+    const banner = await screen.findByRole("alert", { name: "The agent asks for permission" });
+    fireEvent.click(within(banner).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 3, "once"],
+        ["B", 4, null],
+      ]),
+    );
+  });
+});
+
 describe("session state across tasks and hosts", () => {
+  it("fetches a conversation once and shows it again from the store when its tab reopens", async () => {
+    const entries = new Map(useAgents.getState().entries);
+    entries.delete("A");
+    useAgents.setState({ entries });
+    backend.fetched = [];
+    const first = render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    first.unmount();
+    render(<SessionEditor input={input("A")} />);
+    expect(screen.getByText("Answer A")).toBeInTheDocument();
+    await act(async () => {});
+    expect(backend.fetched).toEqual(["A"]);
+  });
+
+  it("opens a long conversation at its end and renders the earlier entries after it", async () => {
+    const entries = Array.from({ length: 150 }, (_, i): AgentEntry => ({ type: "agent", text: `Reply ${i}` }));
+    useAgents.setState({ entries: new Map(useAgents.getState().entries).set("A", entries) });
+    render(<SessionEditor input={input("A")} />);
+    expect(screen.getByText("Reply 149")).toBeInTheDocument();
+    expect(await screen.findByText("Reply 0")).toBeInTheDocument();
+    expect(stream().children).toHaveLength(150);
+  });
+
   it("returns to the task conversation when the docked task changes after opening a subagent", async () => {
     const dispose = registerActions(taskActions);
     try {
@@ -225,5 +334,38 @@ describe("session state across tasks and hosts", () => {
     expect(stream().scrollTop).toBe(230);
     act(() => disconnect());
     expect(useAgents.getState().scrollPositions.size).toBe(0);
+  });
+});
+
+describe("meters in the task header", () => {
+  afterEach(() => {
+    useProject.setState({ settings: null });
+    useAgents.setState({ limits: new Map() });
+  });
+
+  it("shows the provider's usage limits by default and each meter as Settings › Tools › Agents › Chat allows", async () => {
+    const reported: AgentTask = {
+      ...task("A"),
+      usage: { used: 24_000, size: 200_000, cost: { amount: 0.42, currency: "USD" } },
+    };
+    const limits = [
+      { window: "five_hour", usedPercent: 19, resetsMs: null },
+      { window: "seven_day", usedPercent: 9.4, resetsMs: null },
+    ];
+    useAgents.setState({ tasks: new Map([["A", reported]]), limits: new Map([["codex", limits]]) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    expect(screen.getByText("12%")).toBeInTheDocument();
+    expect(screen.getByText("5h 19%")).toBeInTheDocument();
+    expect(screen.getByText("7d 9%")).toBeInTheDocument();
+    expect(screen.queryByText("$0.42")).toBeNull();
+    act(() =>
+      useProject.setState({
+        settings: { agents: { showContextUsage: false, showUsageLimits: false, showCost: true } },
+      }),
+    );
+    expect(screen.queryByText("12%")).toBeNull();
+    expect(screen.queryByText("5h 19%")).toBeNull();
+    expect(screen.getByText("$0.42")).toBeInTheDocument();
   });
 });

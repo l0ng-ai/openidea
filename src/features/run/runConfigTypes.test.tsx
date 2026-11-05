@@ -70,6 +70,32 @@ beforeEach(() => {
 afterEach(() => disposeTypes());
 
 describe("configuration types", () => {
+  it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
+    const type = typeFor("application")!;
+    const base = withParams(newConfigOfType(type, []), { ...newConfigOfType(type, []).params, mainClass: "a.Main" });
+    expect(base.command).toBe("java");
+    expect(base.module).toBeUndefined();
+
+    const chosen = withParams(base, { ...base.params, jre: "/jdks/temurin-8", module: "server" });
+    expect(chosen.command).toBe("/jdks/temurin-8/bin/java");
+    expect(chosen.module).toBe("server");
+    // The project root is a module too.
+    expect(withParams(chosen, { ...chosen.params, module: "." }).module).toBe("");
+    // Back to the defaults: the module's JDK, and the module found again for another main class.
+    const auto = withParams(chosen, { ...chosen.params, jre: "", module: "", mainClass: "b.Main" });
+    expect(auto.command).toBe("java");
+    expect(auto.module).toBeUndefined();
+
+    // A configuration saved with its module shows it in the form.
+    const saved = cfg("saved", {
+      kind: "application",
+      command: "java",
+      args: ["-cp", "${classpath}", "a.Main"],
+      module: "",
+    });
+    expect(formParams(saved)).toMatchObject({ mainClass: "a.Main", module: "." });
+  });
+
   it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
     const type = typeFor(kind)!;
     const original = newConfigOfType(type, []);
@@ -196,6 +222,24 @@ describe("configuration types", () => {
       rubyArgs: "",
       script: "app.rb",
       scriptArgs: "-v",
+    });
+  });
+
+  it("ticking Bundler swaps the interpreter launcher for its bundle sibling, and back", () => {
+    const abs = "/v/ruby/bin/ruby";
+    const run = cfg("r", { kind: "ruby", command: abs, args: ["-Ilib", "test/a_test.rb"] });
+    expect(withParams(run, { ...formParams(run)!, bundler: "true" })).toMatchObject({
+      command: "/v/ruby/bin/bundle",
+      args: ["exec", "ruby", "-Ilib", "test/a_test.rb"],
+    });
+    const bundled = cfg("r", { kind: "ruby", command: "/v/ruby/bin/bundle", args: ["exec", "ruby", "a.rb"] });
+    expect(withParams(bundled, { ...formParams(bundled)!, bundler: "" })).toMatchObject({
+      command: "/v/ruby/bin/ruby",
+      args: ["a.rb"],
+    });
+    // A launcher of the user's own (binstub, spring) is kept.
+    expect(withParams(run, { ...formParams(run)!, bundler: "true", command: "bin/spring" })).toMatchObject({
+      command: "bin/spring",
     });
   });
 
