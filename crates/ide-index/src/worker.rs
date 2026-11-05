@@ -4,7 +4,7 @@
 use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
 use crate::filter::{Found, PathFilter};
 use crate::store::Store;
-use ide_core::{IdeEvent, SharedSink, TaskId};
+use ide_core::{IdeEvent, Range, SharedSink, SymbolKind, TaskId};
 use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::{Condvar, Mutex, RwLock};
 use rayon::prelude::*;
@@ -369,6 +369,29 @@ impl Shared {
                 .into_iter()
                 .map(|t| StoredSymbol { name: t.name, kind: t.kind, container: t.container, range: t.range })
                 .collect();
+        }
+        // Semantic facts of the module graph. The language check is its own:
+        // `has_symbols` routes vue through the web grammar, but facts come
+        // from the script grammars `script_facts` picks per region.
+        rec.facts = self.syntax.script_facts(&lang, &text);
+        // Vue SFCs and HTML documents: the script declarations are index
+        // symbols too (⌘O finds components and their functions; the outline
+        // only has the markup's own tags). A component is its file name.
+        if matches!(lang.as_str(), "vue" | "svelte" | "html" | "htm" | "jsp") {
+            for d in &rec.facts.decls {
+                rec.symbols.push(StoredSymbol { name: d.name.clone(), kind: d.kind, container: None, range: d.range });
+            }
+            if let Some(stem) =
+                f.path.file_stem().and_then(|s| s.to_str()).filter(|_| matches!(lang.as_str(), "vue" | "svelte"))
+            {
+                let range = rec.facts.decls.first().map_or(Range::default(), |d| d.range);
+                rec.symbols.push(StoredSymbol {
+                    name: stem.to_string(),
+                    kind: SymbolKind::Class,
+                    container: None,
+                    range,
+                });
+            }
         }
         Extracted::New(rec)
     }

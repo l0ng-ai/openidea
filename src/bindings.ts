@@ -336,6 +336,14 @@ export const commands = {
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
+	indexGoto: (doc: DocId, pos: Pos, word: string) => typedError<{
+	targets: Location[],
+	/**
+	 *  `certain`: the import chain names the target. `candidate`: a name
+	 *  match (the component registry) — the UI labels it.
+	 */
+	note: IndexNote,
+} | null, IdeError>(__TAURI_INVOKE("index_goto", { doc, pos, word })),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
 	webGoto: (doc: DocId, pos: Pos) => typedError<{
 	reference: WebReference,
@@ -4246,6 +4254,22 @@ export type IndexEntry = {
 	/**  Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know. */
 	categories?: string[],
 };
+
+/**
+ *  Where the project index resolves a symbol to without a language server
+ *  (docs/vue-ts-semantic-index.md): a local's definition, the import chain's
+ *  declaration, a re-export's origin, or a component's file.
+ */
+export type IndexGoto = {
+	targets: Location[],
+	/**
+	 *  `certain`: the import chain names the target. `candidate`: a name
+	 *  match (the component registry) — the UI labels it.
+	 */
+	note: IndexNote,
+};
+
+export type IndexNote = "certain" | "candidate";
 
 export type IndexStatus = {
 	indexing: boolean,

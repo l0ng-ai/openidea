@@ -61,22 +61,28 @@ pub fn resolve_spec(from: &Path, spec: &str, aliases: &AliasMap, exists: &dyn Fn
 /// script extension, then `index.*` files.
 fn complete(base: &Path, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
     if base.extension().is_some() {
-        return exists(base).then(|| base.to_path_buf());
+        return exists(base).then(|| simplified(base));
     }
     let name = base.file_name()?.to_str()?;
     for ext in SCRIPT_EXTENSIONS {
         let candidate = base.with_file_name(format!("{name}.{ext}"));
         if exists(&candidate) {
-            return Some(candidate);
+            return Some(simplified(&candidate));
         }
     }
     for ext in SCRIPT_EXTENSIONS {
         let index = base.join(format!("index.{ext}"));
         if exists(&index) {
-            return Some(index);
+            return Some(simplified(&index));
         }
     }
     None
+}
+
+/// Lexically drops `.` components a `./x`-style alias target may carry, so
+/// resolved paths equal the index's own (no filesystem access).
+fn simplified(path: &Path) -> PathBuf {
+    PathBuf::from(dunce::simplified(path))
 }
 
 #[cfg(test)]

@@ -60,10 +60,15 @@ pub(crate) fn script_regions(tree: &Tree, text: &str) -> Vec<ScriptRegion> {
                     }
                 }
                 "raw_text" if !skip => {
+                    let base = ch.start_byte();
+                    let before = &text[..base];
+                    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
                     out.push(ScriptRegion {
-                        base: ch.start_byte(),
+                        base,
+                        base_line: before.matches('\n').count() as u32,
+                        base_col: text[line_start..base].encode_utf16().count() as u32,
                         language: LanguageId::new(lang),
-                        text: text[ch.start_byte()..ch.end_byte()].to_string(),
+                        text: text[base..ch.end_byte()].to_string(),
                     });
                 }
                 _ => {}

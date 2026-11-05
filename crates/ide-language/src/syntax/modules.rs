@@ -9,7 +9,7 @@
 //! children); locals belong to the scope analysis in `ide-syntax`.
 
 use super::lines::LineIndex;
-use crate::{Decl, Facts, Import, ImportName, Reexport};
+use crate::{Decl, Facts, Import, ImportName, Reexport, ScriptRegion};
 use ide_core::{Range, SymbolKind};
 use tree_sitter::{Node, Tree};
 
@@ -18,13 +18,11 @@ use tree_sitter::{Node, Tree};
 /// whole file, the block offset for a `<script>` region): ranges come out
 /// document-absolute — the region's first line maps onto the document line
 /// containing `base`, columns carry over (one conversion, E8).
-pub(crate) fn facts(tree: &Tree, text: &str, base: usize, idx: &LineIndex) -> Facts {
+pub(crate) fn facts(tree: &Tree, text: &str, region: &ScriptRegion) -> Facts {
     let local = LineIndex::new(text);
-    let base_line = idx.line_of(base) as u32;
     let doc_range = |n: Node| -> Range {
         let r = local.range(n.start_byte(), n.end_byte());
-        let shift = |p: ide_core::Pos| ide_core::Pos::new(base_line + p.line, p.col);
-        Range::new(shift(r.start), shift(r.end))
+        region.shift(r)
     };
     let mut out = Facts::default();
     let mut c = tree.root_node().walk();
@@ -144,12 +142,14 @@ fn export_statement(n: Node, text: &str, range: &impl Fn(Node) -> Range, out: &m
     let mut star = false;
     let mut namespace_export = None;
     let mut decl_node = None;
+    let mut default = false;
     for ch in n.children(&mut c) {
         match ch.kind() {
             "export_clause" => clause = Some(ch),
             "from" => from = true,
             "*" => star = true,
             "namespace_export" => namespace_export = Some(ch),
+            "default" => default = true,
             k if k.ends_with("_declaration") => decl_node = Some(ch),
             _ => {}
         }
@@ -165,14 +165,21 @@ fn export_statement(n: Node, text: &str, range: &impl Fn(Node) -> Range, out: &m
         }
         out.reexports.push(Reexport { names, source: source_of(n, text).to_string(), range: range(n) });
     } else if let Some(decl) = decl_node {
-        // `export <declaration>`: the declaration itself, marked exported.
-        declaration(decl, text, range, out, true);
+        // `export <declaration>`: the declaration itself, marked exported
+        // (and default when written as `export default …`).
+        declaration_default(decl, text, range, out, true, default);
     } else if let Some(clause) = clause {
         // `export { x }` without a source: marks existing declarations exported;
         // the kind is resolved by the consumer matching the name.
         for name in specifiers(clause, text) {
             if let ImportName::Named { imported, .. } = name {
-                out.decls.push(Decl { name: imported, kind: SymbolKind::Unknown, range: range(n), exported: true });
+                out.decls.push(Decl {
+                    name: imported,
+                    kind: SymbolKind::Unknown,
+                    range: range(n),
+                    exported: true,
+                    default: false,
+                });
             }
         }
     }
@@ -181,11 +188,24 @@ fn export_statement(n: Node, text: &str, range: &impl Fn(Node) -> Range, out: &m
 }
 
 fn declaration(n: Node, text: &str, range: &impl Fn(Node) -> Range, out: &mut Facts, exported: bool) {
+    declaration_default(n, text, range, out, exported, false);
+}
+
+/// Like [`declaration`], with the default-export flag: `export default …`.
+fn declaration_default(
+    n: Node,
+    text: &str,
+    range: &impl Fn(Node) -> Range,
+    out: &mut Facts,
+    exported: bool,
+    default: bool,
+) {
     let Some(name) = name_node(n) else { return };
     out.decls.push(Decl {
         name: name.utf8_text(text.as_bytes()).unwrap_or("").to_string(),
         kind: symbol_kind(n.kind()),
         range: range(name),
         exported,
+        default,
     });
 }

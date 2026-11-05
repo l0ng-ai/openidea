@@ -4,7 +4,7 @@
 //! (embedded at build time). Tree-sitter gives zero-config outline, folding
 //! and symbol tags; LSP/DAP configs are consumed by `ide-lsp` / `ide-dap`.
 
-use ide_core::{LanguageId, Range, SymbolKind};
+use ide_core::{LanguageId, Pos, Range, SymbolKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
@@ -326,6 +326,9 @@ pub struct Decl {
     pub range: Range,
     /// Declared with `export`, or inside an `export` statement.
     pub exported: bool,
+    /// The module's default export (`export default …`): the target of a
+    /// default import.
+    pub default: bool,
 }
 
 /// One imported (or re-exported) binding.
@@ -367,8 +370,28 @@ pub struct Reexport {
 pub struct ScriptRegion {
     /// Byte offset of `text` within the document.
     pub base: usize,
+    /// The document line containing `base` (0-based) and its UTF-16 column
+    /// there: what [`ScriptRegion::shift`] adds to region-relative positions.
+    pub base_line: u32,
+    pub base_col: u32,
     /// The language the block's `lang` attribute picks.
     pub language: LanguageId,
     /// The script text.
     pub text: String,
+}
+
+impl ScriptRegion {
+    /// A region-relative range in document coordinates: the region's first
+    /// line maps onto the document line containing `base` (its columns are
+    /// offset by the base column), later lines keep their columns.
+    pub fn shift(&self, r: Range) -> Range {
+        let shift = |p: Pos| {
+            if p.line == 0 {
+                Pos::new(self.base_line, self.base_col + p.col)
+            } else {
+                Pos::new(self.base_line + p.line, p.col)
+            }
+        };
+        Range::new(shift(r.start), shift(r.end))
+    }
 }

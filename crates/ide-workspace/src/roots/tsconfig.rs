@@ -68,8 +68,8 @@ fn merge_config(path: &Path, map: &mut AliasMap, depth: u32) {
     let Some(options) = value.get("compilerOptions") else { return };
     if let Some(base) = options.get("baseUrl").and_then(|b| b.as_str()) {
         // `baseUrl` is relative to the config's directory.
-        if let Some(resolved) = path.parent().map(|d| d.join(base)) {
-            map.base_url = resolved;
+        if let Some(dir) = path.parent() {
+            map.base_url = if base == "." { dir.to_path_buf() } else { dir.join(base) };
         }
     }
     let Some(paths) = options.get("paths").and_then(|p| p.as_object()) else { return };
