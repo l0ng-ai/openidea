@@ -111,6 +111,10 @@
   border-radius: var(--radius-small);
 }
 /* Push dialogs: the list fills the body so a resizable window shows more rows. */
+.pushDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
 .pushTreeWrap {
   flex: 1;
   min-height: 220px;
@@ -127,6 +131,7 @@
 }
 /* Push dialogs: the outgoing commits' changed files below the commits, the diff beside them. */
 .pushChanges {
+  flex: none;
   display: flex;
   flex-direction: column;
   min-height: 0;

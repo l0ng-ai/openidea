@@ -168,6 +168,21 @@ describe("Dialog chrome", () => {
     expect([dialog.style.width, dialog.style.height]).toEqual(["600px", "400px"]);
   });
 
+  it("caps a content-sized dialog at maxHeight until it is resized", () => {
+    render(
+      <Dialog open onClose={() => {}} title="Push" resizable="both" maxHeight={720}>
+        <div>rows</div>
+      </Dialog>,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.style.maxHeight).toBe("min(720px, 100%)");
+    fireEvent.pointerDown(screen.getByRole("separator", { name: "Resize" }), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { buttons: 1, clientX: 500, clientY: 800 });
+    fireEvent.pointerUp(window);
+    expect(dialog.style.maxHeight).toBe("");
+    expect(dialog.style.height).not.toBe("");
+  });
+
   it("still drags a window dialog by its title bar", () => {
     render(
       <Dialog open onClose={() => {}} title="Usages Detected" buttons={safeDelete()} platform="other">
