@@ -66,7 +66,7 @@ The design:
 - [x] Phase 0.2: Tools and corpora
       Add `scripts/php-corpus.sh`, which needs nothing beyond git. It shallow-clones pinned tags of laravel/framework, symfony/symfony and WordPress/WordPress into `${PHP_CORPUS_DIR:-../php-corpus}`, and skips any that are already there. Document in RULES.md how to install Intelephense (`npm i -g intelephense`) and `cargo-nextest`. Run the script, and check that Intelephense starts with `intelephense --stdio` and a scripted `initialize`. Test: a shell check, plus a mention in PROGRESS.md.
 
-- [ ] Phase 0.3: PHP fixture project
+- [x] Phase 0.3: PHP fixture project
       Add `fixtures/php-app`, modelled on the other fixtures and listed in `fixtures/README.md`. It has:
   - `composer.json` with PSR-4 autoloading `App\\` → `src/` and `Tests\\` → `tests/`, and `require.php: ^8.2`
   - classes, an interface, an abstract class, a trait and an enum

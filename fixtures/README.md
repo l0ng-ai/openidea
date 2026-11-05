@@ -5,15 +5,16 @@ has a few source files, passing tests, an **opt-in failing test**, `TODO`/`FIXME
 comments and at least one **intentional warning**, so every IDE feature has
 something to show.
 
-| Fixture          | Toolchain                                                       | Run                                 | Tests                | Failing test                          | Intentional warning                                      |
-| ---------------- | --------------------------------------------------------------- | ----------------------------------- | -------------------- | ------------------------------------- | -------------------------------------------------------- |
-| `rust-app/`      | cargo                                                           | `cargo run`                         | `cargo test`         | `cargo test --features failing-tests` | unused variable in `src/parser.rs`                       |
-| `ts-app/`        | Node 22+, pnpm/npm                                              | `pnpm start`                        | `pnpm test` (vitest) | `OPENIDEA_FAIL=1 pnpm test`               | unused function in `src/index.ts`                        |
-| `python-app/`    | Python 3.10+, pytest                                            | `python -m tasks.cli` (from `src/`) | `pytest`             | `OPENIDEA_FAIL=1 pytest`                  | unused imports in `models.py`                            |
-| `go-app/`        | Go 1.22+                                                        | `go run ./cmd/server`               | `go test ./...`      | `OPENIDEA_FAIL=1 go test ./...`           | unused `fmt.Sprintf` result in `internal/store/store.go` |
-| `kotlin-gradle/` | JDK 21, Gradle 8 (no wrapper)                                   | `gradle run`                        | `gradle test`        | `gradle test -PopenideaFail`              | unused variable in `App.kt`                              |
-| `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`             | `mvn test`           | `mvn test -DopenideaFail=true`            | unused variable in `App.java`                            |
-| `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
+| Fixture          | Toolchain                                                       | Run                                  | Tests                        | Failing test                          | Intentional warning                                         |
+| ---------------- | --------------------------------------------------------------- | ------------------------------------ | ---------------------------- | ------------------------------------- | ----------------------------------------------------------- |
+| `rust-app/`      | cargo                                                           | `cargo run`                          | `cargo test`                 | `cargo test --features failing-tests` | unused variable in `src/parser.rs`                          |
+| `ts-app/`        | Node 22+, pnpm/npm                                              | `pnpm start`                         | `pnpm test` (vitest)         | `OPENIDEA_FAIL=1 pnpm test`           | unused function in `src/index.ts`                           |
+| `python-app/`    | Python 3.10+, pytest                                            | `python -m tasks.cli` (from `src/`)  | `pytest`                     | `OPENIDEA_FAIL=1 pytest`              | unused imports in `models.py`                               |
+| `go-app/`        | Go 1.22+                                                        | `go run ./cmd/server`                | `go test ./...`              | `OPENIDEA_FAIL=1 go test ./...`       | unused `fmt.Sprintf` result in `internal/store/store.go`    |
+| `kotlin-gradle/` | JDK 21, Gradle 8 (no wrapper)                                   | `gradle run`                         | `gradle test`                | `gradle test -PopenideaFail`          | unused variable in `App.kt`                                 |
+| `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`              | `mvn test`                   | `mvn test -DopenideaFail=true`        | unused variable in `App.java`                               |
+| `php-app/`       | PHP 8.2+, Composer                                              | `composer install && composer start` | `composer test` (PHPUnit 11) | `OPENIDEA_FAIL=1 composer test`       | undefined method `count()` in `src/Reports/ShelfReport.php` |
+| `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                               | `make test`                  | —                                     | unused variable in `native/hash.c`                          |
 
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 `fixtures/eslint.config.js` keeps them out of the IDE's own lint run.
@@ -34,7 +35,8 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 ```
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
-For `ts-app` / `polyglot/web` run `pnpm install` first; for `python-app` create a
+For `ts-app` / `polyglot/web` run `pnpm install` first; for `php-app` run
+`composer install`; for `python-app` create a
 venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`).
 
 Missing language servers / debuggers can be installed from the IDE:
