@@ -217,6 +217,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "lsp_resend_diagnostics"
             | "recent_projects"
             | "remove_recent_project"
+            | "recent_project_groups"
+            | "set_recent_project_groups"
             | "open_project"
             | "close_project"
             | "project_current"

@@ -25,7 +25,7 @@ pub use editorconfig::{EditorConfig, EditorConfigProps};
 pub use file_defaults::FileDefaults;
 pub use file_moves::{FileMove, FileMoves, UndoOutcome};
 pub use history::{DirectoryHistory, HistoryEntry, HistoryKind, LocalHistory, Retention};
-pub use recent::{RecentProject, RecentProjects};
+pub use recent::{RecentProject, RecentProjectGroup, RecentProjects};
 pub use roots::{ProjectRoots, RootKind, SourceFolder};
 pub use settings::{SettingsScope, SettingsStore};
 
