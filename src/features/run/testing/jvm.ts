@@ -21,7 +21,7 @@ const SUREFIRE_CLASS_RE =
 const SUREFIRE_TOTAL_RE = /^(?:\[\w+\]\s+)?Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+)\s*$/;
 // `at org.junit…`, also behind a class loader or module (`at app//org.junit…`, `at java.base@21/java.lang…`).
 const LIBRARY_FRAME_RE =
-  /^\s*at\s+(?:\S*\/)?(?:org\.junit|junit\.|org\.opentest4j|kotlin\.|jdk\.internal|java\.|javax\.|sun\.|org\.gradle)/;
+  /^\s*at\s+(?:\S*\/)?(?:org\.junit|junit\.|org\.opentest4j|org\.testng|kotlin\.|jdk\.internal|java\.|javax\.|sun\.|org\.gradle)/;
 
 /** The source position of a stack frame in the project's code, null for library frames. */
 function frameLocation(line: string): TestLocation | null {
