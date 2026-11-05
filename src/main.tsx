@@ -15,6 +15,8 @@ import {
 import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging } from "./platform/errorLog";
+import { guessOs } from "./platform/platformInfo";
+import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { installPointerFocus } from "./platform/pointerFocus";
 import { isTauri } from "./platform/ipc";
@@ -30,6 +32,7 @@ if (import.meta.env.DEV && isTauri()) {
 }
 
 installRepeatedDoubleClick();
+if (guessOs() === "macos") installReorderedTapClick();
 installWindowDrag();
 installPointerFocus();
 installErrorLogging();
