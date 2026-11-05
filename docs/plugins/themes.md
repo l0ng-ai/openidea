@@ -130,7 +130,7 @@ install it from disk.
 Only port themes whose licence allows redistribution, keep their licence file,
 and credit the original authors in `authors` and `description`.
 
-### From IntelliJ IDEA (automatic)
+### From JetBrains IDEs (automatic)
 
 To use a theme you already have in a JetBrains IDE, open **Settings › Plugins**, gear
 menu:

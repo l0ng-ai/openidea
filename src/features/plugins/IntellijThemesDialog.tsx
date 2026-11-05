@@ -85,8 +85,8 @@ function IntellijThemesDialog() {
         </p>
         {themes === null ? (
           <div className={styles.intellijThemesStatus}>
-            <Spinner size={14} label="Looking for IntelliJ themes" />
-            <T>Looking for IntelliJ themes…</T>
+            <Spinner size={14} label="Looking for JetBrains themes" />
+            <T>Looking for JetBrains themes…</T>
           </div>
         ) : (
           <List
@@ -96,7 +96,7 @@ function IntellijThemesDialog() {
             onActiveChange={setActive}
             rowHeight={44}
             className={styles.intellijThemesList}
-            aria-label={tx("IntelliJ theme plugins")}
+            aria-label={tx("JetBrains theme plugins")}
             empty={
               <div className={styles.intellijThemesStatus} role="note">
                 {error ?? (

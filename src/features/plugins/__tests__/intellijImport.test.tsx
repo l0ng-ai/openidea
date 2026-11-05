@@ -164,7 +164,7 @@ describe("Import Theme from JetBrains IDE", () => {
     const onImported = vi.fn();
     render(<IntellijThemesDialogHost />);
     act(() => showInstalledIntellijThemes(onImported));
-    const list = await screen.findByRole("listbox", { name: "IntelliJ theme plugins" });
+    const list = await screen.findByRole("listbox", { name: "JetBrains theme plugins" });
     const options = await waitFor(() => {
       const found = Array.from(list.querySelectorAll('[role="option"]'));
       expect(found).toHaveLength(2);
@@ -184,7 +184,7 @@ describe("Import Theme from JetBrains IDE", () => {
     await waitFor(() => expect(onImported).toHaveBeenCalledWith(ID));
     expect(read).toHaveBeenCalledWith("/dg/plugins/NightOwl");
     expect(useThemeOverride.getState().theme).toBeNull();
-    expect(screen.queryByRole("listbox", { name: "IntelliJ theme plugins" })).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "JetBrains theme plugins" })).toBeNull();
   });
 
   it("offers a file when no IDE has theme plugins", async () => {
