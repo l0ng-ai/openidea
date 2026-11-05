@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
@@ -28,7 +28,7 @@ import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
 import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
-import { installWindowDrag, windowDragRegion } from "./window-drag";
+import { windowDragRegion } from "./window-drag";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -283,7 +283,6 @@ export function TitleBar({
   const [menuExpanded, setMenuExpanded] = useState(false);
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
-  useEffect(() => installWindowDrag(), []);
   const className = clsx(styles.bar, overlay && styles.overlay, frameless && styles.frameless);
   // Distraction Free Mode: the window frame only. Where the title bar carries the
   // main menu (Windows, Linux) it stays, or nothing would lead back out of the mode.
