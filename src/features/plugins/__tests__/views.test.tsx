@@ -228,6 +228,8 @@ describe("plugin menus", () => {
 });
 
 describe("PluginView", () => {
+  afterEach(() => hideContextMenu());
+
   it("renders a tree and sends expand / activate", async () => {
     const events: ViewEvent[] = [];
     const tree: View = {
@@ -279,7 +281,35 @@ describe("PluginView", () => {
     await userEvent.pointer({ keys: "[MouseRight]", target: await screen.findByText("default") });
     expect(itemMenu).toHaveBeenCalledWith("ns");
     expect(await screen.findByText("Describe")).toBeTruthy();
+  });
+
+  it("opens the item menu on a list row, and none when it has no entries", async () => {
+    const list: View = {
+      toolbar: [],
+      body: {
+        kind: "list",
+        value: [
+          { key: "a", label: "Alpha", icon: null, detail: null },
+          { key: "b", label: "Beta", icon: null, detail: null },
+        ],
+      },
+      status: null,
+    };
+    setPluginsBackend(backendWith(() => list));
+    const itemMenu = vi.fn((key: string) => (key === "a" ? [{ label: "Open Alpha", run: () => {} }] : []));
+    render(
+      <>
+        <PluginView pluginId="jobs" view="jobs" itemMenu={itemMenu} />
+        <ContextMenuHost />
+      </>,
+    );
+    await userEvent.pointer({ keys: "[MouseRight]", target: await screen.findByText("Alpha") });
+    expect(itemMenu).toHaveBeenCalledWith("a");
+    expect(await screen.findByText("Open Alpha")).toBeTruthy();
     hideContextMenu();
+    await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByText("Beta") });
+    expect(itemMenu).toHaveBeenCalledWith("b");
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("edits a table cell and renders again when the plugin refreshes", async () => {

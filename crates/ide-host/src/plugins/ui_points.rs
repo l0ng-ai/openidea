@@ -79,8 +79,8 @@ fn commands(pkg: &Package) -> BTreeSet<String> {
         .collect()
 }
 
-fn declared_view(pkg: &Package, id: &str) -> bool {
-    pkg.manifest.declarations(VIEWS).iter().any(|d| d.get("id").and_then(|v| v.as_str()) == Some(id))
+fn declared_view(pkg: &Package, id: &str) -> Option<toml::Value> {
+    pkg.manifest.declarations(VIEWS).into_iter().find(|d| d.get("id").and_then(|v| v.as_str()) == Some(id))
 }
 
 fn declared_command(pkg: &Package, point: &str, command: &str) -> Result<(), String> {
@@ -124,10 +124,17 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
     let key = match (d.menu == VIEW_ITEM_MENU, &d.view) {
         (true, None) => return Err(format!("contributes.menus: {VIEW_ITEM_MENU} needs `view`")),
-        (true, Some(v)) if !declared_view(pkg, v) => {
-            return Err(format!("contributes.menus: view {v:?} is not declared under [[contributes.views]]"));
+        (true, Some(v)) => {
+            let Some(view) = declared_view(pkg, v) else {
+                return Err(format!("contributes.menus: view {v:?} is not declared under [[contributes.views]]"));
+            };
+            if view.get("web").is_some() {
+                return Err(format!(
+                    "contributes.menus: view {v:?} is a web view (view.item.context needs a tree or list the plugin renders)"
+                ));
+            }
+            format!("{VIEW_ITEM_MENU}/{v}/{}", d.command)
         }
-        (true, Some(v)) => format!("{VIEW_ITEM_MENU}/{v}/{}", d.command),
         (false, Some(_)) => return Err(format!("contributes.menus: `view` is only for {VIEW_ITEM_MENU}")),
         (false, None) => format!("{}/{}", d.menu, d.command),
     };
