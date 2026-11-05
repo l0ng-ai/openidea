@@ -18,15 +18,12 @@
 //!   `ArrayAccess` objects (`offsetGet`);
 //! - closures and arrow functions as `Closure(…): T` signatures, their
 //!   return type from the hint or from the body;
-//! - variables: `$this`, the parameters of the enclosing function-like
-//!   (`@param` first, as the summaries do), closure `use` captures and the
-//!   enclosing scope of arrow functions, and plain assignments.
-//!
-//! Local variables are approximated until the flow graph of phase 2.5: a
-//! variable has the type of the last `$var = …` (or `$var op= …`) that ends
-//! before the read in the same function-like, regardless of branches and
-//! loops. `foreach`, `list()`, `catch`, `global` and `static` variables are
-//! `mixed` until then.
+//! - variables: `$this`, and everything else from the [`Flow`] of the
+//!   enclosing function-like ([`flow`]): parameters (`@param` first, as the
+//!   summaries do), closure `use` captures and the enclosing scope of arrow
+//!   functions, assignments and destructuring, `foreach`, `catch`, `global`
+//!   and `static` variables, merged over branches and loops and narrowed by
+//!   conditions.
 //!
 //! Literals are kept while inferring (so `$a['key']` finds the shape field
 //! and `-1` stays an int); [`type_at`] widens the answer (`'a'` is shown as
@@ -40,8 +37,8 @@ use mago_span::HasSpan;
 use mago_syntax::cst::{
     Access, AnonymousClass, ArrayElement, ArrowFunction, Assignment, Call, Class, ClassLikeConstantSelector,
     ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function, FunctionLikeParameterList, Interface,
-    MagicConstant, MatchArm, Method, MethodBody, PartialApplication, PartialArgument, PartialArgumentList, Program,
-    Return, Trait, Variable, Yield,
+    MagicConstant, MatchArm, Method, PartialApplication, PartialArgument, PartialArgumentList, Program, Return, Trait,
+    Variable, Yield,
 };
 use mago_syntax::walker::Walker;
 
@@ -51,8 +48,12 @@ use crate::names::{FileNames, NameKind, NameScope, Resolution};
 use crate::summary::{ClassLike, DocBlock, FileSummary, FunctionDecl, Param, type_hint};
 use crate::syntax::ParsedFile;
 
-/// How many variable assignments one inference follows before answering
-/// `mixed`.
+mod flow;
+
+pub use flow::{Defined, Flow, VarState};
+
+/// How deeply flows may be nested in their building (a closure's flow
+/// needs the enclosing function's) before an empty flow is used.
 const MAX_DEPTH: usize = 64;
 
 /// Array literals with more fields than this are `array<K, V>` / `list<V>`
@@ -98,24 +99,16 @@ impl Frame<'_> {
     }
 }
 
-/// A plain assignment to a variable.
-#[derive(Clone, Copy)]
-struct Assign<'a> {
-    /// Without the `$`.
-    name: &'a [u8],
-    lhs_start: u32,
-    end: u32,
-    node: &'a Assignment<'a>,
-}
-
 /// Infers expression types in one file.
 pub struct ExprTypes<'a, 'r> {
     file: &'a ParsedFile,
     names: &'a FileNames,
     summary: &'a FileSummary,
     resolver: &'r Resolver<'r>,
-    /// Assignments by frame key (`u32::MAX - 1` for the file's top level).
-    assignments: RefCell<HashMap<u32, Rc<Vec<Assign<'a>>>>>,
+    /// The flows built so far (or being built), by scope key: the start of
+    /// the function-like, [`TOP_LEVEL`] for the file's top level.
+    flows: RefCell<HashMap<u32, Rc<RefCell<Flow>>>>,
+    /// Flows being built, nested.
     depth: Cell<usize>,
 }
 
@@ -128,7 +121,32 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         summary: &'a FileSummary,
         resolver: &'r Resolver<'r>,
     ) -> Self {
-        Self { file, names, summary, resolver, assignments: RefCell::new(HashMap::new()), depth: Cell::new(0) }
+        Self { file, names, summary, resolver, flows: RefCell::new(HashMap::new()), depth: Cell::new(0) }
+    }
+
+    /// The flow of the scope `frames` end in: their innermost function-like,
+    /// or the file's top level when there is none.
+    pub fn flow(&self, frames: &[Frame<'a>]) -> Flow {
+        self.flow_cell(flow::outer_scope(frames)).borrow().clone()
+    }
+
+    /// The flow of `scope` (frames ending with a function-like, or none),
+    /// built on first use. A flow being built is returned as far as it got:
+    /// a read is recorded before its type is asked for.
+    fn flow_cell(&self, scope: &[Frame<'a>]) -> Rc<RefCell<Flow>> {
+        let key = flow::scope_key(scope);
+        if let Some(flow) = self.flows.borrow().get(&key) {
+            return flow.clone();
+        }
+        let flow = Rc::new(RefCell::new(Flow::default()));
+        if self.depth.get() >= MAX_DEPTH {
+            return flow;
+        }
+        self.flows.borrow_mut().insert(key, flow.clone());
+        self.depth.set(self.depth.get() + 1);
+        flow::Builder::run(self, scope, flow.clone());
+        self.depth.set(self.depth.get() - 1);
+        flow
     }
 
     fn program(&self) -> &'a Program<'a> {
@@ -257,64 +275,73 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 Type::Mixed
             };
         }
-        let function = frames.iter().rposition(Frame::is_function_like);
-        let key = function.map_or(TOP_LEVEL, |i| frames[i].key());
-        let scope_frames = &frames[..function.map_or(0, |i| i + 1)];
-        let assignments = self.assignments(key, function.map(|i| &frames[i]));
-        let last = assignments
-            .iter()
-            .rev()
-            .find(|assign| assign.name == name && (assign.end <= at || (here && assign.lhs_start == at)))
-            .copied();
-        if let Some(assign) = last {
-            if self.depth.get() >= MAX_DEPTH {
-                return Type::Mixed;
+        let scope = flow::outer_scope(frames);
+        let flow = self.flow_cell(scope);
+        let state = {
+            let flow = flow.borrow();
+            if here { flow.variable_at(at).cloned() } else { flow.read_at(at).cloned() }
+        };
+        match state {
+            // An undefined variable reads as `null` (`$x ??= …`, `$x .= …`);
+            // shown on its own, it is unknown.
+            Some(VarState { defined: Defined::No, .. }) => {
+                if here {
+                    Type::Mixed
+                } else {
+                    Type::Null
+                }
             }
-            self.depth.set(self.depth.get() + 1);
-            let ty = self.assignment(assign.node, scope_frames);
-            self.depth.set(self.depth.get() - 1);
-            return ty;
-        }
-        let Some(i) = function else { return Type::Mixed };
-        if let Some(ty) = self.parameter(&frames[i], name) {
-            return ty;
-        }
-        match &frames[i] {
-            Frame::Closure(closure) => {
-                let captured = closure.use_clause.iter().flat_map(|clause| clause.variables.iter()).any(|variable| {
-                    variable.variable.name.strip_prefix(b"$").unwrap_or(variable.variable.name) == name
-                });
-                if captured { self.variable(name, closure.span().start.offset, &frames[..i]) } else { Type::Mixed }
-            }
-            Frame::Arrow(arrow) => self.variable(name, arrow.span().start.offset, &frames[..i]),
-            _ => Type::Mixed,
+            Some(state) => state.ty,
+            // Somewhere the flow doesn't visit (a parameter's default value).
+            None => scope.last().and_then(|frame| self.parameter(frame, name)).unwrap_or(Type::Mixed),
         }
     }
 
-    /// The plain assignments of a function-like body (or of the top level),
-    /// not those of nested function-likes and classes, in source order.
-    fn assignments(&self, key: u32, frame: Option<&Frame<'a>>) -> Rc<Vec<Assign<'a>>> {
-        if let Some(hit) = self.assignments.borrow().get(&key) {
-            return hit.clone();
-        }
-        let mut found = Vec::new();
-        let walker = AssignWalker;
-        match frame {
-            None => walker.walk_program(self.program(), &mut found),
-            Some(Frame::Function(function)) => walker.walk_block(&function.body, &mut found),
-            Some(Frame::Method(method)) => {
-                if let MethodBody::Concrete(body) = &method.body {
-                    walker.walk_block(body, &mut found);
+    /// What `foreach` over a value of type `ty` gives as keys and values.
+    fn iteration_types(&self, ty: &Type, frames: &[Frame<'a>]) -> (Type, Type) {
+        let context = self.context(frames);
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+        for member in ty.members() {
+            let (key, value) = match member {
+                Type::Array { key, value, .. } | Type::Iterable { key, value } => ((**key).clone(), (**value).clone()),
+                Type::List { value, .. } => (Type::int_range(Some(0), None), (**value).clone()),
+                Type::Shape(shape) => (shape.key_type(), shape.value_type()),
+                Type::Null | Type::Void | Type::Never => continue,
+                Type::Named { .. } | Type::Relative(_) | Type::Intersection(_) => {
+                    // An `Iterator`, else an `IteratorAggregate`'s iterator.
+                    let mut receiver = member.clone();
+                    let mut found = (Type::Mixed, Type::Mixed);
+                    for _ in 0..2 {
+                        let has = |name: &str| {
+                            self.resolver
+                                .class_models(&receiver, &context)
+                                .iter()
+                                .any(|model| model.method(name).is_some())
+                        };
+                        if has("current") {
+                            found = (
+                                self.resolver.method_return(&receiver, "key", &context),
+                                self.resolver.method_return(&receiver, "current", &context),
+                            );
+                            break;
+                        }
+                        if !has("getIterator") {
+                            break;
+                        }
+                        receiver = self.resolver.method_return(&receiver, "getIterator", &context);
+                    }
+                    found
                 }
-            }
-            Some(Frame::Closure(closure)) => walker.walk_block(&closure.body, &mut found),
-            Some(Frame::Arrow(arrow)) => walker.walk_expression(arrow.expression, &mut found),
-            Some(Frame::Class(_)) => {}
+                _ => (Type::Mixed, Type::Mixed),
+            };
+            keys.push(key);
+            values.push(value);
         }
-        found.sort_by_key(|assign| assign.end);
-        let found = Rc::new(found);
-        self.assignments.borrow_mut().insert(key, found.clone());
-        found
+        if values.is_empty() {
+            return (Type::Mixed, Type::Mixed);
+        }
+        (Type::union(keys), Type::union(values))
     }
 
     /// The type an assignment expression has (and gives its variable).
@@ -934,32 +961,6 @@ impl<'a> Walker<'a, 'a, Finder<'a>> for FindWalker {
     fn walk_out_arrow_function(&self, _: &'a ArrowFunction<'a>, cx: &mut Finder<'a>) {
         cx.frames.pop();
     }
-}
-
-/// Collects the plain assignments of one scope.
-struct AssignWalker;
-
-impl<'a> Walker<'a, 'a, Vec<Assign<'a>>> for AssignWalker {
-    fn walk_in_assignment(&self, node: &'a Assignment<'a>, cx: &mut Vec<Assign<'a>>) {
-        if let Expression::Variable(Variable::Direct(direct)) = node.lhs {
-            cx.push(Assign {
-                name: direct.name.strip_prefix(b"$").unwrap_or(direct.name),
-                lhs_start: direct.span.start.offset,
-                end: node.span().end.offset,
-                node,
-            });
-        }
-    }
-
-    // Nested scopes have their own variables.
-    fn walk_closure(&self, _: &'a Closure<'a>, _: &mut Vec<Assign<'a>>) {}
-    fn walk_arrow_function(&self, _: &'a ArrowFunction<'a>, _: &mut Vec<Assign<'a>>) {}
-    fn walk_anonymous_class(&self, _: &'a AnonymousClass<'a>, _: &mut Vec<Assign<'a>>) {}
-    fn walk_function(&self, _: &'a Function<'a>, _: &mut Vec<Assign<'a>>) {}
-    fn walk_class(&self, _: &'a Class<'a>, _: &mut Vec<Assign<'a>>) {}
-    fn walk_interface(&self, _: &'a Interface<'a>, _: &mut Vec<Assign<'a>>) {}
-    fn walk_trait(&self, _: &'a Trait<'a>, _: &mut Vec<Assign<'a>>) {}
-    fn walk_enum(&self, _: &'a Enum<'a>, _: &mut Vec<Assign<'a>>) {}
 }
 
 /// The `return`s and `yield`s of one closure body.

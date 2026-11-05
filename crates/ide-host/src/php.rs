@@ -126,10 +126,13 @@ impl PhpEngineSlot {
     }
 
     fn shutdown_locked(&self) {
-        let engine = self.engine.write().take();
+        // Stop it before emptying the slot, so whoever sees no engine also
+        // sees it stopped (its status and the `LanguageServerRemoved` event).
+        let engine = self.engine();
         if let Some(engine) = engine {
             engine.shutdown();
         }
+        self.engine.write().take();
     }
 }
 

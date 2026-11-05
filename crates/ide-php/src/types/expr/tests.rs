@@ -43,7 +43,7 @@ const VERSION = '1.0';
 const HEADER: &str = "<?php\nnamespace App;\nuse Lib\\{Book, Novel, Author, Shelf, Suit};\nuse function Lib\\{make_book, untyped, first};\nuse const Lib\\VERSION;\n";
 
 /// The type at the caret of `body` (after [`HEADER`]), displayed.
-fn type_at_caret(body: &str) -> Option<String> {
+pub(super) fn type_at_caret(body: &str) -> Option<String> {
     let source = format!("{HEADER}{body}");
     let offset = source.find(CARET).unwrap_or_else(|| panic!("no caret in {body}"));
     let source = source.replacen(CARET, "", 1);
@@ -57,7 +57,32 @@ fn type_at_caret(body: &str) -> Option<String> {
     type_at(&file, &resolver, offset as u32).map(|ty| ty.to_string())
 }
 
-fn check(table: &[(&str, &str)]) {
+/// The flow of the scope around the caret of `body` (after [`HEADER`]) and
+/// the state of the variable at the caret (`None` when there is no variable
+/// there). Offsets in the flow are relative to `body`.
+pub(super) fn flow_at_caret(body: &str) -> (Flow, Option<VarState>, usize) {
+    let source = format!("{HEADER}{body}");
+    let offset = source.find(CARET).unwrap_or_else(|| panic!("no caret in {body}"));
+    let source = source.replacen(CARET, "", 1);
+    let file = ParsedFile::parse("main.php", source.as_str());
+    assert!(!file.has_errors(), "{body}: {:?}", file.errors());
+    let lib = ParsedFile::parse("lib.php", LIB);
+    let summary = FileSummary::extract(&file);
+    let decls = SummarySet::new(vec![summary.clone(), FileSummary::extract(&lib)]);
+    let cache = TypeCache::new();
+    let resolver = Resolver::new(&decls, &cache, 1);
+    let names = FileNames::resolve(&file);
+    let types = ExprTypes::new(&file, &names, &summary, &resolver);
+    let (expr, frames) = types.find(offset as u32).expect("an expression at the caret");
+    let flow = types.flow(&frames);
+    let state = match expr {
+        Expression::Variable(Variable::Direct(direct)) => flow.variable_at(direct.span.start.offset).cloned(),
+        _ => None,
+    };
+    (flow, state, HEADER.len())
+}
+
+pub(super) fn check(table: &[(&str, &str)]) {
     let mut failures = Vec::new();
     for (body, expected) in table {
         let actual = type_at_caret(body);

@@ -222,7 +222,7 @@ The design:
 
   Tests: a table of snippet → type at the caret.
 
-- [ ] Phase 2.5: Flow graph and local variables
+- [x] Phase 2.5: Flow graph and local variables
       Build a flow graph per function or method. From it, get each variable's type at a given point:
   - assignments, list() and array destructuring, foreach key and value
   - `catch` variables, `global` and `static` variables
