@@ -13,6 +13,7 @@ pub mod junit;
 mod process;
 pub mod python_path;
 pub mod ruby_preload;
+pub mod ruby_reporter;
 pub mod tomcat;
 mod utf8;
 pub mod which;
