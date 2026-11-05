@@ -1179,8 +1179,11 @@ mod tests {
         assert_eq!(files_containing(tmp.path(), "hunter2-db"), Vec::<PathBuf>::new());
         assert_eq!(files_containing(tmp.path(), "hunter2-tunnel"), Vec::<PathBuf>::new());
         let reopened = manager(tmp.path());
-        assert_eq!(reopened.secret("s1".into(), true).await.as_deref(), Some("hunter2-db"));
-        assert_eq!(reopened.secret(secrets::ssh_key("s1"), true).await.as_deref(), Some("hunter2-tunnel"));
+        assert_eq!(reopened.secret(&DataSource::default(), "s1".into(), true).await.as_deref(), Some("hunter2-db"));
+        assert_eq!(
+            reopened.secret(&DataSource::default(), secrets::ssh_key("s1"), true).await.as_deref(),
+            Some("hunter2-tunnel")
+        );
     }
 
     #[tokio::test]
@@ -1191,7 +1194,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("data")).unwrap();
         std::fs::write(tmp.path().join("data/db-passwords.json"), legacy.to_string()).unwrap();
         let m = manager(tmp.path());
-        assert_eq!(m.secret("s1".into(), true).await.as_deref(), Some("old-db-pw"));
+        assert_eq!(m.secret(&DataSource::default(), "s1".into(), true).await.as_deref(), Some("old-db-pw"));
         assert_eq!(files_containing(tmp.path(), "old-db-pw"), Vec::<PathBuf>::new());
         assert_eq!(files_containing(tmp.path(), "other-pw"), Vec::<PathBuf>::new());
         let other = SecretStore::new(tmp.path().join("data/db-passwords.json"), Path::new("/other"));
@@ -1200,6 +1203,7 @@ mod tests {
 
     #[tokio::test]
     async fn global_data_sources_are_shared_by_projects_with_their_passwords() {
+        ide_ssh::secrets::testing::use_memory_store();
         let tmp = tempfile::tempdir().unwrap();
         let (app, one, two) = (tmp.path().join("app"), tmp.path().join("one"), tmp.path().join("two"));
         let manager = |root: &std::path::Path| {

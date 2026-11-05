@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub struct SecretStore {
+    path: PathBuf,
     file: SecretFile,
     project: String,
 }
@@ -33,7 +34,8 @@ fn legacy(value: serde_json::Value) -> Option<BTreeMap<String, String>> {
 
 impl SecretStore {
     pub fn new(path: PathBuf, root: &Path) -> Self {
-        Self { file: SecretFile::with_legacy(path, legacy), project: root.to_string_lossy().into_owned() }
+        let file = SecretFile::with_legacy(path.clone(), legacy);
+        Self { path, file, project: root.to_string_lossy().into_owned() }
     }
 
     /// The same file, keyed by `scope` instead (global data sources: the app data directory).
