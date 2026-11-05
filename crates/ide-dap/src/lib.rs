@@ -589,11 +589,12 @@ impl DebugManager {
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
-        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy).
+        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy),
+        // or with the launcher's when the debuggee runs through a manager (`uv run python`).
         if config.adapter == "debugpy" {
-            let python = match arguments.get("python") {
-                Some(Value::String(p)) => Some(p.clone()),
-                Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_owned),
+            let python = match (arguments.get("debugLauncherPython"), arguments.get("python")) {
+                (Some(Value::String(p)), _) | (_, Some(Value::String(p))) => Some(p.clone()),
+                (_, Some(Value::Array(a))) => a.first().and_then(Value::as_str).map(str::to_owned),
                 _ => None,
             };
             if let Some(python) = python {
