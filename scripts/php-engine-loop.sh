@@ -36,7 +36,16 @@ if [[ "$branch" != "feat/php-engine" ]]; then
     exit 1
 fi
 
-say "loop started: $(progress)"
+KNOWN=docs/php-engine/known-failures.txt
+LOCK=$LOGS/loop.pid
+if [[ -f "$LOCK" ]] && kill -0 "$(cat "$LOCK")" 2>/dev/null; then
+    echo "another php-engine loop is running (pid $(cat "$LOCK")); stop it first" >&2
+    exit 1
+fi
+echo $$ >"$LOCK"
+trap 'rm -f "$LOCK"' EXIT
+
+say "loop started (pid $$): $(progress)"
 stuck=0
 for ((i = 1; i <= MAX_ITER; i++)); do
     next=$(grep -m1 '^- \[ \]' "$ROADMAP" || true)
@@ -76,9 +85,17 @@ for ((i = 1; i <= MAX_ITER; i++)); do
     crates=(-p ide-host)
     [[ -d crates/ide-php ]] && crates=(-p ide-php -p ide-host)
     say "checking: cargo test ${crates[*]}"
-    if ! cargo test "${crates[@]}" --quiet >"$LOGS/check-$i.log" 2>&1; then
-        say "tests are red after session $i (see $LOGS/check-$i.log): stopping"
-        exit 1
+    check=$LOGS/check-$i.log
+    if ! cargo test "${crates[@]}" --no-fail-fast >"$check" 2>&1; then
+        # Only failures that are not already known (docs/php-engine/known-failures.txt) count.
+        new=$(grep -E '^test .* \.\.\. FAILED$' "$check" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' |
+            grep -vxF -f <(grep -v '^#' "$KNOWN") || true)
+        if [[ -n "$new" ]] || ! grep -qE '^test .* \.\.\. FAILED$' "$check"; then
+            say "tests are red after session $i (see $check): stopping"
+            [[ -n "$new" ]] && printf '  new failure: %s\n' $new | tee -a "$LIVE"
+            exit 1
+        fi
+        say "only known failures (docs/php-engine/known-failures.txt)"
     fi
     say "tests green: $(progress)"
 done

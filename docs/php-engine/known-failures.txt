@@ -1,0 +1,8 @@
+# Tests that already fail on this machine before any engine work (Git's system core.autocrlf=true
+# turns the patched files' "\n" into "\r\n"). The loop's after-commit check ignores these names and
+# stops only on new failures. One name per line, as cargo prints it after "test ".
+patches_read_and_write_the_requested_repository
+shelf_at_repo_root
+shelf_in_non_git_project
+shelf_in_project_below_repository
+shelves_in_two_repositories
