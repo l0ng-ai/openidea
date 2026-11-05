@@ -1,16 +1,94 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { copySelectionOnKeyDown } from "@/ui/selectableText";
+import { copySelectionOnKeyDown, copyText } from "@/ui/selectableText";
 import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui";
+import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { spanStyle } from "@/ui/ansi";
+import { spanStyle, type Span, type SpanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
+import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
+import {
+  DEFAULT_FIND_OPTIONS,
+  findInLines,
+  type ConsoleMatch,
+  type FindOptions,
+  type FindResult,
+} from "@/ui/consoleFind";
 import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
+
+const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
+
+const MARK_COLOR = "var(--bg-search-match)";
+const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
+
+interface Segment {
+  text: string;
+  style: SpanStyle;
+  /** The piece is inside a find match. */
+  mark: boolean;
+  /** …and inside the current one. */
+  current: boolean;
+}
+
+/** Splits a line's styled spans at find-match boundaries (the Run console's `segmentLine`, without links). */
+function findSegments(spans: readonly Span[], marks: readonly ConsoleMatch[], active?: ConsoleMatch): Segment[] {
+  const out: Segment[] = [];
+  let pos = 0;
+  let mi = 0;
+  for (const span of spans) {
+    const { text, ...style } = span;
+    let offset = 0;
+    while (offset < text.length) {
+      const abs = pos + offset;
+      while (mi < marks.length && marks[mi]!.end <= abs) mi++;
+      const mark = marks[mi];
+      if (mark && mark.start <= abs) {
+        const take = Math.min(mark.end - abs, text.length - offset);
+        out.push({ text: text.slice(offset, offset + take), style, mark: true, current: mark === active });
+        offset += take;
+      } else if (mark && mark.start < pos + text.length) {
+        const take = Math.min(mark.start - abs, text.length - offset);
+        out.push({ text: text.slice(offset, offset + take), style, mark: false, current: false });
+        offset += take;
+      } else {
+        out.push({ text: text.slice(offset), style, mark: false, current: false });
+        offset = text.length;
+      }
+    }
+    pos += text.length;
+  }
+  return out;
+}
+
+/** A match keeps the span's colours but takes the search background (as IDEA does). */
+function segmentNode(seg: Segment, key: number) {
+  if (!seg.mark)
+    return (
+      <span key={key} style={spanStyle(seg.style)}>
+        {seg.text}
+      </span>
+    );
+  return (
+    <mark
+      key={key}
+      className={styles.findMatch}
+      style={{
+        ...spanStyle(seg.style),
+        backgroundColor: seg.current ? CURRENT_MARK_COLOR : MARK_COLOR,
+        color: "var(--fg-search-match)",
+      }}
+      data-find-match=""
+      data-find-current={seg.current ? "" : undefined}
+    >
+      {seg.text}
+    </mark>
+  );
+}
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
   const session = useDebug((s) => s.sessions[sessionId]);
@@ -24,6 +102,7 @@ export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
 export function DebugConsole({ session, interactive = true }: { session: DebugSession; interactive?: boolean }) {
   const lines = useDebug((s) => s.console[session.id]);
   const scroller = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
   // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
   const [follow, setFollow] = useState(true);
   const stick = useRef(true);
@@ -38,6 +117,15 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const historyPos = useRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const completion = useExpressionCompletion(inputRef, input, setInput, session);
+
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [findOptions, setFindOptions] = useState<FindOptions>(DEFAULT_FIND_OPTIONS);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const findInput = useRef<HTMLInputElement>(null);
+  /** Line the next search starts from (the top of the viewport when the query changed). */
+  const findAnchor = useRef(0);
+  const scrolledMatch = useRef<string | null>(null);
 
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
@@ -62,6 +150,99 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
       requestAnimationFrame(() => (programmatic.current = false));
     });
   }, [lines, virtualizer, follow, softWrap]);
+
+  // Find (⌘F): search the whole buffer, not just the rendered rows.
+  const found = useMemo(
+    () => (findOpen ? findInLines(lines ?? [], query, findOptions) : EMPTY_FIND),
+    [findOpen, lines, query, findOptions],
+  );
+  const activeIndex = found.matches.length ? Math.min(Math.max(activeMatchIndex, 0), found.matches.length - 1) : -1;
+  const current = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
+  const marksByLine = useMemo(() => {
+    const byLine = new Map<number, ConsoleMatch[]>();
+    found.matches.forEach((match) => {
+      const marks = byLine.get(match.line);
+      if (marks) marks.push(match);
+      else byLine.set(match.line, [match]);
+    });
+    return byLine;
+  }, [found]);
+
+  // The line at the top of the viewport: typing searches from there, as IDEA does.
+  const topLine = () => {
+    const offset = scroller.current?.scrollTop ?? 0;
+    const items = virtualizer.getVirtualItems();
+    const first = items.find((item) => item.start + item.size > offset) ?? items[0];
+    return first?.index ?? 0;
+  };
+  const openFind = () => {
+    findAnchor.current = topLine();
+    // Opening with selected output searches for it (a single line, like the terminal).
+    if (!findOpen) {
+      const text = selectedText();
+      if (text) setQuery(text);
+    }
+    scrolledMatch.current = null;
+    setFindOpen(true);
+    setFollow(false);
+    findInput.current?.focus();
+    findInput.current?.select();
+  };
+  const closeFind = () => {
+    scrolledMatch.current = null;
+    setFindOpen(false);
+    scroller.current?.focus();
+  };
+  const changeQuery = (value: string) => {
+    findAnchor.current = topLine();
+    setQuery(value);
+  };
+  const changeOptions = (next: FindOptions) => {
+    findAnchor.current = topLine();
+    setFindOptions(next);
+  };
+  const goToMatch = (direction: 1 | -1) => {
+    const total = found.matches.length;
+    if (!total) return;
+    const from = activeMatchIndex >= 0 && activeMatchIndex < total ? activeMatchIndex : activeIndex;
+    setActiveMatchIndex((from + direction + total) % total);
+  };
+
+  const findWasOpen = useRef(false);
+  useEffect(() => {
+    if (findOpen) {
+      findWasOpen.current = true;
+      findInput.current?.focus();
+      findInput.current?.select();
+    } else if (findWasOpen.current) {
+      // Closed from the toolbar rather than the bar: put the caret back in the console.
+      findWasOpen.current = false;
+      scroller.current?.focus();
+    }
+  }, [findOpen]);
+
+  // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
+  useEffect(() => {
+    if (!findOpen) return;
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
+  }, [findOpen]);
+
+  // A new query (or option) starts from the viewport, not from the top of the output.
+  useEffect(() => {
+    if (!findOpen) return;
+    const next = found.matches.findIndex((match) => match.line >= findAnchor.current);
+    setActiveMatchIndex(next >= 0 ? next : 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- new output keeps the current match
+  }, [findOpen, query, findOptions]);
+
+  // Bring the current match into view.
+  useEffect(() => {
+    if (!findOpen || !current) return;
+    const key = `${current.lineId}:${current.start}`;
+    if (scrolledMatch.current === key) return;
+    virtualizer.scrollToIndex(current.line, { align: "center" });
+    scrolledMatch.current = key;
+  }, [findOpen, current, virtualizer]);
 
   const submit = async () => {
     const e = input.trim();
@@ -112,8 +293,95 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     }
   };
 
+  /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */
+  const selectAll = () => {
+    if (inner.current) window.getSelection()?.selectAllChildren(inner.current);
+  };
+  const allSelected = () => {
+    const el = inner.current;
+    const s = window.getSelection();
+    return (
+      !!el &&
+      !!s &&
+      !s.isCollapsed &&
+      s.anchorNode === el &&
+      s.focusNode === el &&
+      s.anchorOffset === 0 &&
+      s.focusOffset === el.childNodes.length
+    );
+  };
+  const bufferText = () => (lines ?? []).map((l) => l.text).join("");
+  /** The selected text; after Select All the whole buffer, including rows that are not mounted. */
+  const selectedOutput = () => {
+    if (allSelected()) return bufferText();
+    const s = window.getSelection();
+    const el = scroller.current;
+    if (!s || !el || !s.anchorNode || !el.contains(s.anchorNode)) return "";
+    return s.toString();
+  };
+  const selectedText = () => {
+    const el = scroller.current;
+    const selection = window.getSelection();
+    if (!el || !selection || !selection.anchorNode || !el.contains(selection.anchorNode)) return "";
+    const text = selection.toString();
+    return text && !text.includes("\n") ? text.trim() : "";
+  };
+
+  const onOutputKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey) {
+      const key = e.key.toLowerCase();
+      if (key === "f") {
+        e.preventDefault();
+        openFind();
+        return;
+      }
+      if (key === "a") {
+        e.preventDefault();
+        selectAll();
+        return;
+      }
+    }
+    copySelectionOnKeyDown(e, selectedOutput);
+  };
+
+  const onContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+    const selection = selectedOutput();
+    showContextMenu(e, [
+      {
+        label: "Copy",
+        icon: "copy",
+        shortcut: formatBinding(hostBinding("Meta+C")),
+        disabled: !selection,
+        run: () => void copyText(selection),
+      },
+      { label: "Select All", shortcut: formatBinding(hostBinding("Meta+A")), run: selectAll },
+      { label: "Copy All", run: () => void copyText(bufferText()) },
+      { label: "Find…", icon: "search", shortcut: formatBinding(hostBinding("Meta+F")), run: openFind },
+      { kind: "separator" },
+      { label: "Clear All", icon: "trash", run: () => clearConsole(session.id) },
+    ]);
+  };
+
   return (
     <div className={styles.console}>
+      {findOpen && (
+        <ConsoleFindBar
+          query={query}
+          onChange={changeQuery}
+          options={findOptions}
+          onOptionsChange={changeOptions}
+          count={found.matches.length}
+          active={activeIndex}
+          overflow={found.overflow}
+          invalid={found.invalid}
+          inputRef={findInput}
+          onNext={() => goToMatch(1)}
+          onPrevious={() => goToMatch(-1)}
+          onClose={closeFind}
+        />
+      )}
       <div
         ref={scroller}
         className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
@@ -123,19 +391,16 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
           if (atEnd !== stick.current) setFollow(atEnd);
         }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          showContextMenu(e, [{ label: "Clear All", icon: "trash", run: () => clearConsole(session.id) }]);
-        }}
+        onContextMenu={onContextMenu}
         role="log"
-        onKeyDown={copySelectionOnKeyDown}
+        onKeyDown={onOutputKeyDown}
         aria-label={tx("Debug console")}
         tabIndex={0}
       >
         {!lines?.length && session.launch?.request === "attach" && (
           <T>The attached process may not provide standard output to the debugger.</T>
         )}
-        <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+        <div ref={inner} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((item) => {
             const l = lines?.[item.index];
             if (!l) return null;
@@ -147,11 +412,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                 className={clsx(styles.out, styles[`cat-${l.category}`])}
                 style={{ transform: `translateY(${item.start}px)` }}
               >
-                {l.spans.map((sp, i) => (
-                  <span key={i} style={spanStyle(sp)}>
-                    {sp.text}
-                  </span>
-                ))}
+                {findSegments(l.spans, marksByLine.get(item.index) ?? [], current).map(segmentNode)}
               </span>
             );
           })}

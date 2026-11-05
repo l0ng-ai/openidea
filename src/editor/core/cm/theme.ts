@@ -64,6 +64,60 @@ export const caretStyles = {
   },
 };
 
+/** The error stripe and scrollbar lane (cm/lanes.ts), also for the VCS viewers. */
+export const overviewStyles = {
+  ".cm-openidea-overview": {
+    position: "absolute",
+    top: "0",
+    right: "0",
+    bottom: "0",
+    width: "12px",
+    cursor: "default",
+    zIndex: "3",
+  },
+  // Over an outer scroller (an aligned diff): stays at the top of its viewport, taking no room.
+  ".cm-openidea-overview-sticky": {
+    position: "sticky",
+    bottom: "auto",
+    flex: "none",
+    alignSelf: "flex-end",
+  },
+  ".cm-openidea-overviewMark": {
+    position: "absolute",
+    left: "3px",
+    width: "6px",
+    minHeight: "3px",
+    borderRadius: "1px",
+    pointerEvents: "auto",
+    cursor: "pointer",
+  },
+  ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
+  ".cm-openidea-overviewMark-full": { left: "0", width: "100%", minHeight: "2px", borderRadius: "0" },
+  // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
+  ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
+  // The lane owns the scrollbar and its thumb (cm/lanes.ts): the native one is hidden so a press
+  // on the scrollbar can never reach the text layer and start a text selection.
+  "&.cm-openidea-withOverview .cm-scroller::-webkit-scrollbar:vertical": { width: "0" },
+  ".cm-openidea-overviewThumb": {
+    position: "absolute",
+    right: "2px",
+    width: "6px",
+    borderRadius: "3px",
+    background: "var(--scrollbar-thumb)",
+    pointerEvents: "auto",
+    cursor: "default",
+  },
+  ".cm-openidea-overview-onThumb .cm-openidea-overviewThumb": { background: "var(--scrollbar-thumb-hover)" },
+  ".cm-openidea-overviewCaret": {
+    position: "absolute",
+    left: "2px",
+    right: "2px",
+    height: "2px",
+    pointerEvents: "none",
+    background: "color-mix(in srgb, var(--fg) 30%, transparent)",
+  },
+};
+
 export const openideaTheme = EditorView.theme({
   "&": {
     height: "100%",
@@ -267,49 +321,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-panels.cm-panels-top": { borderBottom: "1px solid var(--border)" },
   ".cm-panels.cm-panels-bottom": { borderTop: "1px solid var(--border)" },
 
-  // Error stripe and scrollbar lane (cm/lanes.ts)
-  ".cm-openidea-overview": {
-    position: "absolute",
-    top: "0",
-    right: "0",
-    bottom: "0",
-    width: "12px",
-    cursor: "default",
-    zIndex: "3",
-  },
-  ".cm-openidea-overviewMark": {
-    position: "absolute",
-    left: "3px",
-    width: "6px",
-    minHeight: "3px",
-    borderRadius: "1px",
-    pointerEvents: "auto",
-    cursor: "pointer",
-  },
-  ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
-  // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
-  ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
-  // The lane owns the scrollbar and its thumb (cm/lanes.ts): the native one is hidden so a press
-  // on the scrollbar can never reach the text layer and start a text selection.
-  "&.cm-openidea-withOverview .cm-scroller::-webkit-scrollbar:vertical": { width: "0" },
-  ".cm-openidea-overviewThumb": {
-    position: "absolute",
-    right: "2px",
-    width: "6px",
-    borderRadius: "3px",
-    background: "var(--scrollbar-thumb)",
-    pointerEvents: "auto",
-    cursor: "default",
-  },
-  ".cm-openidea-overview-onThumb .cm-openidea-overviewThumb": { background: "var(--scrollbar-thumb-hover)" },
-  ".cm-openidea-overviewCaret": {
-    position: "absolute",
-    left: "2px",
-    right: "2px",
-    height: "2px",
-    pointerEvents: "none",
-    background: "color-mix(in srgb, var(--fg) 30%, transparent)",
-  },
+  ...overviewStyles,
 
   // Sticky lines (cm/stickyScroll.ts)
   ".cm-openidea-sticky": {

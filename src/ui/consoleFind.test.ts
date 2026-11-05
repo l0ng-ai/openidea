@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_FIND_OPTIONS, findInLines, MAX_MATCHES, type FindOptions } from "./find";
+import { DEFAULT_FIND_OPTIONS, findInLines, MAX_MATCHES, type FindOptions } from "./consoleFind";
 
 const lines = (...texts: string[]) => texts.map((text, i) => ({ id: i + 1, text }));
 const opts = (extra: Partial<FindOptions> = {}): FindOptions => ({ ...DEFAULT_FIND_OPTIONS, ...extra });

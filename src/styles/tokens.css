@@ -88,6 +88,11 @@ html {
   --diff-modified: #385570;
   --diff-inserted: #294436;
   --diff-deleted: #484a4a;
+  /* their error stripe marks (ERROR_STRIPE_COLOR of the same keys and DIFF_CONFLICT) */
+  --diff-modified-stripe: #43698d;
+  --diff-inserted-stripe: #447152;
+  --diff-deleted-stripe: #656e76;
+  --diff-conflict-stripe: #8f5247;
 
   /* coverage (IDEA LINE_FULL / PARTIAL / NONE_COVERAGE), following the theme's status colours */
   --coverage-covered: var(--gutter-added);
@@ -120,6 +125,13 @@ html {
   --syn-param: #bcbec4;
   --syn-property: #c77dbb;
   --syn-constant: #c77dbb;
+  --syn-python-local-variable: var(--syn-variable);
+  --syn-python-global-variable: var(--syn-global);
+  --syn-python-instance-attribute: var(--syn-property);
+  --syn-python-class-attribute: var(--syn-property);
+  --syn-python-constant: var(--syn-constant);
+  --syn-python-property: var(--syn-property);
+  --syn-python-type-parameter: var(--syn-type);
   --syn-builtin: #8888c6;
   --syn-self: #94558d;
   --syn-keyword-arg: #aa4926;
@@ -480,6 +492,10 @@ html {
   --diff-modified: #c2d8f2;
   --diff-inserted: #bee6be;
   --diff-deleted: #d6d6d6;
+  --diff-modified-stripe: #b6d2f2;
+  --diff-inserted-stripe: #aadeaa;
+  --diff-deleted-stripe: #c8c8c8;
+  --diff-conflict-stripe: #ffc8bd;
 
   /* syntax (Light scheme + Default / Python defaults) */
   --syn-keyword: #0033b3;
@@ -500,6 +516,13 @@ html {
   --syn-param: #080808;
   --syn-property: #871094;
   --syn-constant: #871094;
+  --syn-python-local-variable: var(--syn-variable);
+  --syn-python-global-variable: var(--syn-global);
+  --syn-python-instance-attribute: var(--syn-property);
+  --syn-python-class-attribute: var(--syn-property);
+  --syn-python-constant: var(--syn-constant);
+  --syn-python-property: var(--syn-property);
+  --syn-python-type-parameter: var(--syn-type);
   --syn-builtin: #000080;
   --syn-self: #94558d;
   --syn-keyword-arg: #660099;
@@ -737,6 +760,10 @@ html {
   --diff-modified: #000099;
   --diff-inserted: #00400f;
   --diff-deleted: #4d2e08;
+  --diff-modified-stripe: #1aabff;
+  --diff-inserted-stripe: #009924;
+  --diff-deleted-stripe: #a66a32;
+  --diff-conflict-stripe: #ff0d25;
 
   --syn-keyword: #e8a885;
   --syn-string: #8ccc94;
@@ -755,6 +782,13 @@ html {
   --syn-param: #e3e4e8;
   --syn-property: #e0a0d6;
   --syn-constant: #e0a0d6;
+  --syn-python-local-variable: var(--syn-variable);
+  --syn-python-global-variable: var(--syn-global);
+  --syn-python-instance-attribute: var(--syn-property);
+  --syn-python-class-attribute: var(--syn-property);
+  --syn-python-constant: var(--syn-constant);
+  --syn-python-property: var(--syn-property);
+  --syn-python-type-parameter: var(--syn-type);
   --syn-builtin: #b0b0f0;
   --syn-self: #d08ac8;
   --syn-keyword-arg: #e0805c;
@@ -1019,6 +1053,10 @@ html {
   --diff-modified: color-mix(in srgb, var(--palette-blue) 30%, var(--palette-bg));
   --diff-inserted: color-mix(in srgb, var(--palette-green) 30%, var(--palette-bg));
   --diff-deleted: color-mix(in srgb, var(--palette-fg) 18%, var(--palette-bg));
+  --diff-modified-stripe: color-mix(in srgb, var(--palette-blue) 50%, var(--palette-bg));
+  --diff-inserted-stripe: color-mix(in srgb, var(--palette-green) 50%, var(--palette-bg));
+  --diff-deleted-stripe: color-mix(in srgb, var(--palette-fg) 35%, var(--palette-bg));
+  --diff-conflict-stripe: color-mix(in srgb, var(--palette-red) 50%, var(--palette-bg));
   --syn-link: var(--palette-blue);
   --link-hover: var(--palette-cyan);
   --danger: var(--palette-red);
@@ -1095,6 +1133,13 @@ html {
   --syn-param: var(--palette-fg);
   --syn-property: var(--palette-property);
   --syn-constant: var(--palette-number);
+  --syn-python-local-variable: var(--syn-variable);
+  --syn-python-global-variable: var(--syn-global);
+  --syn-python-instance-attribute: var(--syn-property);
+  --syn-python-class-attribute: var(--syn-property);
+  --syn-python-constant: var(--syn-constant);
+  --syn-python-property: var(--syn-property);
+  --syn-python-type-parameter: var(--syn-type);
   --syn-builtin: var(--palette-cyan);
   --syn-self: var(--palette-red);
   --syn-keyword-arg: var(--palette-red);

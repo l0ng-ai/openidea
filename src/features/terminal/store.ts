@@ -9,6 +9,7 @@ import { t } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { confirm } from "@/workbench/messages";
+import { readStored, writeStored, type StoredTerminals } from "./persist";
 import { TerminalSession, type SessionOptions, type SessionSnapshot } from "./session";
 
 export type SplitOrientation = "horizontal" | "vertical";
@@ -27,6 +28,8 @@ export interface TerminalTab {
   name: string;
   /** Set by the user via rename; wins over `name`. */
   customName: string | null;
+  /** Predefined shell program. Absent for the default shell and for one-shot commands. */
+  shell: string | null;
   /** Key of the tab's session. */
   session: string;
   /** The tab group showing it. */
@@ -68,6 +71,11 @@ export function getSession(key: string): TerminalSession | undefined {
 
 export function allSessions(): TerminalSession[] {
   return [...sessions.values()];
+}
+
+/** Refits every live session. The terminal tool window calls this when it gains a box. */
+export function refitSessions() {
+  for (const session of sessions.values()) session.refit();
 }
 
 export function sessionForTerminalId(id: number): TerminalSession | undefined {
@@ -177,6 +185,7 @@ export function newTab(cwd: string, name?: string, command?: SessionOptions["com
     id: `t${seq}`,
     name: defaultTabName(name),
     customName: null,
+    shell: command?.shell ? command.program : null,
     session: session.key,
     group: tabs.find((t) => t.id === activeTab)?.group ?? layoutGroups(layout)[0]!,
   };
@@ -373,7 +382,14 @@ export function splitTab(id: string, orientation: SplitOrientation, move = false
     return id;
   }
   const session = createSession(sessions.get(tab.session)?.state.cwd ?? "/");
-  const copy: TerminalTab = { id: `t${seq}`, name: defaultTabName(), customName: null, session: session.key, group };
+  const copy: TerminalTab = {
+    id: `t${seq}`,
+    name: defaultTabName(),
+    customName: null,
+    shell: null,
+    session: session.key,
+    group,
+  };
   useTerminals.setState((st) => ({
     tabs: [...st.tabs, copy],
     layout,
@@ -491,4 +507,124 @@ export function applyThemeToAll() {
 
 export function publishFocus(focused: boolean) {
   setContext("terminalFocus", focused);
+}
+
+/** Project whose tabs `useTerminals` currently holds. Null before the first bind and after unbind. */
+let boundProject: string | null = null;
+/** Set while swapping projects, so closing the old tabs is not saved as the new project's layout. */
+let restoring = false;
+
+function sessionCwd(key: string): string {
+  return sessions.get(key)?.state.cwd ?? "";
+}
+
+function capture(): StoredTerminals {
+  const s = useTerminals.getState();
+  const tabs = s.tabs.flatMap((t) => {
+    const cwd = sessionCwd(t.session);
+    return cwd ? [{ id: t.id, name: t.name, customName: t.customName, cwd, group: t.group, shell: t.shell }] : [];
+  });
+  return { v: 1, tabs, layout: s.layout, selected: s.selected, activeTab: s.activeTab };
+}
+
+function remember() {
+  if (restoring || !boundProject) return;
+  writeStored(boundProject, capture());
+}
+
+function cwdSignature(s: TerminalState): string {
+  return s.tabs.map((t) => s.sessions[t.session]?.cwd ?? "").join("\n");
+}
+
+useTerminals.subscribe((s, prev) => {
+  if (restoring || !boundProject) return;
+  if (
+    s.tabs === prev.tabs &&
+    s.layout === prev.layout &&
+    s.selected === prev.selected &&
+    s.activeTab === prev.activeTab &&
+    cwdSignature(s) === cwdSignature(prev)
+  ) {
+    return;
+  }
+  remember();
+});
+
+function remapLayout(node: GroupLayout, mapGroup: (group: string) => string): GroupLayout {
+  if (typeof node === "string") return mapGroup(node);
+  return {
+    id: `split${++splitSeq}`,
+    orientation: node.orientation,
+    children: node.children.map((child) => remapLayout(child, mapGroup)),
+  };
+}
+
+/** Opens the saved tabs in fresh sessions. Group ids are new, so they don't collide with ones minted later. */
+function restore(saved: StoredTerminals) {
+  const groupOf = new Map<string, string>();
+  const mapGroup = (group: string) => {
+    let mapped = groupOf.get(group);
+    if (!mapped) groupOf.set(group, (mapped = newGroupId()));
+    return mapped;
+  };
+  const layout = remapLayout(saved.layout, mapGroup);
+  const idOf = new Map<string, string>();
+  const tabs: TerminalTab[] = [];
+  for (const savedTab of saved.tabs) {
+    const session = createSession(
+      savedTab.cwd,
+      savedTab.shell ? { program: savedTab.shell, args: [], shell: true } : undefined,
+    );
+    const id = `t${seq}`;
+    idOf.set(savedTab.id, id);
+    tabs.push({
+      id,
+      name: savedTab.name,
+      customName: savedTab.customName,
+      shell: savedTab.shell,
+      session: session.key,
+      group: mapGroup(savedTab.group),
+    });
+  }
+  const selected: Record<string, string> = {};
+  for (const group of layoutGroups(layout)) {
+    const savedGroup = [...groupOf.entries()].find(([, mapped]) => mapped === group)?.[0];
+    const wanted = savedGroup ? idOf.get(saved.selected[savedGroup] ?? "") : undefined;
+    const inGroup = tabs.filter((t) => t.group === group);
+    const id = (wanted && inGroup.some((t) => t.id === wanted) ? wanted : inGroup[0]?.id) ?? "";
+    if (id) selected[group] = id;
+  }
+  const activeTab = (saved.activeTab && idOf.get(saved.activeTab)) || tabs[0]?.id || null;
+  useTerminals.setState({ tabs, layout, selected, activeTab });
+}
+
+/**
+ * Points the terminal at `root`, remembering the project it was bound to.
+ * The same root again is a no-op, so a tool window re-render doesn't reopen tabs.
+ */
+export function syncTerminalProject(root: string | null) {
+  if (root === boundProject) return;
+  if (boundProject) writeStored(boundProject, capture());
+  restoring = true;
+  boundProject = root;
+  try {
+    closeAll();
+    if (!root) return;
+    const saved = readStored(root);
+    if (saved?.tabs.length) restore(saved);
+  } finally {
+    restoring = false;
+  }
+}
+
+/** Drops the in-memory sessions without writing the empty layout over the project that owned them. */
+export function unbindTerminals() {
+  if (boundProject) writeStored(boundProject, capture());
+  restoring = true;
+  boundProject = null;
+  try {
+    closeAll();
+  } finally {
+    restoring = false;
+  }
 }

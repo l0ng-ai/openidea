@@ -1,8 +1,8 @@
 //! "Import a report collected in CI from disk": the format is sniffed from the
-//! content (lcov, Go cover profile, JaCoCo XML) and paths recorded on another
+//! content (lcov, Go cover profile, JaCoCo XML, SimpleCov resultset) and paths recorded on another
 //! machine are mapped into the project by their longest existing suffix.
 
-use crate::{Accumulator, CoverageSuite, goprofile, jacoco, lcov};
+use crate::{Accumulator, CoverageSuite, goprofile, jacoco, lcov, simplecov};
 use ide_core::{IdeError, IdeResult};
 use std::path::{Component, Path, PathBuf};
 
@@ -11,12 +11,16 @@ pub(crate) enum Format {
     Lcov,
     GoProfile,
     Jacoco,
+    SimpleCov,
 }
 
 pub(crate) fn detect(text: &str) -> Option<Format> {
     let head = text.trim_start_matches('\u{feff}').trim_start();
     if head.starts_with('<') {
         return head.contains("<report").then_some(Format::Jacoco);
+    }
+    if head.starts_with('{') {
+        return head.contains("\"coverage\"").then_some(Format::SimpleCov);
     }
     let first = head.lines().next().unwrap_or_default();
     if first.starts_with("mode:") {
@@ -30,6 +34,7 @@ pub fn import(path: &Path, root: &Path) -> IdeResult<CoverageSuite> {
     let text = std::fs::read_to_string(path)?;
     let mut suite = match detect(&text) {
         Some(Format::Lcov) => lcov::parse(&text, root).finish("lcov"),
+        Some(Format::SimpleCov) => simplecov::parse(&text, root)?.finish("SimpleCov"),
         Some(Format::GoProfile) => {
             let (module, module_dir) = go_module_for(root, &text);
             goprofile::parse(&text, &module, &module_dir).finish("go test -cover")
@@ -50,7 +55,7 @@ pub fn import(path: &Path, root: &Path) -> IdeResult<CoverageSuite> {
         }
         None => {
             return Err(IdeError::invalid(format!(
-                "{} is not an lcov tracefile, Go cover profile or JaCoCo XML report",
+                "{} is not an lcov tracefile, Go cover profile, JaCoCo XML report or SimpleCov resultset",
                 path.display()
             )));
         }
@@ -125,7 +130,27 @@ mod tests {
             Some(Format::Jacoco)
         );
         assert_eq!(detect("<?xml version=\"1.0\"?><coverage/>"), None);
+        assert_eq!(detect("{\"RSpec\": {\"coverage\": {}}}"), Some(Format::SimpleCov));
+        assert_eq!(detect("{\"name\": \"package.json\"}"), None);
         assert_eq!(detect("hello"), None);
+    }
+
+    #[test]
+    fn imports_ci_simplecov_with_foreign_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("app");
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        std::fs::write(root.join("lib/a.rb"), "").unwrap();
+        let report = tmp.path().join(".resultset.json");
+        std::fs::write(
+            &report,
+            r#"{"RSpec":{"coverage":{"/home/runner/work/app/app/lib/a.rb":{"lines":[null,1,0]}}}}"#,
+        )
+        .unwrap();
+        let suite = import(&report, &root).unwrap();
+        assert_eq!(suite.runner, "SimpleCov");
+        assert_eq!(suite.files[0].path.as_ref() as &Path, root.join("lib/a.rb"));
+        assert_eq!((suite.files[0].lines_total, suite.files[0].lines_covered), (2, 1));
     }
 
     #[test]

@@ -43,6 +43,7 @@ import {
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
 import { moveToReportedClasses } from "./testing/jvm";
+import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
@@ -87,7 +88,7 @@ interface SessionRuntime {
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
-  /** Machine-readable stdout (`go test -json`, `--teamcity`): fed to the parser, shown decoded. */
+  /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
   queue: OutputChunk[];
   /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
@@ -567,13 +568,16 @@ function newRuntime(config: RunConfig): SessionRuntime {
     if (tests && parser) tests.apply(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
-  // PHPUnit `--teamcity` and Gradle's test init script report through service messages.
+  // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest through
+  // the IDE's own reporter (RSpec has none: its progress dots must show as they come).
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
       : framework === "phpunit" || framework === "jvm"
         ? new TeamcityOutput(feed)
-        : null;
+        : framework === "ruby" && config.kind !== "rspec"
+          ? new RubyTestOutput(feed)
+          : null;
   const runtime: SessionRuntime = {
     stdout,
     tests,
