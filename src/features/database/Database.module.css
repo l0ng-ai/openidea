@@ -823,6 +823,25 @@
   font: inherit;
   cursor: pointer;
 }
+/* Go to Column (ColumnsPopup.tsx). */
+.columnsPopup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  padding: 8px;
+}
+.columnsList {
+  height: min(320px, 50vh);
+}
+.columnsRow {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
 .filterPopup {
   display: flex;
   flex-direction: column;

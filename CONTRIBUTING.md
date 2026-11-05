@@ -25,8 +25,9 @@ Project layout, coding rules, commands and checks are in [AGENTS.md](AGENTS.md).
 - Fill in the template. Keep the description short and in plain words. If it
   doesn't fit in a few sentences, the PR is probably too big.
 - **How it was verified** is required: the commands you ran and their results,
-  and what else the change could affect. UI changes need before/after screenshots;
-  multi-step interactions need a recording.
+  and what else the change could affect. Changes to what users see need before/after
+  screenshots; multi-step interactions need a recording. UI that goes away with a removed
+  feature, copy-only and non-visual changes don't; say what you checked instead.
 - If a change needs a product decision you can't make, ask in the issue and stop
   rather than guessing.
 

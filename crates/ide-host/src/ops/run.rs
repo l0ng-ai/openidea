@@ -198,6 +198,7 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
         python_paths: if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) },
+        ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;
     let mut sink = project.sink.clone();
@@ -212,6 +213,21 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         });
     }
     host.processes.start(&project.root, &config, &options, sink, Box::new(move |c| on_output(c)))
+}
+
+/// The Ruby test reporter's directory, installed on demand, for runs that take it.
+fn ruby_reporter_dir(host: &Host, config: &RunConfig) -> Option<std::path::PathBuf> {
+    if !ide_run::ruby_reporter::applies(config) {
+        return None;
+    }
+    let dir = host.local_data_dir.join("ruby-reporter");
+    match ide_run::ruby_reporter::install(&dir) {
+        Ok(()) => Some(dir),
+        Err(e) => {
+            tracing::warn!("cannot install the Ruby test reporter in {}: {e}", dir.display());
+            None
+        }
+    }
 }
 
 /// Stops a run (interrupt, then kill after Settings › Run's termination timeout).

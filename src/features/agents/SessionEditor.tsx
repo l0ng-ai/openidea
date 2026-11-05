@@ -1213,11 +1213,13 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEnt
   return (
     <div className={styles.permissionLine}>
       <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
-      <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
-        {shortTitle(task, entry.title)}
-      </span>
-      <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
-      {!entry.chosen && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
+      <div className={styles.permissionBody}>
+        <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
+          {shortTitle(task, entry.title)}
+        </span>
+        <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
+        {!entry.chosen && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
+      </div>
     </div>
   );
 }

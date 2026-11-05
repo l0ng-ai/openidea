@@ -1,6 +1,7 @@
 //! Window grouping is independent of a window's project or workspace.
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Platform adapters supply the system's tab preference and active project state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +118,43 @@ impl WindowGroups {
     }
 }
 
+/// One entry of the window session reopened at the next start (`window-groups.json`): a
+/// window group, or a single project window (one project).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedWindows {
+    pub projects: Vec<PathBuf>,
+    /// Index into `projects` of the group's selected tab.
+    pub selected: usize,
+}
+
+/// The project windows open now, to reopen at the next start: every group with its selected
+/// tab, then each window outside a group, in the order of `windows`. `project_of` gives a
+/// window's project (`None` for the welcome screen or LightEdit). `None` while a grouped
+/// window has no project yet (a restored member still opening): keep the previous session.
+pub fn session(
+    groups: &[WindowGroup],
+    windows: &[String],
+    project_of: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<Vec<SavedWindows>> {
+    let mut saved = Vec::new();
+    for group in groups {
+        let projects: Option<Vec<PathBuf>> = group.members.iter().map(|label| project_of(label)).collect();
+        let selected = group.members.iter().position(|l| l == &group.selected).unwrap_or(0);
+        saved.push(SavedWindows { projects: projects?, selected });
+    }
+    for label in windows {
+        if groups.iter().any(|g| g.members.contains(label)) {
+            continue;
+        }
+        if let Some(project) = project_of(label)
+            && !saved.iter().any(|s| s.projects.contains(&project))
+        {
+            saved.push(SavedWindows { projects: vec![project], selected: 0 });
+        }
+    }
+    Some(saved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +223,29 @@ mod tests {
         assert!(groups.reorder("a", members(&["a", "a", "c", "d"])).is_err());
         groups.reorder("a", members(&["d", "c", "b", "a"])).unwrap();
         assert_eq!(groups.group("a").unwrap().members[0], "d");
+    }
+
+    #[test]
+    fn the_session_keeps_groups_and_every_ungrouped_project_window() {
+        let groups = vec![WindowGroup { members: members(&["project-1", "project-2"]), selected: "project-2".into() }];
+        let windows = members(&["main", "project-1", "project-2", "project-3", "project-4"]);
+        let project_of = |label: &str| match label {
+            "main" => Some(PathBuf::from("/a")),
+            "project-1" => Some(PathBuf::from("/b")),
+            "project-2" => Some(PathBuf::from("/c")),
+            "project-3" => Some(PathBuf::from("/d")),
+            // The welcome screen or LightEdit.
+            _ => None,
+        };
+        assert_eq!(
+            session(&groups, &windows, project_of).unwrap(),
+            [
+                SavedWindows { projects: vec!["/b".into(), "/c".into()], selected: 1 },
+                SavedWindows { projects: vec!["/a".into()], selected: 0 },
+                SavedWindows { projects: vec!["/d".into()], selected: 0 },
+            ]
+        );
+        // A grouped window still opening its project: keep the previous session.
+        assert_eq!(session(&groups, &windows, |l| (l != "project-2").then(|| PathBuf::from(l))), None);
     }
 }

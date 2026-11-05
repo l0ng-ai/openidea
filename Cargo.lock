@@ -4156,6 +4156,7 @@ dependencies = [
 name = "ide-build"
 version = "0.1.37"
 dependencies = [
+ "blake3",
  "dirs 6.0.0",
  "dunce",
  "ide-core",
@@ -4216,6 +4217,7 @@ dependencies = [
  "ide-language",
  "memchr",
  "parking_lot",
+ "portable-pty",
  "serde",
  "serde_json",
  "specta",
@@ -6424,6 +6426,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

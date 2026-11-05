@@ -21,7 +21,7 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
     (django && name === "tests.py") ||
     /_test\.go$/.test(name) ||
     /Test\.php$/.test(name) ||
-    /_(spec|test)\.rb$/.test(name) ||
+    /_(spec|test)\.rb$|^test_.*\.rb$/.test(name) ||
     /(Test|Tests|Spec|IT)\.(kt|java|scala|groovy)$/.test(name) ||
     (/(^|\/)tests\/[^/]+\.rs$/.test(relPath) && name !== "mod.rs")
   )
@@ -43,8 +43,8 @@ function testKinds(relPath: string): string[] {
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/\.php$/.test(relPath)) return ["phpunit"];
-  if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake"];
-  if (/_test\.rb$/.test(relPath)) return ["rake", "rspec"];
+  if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake", "ruby"];
+  if (/(^|\/)test_[^/]*\.rb$|_test\.rb$/.test(relPath)) return ["rake", "rspec", "ruby"];
   if (/\.go$/.test(relPath)) return ["go"];
   if (/\.rs$/.test(relPath)) return ["cargo"];
   if (/\.(kt|java|scala|groovy)$/.test(relPath)) return ["gradle", "maven"];
@@ -180,6 +180,9 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
       const key = /(^|:)spec$/.test(task) ? "SPEC" : /(^|:)test$/.test(task) ? "TEST" : null;
       return key ? derived(base, relPath, { args: [...base.args, `${key}=${file}`] }) : base;
     }
+    case "ruby":
+      // The detected Minitest runner (`ruby … -e <runner> test`): its last argument is what to load.
+      return derived(base, relPath, { args: [...base.args.slice(0, -1), file] });
     case "django-test": {
       const tests = djangoTestsOf(base, [djangoLabel(file)]);
       return tests ? derived(base, relPath, tests) : null;

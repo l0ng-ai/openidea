@@ -18,6 +18,7 @@ mod inspect;
 pub mod jdtls;
 mod launch;
 mod library_source;
+mod loading;
 mod pull;
 mod scope;
 mod server;
@@ -216,6 +217,15 @@ fn runtime_handle() -> tokio::runtime::Handle {
     })
 }
 
+fn goto_is_empty(r: &Option<lsp::GotoDefinitionResponse>) -> bool {
+    match r {
+        None => true,
+        Some(lsp::GotoDefinitionResponse::Scalar(_)) => false,
+        Some(lsp::GotoDefinitionResponse::Array(v)) => v.is_empty(),
+        Some(lsp::GotoDefinitionResponse::Link(v)) => v.is_empty(),
+    }
+}
+
 fn rpc_err(server: &str, method: &str, e: RpcError) -> IdeError {
     match e {
         RpcError::Cancelled => IdeError::cancelled(),
@@ -304,6 +314,8 @@ async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<L
     .await
     .unwrap_or_default()
 }
+
+const JAVA_IMPLEMENTATIONS: &str = "openidea.java.implementations";
 
 fn goto_method(kind: GotoKind) -> (&'static str, &'static str, &'static str) {
     match kind {
@@ -1163,8 +1175,13 @@ impl LspManager {
         let mut out = Outcome::new();
         for t in targets.iter().filter(|t| snap.asks(t, pos)) {
             let r: IdeResult<Option<lsp::Hover>> =
-                self.call(t, "textDocument/hover", snap.pos_params(t, pos), Some(&cancel), DEFAULT_TIMEOUT).await;
+                loading::while_loading(&t.server, Some(&cancel), loading::LOADING_WAIT, Option::is_none, || {
+                    self.call(t, "textDocument/hover", snap.pos_params(t, pos), Some(&cancel), DEFAULT_TIMEOUT)
+                })
+                .await;
             match r {
+                // Still loading: no documentation yet, not an error.
+                Err(e) if e.kind == ErrorKind::TimedOut && t.server.is_loading() => out.value = Some(None),
                 Ok(Some(h)) => {
                     if let Some(h) = convert::hover(&self.conv(t.enc()), &snap.path, h) {
                         return Ok(Some(h));
@@ -1244,6 +1261,40 @@ impl LspManager {
         Ok(results.into_iter().map(Result::unwrap_or_default).collect())
     }
 
+    /// jdtls: the implementations in the project's sources (`openidea.java.implementations`).
+    /// Its standard request builds the type hierarchy over every dependency jar too, which takes
+    /// long in a project with many dependencies; empty (or no extension) falls back to it.
+    async fn java_source_implementations(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        cancel: Option<&CancellationToken>,
+    ) -> Vec<Location> {
+        if t.server.name != "jdtls" || !t.caps().commands().iter().any(|c| c == JAVA_IMPLEMENTATIONS) {
+            return Vec::new();
+        }
+        let params = snap.pos_params(t, pos);
+        let arguments =
+            json!([params["textDocument"]["uri"], params["position"]["line"], params["position"]["character"]]);
+        let result: IdeResult<Vec<lsp::Location>> = self
+            .call(
+                t,
+                "workspace/executeCommand",
+                json!({ "command": JAVA_IMPLEMENTATIONS, "arguments": arguments }),
+                cancel,
+                DEFAULT_TIMEOUT,
+            )
+            .await;
+        match result {
+            Ok(locs) => convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(locs)),
+            Err(e) => {
+                tracing::debug!("{JAVA_IMPLEMENTATIONS}: {}", e.message);
+                Vec::new()
+            }
+        }
+    }
+
     async fn goto_in(
         &self,
         snap: &DocSnap,
@@ -1254,16 +1305,25 @@ impl LspManager {
     ) -> IdeResult<Vec<Location>> {
         let mut out = Outcome::new();
         for t in targets.iter().filter(|t| snap.asks(t, pos)) {
-            match self
-                .call::<_, Option<lsp::GotoDefinitionResponse>>(
+            if method == "textDocument/implementation" {
+                let locs = self.java_source_implementations(snap, t, pos, cancel).await;
+                if !locs.is_empty() {
+                    let locs = library_sources(snap, pos, locs).await;
+                    self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    return Ok(locs);
+                }
+            }
+            let r = loading::while_loading(&t.server, cancel, loading::LOADING_WAIT, goto_is_empty, || {
+                self.call::<_, Option<lsp::GotoDefinitionResponse>>(
                     t,
                     method,
                     snap.pos_params(t, pos),
                     cancel,
                     DEFAULT_TIMEOUT,
                 )
-                .await
-            {
+            })
+            .await;
+            match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, pos, locs).await;

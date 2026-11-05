@@ -52,6 +52,14 @@ pub fn sdk_python_effective(host: &Host, window: &str) -> IdeResult<Option<ide_c
     Ok(ide_sdk::apply::python_interpreter(&project.root, &project.settings.effective()).map(Into::into))
 }
 
+/// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
+pub fn sdk_php_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core::IpcPath>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let settings = project.settings.effective();
+    Ok(ide_sdk::apply::setting_path(&project.root, &settings.languages.php.interpreter).map(Into::into))
+}
+
 /// The PHP language level of the project `path` belongs to (a workspace member, by path, as
 /// the language server configuration picks it).
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
@@ -83,6 +91,33 @@ pub async fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) ->
             auto: ide_sdk::php::composer_level(root),
             member: member.map(ide_core::IpcPath),
         }
+    })
+    .await
+    .map_err(join_err)
+}
+
+/// The Composer project `path` belongs to, when its dependencies need `composer install`.
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerInstallState {
+    pub root: ide_core::IpcPath,
+    pub reason: ide_sdk::php::ComposerInstall,
+}
+
+/// `None` in an untrusted project too: `composer install` runs the project's scripts.
+pub async fn sdk_php_composer_install(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+) -> IdeResult<Option<ComposerInstallState>> {
+    let project = host.project(window)?;
+    if !project.is_trusted() {
+        return Ok(None);
+    }
+    let root = project.root.clone();
+    tokio::task::spawn_blocking(move || {
+        ide_sdk::php::composer_install(&path, &root)
+            .map(|(root, reason)| ComposerInstallState { root: ide_core::IpcPath::from(root), reason })
     })
     .await
     .map_err(join_err)
@@ -198,9 +233,14 @@ pub async fn sdk_python_pip(
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window) });
+    d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
     d.add(
         "sdk_php_language_level",
         |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?).await },
+    );
+    d.add(
+        "sdk_php_composer_install",
+        |c| async move { sdk_php_composer_install(&c.host, &c.window, c.arg("path")?).await },
     );
     d.add("sdk_project_libraries", |c| async move { sdk_project_libraries(&c.host, &c.window).await });
     d.add("sdk_locate_tools", |c| async move {

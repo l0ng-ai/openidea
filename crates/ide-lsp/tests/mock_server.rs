@@ -954,6 +954,11 @@ async fn apply_edit_hook_and_server_requests() {
     assert_eq!(v, Value::Null);
     assert!(peer.request::<_, Value>("unknown/method", Value::Null, None).await.is_err());
 
+    peer.notify(
+        "window/showMessage",
+        json!({ "type": 1, "message": "overly long loop turn took 113ms (event handling took 95ms): PrimeCaches" }),
+    )
+    .unwrap();
     peer.notify("window/showMessage", json!({ "type": 2, "message": "careful" })).unwrap();
     peer.notify("window/showMessage", json!({ "type": 3, "message": "info only" })).unwrap();
     peer.notify("window/logMessage", json!({ "type": 1, "message": "log" })).unwrap();
@@ -962,7 +967,10 @@ async fn apply_edit_hook_and_server_requests() {
     })
     .await;
     let notifies = h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { .. })).count();
-    assert_eq!(notifies, 2, "showMessageRequest error + showMessage warning; info is not surfaced");
+    assert_eq!(
+        notifies, 2,
+        "showMessageRequest error + showMessage warning; info and rust-analyzer's developer notices are not surfaced"
+    );
 
     // Dynamically registered capability is now usable.
     s.respond(
@@ -1007,6 +1015,78 @@ async fn progress_tasks_and_busy_status() {
     assert_eq!(tasks[0], ("Indexing".into(), None, Some(0.0), false));
     assert_eq!(tasks[1], ("Indexing".into(), Some("3/10".into()), Some(0.3), false));
     assert!(tasks[2].3);
+}
+
+/// While a server says it is loading the project (rust-analyzer: `serverStatus`
+/// not quiescent) an empty or withdrawn answer is asked again once loading moves
+/// on. `$/progress` alone (background indexing, `cargo check`) doesn't wait.
+#[tokio::test(flavor = "multi_thread")]
+async fn navigation_waits_for_a_server_that_is_still_loading() {
+    #[derive(Clone, Copy, Debug)]
+    enum Answer {
+        Empty,
+        ContentModified,
+    }
+    for answer in [Answer::Empty, Answer::ContentModified] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        let peer = s.peer();
+        peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": false })).unwrap();
+        h.wait_status("mock", ServerStatus::Busy).await;
+        if let Answer::ContentModified = answer {
+            s.errors.lock().insert("textDocument/definition".into(), (-32801, "content modified".into()));
+        }
+        let mgr = h.mgr.clone();
+        let goto = tokio::spawn(async move { mgr.goto(doc, Pos::new(1, 1), GotoKind::Definition).await });
+        eventually(|| !s.requested("textDocument/definition").is_empty()).await;
+        assert!(!goto.is_finished(), "{answer:?}: an answer while loading is not final");
+
+        s.errors.lock().clear();
+        let r = json!({"start":{"line":0,"character":3},"end":{"line":0,"character":6}});
+        s.respond("textDocument/definition", json!({ "uri": uri_of(&path), "range": r }));
+        peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": true })).unwrap();
+        let defs = tokio::time::timeout(Duration::from_secs(10), goto).await.unwrap().unwrap().unwrap();
+        assert_eq!(defs, vec![ide_core::Location::file(path.clone(), rng(0, 3, 0, 6))], "{answer:?}");
+        h.wait_status("mock", ServerStatus::Ready).await;
+    }
+
+    // Hover documentation the same way.
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.peer().notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": false })).unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let mgr = h.mgr.clone();
+    let hover = tokio::spawn(async move { mgr.hover(doc, Pos::new(0, 0), Default::default()).await });
+    eventually(|| !s.requested("textDocument/hover").is_empty()).await;
+    s.respond("textDocument/hover", json!({ "contents": "docs" }));
+    s.peer().notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": true })).unwrap();
+    let hover = tokio::time::timeout(Duration::from_secs(10), hover).await.unwrap().unwrap().unwrap();
+    assert!(hover.is_some());
+
+    // "Nothing here" is the answer at once: rust-analyzer loaded with `cargo check`
+    // running, and a server without `serverStatus` indexing in the background.
+    for quiescent in [Some(true), None] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (doc, _) = h.open("a.mk", "x");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        let peer = s.peer();
+        if let Some(q) = quiescent {
+            peer.notify("experimental/serverStatus", json!({ "health": "ok", "quiescent": q })).unwrap();
+        }
+        peer.notify("$/progress", json!({ "token": "bg", "value": { "kind": "begin", "title": "Indexing" } })).unwrap();
+        h.wait_status("mock", ServerStatus::Busy).await;
+        let defs = tokio::time::timeout(Duration::from_secs(2), h.mgr.goto(doc, Pos::new(0, 0), GotoKind::Definition))
+            .await
+            .unwrap_or_else(|_| panic!("{quiescent:?}: no wait for background work"))
+            .unwrap();
+        assert!(defs.is_empty());
+        assert_eq!(s.requested("textDocument/definition").len(), 1, "{quiescent:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1722,6 +1802,37 @@ async fn implementations_per_position() {
     cancel.cancel();
     let err = h.mgr.implementations(doc, &[Pos::new(0, 6)], cancel).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_implementations_come_from_sources_first() {
+    let caps = json!({
+        "textDocumentSync": 1,
+        "implementationProvider": true,
+        "executeCommandProvider": { "commands": ["openidea.java.implementations"] },
+    });
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, path) = h.open("Repo.java", "interface Repo {}\nclass A implements Repo {}\nclass B {}\nclass C {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let uri = uri_of(&path);
+    let at = move |line: u32| json!([{ "uri": uri, "range": {"start":{"line":line,"character":6},"end":{"line":line,"character":7}} }]);
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
+        // The sources have an implementation of line 0 only.
+        "workspace/executeCommand" => Some(if params["arguments"][1] == 0 { at(1) } else { json!([]) }),
+        "textDocument/implementation" => Some(at(3)),
+        _ => None,
+    }));
+    let found = h.mgr.goto(doc, Pos::new(0, 10), GotoKind::Implementation).await.unwrap();
+    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![1]);
+    assert!(s.requested("textDocument/implementation").is_empty(), "no search through the dependencies");
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.java.implementations");
+    assert_eq!((asked[0]["arguments"][1].clone(), asked[0]["arguments"][2].clone()), (json!(0), json!(10)));
+    // None in the sources: the standard request, with the dependencies.
+    let found = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Implementation).await.unwrap();
+    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![3]);
+    assert_eq!(s.requested("textDocument/implementation").len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3333,7 +3444,8 @@ async fn interactive_capability_is_scoped_to_gopls() {
     let (doc, _) = h.open("probe.mk", "x\n");
     h.wait_status("mock", ServerStatus::Ready).await;
     let s = h.launcher.state("mock");
-    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"], json!({}));
+    let experimental = &s.requested("initialize")[0]["capabilities"]["experimental"];
+    assert!(experimental.get("interactiveResolve").is_none(), "{experimental}");
     let form = h
         .mgr
         .resolve_command(

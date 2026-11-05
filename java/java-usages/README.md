@@ -57,7 +57,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.3.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.4.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -75,6 +75,9 @@ unrelated content and non-Java resource changes; its reproducible SHA-256 is
 `cbae3e3a0bcf2818b4cc9d98998bd9b81f92e1ae7803dc757134485f9776a4e1`.
 Version 1.3.0 adds the class-hierarchy refactoring commands; its reproducible SHA-256 is
 `cca4cc385ace286111730d2a6164333b8958d74d69631548eadca8863255c24a`.
+Version 1.4.0 adds `openidea.java.implementations` (Go to Implementation in the workspace's
+source folders, before the standard request that also searches every dependency jar); its
+reproducible SHA-256 is `d7601493eda846811b4bb8bfe7f3d56e3234a45e663648210db3937cebc770a5`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

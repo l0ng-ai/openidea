@@ -6,7 +6,7 @@ use crate::repo::{gx, to_string};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use ide_core::IdeResult;
-use redb::{Database, MultimapTableDefinition, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -14,9 +14,6 @@ use std::time::SystemTime;
 
 const COMMITS: TableDefinition<&str, &[u8]> = TableDefinition::new("summaries-v2");
 const MESSAGES: TableDefinition<&str, &str> = TableDefinition::new("messages-v1");
-const PATHS: TableDefinition<&str, &[u8]> = TableDefinition::new("paths-v2");
-const POSTINGS: MultimapTableDefinition<&str, &str> = MultimapTableDefinition::new("search-v1");
-const INDEXED: TableDefinition<&str, bool> = TableDefinition::new("indexed-v1");
 
 pub(crate) struct IndexedView {
     pub commits: Vec<Commit>,
@@ -36,9 +33,6 @@ pub(crate) struct LogIndex {
     memory: HashMap<ObjectId, Arc<Commit>>,
     dirty: Vec<Arc<Commit>>,
     dirty_messages: Vec<(String, String)>,
-    dirty_search: Vec<(String, Vec<String>)>,
-    path_memory: HashMap<(ObjectId, String), Option<(ObjectId, u16)>>,
-    dirty_paths: Vec<(String, Option<(String, u16)>)>,
     pub head: Option<(ObjectId, Option<SystemTime>)>,
     pub reachable: HashSet<ObjectId>,
     pub views: HashMap<String, Arc<IndexedView>>,
@@ -91,91 +85,6 @@ impl LogIndex {
             }
         }
         Ok(ids)
-    }
-    pub fn indexed(&self, id: &str) -> bool {
-        self.db
-            .as_ref()
-            .and_then(|db| {
-                let txn = db.begin_read().ok()?;
-                let table = txn.open_table(INDEXED).ok()?;
-                Some(table.get(id).ok()??.value())
-            })
-            .unwrap_or(false)
-    }
-
-    pub fn index_commit(&mut self, id: &str, message: &str, author: &str, email: &str, paths: &[String]) {
-        let mut keys: HashSet<String> = Self::grams(message).into_iter().map(|s| format!("m:{s}")).collect();
-        for user in [author, email, email.split('@').next().unwrap_or(email)] {
-            keys.insert(format!("u:{}", normalize_user(user)));
-        }
-        for path in paths {
-            keys.insert(format!("p:{path}"));
-        }
-        self.dirty_search.push((id.into(), keys.into_iter().collect()));
-    }
-
-    fn grams(text: &str) -> Vec<String> {
-        let chars: Vec<_> = text.to_lowercase().chars().collect();
-        chars.windows(3).map(|s| s.iter().collect()).collect::<HashSet<_>>().into_iter().collect()
-    }
-
-    /// Missing/unindexed commits are always checked directly by the caller.
-    pub fn message_candidates(&self, text: &str) -> Option<HashSet<String>> {
-        let grams = Self::grams(text);
-        if grams.is_empty() {
-            return None;
-        }
-        let db = self.db.as_ref()?;
-        let txn = db.begin_read().ok()?;
-        let table = txn.open_multimap_table(POSTINGS).ok()?;
-        let mut candidates: Option<HashSet<String>> = None;
-        for gram in grams {
-            let values = table.get(format!("m:{gram}").as_str()).ok()?;
-            let ids: HashSet<_> = values.filter_map(Result::ok).map(|s| s.value().to_string()).collect();
-            candidates = Some(match candidates {
-                Some(old) => old.intersection(&ids).cloned().collect(),
-                None => ids,
-            });
-            if candidates.as_ref().is_some_and(HashSet::is_empty) {
-                break;
-            }
-        }
-        Some(candidates.unwrap_or_default())
-    }
-
-    pub fn user_candidates(&self, authors: &[String]) -> Option<HashSet<String>> {
-        let txn = self.db.as_ref()?.begin_read().ok()?;
-        let table = txn.open_multimap_table(POSTINGS).ok()?;
-        let mut ids = HashSet::new();
-        for author in authors {
-            let name = author.split('<').next().unwrap_or(author).trim();
-            let email = author.split('<').nth(1).map(|s| s.trim_end_matches('>')).unwrap_or(author);
-            for alias in [name, email, email.split('@').next().unwrap_or(email)] {
-                for value in table.get(format!("u:{}", normalize_user(alias)).as_str()).ok()?.filter_map(Result::ok) {
-                    ids.insert(value.value().to_string());
-                }
-            }
-        }
-        Some(ids)
-    }
-
-    pub fn path_candidates(&self, paths: &[String]) -> Option<HashSet<String>> {
-        let txn = self.db.as_ref()?.begin_read().ok()?;
-        let table = txn.open_multimap_table(POSTINGS).ok()?;
-        let mut ids = HashSet::new();
-        for path in paths {
-            for value in table.get(format!("p:{path}").as_str()).ok()?.filter_map(Result::ok) {
-                ids.insert(value.value().to_string());
-            }
-            let prefix = format!("p:{path}/");
-            let end = format!("{prefix}{}", char::MAX);
-            for row in table.range(prefix.as_str()..end.as_str()).ok()?.filter_map(Result::ok) {
-                for value in row.1.filter_map(Result::ok) {
-                    ids.insert(value.value().to_string());
-                }
-            }
-        }
-        Some(ids)
     }
     pub fn open(&mut self, dir: &Path) {
         if self.opened {
@@ -272,11 +181,7 @@ impl LogIndex {
     }
 
     pub fn flush(&mut self) {
-        if self.dirty.is_empty()
-            && self.dirty_paths.is_empty()
-            && self.dirty_messages.is_empty()
-            && self.dirty_search.is_empty()
-        {
+        if self.dirty.is_empty() && self.dirty_messages.is_empty() {
             return;
         }
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
@@ -292,26 +197,9 @@ impl LogIndex {
                 }
             }
             {
-                let mut table = txn.open_table(PATHS)?;
-                for (key, value) in &self.dirty_paths {
-                    let bytes = serde_json::to_vec(value)?;
-                    table.insert(key.as_str(), bytes.as_slice())?;
-                }
-            }
-            {
                 let mut table = txn.open_table(MESSAGES)?;
                 for (id, message) in &self.dirty_messages {
                     table.insert(id.as_str(), message.as_str())?;
-                }
-            }
-            {
-                let mut postings = txn.open_multimap_table(POSTINGS)?;
-                let mut indexed = txn.open_table(INDEXED)?;
-                for (id, keys) in &self.dirty_search {
-                    for key in keys {
-                        postings.insert(key.as_str(), id.as_str())?;
-                    }
-                    indexed.insert(id.as_str(), true)?;
                 }
             }
             txn.commit()?;
@@ -321,52 +209,7 @@ impl LogIndex {
             tracing::warn!("Git log cache write failed: {error}");
         }
         self.dirty_messages.clear();
-        self.dirty_search.clear();
         self.dirty.clear();
-        self.dirty_paths.clear();
-    }
-
-    pub fn path_entry(
-        &mut self,
-        repo: &gix::Repository,
-        id: ObjectId,
-        path: &str,
-    ) -> IdeResult<Option<(ObjectId, u16)>> {
-        let memory_key = (id, path.to_string());
-        if let Some(value) = self.path_memory.get(&memory_key) {
-            return Ok(*value);
-        }
-        let key = format!("{id}\0{path}");
-        let cached = self.db.as_ref().and_then(|db| {
-            let txn = db.begin_read().ok()?;
-            let table = txn.open_table(PATHS).ok()?;
-            let value = table.get(key.as_str()).ok()??;
-            serde_json::from_slice::<Option<(String, u16)>>(value.value()).ok()
-        });
-        let cached = match cached {
-            Some(None) => Some(None),
-            Some(Some((hex, mode))) => ObjectId::from_hex(hex.as_bytes()).ok().map(|id| Some((id, mode))),
-            None => None,
-        };
-        let value = if let Some(value) = cached {
-            value
-        } else {
-            let tree = repo.find_commit(id).map_err(gx)?.tree().map_err(gx)?;
-            let value = tree
-                .lookup_entry_by_path(Path::new(path))
-                .map_err(gx)?
-                .map(|entry| (entry.object_id(), entry.mode().value()));
-            if self.db.is_some() {
-                self.dirty_paths.push((key, value.map(|(id, mode)| (id.to_string(), mode))));
-            }
-            value
-        };
-        if self.path_memory.len() >= 4096 {
-            self.flush();
-            self.path_memory.clear();
-        }
-        self.path_memory.insert(memory_key, value);
-        Ok(value)
     }
 }
 

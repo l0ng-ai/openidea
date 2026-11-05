@@ -145,6 +145,7 @@ impl AppState {
         if !display_name.trim().is_empty() {
             self.recent.rename(&project.root, Some(display_name.trim()))?;
         }
+        crate::jump_list::refresh(&self.app, self.recent.list());
         Ok(project)
     }
 

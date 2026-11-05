@@ -237,6 +237,8 @@ export class EditorController implements SlotHost {
   private selectionRequests = new Map<string, number>();
   private activationGeneration = 0;
   private admitting = false;
+  /** Tabs restored from a saved session: not a user's activation, so a pending open still activates its tab. */
+  private restoring = false;
   private closeRequests = 0;
   private projectTransition: Promise<void> = Promise.resolve();
 
@@ -269,6 +271,7 @@ export class EditorController implements SlotHost {
         prevTabs = s;
         if (
           !this.admitting &&
+          !this.restoring &&
           (s.activePane !== prev.activePane || s.panes[s.activePane]?.active !== prev.panes[prev.activePane]?.active)
         )
           ++this.activationGeneration;
@@ -486,7 +489,12 @@ export class EditorController implements SlotHost {
       pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
     this.restoredViews = new Map(Object.entries(session.files));
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
-    useTabs.setState(state, true);
+    this.restoring = true;
+    try {
+      useTabs.setState(state, true);
+    } finally {
+      this.restoring = false;
+    }
     for (const pane of Object.values(state.panes)) if (pane.active) void this.ensureSlot(pane.active);
   }
 

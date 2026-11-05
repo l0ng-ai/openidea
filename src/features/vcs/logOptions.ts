@@ -33,6 +33,8 @@ export interface LogOptions {
   groupByDirectory: boolean;
   /** Selecting a changed file shows its diff in the editor's preview tab. */
   diffPreview: boolean;
+  /** Changed files show how many lines the commit added and deleted. */
+  showLineStats: boolean;
   showDetails: boolean;
   showRepository: boolean;
   showOnlyAffected: boolean;
@@ -65,6 +67,7 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   showBranches: true,
   groupByDirectory: true,
   diffPreview: true,
+  showLineStats: false,
   showDetails: true,
   showRepository: true,
   showOnlyAffected: false,

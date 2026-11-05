@@ -433,50 +433,58 @@ fn close_next(app: &AppHandle) {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct SavedGroup {
-    projects: Vec<PathBuf>,
-    selected: usize,
+/// Window labels in creation order: `main`, then `project-1`, `project-2`, ….
+fn labels_in_order(app: &AppHandle) -> Vec<String> {
+    let mut labels: Vec<String> = app.webview_windows().into_keys().collect();
+    labels.sort_by_key(|l| (l != "main", l.rsplit('-').next().and_then(|n| n.parse::<u32>().ok()), l.clone()));
+    labels
 }
 
+/// Saves the open project windows (groups and single windows) for "Reopen projects on startup".
+/// Nothing is written while quitting, so the windows open at quit are the ones reopened.
 pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
-    let _write = state.groups_persist.lock().await;
+    let mut previous = state.groups_persist.lock().await;
     if state.quitting() {
         return Ok(());
     }
-    let groups = state.groups.lock().groups().to_vec();
     let host = app.state::<AppState>();
-    let saved: Vec<_> = groups
-        .iter()
-        .filter_map(|group| {
-            let projects: Vec<_> = group
-                .members
-                .iter()
-                .filter_map(|label| {
-                    host.project(label)
-                        .ok()
-                        .map(|p| p.root.clone())
-                        .or_else(|| state.pending(label).and_then(|l| l.project).map(Into::into))
-                })
-                .collect();
-            (projects.len() == group.members.len()).then(|| SavedGroup {
-                projects,
-                selected: group.members.iter().position(|l| l == &group.selected).unwrap_or(0),
-            })
-        })
-        .collect();
-    // A restored member may have taken its launch but not finished opening yet.
-    if saved.len() != groups.len() {
-        return Ok(());
-    }
     let path = host.config_dir.join("window-groups.json");
+    if previous.is_none() {
+        *previous = Some(read_session(path.clone()).await);
+    }
+    let groups = state.groups.lock().groups().to_vec();
+    let windows = labels_in_order(app);
+    let project_of = |label: &str| match host.project(label) {
+        Ok(p) => (!p.light).then(|| p.root.clone()),
+        // A restored window may have taken its launch but not finished opening yet.
+        Err(_) => state.pending(label).and_then(|l| l.project).map(Into::into),
+    };
+    let Some(saved) = ide_workspace::window_groups::session(&groups, &windows, project_of) else {
+        return Ok(());
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let bytes = serde_json::to_vec(&saved).map_err(|e| IdeError::internal(e.to_string()))?;
         ide_vfs::write_atomic(&path, &bytes).map(|_| ())
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// The saved session; empty when there is none or it can't be read.
+async fn read_session(path: PathBuf) -> Vec<ide_workspace::window_groups::SavedWindows> {
+    let read = tauri::async_runtime::spawn_blocking(move || match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    read.unwrap_or_else(|e| {
+        tracing::warn!("cannot read the saved windows: {e}");
+        Vec::new()
+    })
 }
 
 pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
@@ -489,41 +497,51 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if !project.settings.effective().general.reopen_last_project || state.groups_restored.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let path = host.config_dir.join("window-groups.json");
-    let saved: Vec<SavedGroup> = tauri::async_runtime::spawn_blocking(move || -> IdeResult<_> {
-        match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| IdeError::invalid(e.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e.into()),
+    let saved = {
+        let mut previous = state.groups_persist.lock().await;
+        if previous.is_none() {
+            *previous = Some(read_session(host.config_dir.join("window-groups.json")).await);
         }
-    })
-    .await
-    .map_err(|e| IdeError::internal(e.to_string()))??;
-    if let Some(group) = saved.iter().find(|g| g.projects.contains(&project.root)) {
+        previous.clone().unwrap_or_default()
+    };
+    // The caller's own group first (it already shows one of its projects), then every other
+    // group and single window that was open at quit. Missing folders are skipped.
+    let order = saved
+        .iter()
+        .filter(|g| g.projects.contains(&project.root))
+        .chain(saved.iter().filter(|g| !g.projects.contains(&project.root)));
+    for group in order {
         let mut labels = Vec::new();
-        let mut selected = caller.to_owned();
+        let mut selected = None;
         for path in &group.projects {
             let label = if path == &project.root {
                 Some(caller.to_owned())
             } else if path.is_dir() {
                 let window = match windows::find_project_window(app, path) {
-                    Some(w) => w,
-                    None => windows::create_restored_window(app, path.clone())?,
+                    Some(w) => Ok(w),
+                    None => windows::create_restored_window(app, path.clone()),
                 };
-                Some(window.label().to_owned())
+                match window {
+                    Ok(w) => Some(w.label().to_owned()),
+                    Err(e) => {
+                        tracing::warn!("cannot reopen {}: {e}", path.display());
+                        None
+                    }
+                }
             } else {
                 None
             };
             if let Some(label) = label {
                 if group.projects.get(group.selected) == Some(path) {
-                    selected = label.clone();
+                    selected = Some(label.clone());
                 }
                 labels.push(label);
             }
         }
         if labels.len() > 1 {
-            state.groups.lock().merge(labels, caller)?;
-            select(app, caller, &selected)?;
+            let selected = selected.unwrap_or_else(|| labels[0].clone());
+            state.groups.lock().merge(labels, &selected)?;
+            select(app, &selected, &selected)?;
         }
     }
     Ok(())

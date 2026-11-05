@@ -10,6 +10,7 @@ mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;
 pub mod ops;
+mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
@@ -228,6 +229,9 @@ impl Host {
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();
         }
+        if let Some(phpstan) = &project.phpstan {
+            phpstan.stop();
+        }
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
         project.notebooks.stop_admission();
@@ -241,6 +245,7 @@ impl Host {
             project.kotlin_bridge.iter().cloned().collect(),
             Some(project.lsp.clone()),
             Some((self.debugger.clone(), window.to_owned())),
+            Some(project),
         ))
     }
 
@@ -253,6 +258,7 @@ impl Host {
         bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
         lsp: Option<Arc<ide_lsp::LspManager>>,
         debug: Option<(Arc<ide_dap::DebugManager>, String)>,
+        retired: Option<Arc<Project>>,
     ) -> std::thread::JoinHandle<()> {
         for bridge in &bridges {
             bridge.stop();
@@ -262,6 +268,10 @@ impl Host {
         }
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
+            // Dropping the project stops its file watcher and index worker, which first finish the
+            // batch they are applying (many file events while a build writes its output), so it
+            // isn't done on the closing caller's thread (the UI thread for a window close).
+            let retired = retired.map(|project| std::thread::spawn(move || drop(project)));
             runtime.block_on(async move {
                 for bridge in bridges {
                     bridge.shutdown().await;
@@ -276,6 +286,9 @@ impl Host {
                     debug.stop_key(&key).await;
                 }
             });
+            if let Some(retired) = retired {
+                let _ = retired.join();
+            }
         })
     }
 
@@ -315,6 +328,7 @@ impl Host {
             projects.iter().filter_map(|project| project.kotlin_bridge.clone()).collect(),
             None,
             None,
+            None,
         ));
         let deadline = std::time::Instant::now() + EXIT_SHUTDOWN_WAIT;
         while pending.iter().any(|handle| !handle.is_finished()) {
@@ -348,6 +362,9 @@ impl Host {
         for project in &projects {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
+            }
+            if let Some(phpstan) = &project.phpstan {
+                phpstan.stop();
             }
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
@@ -413,5 +430,39 @@ impl Host {
 
     pub(crate) fn insert_project(&self, window: &str, project: Arc<Project>) {
         self.projects.write().insert(window.to_owned(), project);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn detached_close_releases_the_project_before_a_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        let project = Arc::downgrade(&host.open_project("main", &root).unwrap());
+        host.close_project_detached("main");
+        assert!(host.project("main").is_err());
+        // The project (its file watcher and index database) is dropped off the closing thread, but
+        // before opening a project waits out the close.
+        host.wait_detached_closes();
+        assert!(project.upgrade().is_none(), "the closed project is dropped");
+        host.open_project("main", &root).unwrap();
+        host.close_project("main");
     }
 }

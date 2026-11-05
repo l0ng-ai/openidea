@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbDriver, DbTablePage } from "@/platform/ipc";
+import { getContext } from "@/platform/context";
 import { TableEditor } from "./TableEditor";
+import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { tableInput } from "./tableInput";
 
 const backend = vi.hoisted(() => ({
@@ -86,5 +88,41 @@ describe("table editor capabilities", () => {
     expect(screen.getByRole("textbox", { name: "Edit name" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add Row" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Submit" })).toBeTruthy();
+  });
+
+  it("offers Submit and Revert to the keyboard while the grid has focus and edits are pending (#1549)", async () => {
+    backend.driver = "postgres";
+    backend.applyEdits.mockResolvedValue({ status: "ok", data: 1 });
+    const uninstall = installTableEditorFocus();
+    try {
+      await act(async () => {
+        render(<TableEditor input={tableInput("source", "public", "users")} />);
+      });
+      const grid = screen.getByRole("grid");
+      act(() => grid.focus());
+      expect(getContext()).toMatchObject({ dbTableEditorFocus: true, dbTableEditorChanges: false });
+
+      fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+      const input = screen.getByRole("textbox", { name: "Edit name" });
+      // A text field keeps ⌘↩ for its own edit.
+      expect(getContext().dbTableEditorFocus).toBe(false);
+      fireEvent.change(input, { target: { value: "Bob" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      act(() => grid.focus());
+      expect(getContext()).toMatchObject({ dbTableEditorFocus: true, dbTableEditorChanges: true });
+
+      act(() => activeTableEditor()!.revert());
+      expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
+      expect(getContext().dbTableEditorChanges).toBe(false);
+
+      fireEvent.doubleClick(screen.getByRole("gridcell", { name: "Ann" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Edit name" }), { target: { value: "Bob" } });
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit name" }), { key: "Enter" });
+      act(() => grid.focus());
+      await act(async () => activeTableEditor()!.submit());
+      expect(backend.applyEdits).toHaveBeenCalledTimes(1);
+    } finally {
+      uninstall();
+    }
   });
 });

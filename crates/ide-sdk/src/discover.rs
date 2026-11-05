@@ -282,8 +282,38 @@ pub(crate) fn php_source(path: &Path, home: Option<&Path>) -> &'static str {
     }
 }
 
-/// `php` CLIs: every one on `PATH`, Homebrew's versioned formulae, PHP version managers,
-/// Laravel Herd, and the usual Windows distributions (XAMPP, Laragon).
+/// A PHP CLI named with its version, as Debian / Ubuntu (`ppa:ondrej/php`) install them:
+/// `php8.1`, `php81`. Not `php-cgi8.1`, `phpize8.1` or `phpdbg8.1`.
+pub(crate) fn is_versioned_php_name(name: &str) -> bool {
+    let name = name.strip_suffix(".exe").unwrap_or(name);
+    let Some(version) = name.strip_prefix("php") else { return false };
+    let mut parts = version.splitn(2, '.');
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    parts.next().is_some_and(digits) && parts.next().is_none_or(digits)
+}
+
+/// The versioned PHP CLIs in `dirs`, in `PATH` order (sorted by name within a directory).
+pub(crate) fn versioned_php_in(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in dirs {
+        if version_managers::is_shims_dir(&dir) {
+            continue;
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| is_versioned_php_name(n))
+            .collect();
+        names.sort();
+        found.extend(names.into_iter().map(|n| dir.join(n)).filter(|p| p.is_file()));
+    }
+    found
+}
+
+/// `php` CLIs: every one on `PATH` (also versioned ones, `php8.1`), Homebrew's versioned
+/// formulae, PHP version managers, Laravel Herd, and the usual Windows distributions (XAMPP, Laragon).
 fn php() -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
     let home = home_dir();
@@ -291,6 +321,11 @@ fn php() -> Vec<Sdk> {
         if version_managers::is_shim(&p) {
             continue;
         }
+        let source = php_source(&p, home.as_deref());
+        found.push((p, source));
+    }
+    // After the plain `php`: deduplication keeps `/usr/bin/php` over the `php8.3` it links to.
+    for p in versioned_php_in(std::env::split_paths(&search_path())) {
         let source = php_source(&p, home.as_deref());
         found.push((p, source));
     }
@@ -332,7 +367,7 @@ fn php() -> Vec<Sdk> {
         }
     }
     let found = dedupe_by_real_path(found);
-    par_map(&found, |(path, source)| {
+    let mut sdks = par_map(&found, |(path, source)| {
         let version = query(path, &["-r", "echo PHP_VERSION;"], VERSION_TIMEOUT)?;
         let version = version.trim().to_owned();
         if version.is_empty() {
@@ -346,7 +381,16 @@ fn php() -> Vec<Sdk> {
             home: path.parent().and_then(Path::parent).map(Into::into),
             extra: None,
         })
-    })
+    });
+    newest_first(&mut sdks);
+    sdks
+}
+
+/// Newest version first, number by number (8.3.12 before 8.3.9); stable, so on equal
+/// versions the `PATH` install stays first.
+pub(crate) fn newest_first(sdks: &mut [Sdk]) {
+    let key = |s: &Sdk| ide_core::tool_path::version_key(s.version.as_deref().unwrap_or(""));
+    sdks.sort_by_key(|s| std::cmp::Reverse(key(s)));
 }
 
 fn node() -> Vec<Sdk> {

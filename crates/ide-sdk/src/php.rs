@@ -1,12 +1,14 @@
 //! The PHP language level: the one chosen in Settings › PHP, else the one the root
 //! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
-//! the Intelephense storage that goes with it; and the stub sets and include paths Intelephense indexes.
+//! the Intelephense storage that goes with it; the stub sets and include paths Intelephense indexes;
+//! and the PHPStan run that checks saved files.
 
 use crate::apply::{merge, merge_init_options, setting_path};
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// A PHP version and where it comes from.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
@@ -48,6 +50,43 @@ pub fn composer_level(root: &Path) -> Option<PhpLanguageLevel> {
     }
     lowest_allowed(composer.pointer("/require/php")?.as_str()?)
         .map(|v| PhpLanguageLevel::new(v, PhpLevelSource::Require))
+}
+
+/// Why `composer install` is due in a Composer project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposerInstall {
+    /// No `vendor/autoload.php`.
+    Missing,
+    /// A package of `composer.lock` is not installed, or at another version.
+    Outdated,
+}
+
+/// The Composer project `file` belongs to (the nearest `composer.json` at or below `root`), and
+/// whether its dependencies need `composer install`.
+pub fn composer_install(file: &Path, root: &Path) -> Option<(PathBuf, ComposerInstall)> {
+    let dir = file.ancestors().filter(|d| d.starts_with(root)).find(|d| d.join("composer.json").is_file())?;
+    let composer: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("composer.json")).ok()?).ok()?;
+    let vendor = dir.join(composer.pointer("/config/vendor-dir").and_then(Value::as_str).unwrap_or("vendor"));
+    if !vendor.join("autoload.php").is_file() {
+        return Some((dir.to_path_buf(), ComposerInstall::Missing));
+    }
+    let read = |path: PathBuf| std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let lock = read(dir.join("composer.lock"))?;
+    let installed = read(vendor.join("composer/installed.json")).unwrap_or(Value::Null);
+    // Composer 2 writes `{"packages": [...], "dev": bool}`, Composer 1 the list itself.
+    let packages = installed.get("packages").unwrap_or(&installed).as_array().cloned().unwrap_or_default();
+    let versions: std::collections::HashMap<&str, &str> =
+        packages.iter().filter_map(|p| Some((p.get("name")?.as_str()?, p.get("version")?.as_str()?))).collect();
+    let dev = installed.get("dev").and_then(Value::as_bool).unwrap_or(true);
+    let sections: &[&str] = if dev { &["packages", "packages-dev"] } else { &["packages"] };
+    let outdated = sections
+        .iter()
+        .filter_map(|section| lock.get(*section).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|p| Some((p.get("name")?.as_str()?, p.get("version")?.as_str()?)))
+        .any(|(name, version)| versions.get(name) != Some(&version));
+    outdated.then(|| (dir.to_path_buf(), ComposerInstall::Outdated))
 }
 
 /// Gives each PHP version its own Intelephense workspace storage (below `data_dir`).
@@ -139,6 +178,33 @@ pub fn include_paths(root: &Path, s: &Settings) -> Vec<String> {
         .collect()
 }
 
+/// `vendor/bin/phpstan analyse` of `files` with a JSON report and the configuration file of
+/// Settings › PHP, run from `root` with Xdebug off: in debug mode it would try to reach a
+/// debugger on every run. The selected PHP runs the script itself (and is first on `PATH`, as for
+/// PHPUnit), so a `php8.1` is not replaced by the `php` its `#!/usr/bin/env php` finds, and
+/// Windows needs no `phpstan.bat`, whose `cmd` limits the command line. `None` when the project
+/// has no PHPStan.
+pub fn phpstan_command(root: &Path, s: &Settings, files: &[PathBuf]) -> Option<Command> {
+    let bin = root.join("vendor/bin/phpstan");
+    if !bin.is_file() {
+        return None;
+    }
+    let php = setting_path(root, &s.languages.php.interpreter)
+        .or_else(|| crate::exec::which("php"))
+        .unwrap_or_else(|| PathBuf::from("php"));
+    let mut cmd = Command::new(php);
+    cmd.current_dir(root).arg(bin).args(["analyse", "--error-format=json", "--no-progress"]);
+    if let Some(config) = setting_path(root, &s.languages.php.phpstan_config) {
+        cmd.arg("--configuration").arg(config);
+    }
+    cmd.args(files);
+    cmd.env("XDEBUG_MODE", "off");
+    if let Some(dir) = crate::apply::php_dir(root, s) {
+        cmd.env("PATH", crate::exec::path_with(&[&dir]));
+    }
+    Some(cmd)
+}
+
 type Version = (u32, u32, u32);
 
 impl PhpLanguageLevel {
@@ -196,6 +262,39 @@ fn lower_bound(alternative: &str) -> Option<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composer_install_is_due_without_vendor_or_when_the_lock_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let app = root.join("app");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        let file = app.join("src/Kernel.php");
+        assert_eq!(composer_install(&file, root), None, "not a Composer project");
+        std::fs::write(app.join("composer.json"), r#"{"config": {"vendor-dir": "lib"}}"#).unwrap();
+        assert_eq!(composer_install(&file, root), Some((app.clone(), ComposerInstall::Missing)));
+        std::fs::create_dir_all(app.join("lib/composer")).unwrap();
+        std::fs::write(app.join("lib/autoload.php"), "<?php").unwrap();
+        assert_eq!(composer_install(&file, root), None, "installed, no lock to compare with");
+        let lock = r#"{"packages": [{"name": "a/a", "version": "v1.2.0"}], "packages-dev": [{"name": "t/t", "version": "10.0.0"}]}"#;
+        std::fs::write(app.join("composer.lock"), lock).unwrap();
+        let installed = |packages: &str, dev: bool| {
+            let json = format!(r#"{{"packages": [{packages}], "dev": {dev}}}"#);
+            std::fs::write(app.join("lib/composer/installed.json"), json).unwrap();
+            composer_install(&file, root)
+        };
+        let a = r#"{"name": "a/a", "version": "v1.2.0"}"#;
+        let t = r#"{"name": "t/t", "version": "10.0.0"}"#;
+        assert_eq!(installed(&format!("{a},{t}"), true), None);
+        assert_eq!(installed(a, false), None, "`--no-dev` leaves out the dev packages");
+        assert_eq!(installed(a, true), Some((app.clone(), ComposerInstall::Outdated)), "a dev package is missing");
+        let old = r#"{"name": "a/a", "version": "v1.1.0"}"#;
+        assert_eq!(installed(&format!("{old},{t}"), true), Some((app.clone(), ComposerInstall::Outdated)));
+        // Composer 1 lists the packages at the top level.
+        std::fs::write(app.join("lib/composer/installed.json"), format!("[{a},{t}]")).unwrap();
+        assert_eq!(composer_install(&file, root), None);
+        assert_eq!(composer_install(&root.join("other.php"), root), None, "outside the Composer project");
+    }
 
     fn level(composer: Option<&str>, explicit: &str) -> Option<String> {
         levels(composer, explicit).0.map(|l| l.version)
@@ -348,6 +447,78 @@ mod tests {
             include_paths(root, &s),
             [root.join("../platform").to_string_lossy().into_owned(), "/opt/prestashop".to_string()]
         );
+    }
+
+    fn phpstan(root: &Path, s: &Settings) -> Option<Command> {
+        let cmd = phpstan_command(root, s, &[root.join("src").join("A.php"), root.join("src").join("B.php")])?;
+        assert_eq!(cmd.get_current_dir(), Some(root));
+        Some(cmd)
+    }
+
+    fn text(s: &std::ffi::OsStr) -> String {
+        s.to_string_lossy().into_owned()
+    }
+
+    fn env(cmd: &Command) -> Vec<(String, Option<String>)> {
+        cmd.get_envs().map(|(k, v)| (text(k), v.map(text))).collect()
+    }
+
+    #[test]
+    fn phpstan_checks_the_files_on_the_selected_php_without_xdebug() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut s = Settings::default();
+        assert!(phpstan(root, &s).is_none(), "no vendor/bin/phpstan, no run");
+
+        let bin = root.join("vendor/bin/phpstan");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        let cmd = phpstan(root, &s).unwrap();
+        // The PHP on PATH unless one is selected.
+        assert_eq!(Path::new(cmd.get_program()).file_stem(), Some("php".as_ref()));
+        let file = |name: &str| root.join("src").join(name).to_string_lossy().into_owned();
+        assert_eq!(
+            cmd.get_args().map(text).collect::<Vec<_>>(),
+            [
+                &*bin.to_string_lossy(),
+                "analyse",
+                "--error-format=json",
+                "--no-progress",
+                &file("A.php"),
+                &file("B.php")
+            ]
+        );
+        assert_eq!(env(&cmd), [("XDEBUG_MODE".to_string(), Some("off".to_string()))]);
+
+        // A selected PHP runs PHPStan whatever its name, and is first on PATH for what PHPStan starts.
+        let php = root.join("php85/bin").join(crate::exe("php8.5"));
+        s.languages.php.interpreter = php.to_string_lossy().into_owned();
+        let cmd = phpstan(root, &s).unwrap();
+        assert_eq!(cmd.get_program(), php.as_os_str());
+        let env = env(&cmd);
+        let path = env.iter().find(|(k, _)| k == "PATH").and_then(|(_, v)| v.clone()).expect("PATH");
+        assert_eq!(std::env::split_paths(&path).next(), Some(root.join("php85/bin")));
+        assert!(env.contains(&("XDEBUG_MODE".to_string(), Some("off".to_string()))));
+    }
+
+    #[test]
+    fn phpstan_uses_the_configuration_file_of_the_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let bin = root.join("vendor/bin/phpstan");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        let args = |config: &str| {
+            let mut s = Settings::default();
+            s.languages.php.phpstan_config = config.into();
+            phpstan(root, &s).unwrap().get_args().map(text).collect::<Vec<_>>()
+        };
+        let resolved = root.join("build/phpstan.ci.neon").to_string_lossy().into_owned();
+        assert_eq!(args(" build/phpstan.ci.neon ")[4..6], ["--configuration".to_string(), resolved]);
+        let absolute = if cfg!(windows) { "C:/etc/phpstan.neon" } else { "/etc/phpstan.neon" };
+        assert_eq!(args(absolute)[4..6], ["--configuration", absolute]);
+        // Empty: PHPStan finds phpstan.neon, phpstan.neon.dist or phpstan.dist.neon itself.
+        assert!(!args(" ").iter().any(|a| a.starts_with("--configuration")));
     }
 
     #[test]

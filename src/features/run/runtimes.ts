@@ -86,6 +86,14 @@ async function projectPython(): Promise<string | null> {
   }
 }
 
+async function projectPhp(): Promise<string | null> {
+  try {
+    return await call(commands.sdkPhpEffective());
+  } catch {
+    return null;
+  }
+}
+
 async function rootMarkers(root: string | null): Promise<{ deno: boolean; bun: boolean }> {
   if (!root) return { deno: false, bun: false };
   try {
@@ -106,10 +114,12 @@ export async function toolEnv(
   file: string | null,
   root: string | null,
   python: boolean,
+  php = false,
 ): Promise<ToolEnv> {
-  const [tools, py, markers] = await Promise.all([
+  const [tools, py, phpInterpreter, markers] = await Promise.all([
     locateTools(names, file),
     python ? projectPython() : Promise.resolve(null),
+    php ? projectPhp() : Promise.resolve(null),
     names.includes("deno") || names.includes("bun") ? rootMarkers(root) : Promise.resolve({ deno: false, bun: false }),
   ]);
   return {
@@ -117,6 +127,7 @@ export async function toolEnv(
     compileDir: compileDir ?? "/tmp/openidea-run",
     windows: isWindows(),
     python: py,
+    php: phpInterpreter,
     ...markers,
   };
 }
