@@ -309,6 +309,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_compare_scope,
         vcs::vcs_compare_paths,
         vcs::vcs_diff_revisions,
+        vcs::vcs_diff_numstat,
         vcs::vcs_merge_base,
         vcs::vcs_create_patch,
         vcs::vcs_patch_preview,

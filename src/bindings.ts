@@ -577,6 +577,11 @@ export const commands = {
 	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
 	/**  Files that differ between two revisions (the "N files updated" of Update Project). */
 	vcsDiffRevisions: (repo: string | null, from: string, to: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_revisions", { repo, from, to })),
+	/**
+	 *  Added and deleted lines between two revisions (Git Log › lines added and deleted).
+	 *  `paths` limits the diff to those repository-relative paths; empty diffs every file.
+	 */
+	vcsDiffNumstat: (repo: string | null, from: string, to: string, paths: string[]) => typedError<FileLineStats[], IdeError>(__TAURI_INVOKE("vcs_diff_numstat", { repo, from, to, paths })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
 	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
 	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
@@ -3484,12 +3489,14 @@ export type ExtensionCount = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt";
+export type ExternalFormatter = "prettier" | "oxfmt" | "ruff";
 
-/**  An external formatter (Prettier, oxfmt) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules, managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH. */
 	path?: string,
+	/**  Ruff only: directory containing its configuration, or a configuration file. */
+	configurationDirectory?: string,
 	languages?: string[],
 	/**  Prefer this formatter even when a language server offers formatting. */
 	prefer?: boolean,
@@ -3574,6 +3581,18 @@ export type FileIconThemeOptions = {
 export type FileIdentifiers = {
 	path: IpcPath,
 	occurrences: IdentifierOccurrence[],
+};
+
+/**
+ *  Added and deleted lines of one file between two revisions (`git diff --numstat`).
+ *  A rename keeps the counts of the content change; a pure rename is `0`/`0`.
+ */
+export type FileLineStats = {
+	/**  Path after the change (the only path, when the file was not renamed). */
+	path: string,
+	oldPath: string | null,
+	added: number,
+	removed: number,
 };
 
 export type FileMatch = {
@@ -4798,6 +4817,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
+	ruff?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,

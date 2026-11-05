@@ -7,8 +7,11 @@ test("Python syntax supplements retain PyCharm colours without a language server
   await expect(page.locator(".cm-content")).toBeVisible();
   await page.screenshot({ path: info.outputPath("before.png") });
   await page.goto("/e2e/pythonHighlight.html");
-  await expect(page.locator(".cm-sem-python-definition")).toHaveText("outer");
-  await expect(page.locator(".cm-sem-python-definition")).toHaveCSS("color", "rgb(34, 68, 102)");
+  await expect(page.locator(".cm-sem-python-definition").filter({ hasText: /^outer$/ })).toHaveText("outer");
+  await expect(page.locator(".cm-sem-python-definition").filter({ hasText: /^outer$/ })).toHaveCSS(
+    "color",
+    "rgb(34, 68, 102)",
+  );
   await expect(page.locator(".cm-sem-python-nested")).toHaveCSS("color", "rgb(51, 85, 119)");
   await expect(page.locator(".cm-sem-python-docstring")).toHaveCSS("color", "rgb(102, 136, 170)");
   await expect(page.locator(".cm-sem-python-docstring")).toHaveCSS("text-decoration-line", "none");
@@ -46,6 +49,11 @@ test("Python syntax supplements retain PyCharm colours without a language server
   await expect(page.locator(".cm-sem-python-constant").first()).toHaveCSS("color", "rgb(170, 85, 5)");
   await expect(page.locator(".cm-sem-python-property").first()).toHaveCSS("color", "rgb(170, 102, 6)");
   await expect(page.locator(".cm-sem-python-type-parameter").first()).toHaveCSS("color", "rgb(170, 119, 7)");
+  await expect(page.locator(".cm-sem-python-fstring").first()).toHaveCSS("color", "rgb(170, 136, 17)");
+  await expect(page.locator(".cm-sem-python-predefined-definition")).toHaveCSS("color", "rgb(187, 153, 34)");
+  await expect(page.locator(".cm-sem-python-predefined-usage")).toHaveCSS("color", "rgb(204, 170, 51)");
+  await expect(page.locator(".cm-sem-keyword").filter({ hasText: /^type$/ })).toHaveCSS("color", "rgb(17, 34, 51)");
+  await expect(page.locator(".cm-sem-unused")).toHaveCSS("color", "rgb(111, 115, 122)");
   expect(errors).toEqual([]);
   await page.screenshot({ path: info.outputPath("python-highlighting.png") });
 });

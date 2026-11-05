@@ -12,6 +12,29 @@ describe("color schemes", () => {
     expect(schemeTokens("light").get("--syn-keyword")).toBe("#0033b3");
     expect(schemeTokens("dark").get("--syn-keyword")).toBe("#cf8e6d");
     expect(schemeTokens("light").get("--bg-editor")).not.toMatch(/var\(/);
+    const dark = schemeTokens("dark");
+    expect(dark.get("--syn-python-builtin")).toBe("#8888c6");
+    expect(dark.get("--syn-python-predefined-definition")).toBe("#b200b2");
+    expect(dark.get("--syn-python-predefined-usage")).toBe("#b200b2");
+    expect(dark.get("--syn-python-instance-attribute")).toBe("#bcbec4");
+    expect(dark.get("--syn-python-fstring")).toBe("#a5c261");
+    expect(dark.get("--syn-python-bytes")).toBe("#a5c261");
+  });
+
+  it("gives PHP variables and function calls their own colours, as PhpStorm (#1532)", () => {
+    expect(schemeTokens("dark").get("--syn-php-variable")).toBe("#c77dbb");
+    expect(schemeTokens("dark").get("--syn-php-function-call")).toBe("#56a8f5");
+    expect(schemeTokens("light").get("--syn-php-variable")).toBe("#871094");
+    expect(schemeTokens("light").get("--syn-php-function-call")).toBe("#00627a");
+    const css = readFileSync("src/styles/tokens.css", "utf8");
+    expect(css).toMatch(/\.cm-editor\[data-language="PHP"\] \{\s*--syn-variable: var\(--syn-php-variable\);/);
+    // An imported PHP_VAR still wins: language overrides are emitted for the same element, !important.
+    const imported = schemeCss(
+      "theme-default",
+      { dark: { "php.identifier": { foreground: "#48d8ee" } } },
+      document.documentElement,
+    );
+    expect(imported).toMatch(/\.cm-editor\[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/);
   });
 
   it("emits scheme and override declarations", () => {

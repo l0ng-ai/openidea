@@ -91,6 +91,7 @@ const UNTRANSLATED = new Set<string>([
   "CMake",
   "Prettier",
   "oxfmt",
+  "Ruff",
   "IntelliJ IDEA",
   "PHPStan",
   // Go environment variables and placeholder values
