@@ -17,6 +17,23 @@ export interface ReferenceInput {
   line: number;
 }
 
+/** Start the write during the user gesture, while the reference is still being resolved. */
+export function copyReferenceToClipboard(
+  reference: Promise<string>,
+  clipboard: Clipboard = navigator.clipboard,
+  Item: typeof ClipboardItem = ClipboardItem,
+): Promise<void> {
+  return clipboard.write([
+    new Item({ "text/plain": reference.then((text) => new Blob([text], { type: "text/plain" })) }),
+  ]);
+}
+
+/** Position inside a selected identifier or the identifier under the caret. */
+export function referenceOffset(text: string, from: number, to: number): number | null {
+  if (from !== to) return /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(text.slice(from, to)) ? from : null;
+  return /[\p{L}\p{N}_$]/u.test(text[from] ?? "") ? from : null;
+}
+
 export function relativePath(path: string, root: string | null): string {
   return root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
 }
@@ -49,7 +66,8 @@ export function pythonModulePath(path: string, root: string | null): string {
   const parts = relativePath(path, root)
     .replace(/\.pyi?$/, "")
     .split("/");
-  if (parts[0] === "src" && parts.length > 1) parts.shift();
+  const src = parts.lastIndexOf("src");
+  if (src >= 0 && src < parts.length - 1) parts.splice(0, src + 1);
   if (parts[parts.length - 1] === "__init__") parts.pop();
   return parts.join(".");
 }

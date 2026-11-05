@@ -3915,7 +3915,6 @@
   "version managed from {version}": "{version}에서 관리되는 버전",
   "Cannot find the declaration": "선언을 찾을 수 없습니다",
   "Cannot exclude {name}": "{name}을(를) 제외할 수 없습니다",
-  "Copied reference: {reference}": "참조 복사됨: {reference}",
   "{count} lines": "{count}줄",
   "Preview of {path}": "{path} 미리보기",
   "Editor for {path}": "{path} 편집기",

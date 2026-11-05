@@ -318,7 +318,7 @@ export const vscodeMacos: Record<string, string[]> = {
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],
-  "editor.copyReference": [],
+  "editor.copyReference": ["Meta+Alt+Shift+C"],
   "code.pasteAsPlainText": [],
   "code.expressionTypeInfo": [],
   "code.implementMethods": [],

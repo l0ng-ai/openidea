@@ -1,4 +1,5 @@
 {
+  "Cannot copy reference": "无法复制引用",
   "Group actions": "分组操作",
   "New Project Group": "新建项目组",
   "Group name:": "组名称：",
@@ -3973,7 +3974,6 @@
   "Solarized Dark": "Solarized 深色",
   "One Light": "One 浅色",
   "One Dark": "One 深色",
-  "Copied reference: {reference}": "已复制引用：{reference}",
   "{count} lines": "{count} 行",
   "Preview of {path}": "{path} 的预览",
   "Editor for {path}": "{path} 的编辑器",
