@@ -1,0 +1,17 @@
+[package]
+name = "ide-php"
+description = "Native in-process PHP code intelligence: syntax, summaries, indexes, types and inspections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+# Mago (MIT OR Apache-2.0) parses PHP. Pinned exactly: its AST API changes
+# between minor releases, and every phase builds on it.
+mago-allocator = "=1.59.0"
+mago-syntax = "=1.59.0"
+mago-names = "=1.59.0"
+mago-phpdoc-syntax = "=1.59.0"
+mago-span = "=1.59.0"
+mago-database = "=1.59.0"

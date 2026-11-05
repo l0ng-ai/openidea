@@ -81,7 +81,7 @@ The design:
 - [x] Phase 0.4: Intelephense baseline smoke test
       Add a `php` case to `crates/ide-host/tests/language_smoke.rs` using the existing `Checks` table: definition, references, hover, completion, diagnostic, rename (if the free tier supports it; otherwise mark it as unsupported the way other languages do), format, signature and structure, on `fixtures/php-app`. It runs with `cargo test -p ide-host --test language_smoke -- --ignored --exact php` and must pass with Intelephense installed. This is the baseline the engine has to match.
 
-- [ ] Phase 0.5: Mago test-drive and `ide-php` skeleton
+- [x] Phase 0.5: Mago test-drive and `ide-php` skeleton
   1. Create `crates/ide-php`: workspace member, `ide-core` dependency, crate docs.
   2. Add pinned Mago crate dependencies (`mago-syntax`, `mago-names`, `mago-phpdoc-syntax`, plus whichever span and interner crates they need).
   3. Add an ignored test or example, `crates/ide-php/examples/parse_corpus.rs`. It parses every `.php` file in the corpora and reports files per second, peak memory, the number of files with errors, and how well parsing recovers on 200 files cut short at random offsets.
