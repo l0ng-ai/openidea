@@ -1971,6 +1971,17 @@ fn view_item_menus_name_a_declared_view() {
         let err = f.host.install_from_dir(&hello_variant(dir.path(), with_menu(extra)), &Consent::all()).unwrap_err();
         assert!(err.message.contains(message), "{extra}: {}", err.message);
     }
+
+    let dir = tempfile::tempdir().unwrap();
+    let web_view = "[[contributes.views]]\nid = \"page\"\ntitle = \"Page\"\nicon = \"plugin\"\nlocation = \"right\"\nweb = \"web/index.html\"\n";
+    let pkg = hello_variant(dir.path(), |m| {
+        let on_page = with_menu("menu = \"view.item.context\"\nview = \"page\"")("");
+        format!("{m}\n{web_view}\n{on_page}")
+    });
+    std::fs::create_dir_all(pkg.join("web")).unwrap();
+    std::fs::write(pkg.join("web/index.html"), "<p>hi</p>").unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("is a web view"), "{}", err.message);
 }
 
 /// The sample plugin makes a tool window with a tree view.

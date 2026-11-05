@@ -149,8 +149,11 @@ A `view.item.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
 view's `tree` or `list`, and each command gets the item's key as its argument.
 `when` clauses can use `viewItem` (the key) and `viewItemKind` (the key up to
-its first `:`, so `pod` for `pod:default/nginx`). Other menus refuse `view`,
-and no menu opens when no declaration matches the item:
+its first `:`, so `pod` for `pod:default/nginx`; the whole key when it has no
+`:`). Only the menu's `when` sees them, not the command's own `when`; a command
+whose `when` is false shows greyed out. Other menus refuse `view`, a web view
+has no item menu, and no menu opens when no declaration matches the item.
+For example:
 
 ```toml
 [[contributes.menus]]
