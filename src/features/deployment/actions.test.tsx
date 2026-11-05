@@ -109,6 +109,32 @@ describe("deployment eligibility", () => {
     expect(useDeployment.getState().sync).toBeNull();
     expect(mocks.compare).not.toHaveBeenCalled();
   });
+  it("opens default-server synchronization in a native window on desktop too", async () => {
+    mocks.desktop = true;
+    // The default server needs no choice, and on desktop nothing opens in the page.
+    mocks.actions
+      .find((action) => action.id === "deployment.syncWithDefault")!
+      .run({ arg: ["/project/a", "/project/b"] });
+    await vi.waitFor(() => expect(mocks.openWindow).toHaveBeenCalledWith("one", ["/project/a", "/project/b"]));
+    expect(mocks.choose).not.toHaveBeenCalled();
+    expect(useDeployment.getState().sync).toBeNull();
+    expect(mocks.compare).not.toHaveBeenCalled();
+  });
+  it.each(["deployment.syncWith", "deployment.syncWithDefault"])(
+    "reports a comparison window that cannot open (%s)",
+    async (action) => {
+      mocks.desktop = true;
+      mocks.choose.mockResolvedValue("one");
+      mocks.openWindow.mockRejectedValueOnce(new Error("window failed"));
+      await run(action);
+      await vi.waitFor(() =>
+        expect(mocks.notify).toHaveBeenCalledWith(
+          expect.objectContaining({ title: expect.stringContaining("Cannot open comparison") }),
+        ),
+      );
+      expect(useDeployment.getState().sync).toBeNull();
+    },
+  );
   it("saves edits made in the local diff before synchronization and stops if saving fails", async () => {
     await run("deployment.syncWith");
     mocks.choose.mockResolvedValue("one");

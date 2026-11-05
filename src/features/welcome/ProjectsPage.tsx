@@ -19,8 +19,9 @@ import {
   showContextMenu,
   T,
 } from "@/ui";
-import { askRemoveRecent, ProjectBadge, recentMenu } from "./RecentList";
-import { filterRecent, openRecent, useRecent, type RecentMatch } from "./recent";
+import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu } from "./RecentList";
+import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
+import type { RecentProjectGroup } from "@/platform/ipc";
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -113,16 +114,78 @@ function Landing() {
   );
 }
 
+/** A project group: click or Enter folds it, its menu renames or removes it. */
+function GroupRow({
+  group,
+  count,
+  id,
+  selected,
+  onSelect,
+}: {
+  group: RecentProjectGroup;
+  count: number;
+  id: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (selected) ref.current?.scrollIntoView?.({ block: "nearest" });
+  }, [selected]);
+  return (
+    <div
+      ref={ref}
+      id={id}
+      role="option"
+      aria-selected={selected}
+      aria-expanded={group.expanded}
+      className={clsx(styles.project, styles.group, selected && styles.projectSelected)}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => {
+        onSelect();
+        void setGroupExpanded(group.name, !group.expanded);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onSelect();
+        showContextMenu(e, groupMenu(group));
+      }}
+    >
+      <Icon name={group.expanded ? "chevron-down" : "chevron-right"} size={16} />
+      <Icon name="folder" size={16} />
+      <span className={styles.groupName}>{group.name}</span>
+      <span className={styles.groupCount}>{count}</span>
+      <IconButton
+        icon="more"
+        title="Group actions"
+        aria-haspopup="menu"
+        iconSize={16}
+        className={styles.projectMore}
+        tabIndex={-1}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect();
+          const r = e.currentTarget.getBoundingClientRect();
+          showContextMenu({ x: r.left, y: r.bottom + 2 }, groupMenu(group));
+        }}
+      />
+    </div>
+  );
+}
+
 function ProjectRow({
   m,
   id,
   selected,
+  nested,
   onSelect,
   onOpen,
 }: {
   m: RecentMatch;
   id: string;
   selected: boolean;
+  /** Listed under a group. */
+  nested?: boolean;
   onSelect: () => void;
   onOpen: () => void;
 }) {
@@ -143,7 +206,7 @@ function ProjectRow({
       role="option"
       aria-selected={selected}
       title={m.project.path}
-      className={clsx(styles.project, selected && styles.projectSelected)}
+      className={clsx(styles.project, nested && styles.projectNested, selected && styles.projectSelected)}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         onSelect();
@@ -195,10 +258,10 @@ function ProjectRow({
 }
 
 /** Keys shared by the search field and the list. Returns true when handled. */
-export function handleListKey(
+export function handleListKey<T>(
   e: Pick<KeyboardEvent, "key" | "metaKey" | "shiftKey">,
-  ctx: { items: readonly RecentMatch[]; current: number; caretAtEnd: boolean },
-): { kind: "move"; index: number } | { kind: "open" | "remove" | "menu"; match: RecentMatch } | null {
+  ctx: { items: readonly T[]; current: number; caretAtEnd: boolean },
+): { kind: "move"; index: number } | { kind: "open" | "remove" | "menu"; match: T } | null {
   const m = ctx.items[ctx.current];
   if (e.key === "Enter") return m ? { kind: "open", match: m } : null;
   if (m && ((e.key === "Delete" && ctx.caretAtEnd) || (e.key === "Backspace" && e.metaKey)))
@@ -210,13 +273,14 @@ export function handleListKey(
 
 export function ProjectsPage() {
   const projects = useRecent((s) => s.projects);
+  const groups = useRecent((s) => s.groups);
   const loaded = useRecent((s) => s.loaded);
   const home = useRecent((s) => s.home);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const search = useRef<HTMLInputElement>(null);
   const baseId = useId();
-  const items = useMemo(() => filterRecent(projects, query, home), [projects, query, home]);
+  const items = useMemo(() => recentRows(projects, groups, query, home), [projects, groups, query, home]);
   const current = Math.max(0, Math.min(active, items.length - 1));
 
   if (!loaded) return null;
@@ -228,6 +292,13 @@ export function ProjectsPage() {
     const input = e.target instanceof HTMLInputElement ? e.target : null;
     const caretAtEnd =
       !input || (input.selectionStart === input.value.length && input.selectionEnd === input.value.length);
+    const row = items[current];
+    // A group folds with ← / → (and Enter, below), like a tree node.
+    if (row?.kind === "group" && !input && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      e.preventDefault();
+      void setGroupExpanded(row.group.name, e.key === "ArrowRight");
+      return;
+    }
     const r = handleListKey(e, { items, current, caretAtEnd });
     if (!r) {
       // Typing in the list goes to the search field.
@@ -240,12 +311,24 @@ export function ProjectsPage() {
       return;
     }
     e.preventDefault();
-    if (r.kind === "move") setActive(r.index);
-    else if (r.kind === "open") void openRecent(r.match.project);
-    else if (r.kind === "remove") void askRemoveRecent(r.match.project);
+    if (r.kind === "move") {
+      setActive(r.index);
+      return;
+    }
+    const match: RecentRow = r.match;
+    if (match.kind === "group") {
+      if (r.kind === "open") void setGroupExpanded(match.group.name, !match.group.expanded);
+      else if (r.kind === "menu") {
+        const el = document.getElementById(optionId(current))?.getBoundingClientRect();
+        showContextMenu({ x: (el?.right ?? 0) - 40, y: (el?.top ?? 0) + 24 }, groupMenu(match.group));
+      }
+      return;
+    }
+    if (r.kind === "open") void openRecent(match.m.project);
+    else if (r.kind === "remove") void askRemoveRecent(match.m.project);
     else {
       const el = document.getElementById(optionId(current))?.getBoundingClientRect();
-      showContextMenu({ x: (el?.right ?? 0) - 40, y: (el?.top ?? 0) + 24 }, recentMenu(r.match.project));
+      showContextMenu({ x: (el?.right ?? 0) - 40, y: (el?.top ?? 0) + 24 }, recentMenu(match.m.project));
     }
   };
 
@@ -279,16 +362,28 @@ export function ProjectsPage() {
         className={styles.projectList}
         onKeyDown={onKeyDown}
       >
-        {items.map((m, i) => (
-          <ProjectRow
-            key={m.project.path}
-            m={m}
-            id={optionId(i)}
-            selected={i === current}
-            onSelect={() => setActive(i)}
-            onOpen={() => void openRecent(m.project)}
-          />
-        ))}
+        {items.map((row, i) =>
+          row.kind === "group" ? (
+            <GroupRow
+              key={`group:${row.group.name}`}
+              group={row.group}
+              count={row.count}
+              id={optionId(i)}
+              selected={i === current}
+              onSelect={() => setActive(i)}
+            />
+          ) : (
+            <ProjectRow
+              key={row.m.project.path}
+              m={row.m}
+              id={optionId(i)}
+              selected={i === current}
+              nested={row.group !== null}
+              onSelect={() => setActive(i)}
+              onOpen={() => void openRecent(row.m.project)}
+            />
+          ),
+        )}
         {items.length === 0 && (
           <div className={styles.noMatches}>
             <T>No matching projects</T>

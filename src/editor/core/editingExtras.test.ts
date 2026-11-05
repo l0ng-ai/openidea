@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { cyclicExpandWord, expandCandidates, prefixStart } from "./wordCompletion";
+import type { OutlineItem } from "@/platform/ipc";
 import { pythonModulePath, qualifiedReference, rustImplType, rustModulePath } from "./copyReference";
+import { declarationChain } from "./view/outline";
 
 describe("cyclic expand word", () => {
   const text = "alphaOne x alphaTwo y al| alphaThree alphaOne";
@@ -101,5 +103,33 @@ describe("copy reference", () => {
     expect(
       qualifiedReference({ ...base, root: null, language: "markdown", path: "/x/a.md", text: "", chain: [] }),
     ).toBe("/x/a.md:5");
+    expect(qualifiedReference({ ...base, language: "python", path: "/p/pkg/mod.py", text: "", chain: [] })).toBe(
+      "pkg/mod.py:5",
+    );
+    expect(qualifiedReference({ ...base, language: "rust", path: "/p/src/a.rs", text: "", chain: [] })).toBe(
+      "src/a.rs:5",
+    );
+  });
+
+  it("names a symbol only with the caret on its name, like IDEA", () => {
+    const item = (name: string, range: number[], sel: number[], children: OutlineItem[] = []): OutlineItem => ({
+      name,
+      detail: null,
+      kind: "class",
+      range: { start: { line: range[0]!, col: range[1]! }, end: { line: range[2]!, col: range[3]! } },
+      selection_range: { start: { line: sel[0]!, col: sel[1]! }, end: { line: sel[2]!, col: sel[3]! } },
+      children,
+    });
+    // class Book {        line 0, name at cols 6-10
+    //   void sum() {      line 1, name at cols 7-10
+    //     total += 1;     line 2
+    const outline = [item("Book", [0, 0, 4, 1], [0, 6, 0, 10], [item("sum", [1, 2, 3, 3], [1, 7, 1, 10])])];
+    const names = (line: number, col: number) => declarationChain(outline, line, col).map((i) => i.name);
+    expect(names(1, 8)).toEqual(["Book", "sum"]);
+    expect(names(1, 10)).toEqual(["Book", "sum"]);
+    expect(names(0, 6)).toEqual(["Book"]);
+    expect(names(2, 6)).toEqual([]);
+    expect(names(1, 2)).toEqual([]);
+    expect(names(5, 0)).toEqual([]);
   });
 });

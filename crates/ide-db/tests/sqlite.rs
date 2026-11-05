@@ -1,7 +1,9 @@
 //! Introspection, queries and table edits against a real SQLite file.
 
 use ide_core::{CancellationToken, IdeResult};
-use ide_db::{CellValue, DataSource, DbDriver, DbManager, DbOptions, DbProperty, DbRowEdit, DbTableKind, SortKey};
+use ide_db::{
+    CellValue, DataSource, DbDriver, DbManager, DbOptions, DbProperty, DbRowEdit, DbTableKind, QueryResult, SortKey,
+};
 
 async fn setup() -> (tempfile::TempDir, DbManager) {
     let tmp = tempfile::tempdir().unwrap();
@@ -120,6 +122,28 @@ async fn queries_with_limits_nulls_and_blobs() -> IdeResult<()> {
 
     let err = db.execute("s1", "SELECT nope FROM users", 10, &c).await.unwrap_err();
     assert!(err.message.contains("nope"), "{}", err.message);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_later_page_returns_only_its_rows() -> IdeResult<()> {
+    let (_tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    let sql = "SELECT id FROM users ORDER BY id";
+    let ids = |r: &QueryResult| r.rows.iter().map(|row| row[0].clone().unwrap()).collect::<Vec<_>>();
+
+    let second = db.execute_from("s1", sql, 1, 1, &c).await?;
+    assert_eq!(ids(&second), vec!["2"]);
+    assert!(second.has_more);
+    assert_eq!(second.columns.len(), 1);
+
+    let last = db.execute_from("s1", sql, 2, 5, &c).await?;
+    assert_eq!(ids(&last), vec!["3"]);
+    assert!(!last.has_more);
+
+    let past = db.execute_from("s1", sql, 9, 5, &c).await?;
+    assert!(past.rows.is_empty() && !past.has_more);
+    assert_eq!(past.columns.len(), 1, "columns of a page past the end come from the prepared statement");
     Ok(())
 }
 

@@ -77,6 +77,8 @@ impl Host {
             lap = std::time::Instant::now();
         };
         let root = dunce::canonicalize(root)?;
+        let opening = self.opening(window);
+        let _opening = opening.lock();
         // Reject a damaged manifest before replacing the currently open project.
         ide_workspace::workspace::Workspace::load(&root)?;
         // The window reloaded (or asked again) for the project it already has: keep
@@ -230,6 +232,11 @@ impl Host {
                 if cfg.name == "jdtls" {
                     let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
                     ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
+                    ide_sdk::apply::configure_gradle_import(
+                        cfg,
+                        effective.languages.java.gradle.linked_projects.as_deref(),
+                        build_files.as_deref(),
+                    );
                 }
             }));
         }
@@ -564,6 +571,8 @@ impl Host {
             return Err(IdeError::invalid(format!("{} is a folder", file.display())));
         }
         let dir = file.parent().map(Path::to_path_buf).ok_or_else(|| IdeError::invalid("no parent folder"))?;
+        let opening = self.opening(window);
+        let _opening = opening.lock();
         if let Ok(current) = self.project(window)
             && current.light
         {
@@ -876,8 +885,14 @@ impl Project {
 
     /// Effective source / test / resource / excluded roots (detected + Project Structure marks).
     pub fn roots(&self) -> ProjectRoots {
-        let detected = with_gradle_roots(&self.root, &self.build_cache_dir(), &self.detected_roots.read());
-        linked_roots(&self.root, &self.settings.effective(), &detected)
+        let settings = self.settings.effective();
+        let detected = with_gradle_roots(
+            &self.root,
+            &self.build_cache_dir(),
+            &settings.languages.java.gradle,
+            &self.detected_roots.read(),
+        );
+        linked_roots(&self.root, &settings, &detected)
     }
 
     /// Where the Maven / Gradle tool windows cache what the build tools reported.
@@ -1078,7 +1093,7 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
     }
     let mut out: Vec<PathBuf> = Vec::new();
     let user = settings.project_structure.content_roots.iter().map(|r| PathBuf::from(r.trim()));
-    for p in user.chain(ide_build::gradle_external_roots(root, build_cache)) {
+    for p in user.chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle)) {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
@@ -1182,31 +1197,93 @@ pub(crate) fn jdtls_maven_import(
     settings: &ide_core::settings::Settings,
 ) -> (Vec<PathBuf>, Option<Vec<String>>) {
     let maven = &settings.languages.java.maven;
-    if maven.unlinked_projects.is_empty() {
+    let gradle = &settings.languages.java.gradle;
+    if maven.unlinked_projects.is_empty() && gradle.linked_projects.is_none() {
         return (Vec::new(), None);
     }
-    let model = ide_build::maven::load(root);
+    let model = ide_build::maven::load_linked(root, maven);
     let unlinked = ide_build::maven::UnlinkedProjects::from_model(&model, maven);
     let excluded = unlinked.poms().map(PathBuf::from).collect();
-    let build_files = unlinked.import_poms(&model).map(|poms| {
-        let gradle = ide_build::gradle::load(root).and_then(|g| {
+    let poms = unlinked.import_poms(&model).or_else(|| {
+        gradle.linked_projects.as_ref().map(|_| {
+            model
+                .projects
+                .iter()
+                .filter(|p| !p.aggregated && !unlinked.contains(&p.pom))
+                .map(|p| p.pom.clone())
+                .collect()
+        })
+    });
+    let build_files = poms.map(|poms| {
+        let gradle = ide_build::gradle::load_linked(root, gradle).into_iter().filter_map(|g| {
             let dir = root.join(&g.dir);
             let names = ide_build::gradle::SETTINGS_FILES.iter().chain(ide_build::gradle::BUILD_FILES);
             names.map(|n| dir.join(n)).find(|f| f.is_file())
         });
-        poms.iter().map(|pom| root.join(pom)).chain(gradle).map(|f| ide_lsp::path_to_uri_string(&f)).collect()
+        let eclipse = if settings.languages.java.gradle.linked_projects.is_some() {
+            independent_eclipse_projects(root)
+        } else {
+            Vec::new()
+        };
+        poms.iter()
+            .map(|pom| root.join(pom))
+            .chain(gradle)
+            .chain(eclipse)
+            .map(|f| ide_lsp::path_to_uri_string(&f))
+            .collect()
     });
     (excluded, build_files)
+}
+
+/// Explicit Gradle imports must retain Eclipse projects without re-importing generated build metadata.
+fn independent_eclipse_projects(root: &Path) -> Vec<PathBuf> {
+    let managed = |dir: &Path| {
+        std::iter::once("pom.xml")
+            .chain(ide_build::gradle::SETTINGS_FILES.iter().copied())
+            .chain(ide_build::gradle::BUILD_FILES.iter().copied())
+            .any(|name| dir.join(name).is_file())
+    };
+    if managed(root) {
+        return Vec::new();
+    }
+    let walker = ignore::WalkBuilder::new(root)
+        .standard_filters(false)
+        .filter_entry(move |entry| {
+            if !entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                return false;
+            }
+            if entry.depth() > 0
+                && (entry.file_name().to_string_lossy().starts_with('.')
+                    || matches!(
+                        entry.file_name().to_str(),
+                        Some("node_modules" | "target" | "build" | "dist" | "out" | "bin" | "vendor")
+                    )
+                    || entry.path().parent().is_some_and(|parent| parent.join(".project").is_file()))
+            {
+                return false;
+            }
+            !managed(entry.path())
+        })
+        .build();
+    let mut projects: Vec<_> =
+        walker.flatten().map(|entry| entry.path().join(".project")).filter(|path| path.is_file()).collect();
+    projects.sort();
+    projects
 }
 
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
 /// static detection guesses. Folders outside the project keep their absolute path, which
 /// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
-fn with_gradle_roots(root: &Path, build_cache: &Path, detected: &[SourceFolder]) -> Vec<SourceFolder> {
+fn with_gradle_roots(
+    root: &Path,
+    build_cache: &Path,
+    settings: &ide_core::settings::GradleSettings,
+    detected: &[SourceFolder],
+) -> Vec<SourceFolder> {
     use ide_build::gradle::ReportedRoot;
     use ide_workspace::roots::RootKind;
     let mut out: Vec<SourceFolder> = Vec::new();
-    for (dir, kind) in ide_build::gradle_source_roots(build_cache) {
+    for (dir, kind) in ide_build::gradle_source_roots(root, build_cache, settings) {
         if !dir.is_dir() {
             continue;
         }
@@ -1377,6 +1454,37 @@ pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
 #[cfg(test)]
 mod maven_linkage_tests {
     #[test]
+    fn explicit_gradle_links_preserve_independent_eclipse_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in
+            ["linked", "unlinked", "eclipse", "nested/eclipse", "unlinked/subproject", "maven", "build/generated"]
+        {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join(".project"), "<projectDescription/>").unwrap();
+        }
+        for dir in ["linked", "unlinked"] {
+            std::fs::write(root.join(dir).join("settings.gradle"), "").unwrap();
+        }
+        std::fs::write(root.join("maven/pom.xml"), "<project/>").unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.gradle.linked_projects = Some(vec!["linked".into()]);
+        let (_, files) = super::jdtls_maven_import(root, &settings);
+        let files = files.unwrap();
+        let uri = |path: &str| ide_lsp::path_to_uri_string(&root.join(path));
+        assert!(files.contains(&uri("linked/settings.gradle")));
+        assert!(files.contains(&uri("maven/pom.xml")));
+        assert!(files.contains(&uri("eclipse/.project")));
+        assert!(files.contains(&uri("nested/eclipse/.project")));
+        assert!(!files.iter().any(|path| path.contains("unlinked") || path.contains("build/generated")));
+        assert!(!files.contains(&uri("linked/.project")));
+        assert!(!files.contains(&uri("maven/.project")));
+        settings.languages.java.gradle.linked_projects = Some(vec![]);
+        let (_, files) = super::jdtls_maven_import(root, &settings);
+        assert_eq!(files.unwrap(), [uri("maven/pom.xml"), uri("eclipse/.project"), uri("nested/eclipse/.project")]);
+    }
+
+    #[test]
     fn jdtls_imports_the_linked_modules_and_the_gradle_build_once_a_reactor_module_is_unlinked() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1473,7 +1581,8 @@ mod gradle_roots_tests {
         std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
         let guessed = SourceFolder { path: "src/it/java".into(), kind: RootKind::Source, detected_from: None };
         let other = SourceFolder { path: "web".into(), kind: RootKind::Source, detected_from: None };
-        let out = with_gradle_roots(&root, &cache, &[guessed, other.clone()]);
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
         let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
         assert_eq!(

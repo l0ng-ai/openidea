@@ -224,7 +224,8 @@ describe("application configurations", () => {
     });
     expect(applicationConfig({ className: "a.Tool" }, "m/src/test/java/a/Tool.java")).toMatchObject({
       kind: "application",
-      cwd: "m",
+      module: "m",
+      cwd: null,
       args: ["-cp", "${testClasspath}", "a.Tool"],
     });
   });

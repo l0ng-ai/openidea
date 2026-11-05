@@ -39,17 +39,14 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
-import { isRemoteWindow } from "@/platform/remote";
+import { hostOs, isRemoteWindow } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
 const mutable = (n: ProjectNode) => !n.root && !n.placeholder && !n.readOnly;
 
 const get = () => useProjectTree.getState();
-
-const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-const isWindows = /Win/i.test(ua);
-/** macOS and Windows file systems are case-insensitive by default. */
-const caseInsensitive = /Mac|Win/i.test(ua);
+const caseInsensitiveOs = (os: string) => os === "windows" || os === "macos";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -236,6 +233,9 @@ export function cancelEditing() {
 export function checkEditingName(name: string) {
   const { editing } = get();
   if (!editing) return { error: null };
+  const os = hostOs();
+  const isWindows = os === "windows";
+  const caseInsensitive = caseInsensitiveOs(os);
   if (editing.kind === "new" && editing.pkg) {
     const { segments, error } = packageSegments(name, editing.pkg);
     if (!segments) return { error };
@@ -645,6 +645,7 @@ async function pasteFromOsClipboard(paths: string[], target: string) {
 /** The same files, as the clipboard keeps them (`/`-separated, any order). */
 function sameFiles(files: string[], paths: string[] | undefined): boolean {
   if (!paths || files.length !== paths.length) return false;
+  const caseInsensitive = caseInsensitiveOs(usePlatform.getState().os);
   const key = (list: string[]) =>
     list
       .map((p) => (caseInsensitive ? p.toLowerCase() : p))
@@ -687,6 +688,7 @@ export async function transfer(
   if (!root) return false;
   const fs = projectFs(root);
   await loadDir(target);
+  const caseInsensitive = caseInsensitiveOs(hostOs());
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
   const hasName = (n: string) => taken.has(caseInsensitive ? n.toLowerCase() : n);
   const isTaken = (n: string) => hasName(n) || (isUnityAssetFolder(target) && hasName(`${n}.meta`));
@@ -744,6 +746,7 @@ export async function transfer(
 async function moveInto(paths: string[], target: string): Promise<boolean> {
   paths = assetPaths(paths);
   await loadDir(target);
+  const caseInsensitive = caseInsensitiveOs(hostOs());
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
   const errors: string[] = [];
   const moves: { from: string; to: string }[] = [];

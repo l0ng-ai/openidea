@@ -11,7 +11,7 @@ import {
   commands,
   isCancelled,
   nextRequestId,
-  type GradleProject,
+  type GradleModel,
   type MavenDependency,
   type MavenProject,
 } from "@/platform/ipc";
@@ -53,6 +53,7 @@ import {
   type DependencyTreeNode,
   type DependencyUsage,
 } from "./analyzer";
+import { gradleProjectKey } from "./model";
 import { syncTool, useAnalyzer, useBuild } from "./store";
 import styles from "./DependencyAnalyzer.module.css";
 
@@ -67,13 +68,13 @@ const GRADLE = "gradle:";
 const CONFIGURATIONS = ["compileClasspath", "runtimeClasspath", "testCompileClasspath", "testRuntimeClasspath"];
 
 type GradleTree = { deps: MavenDependency[] | null; error: string | null; loading: boolean };
-/** Reports already read in this session, by `root|path|configuration`: reopening the tab doesn't run Gradle again. */
+/** Reports already read in this session, by workspace, build, project and configuration: reopening the tab doesn't run Gradle again. */
 const gradleTrees = new Map<string, MavenDependency[]>();
 
 /** The `dependencies` report of `path` for `configuration`, cached; a new `generation` runs Gradle again. */
-function useGradleTree(path: string | null, configuration: string, generation: number) {
+function useGradleTree(path: string | null, buildDir: string | null, configuration: string, generation: number) {
   const root = useBuild((s) => s.root);
-  const key = path && root ? `${root}|${path}|${configuration}` : null;
+  const key = path && root ? JSON.stringify([root, buildDir, path, configuration]) : null;
   const [state, setState] = useState<GradleTree & { key: string | null }>({
     key: null,
     deps: null,
@@ -98,7 +99,7 @@ function useGradleTree(path: string | null, configuration: string, generation: n
     let done = false;
     setState({ key, deps: cached ?? null, error: null, loading: true });
     const offline = useBuild.getState().settings.gradle.offline;
-    call(commands.gradleDependencies(path, configuration, offline, request))
+    call(commands.gradleDependencies(path, configuration, offline, request, buildDir))
       .then((deps) => {
         const tree = fromGradle(deps);
         gradleTrees.set(key, tree);
@@ -115,7 +116,7 @@ function useGradleTree(path: string | null, configuration: string, generation: n
       live = false;
       if (!done) void commands.cancelRequest(request).catch(() => {});
     };
-  }, [key, path, configuration, generation]);
+  }, [key, path, buildDir, configuration, generation]);
   const current: GradleTree = state.key === key ? state : { deps: null, error: null, loading: !!key };
   const cancel = () => {
     if (running.current != null) void commands.cancelRequest(running.current).catch(() => {});
@@ -162,20 +163,22 @@ function versionLabel(d: MavenDependency) {
   return d.version ?? "";
 }
 
-function moduleOptions(maven: readonly MavenProject[], gradle: readonly GradleProject[]): SelectOption[] {
+function moduleOptions(maven: readonly MavenProject[], gradle: readonly GradleModel[]): SelectOption[] {
   return [
     ...maven
       .filter((p) => p.packaging !== "pom" || p.dependencies.length > 0)
       .map((p) => ({ value: p.pom, label: p.displayName, detail: p.pom, icon: "maven-project" })),
     // buildSrc's tasks can't be run from the build.
-    ...gradle
-      .filter((p) => p.build !== ":buildSrc")
-      .map((p) => ({
-        value: `${GRADLE}${p.path}`,
-        label: p.name,
-        detail: p.path,
-        icon: p.path === ":" ? "gradle-project" : "gradle-module",
-      })),
+    ...gradle.flatMap((build) =>
+      build.projects
+        .filter((p) => !p.build?.endsWith(":buildSrc"))
+        .map((p) => ({
+          value: gradleProjectKey(build, p),
+          label: p.name,
+          detail: `${build.dir || "."} ${p.path}`,
+          icon: p.path === ":" ? "gradle-project" : "gradle-module",
+        })),
+    ),
   ];
 }
 
@@ -332,7 +335,7 @@ function UsagesPane({
 export function DependencyAnalyzer(_props: { input: EditorInput }) {
   const tx = useTx();
   const maven = useBuild((s) => s.model?.maven ?? null);
-  const gradle = useBuild((s) => s.model?.gradle ?? null);
+  const gradle = useBuild((s) => s.model?.gradle);
   const syncing = useBuild((s) => s.syncing.maven);
   const chosen = useAnalyzer((s) => s.module);
   const [query, setQuery] = useState("");
@@ -343,13 +346,18 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
   const [mode, setMode] = useState<Mode>("list");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const options = useMemo(() => moduleOptions(maven?.projects ?? [], gradle?.projects ?? []), [maven, gradle]);
+  const options = useMemo(() => moduleOptions(maven?.projects ?? [], gradle ?? []), [maven, gradle]);
   const value = options.some((o) => o.value === chosen) ? chosen! : (options[0]?.value ?? null);
-  const gradlePath = value?.startsWith(GRADLE) ? value.slice(GRADLE.length) : null;
+  const selectedGradle = value?.startsWith(GRADLE)
+    ? (gradle ?? [])
+        .flatMap((build) => build.projects.map((project) => ({ build, project })))
+        .find(({ build, project }) => gradleProjectKey(build, project) === value)
+    : null;
+  const gradlePath = selectedGradle?.project.path ?? null;
   const pom = value != null && gradlePath == null ? value : null;
   const module = pom ? (maven?.projects.find((p) => p.pom === pom) ?? null) : null;
-  const gradleProject = gradlePath != null ? (gradle?.projects.find((p) => p.path === gradlePath) ?? null) : null;
-  const report = useGradleTree(gradlePath, configuration, generation);
+  const gradleProject = selectedGradle?.project ?? null;
+  const report = useGradleTree(gradlePath, selectedGradle?.build.dir ?? null, configuration, generation);
   const deps = useMemo(
     () => (gradlePath != null ? (report.deps ?? []) : (module?.dependencies ?? [])),
     [gradlePath, report.deps, module],
@@ -428,7 +436,7 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
     showContextMenu({ x: e.clientX, y: e.clientY }, items);
   };
 
-  if (!maven && !gradle) return <EmptyState title="No Maven or Gradle projects" />;
+  if (!maven && !gradle?.length) return <EmptyState title="No Maven or Gradle projects" />;
 
   const treeView = (
     <div className={styles.body}>

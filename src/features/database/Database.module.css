@@ -560,21 +560,6 @@
 .gridHost {
   position: relative;
 }
-/* IDEA's floating row count at the bottom of a result. */
-.rowPill {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  padding: 3px 10px;
-  border: 1px solid var(--border-popup, var(--border));
-  border-radius: var(--radius-small);
-  background: var(--bg-popup, var(--bg-elev));
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-  box-shadow: var(--shadow-popup, none);
-  pointer-events: none;
-}
 .resultSource {
   color: var(--fg-muted);
   font-size: var(--fs-small);
@@ -1259,4 +1244,78 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   resize: vertical;
+}
+
+/* The grid beside the Record / Value / Aggregates panel, under its search bar. */
+.dataMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* IDEA's search bar above a result grid. */
+.gridSearch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-ui);
+}
+.gridSearchField {
+  flex: 0 1 360px;
+  min-width: 160px;
+}
+.gridSearchCount {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding: 0 6px;
+  white-space: nowrap;
+  min-width: 56px;
+}
+.gridSearchNone {
+  color: var(--danger);
+}
+.cellMatch {
+  background: var(--bg-text-search-result);
+}
+.cellMatchCurrent {
+  background: var(--bg-text-search-result-current);
+}
+
+/* IDEA's floating pager at the bottom of a result: |< < 1-500 of 501+ > >| and the page size. */
+.resultPager {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border: 1px solid var(--border-popup, var(--border));
+  border-radius: var(--radius-small);
+  background: var(--bg-popup, var(--bg-elev));
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  box-shadow: var(--shadow-popup, none);
+  white-space: nowrap;
+}
+.resultPagerRange {
+  padding: 0 6px;
+}
+.resultPagerCount {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.resultPagerCount:disabled {
+  color: inherit;
+  cursor: default;
 }

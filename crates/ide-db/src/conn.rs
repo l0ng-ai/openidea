@@ -337,10 +337,13 @@ fn result_columns<R: Row>(row: &R) -> Vec<ResultColumn> {
         .collect()
 }
 
-/// Streams the results of `$sql` on executor `$exec`, keeping at most `$max` rows
-/// with their cells read as `$mode`.
+/// Streams the results of `$sql` on executor `$exec`, reading past the first `$skip`
+/// rows without decoding them, then keeping at most `$max` rows with their cells read as `$mode`.
 macro_rules! fetch {
-    ($exec:expr, $sql:expr, $max:expr, $mode:expr) => {{
+    ($exec:expr, $sql:expr, $max:expr, $mode:expr) => {
+        fetch!($exec, $sql, 0usize, $max, $mode)
+    };
+    ($exec:expr, $sql:expr, $skip:expr, $max:expr, $mode:expr) => {{
         use futures::StreamExt;
         let mut stream = sqlx::raw_sql(sqlx::AssertSqlSafe($sql.to_owned())).fetch_many($exec);
         let mut columns: Vec<ResultColumn> = Vec::new();
@@ -349,6 +352,7 @@ macro_rules! fetch {
         let mut has_more = false;
         let mut failure = None;
         let mut first: Option<Instant> = None;
+        let mut to_skip: usize = $skip;
         while let Some(item) = stream.next().await {
             first.get_or_insert_with(Instant::now);
             match item {
@@ -356,6 +360,10 @@ macro_rules! fetch {
                 Ok(sqlx::Either::Right(row)) => {
                     if columns.is_empty() {
                         columns = result_columns(&row);
+                    }
+                    if to_skip > 0 {
+                        to_skip -= 1;
+                        continue;
                     }
                     if rows.len() >= $max {
                         has_more = true;
@@ -386,7 +394,8 @@ async fn mssql_command(conn: &mut MssqlClient, sql: &str) -> IdeResult<()> {
     Ok(())
 }
 
-async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, max: usize) -> IdeResult<Fetched> {
+/// Like [`fetch!`] for SQL Server: the first `skip` rows are read past without decoding.
+async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, skip: usize, max: usize) -> IdeResult<Fetched> {
     let mut stream = conn.simple_query(sql).await.map_err(mssql_err)?;
     let first = Some(Instant::now());
     let columns = stream
@@ -399,8 +408,13 @@ async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, max: usize) -> IdeResult
         .collect();
     let mut rows = Vec::new();
     let mut has_more = false;
+    let mut to_skip = skip;
     while let Some(item) = stream.next().await {
         if let tiberius::QueryItem::Row(row) = item.map_err(mssql_err)? {
+            if to_skip > 0 {
+                to_skip -= 1;
+                continue;
+            }
             if rows.len() >= max {
                 has_more = true;
                 break;
@@ -734,7 +748,7 @@ impl Pool {
         let fetched: IdeResult<Fetched> = match self {
             Pool::SqlServer(p) => {
                 let mut conn = p.get_owned().await.map_err(mssql_pool_err)?;
-                mssql_fetch(&mut conn, sql, max).await
+                mssql_fetch(&mut conn, sql, 0, max).await
             }
             _ => with_pool!(self, p => fetch!(p, sql, max, Cells::Text)),
         };
@@ -744,11 +758,23 @@ impl Pool {
     /// Runs one statement and keeps at most `max_rows` rows. Cancelling stops
     /// the statement on the server (PostgreSQL, MySQL) and drops the connection.
     pub async fn execute(&self, sql: &str, max_rows: usize, cancel: &CancellationToken) -> IdeResult<QueryResult> {
+        self.execute_from(sql, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping them
+    /// (a later page of a result: only that page is decoded and returned).
+    pub async fn execute_from(
+        &self,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
         if let Pool::Clickhouse(p) = self {
-            return p.execute(sql, max_rows, cancel).await;
+            return p.execute_from(sql, skip, max_rows, cancel).await;
         }
         let mut conn = Held::acquire(self).await?;
-        let r = conn.execute(self, sql, max_rows, cancel).await;
+        let r = conn.execute_from(self, sql, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             conn.discard().await;
             return Err(IdeError::cancelled());
@@ -875,8 +901,21 @@ impl Held {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        self.execute_from(pool, sql, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping them
+    /// (see [`Pool::execute_from`]).
+    pub async fn execute_from(
+        &mut self,
+        pool: &Pool,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
         if let Held::Clickhouse(c) = self {
-            return c.execute(sql, max_rows, cancel).await;
+            return c.execute_from(sql, skip, max_rows, cancel).await;
         }
         let started = Instant::now();
         // `$id`: the query naming the server process, `$kill`: how another connection stops it.
@@ -887,7 +926,7 @@ impl Held {
                     None => None,
                 };
                 let r = tokio::select! {
-                    r = async { fetch!(&mut **$conn, sql, max_rows, Cells::Display) } => r,
+                    r = async { fetch!(&mut **$conn, sql, skip, max_rows, Cells::Display) } => r,
                     () = cancel.cancelled() => Err(IdeError::cancelled()),
                 };
                 if cancel.is_cancelled() {
@@ -916,7 +955,7 @@ impl Held {
             Held::SqlServer(c) => {
                 // Tiberius has no attention/cancel API; stop reading and discard the connection.
                 tokio::select! {
-                    r = mssql_fetch(c, sql, max_rows) => r?,
+                    r = mssql_fetch(c, sql, skip, max_rows) => r?,
                     () = cancel.cancelled() => return Err(IdeError::cancelled()),
                 }
             }

@@ -77,6 +77,23 @@ fn project_venv_is_the_default_interpreter() {
 }
 
 #[test]
+fn an_interpreter_outside_detection_is_named_like_a_detected_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("shop");
+    let member = fake_venv(&root.join("backend"), ".venv");
+    let sdk = crate::python_interpreter_sdk(&member, Some(&root)).unwrap();
+    assert_eq!(
+        (sdk.name.as_str(), sdk.version.as_deref(), sdk.source.as_str()),
+        ("Python 3.12 (backend)", Some("3.12.1"), "venv")
+    );
+    let own = fake_venv(&root, ".venv");
+    assert_eq!(crate::python_interpreter_sdk(&own, Some(&root)).unwrap().name, "Python 3.12 (shop)");
+    // Outside the project the folder name says which one it is.
+    let elsewhere = fake_venv(&tmp.path().join("other"), ".venv");
+    assert_eq!(crate::python_interpreter_sdk(&elsewhere, Some(&root)).unwrap().name, "Python 3.12 (.venv)");
+}
+
+#[test]
 fn pyright_gets_python_path_and_venv_env() {
     let tmp = tempfile::tempdir().unwrap();
     let py = fake_venv(tmp.path(), ".venv");

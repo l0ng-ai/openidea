@@ -73,6 +73,14 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
+        wit::ui::copy_to_clipboard(text).map_err(error)
+    }
+
+    pub fn open_url(url: &str) -> Result<(), Error> {
+        wit::ui::open_url(url).map_err(error)
+    }
+
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         wit::storage::get(key).map_err(error)
     }
@@ -150,6 +158,10 @@ mod imp {
 
     pub fn vcs_fetch(p: &ProjectRes) -> Result<(), Error> {
         wit::vcs::fetch(p).map_err(error)
+    }
+
+    pub fn vcs_remotes(p: &ProjectRes) -> Result<Vec<(String, String)>, Error> {
+        wit::vcs::remotes(p).map_err(error)
     }
 
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
@@ -339,6 +351,11 @@ impl Project {
         imp::vcs_status(&self.inner)
     }
 
+    /// Configured remotes (`(name, fetch_url)`), in order. Needs `vcs.read`.
+    pub fn vcs_remotes(&self) -> Result<Vec<(String, String)>, Error> {
+        imp::vcs_remotes(&self.inner)
+    }
+
     /// Fetches all remotes. Needs `vcs.write`; long-running, so call it in a [`Task`].
     pub fn vcs_fetch(&self) -> Result<(), Error> {
         imp::vcs_fetch(&self.inner)
@@ -526,6 +543,16 @@ pub fn set_status_item(id: &str, item: &StatusItem) {
 
 pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
+}
+
+/// Copies `text` to the system clipboard. Needs `clipboard`.
+pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
+    imp::copy_to_clipboard(text)
+}
+
+/// Opens an `http://` or `https://` URL in the user's default browser.
+pub fn open_url(url: &str) -> Result<(), Error> {
+    imp::open_url(url)
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of

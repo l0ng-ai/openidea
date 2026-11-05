@@ -14,10 +14,12 @@ import { fitScheduler, settledResize } from "./fit";
 import { installTerminalDrop } from "./drop";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
+import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
@@ -184,7 +186,7 @@ export class TerminalSession {
   private resizeObserver: ResizeObserver | null = null;
   private readonly fitter = fitScheduler(() => this.doFit());
   private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
-  private inputRaf = 0;
+  /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
   private lastSize = { cols: 0, rows: 0 };
   /** Bumped on restart so late output from a previous PTY is ignored. */
@@ -412,13 +414,22 @@ export class TerminalSession {
   }
 
   /**
-   * Routes a WebKitGTK / fcitx5 IME commit through `ImeCommitGate`: the platform reports the
-   * commit's own keystroke (code 229) and its input event, but reports `compositionstart` only
-   * for composed words — never for the punctuation an IME commits directly.
+   * Delivers the IME commits xterm loses on macOS, and routes a WebKitGTK / fcitx5 commit
+   * through `ImeCommitGate` elsewhere (that platform reports the commit's own keystroke code
+   * 229 and its input event, but reports `compositionstart` only for composed words).
    */
   private watchImeCommit() {
     const textarea = this.term.textarea;
     if (!textarea) return;
+    // WKWebView: xterm drops commits IMEs without composition events inject (Doubao) and
+    // misses text that lands after its textarea snapshot. Deliver those here.
+    if (usePlatform.getState().os === "macos") {
+      this.disposables.push({
+        dispose: ownTerminalInput({ host: this.host, textarea, send: (data) => this.send(data) }),
+      });
+      return;
+    }
+    // WebKitGTK (Linux) and WebView2 keep the fcitx5 deduplication gate.
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.keyCode === 229) this.ime.begin();
       else this.ime.keystroke();
@@ -513,6 +524,7 @@ export class TerminalSession {
       }
       this.ptyId = info.id;
       this.update({ status: "running", title: info.title || "Local" });
+      this.flushPendingInput();
     } catch (e) {
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
       this.term.writeln(RESTART_HINT);
@@ -557,26 +569,36 @@ export class TerminalSession {
   restart() {
     if (this.snapshot.status === "running" || this.snapshot.status === "starting") return;
     this.term.write("\r\n");
+    this.pendingInput = "";
     this.update({ status: "idle" });
     void this.start();
   }
 
-  /** Sends input to the PTY, coalescing rapid keystrokes per animation frame. */
+  /**
+   * Sends input to the PTY. Keystrokes are not coalesced: WebKit delivers at most one key
+   * event per frame already, and a frame-based batch only made input wait for rendering.
+   */
   input(data: string) {
+    if (!data) return;
     const status = this.snapshot.status;
     if (status === "exited" || status === "error") {
       if (data === "\r") this.restart();
       return;
     }
-    if (this.ptyId === null) return;
-    this.pendingInput += data;
-    if (this.inputRaf) return;
-    this.inputRaf = requestAnimationFrame(() => {
-      this.inputRaf = 0;
-      const chunk = this.pendingInput;
-      this.pendingInput = "";
-      if (chunk && this.ptyId !== null) void commands.termWrite(this.ptyId, chunk);
-    });
+    if (this.ptyId === null) {
+      // The shell is still being spawned (tens of ms); keep the keystrokes and send them
+      // once the PTY exists instead of dropping them.
+      this.pendingInput += data;
+      return;
+    }
+    void commands.termWrite(this.ptyId, data);
+  }
+
+  /** Sends keystrokes buffered while the PTY was starting. */
+  private flushPendingInput() {
+    const queued = this.pendingInput;
+    this.pendingInput = "";
+    if (queued && this.ptyId !== null) void commands.termWrite(this.ptyId, queued);
   }
 
   /** Writes input immediately (shortcuts translated outside xterm). */
@@ -663,7 +685,7 @@ export class TerminalSession {
     this.disposed = true;
     this.fitter.cancel();
     this.ptyResize.cancel();
-    cancelAnimationFrame(this.inputRaf);
+    this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
     if (this.ptyId !== null) void commands.termKill(this.ptyId);

@@ -507,6 +507,30 @@ export function hideLongEdges(rows: readonly GraphRow[], minLength = LONG_EDGE):
 }
 
 /**
+ * Packs each row's lanes side by side, in their order: lanes laid out by branch leave
+ * gaps (one per branch) and hidden long edges free theirs. Each row boundary and each
+ * node level is packed on its own; adjacent rows share the boundary, so lines stay joined.
+ */
+export function compactLanes(rows: readonly GraphRow[]): GraphRow[] {
+  const ranks = (lanes: Iterable<number>) => new Map([...new Set(lanes)].sort((a, b) => a - b).map((l, i) => [l, i]));
+  const boundaries = Array.from({ length: rows.length + 1 }, (_, r) =>
+    ranks([...(rows[r]?.up.map((s) => s.from) ?? []), ...(rows[r - 1]?.down.map((s) => s.to) ?? [])]),
+  );
+  return rows.map((row, r) => {
+    const node = ranks([row.lane, ...row.up.map((s) => s.to), ...row.down.map((s) => s.from)]);
+    const top = boundaries[r]!;
+    const bottom = boundaries[r + 1]!;
+    return {
+      ...row,
+      lane: node.get(row.lane)!,
+      up: row.up.map((s) => ({ ...s, from: top.get(s.from)!, to: node.get(s.to)! })),
+      down: row.down.map((s) => ({ ...s, from: node.get(s.from)!, to: bottom.get(s.to)! })),
+      width: Math.max(node.size, top.size, bottom.size),
+    };
+  });
+}
+
+/**
  * Draws a lane change as one straight diagonal across the row boundary, like IDEA: a half-row
  * segment that changes lane and the vertical half of the neighbouring row that continues it meet
  * halfway between the two lanes. Only the drawn positions change; `from` / `to` stay the lanes.

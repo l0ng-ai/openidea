@@ -472,6 +472,41 @@ pub(crate) fn default_local_repo() -> Option<PathBuf> {
     local_repository_of(&m2.join("settings.xml")).or(Some(m2.join("repository")))
 }
 
+/// The user `settings.xml` a build reads: the configured one (`~/` and project-relative
+/// paths allowed), else `~/.m2/settings.xml`.
+pub fn user_settings_file(root: &Path, settings: &ide_core::settings::MavenSettings) -> Option<PathBuf> {
+    let configured = settings.user_settings.trim();
+    if configured.is_empty() {
+        return Some(dirs::home_dir()?.join(".m2").join("settings.xml"));
+    }
+    let path = match configured.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir()?.join(rest),
+        None => PathBuf::from(configured),
+    };
+    Some(if path.is_absolute() { path } else { root.join(path) })
+}
+
+/// The profiles a `settings.xml` defines, for the Profiles list beside the POMs' own (as
+/// IDEA lists them): checked by default when `<activeProfiles>` names them or they are
+/// `activeByDefault`.
+pub fn settings_profiles(settings: &Path) -> Vec<MavenProfile> {
+    let Some(root) = std::fs::read_to_string(settings).ok().and_then(|text| xml::parse(&text)) else {
+        return Vec::new();
+    };
+    let active: Vec<String> =
+        root.list("activeProfiles", "activeProfile").iter().map(|e| e.text.trim().to_owned()).collect();
+    let mut profiles: Vec<MavenProfile> = Vec::new();
+    for profile in root.list("profiles", "profile") {
+        let Some(id) = profile.text_of("id") else { continue };
+        if profiles.iter().any(|p| p.id == id) {
+            continue;
+        }
+        let by_default = profile.at("activation/activeByDefault").is_some_and(|e| e.text.trim() == "true");
+        profiles.push(MavenProfile { active_by_default: by_default || active.contains(&id), id });
+    }
+    profiles
+}
+
 /// `<localRepository>` of a settings file, when it names one: the repository a build
 /// with `-s <file>` resolves into, which is not necessarily the user's default.
 pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
@@ -1065,10 +1100,9 @@ pub fn load(root: &Path) -> MavenModel {
     load_with_repo(root, default_local_repo())
 }
 
-/// [`load`] with the chosen `profiles` (`-P` entries; `!id` deactivates): their modules,
-/// dependencies and properties are part of the model, those turned off are not.
-pub fn load_with_profiles(root: &Path, profiles: &[String]) -> MavenModel {
-    load_with(root, default_local_repo(), profiles)
+/// [`load`] with the POMs `settings` link (Add Maven Projects).
+pub fn load_linked(root: &Path, settings: &ide_core::settings::MavenSettings) -> MavenModel {
+    load_with_linked(root, default_local_repo(), &[], &settings.linked_projects)
 }
 
 pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenModel {
@@ -1090,11 +1124,53 @@ fn profile_choice(chosen: &[String], id: &str) -> Option<bool> {
 }
 
 pub(crate) fn load_with(root: &Path, local_repo: Option<PathBuf>, profiles: &[String]) -> MavenModel {
+    load_with_linked(root, local_repo, profiles, &[])
+}
+
+/// The POMs of `linked` (project-relative, from Settings) that exist inside `root`.
+fn linked_poms(root: &Path, linked: &[String]) -> Vec<PathBuf> {
+    let base = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out: Vec<PathBuf> = Vec::new();
+    for pom in linked {
+        let pom = normalized_pom(pom);
+        if pom.is_empty() || pom.starts_with("../") || pom == ".." {
+            continue;
+        }
+        let path = root.join(&pom);
+        let inside = dunce::canonicalize(&path).is_ok_and(|p| p.starts_with(&base));
+        if path.is_file() && inside && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Whether `root` holds a Maven build or the settings link one inside it.
+pub fn has_projects(root: &Path, settings: &ide_core::settings::MavenSettings) -> bool {
+    is_maven_project(root) || !linked_poms(root, &settings.linked_projects).is_empty()
+}
+
+/// The model with the chosen `profiles` (`-P` entries; `!id` deactivates: their modules,
+/// dependencies and properties are part of the model, those turned off are not) and the
+/// `linked` POMs (Add Maven Projects): builds that no reactor lists, shown as independent
+/// top-level projects. A linked POM that turns out to be a module of the root reactor stays that module.
+pub fn load_with_linked(
+    root: &Path,
+    local_repo: Option<PathBuf>,
+    profiles: &[String],
+    linked: &[String],
+) -> MavenModel {
     let mut resolver = Resolver::new(local_repo, profiles);
     let mut model = MavenModel::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    // (pom, aggregated)
-    let mut stack: Vec<(PathBuf, bool)> = top_level_poms(root).into_iter().rev().map(|p| (p, false)).collect();
+    let mut tops = top_level_poms(root);
+    for pom in linked_poms(root, linked) {
+        if !tops.contains(&pom) {
+            tops.push(pom);
+        }
+    }
+    // (pom, aggregated); the root reactor and its modules come before linked POMs.
+    let mut stack: Vec<(PathBuf, bool)> = tops.into_iter().rev().map(|p| (p, false)).collect();
     while let Some((path, aggregated)) = stack.pop() {
         if model.projects.len() >= MAX_PROJECTS {
             break;
@@ -1216,7 +1292,7 @@ impl UnlinkedProjects {
         if settings.unlinked_projects.is_empty() {
             return Self::default();
         }
-        Self::from_model(&load(root), settings)
+        Self::from_model(&load_linked(root, settings), settings)
     }
 
     pub fn from_model(model: &MavenModel, settings: &ide_core::settings::MavenSettings) -> Self {
@@ -1496,6 +1572,37 @@ mod tests {
     }
 
     #[test]
+    fn settings_profiles_are_listed_with_the_active_ones_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("settings.xml");
+        std::fs::write(
+            &file,
+            r#"<settings>
+  <profiles>
+    <profile><id>nexus</id></profile>
+    <profile><id>jdk21</id><activation><activeByDefault>true</activeByDefault></activation></profile>
+    <profile><id>release</id></profile>
+    <profile><id>nexus</id></profile>
+    <profile><activation/></profile>
+  </profiles>
+  <activeProfiles><activeProfile>nexus</activeProfile></activeProfiles>
+</settings>"#,
+        )
+        .unwrap();
+        let p = |id: &str, active| MavenProfile { id: id.into(), active_by_default: active };
+        assert_eq!(settings_profiles(&file), [p("nexus", true), p("jdk21", true), p("release", false)]);
+        assert!(settings_profiles(&tmp.path().join("missing.xml")).is_empty());
+
+        let mut s = ide_core::settings::MavenSettings::default();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(home.join(".m2/settings.xml")));
+        s.user_settings = "conf/settings.xml".into();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(tmp.path().join("conf/settings.xml")));
+        s.user_settings = "~/work/settings.xml".into();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(home.join("work/settings.xml")));
+    }
+
+    #[test]
     fn a_settings_file_names_the_repository_to_read_goals_from() {
         let tmp = tempfile::tempdir().unwrap();
         let settings = tmp.path().join("settings.xml");
@@ -1731,6 +1838,49 @@ mod tests {
         assert_eq!(parent.profiles, ["dev", "extra"]);
         assert_eq!(core.profiles, ["dev", "extra"], "a module inherits its parent's profiles");
         assert!(model.projects.iter().all(|p| p.command == if cfg!(windows) { "mvn.cmd" } else { "mvn" }));
+    }
+
+    /// Add Maven Projects: a POM inside the project that no reactor lists becomes an
+    /// independent top-level project; one the root reactor lists stays its module.
+    #[test]
+    fn linked_poms_outside_the_reactor_are_top_level_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            "<project><groupId>demo</groupId><artifactId>main</artifactId><version>1.0</version><packaging>pom</packaging><modules><module>core</module></modules></project>",
+        );
+        write(
+            root,
+            "core/pom.xml",
+            "<project><groupId>demo</groupId><artifactId>core</artifactId><version>1.0</version></project>",
+        );
+        write(
+            root,
+            "stub/pom.xml",
+            "<project><groupId>demo</groupId><artifactId>stub</artifactId><version>1.0</version></project>",
+        );
+        let top = |m: &MavenModel| m.projects.iter().map(|p| (p.dir.clone(), p.aggregated)).collect::<Vec<_>>();
+
+        assert_eq!(top(&load_with_linked(root, None, &[], &[])), [("".into(), false), ("core".into(), true)]);
+        let linked: Vec<String> =
+            ["stub/pom.xml", "./core/pom.xml", "../outside/pom.xml", "missing/pom.xml"].map(String::from).into();
+        assert_eq!(
+            top(&load_with_linked(root, None, &[], &linked)),
+            [("".into(), false), ("core".into(), true), ("stub".into(), false)]
+        );
+
+        // Deeper than the folder search reaches: only the link makes it a Maven project.
+        let deep = tempfile::tempdir().unwrap();
+        write(deep.path(), "a/b/c/tool/pom.xml", "<project><artifactId>tool</artifactId></project>");
+        let settings = ide_core::settings::MavenSettings {
+            linked_projects: vec!["a/b/c/tool/pom.xml".into()],
+            ..Default::default()
+        };
+        assert!(!has_projects(deep.path(), &Default::default()));
+        assert!(has_projects(deep.path(), &settings));
+        assert_eq!(top(&load_linked(deep.path(), &settings)), [("a/b/c/tool".into(), false)]);
     }
 
     #[test]

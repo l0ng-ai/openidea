@@ -1,7 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { RecentProject } from "@/bindings";
 import { useProject } from "@/platform/project";
-import { filterRecent, tildify } from "./recent";
+import {
+  createGroup,
+  filterRecent,
+  groupNameError,
+  moveToGroup,
+  recentRows,
+  removeGroup,
+  renameGroup,
+  tildify,
+  useRecent,
+} from "./recent";
 import { lastSessionProject, reopenEnabled, trackSession } from "./session";
 
 const p = (name: string, path: string, branch: string | null = null): RecentProject => ({
@@ -75,5 +85,47 @@ describe("session restore", () => {
     useProject.setState({ project: null });
     expect(lastSessionProject()).toBeNull();
     stop();
+  });
+});
+
+describe("project groups", () => {
+  const rows = (query = "") =>
+    recentRows(projects, useRecent.getState().groups, query, "/Users/me").map((r) =>
+      r.kind === "group" ? `[${r.group.name} ${r.count}]` : `${r.group ? "  " : ""}${r.m.project.name}`,
+    );
+  afterEach(() => useRecent.setState({ groups: [] }));
+
+  it("lists groups first with their projects, then the rest; a search lists matches only", async () => {
+    expect(rows()).toEqual(["acme-api", "openidea-ide", "tokio", "notes"]);
+    await createGroup(" Work ", "/Users/me/dev/acme");
+    await moveToGroup("/Users/me/dev/openidea", "Work");
+    await createGroup("Oss", "/Users/me/oss/tokio");
+    expect(rows()).toEqual(["[Work 2]", "  acme-api", "  openidea-ide", "[Oss 1]", "  tokio", "notes"]);
+    expect(rows("tok")).toEqual(["tokio"]);
+
+    useRecent.setState((s) => ({ groups: s.groups.map((g) => ({ ...g, expanded: g.name !== "Work" })) }));
+    expect(rows()).toEqual(["[Work 2]", "[Oss 1]", "  tokio", "notes"]);
+  });
+
+  it("moves a project between groups, renames and removes groups without dropping projects", async () => {
+    await createGroup("Work", "/Users/me/dev/acme");
+    await createGroup("Oss");
+    expect(groupNameError("work ")).toBeNull();
+    expect(groupNameError(" Work")).toBe("A group named 'Work' already exists");
+    expect(groupNameError("Work", "Work")).toBeNull();
+    expect(groupNameError("  ")).toBe("Enter a group name");
+    // A second group of the same name is not created.
+    await createGroup("Work", "/Users/me/oss/tokio");
+    expect(useRecent.getState().groups.map((g) => g.name)).toEqual(["Work", "Oss"]);
+
+    await moveToGroup("/Users/me/dev/acme", "Oss");
+    expect(rows()).toEqual(["[Work 0]", "[Oss 1]", "  acme-api", "openidea-ide", "tokio", "notes"]);
+    await renameGroup("Oss", "Open source");
+    await moveToGroup("/Users/me/oss/tokio", "Open source");
+    await removeGroup("Work");
+    expect(rows()).toEqual(["[Open source 2]", "  acme-api", "  tokio", "openidea-ide", "notes"]);
+    await moveToGroup("/Users/me/dev/acme", null);
+    await removeGroup("Open source");
+    expect(rows()).toEqual(["acme-api", "openidea-ide", "tokio", "notes"]);
   });
 });

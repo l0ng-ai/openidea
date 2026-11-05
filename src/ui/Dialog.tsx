@@ -117,6 +117,8 @@ export interface DialogProps {
   resizable?: "both";
   minWidth?: number;
   minHeight?: number;
+  /** Height cap while content-sized; a manual resize lifts it. */
+  maxHeight?: number;
   /** Size to open at, such as one remembered from `onResized`; kept inside the window. */
   initialSize?: { w: number; h: number } | null;
   /** The size a resize ended at. */
@@ -210,6 +212,7 @@ function DialogInner({
   resizable,
   minWidth,
   minHeight,
+  maxHeight,
   initialSize,
   onResized,
   position = "center",
@@ -392,6 +395,7 @@ function DialogInner({
         style={{
           width: size ? size.w : width,
           height: size?.h,
+          maxHeight: !size && maxHeight ? `min(${maxHeight}px, 100%)` : undefined,
           translate: offset.x || offset.y ? `${offset.x}px ${offset.y}px` : undefined,
         }}
       >

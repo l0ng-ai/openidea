@@ -1,4 +1,4 @@
-package openidea:plugin@1.0.0;
+package openidea:plugin@1.1.0;
 
 /// Writes to the IDE log, tagged with the plugin id.
 interface log {
@@ -8,7 +8,7 @@ interface log {
 }
 
 interface ui {
-    use types.{notification-level};
+    use types.{error, notification-level};
 
     record status-item {
         text: string,
@@ -23,6 +23,10 @@ interface ui {
     /// Shows or updates the plugin's status bar item `id` in every window.
     set-status-item: func(id: string, item: status-item);
     remove-status-item: func(id: string);
+    /// Copies `text` to the system clipboard. Requires `clipboard`.
+    copy-to-clipboard: func(text: string) -> result<_, error>;
+    /// Opens an `http://` or `https://` URL in the user's default browser.
+    open-url: func(url: string) -> result<_, error>;
 }
 
 /// Persistent key-value storage of the plugin (survives restarts and idle

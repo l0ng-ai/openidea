@@ -365,6 +365,14 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-global:not(.cm-sem-function)": { color: "var(--syn-global, inherit)" },
   ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
+  ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {
+    color: "var(--syn-static-property, var(--syn-property))",
+    fontStyle: "var(--syn-static-property-italic, var(--syn-static-italic, italic))",
+    fontWeight: "var(--syn-static-property-bold, var(--syn-property-bold, inherit))",
+    backgroundColor: "var(--syn-static-property-bg, transparent)",
+    textDecoration: "var(--syn-static-property-effect, none)",
+    WebkitTextDecoration: "var(--syn-static-property-effect, none)",
+  },
   ".cm-sem-python-static": { fontStyle: "var(--syn-python-static-italic, normal)" },
   ".cm-sem-mutable": {
     textDecoration: "underline",

@@ -23,8 +23,26 @@ pub struct LocatedTools {
 /// Installed interpreters / toolchains of `kind`; project-local ones first.
 pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<Vec<Sdk>> {
     host.require_trust(window)?;
-    let root = host.project(window).ok().map(|p| p.root.clone());
-    tokio::task::spawn_blocking(move || ide_sdk::detect(kind, root.as_deref())).await.map_err(join_err)
+    let project = host.project(window).ok();
+    let root = project.as_ref().map(|p| p.root.clone());
+    // The interpreter the project uses is a choice even where detection doesn't look (a
+    // virtualenv in a subfolder, one picked by path), so it shows by name and version.
+    let current = match (&project, kind) {
+        (Some(p), SdkKind::Python) => ide_sdk::apply::python_interpreter(&p.root, &p.settings.effective()),
+        _ => None,
+    };
+    tokio::task::spawn_blocking(move || {
+        let mut sdks = ide_sdk::detect(kind, root.as_deref());
+        if let Some(path) = current
+            && !sdks.iter().any(|s| *s.path == *path)
+            && let Some(sdk) = ide_sdk::python_interpreter_sdk(&path, root.as_deref())
+        {
+            sdks.push(sdk);
+        }
+        sdks
+    })
+    .await
+    .map_err(join_err)
 }
 
 /// The interpreter the project uses: the configured one, else its virtualenv.

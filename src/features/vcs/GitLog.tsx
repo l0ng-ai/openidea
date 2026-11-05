@@ -49,7 +49,6 @@ import {
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
 import { nextSpeedMatch } from "./logSearch";
-import { LogIndexStatus } from "./logIndex";
 import { presentLogGraph } from "./logPresentation";
 import {
   closeLogTab,
@@ -328,7 +327,6 @@ export function LogView() {
       <SplitPanel id="commits" defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
-          <LogIndexStatus repositories={repo} />
           <CommitList />
         </div>
       </SplitPanel>
@@ -1091,6 +1089,8 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
         toggle("Date", o, "showDate"),
         toggle("Hash", o, "showHash"),
         toggle("Signature", o, "showSignature"),
+        { kind: "separator" },
+        toggle("Column Headers", o, "showColumnHeaders"),
       ],
     },
     { kind: "separator" },
@@ -1604,15 +1604,17 @@ function CommitList() {
           );
         }}
       >
-        <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
-          {opts.showRepository && useVcs.getState().roots.length > 1 && (
-            <span className={styles.colRepository}>{tx("Repository")}</span>
-          )}
-          <span className={styles.colSubject}>{tx("Commit")}</span>
-          {columns.map((column) => (
-            <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
-          ))}
-        </div>
+        {opts.showColumnHeaders && (
+          <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+            {opts.showRepository && useVcs.getState().roots.length > 1 && (
+              <span className={styles.colRepository}>{tx("Repository")}</span>
+            )}
+            <span className={styles.colSubject}>{tx("Commit")}</span>
+            {columns.map((column) => (
+              <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
+            ))}
+          </div>
+        )}
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}

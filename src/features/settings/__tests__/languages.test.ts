@@ -42,6 +42,7 @@ describe("languages settings", () => {
       userSettings: "",
       localRepository: "",
       unlinkedProjects: [],
+      linkedProjects: [],
       daemon: false,
       mvndHome: "/opt/mvnd",
     });

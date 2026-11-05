@@ -429,6 +429,36 @@ pub fn configure_maven_import(
     }
 }
 
+/// Explicit Gradle links constrain discovery and isolate JDT's persisted import state.
+pub fn configure_gradle_import(
+    cfg: &mut LanguageServerConfig,
+    linked: Option<&[String]>,
+    build_files: Option<&[String]>,
+) {
+    let Some(linked) = linked.filter(|_| cfg.name == "jdtls") else { return };
+    merge_init_options(
+        cfg,
+        json!({
+            "settings": {"java": {"import": {"gradle": {"enabled": !linked.is_empty()}}}},
+            "projectConfigurations": build_files.unwrap_or_default()
+        }),
+    );
+    if let Some(settings) = &mut cfg.settings {
+        merge(settings, json!({"java": {"import": {"gradle": {"enabled": !linked.is_empty()}}}}));
+    }
+    if let Some(index) = cfg.args.iter().position(|arg| arg == "-data")
+        && let Some(workspace) = cfg.args.get_mut(index + 1)
+    {
+        let mut hash = 0xcbf29ce484222325u64;
+        for dir in linked {
+            for byte in dir.bytes().chain([0]) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        }
+        *workspace = format!("{workspace}-gradle-{hash:016x}");
+    }
+}
+
 pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
@@ -1217,6 +1247,25 @@ mod java_compiler_tests {
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn explicit_gradle_links_scope_jdt_import_and_unlink_all_disables_gradle() {
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+        let files = ["file:///p/a/settings.gradle".to_owned(), "file:///p/maven/pom.xml".to_owned()];
+        configure_gradle_import(&mut cfg, Some(&["a".into()]), Some(&files));
+        let options = serde_json::to_value(&cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(files));
+        assert_eq!(options.pointer("/settings/java/import/gradle/enabled"), Some(&json!(true)));
+        assert!(cfg.args[1].starts_with("/cache/jdtls-gradle-"));
+        let linked_cache = cfg.args[1].clone();
+        cfg.args[1] = "/cache/jdtls".into();
+        configure_gradle_import(&mut cfg, Some(&[]), Some(&files[1..]));
+        let options = serde_json::to_value(&cfg.initialization_options).unwrap();
+        assert_eq!(options["projectConfigurations"], json!(&files[1..]));
+        assert_eq!(options.pointer("/settings/java/import/gradle/enabled"), Some(&json!(false)));
+        assert_ne!(linked_cache, cfg.args[1]);
+    }
 
     #[test]
     fn import_excludes_unlinked_modules_and_changes_persistent_workspace() {

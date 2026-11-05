@@ -116,9 +116,13 @@ export function activate(): () => void {
     const paths = own ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
     // The Build tool window's model (one load per build change), not a load of our own.
     const build = useBuildModel.getState();
-    const gradleProjects = build.root === project?.root ? (build.model?.gradle?.projects ?? []) : [];
-    const rootName = gradleProjects.find((p) => p.path === ":")?.name ?? "";
-    const groups = own && project ? gradleModuleGroups(gradleProjects, rootName, project.root) : [];
+    const gradleBuilds = build.root === project?.root ? (build.model?.gradle ?? []) : [];
+    const groups =
+      own && project
+        ? gradleBuilds.flatMap((g) =>
+            gradleModuleGroups(g.projects, g.projects.find((p) => p.path === ":")?.name ?? "", project.root, g.dir),
+          )
+        : [];
     const key = JSON.stringify([paths, groups]);
     if (key === shownRoots) return;
     shownRoots = key;

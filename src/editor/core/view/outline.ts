@@ -14,3 +14,11 @@ export function symbolChain(items: readonly OutlineItem[], line: number, col: nu
     level = hit.children;
   }
 }
+
+/** The chain up to the innermost item whose name (selection range) holds (line, col); empty off every name. */
+export function declarationChain(items: readonly OutlineItem[], line: number, col: number): OutlineItem[] {
+  const pos = { line, col };
+  const chain = symbolChain(items, line, col);
+  const named = chain.findLastIndex((i) => before(i.selection_range.start, pos) && before(pos, i.selection_range.end));
+  return chain.slice(0, named + 1);
+}

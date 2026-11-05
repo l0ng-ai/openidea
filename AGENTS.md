@@ -51,7 +51,8 @@ Visual style: dark, low-contrast greys, one cool accent
 
 Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
 (`Closes #<n>` when it resolves an issue), reproduce first, keep the diff focused, short plain description, and a
-**How it was verified** section with commands run, results and (for UI) before/after screenshots.
+**How it was verified** section with commands run, results and, when the change alters what users
+see, before/after screenshots (not for UI removed along with a feature, copy-only or non-visual changes).
 Unclear product decisions → `needs-decision` and stop.
 
 ## Skills
