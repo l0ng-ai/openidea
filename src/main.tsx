@@ -32,7 +32,10 @@ if (import.meta.env.DEV && isTauri()) {
 }
 
 installRepeatedDoubleClick();
-if (guessOs() === "macos") installReorderedTapClick();
+// WebKit only (bug 219670). In Chromium (the e2e browser) a scripted double-click stamps its
+// second press like the release before it, which the shim would take for a reordered tap and
+// click twice.
+if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
 installWindowDrag();
 installPointerFocus();
 installErrorLogging();
