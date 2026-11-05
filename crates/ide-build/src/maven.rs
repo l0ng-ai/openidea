@@ -472,6 +472,41 @@ pub(crate) fn default_local_repo() -> Option<PathBuf> {
     local_repository_of(&m2.join("settings.xml")).or(Some(m2.join("repository")))
 }
 
+/// The user `settings.xml` a build reads: the configured one (`~/` and project-relative
+/// paths allowed), else `~/.m2/settings.xml`.
+pub fn user_settings_file(root: &Path, settings: &ide_core::settings::MavenSettings) -> Option<PathBuf> {
+    let configured = settings.user_settings.trim();
+    if configured.is_empty() {
+        return Some(dirs::home_dir()?.join(".m2").join("settings.xml"));
+    }
+    let path = match configured.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir()?.join(rest),
+        None => PathBuf::from(configured),
+    };
+    Some(if path.is_absolute() { path } else { root.join(path) })
+}
+
+/// The profiles a `settings.xml` defines, for the Profiles list beside the POMs' own (as
+/// IDEA lists them): checked by default when `<activeProfiles>` names them or they are
+/// `activeByDefault`.
+pub fn settings_profiles(settings: &Path) -> Vec<MavenProfile> {
+    let Some(root) = std::fs::read_to_string(settings).ok().and_then(|text| xml::parse(&text)) else {
+        return Vec::new();
+    };
+    let active: Vec<String> =
+        root.list("activeProfiles", "activeProfile").iter().map(|e| e.text.trim().to_owned()).collect();
+    let mut profiles: Vec<MavenProfile> = Vec::new();
+    for profile in root.list("profiles", "profile") {
+        let Some(id) = profile.text_of("id") else { continue };
+        if profiles.iter().any(|p| p.id == id) {
+            continue;
+        }
+        let by_default = profile.at("activation/activeByDefault").is_some_and(|e| e.text.trim() == "true");
+        profiles.push(MavenProfile { active_by_default: by_default || active.contains(&id), id });
+    }
+    profiles
+}
+
 /// `<localRepository>` of a settings file, when it names one: the repository a build
 /// with `-s <file>` resolves into, which is not necessarily the user's default.
 pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
@@ -1534,6 +1569,37 @@ mod tests {
         );
         assert_eq!(p.goals, ["check", "checkstyle", "checkstyle-aggregate", "help"], "every goal the plugin offers");
         assert_eq!(p.prefix, "checkstyle");
+    }
+
+    #[test]
+    fn settings_profiles_are_listed_with_the_active_ones_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("settings.xml");
+        std::fs::write(
+            &file,
+            r#"<settings>
+  <profiles>
+    <profile><id>nexus</id></profile>
+    <profile><id>jdk21</id><activation><activeByDefault>true</activeByDefault></activation></profile>
+    <profile><id>release</id></profile>
+    <profile><id>nexus</id></profile>
+    <profile><activation/></profile>
+  </profiles>
+  <activeProfiles><activeProfile>nexus</activeProfile></activeProfiles>
+</settings>"#,
+        )
+        .unwrap();
+        let p = |id: &str, active| MavenProfile { id: id.into(), active_by_default: active };
+        assert_eq!(settings_profiles(&file), [p("nexus", true), p("jdk21", true), p("release", false)]);
+        assert!(settings_profiles(&tmp.path().join("missing.xml")).is_empty());
+
+        let mut s = ide_core::settings::MavenSettings::default();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(home.join(".m2/settings.xml")));
+        s.user_settings = "conf/settings.xml".into();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(tmp.path().join("conf/settings.xml")));
+        s.user_settings = "~/work/settings.xml".into();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(home.join("work/settings.xml")));
     }
 
     #[test]
