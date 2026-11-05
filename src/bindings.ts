@@ -42,6 +42,7 @@ export const commands = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 } | null>("project_current"),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
 	languages: () => __TAURI_INVOKE<LanguageInfo_Serialize[]>("languages"),
@@ -324,6 +325,7 @@ export const commands = {
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
+	indexFileExtensions: () => typedError<ExtensionCount[], IdeError>(__TAURI_INVOKE("index_file_extensions")),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
@@ -474,7 +476,15 @@ export const commands = {
 	 *  editor text. Cancellable with `cancel_request(request)`.
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
-	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
+	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
+	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
+	vcsLogUsers: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_log_users", { repo })),
+	vcsOpenExternalLog: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("vcs_open_external_log", { path })),
+	vcsLogDetails: (repo: string | null, revision: string) => typedError<LogDetails, IdeError>(__TAURI_INVOKE("vcs_log_details", { repo, revision })),
+	vcsLogDetailsBatch: (repo: string | null, revisions: string[], request: RequestId) => typedError<LogDetails[], IdeError>(__TAURI_INVOKE("vcs_log_details_batch", { repo, revisions, request })),
+	vcsLogIndex: (repo: string | null, request: number | null) => typedError<LogIndexProgress, IdeError>(__TAURI_INVOKE("vcs_log_index", { repo, request })),
+	vcsRevisionChildren: (repo: string | null, revision: string, directory: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_children", { repo, revision, directory })),
+	vcsRevisionFiles: (repo: string | null, revision: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_files", { repo, revision })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
 	/**  Combined changes of several commits, `commits` oldest first. */
 	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
@@ -620,6 +630,8 @@ export const commands = {
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
 	/**  Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path. */
 	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
+	/**  Writes one of the IDE's Gradle init scripts where the build runs; returns its path. */
+	runGradleInitScript: (name: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_init_script", { name, text })),
 	runTomcatHome: (home: string) => typedError<TomcatHome, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
 	runTomcatArtifacts: () => typedError<WebArtifact[], IdeError>(__TAURI_INVOKE("run_tomcat_artifacts")),
 	runTomcatBuild: (config: RunConfig_Deserialize) => typedError<({
@@ -738,6 +750,8 @@ export const commands = {
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective")),
+	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
+	sdkPhpLanguageLevel: (path: string) => typedError<PhpLanguageLevels, IdeError>(__TAURI_INVOKE("sdk_php_language_level", { path })),
 	/**
 	 *  SDK / library source folders shown under "External Libraries" in the Project view,
 	 *  with the Maven / Gradle dependency jars of the build model.
@@ -2115,24 +2129,7 @@ export type CommandForm = {
 	formAnswers: FormAnswer[],
 };
 
-export type Commit = {
-	id: string,
-	shortId: string,
-	parents: string[],
-	author: string,
-	email: string,
-	timeMs: number | null,
-	summary: string,
-	message: string,
-	refs: string[],
-	/**  Committer time (Log › View Options › Commit Timestamp). */
-	commitTimeMs?: number | null,
-	/**
-	 *  Per parent, under a user or text filter: the link passes commits the filter hides
-	 *  (`parents` then name the nearest shown ancestors). Empty when no parent is rewritten.
-	 */
-	dashed?: boolean[],
-};
+export type Commit = Commit_Serialize | Commit_Deserialize;
 
 /**  Commit Options (IDEA's commit options popup). */
 export type CommitOptions = {
@@ -2171,6 +2168,64 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+};
+
+export type Commit_Deserialize = {
+	id: string,
+	shortId: string,
+	parents: string[],
+	/**  Connections in the filtered graph; never use these as revision/diff parents. */
+	graphParents?: string[] | null,
+	graphDashed?: boolean[],
+	/**  Repository-relative filename at this revision in rename-following history. */
+	historyPath?: string | null,
+	logPosition?: number | null,
+	logTotal?: number | null,
+	graphBoundaryParents?: string[],
+	/**  Reachability from HEAD, computed independently of the visible filters. */
+	onCurrentBranch?: boolean | null,
+	author: string,
+	email: string,
+	committer?: string,
+	committerEmail?: string,
+	timeMs: number | null,
+	summary: string,
+	message: string,
+	messageTruncated?: boolean,
+	refs: string[],
+	/**  Committer time (Log › View Options › Commit Timestamp). */
+	commitTimeMs?: number | null,
+	/**  Legacy alias of `graph_dashed`, indexed by displayed parents. */
+	dashed?: boolean[],
+};
+
+export type Commit_Serialize = {
+	id: string,
+	shortId: string,
+	parents: string[],
+	/**  Connections in the filtered graph; never use these as revision/diff parents. */
+	graphParents?: string[] | null,
+	graphDashed?: boolean[],
+	/**  Repository-relative filename at this revision in rename-following history. */
+	historyPath?: string | null,
+	logPosition?: number | null,
+	logTotal?: number | null,
+	graphBoundaryParents?: string[],
+	/**  Reachability from HEAD, computed independently of the visible filters. */
+	onCurrentBranch?: boolean | null,
+	author: string,
+	email: string,
+	committer: string,
+	committerEmail: string,
+	timeMs: number | null,
+	summary: string,
+	message: string,
+	messageTruncated: boolean,
+	refs: string[],
+	/**  Committer time (Log › View Options › Commit Timestamp). */
+	commitTimeMs: number | null,
+	/**  Legacy alias of `graph_dashed`, indexed by displayed parents. */
+	dashed?: boolean[],
 };
 
 export type CompareResult = {
@@ -3361,6 +3416,12 @@ export type ExpressionAt = {
 	functionBoundary: SyntaxNode | null,
 	/**  The statement (or the expression when there is none) contains syntax errors. */
 	hasError: boolean,
+};
+
+/**  How many indexed files share an extension (lower case, without the dot). */
+export type ExtensionCount = {
+	extension: string,
+	files: number,
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
@@ -4856,6 +4917,22 @@ export type Location = {
 	uri?: string | null,
 };
 
+export type LogDetails = {
+	message: string,
+	containingBranches: string[],
+	/**  Git's verification code: G/U good, B bad, E error, N unsigned, X/Y expired, R revoked. */
+	signature: string,
+	signer: string,
+	key: string,
+	fingerprint: string,
+};
+
+export type LogIndexProgress = {
+	indexed: number,
+	total: number,
+	running: boolean,
+};
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type LogLocation = {
@@ -4869,11 +4946,19 @@ export type LogOrder =
 /**  `--topo-order`: lines of history are not intermixed. */
 "topo" | 
 /**  `--date-order`: commit time, but never a parent before its children. */
-"date";
+"date" | "standard";
 
 export type LogQuery = {
+	speedSearch?: string | null,
+	searchFields?: string[],
+	/**  Jump directly to an indexed window containing this commit (50 rows of context). */
+	seek?: string | null,
+	retainUntil?: string | null,
 	branch: string | null,
 	path: IpcPath | null,
+	paths?: IpcPath[],
+	/**  File history follows renames; structure filters retain fixed paths. */
+	follow?: boolean,
 	author: string | null,
 	text: string | null,
 	skip: number,
@@ -4883,6 +4968,8 @@ export type LogQuery = {
 	 *  not the left). Takes precedence over `branch`.
 	 */
 	range?: string | null,
+	/**  Additional ranges unioned with each other and with selected branches. */
+	ranges?: string[],
 	/**  `text` is a regular expression (Log filter `.*`). */
 	textRegex?: boolean,
 	/**  `text` matches case-sensitively (Log filter `Cc`). */
@@ -4891,6 +4978,7 @@ export type LogQuery = {
 	branches?: string[],
 	/**  More author needles next to `author`; a commit matches any of them (Log User filter). */
 	authors?: string[],
+	authorsExact?: boolean,
 	order?: LogOrder,
 	/**  Follow only the first parent of merges (`--first-parent`). */
 	firstParent?: boolean,
@@ -4903,6 +4991,10 @@ export type LogQuery = {
 	 */
 	sinceMs?: number | null,
 	untilMs?: number | null,
+	request?: RequestId | null,
+	summaryOnly?: boolean,
+	/**  Inclusive refresh boundary. Clients join only verified linear prefixes. */
+	stopAt?: string | null,
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
@@ -5029,6 +5121,16 @@ export type MavenSettings = {
 	userSettings?: string,
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
+	/**
+	 *  Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
+	 *  its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
+	 */
+	daemon?: boolean,
+	/**
+	 *  Maven Daemon home (or its `mvnd` executable); empty = `$MVND_HOME`, else
+	 *  `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
+	 */
+	mvndHome?: string,
 };
 
 export type MemoryCategory = 
@@ -5292,6 +5394,37 @@ export type PathCompletion = {
 	dir: boolean,
 };
 
+/**  A PHP version and where it comes from. */
+export type PhpLanguageLevel = {
+	/**  `X.Y.Z`. */
+	version: string,
+	source: PhpLevelSource,
+};
+
+/**
+ *  The PHP language level of the project `path` belongs to (a workspace member, by path, as
+ *  the language server configuration picks it).
+ */
+export type PhpLanguageLevels = {
+	/**  The one Intelephense checks against; `None`: its default. */
+	effective: PhpLanguageLevel | null,
+	/**  The one Auto picks, from `composer.json`. */
+	auto: PhpLanguageLevel | null,
+	/**
+	 *  The workspace member `path` belongs to: its own settings choose the level, not the
+	 *  workspace's. `None`: the opened project.
+	 */
+	member: IpcPath | null,
+};
+
+export type PhpLevelSource = 
+/**  `languages.php.languageLevel`. */
+"settings" | 
+/**  `config.platform.php` of `composer.json`. */
+"platform" | 
+/**  The lowest version `require.php` of `composer.json` allows. */
+"require";
+
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
@@ -5300,6 +5433,16 @@ export type PhpSettings = {
 	 *  `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
 	 */
 	languageLevel?: string,
+	/**
+	 *  Folders outside the project whose code the language server indexes too (a platform a
+	 *  module extends); absolute, `~/`, or relative to the project.
+	 */
+	includePaths?: string[],
+	/**
+	 *  Intelephense stub sets loaded on top of its defaults and the `ext-*` entries of
+	 *  `composer.json` (`wordpress`).
+	 */
+	stubs?: string[],
 };
 
 /**  The focused editor when a plugin command is invoked. */
@@ -5337,7 +5480,7 @@ export type PluginEvent =
 /**  For the script of a view's `html` body. */
 { type: "viewMessage"; pluginId: string; view: string; message: string } | 
 /**  Open a terminal running `program` (already approved and verified). */
-{ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | 
+{ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | { type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number } | 
 /**
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
@@ -5636,6 +5779,7 @@ export type ProjectInfo_Deserialize = {
 	isGit: boolean,
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectInfo_Serialize = {
@@ -5645,6 +5789,7 @@ export type ProjectInfo_Serialize = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectRoots = {
@@ -7151,6 +7296,13 @@ export type UndoOutcome = {
 	moves: FileMove[],
 	/**  Edited files changed since the refactoring, so their edits were kept. */
 	conflicts: IpcPath[],
+};
+
+export type UnityProjectInfo = {
+	editorVersion: string | null,
+	/**  File names relative to the Unity root, in stable order. */
+	solutions: string[],
+	projects: string[],
 };
 
 export type UpdateCheck = {

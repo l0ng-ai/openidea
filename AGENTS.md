@@ -69,6 +69,11 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
 - `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
   on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
+- `pnpm smoke smoke/run.test.ts -t <language>` — run and test that language's fixture through the
+  run store and a real `openidea-server` (build it first: `cargo build -p ide-host --bin openidea-server`).
+- `pnpm smoke smoke/debug.test.ts -t <language>` — debug that fixture's entry point the same way, with
+  the debugger the IDE installs (on macOS, CodeLLDB and Delve may need Developer Mode:
+  `sudo DevToolsSecurity -enable`).
 - `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion

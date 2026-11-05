@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import type { FileMatches } from "@/platform/ipc";
-import { shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import {
   Button,
   EmptyState,
@@ -53,7 +53,7 @@ import {
   type FindTab,
 } from "./windowStore";
 import styles from "./FindToolWindow.module.css";
-import { tx } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 
 type Node =
   | { kind: "dir"; key: string; label: string; count: number; children: Node[] }
@@ -205,7 +205,7 @@ export function FindToolWindow() {
   if (!tab) {
     return (
       <EmptyState title="No search results" icon="search">
-        {tx`Use Find in Files (${shortcutLabel("find.inPath") ?? "⇧⌘F"}) and choose “Open in Find Window”.`}
+        {tx`Use Find in Files (${shortcutLabel("find.inPath") ?? formatBinding(hostBinding("Meta+Shift+F"))}) and choose “Open in Find Window”.`}
       </EmptyState>
     );
   }
@@ -376,8 +376,10 @@ function FindTabView({ tab }: { tab: FindTab }) {
             ? (st.error ?? tx("Search failed"))
             : progress
               ? tx`Replacing… ${progress.done}/${progress.total} files`
-              : tx`${`${st.matchCount}${st.summary?.limitHit ? "+" : ""}`} matches in ${st.files.length} files` +
-                (marks.excluded.size ? ` · ${tx`${marks.excluded.size} excluded`}` : "")}
+              : t(st.summary?.limitHit ? "search.find.matchesIncomplete" : "search.find.matches", {
+                  matches: st.matchCount,
+                  files: st.files.length,
+                }) + (marks.excluded.size ? ` · ${tx`${marks.excluded.size} excluded`}` : "")}
         </span>
         <span className={styles.spacer} />
         <Button size="small" variant="ghost" disabled={!selection.size} onClick={exclude} title="Exclude / include (⌫)">
@@ -543,7 +545,6 @@ function FindNodeContent({ node, state, tab }: { node: Node; state: TreeRowState
               text={node.text}
               ranges={node.ranges}
               source={{ path: node.path, line: node.line, col: node.textCol }}
-              active={state.selected}
               replacement={tab.replacement}
               query={tab.query}
               preserveCase={!!tab.preserveCase}

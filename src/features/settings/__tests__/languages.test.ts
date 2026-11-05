@@ -22,7 +22,12 @@ describe("languages settings", () => {
       node: { packageManager: "pip" },
       rust: { checkCommand: "clippy", checkOnSave: false },
       typescript: { version: "" },
-      java: { jdtlsVmArgs: " -Xmx2g ", jdk: 21, jdtlsJdk: " /opt/jdk-25 ", maven: { home: " /opt/maven " } },
+      java: {
+        jdtlsVmArgs: " -Xmx2g ",
+        jdk: 21,
+        jdtlsJdk: " /opt/jdk-25 ",
+        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd " },
+      },
     });
     expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
     expect(v.node.packageManager).toBe("");
@@ -32,7 +37,14 @@ describe("languages settings", () => {
     expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(v.java.jdk).toBe("");
     expect(v.java.jdtlsJdk).toBe("/opt/jdk-25");
-    expect(v.java.maven).toEqual({ home: "/opt/maven", userSettings: "", localRepository: "", unlinkedProjects: [] });
+    expect(v.java.maven).toEqual({
+      home: "/opt/maven",
+      userSettings: "",
+      localRepository: "",
+      unlinkedProjects: [],
+      daemon: false,
+      mvndHome: "/opt/mvnd",
+    });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 
@@ -45,7 +57,15 @@ describe("languages settings", () => {
   });
 
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
-    expect(validateSettings({}).languages.php).toEqual({ interpreter: "", languageLevel: "" });
+    expect(validateSettings({}).languages.php).toEqual({
+      interpreter: "",
+      languageLevel: "",
+      includePaths: [],
+      stubs: [],
+    });
+    const lists = validateLanguages({ php: { includePaths: [" ../platform ", "", 3, "../platform"], stubs: "redis" } });
+    expect(lists.php.includePaths).toEqual(["../platform"]);
+    expect(lists.php.stubs).toEqual([]);
     expect(validateLanguages({ php: { languageLevel: "7.4" } }).php.languageLevel).toBe("7.4");
     for (const level of ["7.4.3", "9.0", 8.1, null]) {
       expect(validateLanguages({ php: { languageLevel: level } }).php.languageLevel).toBe("");

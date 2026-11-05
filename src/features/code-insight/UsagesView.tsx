@@ -5,7 +5,7 @@
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import { tokenSpans, useLineTokens } from "@/editor/lineTokens";
+import { previewColors, tokenSpans, useLineTokens } from "@/editor/lineTokens";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -399,6 +399,12 @@ function UsagesPreview({ node }: { node: Node | null }) {
     return (group?.usages ?? []).map((u) => ({ line: u.line, ranges: [[u.col, u.endCol] as const] }));
   }, [usage, search?.groups]);
   return (
-    <SourcePreview path={usage?.path ?? null} line={usage?.line ?? 0} highlights={highlights} load={previewText} />
+    <SourcePreview
+      path={usage?.path ?? null}
+      line={usage?.line ?? 0}
+      highlights={highlights}
+      load={previewText}
+      colorize={previewColors}
+    />
   );
 }

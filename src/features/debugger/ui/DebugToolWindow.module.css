@@ -251,6 +251,12 @@
   cursor: text;
 }
 
+/* Soft-Wrap off: long lines scroll horizontally. */
+.noWrap {
+  white-space: pre;
+  word-break: normal;
+}
+
 .out {
   position: absolute;
   top: 0;

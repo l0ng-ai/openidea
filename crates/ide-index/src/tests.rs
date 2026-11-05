@@ -112,6 +112,28 @@ fn indexes_files_and_symbols_honouring_excludes() {
 }
 
 #[test]
+fn counts_file_extensions_most_common_first() {
+    let fx = Fixture::new(&[
+        ("src/a.rs", "fn a() {}\n"),
+        ("src/b.RS", "fn b() {}\n"),
+        ("src/lib.rs", "fn c() {}\n"),
+        ("Cargo.toml", "[package]\n"),
+        ("README.md", "# r\n"),
+        ("docs/guide.md", "# g\n"),
+        (".gitignore", "target\n"),
+        ("Makefile", "all:\n"),
+        ("target/debug/gen.rs", "fn generated() {}\n"),
+    ]);
+    let idx = fx.open();
+    let counts: Vec<(String, u32)> = idx.file_extensions().into_iter().map(|c| (c.extension, c.files)).collect();
+    assert_eq!(
+        counts,
+        [("rs".into(), 3), ("md".into(), 2), ("toml".into(), 1)],
+        "case-folded, excluded folders and extension-less files left out"
+    );
+}
+
+#[test]
 fn file_ranking_is_idea_like() {
     let fx = sample();
     let idx = fx.open();

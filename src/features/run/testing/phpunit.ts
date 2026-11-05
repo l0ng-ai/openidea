@@ -3,24 +3,8 @@
  * suite and test event, with the exact `Class::method` names and failure details. Tests are reported as
  * `[...suites, test]`: the configured suite (`Unit`), the class, then the method (with its data set).
  */
-import { TestStdout, type TestEvent, type TestOutputParser } from "./types";
-
-const MESSAGE_RE = /^\s*##teamcity\[(\w+)((?:\s+[\w.-]+='(?:[^|']|\|.)*')*)\s*\]\s*$/;
-const ATTR_RE = /([\w.-]+)='((?:[^|']|\|.)*)'/g;
-
-/** TeamCity escapes: `|n` `|r` `|'` `|[` `|]` `||` and `|0xNNNN`. */
-function unescape(value: string): string {
-  return value.replace(/\|(0x[0-9a-fA-F]{4}|.)/g, (_, c: string) => {
-    if (c.startsWith("0x")) return String.fromCharCode(Number.parseInt(c, 16));
-    return c === "n" ? "\n" : c === "r" ? "\r" : c;
-  });
-}
-
-function attributes(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const m of text.matchAll(ATTR_RE)) out[m[1]!] = unescape(m[2]!);
-  return out;
-}
+import { serviceMessage } from "./teamcity";
+import type { TestEvent, TestOutputParser } from "./types";
 
 /** `php_qn:///app/tests/FooTest.php::\App\FooTest::testBar` → the file. */
 function hintFile(hint: string | undefined): string | null {
@@ -51,10 +35,9 @@ export function phpunitParser(): TestOutputParser {
 
   return {
     feed(line) {
-      const m = MESSAGE_RE.exec(line);
-      if (!m) return [];
-      const kind = m[1]!;
-      const a = attributes(m[2] ?? "");
+      const message = serviceMessage(line);
+      if (!message) return [];
+      const { kind, attrs: a } = message;
       const name = a.name ?? "";
       const events: TestEvent[] = [];
       switch (kind) {
@@ -187,11 +170,4 @@ export function phpunitFilter(paths: readonly (readonly string[])[]): string {
     else parts.add(`${escapePattern(last)}::.*`);
   }
   return `/(${[...parts].join("|")})$/`;
-}
-
-/** Console text of a `--teamcity` run: the service messages only feed the test tree, as in PhpStorm. */
-export class TeamcityOutput extends TestStdout {
-  constructor(feedLine: (line: string) => void) {
-    super(feedLine, (line) => (MESSAGE_RE.test(line) ? "" : line + "\n"));
-  }
 }

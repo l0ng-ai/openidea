@@ -378,7 +378,17 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
     let mut out = UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?);
     out.files = files;
+    if let Some(icon) = d.icon.as_deref().filter(|i| i.ends_with(".svg")) {
+        let path = std::path::PathBuf::from(icon);
+        let svg = super::icons::read_icon(pkg, &path)?;
+        out.assets.push((view_icon_asset(&d.id), svg));
+        out.files.push(path);
+    }
     Ok(out)
+}
+
+pub fn view_icon_asset(id: &str) -> String {
+    format!("viewIcon/{id}")
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -6,7 +6,7 @@
 import { useId, useMemo } from "react";
 import { IconButton, Input, type SelectOption } from "@/ui";
 import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
-import { Row, Section, Select, Toggle } from "../components/Form";
+import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
 import { SdkField, tildify, useDetected } from "./components";
@@ -120,6 +120,8 @@ const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
 export function PhpPage() {
   const [interpreter] = useSetting<string>("languages.php.interpreter");
   const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
+  const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
+  const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
   const { list } = useDetected("php");
   const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
   return (
@@ -130,6 +132,34 @@ export function PhpPage() {
           hint="The PHP version Intelephense checks the code against: newer syntax and functions are reported. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."
         >
           <Select value={level} options={PHP_LEVEL_OPTIONS} onChange={setLevel} aria-label="PHP language level" />
+        </Row>
+        <Row
+          label="Include paths"
+          stacked
+          hint="Folders outside the project whose classes and functions Intelephense indexes too, such as the platform a module extends. Absolute, or relative to the project."
+        >
+          <GlobListEditor
+            value={includePaths ?? []}
+            onChange={setIncludePaths}
+            placeholder="/path/to/platform"
+            emptyText="No include paths"
+            itemLabel="Include path"
+            aria-label="Include paths"
+          />
+        </Row>
+        <Row
+          label="Additional stubs"
+          stacked
+          hint="Intelephense stub sets loaded on top of its defaults, such as wordpress. Each ext-* in require or require-dev of composer.json adds its own."
+        >
+          <GlobListEditor
+            value={stubs ?? []}
+            onChange={setStubs}
+            placeholder="Stub name, e.g. wordpress"
+            emptyText="No additional stubs"
+            itemLabel="Stub"
+            aria-label="Additional stubs"
+          />
         </Row>
       </Section>
       <Section title="CLI Interpreter">
@@ -396,6 +426,7 @@ export function GradlePage() {
 }
 
 export function MavenPage() {
+  const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   return (
     <div className={styles.page}>
       <Section>
@@ -408,7 +439,7 @@ export function MavenPage() {
           directory
           browseTitle="Select Maven Home Directory"
           aria-label="Maven home path"
-          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw."
+          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled."
         />
         <PathInput
           k="languages.java.maven.userSettings"
@@ -424,6 +455,19 @@ export function MavenPage() {
           placeholder="From settings.xml, else ~/.m2/repository"
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
+        />
+        <Toggle
+          label="Use Maven Daemon (mvnd)"
+          checked={daemon}
+          onChange={setDaemon}
+          hint="Builds, sync and Maven run configurations run through mvnd for speed. It embeds its own Maven (the home and mvnw are bypassed), needs Java 17+ and builds in parallel by default. Falls back to mvn when mvnd is missing or the JDK is too old."
+        />
+        <PathInput
+          k="languages.java.maven.mvndHome"
+          label="Maven Daemon home path"
+          placeholder="MVND_HOME, else auto-detected"
+          title="Select Maven Daemon Home Directory"
+          hint="The mvnd home (or its executable). Empty = $MVND_HOME, else mvnd on PATH."
         />
       </Section>
     </div>

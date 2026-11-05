@@ -399,6 +399,53 @@ OrderControllerTest > Paging > firstPage() SKIPPED
     expect(r.get("OrderTest")).toBeUndefined();
   });
 
+  it("reports each test from the gradle init script's service messages", () => {
+    const parser = jvmParser();
+    const r = results(
+      parser,
+      `> Task :test
+##teamcity[testStarted name='addsZero()' className='demo.CalcTest']
+##teamcity[testStdOut name='addsZero()' className='demo.CalcTest' out='adding zero|n']
+##teamcity[testFinished name='addsZero()' className='demo.CalcTest' duration='11']
+##teamcity[testStarted name='fails()' className='demo.CalcTest']
+##teamcity[testFailed name='fails()' className='demo.CalcTest' message='boom' details='org.opentest4j.AssertionFailedError: boom|n\tat app//org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)|n\tat app//demo.CalcTest.fails(CalcTest.java:21)|n']
+##teamcity[testFinished name='fails()' className='demo.CalcTest' duration='4']
+CalcTest > fails() FAILED
+    org.opentest4j.AssertionFailedError at CalcTest.java:21
+##teamcity[testStarted name='add(int)|[1|]' className='demo.ParamTest']
+##teamcity[testFailed name='add(int)|[1|]' className='demo.ParamTest' message='no' details='no']
+##teamcity[testFinished name='add(int)|[1|]' className='demo.ParamTest' duration='1']
+##teamcity[testStarted name='add(int)|[2|]' className='demo.ParamTest']
+##teamcity[testFinished name='add(int)|[2|]' className='demo.ParamTest' duration='1']
+##teamcity[testStarted name='later()' className='demo.ParamTest']
+##teamcity[testIgnored name='later()' className='demo.ParamTest']
+##teamcity[testFinished name='later()' className='demo.ParamTest' duration='0']
+`,
+    );
+    // Named like the XML reports, and not repeated under Gradle's simple class name.
+    expect(r.roots.map((n) => n.name)).toEqual(["demo.CalcTest", "demo.ParamTest"]);
+    expect(leaf(r, "demo.CalcTest", "addsZero")).toMatchObject({
+      own: "passed",
+      durationMs: 11,
+      output: ["adding zero"],
+    });
+    const failed = leaf(r, "demo.CalcTest", "fails")!;
+    expect(failed.own).toBe("failed");
+    expect(failed.output[0]).toBe("org.opentest4j.AssertionFailedError: boom");
+    expect(failed.location).toMatchObject({ path: "demo/CalcTest.java", line: 21, className: "demo.CalcTest" });
+    expect(leaf(r, "demo.ParamTest", "add")?.own).toBe("failed");
+    expect(leaf(r, "demo.ParamTest", "later")?.own).toBe("skipped");
+    expect(r.hasResult(["demo.CalcTest", "fails"])).toBe(true);
+    expect(r.hasResult(["demo.CalcTest", "other"])).toBe(false);
+  });
+
+  it("shows a test as running from its start", () => {
+    const r = new TestResults();
+    r.apply(jvmParser().feed("##teamcity[testStarted name='slow()' className='demo.SlowTest']"));
+    expect(leaf(r, "demo.SlowTest", "slow")?.own).toBe("running");
+    expect(r.hasResult(["demo.SlowTest", "slow"])).toBe(false);
+  });
+
   it("parses surefire reports", () => {
     const r = results(
       jvmParser(),
@@ -423,6 +470,24 @@ org.opentest4j.AssertionFailedError: expected: <3> but was: <2>
     });
     expect(r.get("com.acme.UserTest")?.own).toBe("passed");
     expect(r.summary).toMatchObject({ passed: 2, failed: 1 });
+  });
+
+  it("locates a TestNG failure in the test, past TestNG's own frames", () => {
+    const r = results(
+      jvmParser(),
+      `[INFO] Running com.acme.PriceTest
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.2 s <<< FAILURE! -- in com.acme.PriceTest
+[ERROR] com.acme.PriceTest.rounds -- Time elapsed: 0.01 s <<< FAILURE!
+java.lang.AssertionError: expected [3] but found [2]
+	at org.testng.Assert.fail(Assert.java:111)
+	at org.testng.Assert.assertEquals(Assert.java:1080)
+	at com.acme.PriceTest.rounds(PriceTest.java:12)
+`,
+    );
+    expect(leaf(r, "com.acme.PriceTest", "rounds")?.location).toMatchObject({
+      path: "com/acme/PriceTest.java",
+      line: 12,
+    });
   });
 });
 
