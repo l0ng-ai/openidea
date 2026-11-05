@@ -4,3 +4,4 @@
  * copies them. Imported before Excalidraw.
  */
 window.EXCALIDRAW_ASSET_PATH = new URL("./", window.location.href).href;
+window.EXCALIDRAW_EXPORT_SOURCE = "https://openidea.dev";

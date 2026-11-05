@@ -104,4 +104,42 @@ describe("DocumentSync", () => {
     await sync.flush();
     expect(p.replace).not.toHaveBeenCalled();
   });
+
+  it("passes the document name to async codecs (such as .excalidraw.svg)", async () => {
+    const p = port("svg:init");
+    p.get.mockResolvedValue({ version: 0, text: "svg:init", readOnly: false, name: "arch.excalidraw.svg" });
+    const asyncCodec: SceneCodec<string> = {
+      parse: async (text, name) =>
+        name?.endsWith(".svg") && text.startsWith("svg:") ? { scene: text.slice(4) } : { error: "not svg" },
+      serialize: async (scene, name) => (name?.endsWith(".svg") ? `svg:${scene}` : scene),
+      signature: (scene) => scene,
+    };
+    const h = hooks();
+    const sync = new DocumentSync(p, asyncCodec, h, 0);
+    expect(await sync.start()).toEqual({
+      scene: "init",
+      error: null,
+      readOnly: false,
+      name: "arch.excalidraw.svg",
+    });
+    sync.changed("updated");
+    await sync.flush();
+    expect(p.text()).toBe("svg:updated");
+  });
+
+  it("ignores transient mount changes that settle back to the document's signature", async () => {
+    const p = port("svg:initial");
+    const asyncCodec: SceneCodec<string> = {
+      parse: async (text) => ({ scene: text.replace(/^svg:/, "") }),
+      serialize: async (scene) => `svg:reformatted:${scene}`,
+      signature: (scene) => scene,
+    };
+    const sync = new DocumentSync(p, asyncCodec, hooks(), 50);
+    await sync.start();
+    // Excalidraw fires onChange([]) on mount before initializeScene restores initialData.
+    sync.changed("");
+    sync.changed("initial");
+    await sync.flush();
+    expect(p.replace).not.toHaveBeenCalled();
+  });
 });

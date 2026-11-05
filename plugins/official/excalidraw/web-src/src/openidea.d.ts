@@ -38,4 +38,5 @@ interface OpenideaBridge {
 interface Window {
   openidea?: OpenideaBridge;
   EXCALIDRAW_ASSET_PATH?: string | string[];
+  EXCALIDRAW_EXPORT_SOURCE?: string;
 }

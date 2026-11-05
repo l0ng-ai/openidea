@@ -86,6 +86,12 @@ function App({ bridge }: { bridge: OpenideaBridge }) {
     if (api) void loadSceneFonts(api);
   }, [api, sync]);
 
+  useEffect(() => {
+    const onBlur = () => void sync.flush();
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [sync]);
+
   if (!start) return null;
   if (!start.scene && error)
     return (

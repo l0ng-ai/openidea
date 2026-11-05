@@ -1,12 +1,14 @@
 /**
  * The one module that talks to `@excalidraw/excalidraw`'s data API: reading a
- * `.excalidraw` file into a scene (through Excalidraw's own `restore`, so old
- * files and element skeletons work), writing it back in the format
- * Excalidraw saves, and showing a scene that changed in the text.
+ * `.excalidraw` / `.excalidraw.svg` file into a scene (through Excalidraw's
+ * own `restore`, so old files and element skeletons work), writing it back in
+ * the format Excalidraw saves, and showing a scene that changed in the text.
  */
 import {
   CaptureUpdateAction,
+  MIME_TYPES,
   convertToExcalidrawElements,
+  exportToSvg,
   getNonDeletedElements,
   getSceneVersion,
   restore,
@@ -85,6 +87,93 @@ export function parseScene(text: string): { scene: Scene } | { error: string } {
   return { scene: { elements: restored.elements, appState: restored.appState, files: restored.files ?? {}, source } };
 }
 
+export const isSvgFile = (name = ""): boolean => /\.svg$/i.test(name);
+
+function byteStringToBytes(bstring: string): Uint8Array<ArrayBuffer> {
+  const buffer = new ArrayBuffer(bstring.length);
+  const view = new Uint8Array(buffer);
+  for (let i = 0; i < bstring.length; i++) view[i] = bstring.charCodeAt(i);
+  return view;
+}
+
+function bytesToByteString(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.byteLength; i++) out += String.fromCharCode(bytes[i]!);
+  return out;
+}
+
+async function inflateBytes(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const ds = new DecompressionStream("deflate");
+  const writer = ds.writable.getWriter();
+  const writePromise = writer.write(bytes).then(() => writer.close());
+  const textPromise = new Response(ds.readable).text();
+  const [, text] = await Promise.all([writePromise, textPromise]);
+  return text;
+}
+
+async function deflateString(text: string): Promise<Uint8Array> {
+  const bytes = new TextEncoder().encode(text);
+  const cs = new CompressionStream("deflate");
+  const writer = cs.writable.getWriter();
+  const writePromise = writer.write(bytes).then(() => writer.close());
+  const bufPromise = new Response(cs.readable).arrayBuffer();
+  const [, buf] = await Promise.all([writePromise, bufPromise]);
+  return new Uint8Array(buf);
+}
+
+/** Encodes a scene JSON string into Excalidraw's `payload-version:2` base64 metadata payload. */
+export async function encodeSvgPayload(json: string): Promise<string> {
+  const compressed = await deflateString(json);
+  const envelope = {
+    version: "1",
+    encoding: "bstring",
+    compressed: true,
+    encoded: bytesToByteString(compressed),
+  };
+  return btoa(JSON.stringify(envelope));
+}
+
+/** Extracts and decodes the embedded Excalidraw JSON string from an `.excalidraw.svg` document. */
+export async function decodeSvgPayload(svg: string): Promise<{ json: string } | { error: string }> {
+  if (!svg.includes(`payload-type:${MIME_TYPES.excalidraw}`)) {
+    return { error: "This SVG does not contain an embedded Excalidraw scene." };
+  }
+  const match = /<!--\s*payload-start\s*-->\s*([\s\S]+?)\s*<!--\s*payload-end\s*-->/.exec(svg);
+  if (!match?.[1]) {
+    return { error: "Malformed Excalidraw SVG metadata payload." };
+  }
+  const version = /<!--\s*payload-version:(\d+)\s*-->/.exec(svg)?.[1] ?? "1";
+  const isByteString = version !== "1";
+  try {
+    const decodedBase64 = atob(match[1].replace(/\s+/g, ""));
+    const outerJson = isByteString ? decodedBase64 : new TextDecoder("utf-8").decode(byteStringToBytes(decodedBase64));
+    const envelope: unknown = JSON.parse(outerJson);
+    if (!isRecord(envelope)) return { error: "Invalid Excalidraw SVG metadata payload." };
+    if (!("encoded" in envelope)) {
+      if (envelope.type === "excalidraw") return { json: outerJson };
+      return { error: "Invalid Excalidraw SVG metadata payload." };
+    }
+    if (envelope.encoding !== "bstring" || typeof envelope.encoded !== "string") {
+      return { error: `Unsupported Excalidraw SVG payload encoding: ${String(envelope.encoding)}` };
+    }
+    const bytes = byteStringToBytes(envelope.encoded);
+    const json = envelope.compressed ? await inflateBytes(bytes) : new TextDecoder("utf-8").decode(bytes);
+    return { json };
+  } catch (e) {
+    return { error: e instanceof Error && e.message ? e.message : "Cannot decode Excalidraw SVG scene data." };
+  }
+}
+
+/** Reads an `.excalidraw.svg` document (or an empty new file) into a scene. */
+export async function parseSvgScene(text: string): Promise<{ scene: Scene } | { error: string }> {
+  const trimmed = text.trim();
+  if (!trimmed) return parseScene("");
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return parseScene(trimmed);
+  const decoded = await decodeSvgPayload(trimmed);
+  if ("error" in decoded) return decoded;
+  return parseScene(decoded.json);
+}
+
 /**
  * As Excalidraw saves to disk (`serializeAsJSON(…, "local")`), with a final
  * newline, keeping the file's `source`: Excalidraw writes the page's origin,
@@ -95,6 +184,27 @@ export function serializeScene(scene: Scene): string {
   const source = JSON.stringify(scene.source ?? SOURCE);
   // `source` is the third key, before any element: the first match is the file's own.
   return `${json.replace(/"source": "(?:[^"\\]|\\.)*"/, `"source": ${source}`)}\n`;
+}
+
+/** As Excalidraw exports `.excalidraw.svg` with the scene embedded in `<metadata>`. */
+export async function serializeSvgScene(scene: Scene): Promise<string> {
+  const elements = getNonDeletedElements(scene.elements);
+  const [svg, payload] = await Promise.all([
+    exportToSvg({
+      elements,
+      appState: {
+        ...scene.appState,
+        exportBackground: scene.appState.exportBackground ?? true,
+        viewBackgroundColor: scene.appState.viewBackgroundColor ?? "#ffffff",
+        exportWithDarkMode: scene.appState.exportWithDarkMode ?? false,
+        exportEmbedScene: true,
+      },
+      files: scene.files,
+      skipInliningFonts: true,
+    }),
+    encodeSvgPayload(serializeScene(scene).trimEnd()),
+  ]);
+  return svg.outerHTML.replace(/(<!--\s*payload-start\s*-->)[\s\S]*?(<!--\s*payload-end\s*-->)/, `$1${payload}$2`);
 }
 
 /** What is saved changes iff this does: pointer moves, zoom and selection don't. */
@@ -113,7 +223,11 @@ export function sceneSignature(scene: Scene): string {
   ].join(":");
 }
 
-export const codec: SceneCodec<Scene> = { parse: parseScene, serialize: serializeScene, signature: sceneSignature };
+export const codec: SceneCodec<Scene> = {
+  parse: (text, name) => (isSvgFile(name) || text.trimStart().startsWith("<") ? parseSvgScene(text) : parseScene(text)),
+  serialize: (scene, name) => (isSvgFile(name) ? serializeSvgScene(scene) : serializeScene(scene)),
+  signature: sceneSignature,
+};
 
 /** Shows a scene the text changed to, keeping the view (scroll, zoom) and the canvas's undo history. */
 export function applyScene(api: ExcalidrawImperativeAPI, scene: Scene) {
@@ -166,5 +280,5 @@ function fontStack(id: number): string {
 
 /** What exports are called: the file's name without its extension. */
 export function exportName(file: string): string {
-  return file.replace(/\.excalidraw(\.json)?$/i, "") || "drawing";
+  return file.replace(/\.excalidraw(\.(json|svg))?$/i, "") || "drawing";
 }

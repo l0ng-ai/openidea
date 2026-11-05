@@ -1,7 +1,7 @@
 id = "openidea.excalidraw"
 name = "Excalidraw"
 version = "0.1.0"
-description = "Draw and edit Excalidraw diagrams (.excalidraw). The drawing is the file's text, so the text editor follows, Undo and Save are shared, and the IDE theme applies."
+description = "Draw and edit Excalidraw diagrams (.excalidraw, .excalidraw.json, .excalidraw.svg). The drawing is the file's text, so the text editor follows, Undo and Save are shared, and the IDE theme applies."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: the Excalidraw canvas next to (or instead of) the file's text, kept in step both ways; export to PNG and SVG through the save dialog; a file icon and a New › Excalidraw Drawing template. Based on the Excalidraw editor proposed by Deng Liu (#738)."
@@ -15,7 +15,7 @@ optional = ["clipboard"]
 [[contributes.customEditors]]
 id = "canvas"
 title = "Drawing"
-patterns = ["*.excalidraw", "*.excalidraw.json"]
+patterns = ["*.excalidraw", "*.excalidraw.json", "*.excalidraw.svg"]
 priority = "default"
 layout = "preview"
 web = "web/index.html"
@@ -25,7 +25,7 @@ path = "languages/excalidraw.toml"
 
 [[contributes.fileIcons]]
 id = "excalidraw"
-patterns = ["*.excalidraw", "*.excalidraw.json"]
+patterns = ["*.excalidraw", "*.excalidraw.json", "*.excalidraw.svg"]
 icon = "icons/excalidraw.svg"
 iconDark = "icons/excalidraw_dark.svg"
 

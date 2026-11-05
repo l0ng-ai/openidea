@@ -17,9 +17,11 @@ export interface SyncPort {
   onChange(fn: (state: { version: number; text: string }) => void): void;
 }
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export interface SceneCodec<S> {
-  parse(text: string): { scene: S } | { error: string };
-  serialize(scene: S): string;
+  parse(text: string, name?: string): MaybePromise<{ scene: S } | { error: string }>;
+  serialize(scene: S, name?: string): MaybePromise<string>;
   /** Equal for scenes that save the same. */
   signature(scene: S): string;
 }
@@ -35,8 +37,10 @@ export class DocumentSync<S> {
   private version = 0;
   private text = "";
   private readOnly = false;
+  private name = "";
   private valid = true;
   private signature: string | null = null;
+  private savedSignature: string | null = null;
   private pending: S | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private writing: Promise<void> | null = null;
@@ -54,14 +58,15 @@ export class DocumentSync<S> {
     this.version = doc.version;
     this.text = doc.text;
     this.readOnly = doc.readOnly;
-    this.port.onChange((state) => this.external(state));
-    const parsed = this.codec.parse(doc.text);
+    this.name = doc.name ?? "";
+    this.port.onChange((state) => void this.external(state));
+    const parsed = await this.codec.parse(doc.text, this.name);
     if ("error" in parsed) {
       this.valid = false;
-      return { scene: null, error: parsed.error, readOnly: doc.readOnly, name: doc.name ?? "" };
+      return { scene: null, error: parsed.error, readOnly: doc.readOnly, name: this.name };
     }
-    this.signature = this.codec.signature(parsed.scene);
-    return { scene: parsed.scene, error: null, readOnly: doc.readOnly, name: doc.name ?? "" };
+    this.savedSignature = this.signature = this.codec.signature(parsed.scene);
+    return { scene: parsed.scene, error: null, readOnly: doc.readOnly, name: this.name };
   }
 
   /** The canvas changed. */
@@ -70,6 +75,14 @@ export class DocumentSync<S> {
     const signature = this.codec.signature(scene);
     if (signature === this.signature) return;
     this.signature = signature;
+    if (signature === this.savedSignature) {
+      this.pending = null;
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      return;
+    }
     this.pending = scene;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
@@ -88,17 +101,25 @@ export class DocumentSync<S> {
     const scene = this.pending;
     this.pending = null;
     if (scene === null) return;
-    const text = this.codec.serialize(scene);
-    if (text === this.text) return;
+    const sceneSig = this.codec.signature(scene);
+    if (sceneSig === this.savedSignature) return;
+    const atVersion = this.version;
     this.writing = (async () => {
+      const text = await this.codec.serialize(scene, this.name);
+      if (this.version !== atVersion) return;
+      if (text === this.text) {
+        this.savedSignature = sceneSig;
+        return;
+      }
       try {
         const { version } = await this.port.replace(this.version, text);
         this.version = version;
         this.text = text;
+        this.savedSignature = sceneSig;
       } catch (e) {
         if (!(e instanceof Error && e.message === "stale")) throw e;
         // Someone else changed it first: theirs wins.
-        this.external(await this.port.get());
+        await this.external(await this.port.get());
       }
     })().finally(() => {
       this.writing = null;
@@ -106,7 +127,7 @@ export class DocumentSync<S> {
     await this.writing;
   }
 
-  private external(state: { version: number; text: string }) {
+  private external(state: { version: number; text: string }): MaybePromise<void> {
     this.version = state.version;
     if (state.text === this.text) return;
     this.text = state.text;
@@ -114,15 +135,19 @@ export class DocumentSync<S> {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.pending = null;
-    const parsed = this.codec.parse(state.text);
-    if ("error" in parsed) {
-      this.valid = false;
-      this.hooks.error(parsed.error);
-      return;
-    }
-    this.valid = true;
-    this.signature = this.codec.signature(parsed.scene);
-    this.hooks.error(null);
-    this.hooks.apply(parsed.scene);
+    const apply = (parsed: { scene: S } | { error: string }) => {
+      if (this.version !== state.version) return;
+      if ("error" in parsed) {
+        this.valid = false;
+        this.hooks.error(parsed.error);
+        return;
+      }
+      this.valid = true;
+      this.savedSignature = this.signature = this.codec.signature(parsed.scene);
+      this.hooks.error(null);
+      this.hooks.apply(parsed.scene);
+    };
+    const parsed = this.codec.parse(state.text, this.name);
+    return "then" in parsed ? parsed.then(apply) : apply(parsed);
   }
 }
