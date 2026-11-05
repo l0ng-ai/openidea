@@ -3873,7 +3873,7 @@
   "JDK Location": "JDK 位置",
   "Downloading JDK": "正在下载 JDK",
   "Use ; to separate name patterns, * for any number of symbols, ? for one.": "使用 ; 分隔名称模式，* 匹配任意数量的字符，? 匹配单个字符。",
-  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "文件夹根据构建文件（pom.xml、build.gradle、Cargo.toml、go.mod、pyproject.toml、package.json）检测；标记或取消标记文件夹会覆盖检测结果。项目视图、在文件中查找和索引会跳过已排除的文件夹（重新打开项目以重新索引）。",
+  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "文件夹根据构建文件（pom.xml、build.gradle、Cargo.toml、go.mod、pyproject.toml、package.json、composer.json）检测；标记或取消标记文件夹会覆盖检测结果。项目视图、在文件中查找和索引会跳过已排除的文件夹（重新打开项目以重新索引）。",
   "Project virtualenv (auto-detect)": "项目 virtualenv（自动检测）",
   "<No interpreter>": "<无解释器>",
   "Package name or requirement, e.g. requests or django==5.1": "软件包名称或需求，例如 requests 或 django==5.1",

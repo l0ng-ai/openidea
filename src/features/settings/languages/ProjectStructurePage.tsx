@@ -2,7 +2,7 @@
  * Settings › Project Structure (IDEA's module "Sources" tab): the content
  * root's Sources / Tests / Resources / Test Resources / Excluded folders.
  * Roots detected from build files (`pom.xml`, `build.gradle`, `Cargo.toml`,
- * `go.mod`, `pyproject.toml`, `package.json`) apply until the user marks or
+ * `go.mod`, `pyproject.toml`, `package.json`, `composer.json`) apply until the user marks or
  * unmarks the folder (`projectStructure.*`, project scope). Roots drive the
  * project tree icons, package inference for new classes, the "Project
  * Production / Test Files" scopes, and Excluded folders are skipped by the
@@ -330,7 +330,7 @@ export function ProjectStructurePage() {
           <div className={styles.note}>
             <T>
               {
-                "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index)."
+                "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index)."
               }
             </T>
           </div>
