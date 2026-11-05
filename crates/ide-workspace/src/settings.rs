@@ -55,7 +55,9 @@ fn deep_merge(base: &mut Json, layer: Json) {
 
 fn parse_layer(text: &str) -> Result<Json, String> {
     let table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
-    serde_json::to_value(table).map_err(|e| e.to_string())
+    let mut value = serde_json::to_value(table).map_err(|e| e.to_string())?;
+    crate::settings_schema::strip_schema_key(&mut value);
+    Ok(value)
 }
 
 /// Reads one layer; `None` when missing or invalid (logged).
@@ -84,6 +86,19 @@ fn try_merge(merged: &mut Json, layer: Json) -> Result<(), String> {
     serde_json::from_value::<Settings>(candidate.clone()).map_err(|e| e.to_string())?;
     *merged = candidate;
     Ok(())
+}
+
+/// Whether `value` holds a leaf at the dotted path (objects only; an array is a
+/// leaf and does not contain further path segments).
+fn json_path_exists(value: &Json, segments: &[&str]) -> bool {
+    let mut cursor = value;
+    for seg in segments {
+        let Some(next) = cursor.as_object().and_then(|m| m.get(*seg)) else {
+            return false;
+        };
+        cursor = next;
+    }
+    true
 }
 
 fn json_to_toml(value: &Json) -> IdeResult<toml_edit::Value> {
@@ -282,6 +297,63 @@ impl SettingsStore {
         settings
     }
 
+    /// Diagnoses where the effective value of a dotted key came from. A layer
+    /// that is missing, unreadable or fails validation is ignored here exactly
+    /// as it is in `compute`, so the answer always matches effective settings.
+    pub fn resolved_from(&self, key: &str) -> crate::settings_schema::SettingsOrigin {
+        use crate::settings_schema::SettingsOrigin as Origin;
+        let segments: Vec<&str> = key.split('.').collect();
+        if segments.iter().any(|s| s.is_empty()) {
+            return Origin::Default;
+        }
+        let mut merged = defaults_json();
+        let mut origin = Origin::Default;
+        for (scope, file) in self.layers() {
+            let Some(mut layer) = read_layer(&file) else { continue };
+            if scope == SettingsScope::Project {
+                remove_custom_schemes(&mut layer);
+            }
+            if !json_path_exists(&layer, &segments) {
+                continue;
+            }
+            if try_merge(&mut merged, layer).is_err() {
+                continue;
+            }
+            origin = match scope {
+                SettingsScope::Global => Origin::Global,
+                SettingsScope::Project => Origin::Project,
+            };
+        }
+        origin
+    }
+
+    /// Declared schema version of the global settings file (`0` = legacy).
+    pub fn schema_version(&self) -> u32 {
+        let text = std::fs::read_to_string(&self.global_file).unwrap_or_default();
+        crate::settings_schema::declared_version(&text)
+    }
+
+    /// Brings the global settings file up to the current schema. Idempotent;
+    /// returns `(from, to)`. A corrupt file is left untouched and reported as an
+    /// error, so no user setting is ever lost by a migration.
+    pub fn migrate_schema(&self) -> IdeResult<(u32, u32)> {
+        use crate::settings_schema::SCHEMA_VERSION;
+        let text = match std::fs::read_to_string(&self.global_file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let (migrated, from) = crate::settings_schema::migrate(&text)?;
+        if migrated != text {
+            if let Some(dir) = self.global_file.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            ide_vfs::write_atomic(&self.global_file, migrated.as_bytes())?;
+            self.reload();
+        }
+        Ok((from, SCHEMA_VERSION))
+    }
+
     /// File › Manage IDE Settings › Export Settings…: the global layer plus
     /// frontend-held IDE state (`storage`: keymaps' companions such as live
     /// templates, macros) as one JSON file.
@@ -297,8 +369,10 @@ impl SettingsStore {
         Ok(())
     }
 
-    /// Import Settings…: replaces the global layer with the bundle's (validated
-    /// first) and returns the new effective settings and the bundle's `storage`.
+    /// Import Settings…: merges the bundle into the global layer instead of
+    /// replacing it. Values the user already set locally win; only keys absent
+    /// from the local file are added. Returns the new effective settings and the
+    /// bundle's `storage`.
     pub fn import_bundle(&self, path: &Path) -> IdeResult<(Settings, BTreeMap<String, String>)> {
         let bytes = std::fs::read(path)?;
         let bundle: SettingsBundle = serde_json::from_slice(&bytes)
@@ -308,10 +382,30 @@ impl SettingsStore {
         }
         let layer = parse_layer(&bundle.settings).map_err(|e| IdeError::invalid(format!("invalid settings: {e}")))?;
         try_merge(&mut defaults_json(), layer).map_err(|e| IdeError::invalid(format!("invalid settings: {e}")))?;
+
+        let incoming: DocumentMut = bundle
+            .settings
+            .parse()
+            .map_err(|e| IdeError::invalid(format!("invalid settings: {e}")))?;
+        let existing_text = match std::fs::read_to_string(&self.global_file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let mut existing: DocumentMut = existing_text
+            .parse()
+            .map_err(|e| IdeError::invalid(format!("{} is not valid TOML; fix it first: {e}", self.global_file.display())))?;
+        crate::settings_schema::merge_documents(&mut existing, &incoming);
+        let merged_text = existing.to_string();
+        // Validate the merged stack before touching the disk.
+        let merged_layer =
+            parse_layer(&merged_text).map_err(|e| IdeError::invalid(format!("invalid merged settings: {e}")))?;
+        try_merge(&mut defaults_json(), merged_layer)
+            .map_err(|e| IdeError::invalid(format!("invalid merged settings: {e}")))?;
         if let Some(dir) = self.global_file.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        ide_vfs::write_atomic(&self.global_file, bundle.settings.as_bytes())?;
+        ide_vfs::write_atomic(&self.global_file, merged_text.as_bytes())?;
         Ok((self.reload(), bundle.storage))
     }
 }
@@ -558,5 +652,91 @@ mod tests {
         assert_eq!(toolbar.hidden, ["vcs.branch"]);
         let s = store.set(SettingsScope::Global, "appearance.mainToolbar", Json::Null).unwrap();
         assert_eq!(s.appearance.main_toolbar, None);
+    }
+
+    // ---- spec 14: schema version, layering diagnostics, non-destructive import ----
+
+    use crate::settings_schema::SettingsOrigin as Origin;
+
+    #[test]
+    fn resolved_from_reports_the_layer_that_supplies_the_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        std::fs::write(cfg.join("settings.toml"), "keymap = \"vscode\"\n[editor]\nfontSize = 15\ntabSize = 2\n")
+            .unwrap();
+        std::fs::write(proj.join(".openidea/settings.toml"), "[editor]\ntabSize = 8\n").unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+
+        assert_eq!(store.resolved_from("editor.fontSize"), Origin::Global);
+        assert_eq!(store.resolved_from("editor.tabSize"), Origin::Project);
+        assert_eq!(store.resolved_from("editor.fontFamily"), Origin::Default);
+        assert_eq!(store.resolved_from("keymap"), Origin::Global);
+        assert_eq!(store.resolved_from("editor..fontSize"), Origin::Default);
+
+        // A broken layer is ignored, so the reported origin falls back.
+        std::fs::write(proj.join(".openidea/settings.toml"), "[editor\n").unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+        assert_eq!(store.resolved_from("editor.tabSize"), Origin::Global);
+    }
+
+    #[test]
+    fn schema_migration_is_idempotent_and_preserves_user_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("settings.toml"), "# mine\n[editor]\nfontSize = 18\n").unwrap();
+        let store = SettingsStore::load(&cfg, None);
+        assert_eq!(store.schema_version(), 0);
+
+        assert_eq!(store.migrate_schema().unwrap(), (0, 1));
+        assert_eq!(store.schema_version(), 1);
+        assert_eq!(store.effective().editor.font_size, 18.0);
+        let text = std::fs::read_to_string(cfg.join("settings.toml")).unwrap();
+        assert!(text.contains("# mine") && text.contains("fontSize = 18"), "{text}");
+
+        // Second run is a no-op and reports the current version.
+        assert_eq!(store.migrate_schema().unwrap(), (1, 1));
+        assert_eq!(std::fs::read_to_string(cfg.join("settings.toml")).unwrap(), text);
+    }
+
+    #[test]
+    fn migration_never_rewrites_a_corrupt_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let corrupt = "[editor\nfontSize = 18\n";
+        std::fs::write(cfg.join("settings.toml"), corrupt).unwrap();
+        let store = SettingsStore::load(&cfg, None);
+        assert!(store.migrate_schema().is_err());
+        assert_eq!(std::fs::read_to_string(cfg.join("settings.toml")).unwrap(), corrupt);
+    }
+
+    #[test]
+    fn importing_a_bundle_merges_instead_of_clearing_local_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+
+        let source = SettingsStore::load(&a, None);
+        source.set(SettingsScope::Global, "editor.fontSize", json!(12)).unwrap();
+        source.set(SettingsScope::Global, "editor.tabSize", json!(4)).unwrap();
+        let file = tmp.path().join("settings.json");
+        source.export_bundle(&file, BTreeMap::new()).unwrap();
+
+        // Target already has its own values, including one the bundle overrides.
+        let target = SettingsStore::load(&b, None);
+        target.set(SettingsScope::Global, "editor.fontSize", json!(22)).unwrap();
+        target.set(SettingsScope::Global, "editor.lineHeight", json!(1.8)).unwrap();
+        let (settings, _) = target.import_bundle(&file).unwrap();
+
+        assert_eq!(settings.editor.font_size, 22.0, "local value wins over the bundle");
+        assert_eq!(settings.editor.line_height, 1.8, "local-only key survives the import");
+        assert_eq!(settings.editor.tab_size, 4, "bundle adds settings the local file lacks");
+        let text = std::fs::read_to_string(b.join("settings.toml")).unwrap();
+        assert!(text.contains("lineHeight = 1.8") && text.contains("fontSize = 22"), "{text}");
     }
 }
