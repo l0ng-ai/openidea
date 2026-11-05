@@ -58,6 +58,8 @@ commands:
   merge <index> <other-index> --keep ID [--out FILE]
                           replace every publisher but ID in index with those of other-index
                           (a path or URL), their plugins and revocations
+  compat <path>           read an IntelliJ plugin (jar/zip/folder/plugin.xml) and print a
+                          compatibility report; no IntelliJ bytecode is executed
 
 environment:
   OPENIDEA_PLUGINS_DIR    the IDE's plugins directory (default: the app data directory)";
@@ -76,6 +78,7 @@ fn main() -> ExitCode {
         Some("pack") => cmd_pack(&args[1..]),
         Some("index") => cmd_index(&args[1..]),
         Some("merge") => cmd_merge(&args[1..]),
+        Some("compat") => cmd_compat(&args[1..]),
         Some("--version" | "-V") => {
             println!("openidea-plugin {} (plugin API {})", env!("CARGO_PKG_VERSION"), ide_extension::ENGINE_VERSION);
             Ok(())
@@ -93,6 +96,30 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `compat <path>` — IntelliJ descriptor compatibility report (read-only).
+fn cmd_compat(args: &[String]) -> Result<(), String> {
+    let parsed = Args::parse(args, &[], &[])?;
+    let path = match parsed.positional.as_slice() {
+        [p] => PathBuf::from(p),
+        _ => return Err("expected one plugin path (jar / zip / folder / plugin.xml)".into()),
+    };
+    let report = ide_host::plugins::intellij_compat::compat_report(&path).map_err(|e| e.to_string())?;
+    println!("{}", report.summary);
+    println!();
+    for e in &report.entries {
+        let kind = match e.kind {
+            ide_host::plugins::intellij_compat::CompatKind::Importable => "可导入",
+            ide_host::plugins::intellij_compat::CompatKind::RewriteToWasm => "需改写为 Wasm",
+            ide_host::plugins::intellij_compat::CompatKind::Unsupported => "不支持",
+        };
+        let target = e.target.as_deref().unwrap_or("—");
+        println!("  [{kind}] {:4} × {:<52} → {target}", e.count, e.point);
+    }
+    println!();
+    println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    Ok(())
 }
 
 /// Splits `args` into positionals and `--flag value` / `--switch` options.
