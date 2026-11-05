@@ -958,10 +958,15 @@ only grows:
 
 Checked automatically:
 
-- SDK `tests/api_frozen.rs`: `tests/api/<version>/` holds the WIT of each
+- SDK `tests/api_frozen.rs`: `tests/api/released/` holds the WIT of the latest
   released version; every interface, type, function and world import or
-  export in it must still exist unchanged in `wit/` (rules 1–3). Copy `wit/`
-  there when a version ships.
+  export in it must still exist unchanged in `wit/` (rules 1–3). Under the
+  released version `wit/` must match it exactly, so additions start with a
+  version bump. Each snapshot passed this check against the one before, so
+  one snapshot covers every release.
+- Releasing: when the `wit/` version changes, copy `wit/*.wit` over
+  `tests/api/released/` in the release commit. The release workflow refuses a
+  tag whose `wit/` version differs from the snapshot's.
 - `crates/ide-plugin/tests/api_compat.rs`: the versions agree, the SDK's copy
   matches, the version check (rules 4, 5); a simulated next-minor host (every
   import stubbed at the newer version, plus extra functions and an extra
