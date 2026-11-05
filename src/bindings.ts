@@ -772,6 +772,8 @@ export const commands = {
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective")),
+	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
+	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
 	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
 	sdkPhpLanguageLevel: (path: string) => typedError<PhpLanguageLevels, IdeError>(__TAURI_INVOKE("sdk_php_language_level", { path })),
 	/**

@@ -398,6 +398,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download,
         sdk::sdk_detect,
         sdk::sdk_python_effective,
+        sdk::sdk_php_effective,
         sdk::sdk_php_language_level,
         sdk::sdk_project_libraries,
         sdk::sdk_locate_tools,
