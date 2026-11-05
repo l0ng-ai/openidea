@@ -2,7 +2,7 @@
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
-import { streamSearch } from "@/features/search/common/textSearch";
+import { streamSearch } from "@/platform/textSearch";
 import { joinPath, type FileTarget } from "./links";
 import { findRubyTest } from "./rubyTests";
 import { tx } from "@/platform/i18n";
