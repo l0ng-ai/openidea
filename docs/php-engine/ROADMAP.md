@@ -194,7 +194,7 @@ The design:
 
   Also add display (PHP syntax), parsing from native type hints and from PHPDoc type expressions, and subtyping and union simplification. Reuse Mago's `algebra` and `codex` type representations if they fit; otherwise write it in-house and note why. Tests: parse, display and subtyping tables.
 
-- [ ] Phase 2.2: Lazy types and resolver
+- [x] Phase 2.2: Lazy types and resolver
       Add `LazyType`, created at summary time for unannotated returns, property defaults and constant values. Add a `Resolver` that completes lazy types against the indexes, with:
   - a cache invalidated by the modification counter
   - `visited` and `depth` guards

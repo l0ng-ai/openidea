@@ -3,7 +3,8 @@
 //! One line per declaration and member, with every field that the summary
 //! stores. `@l:c-l:c` is the name's range and `[l:c-l:c]` the declaration's
 //! (0-based lines, UTF-16 columns). Docblock tags follow their declaration,
-//! indented one level further and starting with `@`.
+//! indented one level further and starting with `@`; then the lazy type of
+//! a value or an inferred return, starting with `~`.
 
 use std::fmt::Write;
 
@@ -11,6 +12,7 @@ use super::{
     ClassLike, ConstantKind, DocBlock, DocTemplate, DocType, FileSummary, Loc, Param, Property, PropertyAccess,
     TraitRule, TypeHint, Variance, Visibility,
 };
+use crate::types::LazyType;
 
 pub(super) fn render(summary: &FileSummary) -> String {
     let mut out = String::new();
@@ -33,6 +35,7 @@ pub(super) fn render(summary: &FileSummary) -> String {
             decl_loc(function.loc)
         );
         doc(&mut out, "  ", &function.doc);
+        lazy(&mut out, "  ", "returns", &function.inferred_return);
     }
     for constant in &summary.constants {
         attributes(&mut out, "", &constant.attributes);
@@ -49,8 +52,16 @@ pub(super) fn render(summary: &FileSummary) -> String {
             decl_loc(constant.loc)
         );
         doc(&mut out, "  ", &constant.doc);
+        lazy(&mut out, "  ", "type", &constant.value_type);
     }
     out
+}
+
+/// A lazy type, as `~ returns: …` or `~ type: …`.
+fn lazy(out: &mut String, indent: &str, what: &str, ty: &Option<LazyType>) {
+    if let Some(ty) = ty {
+        let _ = writeln!(out, "{indent}~ {what}: {ty}");
+    }
 }
 
 fn template(template: &DocTemplate) -> String {
@@ -251,6 +262,7 @@ fn property(out: &mut String, property: &Property) {
     }
     let _ = writeln!(out, "{line} {} {}", name_loc(property.name_loc), decl_loc(property.loc));
     doc(out, "    ", &property.doc);
+    lazy(out, "    ", "type", &property.default_type);
 }
 
 fn class_like(out: &mut String, class: &ClassLike) {
@@ -318,6 +330,7 @@ fn class_like(out: &mut String, class: &ClassLike) {
             decl_loc(constant.loc)
         );
         doc(out, "    ", &constant.doc);
+        lazy(out, "    ", "type", &constant.value_type);
     }
     for item in &class.properties {
         property(out, item);
@@ -337,5 +350,6 @@ fn class_like(out: &mut String, class: &ClassLike) {
             decl_loc(method.loc)
         );
         doc(out, "    ", &method.doc);
+        lazy(out, "    ", "returns", &method.inferred_return);
     }
 }

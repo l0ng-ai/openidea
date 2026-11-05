@@ -20,8 +20,11 @@
 //!   so they can be parsed later without this file's imports. A
 //!   `@psalm-*` / `@phpstan-*` tag wins over the plain tag it duplicates, and
 //!   a tag whose type fails to parse keeps its name with the type `mixed`.
-//! - Default values and constant values are kept as source text; phase 2.2
-//!   turns them into lazy types.
+//! - Default values and constant values are kept as source text. Where no
+//!   type is declared, the type of a default or constant value and what a
+//!   function-like body returns are kept as [`LazyType`]s: known when the file
+//!   alone says (`= []`, `return new Foo`), else a recipe the resolver
+//!   completes against other files (`return $this->find()`, `= Foo::BAR`).
 //! - Every declaration has a [`Loc`] for its name and one for the whole
 //!   declaration, as byte offsets and as IDE ranges (0-based lines, UTF-16
 //!   columns).
@@ -40,9 +43,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::names::RelativeClass;
 use crate::syntax::ParsedFile;
+use crate::types::LazyType;
 
 /// Bump whenever a type in this module changes shape.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -187,6 +191,9 @@ pub struct ClassConstant {
     pub type_hint: Option<TypeHint>,
     /// The value expression as written.
     pub value: String,
+    /// The type of the value, for a constant with no type hint and no
+    /// `@var`.
+    pub value_type: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
     pub doc: Option<Box<DocBlock>>,
@@ -225,6 +232,9 @@ pub struct Property {
     pub is_promoted: bool,
     pub type_hint: Option<TypeHint>,
     pub default: Option<String>,
+    /// The type of the default value, for a property with a default but no
+    /// type hint and no `@var`.
+    pub default_type: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
     pub doc: Option<Box<DocBlock>>,
@@ -243,6 +253,9 @@ pub struct Method {
     pub by_ref_return: bool,
     pub params: Vec<Param>,
     pub return_type: Option<TypeHint>,
+    /// What the body returns, for a function-like with a body and neither a
+    /// return type nor `@return`.
+    pub inferred_return: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
     pub doc: Option<Box<DocBlock>>,
@@ -284,6 +297,9 @@ pub struct FunctionDecl {
     pub by_ref_return: bool,
     pub params: Vec<Param>,
     pub return_type: Option<TypeHint>,
+    /// What the body returns, for a function-like with a body and neither a
+    /// return type nor `@return`.
+    pub inferred_return: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
     pub doc: Option<Box<DocBlock>>,
@@ -307,6 +323,8 @@ pub struct ConstantDecl {
     /// The `const` statement or the `define` call.
     pub loc: Loc,
     pub value: String,
+    /// The type of the value.
+    pub value_type: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
     pub doc: Option<Box<DocBlock>>,

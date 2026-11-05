@@ -13,8 +13,14 @@ fn render(source: &str) -> String {
     summarize(source).render()
 }
 
-/// The rendering without locations, for compact expectations.
+/// The rendering without locations and lazy types, for compact
+/// expectations.
 fn shape(source: &str) -> Vec<String> {
+    shape_with_lazy(source).into_iter().filter(|line| !line.trim_start().starts_with('~')).collect()
+}
+
+/// The rendering without locations.
+fn shape_with_lazy(source: &str) -> Vec<String> {
     render(source)
         .lines()
         .map(|line| {
@@ -630,4 +636,110 @@ fn php_app_fixture_golden() {
         golden.push_str(&format!("== {relative}\n{}", summary.render()));
     }
     insta::assert_snapshot!("php_app", golden);
+}
+
+/// The `~` lines of the rendering: lazy types of untyped declarations.
+fn lazy_lines(source: &str) -> Vec<String> {
+    shape_with_lazy(source)
+        .into_iter()
+        .filter(|line| line.trim_start().starts_with('~'))
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
+#[test]
+fn lazy_types_of_untyped_returns() {
+    let source = r#"<?php
+namespace App;
+use Lib\Repo;
+function none() { echo 1; }
+function bare() { return; }
+function maybe($x) { if ($x) { return 1; } return; }
+function lit() { return 'a'; }
+function calls() { return helper(); }
+function qualified() { return \Lib\make(); }
+function created() { return new Repo(); }
+function chained() { return (new Repo())->find()->name; }
+function nullsafe(Repo $r) { return $r?->find(); }
+function statics() { return Repo::create(); }
+function constants() { return [PHP_EOL, Repo::KIND, Repo::class]; }
+function mixed($x) { return $x; }
+function ops($a) { return $a . 'x'; }
+function math() { return 1 + 2; }
+function closures() { $g = fn() => 2; return function () { return 1; }; }
+function generator() { yield 1; }
+function both($x) { return $x ? new Repo() : helper(); }
+function typed(): int { return 1; }
+/** @return string */
+function documented() { return 1; }
+"#;
+    assert_eq!(
+        lazy_lines(source),
+        [
+            "~ returns: void",
+            "~ returns: void",
+            "~ returns: ?int",
+            "~ returns: string",
+            r"~ returns: App\helper() ?? helper()",
+            r"~ returns: Lib\make()",
+            r"~ returns: Lib\Repo",
+            r"~ returns: Lib\Repo->find()->$name",
+            r"~ returns: null | Lib\Repo->find()",
+            r"~ returns: Lib\Repo->create()",
+            "~ returns: non-empty-list",
+            "~ returns: mixed",
+            "~ returns: string",
+            "~ returns: int",
+            "~ returns: Closure",
+            "~ returns: Generator",
+            r"~ returns: Lib\Repo | App\helper() ?? helper()",
+        ]
+    );
+}
+
+#[test]
+fn lazy_types_of_members_and_constants() {
+    let source = r#"<?php
+namespace App;
+const A = 'x';
+const B = A;
+define('C', -5);
+class K {
+    const ONE = 1;
+    const TWO = self::ONE;
+    const int TYPED = 3;
+    /** @var string */
+    const DOC = 'd';
+    public $plain = [];
+    public $map = ['a' => 1, 'b' => 2.5];
+    public $none;
+    public int $typed = 1;
+    /** @var string */
+    public $doc = 'x';
+    public static $other = Other::X;
+    public function __construct(public $promoted = 1) {}
+    public function self() { return $this; }
+    public function make() { return new static(); }
+    public function parent() { return parent::make(); }
+    public function cls() { return static::class; }
+}
+interface I { public function m(); }
+"#;
+    assert_eq!(
+        lazy_lines(source),
+        [
+            "~ type: 1",
+            "~ type: self::ONE",
+            "~ type: array",
+            "~ type: non-empty-array<string, int|float>",
+            r"~ type: App\Other::X",
+            "~ returns: $this",
+            "~ returns: static",
+            "~ returns: parent->make()",
+            "~ returns: class-string<static>",
+            "~ type: 'x'",
+            r"~ type: const(App\A ?? A)",
+            "~ type: -5",
+        ]
+    );
 }

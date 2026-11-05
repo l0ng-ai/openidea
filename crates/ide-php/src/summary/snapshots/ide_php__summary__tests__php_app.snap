@@ -37,6 +37,7 @@ class App\Library final @11:12-11:19 [11:0-57:1]
 == src/Model/Book.php
 class App\Model\Book final @8:12-8:16 [8:0-33:1]
   const public MAX_TITLE = 200 @10:17-10:26 [10:4-10:33]
+    ~ type: 200
   property public readonly promoted string $isbn @13:31-13:36 [13:8-13:36]
   property public readonly promoted string $title @14:31-14:37 [14:8-14:37]
   property public readonly promoted App\Model\Genre $genre @15:30-15:36 [15:8-15:36]
@@ -112,8 +113,11 @@ trait App\Support\HasTimestamps @8:6-8:19 [8:0-21:1]
   method public touchedAt(): ?DateTimeImmutable @17:20-17:29 [17:4-20:5]
 == src/constants.php
 const App\DEFAULT_CURRENCY = 'EUR' @6:6-6:22 [6:0-6:31]
+  ~ type: 'EUR'
 const App\LOAN_DAYS = 21 @7:6-7:15 [7:0-7:21]
+  ~ type: 21
 define APP_VERSION = '1.0.0' @9:8-9:19 [9:0-9:30]
+  ~ type: '1.0.0'
 == src/functions.php
 function App\format_price(int $cents, string $currency = DEFAULT_CURRENCY): string @9:9-9:21 [9:0-12:1]
 function App\slugify(string $text): string @17:9-17:16 [17:0-23:1]

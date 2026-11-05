@@ -284,3 +284,30 @@ fn shutdown_during_a_scan_leaves_dumb_mode() {
     }
     assert!(seen.iter().all(|s| s != &format!("server:{:?}", ServerStatus::Crashed)), "{seen:?}");
 }
+
+#[test]
+fn resolved_types_are_dropped_on_edit() {
+    use crate::types::Type;
+    let f = Fixture::new();
+    f.write(
+        "src/a.php",
+        "<?php\nnamespace App;\nfunction a() { return b(); }\nfunction len() { return strlen('x'); }\n",
+    );
+    let b = f.write("src/b.php", "<?php\nnamespace App;\nfunction b() { return 1; }\n");
+    let engine = f.open();
+
+    assert_eq!(engine.resolver().function_return(r"App\a"), Some(Type::Int));
+    // Built-in functions come from the bundled stubs (`@return int<0,max>`).
+    assert_eq!(engine.resolver().function_return(r"App\len"), Some(Type::int_range(Some(0), None)));
+    assert!(engine.cached_types() >= 3);
+
+    // An edit bumps the modification counter, which drops the cache.
+    let doc = DocId::next();
+    engine.document_opened(doc, &b, 1, "<?php\nnamespace App;\nfunction b() { return 'one'; }\n");
+    assert_eq!(engine.cached_types(), 0);
+    assert_eq!(engine.resolver().function_return(r"App\a"), Some(Type::string()));
+    engine.document_changed(doc, 2, "<?php\nnamespace App;\nfunction b() { return new \\ArrayIterator([]); }\n");
+    assert_eq!(engine.resolver().function_return(r"App\a"), Some(Type::named("ArrayIterator")));
+    engine.document_closed(doc);
+    assert_eq!(engine.resolver().function_return(r"App\a"), Some(Type::Int));
+}

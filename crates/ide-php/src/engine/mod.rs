@@ -24,7 +24,7 @@
 //! overlays: [`PhpEngine::summary`] answers from the buffer of an open file
 //! and from the index otherwise. Every document edit and watcher batch bumps
 //! the [modification counter](PhpEngine::modification_count) that the type
-//! caches of later phases are dropped on.
+//! cache of [`PhpEngine::resolver`] is dropped on.
 
 #[cfg(test)]
 mod tests;
@@ -41,10 +41,12 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, ServerId
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::index::{IndexStats, PhpIndex};
+use crate::names::{NameKind, fqn_eq};
 use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
 use crate::stubs::{BundledStubs, StubFilter, StubSet};
-use crate::summary::FileSummary;
+use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl};
 use crate::syntax::{ParseCache, ParsedFile};
+use crate::types::{Declarations, Resolver, TypeCache};
 
 /// The name the engine reports itself under in `IdeEvent::LanguageServer`.
 pub const SERVER_NAME: &str = "PHP (native)";
@@ -144,6 +146,8 @@ struct Shared {
     indexing: AtomicBool,
     documents: Mutex<HashMap<DocId, OpenDocument>>,
     parses: ParseCache,
+    /// Resolved declaration types, dropped when `modification` moves.
+    types: TypeCache,
     /// The stub filter and the stub set built for it (on first use).
     stubs: Mutex<(StubFilter, Option<Arc<StubSet>>)>,
 }
@@ -174,6 +178,7 @@ impl PhpEngine {
             indexing: AtomicBool::new(false),
             documents: Mutex::new(HashMap::new()),
             parses: ParseCache::new(),
+            types: TypeCache::new(),
             stubs: Mutex::new((config.stubs, None)),
         });
         let worker = shared.clone();
@@ -399,6 +404,49 @@ impl PhpEngine {
             Some(index) => index.summary(path),
             None => Ok(None),
         }
+    }
+
+    // -------------------------------------------------------------- types
+
+    /// A resolver for lazy types against the project, caching in the
+    /// engine's type cache for the current modification count.
+    pub fn resolver(&self) -> Resolver<'_> {
+        Resolver::new(self, &self.shared.types, self.modification_count())
+    }
+
+    /// How many declaration types are cached for the current modification
+    /// count.
+    pub fn cached_types(&self) -> usize {
+        self.shared.types.len(self.modification_count())
+    }
+
+    /// The first project declaration of `fqn` that `pick` finds in its
+    /// declaring file's summary (open buffers first).
+    fn project_declaration<T>(&self, kind: NameKind, fqn: &str, pick: impl Fn(&FileSummary) -> Option<T>) -> Option<T> {
+        let index = self.index()?;
+        index.declarations(kind, fqn).ok()?.into_iter().find_map(|decl| pick(&self.summary(&decl.path()).ok()??))
+    }
+}
+
+/// Project declarations from the open buffers and the indexes, then the
+/// bundled stubs.
+impl Declarations for PhpEngine {
+    fn class_like(&self, fqn: &str) -> Option<ClassLike> {
+        self.project_declaration(NameKind::ClassLike, fqn, |summary| summary.class_like(fqn).cloned())
+            .or_else(|| self.stubs().class_like(fqn).map(|(_, class)| class.clone()))
+    }
+
+    fn function(&self, fqn: &str) -> Option<FunctionDecl> {
+        self.project_declaration(NameKind::Function, fqn, |summary| summary.function(fqn).cloned())
+            .or_else(|| self.stubs().function(fqn).map(|(_, function)| function.clone()))
+    }
+
+    fn constant(&self, fqn: &str) -> Option<ConstantDecl> {
+        let wanted = fqn.trim_start_matches('\\');
+        self.project_declaration(NameKind::Constant, fqn, |summary| {
+            summary.constants.iter().find(|constant| fqn_eq(NameKind::Constant, &constant.fqn, wanted)).cloned()
+        })
+        .or_else(|| self.stubs().constant(fqn).map(|(_, constant)| constant.clone()))
     }
 }
 

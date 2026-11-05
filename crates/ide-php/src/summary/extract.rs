@@ -23,7 +23,10 @@ use super::{
 };
 use crate::names::{NameKind, NameScope, Resolution};
 use crate::syntax::ParsedFile;
+use crate::types::{LazyType, Type};
+use infer::{Infer, body_return};
 
+mod infer;
 mod phpdoc;
 
 pub(super) fn extract(file: &ParsedFile) -> FileSummary {
@@ -207,17 +210,54 @@ impl Extractor<'_> {
     }
 
     fn function(&self, node: &Function<'_>) -> FunctionDecl {
+        let params = self.params(&node.parameter_list);
+        let return_type = self.return_type(&node.return_type_hint);
+        let doc = self.doc_at(node.span().start.offset, &[]);
+        let inferred_return =
+            self.infers_return(&return_type, &doc).then(|| body_return(&self.infer(&params, &doc, &[]), &node.body));
         FunctionDecl {
             fqn: self.scope.qualify(node.name.value),
             name: lossy(node.name.value),
             name_loc: self.loc(node.name.span),
             loc: self.loc(node.span()),
             by_ref_return: node.ampersand.is_some(),
-            params: self.params(&node.parameter_list),
-            return_type: self.return_type(&node.return_type_hint),
+            params,
+            return_type,
+            inferred_return,
             attributes: self.attributes(&node.attribute_lists),
-            doc: self.doc_at(node.span().start.offset, &[]),
+            doc,
         }
+    }
+
+    /// Whether a function-like's return type has to be inferred: neither a
+    /// native return type nor `@return`.
+    fn infers_return(&self, return_type: &Option<TypeHint>, doc: &Option<Box<DocBlock>>) -> bool {
+        return_type.is_none() && doc.as_ref().is_none_or(|doc| doc.return_type.is_none())
+    }
+
+    /// Inference over a function-like body: the parameters have their
+    /// `@param` type, else their native one.
+    fn infer(&self, params: &[Param], doc: &Option<Box<DocBlock>>, outer: &[String]) -> Infer<'_> {
+        let mut templates: Vec<&str> = outer.iter().map(String::as_str).collect();
+        templates.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
+        let params = params
+            .iter()
+            .filter_map(|param| {
+                let ty = match (doc.as_ref().and_then(|doc| doc.param_type(&param.name)), &param.type_hint) {
+                    (Some(ty), _) => Type::from_doc(ty, &templates),
+                    (None, Some(hint)) => Type::from_hint(hint),
+                    (None, None) => return None,
+                };
+                let ty = if param.variadic { Type::list_of(ty) } else { ty };
+                Some((param.name.clone(), ty))
+            })
+            .collect();
+        Infer { scope: &self.scope, params, literals: false }
+    }
+
+    /// The type of a constant value or property default.
+    fn value_type(&self, value: &Expression<'_>, literals: bool) -> LazyType {
+        Infer { scope: &self.scope, params: Vec::new(), literals }.expr(value)
     }
 
     fn class_like(
@@ -276,6 +316,7 @@ impl Extractor<'_> {
                                     is_promoted: true,
                                     type_hint: param.type_hint.clone(),
                                     default: None,
+                                    default_type: None,
                                     attributes: param.attributes.clone(),
                                     doc: self.promoted_doc(param, &method, &names),
                                 });
@@ -338,8 +379,11 @@ impl Extractor<'_> {
         let loc = self.loc(node.span());
         let doc = self.doc_at(node.span().start.offset, names);
         for item in &node.items {
+            let name = lossy(item.name.value);
+            let typed = type_hint.is_some() || doc.as_ref().is_some_and(|doc| doc.var_type(&name).is_some());
             out.push(ClassConstant {
-                name: lossy(item.name.value),
+                value_type: (!typed).then(|| self.value_type(item.value, true)),
+                name,
                 name_loc: self.loc(item.name.span),
                 loc,
                 visibility: mods.visibility.unwrap_or_default(),
@@ -367,12 +411,16 @@ impl Extractor<'_> {
         let loc = self.loc(node.span());
         let doc = self.doc_at(node.span().start.offset, names);
         for item in items {
-            let (variable, default) = match item {
+            let (variable, value) = match item {
                 PropertyItem::Abstract(item) => (&item.variable, None),
-                PropertyItem::Concrete(item) => (&item.variable, Some(self.source(item.value.span()))),
+                PropertyItem::Concrete(item) => (&item.variable, Some(item.value)),
             };
+            let name = variable_name(variable.name);
+            let typed = type_hint.is_some() || doc.as_ref().is_some_and(|doc| doc.var_type(&name).is_some());
             out.push(Property {
-                name: variable_name(variable.name),
+                default: value.map(|value| self.source(value.span())),
+                default_type: value.filter(|_| !typed).map(|value| self.value_type(value, false)),
+                name,
                 name_loc: self.loc(variable.span),
                 loc,
                 visibility: mods.visibility.unwrap_or_default(),
@@ -384,7 +432,6 @@ impl Extractor<'_> {
                 has_hooks,
                 is_promoted: false,
                 type_hint: type_hint.clone(),
-                default,
                 attributes: attributes.clone(),
                 doc: doc.clone(),
             });
@@ -408,6 +455,17 @@ impl Extractor<'_> {
 
     fn method(&self, node: &AstMethod<'_>, in_interface: bool, names: &[String]) -> Method {
         let mods = Mods::of(&node.modifiers);
+        let params = self.params(&node.parameter_list);
+        let return_type = self.return_type(&node.return_type_hint);
+        let doc = self.doc_at(node.span().start.offset, names);
+        let inferred_return = match &node.body {
+            MethodBody::Concrete(body)
+                if self.infers_return(&return_type, &doc) && !node.name.value.eq_ignore_ascii_case(b"__construct") =>
+            {
+                Some(body_return(&self.infer(&params, &doc, names), body))
+            }
+            _ => None,
+        };
         Method {
             name: lossy(node.name.value),
             name_loc: self.loc(node.name.span),
@@ -417,10 +475,11 @@ impl Extractor<'_> {
             is_abstract: mods.is_abstract || (in_interface && matches!(node.body, MethodBody::Abstract(_))),
             is_final: mods.is_final,
             by_ref_return: node.ampersand.is_some(),
-            params: self.params(&node.parameter_list),
-            return_type: self.return_type(&node.return_type_hint),
+            params,
+            return_type,
+            inferred_return,
             attributes: self.attributes(&node.attribute_lists),
-            doc: self.doc_at(node.span().start.offset, names),
+            doc,
         }
     }
 
@@ -513,6 +572,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
                 name_loc: cx.loc(item.name.span),
                 loc,
                 value: cx.source(item.value.span()),
+                value_type: Some(cx.value_type(item.value, true)),
                 attributes: attributes.clone(),
                 doc: doc.clone(),
             };
@@ -545,6 +605,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
             name_loc: cx.loc(name_span),
             loc: cx.loc(node.span()),
             value: cx.source(value.span()),
+            value_type: Some(cx.value_type(value, true)),
             attributes: Vec::new(),
             doc: cx.doc_at(node.span().start.offset, &[]),
         };

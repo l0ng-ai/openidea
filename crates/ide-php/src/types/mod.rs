@@ -35,12 +35,16 @@
 //! conditional return type `(T is X ? A : B)` becomes `A|B`.
 
 mod display;
+mod lazy;
 mod parse;
+pub mod resolve;
 mod subtype;
 
 use serde::{Deserialize, Serialize};
 
+pub use lazy::LazyType;
 pub use parse::{TypeParseError, parse_doc_type};
+pub use resolve::{Context, Declarations, Resolver, SummarySet, TypeCache};
 pub use subtype::{Hierarchy, NoHierarchy};
 
 /// A PHP type.
@@ -402,6 +406,70 @@ impl Type {
             Self::Null => Self::Never,
             Self::Union(members) => Self::union(members.iter().filter(|ty| **ty != Self::Null).cloned()),
             other => other.clone(),
+        }
+    }
+
+    /// The type with literals widened to their base type (`1` → `int`,
+    /// `'a'` → `string`, `true` → `bool`), everywhere inside it.
+    pub fn widen(&self) -> Self {
+        self.map(&mut |ty| match ty {
+            Self::LiteralInt(_) => Some(Self::Int),
+            Self::LiteralFloat(_) => Some(Self::Float),
+            Self::LiteralString(_) => Some(Self::string()),
+            Self::LiteralBool(_) => Some(Self::Bool),
+            _ => None,
+        })
+    }
+
+    /// Rebuilds the type top-down: where `replace` answers, its type takes
+    /// the place of that part; elsewhere the children are mapped. Unions and
+    /// intersections are simplified again.
+    pub fn map(&self, replace: &mut dyn FnMut(&Self) -> Option<Self>) -> Self {
+        if let Some(ty) = replace(self) {
+            return ty;
+        }
+        let mut sub = |ty: &Self| Box::new(ty.map(replace));
+        match self {
+            Self::ClassString(Some(inner)) => Self::ClassString(Some(sub(inner))),
+            Self::Array { key, value, non_empty } => {
+                Self::Array { key: sub(key), value: sub(value), non_empty: *non_empty }
+            }
+            Self::List { value, non_empty } => Self::List { value: sub(value), non_empty: *non_empty },
+            Self::Iterable { key, value } => Self::Iterable { key: sub(key), value: sub(value) },
+            Self::Shape(shape) => Self::Shape(Box::new(Shape {
+                list: shape.list,
+                fields: shape
+                    .fields
+                    .iter()
+                    .map(|field| ShapeField {
+                        key: field.key.clone(),
+                        ty: field.ty.map(replace),
+                        optional: field.optional,
+                    })
+                    .collect(),
+                rest: shape.rest.as_ref().map(|(key, value)| (key.map(replace), value.map(replace))),
+            })),
+            Self::Named { fqn, args } => {
+                Self::Named { fqn: fqn.clone(), args: args.iter().map(|arg| arg.map(replace)).collect() }
+            }
+            Self::Callable(Some(signature)) => Self::Callable(Some(Box::new(signature.map(replace)))),
+            Self::Closure(Some(signature)) => Self::Closure(Some(Box::new(signature.map(replace)))),
+            Self::Union(members) => Self::union(members.iter().map(|member| member.map(replace))),
+            Self::Intersection(members) => Self::intersection(members.iter().map(|member| member.map(replace))),
+            other => other.clone(),
+        }
+    }
+}
+
+impl Signature {
+    fn map(&self, replace: &mut dyn FnMut(&Type) -> Option<Type>) -> Self {
+        Self {
+            params: self
+                .params
+                .iter()
+                .map(|param| SignatureParam { ty: param.ty.map(replace), ..param.clone() })
+                .collect(),
+            return_type: self.return_type.as_ref().map(|ty| ty.map(replace)),
         }
     }
 }
