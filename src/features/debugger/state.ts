@@ -23,6 +23,7 @@ import {
   type ThreadInfo,
   type Variable,
 } from "@/platform/ipc";
+import { confirmTerminate } from "@/workbench/confirmTerminate";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
@@ -632,6 +633,51 @@ export async function stopSession(id: DebugSessionId, options: { stopProcess?: b
   // Detaching leaves an attached JVM running: stop the process it belongs to, like IDEA.
   if (options.stopProcess !== false && root.process != null)
     await call(commands.runStop(root.process)).catch(() => undefined);
+}
+
+/**
+ * Closes a session's tab: a live session is stopped first once the user agrees (the Run
+ * tab's question), then the window forgets it — and its children.
+ */
+export async function closeSessionTab(id: DebugSessionId): Promise<boolean> {
+  const s = useDebug.getState().sessions[id];
+  if (!s) return false;
+  if (isLive(s)) {
+    if (workflowSettings().run.confirmTerminate && !(await confirmTerminate(s.name))) return false;
+    await stopSession(s.id);
+  }
+  removeSession(s.id);
+  return true;
+}
+
+/** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
+export function removeSession(id: DebugSessionId) {
+  const st = useDebug.getState();
+  const gone = new Set<DebugSessionId>([id]);
+  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+
+  const order = Object.values(st.sessions).map((s) => s.id);
+  const sessions: Record<number, DebugSession> = {};
+  for (const s of Object.values(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
+  const console = { ...st.console };
+  for (const goneId of gone) delete console[goneId];
+  const at = order.indexOf(id);
+  const neighbour =
+    order
+      .slice(0, at)
+      .reverse()
+      .find((n) => sessions[n]) ??
+    order.slice(at + 1).find((n) => sessions[n]) ??
+    null;
+
+  useDebug.setState({
+    sessions,
+    active: st.active != null && sessions[st.active] ? st.active : neighbour,
+    console,
+  });
+  for (const goneId of gone) owned.delete(goneId);
+  updateExecutionPoint();
+  publishContext();
 }
 
 export async function rerunSession(id: DebugSessionId) {

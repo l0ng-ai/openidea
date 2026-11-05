@@ -2,8 +2,8 @@ use crate::state::AppState;
 use ide_core::settings::Settings;
 use ide_core::{EventSink, IdeError, IdeResult, RequestId, TaskId};
 use ide_language::LanguageInfo;
-use ide_workspace::RecentProject;
 use ide_workspace::settings::SettingsScope;
+use ide_workspace::{RecentProject, RecentProjectGroup};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
@@ -47,6 +47,24 @@ pub fn recent_projects(state: State<'_, AppState>) -> Vec<RecentProject> {
 #[specta::specta]
 pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
     state.recent.remove(&path)
+}
+
+/// The welcome screen's project groups.
+#[tauri::command]
+#[specta::specta]
+pub fn recent_project_groups(state: State<'_, AppState>) -> Vec<RecentProjectGroup> {
+    state.recent.groups()
+}
+
+/// Replaces the project groups; returns them as saved (names trimmed and unique, each
+/// project in one group, only recent projects).
+#[tauri::command]
+#[specta::specta]
+pub fn set_recent_project_groups(
+    state: State<'_, AppState>,
+    groups: Vec<RecentProjectGroup>,
+) -> IdeResult<Vec<RecentProjectGroup>> {
+    state.recent.set_groups(groups)
 }
 
 #[tauri::command]

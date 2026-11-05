@@ -564,9 +564,8 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
                 Some(m) => format!("application:{m}:{class}"),
                 None => format!("application:{class}"),
             };
-            let mut app = config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class])
-                .in_dir(module_rel.as_ref().map(PathBuf::from))
-                .debug("java-debug");
+            let mut app =
+                config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class]).debug("java-debug");
             app.extras.module = Some(module_rel.clone().unwrap_or_default());
             out.push(app);
         }

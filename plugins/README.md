@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.0.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.1.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -71,7 +71,8 @@ target through rustup if needed), copies the component to the manifest's
 `wasm` path and runs `check`. `check` validates the package exactly as
 _Install Plugin from Disk…_ would — manifest, every contribution, the SVG
 sanitiser, the component — and that the component imports nothing but the
-plugin API and WASI. It prints what the user will be asked to grant.
+plugin API and WASI and links against the IDE's: every function it imports
+exists with the same signature, and it exports the plugin world. It prints what the user will be asked to grant.
 
 `link` adds the folder to `links.json` in the IDE's plugins directory
 (`$OPENIDEA_PLUGINS_DIR`, default `<app-data>/ai.l0ng.openidea/plugins`). Linked
@@ -183,7 +184,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics` |
 | `editor.read`       | low    | `TextEditor::document`, `selections`                                                |
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                           |
-| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes)                     |
+| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`      |
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only)                                        |
 | `storage`           | low    | `host::storage` (1 MiB per plugin)                                                  |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                        |
@@ -191,7 +192,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                      |
 | `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                        |
 | `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                       |
-| `clipboard`         | medium | the clipboard API in the plugin's web views (keyboard copy / paste work without it) |
+| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views           |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -299,12 +300,14 @@ then run `openidea-plugin check`.
 | `TextEditor::apply_edits(version, edits)`                                | `editor.text-editor.apply-edits` | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                      |
 | `Project::root()`, `read_file(path)`                                     | `workspace.project`              | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win.                                                                                       |
 | `host::projects()`                                                       | `workspace.projects`             | Every open project (for scheduled work without a window).                                                                                                                                                            |
-| `Project::vcs_status()`, `vcs_fetch()`                                   | `vcs`                            | Fetch runs git, so only in trusted projects; call it inside a task.                                                                                                                                                  |
+| `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                  | `vcs`                            | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                      |
 | `host::subscribe(kind)`                                                  | `events.subscribe`               | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                                                                                  |
 | `host::begin_task(title, cancellable)` → `Task`                          | `tasks.begin`                    | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                               |
 | `host::storage::{get, set, delete, keys}`                                | `storage`                        | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                             |
 | `host::set_status_item(id, item)`, `remove_status_item`                  | `ui`                             | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                 |
 | `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
+| `host::copy_to_clipboard(text)`                                          | `ui.copy-to-clipboard`           | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                            |
+| `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
@@ -942,6 +945,8 @@ only grows:
    its `openidea:plugin/*` imports and exports, `PluginEngine::check_component`).
    Installing and `openidea-plugin check` refuse another major or a newer
    minor with a message that says to update the IDE or rebuild with the SDK.
+   They also link the component, so one that imports a function this host
+   lacks under the same version (built from unreleased WIT) is refused too.
 5. **One version number**: the `wit/` package version, `ENGINE_VERSION` and
    `API_VERSION` agree, and the SDK's `wit/` copy is identical to `wit/`.
 6. **1.x calls are synchronous and pass documents whole.** Host calls block

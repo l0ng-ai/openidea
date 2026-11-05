@@ -46,7 +46,9 @@ pub fn new_project_tab_target(app: &AppHandle, launch: &Launch) -> IdeResult<Opt
         let host = app.state::<crate::state::AppState>();
         host.project(w.label()).is_ok_and(|p| !p.light) || host.remote_dev.get(w.label()).is_some()
     });
-    let fullscreen = active.as_ref().is_some_and(|w| w.is_fullscreen().unwrap_or(false));
+    // A project-tab group is fullscreen through simple fullscreen, which the native flag misses.
+    let fullscreen =
+        active.as_ref().is_some_and(|w| w.is_fullscreen().unwrap_or(false) || is_simple_fullscreen(w.label()));
     let light_edit = launch.project.is_none() && launch.remote.is_none();
     Ok(should_group_new_project(tabbing_preference(app)?, fullscreen, active.is_some(), light_edit)
         .then_some(active)

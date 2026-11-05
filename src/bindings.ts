@@ -10,6 +10,13 @@ export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
+	/**  The welcome screen's project groups. */
+	recentProjectGroups: () => __TAURI_INVOKE<RecentProjectGroup[]>("recent_project_groups"),
+	/**
+	 *  Replaces the project groups; returns them as saved (names trimmed and unique, each
+	 *  project in one group, only recent projects).
+	 */
+	setRecentProjectGroups: (groups: RecentProjectGroup[]) => typedError<RecentProjectGroup[], IdeError>(__TAURI_INVOKE("set_recent_project_groups", { groups })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
 	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
@@ -5505,7 +5512,11 @@ export type PluginEvent =
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
  */
-{ type: "languagesChanged" };
+{ type: "languagesChanged" } | 
+/**  Copy `text` to the system clipboard. */
+{ type: "copyToClipboard"; pluginId: string; text: string } | 
+/**  Open `url` (`http(s)://`) in the system browser. */
+{ type: "openUrl"; pluginId: string; url: string };
 
 export type PluginInfo = {
 	id: string,
@@ -5966,6 +5977,14 @@ export type RecentProject = {
 	openedAtMs: number | null,
 	/**  Current git branch when last opened, shown on the welcome screen. */
 	branch: string | null,
+};
+
+/**  A named group of recent projects on the welcome screen (New Project Group…, Move to Group). */
+export type RecentProjectGroup = {
+	name: string,
+	/**  Its projects, in the order they were added. */
+	paths: IpcPath[],
+	expanded?: boolean,
 };
 
 export type RefactoringProblem = {
