@@ -3676,7 +3676,7 @@
   "JDK Location": "Emplacement du JDK",
   "Downloading JDK": "Téléchargement du JDK",
   "Use ; to separate name patterns, * for any number of symbols, ? for one.": "Utilisez ; pour séparer les motifs de noms, * pour un nombre quelconque de caractères, ? pour un seul.",
-  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "Les dossiers sont détectés depuis les fichiers de build (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json) ; marquer ou démarquer un dossier remplace la détection. Les dossiers exclus sont ignorés par la vue Projet, Rechercher dans les fichiers et l'index (rouvrez le projet pour réindexer).",
+  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "Les dossiers sont détectés depuis les fichiers de build (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json) ; marquer ou démarquer un dossier remplace la détection. Les dossiers exclus sont ignorés par la vue Projet, Rechercher dans les fichiers et l'index (rouvrez le projet pour réindexer).",
   "Project virtualenv (auto-detect)": "Virtualenv du projet (détection automatique)",
   "<No interpreter>": "<Aucun interpréteur>",
   "Package name or requirement, e.g. requests or django==5.1": "Nom de paquet ou contrainte, p. ex. requests ou django==5.1",

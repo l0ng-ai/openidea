@@ -3789,7 +3789,7 @@
   "JDK Location": "JDK 위치",
   "Downloading JDK": "JDK 다운로드 중",
   "Use ; to separate name patterns, * for any number of symbols, ? for one.": "이름 패턴은 ;로 구분하고, *는 임의 개수의 문자, ?는 한 문자와 일치합니다.",
-  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "폴더는 빌드 파일(pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json)에서 감지되며, 폴더를 표시하거나 표시 해제하면 감지 결과가 재정의됩니다. 제외된 폴더는 프로젝트 뷰, 파일에서 찾기 및 인덱스에서 건너뜁니다(다시 인덱싱하려면 프로젝트를 다시 여세요).",
+  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "폴더는 빌드 파일(pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json)에서 감지되며, 폴더를 표시하거나 표시 해제하면 감지 결과가 재정의됩니다. 제외된 폴더는 프로젝트 뷰, 파일에서 찾기 및 인덱스에서 건너뜁니다(다시 인덱싱하려면 프로젝트를 다시 여세요).",
   "Project virtualenv (auto-detect)": "프로젝트 virtualenv(자동 감지)",
   "<No interpreter>": "<인터프리터 없음>",
   "Package name or requirement, e.g. requests or django==5.1": "패키지 이름 또는 요구 사항, 예: requests 또는 django==5.1",

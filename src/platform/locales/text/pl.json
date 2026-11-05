@@ -3779,7 +3779,7 @@
   "JDK Location": "Lokalizacja JDK",
   "Downloading JDK": "Pobieranie JDK",
   "Use ; to separate name patterns, * for any number of symbols, ? for one.": "Użyj ; do rozdzielania wzorców nazw, * dla dowolnej liczby znaków, ? dla jednego znaku.",
-  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "Foldery są wykrywane z plików budowania (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json); ręczne zaznaczenie lub odznaczenie foldera zastępuje automatyczne wykrywanie. Wykluczone foldery są pomijane w widoku Projektu, wyszukiwaniu w plikach oraz przez indeks (otwórz projekt ponownie, aby reindeksować).",
+  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index).": "Foldery są wykrywane z plików budowania (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); ręczne zaznaczenie lub odznaczenie foldera zastępuje automatyczne wykrywanie. Wykluczone foldery są pomijane w widoku Projektu, wyszukiwaniu w plikach oraz przez indeks (otwórz projekt ponownie, aby reindeksować).",
   "Project virtualenv (auto-detect)": "Środowisko wirtualne projektu (automatyczne wykrywanie)",
   "<No interpreter>": "<No interpreter>",
   "Download JDK…": "Pobierz JDK…",
