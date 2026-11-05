@@ -10,7 +10,7 @@ use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use oracle::sql_type::{Blob, Clob, OracleType};
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -62,41 +62,47 @@ fn connect_string(source: &DataSource) -> String {
     if db.is_empty() { format!("//{host}:{port}") } else { format!("//{host}:{port}/{db}") }
 }
 
-/// Loads the Oracle client once per process; the first data source's directory wins.
-fn init_client(dir: &str) -> IdeResult<()> {
-    static INIT: OnceLock<(String, IdeResult<()>)> = OnceLock::new();
-    let (used, result) = INIT.get_or_init(|| {
-        let init = (|| {
-            let dir = dir.trim();
-            let mut params = oracle::InitParams::new();
-            if !dir.is_empty() {
-                let expanded: PathBuf = ide_ssh::expand(dir);
-                if !expanded.is_dir() {
-                    return Err(IdeError::invalid(format!(
-                        "Oracle Instant Client directory not found: {}",
-                        expanded.display()
-                    )));
-                }
-                params
-                    .oracle_client_lib_dir(expanded.to_string_lossy().into_owned())
-                    .map_err(|e| IdeError::invalid(format!("Oracle Instant Client directory: {e}")))?;
-            }
-            params.init().map_err(|e| {
-                let hint = if e.to_string().contains("DPI-1047") {
-                    format!("{e} — set the Instant Client directory (Options tab) or ORACLE_HOME")
-                } else {
-                    e.to_string()
-                };
-                IdeError::new(ErrorKind::Io, format!("Oracle client: {hint}"))
-            })?;
-            Ok(())
-        })();
-        (dir.trim().to_owned(), init)
-    });
-    if result.is_ok() && !used.is_empty() && used != dir.trim() {
-        tracing::warn!("Oracle client already loaded from {used}; ignoring {dir}");
+/// The expanded Instant Client directory, `None` when the search path is used.
+fn client_dir(dir: &str) -> IdeResult<Option<String>> {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return Ok(None);
     }
-    result.clone()
+    let expanded: PathBuf = ide_ssh::expand(dir);
+    if !expanded.is_dir() {
+        return Err(IdeError::invalid(format!("Oracle Instant Client directory not found: {}", expanded.display())));
+    }
+    Ok(Some(expanded.to_string_lossy().into_owned()))
+}
+
+/// Loads the Oracle client once per process; the first data source's directory wins.
+/// Failures are not cached: a corrected directory works without restarting.
+fn init_client(dir: &str) -> IdeResult<()> {
+    static LOADED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let dir = dir.trim();
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(used) = loaded.as_deref() {
+        if !dir.is_empty() && !used.is_empty() && used != dir {
+            tracing::warn!("Oracle client already loaded from {used}; ignoring {dir}");
+        }
+        return Ok(());
+    }
+    let mut params = oracle::InitParams::new();
+    if let Some(lib_dir) = client_dir(dir)? {
+        params
+            .oracle_client_lib_dir(lib_dir)
+            .map_err(|e| IdeError::invalid(format!("Oracle Instant Client directory: {e}")))?;
+    }
+    params.init().map_err(|e| {
+        let hint = if e.to_string().contains("DPI-1047") {
+            format!("{e} — set the Instant Client directory (Options tab) or ORACLE_HOME")
+        } else {
+            e.to_string()
+        };
+        IdeError::new(ErrorKind::Io, format!("Oracle client: {hint}"))
+    })?;
+    *loaded = Some(dir.to_owned());
+    Ok(())
 }
 
 /// `rust-oracle` errors are not `Sync`; the pool wants a shareable error.
@@ -166,6 +172,16 @@ impl OraclePool {
             .build(OracleConnectionManager(state.clone()))
             .await
             .map_err(|e| e.into_ide())?;
+        // bb8 connects lazily and reports failed attempts as a bare timeout, which
+        // would turn a wrong password into "timed out connecting to the database".
+        let opened = tokio::task::spawn_blocking({
+            let state = state.clone();
+            move || open(&state)
+        })
+        .await
+        .map_err(|e| IdeError::internal(format!("Oracle connect task: {e}")))?
+        .map_err(oracle_err)?;
+        let _ = pool.add(OracleHandle { conn: Some(opened) });
         Ok(Self { state, pool: Arc::new(pool) })
     }
 
@@ -218,7 +234,12 @@ impl ManageConnection for OracleConnectionManager {
             state.timeout,
             tokio::task::spawn_blocking(move || {
                 let result = (|| -> oracle::Result<()> {
-                    raw.statement("SELECT 1 FROM DUAL").build()?.execute(&[])?;
+                    // `execute` rejects selects, so read one row.
+                    let mut stmt = raw.statement("SELECT 1 FROM DUAL").build()?;
+                    let mut rows = stmt.query(&[])?;
+                    if let Some(row) = rows.next() {
+                        row?;
+                    }
                     Ok(())
                 })();
                 (raw, result)
@@ -533,25 +554,57 @@ mod tests {
         ));
         let mut broken = OracleHandle { conn: None };
         assert!(manager.has_broken(&mut broken));
-        // A connection that cannot be opened reports the failure without panicking.
+        // A connection that cannot be opened reports the failure without panicking
+        // (a client-load error, or ORA-12541 when a client is available).
         match manager.connect().await {
             Ok(_) => unreachable!("no server is listening"),
-            Err(err) => assert!(err.into_ide().message.contains("Oracle")),
+            Err(err) => assert!(!err.into_ide().message.is_empty()),
         }
     }
 
+    #[test]
+    fn connect_reports_a_missing_client_directory() {
+        let err = client_dir("/nonexistent/instantclient").expect_err("no such directory");
+        assert!(err.message.contains("Instant Client directory not found"), "{}", err.message);
+        assert!(client_dir("").expect("the search path").is_none());
+    }
+
+    /// A live server, skipped unless `OPENIDEA_ORACLE_TEST` is
+    /// `user/password@host:port/service` (and `OPENIDEA_ORACLE_CLIENT` names the
+    /// Instant Client when it is not on the search path).
+    ///
+    /// Checking out a connection runs `is_valid`, so this fails if the ping is
+    /// not a query (bb8 silently retries a rejected check-out until it times out).
     #[tokio::test]
-    async fn connect_reports_a_missing_client_directory() {
+    async fn a_pooled_connection_runs_queries() {
+        let Some(spec) = std::env::var("OPENIDEA_ORACLE_TEST").ok().filter(|s| !s.is_empty()) else { return };
+        let (auth, addr) = spec.split_once('@').expect("user/password@host:port/service");
+        let (user, password) = auth.split_once('/').expect("user/password");
+        let (host, rest) = addr.split_once(':').expect("host:port/service");
+        let (port, service) = rest.split_once('/').expect("port/service");
         let source = DataSource {
             driver: DbDriver::Oracle,
-            user: "scott".into(),
+            host: host.into(),
+            port: Some(port.parse().expect("port")),
+            database: service.into(),
+            user: user.into(),
             options: crate::source::DbOptions {
-                instant_client: "/nonexistent/instantclient".into(),
+                instant_client: std::env::var("OPENIDEA_ORACLE_CLIENT").unwrap_or_default(),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let err = OraclePool::connect(&source, Some("tiger"), &Setup::default()).await.expect_err("no client");
-        assert!(err.message.contains("Instant Client directory not found"), "{}", err.message);
+        let pool = crate::conn::Pool::connect(&source, Some(password), None).await.expect("connect");
+        let rows = pool.rows("SELECT 1 FROM DUAL", 1).await.expect("query through the pool");
+        assert_eq!(rows.first().and_then(|r| r.first().cloned().flatten()).as_deref(), Some("1"));
+
+        // The result grid reads later pages by skipping rows client-side.
+        let page = pool
+            .execute_from("SELECT LEVEL FROM DUAL CONNECT BY LEVEL <= 10", 4, 3, &CancellationToken::new())
+            .await
+            .expect("second page");
+        let values: Vec<String> = page.rows.iter().filter_map(|r| r.first().cloned().flatten()).collect();
+        assert_eq!(values, ["5", "6", "7"]);
+        assert!(page.has_more);
     }
 }
