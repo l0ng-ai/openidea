@@ -143,7 +143,7 @@ fn nvm_bins(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// `v22.10.1` as `[22, 10, 1]`: v22 is newer than v9, v20.10 newer than v20.9.
-fn version_key(name: &str) -> Vec<u64> {
+pub fn version_key(name: &str) -> Vec<u64> {
     name.trim_start_matches('v').split('.').map(|n| n.parse().unwrap_or(0)).collect()
 }
 

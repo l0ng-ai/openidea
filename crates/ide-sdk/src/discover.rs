@@ -367,7 +367,7 @@ fn php() -> Vec<Sdk> {
         }
     }
     let found = dedupe_by_real_path(found);
-    par_map(&found, |(path, source)| {
+    let mut sdks = par_map(&found, |(path, source)| {
         let version = query(path, &["-r", "echo PHP_VERSION;"], VERSION_TIMEOUT)?;
         let version = version.trim().to_owned();
         if version.is_empty() {
@@ -381,7 +381,16 @@ fn php() -> Vec<Sdk> {
             home: path.parent().and_then(Path::parent).map(Into::into),
             extra: None,
         })
-    })
+    });
+    newest_first(&mut sdks);
+    sdks
+}
+
+/// Newest version first, number by number (8.3.12 before 8.3.9); stable, so on equal
+/// versions the `PATH` install stays first.
+pub(crate) fn newest_first(sdks: &mut [Sdk]) {
+    let key = |s: &Sdk| ide_core::tool_path::version_key(s.version.as_deref().unwrap_or(""));
+    sdks.sort_by_key(|s| std::cmp::Reverse(key(s)));
 }
 
 fn node() -> Vec<Sdk> {
