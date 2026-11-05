@@ -25,6 +25,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+const confirmTerminate = vi.hoisted(() => vi.fn(async () => false));
+vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
+
 import { useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
 
@@ -96,6 +99,28 @@ describe("debug tool window", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["app"]);
     expect(useDebug.getState().active).toBe(2);
     expect(useDebug.getState().sessions).not.toHaveProperty("1");
+  });
+
+  it("passes the selection of a closed tab to the tab on its left", async () => {
+    useDebug.setState({
+      sessions: {
+        4: { ...session, id: 4, name: "a", status: "terminated" },
+        5: { ...session, id: 5, name: "b", status: "terminated" },
+        6: { ...session, id: 6, name: "c", status: "terminated" },
+      },
+      active: 5,
+    });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[1]!));
+    expect(useDebug.getState().active).toBe(4);
+  });
+
+  it("keeps a live session when the user doesn't terminate it", async () => {
+    useDebug.setState({ sessions: { 8: { ...session, id: 8, name: "server" } }, active: 8 });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
+    expect(confirmTerminate).toHaveBeenCalledWith("server");
+    expect(useDebug.getState().sessions).toHaveProperty("8");
   });
 
   it("leaves nothing selected once the last tab is closed", async () => {
