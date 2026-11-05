@@ -5,6 +5,8 @@
  */
 import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter, type ViewUpdate } from "@codemirror/view";
+import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { overviewLane } from "@/editor/core/cm/lanes";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui";
@@ -189,6 +191,45 @@ export const resultMarks = EditorView.decorations.compute([mergeField], (state) 
   }
   return out.finish();
 });
+
+/** A change's type (MergeConflictType): a conflict, else how the changed side(s) differ from the base. */
+function changeType(c: MergeChange): "conflict" | "inserted" | "deleted" | "modified" {
+  if (isConflict(c)) return "conflict";
+  const changed = c.kind === "right" ? c.right : c.left;
+  return c.base === "" ? "inserted" : changed === "" ? "deleted" : "modified";
+}
+
+const stripeMark = (c: MergeChange, from: number, to: number): ScrollbarMark => {
+  const type = changeType(c);
+  return {
+    from,
+    to: to > from ? to - 1 : from,
+    color: `var(--diff-${type}-stripe)`,
+    kind: "thin",
+    priority: type === "conflict" ? 1 : 0,
+  };
+};
+
+/**
+ * The open changes on a pane's overview lane, as IDEA's merge viewer: the result marks each
+ * change until it is resolved, a side pane the changes of that side until that side is accepted
+ * or ignored (TextMergeChange: a resolved side paints no background, so no stripe either).
+ */
+export function mergeStripe(pane: MergeSide | "result"): Extension {
+  const marks =
+    pane === "result"
+      ? scrollbarMarks.compute([mergeField], (state): readonly ScrollbarMark[] =>
+          state.field(mergeField).flatMap((c) => (isResolved(c) ? [] : [stripeMark(c, c.from, c.to)])),
+        )
+      : scrollbarMarks.compute([sideChanges], (state): readonly ScrollbarMark[] =>
+          state.field(sideChanges).flatMap((c) => {
+            if (!changesSide(c, pane) || c.done[pane]) return [];
+            const [from, to] = pane === "left" ? c.leftRange : c.rightRange;
+            return [stripeMark(c, from, to)];
+          }),
+        );
+  return [marks, overviewLane];
+}
 
 export const mergeTheme = EditorView.baseTheme({
   // A fixed width, so the text does not shift as controls come and go while scrolling.

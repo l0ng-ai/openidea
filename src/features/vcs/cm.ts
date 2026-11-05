@@ -30,10 +30,12 @@ import { getChunks, mergeViewSiblings, type Chunk } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
+import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { findExtension } from "@/editor/core/cm/find";
+import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
 import { caretExtension } from "@/editor/core/cm/prefs";
 import { fontExtension } from "@/editor/core/cm/setup";
-import { caretStyles, findLocals, findStyles } from "@/editor/core/cm/theme";
+import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { getDiffInsights, hasInnerFragments } from "./diffOptions";
@@ -223,6 +225,62 @@ export const chunkDecorations = (build: (view: EditorView) => DecorationSet) =>
 
 const changedLines = chunkDecorations(lineDeco);
 
+/** Stripe colours by type (TextDiffType.getMarkerColor: the keys' ERROR_STRIPE_COLOR). */
+const stripeColor = byKind((kind) => `var(--diff-${kind}-stripe)`);
+
+/** The diff viewer's layouts, as the overview lane sees them. */
+export type DiffLayout = "split" | "aligned" | "unified";
+
+/**
+ * The changes on the overview lane as thin marks, after IDEA's diff error stripe
+ * (DiffDrawUtil.LineHighlighterBuilder): a side-by-side pane marks each chunk's lines in the
+ * chunk's type, an empty side a point where the lines would be. The unified view has no modified type: the old lines are marked deleted and the
+ * new ones inserted (createUnifiedChunkHighlighters); the old lines sit above the new ones in a
+ * widget, so their mark is a point on top of the inserted lines.
+ */
+export function diffScrollbarMarks(state: EditorState, unified: boolean): ScrollbarMark[] {
+  const info = getChunks(state);
+  if (!info) return [];
+  if (unified)
+    return info.chunks.flatMap((c) => {
+      const marks: ScrollbarMark[] = [];
+      if (c.fromB !== c.toB) marks.push({ from: c.fromB, to: c.endB, color: stripeColor.inserted, kind: "thin" });
+      if (c.fromA !== c.toA) marks.push({ from: c.fromB, color: stripeColor.deleted, kind: "thin", priority: 1 });
+      return marks;
+    });
+  const isA = info.side === "a";
+  return info.chunks.map((c) => ({
+    from: isA ? c.fromA : c.fromB,
+    to: isA ? c.endA : c.endB,
+    color: stripeColor[chunkKind(c)],
+    kind: "thin",
+  }));
+}
+
+type ChunkMarks = { chunks: readonly Chunk[] | undefined; marks: readonly ScrollbarMark[] };
+
+/** Recomputed when the chunks change, which can happen without a document change (MergeView, `updateOriginalDoc`). */
+const chunkMarks = (unified: boolean) =>
+  StateField.define<ChunkMarks>({
+    create: (state) => ({ chunks: getChunks(state)?.chunks, marks: diffScrollbarMarks(state, unified) }),
+    update: (value, tr) => {
+      const chunks = getChunks(tr.state)?.chunks;
+      return chunks === value.chunks ? value : { chunks, marks: diffScrollbarMarks(tr.state, unified) };
+    },
+    provide: (f) => scrollbarMarks.from(f, (v) => v.marks),
+  });
+
+/**
+ * The overview lane with the diff's changes, over the pane's scrollbar. The panes of an aligned
+ * side-by-side diff scroll together in the MergeView, whose scrollbar the right pane's lane takes.
+ */
+export function diffOverview(layout: DiffLayout): Extension {
+  return [
+    chunkMarks(layout === "unified"),
+    layout === "aligned" ? overviewLaneIn((view) => view.dom.closest<HTMLElement>(".cm-mergeView")) : overviewLane,
+  ];
+}
+
 /**
  * IDEA's "Highlight words" for a side-by-side pane: the inner fragments of
  * chunks whose words were compared, over their lighter line background.
@@ -254,6 +312,7 @@ export const viewerHighlight = HighlightStyle.define([
 
 export const viewerTheme = EditorView.theme(
   {
+    ...overviewStyles,
     "&": {
       height: "100%",
       backgroundColor: "var(--bg-app)",
@@ -341,6 +400,8 @@ export const viewerTheme = EditorView.theme(
     },
     ".cm-collapsedLines:before": { content: "none" },
     ".cm-collapsedLines:after": { content: "none" },
+    // Clear of the overview lane over the scrollbar (12px wide).
+    "&.cm-openidea-withOverview .cm-deletedChunk .cm-chunkButtons": { insetInlineEnd: "17px" },
     ".cm-chunkButtons button": {
       font: "inherit",
       fontFamily: "var(--font-ui)",

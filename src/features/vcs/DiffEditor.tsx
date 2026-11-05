@@ -34,7 +34,7 @@ import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platfo
 import { tx } from "@/platform/i18n";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
-import { changedLineGutters, diffWords, languageFor, viewerBase } from "./cm";
+import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -417,6 +417,8 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           extensions: [
             side(attached.a, editableA, "left"),
             colours,
+            // Aligned panes scroll together: one stripe, on the right (as IDEA's shared scrollbar).
+            panes ? diffOverview("split") : [],
             panes?.extension ?? [],
             focusTracker("a"),
             findWatch("a"),
@@ -428,6 +430,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           extensions: [
             side(attached.b, editableB, "right"),
             colours,
+            diffOverview(panes ? "split" : "aligned"),
             panes?.extension ?? [],
             listener,
             focusTracker("b"),
@@ -473,6 +476,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         parent: host,
         extensions: [
           side(attached.b, editableB, "right"),
+          diffOverview("unified"),
           listener,
           focusTracker("b"),
           findWatch("b"),
