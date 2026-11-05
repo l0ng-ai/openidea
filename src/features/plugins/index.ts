@@ -52,10 +52,7 @@ export function activateSettingsPages(): () => void {
   const disposers = [
     registerPluginsPage(),
     registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
-    registerOverlay({
-      id: "plugins.intellijThemes",
-      component: IntellijThemesDialogHost,
-    }),
+    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
     provideConsentDialog(),
     defineBuiltinUiPoints(),
     followPluginChanges(),
@@ -71,10 +68,7 @@ export function activate(): () => void {
   const disposers = [
     registerPluginsPage(),
     registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
-    registerOverlay({
-      id: "plugins.intellijThemes",
-      component: IntellijThemesDialogHost,
-    }),
+    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
     provideConsentDialog(),
     providePluginThemePreviews(),
     registerActions([
@@ -153,11 +147,7 @@ export function activate(): () => void {
     startViewUi((input) => void editorService().openInput(input)),
     startWorkspaceContains(),
     // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).
-    registerEditorContribution({
-      id: "plugins.lineMarkers",
-      order: 57,
-      extensions: pluginLineMarkerGutter,
-    }),
+    registerEditorContribution({ id: "plugins.lineMarkers", order: 57, extensions: pluginLineMarkerGutter }),
     // Dev plugins (`<project>/.openidea/plugins`) depend on the open project.
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) void refreshPlugins();

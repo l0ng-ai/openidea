@@ -13,29 +13,37 @@ export async function refreshWorkspaceContains(
   root: string | null,
   keys: readonly string[],
   list: (dir: string) => Promise<string[]>,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
-  await Promise.all(
+  const results = await Promise.all(
     keys.map(async (key) => {
       if (root === null) {
-        setContext(key, false);
-        return;
+        return [key, false] as const;
       }
       const path = key.slice("workspaceContains:".length);
       const slash = path.lastIndexOf("/");
       const parent = slash < 0 ? "" : path.slice(0, slash);
       const name = path.slice(slash + 1);
       const names: string[] = await list(parent ? `${root}/${parent}` : root).catch(() => []);
-      setContext(key, names.includes(name));
+      return [key, names.includes(name)] as const;
     }),
   );
+  if (!isCurrent()) {
+    return;
+  }
+  for (const [key, value] of results) {
+    setContext(key, value);
+  }
 }
 
 const listNames = (dir: string) => call(commands.fsReadDir(dir)).then((entries) => entries.map((e) => e.name));
 
 export function startWorkspaceContains(): () => void {
+  let latest = 0;
   const refresh = () => {
+    const token = ++latest;
     const keys = workspaceContainsKeys(usePlugins.getState().ui.map((u) => (u.decl as { when?: string | null }).when));
-    void refreshWorkspaceContains(useProject.getState().project?.root ?? null, keys, listNames);
+    void refreshWorkspaceContains(useProject.getState().project?.root ?? null, keys, listNames, () => token === latest);
   };
   const disposers = [
     usePlugins.subscribe((s, prev) => {
