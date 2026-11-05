@@ -71,7 +71,8 @@ target through rustup if needed), copies the component to the manifest's
 `wasm` path and runs `check`. `check` validates the package exactly as
 _Install Plugin from Disk…_ would — manifest, every contribution, the SVG
 sanitiser, the component — and that the component imports nothing but the
-plugin API and WASI. It prints what the user will be asked to grant.
+plugin API and WASI and links against the IDE's: every function it imports
+exists with the same signature, and it exports the plugin world. It prints what the user will be asked to grant.
 
 `link` adds the folder to `links.json` in the IDE's plugins directory
 (`$OPENIDEA_PLUGINS_DIR`, default `<app-data>/ai.l0ng.openidea/plugins`). Linked
@@ -942,6 +943,8 @@ only grows:
    its `openidea:plugin/*` imports and exports, `PluginEngine::check_component`).
    Installing and `openidea-plugin check` refuse another major or a newer
    minor with a message that says to update the IDE or rebuild with the SDK.
+   They also link the component, so one that imports a function this host
+   lacks under the same version (built from unreleased WIT) is refused too.
 5. **One version number**: the `wit/` package version, `ENGINE_VERSION` and
    `API_VERSION` agree, and the SDK's `wit/` copy is identical to `wit/`.
 6. **1.x calls are synchronous and pass documents whole.** Host calls block
