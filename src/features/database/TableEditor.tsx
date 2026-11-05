@@ -16,6 +16,7 @@ import {
 import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { SqlFilterInput } from "./SqlFilterInput";
+import { ColumnsPopup } from "./ColumnsPopup";
 import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
 import type { ExportFormat } from "./export";
 import {
@@ -182,12 +183,23 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const dirty = hasEdits(edits);
   // Submit / Revert actions (⌘↩ / ⌥⌘Z) reach the latest state through the handle.
   const viewRef = useRef<HTMLDivElement>(null);
-  const handle = useRef<TableEditorHandle>({ dirty: false, submit: () => {}, revert: () => {} }).current;
+  const handle = useRef<TableEditorHandle>({
+    dirty: false,
+    submit: () => {},
+    revert: () => {},
+    showColumns: () => {},
+  }).current;
   handle.dirty = editable && dirty;
   handle.submit = () => {
     if (editable && dirty) void submit();
   };
   handle.revert = () => setEdits(emptyEdits());
+  const [columnsAt, setColumnsAt] = useState<{ x: number; y: number } | null>(null);
+  const [revealColumn, setRevealColumn] = useState<{ col: number } | null>(null);
+  handle.showColumns = () => {
+    const r = viewRef.current?.getBoundingClientRect();
+    if (page && r) setColumnsAt({ x: r.left + r.width / 2, y: r.top + 48 });
+  };
   useEffect(() => registerTableEditor(viewRef.current!, handle), [handle]);
   useEffect(() => tableEditorChanged(handle), [handle, dirty, editable]);
   const orderInvalid = orderDraft !== null && !parseOrderBy(orderDraft, names);
@@ -339,6 +351,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
             columns={gridColumns}
             rowCount={rowCount}
             fixedRows={loaded}
+            revealColumn={revealColumn}
             value={value}
             panel={panel}
             onPanelChange={setPanel}
@@ -365,6 +378,18 @@ export function TableEditor({ input }: { input: EditorInput }) {
             }
           />
         </div>
+      )}
+      {columnsAt && (
+        <ColumnsPopup
+          anchor={columnsAt}
+          table={ref.table}
+          columns={gridColumns}
+          onPick={(col) => {
+            setColumnsAt(null);
+            setRevealColumn({ col });
+          }}
+          onClose={() => setColumnsAt(null)}
+        />
       )}
     </div>
   );

@@ -52,6 +52,7 @@ export const eclipseWindows: Record<string, string[]> = {
   "code.expandToLevel5": [],
   "refactor.extractMethod": ["Shift+Alt+M"],
   "navigate.fileStructure": ["Ctrl+F3", "Ctrl+O"],
+  "db.goToColumn": ["Ctrl+F3", "Ctrl+O"],
   "find.inFile": [],
   "find.inPath": ["Ctrl+H"],
   "find.next": ["Ctrl+K"],

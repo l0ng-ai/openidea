@@ -155,6 +155,14 @@ export function activate(): () => void {
         },
       },
       {
+        id: "db.goToColumn",
+        title: "Go to Column",
+        category: "Tools",
+        keywords: ["table editor", "file structure", "columns"],
+        when: "dbTableEditorFocus",
+        run: () => activeTableEditor()?.showColumns(),
+      },
+      {
         id: "db.submitChanges",
         title: "Submit",
         category: "Tools",

@@ -41,6 +41,7 @@ const shared = [
     "find.popup.openResult",
   ],
   ["navigate.typeHierarchy", "db.editData"],
+  ["navigate.fileStructure", "db.goToColumn"],
   ["find.replaceInFile", "agents.findInConversation", "vcs.log.goToRef"],
   ["find.next", "find.popup.nextResult"],
   ["find.previous", "find.popup.previousResult"],

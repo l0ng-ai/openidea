@@ -90,6 +90,7 @@ export interface DataViewProps extends Pick<
   /** The search bar is shown (the toolbar's search button, ⌘F in the grid). */
   searchOpen?: boolean;
   onSearchOpenChange?: (open: boolean) => void;
+  revealColumn?: GridProps["revealColumn"];
   "aria-label"?: string;
 }
 
@@ -200,6 +201,7 @@ export function DataView(props: DataViewProps) {
             isMatch={test ? (r, c) => matchSet.has(`${r}:${c}`) : undefined}
             currentMatch={currentMatch}
             onFind={onSearchOpenChange && openSearch}
+            revealColumn={props.revealColumn}
             aria-label={props["aria-label"]}
             columns={columns}
             rowCount={shown}
