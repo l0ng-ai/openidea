@@ -122,6 +122,14 @@ describe(".icls schemes", () => {
     for (const [name, value] of names) expect(attrs[name]?.foreground).toBe(`#${value}`);
   });
 
+  it("imports the Python f-string colour", () => {
+    const xml =
+      '<scheme name="F"><attributes><option name="PY.STRING.F"><value>' +
+      '<option name="FOREGROUND" value="808080"/></value></option></attributes></scheme>';
+    const { id, customs } = importScheme({}, parseIcls(xml).scheme);
+    expect(parseIcls(exportIcls(id, customs)).scheme.attributes.pyFString?.foreground).toBe("#808080");
+  });
+
   it("imports the global variable colour", () => {
     const xml =
       '<scheme name="G" parent_scheme="Darcula"><attributes><option name="DEFAULT_GLOBAL_VARIABLE"><value>' +

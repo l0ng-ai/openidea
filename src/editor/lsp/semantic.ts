@@ -97,6 +97,7 @@ const PYTHON_VARIABLE_KINDS = new Set<PythonSymbolKind>([
   "constant",
   "property",
   "typeParameter",
+  "unusedParameter",
 ]);
 const PYTHON_SYMBOL_BASES = new Set([
   "cm-sem-variable",
@@ -105,6 +106,7 @@ const PYTHON_SYMBOL_BASES = new Set([
   "cm-sem-constant",
   "cm-sem-type",
   "cm-sem-typeParameter",
+  "cm-sem-parameter",
   "cm-sem-builtin",
 ]);
 

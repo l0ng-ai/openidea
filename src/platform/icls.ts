@@ -149,6 +149,7 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.PREDEFINED_DEFINITION": "pyPredefinedDefinition",
   "PY.PREDEFINED_USAGE": "pyPredefinedUsage",
   "PY.STRING.B": "pyBytes",
+  "PY.STRING.F": "pyFString",
   "PY.VALID_STRING_ESCAPE": "escape",
   "PY.OPERATION_SIGN": "operator",
 });

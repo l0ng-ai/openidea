@@ -50,6 +50,39 @@ class Foo:
     );
   });
 
+  it("marks unused parameters and highlights type and f-string keywords", async () => {
+    const state = await parse(`type Alias = list[int]
+s = f"value={1}"
+def used(x):
+    return x
+def unused(param):
+    return 1
+def skipped(self, _hidden):
+    return 1
+`);
+    const tree = syntaxTree(state);
+    const kinds = pythonSymbolKinds(tree, state.doc);
+    const kindOf = (name: string) =>
+      [...kinds]
+        .filter(([range]) => {
+          const [from, to] = range.split(":").map(Number);
+          return state.doc.sliceString(from!, to!) === name;
+        })
+        .map(([, kind]) => kind);
+    expect(kindOf("param")).toEqual(["unusedParameter"]);
+    expect(kindOf("x")).toEqual(["parameter", "parameter"]);
+    expect(kindOf("self")).toEqual(["parameter"]);
+    expect(kindOf("_hidden")).toEqual(["parameter"]);
+
+    const ranges = pythonSyntaxRanges(tree, state.doc, kinds);
+    const styles = ranges.map((r) => [state.doc.sliceString(r.from, r.to), r.className]);
+    expect(styles).toContainEqual(["param", "cm-sem-parameter cm-sem-unused"]);
+    expect(styles).toContainEqual(["type", "cm-sem-keyword"]);
+    const fstring = ranges.filter((r) => r.className === "cm-sem-python-fstring");
+    expect(fstring.length).toBeGreaterThan(0);
+    expect(fstring.some((r) => state.doc.sliceString(r.from, r.to).includes("value="))).toBe(true);
+  });
+
   it("lets server classification override the local builtin guess", async () => {
     const state = await parse("print(1)");
     const ranges = semanticRanges(
