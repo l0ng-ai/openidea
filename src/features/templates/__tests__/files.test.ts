@@ -3,8 +3,10 @@ import {
   caretAfterReformat,
   expandIncludes,
   fragmentResolver,
+  composerPsr4,
   inferGoPackage,
   inferJvmPackage,
+  inferPhpNamespace,
   planFile,
   reformatsOnCreate,
   renderFileTemplate,
@@ -89,6 +91,58 @@ describe("file naming", () => {
     for (const id of ["stylesheet", "dockerfile", "editorconfig", "json", "yaml", "toml", "shell", "gitignore"])
       expect(ids).toContain(id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("PHP namespaces", () => {
+  const psr4 = composerPsr4(
+    JSON.stringify({
+      autoload: { "psr-4": { "App\\": "src/", "Legacy\\": ["src/legacy/", "lib"] } },
+      "autoload-dev": { "psr-4": { "App\\Tests\\": "./tests" } },
+    }),
+  );
+
+  it("reads autoload and autoload-dev PSR-4 maps", () => {
+    expect(psr4).toEqual([
+      ["App\\", "src"],
+      ["Legacy\\", "src/legacy"],
+      ["Legacy\\", "lib"],
+      ["App\\Tests\\", "tests"],
+    ]);
+    expect(composerPsr4("{ not json")).toEqual([]);
+  });
+
+  it("uses the longest mapped folder and adds the folders below it", () => {
+    expect(inferPhpNamespace("/src/Http", psr4)).toBe("App\\Http");
+    expect(inferPhpNamespace("/src", psr4)).toBe("App");
+    expect(inferPhpNamespace("/src/legacy/Billing", psr4)).toBe("Legacy\\Billing");
+    expect(inferPhpNamespace("/tests/Service", psr4)).toBe("App\\Tests\\Service");
+    expect(inferPhpNamespace("/config", psr4)).toBe("");
+    expect(inferPhpNamespace("/src/my-dir", psr4)).toBe("");
+    expect(inferPhpNamespace("/x", [["", ""]])).toBe("x");
+  });
+
+  it("writes the namespace into PHP classes, and leaves it out without one", () => {
+    const kinds = tpl("php-class").kinds;
+    const cls = renderFileTemplate(kinds[0]!.body, {
+      name: "UserController",
+      fileName: "UserController.php",
+      packageName: "App\\Http",
+    });
+    expect(cls.text).toBe("<?php\n\nnamespace App\\Http;\n\nclass UserController\n{\n    \n}\n");
+    const bare = renderFileTemplate(kinds[0]!.body, { name: "Foo", fileName: "Foo.php" });
+    expect(bare.text).toBe("<?php\n\nclass Foo\n{\n    \n}\n");
+    const test = renderFileTemplate(kinds.find((k) => k.id === "test")!.body, {
+      name: "MailerTest",
+      fileName: "MailerTest.php",
+      packageName: "App\\Tests\\Service",
+    });
+    expect(test.text).toBe(
+      "<?php\n\nnamespace App\\Tests\\Service;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class MailerTest extends TestCase\n{\n    public function testSomething(): void\n    {\n        \n    }\n}\n",
+    );
+    expect(renderFileTemplate(tpl("php").kinds[0]!.body, { name: "bootstrap", fileName: "bootstrap.php" }).text).toBe(
+      "<?php\n\n\n",
+    );
   });
 });
 

@@ -32,7 +32,7 @@ export interface FileTemplate {
   extension: string;
   nameStyle: NameStyle;
   /** Package inference: `jvm` (Java/Kotlin source roots) or `go` (directory). */
-  packageStyle?: "jvm" | "go";
+  packageStyle?: "jvm" | "go" | "php";
   /** Dotted names (`com.acme.Foo`) create package directories. */
   dottedPackages?: boolean;
   kinds: FileTemplateKind[];
@@ -222,6 +222,47 @@ export function inferGoPackage(directory: string, projectRoot: string | null, si
 }
 
 export const GO_PACKAGE_RE = /^\s*package\s+([A-Za-z_]\w*)/m;
+
+/** `autoload.psr-4` and `autoload-dev.psr-4` of a composer.json: `[namespace prefix, folder]` (folder relative to it). */
+export function composerPsr4(json: string): Array<[string, string]> {
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const out: Array<[string, string]> = [];
+  for (const section of ["autoload", "autoload-dev"]) {
+    const map = (data as Record<string, { "psr-4"?: Record<string, unknown> } | undefined> | null)?.[section]?.[
+      "psr-4"
+    ];
+    if (!map || typeof map !== "object") continue;
+    for (const [prefix, value] of Object.entries(map)) {
+      for (const dir of Array.isArray(value) ? value : [value])
+        if (typeof dir === "string")
+          out.push([prefix, dir.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "")]);
+    }
+  }
+  return out;
+}
+
+/**
+ * PHP namespace for `directory` (relative to the composer.json folder): the PSR-4 prefix of the
+ * longest mapped folder that contains it, then the folders below it (`App\\` + `src/` → `src/Http`
+ * gives `App\Http`). Outside every mapping: no namespace.
+ */
+export function inferPhpNamespace(directory: string, psr4: ReadonlyArray<readonly [string, string]>): string {
+  const rel = directory.split("/").filter(Boolean);
+  let best: { prefix: string; depth: number } | null = null;
+  for (const [prefix, dir] of psr4) {
+    const segs = dir.split("/").filter((s) => s && s !== ".");
+    if (segs.length > rel.length || segs.some((s, i) => s !== rel[i])) continue;
+    if (!best || segs.length > best.depth) best = { prefix, depth: segs.length };
+  }
+  if (!best) return "";
+  const parts = [...best.prefix.split("\\").filter(Boolean), ...rel.slice(best.depth)];
+  return parts.every((p) => /^[A-Za-z_\x80-\uffff][\w\x80-\uffff]*$/.test(p)) ? parts.join("\\") : "";
+}
 
 export interface FileTemplateVars {
   name: string;

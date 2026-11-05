@@ -10,8 +10,10 @@ import { editorService, maybeEditorService, notifications } from "@/workbench/co
 import {
   GO_PACKAGE_RE,
   caretAfterReformat,
+  composerPsr4,
   inferGoPackage,
   inferJvmPackage,
+  inferPhpNamespace,
   planFile,
   reformatsOnCreate,
   renderFileTemplate,
@@ -46,10 +48,29 @@ function packageRoots(): string[] {
     .map((r) => r.path);
 }
 
+/** The namespace from the nearest composer.json between `directory` and the project root (PSR-4). */
+async function composerNamespace(directory: string, root: string | null): Promise<string> {
+  if (!isTauri()) return "";
+  let dir = directory.replace(/\/+$/, "");
+  const top = root?.replace(/\/+$/, "") ?? null;
+  for (;;) {
+    let text: string | null = null;
+    try {
+      text = await call(commands.fsReadText(`${dir}/composer.json`));
+    } catch {
+      /* no composer.json here */
+    }
+    if (text !== null) return inferPhpNamespace(directory.slice(dir.length), composerPsr4(text));
+    if (!top || dir === top || !dir.startsWith(`${top}/`)) return "";
+    dir = dirname(dir);
+  }
+}
+
 export async function packageFor(t: FileTemplate, directory: string): Promise<string> {
   const root = useProject.getState().project?.root ?? null;
   if (t.packageStyle === "jvm") return inferJvmPackage(directory, root, packageRoots());
   if (t.packageStyle === "go") return inferGoPackage(directory, root, await siblingGoPackage(directory));
+  if (t.packageStyle === "php") return composerNamespace(directory, root);
   return "";
 }
 
