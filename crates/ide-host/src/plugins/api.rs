@@ -667,6 +667,17 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
+    fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError> {
+        let event = PluginEvent::OpenLocation {
+            plugin_id: self.id().to_owned(),
+            path: path.to_path_buf().into(),
+            line,
+            column,
+        };
+        self.shared.sink.emit(client, event);
+        Ok(())
+    }
+
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String> {
         let schema: Vec<super::ui_points::SettingSchema> = self
             .shared

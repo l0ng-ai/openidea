@@ -33,6 +33,7 @@ import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
+import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
 import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
@@ -471,6 +472,15 @@ export function registerVcsActions(): () => void {
         openLogTab("history", path);
         showGitWindow();
       },
+    },
+    {
+      id: "vcs.showHistoryForSelection",
+      title: "Show History for Selection",
+      category: "Git",
+      icon: "history",
+      when: `${VCS} && textEditorActive`,
+      keywords: ["line history", "block history", "git log -L"],
+      run: () => showSelectionHistory(),
     },
     {
       id: "vcs.showCommit",

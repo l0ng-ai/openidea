@@ -74,6 +74,7 @@ struct State {
     refreshed: Vec<String>,
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
+    locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
 }
 
@@ -218,6 +219,10 @@ impl MockHost {
     /// `(view, message)` the plugin posted to its views' frames.
     pub fn view_messages(&self) -> Vec<(String, String)> {
         self.state.borrow().view_messages.clone()
+    }
+
+    pub fn opened_locations(&self) -> Vec<(String, u32, u32)> {
+        self.state.borrow().locations.clone()
     }
 
     /// Terminals the plugin opened.
@@ -595,6 +600,14 @@ pub mod current {
         })
     }
 
+    pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            s.locations.push((path.into(), line, column));
+            Ok(())
+        })
+    }
+
     pub fn setting(key: &str) -> Option<String> {
         with(|s| s.settings.get(key).cloned())
     }
@@ -722,11 +735,8 @@ mod tests {
         let out = mock.invocation().project().unwrap().run_process("java", &["-version".into()], None).unwrap();
         assert_eq!(out.stdout, "-version");
         assert_eq!(mock.process_runs()[0].cwd.as_deref(), Some("/project"));
-        host::publish_diagnostics(
-            "/project/a.java",
-            &[Diagnostic { range: Range::default(), severity: Severity::Warning, message: "m".into(), code: None }],
-        )
-        .unwrap();
+        host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
+            .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
     }
 }

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import type { RunConfig } from "@/platform/ipc";
+import { afterEach, describe, expect, it } from "vitest";
+import type { HierarchyItem, RunConfig } from "@/platform/ipc";
 import {
   innermostTarget,
   nodeTypeStripping,
@@ -15,8 +15,18 @@ import {
   type LocatedTool,
   type ToolEnv,
 } from "./producers";
+import { clearInheritedMain, resolveCandidates, unresolvedCandidates } from "./inheritedMain";
+
+afterEach(() => clearInheritedMain());
 
 const ROOT = "/work/app";
+const superItem: Omit<HierarchyItem, "name" | "path"> = {
+  kind: "class",
+  detail: null,
+  range: { start: { line: 0, col: 0 }, end: { line: 1, col: 0 } },
+  selectionRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+  fromRanges: [],
+};
 const SCRATCH = "/Users/me/Library/Application Support/ai.l0ng.openidea/scratches";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
@@ -150,6 +160,31 @@ describe("single-file producers (scratches)", () => {
       debugAdapter: "debugpy",
     });
     expect(produceContext(scratch("hi.py"), env({}))!.missing!.title).toBe("Cannot run 'hi.py'");
+  });
+
+  it("Python: a module with relative imports runs with -m from above its top package", () => {
+    const venv = [cfg({ id: "pytest", kind: "pytest", command: ".venv/bin/pytest" })];
+    const packages = new Set([`${ROOT}/src/tasks`, `${ROOT}/src/tasks/sub`]);
+    const at = (path: string, content: string) =>
+      run({ path, root: ROOT, configs: venv, content, pythonPackage: (d) => packages.has(d) });
+    const relative = "from .models import TaskList\n";
+    expect(at(`${ROOT}/src/tasks/cli.py`, relative)).toMatchObject({
+      command: `${ROOT}/.venv/bin/python`,
+      args: ["-m", "tasks.cli"],
+      cwd: "src",
+    });
+    expect(at(`${ROOT}/src/tasks/sub/__main__.py`, "from ..models import X\n")).toMatchObject({
+      args: ["-m", "tasks.sub"],
+      cwd: "src",
+    });
+    // A directory without `__init__.py` is still the module's package; a top-level one runs from the root.
+    expect(at(`${ROOT}/scripts/gen.py`, relative)).toMatchObject({ args: ["-m", "scripts.gen"], cwd: null });
+    // Without relative imports, the file runs as a script.
+    expect(at(`${ROOT}/src/tasks/cli.py`, "import argparse\n")).toMatchObject({
+      command: ".venv/bin/python",
+      args: ["src/tasks/cli.py"],
+      cwd: null,
+    });
   });
 
   it("shell scripts: the shell of the #! line, else by extension; extensionless files by #!", () => {
@@ -329,6 +364,23 @@ describe("single-file producers (scratches)", () => {
     const p = produceContext(input(["/work/billing", svc]), ALL)!;
     expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
     expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
+  });
+
+  it("Java: a class whose superclass declares main runs as a Spring Boot application", async () => {
+    const path = `${ROOT}/src/main/java/demo/AiChatApplication.java`;
+    const content = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const input = { path, root: ROOT, configs: gradle, content, line: 3 };
+    expect(fileTargets(input, content)).toEqual([]);
+    await resolveCandidates(path, unresolvedCandidates(path, content), {
+      supertypes: async () => [{ ...superItem, name: "AtomStarter", path: "jdt://lib/AtomStarter.class" }],
+      text: async () => "package x; public class AtomStarter { public static void main(String[] a) {} }",
+    });
+    expect(fileTargets(input, content)).toMatchObject([
+      { kind: "main", className: "demo.AiChatApplication", spring: true },
+    ]);
+    expect(produceContext(input, ALL)!.config).toMatchObject({ kind: "spring-boot" });
+    expect(produceContext(input, ALL)!.config!.args.at(-1)).toBe("demo.AiChatApplication");
   });
 
   describe("Java / Kotlin mains in a build nested in a folder of repositories", () => {

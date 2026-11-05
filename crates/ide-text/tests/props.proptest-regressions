@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc afa0785335731ca8adc050b09312843aeb3ff05dc895963d09d9f728c553717c # shrinks to doc_text = "a", picks = [(0, 0, ""), (0, 0, ""), (658842129343018477, 1922606258417419361, ""), (0, 4297423518677873183, ""), (953525717999286983, 557348908835472853, "a"), (0, 0, "b"), (0, 1653396554766652711, "")], seed = 7072935092038531240
+cc dd6ec32be77e8ad96d0ce3ef14ad9d72d5ba2a06f227ea693bfdee62debf08b7 # shrinks to a = "中é\n\n", b = "\n\na"

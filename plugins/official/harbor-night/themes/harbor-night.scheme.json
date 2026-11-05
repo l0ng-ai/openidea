@@ -18,6 +18,7 @@
     "--syn-number": "#7fc8f8",
     "--syn-punct": "#a9b4c2",
     "--syn-variable": "#d9dfe8",
+    "--syn-global": "#d9dfe8",
     "--syn-param": "#d9dfe8",
     "--syn-property": "#b9a3f0",
     "--syn-constant": "#e58fa3",

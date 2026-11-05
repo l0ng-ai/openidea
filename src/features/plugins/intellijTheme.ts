@@ -130,6 +130,7 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   DEFAULT_IDENTIFIER: [["FOREGROUND", "--syn-variable"]],
   DEFAULT_LOCAL_VARIABLE: [["FOREGROUND", "--syn-variable"]],
   DEFAULT_PARAMETER: [["FOREGROUND", "--syn-param"]],
+  DEFAULT_GLOBAL_VARIABLE: [["FOREGROUND", "--syn-global"]],
   DEFAULT_PREDEFINED_SYMBOL: [["FOREGROUND", "--syn-builtin"]],
   DEFAULT_METADATA: [
     ["FOREGROUND", "--syn-annotation"],

@@ -81,6 +81,7 @@ pub struct Host {
     pub runtime: tokio::runtime::Handle,
     /// One project per window, keyed by window label.
     projects: RwLock<HashMap<String, Arc<Project>>>,
+    pub(crate) external_logs: RwLock<HashMap<String, Vec<Arc<ide_vcs::Repo>>>>,
     requests: requests::Requests,
     project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
 }
@@ -125,6 +126,7 @@ impl Host {
             owner,
             runtime,
             projects: RwLock::default(),
+            external_logs: RwLock::default(),
             requests: Default::default(),
             project_requests: RwLock::default(),
         };
@@ -181,6 +183,10 @@ impl Host {
     }
 
     pub fn close_project(&self, window: &str) {
+        self.external_logs.write().remove(self.owner_window(window));
+        for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+            self.cancel_request(request);
+        }
         let project = self.projects.write().remove(window);
         if let Some(project) = project {
             if !project.light {
@@ -196,9 +202,6 @@ impl Host {
             // asked for, its runs, its shells and its debug sessions — and the language
             // servers finish shutting down before the window is gone, as IDEA closes a
             // project's processes.
-            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
-                self.cancel_request(request);
-            }
             self.processes.kill_project(&project.root);
             self.terminals.kill_key(self.owner_window(window));
             self.shutdown_project_workers_blocking(
@@ -314,11 +317,17 @@ impl Host {
     }
 
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {
-        let token = self.begin_request(id);
-        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
+        let token = self.begin_project_read_request(window, id);
         if self.project(window).is_ok_and(|p| !p.is_trusted()) {
             token.cancel();
         }
+        token
+    }
+
+    /// Read-only work remains cancellable/disposed with its window in restricted projects.
+    pub fn begin_project_read_request(&self, window: &str, id: RequestId) -> CancellationToken {
+        let token = self.begin_request(id);
+        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
         token
     }
 

@@ -36,6 +36,11 @@ impl SecretStore {
         Self { file: SecretFile::with_legacy(path, legacy), project: root.to_string_lossy().into_owned() }
     }
 
+    /// The same file, keyed by `scope` instead (global data sources: the app data directory).
+    pub fn scoped(&self, scope: &Path) -> Self {
+        Self::new(self.path.clone(), scope)
+    }
+
     pub fn get(&self, key: &str) -> Option<String> {
         self.file.get(&file_key(&self.project, key))
     }

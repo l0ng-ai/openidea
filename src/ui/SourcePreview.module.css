@@ -14,7 +14,7 @@
   /* The workbench disables selection globally; preview text stays selectable/copyable. */
   -webkit-user-select: text;
   user-select: text;
-  cursor: text;
+  cursor: default;
 }
 .empty {
   display: flex;
@@ -28,6 +28,7 @@
   padding: 4px 0;
   font: inherit;
   min-width: max-content;
+  cursor: text;
 }
 .codeLine {
   display: flex;

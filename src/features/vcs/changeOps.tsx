@@ -9,6 +9,7 @@ import { useChangelists, withListDefaults } from "./changelists";
 import { runCommitChecks } from "./commitChecks";
 import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { hunkKeys } from "./hunks";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, rootOf, stripSlash } from "./model";
@@ -142,6 +143,31 @@ async function partialCommitFiles(paths: readonly string[]): Promise<{ files: Pa
       });
   }
   return { files, whole };
+}
+
+/** Delete… on unversioned files in the Changes view, as in IDEA: they move to the Trash. */
+export async function deleteUnversioned(paths: readonly string[]) {
+  if (!paths.length) return;
+  const question = paths.length === 1 ? tx`Delete '${baseName(paths[0]!)}'?` : tx`Delete ${paths.length} items?`;
+  const ok = await confirmDialog({
+    title: "Delete",
+    okLabel: "Delete",
+    danger: true,
+    message: (
+      <>
+        {question}
+        <br />
+        <T>Items are moved to the Trash.</T>
+      </>
+    ),
+  });
+  if (!ok) return;
+  await runOp("Delete", async () => {
+    for (const path of paths) {
+      await call(commands.fsDelete(path));
+      notifyFileOperation({ kind: "deleted", paths: [path] });
+    }
+  });
 }
 
 /** Files the Rollback action applies to by default. */
