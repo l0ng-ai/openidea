@@ -237,3 +237,59 @@ mod tests {
         ));
     }
 }
+
+/// A queue of patches to replay on reconnect, in insertion order, deduplicated
+/// by idempotency key. Used by the remote client to buffer edits while offline
+/// and flush them once, even if the ack times out and the flush is retried.
+pub struct ReplayQueue<T> {
+    inner: OfflineBuffer<T>,
+}
+
+impl<T> ReplayQueue<T> {
+    pub fn new(capacity: usize) -> Self {
+        Self { inner: OfflineBuffer::new(capacity) }
+    }
+
+    /// Enqueue one patch, returning its key.
+    pub fn enqueue(&mut self, value: T) -> u64 {
+        self.inner.push(value)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Drain everything to replay, in order.
+    pub fn drain(&mut self) -> Vec<(u64, T)> {
+        self.inner.drain()
+    }
+}
+
+#[cfg(test)]
+mod replay_queue_tests {
+    use super::*;
+
+    #[test]
+    fn replay_queue_preserves_order_and_deduplicates_on_replay() {
+        let mut q = ReplayQueue::new(4);
+        let k1 = q.enqueue("a");
+        let k2 = q.enqueue("b");
+        assert_eq!(q.len(), 2);
+        let batch = q.drain();
+        assert_eq!(batch, vec![(k1, "a"), (k2, "b")]);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn replay_queue_is_bounded() {
+        let mut q = ReplayQueue::new(2);
+        q.enqueue(1);
+        q.enqueue(2);
+        q.enqueue(3);
+        assert_eq!(q.len(), 2);
+    }
+}
