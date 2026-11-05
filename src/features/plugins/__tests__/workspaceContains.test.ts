@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { getContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 import { refreshWorkspaceContains, workspaceContainsKeys } from "../workspaceContains";
 
 describe("workspaceContains", () => {
@@ -32,8 +32,42 @@ describe("workspaceContains", () => {
     });
     await refreshWorkspaceContains("/p", ["workspaceContains:x/y"], list);
     expect(getContext()["workspaceContains:x/y"]).toBe(false);
+    setContext("workspaceContains:x/y", true);
     list.mockClear();
     await refreshWorkspaceContains(null, ["workspaceContains:x/y"], list);
     expect(list).not.toHaveBeenCalled();
+    expect(getContext()["workspaceContains:x/y"]).toBe(false);
+  });
+
+  it("ignores a stale refresh that resolves after a newer one", async () => {
+    const key = "workspaceContains:pom.xml";
+    let releaseOld: (names: string[]) => void = () => {};
+    let releaseNew: (names: string[]) => void = () => {};
+    const old = new Promise<string[]>((resolve) => (releaseOld = resolve));
+    const fresh = new Promise<string[]>((resolve) => (releaseNew = resolve));
+    let latest = 0;
+    const first = refreshWorkspaceContains(
+      "/a",
+      [key],
+      () => old,
+      (
+        (t) => () =>
+          t === latest
+      )(++latest),
+    );
+    const second = refreshWorkspaceContains(
+      "/b",
+      [key],
+      () => fresh,
+      (
+        (t) => () =>
+          t === latest
+      )(++latest),
+    );
+    releaseNew(["pom.xml"]);
+    await second;
+    releaseOld([]);
+    await first;
+    expect(getContext()[key]).toBe(true);
   });
 });
