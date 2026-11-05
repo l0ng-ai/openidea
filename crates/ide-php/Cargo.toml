@@ -7,6 +7,11 @@ license.workspace = true
 
 [dependencies]
 ide-core.workspace = true
+ide-sdk.workspace = true
+ide-vfs.workspace = true
+ignore.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
 self_cell.workspace = true
 serde.workspace = true
 postcard.workspace = true
@@ -31,7 +36,6 @@ ide-language.workspace = true
 ide-lsp.workspace = true
 ide-text.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 dunce.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -140,7 +140,7 @@ The design:
 
   Tests: build, change, delete and restart against a temporary directory, and check that nothing is re-parsed when nothing changed.
 
-- [ ] Phase 1.6: Composer and include paths
+- [x] Phase 1.6: Composer and include paths
       Work out which files belong to the project:
   - `composer.json` autoload and autoload-dev (`psr-4`, `psr-0`, `classmap`, `files`)
   - `vendor/composer/installed.json` when present

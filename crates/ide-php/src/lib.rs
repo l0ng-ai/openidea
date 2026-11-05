@@ -23,12 +23,17 @@
 //! - [`index`]: the persistent redb indexes ([`index::PhpIndex`]): summaries
 //!   by content hash, FQN, short name, direct subclasses and namespace
 //!   children, built in parallel and updated incrementally.
+//! - [`project`]: which files belong to the project
+//!   ([`project::ProjectLayout`]): the project folder, Composer autoload
+//!   rules and installed packages, include paths and excluded folders, and
+//!   the PSR-4/PSR-0 namespace ⇄ directory map ([`project::AutoloadMap`]).
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
 pub mod index;
 pub mod names;
 pub mod probe;
+pub mod project;
 pub mod summary;
 pub mod syntax;
 
