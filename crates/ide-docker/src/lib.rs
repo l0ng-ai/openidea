@@ -440,3 +440,89 @@ pub fn compose_op(
     });
     run_streaming(ep, None, &args, cancel, on_output)
 }
+
+/// Whether `ep` is a daemon on this machine, where a bind mount of the project
+/// is this machine's folder. The CLI's default daemon and a context are looked
+/// up (`DOCKER_HOST`, else the context's endpoint).
+pub fn endpoint_is_local(ep: &DockerEndpoint) -> IdeResult<bool> {
+    let url = match ep {
+        DockerEndpoint::Socket { path } => path.trim().to_owned(),
+        DockerEndpoint::Tcp { host, .. } => {
+            let host = host.trim();
+            if host.contains("://") { host.to_owned() } else { format!("tcp://{host}") }
+        }
+        DockerEndpoint::Default => {
+            match ide_core::process::host_var_os("DOCKER_HOST").map(|v| v.to_string_lossy().trim().to_owned()) {
+                Some(url) if !url.is_empty() => url,
+                _ => context_host(ep, None)?,
+            }
+        }
+        DockerEndpoint::Context { name } => context_host(&DockerEndpoint::Default, Some(name.trim()))?,
+    };
+    Ok(daemon_url_is_local(&url))
+}
+
+/// The daemon URL of context `name` (the current one with `None`).
+fn context_host(ep: &DockerEndpoint, name: Option<&str>) -> IdeResult<String> {
+    let mut args = vec!["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"];
+    args.extend(name);
+    Ok(run(ep, &args, QUICK)?.trim().to_owned())
+}
+
+/// `unix://`, `npipe://`, a bare socket path and TCP on the loopback address are
+/// this machine; `ssh://` and other hosts are not.
+pub fn daemon_url_is_local(url: &str) -> bool {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once("://") else { return true };
+    match scheme {
+        "unix" | "npipe" => true,
+        "tcp" | "http" | "https" => {
+            let host = rest.split('/').next().unwrap_or_default();
+            let host = match host.strip_prefix('[') {
+                Some(v6) => v6.split(']').next().unwrap_or_default(),
+                None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+            };
+            matches!(host, "localhost" | "127.0.0.1" | "::1")
+        }
+        _ => false,
+    }
+}
+
+/// `docker compose config --format json` of the project at `dir` (`files`
+/// relative to it; none = the project's default file).
+pub fn compose_config(ep: &DockerEndpoint, dir: &Path, files: &[String]) -> IdeResult<String> {
+    let mut args: Vec<&str> = vec!["compose"];
+    for f in files.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
+        args.extend(["--file", f]);
+    }
+    args.extend(["config", "--format", "json"]);
+    let mut cmd = command(ep, &args)?;
+    cmd.current_dir(dir);
+    let out = process::run(cmd, QUICK, None)?;
+    if out.success { Ok(out.stdout) } else { Err(failure(&args, &out.stderr, &out.stdout)) }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn local_daemon_urls() {
+        for url in [
+            "unix:///var/run/docker.sock",
+            "/var/run/docker.sock",
+            "npipe:////./pipe/docker_engine",
+            "tcp://localhost:2375",
+            "tcp://127.0.0.1:2376",
+            "tcp://[::1]:2375",
+            "",
+        ] {
+            assert!(daemon_url_is_local(url), "{url}");
+        }
+        for url in ["ssh://me@build", "tcp://build:2376", "tcp://10.0.0.5:2375", "https://docker.example.com"] {
+            assert!(!daemon_url_is_local(url), "{url}");
+        }
+        assert!(endpoint_is_local(&DockerEndpoint::Socket { path: "/run/user/1000/docker.sock".into() }).unwrap());
+        assert!(!endpoint_is_local(&DockerEndpoint::Tcp { host: "build:2376".into(), tls_cert_dir: None }).unwrap());
+    }
+}

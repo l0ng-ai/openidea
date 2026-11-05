@@ -92,6 +92,9 @@ const UNTRANSLATED = new Set<string>([
   "Prettier",
   "oxfmt",
   "IntelliJ IDEA",
+  // Docker run target placeholder values
+  "compose.yaml",
+  "python:3.12",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",

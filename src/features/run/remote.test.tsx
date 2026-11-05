@@ -40,7 +40,7 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { IpcError, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import type { RunTargetValid } from "@/platform/remoteSettings";
+import { DEFAULT_RUN_TARGET, type RunTargetValid } from "@/platform/remoteSettings";
 import {
   provideNotificationService,
   provideToolWindowService,
@@ -50,7 +50,15 @@ import {
 import { ConfigForm } from "./ConfigForm";
 import { duplicateConfig, upsertConfig, userConfigs } from "./configs";
 import { activate } from "./index";
-import { remoteDebugBlocked, remoteLabel, startRemedy, startWithRemedies, withTarget, type RemedyDeps } from "./remote";
+import {
+  containerExecutorBlocked,
+  remoteDebugBlocked,
+  remoteLabel,
+  startRemedy,
+  startWithRemedies,
+  withTarget,
+  type RemedyDeps,
+} from "./remote";
 import { resetRuns, saveUserConfigs, startRun, useRun } from "./store";
 import { newConfigOfType } from "./types";
 import { readRan } from "./services";
@@ -70,6 +78,7 @@ const cfg = (id: string, extra: Partial<RunConfig> = {}): RunConfig => ({
 });
 
 const box: RunTargetValid = {
+  ...DEFAULT_RUN_TARGET,
   id: "box",
   name: "Build box",
   sshConfig: "ssh1",
@@ -186,6 +195,29 @@ describe("remote debugging", () => {
     useRun.setState({ configs: [local], loaded: true });
     await executeAction("run.debugConfig", local.id);
     expect(readRan("/remember-debug")).toContain(local.id);
+  });
+});
+
+describe("coverage and profiling", () => {
+  const container: RunTargetValid = {
+    ...DEFAULT_RUN_TARGET,
+    kind: "docker",
+    id: "py",
+    name: "Python",
+    image: "python:3.12",
+  };
+
+  it("are refused in containers, with a notification", () => {
+    expect(containerExecutorBlocked(cfg("app", { target: "py" }), [box, container])).toBe(true);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Coverage and profiling are not supported in containers", level: "warning" }),
+    );
+  });
+
+  it("are left alone locally and over SSH", () => {
+    expect(containerExecutorBlocked(cfg("app"), [box, container])).toBe(false);
+    expect(containerExecutorBlocked(cfg("app", { target: "box" }), [box, container])).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
   });
 });
 
