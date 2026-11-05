@@ -664,14 +664,16 @@ export const commands = {
 	runTestReports: (module: string | null, sinceMs: number | null) => typedError<TestCaseReport[], IdeError>(__TAURI_INVOKE("run_test_reports", { module, sinceMs })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
 	buildModel: () => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_model")),
+	gradleLinkProjects: (paths: string[]) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("gradle_link_projects", { paths })),
+	gradleUnlinkProjects: (paths: string[]) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("gradle_unlink_projects", { paths })),
 	/**
 	 *  Runs Maven (`help:effective-pom dependency:tree`) or Gradle (`tasks --all`) in the
 	 *  background, reporting progress on `on_progress`; cancellable with `cancel_request(request)`.
 	 *  Returns the refreshed model; a failed build is reported in its `syncError`.
 	 */
-	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, onProgress })),
+	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], buildDir: string | null, onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, buildDir, onProgress })),
 	/**  The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer). */
-	gradleDependencies: (gradlePath: string, configuration: string, offline: boolean, request: RequestId) => typedError<GradleDependency[], IdeError>(__TAURI_INVOKE("gradle_dependencies", { gradlePath, configuration, offline, request })),
+	gradleDependencies: (gradlePath: string, configuration: string, offline: boolean, request: RequestId, buildDir: string | null) => typedError<GradleDependency[], IdeError>(__TAURI_INVOKE("gradle_dependencies", { gradlePath, configuration, offline, request, buildDir })),
 	/**
 	 *  The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
 	 *  build has downloaded it.
@@ -1851,7 +1853,7 @@ export type BuildMessage = {
 /**  The build systems of a project; `None` when the project does not use one. */
 export type BuildModel = {
 	maven: MavenModel | null,
-	gradle: GradleModel | null,
+	gradle?: GradleModel[],
 };
 
 export type BuildResult = {
@@ -3912,6 +3914,8 @@ export type GradleRunUsing =
 
 /**  Build Tools › Gradle. */
 export type GradleSettings = {
+	/**  Linked build directories; absent preserves automatic discovery, empty unlinks all builds. */
+	linkedProjects?: string[] | null,
 	/**  Empty = Project JDK; otherwise a JDK home. */
 	jvm?: string,
 	distribution?: GradleDistribution,
