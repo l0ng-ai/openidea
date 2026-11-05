@@ -84,7 +84,7 @@ class BreakpointMarker extends GutterMarker {
   }
 }
 
-const bpLine = Decoration.line({ class: styles.bpLine });
+const bpLine = Decoration.line({ class: `${styles.bpLine} cm-openidea-lineBg` });
 const DISABLED_LOOKS = new Set<BreakpointLook>(["disabled", "muted", "methodDisabled", "fieldDisabled"]);
 
 const setMarkers = StateEffect.define<RangeSet<BreakpointMarker>>();

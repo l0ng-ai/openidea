@@ -111,7 +111,7 @@ for (const palette of palettes) {
       );
     await editor.locator(".cm-content").click();
     await page.keyboard.press("Meta+a");
-    await expect(editor.locator(".cm-selectionBackground").first()).toBeVisible();
+    await expect(editor.locator(".cm-selectionBackground:visible").first()).toBeVisible();
     await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Meta+f");
     await page.getByRole("textbox", { name: "Find", exact: true }).fill("Order");
