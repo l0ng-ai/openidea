@@ -112,7 +112,7 @@ The design:
 
   Use `mago-names` where it fits. Tests are table-driven over snippets.
 
-- [ ] Phase 1.3: File summaries for declarations
+- [x] Phase 1.3: File summaries for declarations
       Add `FileSummary` and its extraction:
   - classes, interfaces, traits and enums (cases and backing type)
   - extends and implements, trait uses with `insteadof` and `as`

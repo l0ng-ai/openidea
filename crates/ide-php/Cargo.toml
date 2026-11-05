@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 ide-core.workspace = true
 self_cell.workspace = true
+serde.workspace = true
+postcard.workspace = true
 # Mago (MIT OR Apache-2.0) parses PHP. Pinned exactly: its AST API changes
 # between minor releases, and every phase builds on it.
 mago-allocator = "=1.59.0"
@@ -19,6 +21,7 @@ mago-database = "=1.59.0"
 mago-syntax-core = "=1.59.0"
 
 [dev-dependencies]
+insta.workspace = true
 # The differential test (tests/differential.rs) drives Intelephense through ide-lsp.
 ide-language.workspace = true
 ide-lsp.workspace = true

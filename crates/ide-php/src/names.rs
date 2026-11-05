@@ -70,7 +70,7 @@ pub enum NameRole {
 }
 
 /// `self`, `static` or `parent`, resolved later against the enclosing class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum RelativeClass {
     Self_,
     Static,
@@ -264,7 +264,7 @@ impl NameScope {
 
     /// Prefixes the current namespace (a declaration's name, or a name with
     /// no import).
-    fn qualify(&self, name: &[u8]) -> String {
+    pub(crate) fn qualify(&self, name: &[u8]) -> String {
         if self.namespace.is_empty() { lossy(name) } else { format!("{}\\{}", self.namespace, lossy(name)) }
     }
 }

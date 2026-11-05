@@ -1,0 +1,104 @@
+---
+source: crates/ide-php/src/summary/tests.rs
+expression: golden
+---
+== .phpstorm.meta.php
+== bin/library.php
+== src/Container.php
+class App\Container final @13:12-13:21 [13:0-49:1]
+  property private array $factories = [] @16:18-16:28 [16:4-16:34]
+  property private array $instances = [] @19:18-19:28 [19:4-19:34]
+  method public static boot(): self @21:27-21:31 [21:4-28:5]
+  method public set(string $id, Closure $factory): void @33:20-33:23 [33:4-37:5]
+  method public make(string $id): object @39:20-39:24 [39:4-48:5]
+== src/Contracts/Repository.php
+interface App\Contracts\Repository @11:10-11:20 [11:0-27:1]
+  method public abstract find(string $id): ?object @16:20-16:24 [16:4-16:46]
+  method public abstract all(): App\Support\Collection @21:20-21:23 [21:4-21:38]
+  method public abstract save(object $entity): void @26:20-26:24 [26:4-26:47]
+== src/Library.php
+class App\Library final @11:12-11:19 [11:0-57:1]
+  property private readonly promoted App\Repository\BookRepository $books @13:64-13:70 [13:32-13:70]
+  method public __construct(private readonly App\Repository\BookRepository $books) @13:20-13:31 [13:4-15:5]
+  method public add(App\Model\Book $book): void @17:20-17:23 [17:4-20:5]
+  method public find(string $isbn): ?App\Model\Book @22:20-22:24 [22:4-25:5]
+  method public checkout(string $isbn): App\Model\Book @30:20-30:28 [30:4-40:5]
+  method public available(): App\Support\Collection @45:20-45:29 [45:4-48:5]
+  method public totalValue(): string @50:20-50:30 [50:4-56:5]
+== src/Model/Book.php
+class App\Model\Book final @8:12-8:16 [8:0-33:1]
+  const public MAX_TITLE = 200 @10:17-10:26 [10:4-10:33]
+  property public readonly promoted string $isbn @13:31-13:36 [13:8-13:36]
+  property public readonly promoted string $title @14:31-14:37 [14:8-14:37]
+  property public readonly promoted App\Model\Genre $genre @15:30-15:36 [15:8-15:36]
+  property public readonly promoted int $priceCents @16:28-16:39 [16:8-16:39]
+  property public readonly promoted bool $available @17:29-17:39 [17:8-17:46]
+  method public __construct(public readonly string $isbn, public readonly string $title, public readonly App\Model\Genre $genre, public readonly int $priceCents, public readonly bool $available = true) @12:20-12:31 [12:4-22:5]
+  method public withAvailability(bool $available): self @24:20-24:36 [24:4-27:5]
+  method public label(): string @29:20-29:25 [29:4-32:5]
+== src/Model/Genre.php
+enum App\Model\Genre final: string @6:5-6:10 [6:0-20:1]
+  case Fiction = 'fiction' @8:9-8:16 [8:4-8:29]
+  case Science = 'science' @9:9-9:16 [9:4-9:29]
+  case History = 'history' @10:9-10:16 [10:4-10:29]
+  method public label(): string @12:20-12:25 [12:4-19:5]
+== src/Reports/ShelfReport.php
+class App\Reports\ShelfReport final @10:12-10:23 [10:0-26:1]
+  property private readonly promoted App\Library $library @12:57-12:65 [12:32-12:65]
+  method public __construct(private readonly App\Library $library) @12:20-12:31 [12:4-14:5]
+  method public summary(): string @16:20-16:27 [16:4-20:5]
+  method public price(int $cents): string @22:20-22:25 [22:4-25:5]
+== src/Repository/AbstractRepository.php
+class App\Repository\AbstractRepository abstract @15:15-15:33 [15:0-39:1]
+  implements App\Contracts\Repository
+  property protected array $items = [] @18:20-18:26 [18:4-18:32]
+  method protected abstract idOf(object $entity): string @23:32-23:36 [23:4-23:61]
+  method public find(string $id): ?object @25:20-25:24 [25:4-28:5]
+  method public all(): App\Support\Collection @30:20-30:23 [30:4-33:5]
+  method public save(object $entity): void @35:20-35:24 [35:4-38:5]
+== src/Repository/BookRepository.php
+class App\Repository\BookRepository @14:6-14:20 [14:0-39:1]
+  extends App\Repository\AbstractRepository
+  use App\Support\HasTimestamps [16:4-16:22]
+  method protected idOf(object $entity): string @21:23-21:27 [21:4-24:5]
+  method public save(object $entity): void @26:20-26:24 [26:4-30:5]
+  method public byGenre(App\Model\Genre $genre): App\Support\Collection @35:20-35:27 [35:4-38:5]
+== src/Support/Collection.php
+class App\Support\Collection final @16:12-16:22 [16:0-81:1]
+  implements IteratorAggregate, Countable
+  property private readonly promoted array $items @21:55-21:61 [21:32-21:66]
+  method public __construct(private readonly array $items = []) @21:20-21:31 [21:4-23:5]
+  method public map(callable $fn): self @30:20-30:23 [30:4-33:5]
+  method public filter(callable $fn): self @39:20-39:26 [39:4-42:5]
+  method public push(mixed $item): self @48:20-48:24 [48:4-51:5]
+  method public first(): mixed @56:20-56:25 [56:4-59:5]
+  method public toArray(): array @64:20-64:27 [64:4-67:5]
+  method public count(): int @69:20-69:25 [69:4-72:5]
+  method public getIterator(): ArrayIterator @77:20-77:31 [77:4-80:5]
+== src/Support/HasTimestamps.php
+trait App\Support\HasTimestamps @8:6-8:19 [8:0-21:1]
+  property private ?DateTimeImmutable $touchedAt = null @10:31-10:41 [10:4-10:49]
+  method public touch(): void @12:20-12:25 [12:4-15:5]
+  method public touchedAt(): ?DateTimeImmutable @17:20-17:29 [17:4-20:5]
+== src/constants.php
+const App\DEFAULT_CURRENCY = 'EUR' @6:6-6:22 [6:0-6:31]
+const App\LOAN_DAYS = 21 @7:6-7:15 [7:0-7:21]
+define APP_VERSION = '1.0.0' @9:8-9:19 [9:0-9:30]
+== src/functions.php
+function App\format_price(int $cents, string $currency = DEFAULT_CURRENCY): string @9:9-9:21 [9:0-12:1]
+function App\slugify(string $text): string @17:9-17:16 [17:0-23:1]
+== tests/CollectionTest.php
+class Tests\CollectionTest final @9:12-9:26 [9:0-26:1]
+  extends PHPUnit\Framework\TestCase
+  method public testMapAndFilter(): void @11:20-11:36 [11:4-19:5]
+  method public testFirstOfEmptyIsNull(): void @21:20-21:42 [21:4-25:5]
+== tests/LibraryTest.php
+class Tests\LibraryTest final @17:12-17:23 [17:0-67:1]
+  extends PHPUnit\Framework\TestCase
+  property private App\Library $library @19:20-19:28 [19:4-19:29]
+  method protected setUp(): void @21:23-21:28 [21:4-26:5]
+  method public testCheckoutMarksTheBookUnavailable(): void @28:20-28:55 [28:4-36:5]
+  method public testTotalValue(): void @38:20-38:34 [38:4-41:5]
+  method public testRepositoryFiltersByGenre(): void @43:20-43:48 [43:4-51:5]
+  method public testHelpers(): void @53:20-53:31 [53:4-57:5]
+  method public testIntentionallyFailing(): void @59:20-59:44 [59:4-66:5]

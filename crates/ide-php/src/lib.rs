@@ -17,11 +17,15 @@
 //! - [`names`]: PHP name resolution ([`names::FileNames`]): namespaces,
 //!   imports and aliases, the global fallback of functions and constants,
 //!   and `self`/`static`/`parent` markers.
+//! - [`summary`]: per-file declaration summaries ([`summary::FileSummary`]):
+//!   class-likes with their members and signatures, functions and constants,
+//!   serialized with postcard.
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
 pub mod names;
 pub mod probe;
+pub mod summary;
 pub mod syntax;
 
 /// Re-exports of the pinned Mago crates, so later phases and the examples use
