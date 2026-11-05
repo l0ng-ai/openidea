@@ -10,7 +10,7 @@ vi.mock("@/platform/projectRoots", () => ({
 }));
 
 import type { RunConfig } from "@/platform/ipc";
-import { produceContext, produceDirectory, type ToolEnv } from "./producers";
+import { produceContext, produceDirectory, produceFile, type ToolEnv } from "./producers";
 
 const env: ToolEnv = {
   tool: (n) => (n === "ruby" ? { path: "/bin/ruby", version: null } : null),
@@ -71,5 +71,48 @@ describe("Ruby directory run", () => {
     expect(dir("lib/unit", [cfg({ id: "rspec", kind: "rspec" })])).toBeNull();
     expect(dir("other/unit", [cfg({ id: "rspec", kind: "rspec" })])).toBeNull();
     expect(dir("test/unit", [])).toBeNull();
+  });
+});
+
+describe("Ruby test files", () => {
+  const rake = {
+    id: "rake:test",
+    name: "rake test",
+    kind: "rake",
+    command: "bundle",
+    args: ["exec", "rake", "test"],
+    cwd: null,
+    env: {},
+    detected: true,
+    isTest: true,
+    debugAdapter: null,
+  } as RunConfig;
+  const minitest = {
+    ...rake,
+    id: "minitest",
+    name: "minitest",
+    kind: "ruby",
+    command: "ruby",
+    args: ["-Ilib", "-Itest", "-e", "RUNNER", "test"],
+  } as RunConfig;
+  const file = (path: string, configs: RunConfig[]) =>
+    produceFile({ path: `/work/app/${path}`, root: "/work/app", configs, content: "" }, env);
+
+  it("test_*.rb is a test file: rake test with TEST=<file>, reported per test", () => {
+    const p = file("test/unit/test_decide.rb", [rake]);
+    expect(p?.config).toMatchObject({ isTest: true, args: ["exec", "rake", "test", "TEST=test/unit/test_decide.rb"] });
+  });
+
+  it("without a rake test task the detected Minitest runner loads the file", () => {
+    const p = file("test/unit/test_decide.rb", [minitest]);
+    expect(p?.config).toMatchObject({
+      isTest: true,
+      kind: "ruby",
+      args: ["-Ilib", "-Itest", "-e", "RUNNER", "test/unit/test_decide.rb"],
+    });
+  });
+
+  it("other scripts stay plain runs", () => {
+    expect(file("lib/tool.rb", [rake])?.config?.isTest).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ import type { FindResultsSource } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
 import { loadJson, saveJson } from "../common/open";
 import { maybeToolWindowService } from "../common/services";
-import { cancelRequest, streamSearch } from "../common/textSearch";
+import { cancelRequest, streamSearch } from "@/platform/textSearch";
 import { FindSession, IDLE, countFileMatches, type FindDeps, type FindState } from "./session";
 
 export interface FindTab {

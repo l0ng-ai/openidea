@@ -1059,8 +1059,9 @@ fn ruby_config(
     c
 }
 
-/// Loads the test files of the directories (or files) in `ARGV`, default `test`: the way `rake test` does.
-const MINITEST_RUNNER: &str = r#"dirs = ARGV.empty? ? ["test"] : ARGV.dup; ARGV.clear; dirs.flat_map { |d| File.file?(d) ? [d] : Dir[File.join(d, "**", "{*_test,test_*}.rb")] }.sort.each { |f| require File.expand_path(f) }"#;
+/// Loads the test files of the directories (or files) named in `ARGV`, default `test`, the way `rake test`
+/// does; options such as `-v` stay in `ARGV` for Minitest.
+const MINITEST_RUNNER: &str = r#"paths, opts = ARGV.partition { |a| !a.start_with?("-") }; ARGV.replace(opts); (paths.empty? ? ["test"] : paths).flat_map { |d| File.file?(d) ? [d] : Dir[File.join(d, "**", "{*_test,test_*}.rb")] }.sort.each { |f| require File.expand_path(f) }"#;
 
 fn uses_rspec(root: &Path) -> bool {
     root.join("spec").is_dir()
