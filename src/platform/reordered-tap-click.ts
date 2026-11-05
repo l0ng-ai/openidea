@@ -3,8 +3,8 @@
  * focus, and with a third-party input method it can hand the page a tap as `pointerup` ->
  * `pointerdown` (WebKit bug 219670). The press then has no release: the tap's click is lost,
  * and the engine, which still considers the button down, starts the next tap with a bare
- * `mousedown` (no `pointerdown`). `pointerdown.timeStamp` stays native, so a press stamped no
- * later than the `pointerup` just before it is a reordered tap: finish it with a synthetic
+ * `mousedown` (no `pointerdown`). `pointerdown.timeStamp` stays native, so a press stamped before
+ * the `pointerup` just before it is a reordered tap: finish it with a synthetic
  * `pointerup`/`mouseup`/`click`, and give the next press the `pointerdown` the engine skips.
  * The next tap's own click lands on its own target, so it is left alone.
  *
@@ -47,7 +47,10 @@ export function installReorderedTapClick({
   const onPointerUp = (e: PointerEvent) => {
     if (!isTrusted(e)) return;
     down = false;
-    if (primaryMouse(e)) lastUp = e.timeStamp;
+    if (!primaryMouse(e)) return;
+    lastUp = e.timeStamp;
+    // The engine released the press itself, so it was not a stale one: there is nothing to finish.
+    pending = null;
   };
 
   const onPointerCancel = (e: PointerEvent) => {
@@ -60,7 +63,8 @@ export function installReorderedTapClick({
     const before = lastUp;
     lastUp = null;
     pending = null;
-    if (!primaryMouse(e) || before === null || e.timeStamp > before) return;
+    // A quick in-order click can stamp its press with its last release's time: only an earlier press is stale.
+    if (!primaryMouse(e) || before === null || e.timeStamp >= before) return;
     if (!(e.target instanceof Element)) return;
     pending = { target: e.target, detail: 1, x: e.clientX, y: e.clientY, mods: mods(e) };
     // After this tick the page's own pointerdown/mousedown handlers have run, as for an in-order tap.
