@@ -25,6 +25,9 @@ describe("missing debug adapters", () => {
       "netcoredbg",
     );
     expect(missingAdapter("delve", unavailable("debug adapter `delve` not found (x)"))?.tool).toBe("delve");
+    expect(missingAdapter("bash-debug", unavailable("debug adapter `bash-debug` not found (x)"))?.title).toBe(
+      "Bash Debug is not installed",
+    );
   });
 
   it("offers the managed install of the missing php-debug adapter", () => {
