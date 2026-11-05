@@ -129,15 +129,32 @@
   flex-direction: column;
   padding: 0 14px 14px;
 }
+/* Push dialog: commits above their changed files, split by a draggable divider; the pair fills the body. */
+.pushSplit {
+  flex: 1;
+  min-height: min(540px, 60vh);
+}
+/* The panel's own `height: 100%` doesn't resolve against a flex-basis height in WebKit: stretch instead. */
+.pushSplit .pushSplitPanel {
+  height: auto;
+  align-self: stretch;
+}
+.pushSplitPanel > .pushListWrap {
+  min-height: 0;
+  padding-bottom: 8px;
+}
 /* Push dialogs: the outgoing commits' changed files below the commits, the diff beside them. */
 .pushChanges {
-  flex: none;
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding-top: 8px;
 }
 .pushChanges .comparison {
-  height: min(360px, 45vh);
+  flex: 1;
+  height: auto;
+  min-height: 0;
   padding: 0 14px 14px;
 }
 .pushChangesTitle {
