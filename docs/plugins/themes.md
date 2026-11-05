@@ -324,7 +324,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-228 themeable tokens: 121 in the UI theme file, 107 in the editor colour scheme file.
+235 themeable tokens: 121 in the UI theme file, 114 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -434,6 +434,13 @@ a token.
 | `--syn-param` | `#bcbec4` | `#080808` |
 | `--syn-property` | `#c77dbb` | `#871094` |
 | `--syn-constant` | `#c77dbb` | `#871094` |
+| `--syn-python-local-variable` | `var(--syn-variable)` | `var(--syn-variable)` |
+| `--syn-python-global-variable` | `var(--syn-global)` | `var(--syn-global)` |
+| `--syn-python-instance-attribute` | `var(--syn-property)` | `var(--syn-property)` |
+| `--syn-python-class-attribute` | `var(--syn-property)` | `var(--syn-property)` |
+| `--syn-python-constant` | `var(--syn-constant)` | `var(--syn-constant)` |
+| `--syn-python-property` | `var(--syn-property)` | `var(--syn-property)` |
+| `--syn-python-type-parameter` | `var(--syn-type)` | `var(--syn-type)` |
 | `--syn-builtin` | `#8888c6` | `#000080` |
 | `--syn-self` | `#94558d` | `#94558d` |
 | `--syn-keyword-arg` | `#aa4926` | `#660099` |
