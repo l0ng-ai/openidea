@@ -132,6 +132,9 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  /* PhpStorm colours PHP variables and function calls on their own */
+  --syn-php-variable: var(--syn-property);
+  --syn-php-function-call: var(--syn-function);
   --syn-builtin: #8888c6;
   --syn-self: #94558d;
   --syn-keyword-arg: #aa4926;
@@ -523,6 +526,8 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  --syn-php-variable: var(--syn-property);
+  --syn-php-function-call: var(--syn-function);
   --syn-builtin: #000080;
   --syn-self: #94558d;
   --syn-keyword-arg: #660099;
@@ -789,6 +794,8 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  --syn-php-variable: var(--syn-property);
+  --syn-php-function-call: var(--syn-function);
   --syn-builtin: #b0b0f0;
   --syn-self: #d08ac8;
   --syn-keyword-arg: #e0805c;
@@ -1140,6 +1147,8 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  --syn-php-variable: var(--syn-property);
+  --syn-php-function-call: var(--syn-function);
   --syn-builtin: var(--palette-cyan);
   --syn-self: var(--palette-red);
   --syn-keyword-arg: var(--palette-red);
@@ -1428,4 +1437,9 @@ html {
   --success: #1f66cc;
   --db-connected: var(--success);
   --db-connected-ring: var(--success);
+}
+/* PHP editors: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
+.cm-editor[data-language="PHP"] {
+  --syn-variable: var(--syn-php-variable);
+  --syn-function-call: var(--syn-php-function-call);
 }
