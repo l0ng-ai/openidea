@@ -102,7 +102,7 @@ The design:
 
   Tests: multibyte text such as emoji in strings, CRLF, files mixing HTML and PHP, and broken input.
 
-- [ ] Phase 1.2: Name resolution
+- [x] Phase 1.2: Name resolution
       Resolve names the way PHP does:
   - namespaces, including several per file and braced blocks
   - `use`, `use function`, `use const`, grouped `use`

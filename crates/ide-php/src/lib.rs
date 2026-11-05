@@ -14,9 +14,13 @@
 //!
 //! - [`syntax`]: parsed files ([`syntax::ParsedFile`]), byte ⇄ UTF-16
 //!   conversion ([`syntax::LineIndex`]) and the per-document parse cache.
+//! - [`names`]: PHP name resolution ([`names::FileNames`]): namespaces,
+//!   imports and aliases, the global fallback of functions and constants,
+//!   and `self`/`static`/`parent` markers.
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
+pub mod names;
 pub mod probe;
 pub mod syntax;
 
