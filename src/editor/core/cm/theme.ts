@@ -177,7 +177,17 @@ export const openideaTheme = EditorView.theme({
   "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
     background: "var(--editor-selection)",
   },
-  ".cm-activeLine": { backgroundColor: "var(--editor-caret-row)" },
+  // Row backgrounds go on a pseudo-element under the selection layer: on the line itself they would hide it.
+  ".cm-activeLine": { backgroundColor: "transparent", "--openidea-line-bg": "var(--editor-caret-row)" },
+  ".cm-activeLine, .cm-openidea-lineBg": { position: "relative" },
+  ".cm-activeLine::before, .cm-openidea-lineBg::before": {
+    content: '""',
+    position: "absolute",
+    inset: "0",
+    zIndex: "-1000",
+    background: "var(--openidea-line-bg)",
+    pointerEvents: "none",
+  },
   ".cm-selectionMatch": {
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
   },
@@ -263,7 +273,13 @@ export const openideaTheme = EditorView.theme({
   ".cm-foldPlaceholder:hover": { backgroundColor: "color-mix(in srgb, var(--fg-muted) 24%, transparent)" },
 
   // Indent guides (cm/indentGuides.ts)
-  ".cm-openidea-guides": {
+  // Above the text so a selection, or a mark's background, never covers part of a guide.
+  ".cm-openidea-guides": { position: "relative" },
+  ".cm-openidea-guides::after": {
+    content: '""',
+    position: "absolute",
+    inset: "0",
+    pointerEvents: "none",
     backgroundImage:
       "repeating-linear-gradient(to right, var(--editor-indent-guide) 0 1px, transparent 1px calc(var(--openidea-guide-step) * 1ch))",
     backgroundSize: "calc(var(--openidea-guide-levels) * var(--openidea-guide-step) * 1ch) 100%",
