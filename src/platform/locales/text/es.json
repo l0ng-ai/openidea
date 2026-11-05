@@ -3946,6 +3946,7 @@
   "Solarized Dark": "Solarized oscuro",
   "One Light": "One Light",
   "One Dark": "One Dark",
+  "Copied reference: {reference}": "Referencia copiada: {reference}",
   "{count} lines": "{count} líneas",
   "Preview of {path}": "Vista previa de {path}",
   "Editor for {path}": "Editor de {path}",

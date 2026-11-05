@@ -3974,6 +3974,7 @@
   "Solarized Dark": "Solarized 深色",
   "One Light": "One 浅色",
   "One Dark": "One 深色",
+  "Copied reference: {reference}": "已复制引用：{reference}",
   "{count} lines": "{count} 行",
   "Preview of {path}": "{path} 的预览",
   "Editor for {path}": "{path} 的编辑器",

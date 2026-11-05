@@ -46,7 +46,7 @@ export const vscodeWindows: Record<string, string[]> = {
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],
-  "editor.copyReference": ["Ctrl+Alt+Shift+C"],
+  "editor.copyReference": [],
   "code.pasteAsPlainText": [],
   "code.expressionTypeInfo": [],
   "code.implementMethods": [],

@@ -17,12 +17,16 @@ export interface ReferenceInput {
   line: number;
 }
 
-/** Start the write during the user gesture, while the reference is still being resolved. */
+/**
+ * Start the write during the user gesture, while the reference is still being resolved.
+ * Without `ClipboardItem`, the text is written once it is known.
+ */
 export function copyReferenceToClipboard(
   reference: Promise<string>,
   clipboard: Clipboard = navigator.clipboard,
-  Item: typeof ClipboardItem = ClipboardItem,
+  Item: typeof ClipboardItem | null = globalThis.ClipboardItem ?? null,
 ): Promise<void> {
+  if (!Item || typeof clipboard.write !== "function") return reference.then((text) => clipboard.writeText(text));
   return clipboard.write([
     new Item({ "text/plain": reference.then((text) => new Blob([text], { type: "text/plain" })) }),
   ]);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { cyclicExpandWord, expandCandidates, prefixStart } from "./wordCompletion";
@@ -84,6 +84,12 @@ describe("copy reference", () => {
     finish("coordination_layer.db.key_scope.load_scoped");
     expect(await (await content!).text()).toBe("coordination_layer.db.key_scope.load_scoped");
     await result;
+  });
+
+  it("writes the resolved text where ClipboardItem is unavailable", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    await copyReferenceToClipboard(Promise.resolve("pkg.mod.f"), { writeText } as unknown as Clipboard, null);
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("pkg.mod.f");
   });
 
   it("qualifies Java members with the package", () => {

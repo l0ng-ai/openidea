@@ -484,10 +484,13 @@ function copyReference(view: EditorView, slot: EditorSlot) {
       body: error instanceof Error ? error.message : String(error),
     });
   };
+  const copied = async () => {
+    const text = await reference;
+    recordClipboard(text);
+    void executeAction("editor.showHint", { text: tx`Copied reference: ${text}` });
+  };
   try {
-    void copyReferenceToClipboard(reference)
-      .then(async () => recordClipboard(await reference))
-      .catch(failed);
+    void copyReferenceToClipboard(reference).then(copied).catch(failed);
   } catch (error) {
     failed(error);
   }
