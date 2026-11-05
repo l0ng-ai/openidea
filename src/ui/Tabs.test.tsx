@@ -117,6 +117,24 @@ describe("Tabs interactions", () => {
     expect(onSelect).toHaveBeenCalledWith("c");
   });
 
+  it("middle click closes a tab without selecting it", () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "B" }), { button: 1 });
+    expect(onClose).toHaveBeenCalledWith("b");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("middle click ignores tabs that cannot close", () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "C" }), { button: 1 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("keeps Shift+click selection where the strip does not opt in", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();

@@ -315,6 +315,8 @@ async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<L
     .unwrap_or_default()
 }
 
+const JAVA_IMPLEMENTATIONS: &str = "openidea.java.implementations";
+
 fn goto_method(kind: GotoKind) -> (&'static str, &'static str, &'static str) {
     match kind {
         GotoKind::Definition => ("textDocument/definition", "definitionProvider", "go to definition"),
@@ -1259,6 +1261,40 @@ impl LspManager {
         Ok(results.into_iter().map(Result::unwrap_or_default).collect())
     }
 
+    /// jdtls: the implementations in the project's sources (`openidea.java.implementations`).
+    /// Its standard request builds the type hierarchy over every dependency jar too, which takes
+    /// long in a project with many dependencies; empty (or no extension) falls back to it.
+    async fn java_source_implementations(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        cancel: Option<&CancellationToken>,
+    ) -> Vec<Location> {
+        if t.server.name != "jdtls" || !t.caps().commands().iter().any(|c| c == JAVA_IMPLEMENTATIONS) {
+            return Vec::new();
+        }
+        let params = snap.pos_params(t, pos);
+        let arguments =
+            json!([params["textDocument"]["uri"], params["position"]["line"], params["position"]["character"]]);
+        let result: IdeResult<Vec<lsp::Location>> = self
+            .call(
+                t,
+                "workspace/executeCommand",
+                json!({ "command": JAVA_IMPLEMENTATIONS, "arguments": arguments }),
+                cancel,
+                DEFAULT_TIMEOUT,
+            )
+            .await;
+        match result {
+            Ok(locs) => convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(locs)),
+            Err(e) => {
+                tracing::debug!("{JAVA_IMPLEMENTATIONS}: {}", e.message);
+                Vec::new()
+            }
+        }
+    }
+
     async fn goto_in(
         &self,
         snap: &DocSnap,
@@ -1269,6 +1305,14 @@ impl LspManager {
     ) -> IdeResult<Vec<Location>> {
         let mut out = Outcome::new();
         for t in targets.iter().filter(|t| snap.asks(t, pos)) {
+            if method == "textDocument/implementation" {
+                let locs = self.java_source_implementations(snap, t, pos, cancel).await;
+                if !locs.is_empty() {
+                    let locs = library_sources(snap, pos, locs).await;
+                    self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    return Ok(locs);
+                }
+            }
             let r = loading::while_loading(&t.server, cancel, loading::LOADING_WAIT, goto_is_empty, || {
                 self.call::<_, Option<lsp::GotoDefinitionResponse>>(
                     t,

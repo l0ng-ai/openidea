@@ -735,6 +735,8 @@ export const commands = {
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
+	/**  Types `text` into the session's program (a `runInTerminal` program). */
+	debugSendInput: (session: DebugSessionId, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("debug_send_input", { session, text })),
 	debugHotReload: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session })),
 	debugHotRestart: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_restart", { session })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
@@ -776,6 +778,11 @@ export const commands = {
 	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
 	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
 	sdkPhpLanguageLevel: (path: string) => typedError<PhpLanguageLevels, IdeError>(__TAURI_INVOKE("sdk_php_language_level", { path })),
+	/**  The Composer project `path` belongs to, when its dependencies need `composer install`. */
+	sdkPhpComposerInstall: (path: string) => typedError<{
+	root: IpcPath,
+	reason: ComposerInstall,
+} | null, IdeError>(__TAURI_INVOKE("sdk_php_composer_install", { path })),
 	/**
 	 *  SDK / library source folders shown under "External Libraries" in the Project view,
 	 *  with the Maven / Gradle dependency jars of the build model.
@@ -2378,6 +2385,19 @@ export type ComposeOp = "start" | "stop" | "restart" |
 /**  Stops and removes the project's containers and networks. */
 "down";
 
+/**  Why `composer install` is due in a Composer project. */
+export type ComposerInstall = 
+/**  No `vendor/autoload.php`. */
+"missing" | 
+/**  A package of `composer.lock` is not installed, or at another version. */
+"outdated";
+
+/**  The Composer project `path` belongs to, when its dependencies need `composer install`. */
+export type ComposerInstallState = {
+	root: IpcPath,
+	reason: ComposerInstall,
+};
+
 /**  The user's answer on an install or consent page. */
 export type Consent = {
 	/**
@@ -2837,7 +2857,12 @@ export type DebugEvent =
  *  First event of every session (only build output of a root session's
  *  `cargo` step can precede it). `parent` is set for adapter-started child sessions.
  */
-{ kind: "started"; name: string; adapter: string; parent: DebugSessionId | null } | { kind: "initialized" } | { kind: "stopped"; threadId: number; reason: string; description: string | null; allThreadsStopped: boolean } | { kind: "continued"; threadId: number; allThreadsContinued: boolean } | { kind: "output"; category: string; output: string } | { kind: "thread"; threadId: number; started: boolean } | { kind: "breakpointsChanged"; path: IpcPath } | { kind: "terminated" } | { kind: "exited"; code: number } | 
+{ kind: "started"; name: string; adapter: string; parent: DebugSessionId | null } | { kind: "initialized" } | { kind: "stopped"; threadId: number; reason: string; description: string | null; allThreadsStopped: boolean } | { kind: "continued"; threadId: number; allThreadsContinued: boolean } | { kind: "output"; category: string; output: string } | { kind: "thread"; threadId: number; started: boolean } | 
+/**
+ *  The program runs in a terminal the IDE gave it (`runInTerminal`): what is typed for it
+ *  in the debug console reaches its input.
+ */
+{ kind: "programInput" } | { kind: "breakpointsChanged"; path: IpcPath } | { kind: "terminated" } | { kind: "exited"; code: number } | 
 /**
  *  java-debug's `hotcodereplace` event: `change_type` is `BUILD_COMPLETE` (classes
  *  changed and can be reloaded), `STARTING`, `END`, `WARNING` or `ERROR`.

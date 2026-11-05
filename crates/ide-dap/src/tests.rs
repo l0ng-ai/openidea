@@ -468,6 +468,40 @@ async fn run_in_terminal_spawns_debuggee() {
     assert!(response["body"]["processId"].as_u64().unwrap() > 0);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn run_in_terminal_program_reads_typed_input() {
+    let h = harness(Script {
+        // CodeLLDB's launcher asks to clear the terminal; the console keeps its output.
+        run_in_terminal: Some(vec![
+            "sh".into(),
+            "-c".into(),
+            "[ -t 0 ] && echo 'name?' && read name && echo \"hello $name\"".into(),
+            "--clear-screen".into(),
+        ]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::ProgramInput)).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("name?"))).await;
+    h.manager.send_input(session, "Bob\n").unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("hello Bob"))).await;
+    let output: String = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Debug { event: DebugEvent::Output { category, output }, .. } if category == "stdout" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!output.contains('\r'), "{output:?}");
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "x\n").is_err());
+}
+
 #[test]
 fn launch_arguments_merge_and_defaults() {
     let mut c = config();

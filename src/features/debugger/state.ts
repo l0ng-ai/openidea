@@ -45,6 +45,8 @@ export interface DebugSession {
   parent: DebugSessionId | null;
   /** Launch configuration (root sessions), used by Rerun. */
   launch: LaunchConfig | null;
+  /** The program runs in a terminal the IDE gave it: the console types into it while it runs. */
+  programInput?: boolean;
   /** Process the session is attached to (a Run tab's build tool); stopped with the session. */
   process: RunId | null;
   status: SessionStatus;
@@ -944,6 +946,16 @@ export async function setVariableValue(
   return result;
 }
 
+/** Whether the console types into the session's program (it runs, in a terminal the IDE gave it). */
+export function readsProgramInput(s: DebugSession): boolean {
+  return !!s.programInput && s.status === "running";
+}
+
+/** Types `text` into the session's program; its terminal echoes it to the console. */
+export async function sendProgramInput(session: DebugSession, text: string): Promise<void> {
+  await call(commands.debugSendInput(session.id, text));
+}
+
 export async function evaluate(
   expression: string,
   context: "repl" | "watch" | "hover" | "clipboard",
@@ -1021,6 +1033,9 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "thread":
       if (s.status === "paused") void loadThreads(id);
+      break;
+    case "programInput":
+      patch(id, { programInput: true });
       break;
     case "breakpointsChanged":
       void refreshStates(event.path);

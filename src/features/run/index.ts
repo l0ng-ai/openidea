@@ -37,6 +37,7 @@ import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { openImport } from "./importConfigs";
+import { registerComposerInstall } from "./composerInstall";
 import { registerGoActions } from "./goActions";
 import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
@@ -292,6 +293,7 @@ export function activate(): () => void {
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
     registerGoActions(),
+    registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
