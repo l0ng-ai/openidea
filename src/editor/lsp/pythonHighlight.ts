@@ -109,6 +109,33 @@ function scope(node: SyntaxNode | null): SyntaxNode | null {
   return null;
 }
 
+const STUB_STATEMENTS = new Set(["PassStatement", "RaiseStatement"]);
+
+/**
+ * Whether the parameters `fn` doesn't read count as unused. Not for stubs (a body of only a
+ * docstring, `...`, `pass` or `raise`), `@abstractmethod` / `@overload` / `@override`, dunder
+ * methods or methods of a class with bases: those signatures are dictated elsewhere.
+ */
+function checksUnusedParameters(fn: SyntaxNode, doc: Text): boolean {
+  if (fn.name !== "FunctionDefinition") return true;
+  const name = directName(fn);
+  if (name && /^__\w+__$/.test(doc.sliceString(name.from, name.to))) return false;
+  if (fn.parent?.name === "DecoratedStatement")
+    for (let d = fn.parent.firstChild; d; d = d.nextSibling)
+      if (d.name === "Decorator" && /\b(?:abstractmethod|overload|override)\b/.test(doc.sliceString(d.from, d.to)))
+        return false;
+  const owner = scope(fn.parent);
+  if (owner?.name === "ClassDefinition" && owner.getChild("ArgList")) return false;
+  const body = fn.getChild("Body");
+  for (let st = body?.firstChild; st; st = st.nextSibling) {
+    if (st.name === ":" || st.name === "Comment" || STUB_STATEMENTS.has(st.name)) continue;
+    const only = st.name === "ExpressionStatement" ? st.firstChild : null;
+    if (only && !only.nextSibling && (only.name === "String" || only.name === "Ellipsis")) continue;
+    return true;
+  }
+  return false;
+}
+
 function enclosingClass(node: SyntaxNode | null): SyntaxNode | null {
   for (; node; node = node.parent) if (node.name === "ClassDefinition") return node;
   return null;
@@ -422,7 +449,8 @@ export function pythonSymbolKinds(tree: Tree, doc: Text): Map<string, PythonSymb
         name !== "self" &&
         name !== "cls" &&
         !name.startsWith("_") &&
-        !usedParameters.has(`${key(owner)}:${name}`)
+        !usedParameters.has(`${key(owner)}:${name}`) &&
+        checksUnusedParameters(owner, doc)
       )
         return "unusedParameter";
     }
