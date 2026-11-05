@@ -30,6 +30,11 @@ pub trait PluginWorkspace: Send + Sync {
     fn projects(&self) -> Vec<PathBuf>;
     /// Unsaved text of the open document at `path`.
     fn buffer_text(&self, path: &Path) -> Option<String>;
+    /// Up to `limit` files of the project index below `root` whose root-relative path satisfies
+    /// `matches`; `None` when no index covers `root` yet (the caller walks the disk instead).
+    fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
+        None
+    }
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
     /// Applies `edits` to the open document at `path` if it is still at
@@ -459,6 +464,19 @@ impl HostApi for PluginApi {
             .build()
             .map_err(|e| HostError::Invalid(format!("{glob:?}: {e}")))?
             .compile_matcher();
+        // Hidden files and folders are left out, as in the walk below.
+        let visible = |rel: &Path| !rel.iter().any(|c| c.to_str().is_some_and(|c| c.starts_with('.')));
+        // The project index already lists the files: walking a large tree on every call can take
+        // longer than an editor provider's deadline (the plugin is then stopped as crashed).
+        if let Some(files) = self
+            .shared
+            .workspace()
+            .and_then(|w| w.indexed_files(root, &|rel| visible(rel) && matcher.is_match(rel), limit))
+        {
+            let mut out: Vec<String> = files.iter().map(|p| to_ipc(p)).collect();
+            out.sort();
+            return Ok(out);
+        }
         let mut out = Vec::new();
         for (n, entry) in ignore::WalkBuilder::new(root).hidden(true).build().flatten().enumerate() {
             if n >= MAX_WALK || out.len() >= limit {
@@ -738,6 +756,12 @@ impl PluginWorkspace for HostWorkspace {
         HostWorkspace::projects(self).iter().find_map(|p| p.documents.text_of(path))
     }
 
+    fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
+        // The index of the project rooted at `root` (a workspace member's files are in its own).
+        let project = HostWorkspace::projects(self).into_iter().find(|p| p.root == root)?;
+        project.index.files_matching(root, matches, limit)
+    }
+
     fn document(&self, path: &Path) -> Option<(u64, String)> {
         let (project, doc) = self.open_document(path)?;
         let snap = project.documents.snapshot(doc).ok()?;
@@ -819,6 +843,60 @@ mod tests {
         let api = api(&root, Arc::default());
         assert_eq!(api.find_files(&root, "**/*.java", 8).unwrap(), [to_ipc(&file)]);
         assert_eq!(api.vcs_status(&root).unwrap().unwrap().root, to_ipc(&root));
+    }
+
+    /// A project index that lists `files` (root-relative), whatever is on disk.
+    struct Indexed(PathBuf, Vec<&'static str>);
+    impl PluginWorkspace for Indexed {
+        fn projects(&self) -> Vec<PathBuf> {
+            vec![self.0.clone()]
+        }
+        fn buffer_text(&self, _: &Path) -> Option<String> {
+            None
+        }
+        fn document(&self, _: &Path) -> Option<(u64, String)> {
+            None
+        }
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+            Err(HostError::Stale)
+        }
+        fn trusted(&self, _: &Path) -> bool {
+            true
+        }
+        fn project_of(&self, _: &str) -> Option<PathBuf> {
+            None
+        }
+        fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
+            (root == self.0).then(|| {
+                self.1.iter().map(Path::new).filter(|rel| matches(rel)).take(limit).map(|rel| root.join(rel)).collect()
+            })
+        }
+    }
+
+    #[test]
+    fn find_files_uses_the_project_index_when_there_is_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let api = api(&root, Arc::default());
+        *api.shared.workspace.write() = Some(Arc::new(Indexed(
+            root.clone(),
+            vec!["src/b/UserMapper.xml", "src/a/OrderMapper.xml", ".idea/workspace.xml", "pom.xml"],
+        )));
+        // Listed by the index, not walked: none of these exist on disk.
+        assert_eq!(
+            api.find_files(&root, "**/*Mapper.xml", 10).unwrap(),
+            [to_ipc(&root.join("src/a/OrderMapper.xml")), to_ipc(&root.join("src/b/UserMapper.xml"))]
+        );
+        assert_eq!(api.find_files(&root, "**/*.xml", 10).unwrap().len(), 3, "hidden folders are left out");
+        assert_eq!(api.find_files(&root, "**/*.xml", 1).unwrap().len(), 1);
+        // Another root: no index covers it, so the disk is walked.
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("a.xml"), "").unwrap();
+        assert_eq!(api.find_files(&other, "*.xml", 10).unwrap(), [to_ipc(&other.join("a.xml"))]);
     }
 
     #[test]
