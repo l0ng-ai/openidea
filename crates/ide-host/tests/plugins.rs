@@ -2078,6 +2078,62 @@ fn views_open_project_files_at_a_line() {
 }
 
 #[test]
+fn vcs_remotes_clipboard_and_open_url() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    // Not a git repository yet: `vcs-remotes` returns an empty list.
+    assert_eq!(f.run("jobs", "remotes", None).unwrap().as_deref(), Some(""));
+
+    git(&f.project, &["init", "-b", "main"]);
+    git(&f.project, &["remote", "add", "origin", "git@github.com:l0ng-ai/openidea.git"]);
+    git(&f.project, &["remote", "add", "upstream", "https://github.com/org/openidea"]);
+    assert_eq!(
+        f.run("jobs", "remotes", None).unwrap().as_deref(),
+        Some("origin=git@github.com:l0ng-ai/openidea.git\nupstream=https://github.com/org/openidea")
+    );
+
+    f.host.set_capability("jobs", "vcs.read", false).unwrap();
+    assert!(f.run("jobs", "remotes", None).unwrap_err().contains("vcs.read"), "needs vcs.read");
+
+    // `ui.copy-to-clipboard` requires `clipboard` and addresses the calling window.
+    f.take_events();
+    f.run("jobs", "copy", Some("https://github.com/l0ng-ai/openidea")).unwrap();
+    let copied = f.take_events().into_iter().find_map(|(client, e)| match e {
+        PluginEvent::CopyToClipboard { plugin_id, text } => Some((client, plugin_id, text)),
+        _ => None,
+    });
+    assert_eq!(copied, Some((Some("main".into()), "jobs".into(), "https://github.com/l0ng-ai/openidea".into())));
+
+    f.host.set_capability("jobs", "clipboard", false).unwrap();
+    f.take_events();
+    assert!(f.run("jobs", "copy", Some("secret")).unwrap_err().contains("clipboard"), "needs clipboard");
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::CopyToClipboard { .. })));
+
+    // `ui.open-url` accepts http(s) URLs and rejects other schemes.
+    f.take_events();
+    f.run("jobs", "open-url", Some("https://github.com/l0ng-ai/openidea/blob/main/README.md#L1")).unwrap();
+    let opened = f.take_events().into_iter().find_map(|(client, e)| match e {
+        PluginEvent::OpenUrl { plugin_id, url } => Some((client, plugin_id, url)),
+        _ => None,
+    });
+    assert_eq!(
+        opened,
+        Some(
+            (Some("main".into()), "jobs".into(), "https://github.com/l0ng-ai/openidea/blob/main/README.md#L1".into(),)
+        )
+    );
+
+    for bad in ["javascript:alert(1)", "file:///etc/passwd", ""] {
+        f.take_events();
+        let err = f.run("jobs", "open-url", Some(bad)).unwrap_err();
+        assert!(err.contains("http:// or https://"), "{bad:?}: {err}");
+        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::OpenUrl { .. })));
+    }
+}
+
+#[test]
 fn views_can_use_an_svg_icon_from_the_package() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
