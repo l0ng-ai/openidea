@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getContext, setContext } from "@/platform/context";
-import { refreshWorkspaceContains, workspaceContainsKeys } from "../workspaceContains";
+import { affectsWorkspaceContains, refreshWorkspaceContains, workspaceContainsKeys } from "../workspaceContains";
 
 describe("workspaceContains", () => {
   it("collects keys from when clauses", () => {
@@ -17,7 +17,7 @@ describe("workspaceContains", () => {
   it("sets each key from its parent folder's listing", async () => {
     const list = vi.fn(async (dir: string) => (dir === "/p/.devcontainer" ? ["devcontainer.json"] : ["src"]));
     await refreshWorkspaceContains(
-      "/p",
+      ["/p"],
       ["workspaceContains:.devcontainer/devcontainer.json", "workspaceContains:pom.xml"],
       list,
     );
@@ -30,13 +30,56 @@ describe("workspaceContains", () => {
     const list = vi.fn(async (): Promise<string[]> => {
       throw new Error("missing");
     });
-    await refreshWorkspaceContains("/p", ["workspaceContains:x/y"], list);
+    await refreshWorkspaceContains(["/p"], ["workspaceContains:x/y"], list);
     expect(getContext()["workspaceContains:x/y"]).toBe(false);
     setContext("workspaceContains:x/y", true);
     list.mockClear();
-    await refreshWorkspaceContains(null, ["workspaceContains:x/y"], list);
+    await refreshWorkspaceContains([], ["workspaceContains:x/y"], list);
     expect(list).not.toHaveBeenCalled();
     expect(getContext()["workspaceContains:x/y"]).toBe(false);
+  });
+
+  it("is true when any root contains the path", async () => {
+    const list = vi.fn(async (dir: string) => (dir === "/b" ? ["pom.xml"] : []));
+    await refreshWorkspaceContains(["/a", "/b"], ["workspaceContains:pom.xml"], list);
+    expect(getContext()["workspaceContains:pom.xml"]).toBe(true);
+  });
+
+  it("ignores keys that are absolute or climb out of the project, and a trailing slash", async () => {
+    const list = vi.fn(async (dir: string) => (dir === "/p" ? [".devcontainer"] : []));
+    await refreshWorkspaceContains(
+      ["/p"],
+      [
+        "workspaceContains:/etc/passwd",
+        "workspaceContains:../a",
+        "workspaceContains:a/../../b",
+        "workspaceContains:.devcontainer/",
+      ],
+      list,
+    );
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith("/p");
+    expect(getContext()["workspaceContains:/etc/passwd"]).toBe(false);
+    expect(getContext()["workspaceContains:../a"]).toBe(false);
+    expect(getContext()["workspaceContains:a/../../b"]).toBe(false);
+    expect(getContext()["workspaceContains:.devcontainer/"]).toBe(true);
+  });
+
+  it("only picks keys at a word boundary", () => {
+    expect(workspaceContainsKeys(["xworkspaceContains:../a", "a && workspaceContains:b"])).toEqual([
+      "workspaceContains:b",
+    ]);
+  });
+
+  it("refreshes only when a watched path or one of its parents changes", () => {
+    const keys = ["workspaceContains:.devcontainer/devcontainer.json"];
+    const affects = (paths: string[], roots = ["/p"]) => affectsWorkspaceContains(paths, roots, keys);
+    expect(affects(["/p2/x"])).toBe(false);
+    expect(affects(["/p/src/a.ts"])).toBe(false);
+    expect(affects(["/p/.devcontainer"])).toBe(true);
+    expect(affects(["/p/.devcontainer/devcontainer.json"])).toBe(true);
+    expect(affects(["/q/.devcontainer"], ["/p", "/q"])).toBe(true);
+    expect(affects(["/p/.devcontainer"], [])).toBe(false);
   });
 
   it("ignores a stale refresh that resolves after a newer one", async () => {
@@ -47,7 +90,7 @@ describe("workspaceContains", () => {
     const fresh = new Promise<string[]>((resolve) => (releaseNew = resolve));
     let latest = 0;
     const first = refreshWorkspaceContains(
-      "/a",
+      ["/a"],
       [key],
       () => old,
       (
@@ -56,7 +99,7 @@ describe("workspaceContains", () => {
       )(++latest),
     );
     const second = refreshWorkspaceContains(
-      "/b",
+      ["/b"],
       [key],
       () => fresh,
       (
