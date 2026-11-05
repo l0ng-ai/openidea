@@ -26,11 +26,16 @@
  * Not seen: text kept in a variable or built by a helper before it reaches `tx`,
  * and text sent by the backend. Their entries count as used (not stale) as long as
  * the text appears as a literal anywhere in `src/`, the Rust crates or `languages/`.
+ *
+ * Message keys are checked too: a literal key given to `t`, or to a function bound
+ * from `useT()` in the same file, must exist in `en.json`; otherwise the UI shows the
+ * raw key. Keys built at runtime or passed through a helper are not seen.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import en from "./en.json";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const TEXT_DIR = new URL("./text/", import.meta.url);
@@ -79,6 +84,14 @@ const BUILT_AT_RUNTIME = new Set<string>([]);
 
 /** Text that stays as written in every locale: names, code, formats, shortcuts. */
 const UNTRANSLATED = new Set<string>([
+  "dotnet test",
+  "netcoredbg (.NET)",
+  // Product names
+  "Cargo",
+  "CMake",
+  "Prettier",
+  "oxfmt",
+  "IntelliJ IDEA",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",
@@ -105,6 +118,7 @@ const UNTRANSLATED = new Set<string>([
   "basedpyright",
   "Cargo Check",
   "Clippy",
+  "ClickHouse",
   "CockroachDB",
   "CodeLLDB",
   "CodeLLDB (Rust, C, C++)",
@@ -125,6 +139,7 @@ const UNTRANSLATED = new Set<string>([
   "Go",
   "Godot",
   "Gradle",
+  "GraphQL",
   "Greenplum",
   "Java",
   "java-debug (Java)",
@@ -138,10 +153,13 @@ const UNTRANSLATED = new Set<string>([
   "MySQL",
   "Neon",
   "Node.js",
+  "PHP",
+  "Python",
   "npm",
   "OpenIDEA",
   "Spring Boot",
   "PostgreSQL",
+  "Pyrefly",
   "Pyright",
   "pytest",
   "Rust",
@@ -166,9 +184,6 @@ const UNTRANSLATED = new Set<string>([
   "IDE",
   "mod tests",
   "Windows (\\r\\n)",
-  // Language names, written in their own language
-  "English",
-  "简体中文 (Chinese, Simplified)",
   // Terms, keywords and acronyms kept in English
   "DDL",
   "GOPATH",
@@ -205,13 +220,21 @@ const UNTRANSLATED = new Set<string>([
   "go env GOPATH",
   "kebab-case",
   "KEY=value; OTHER=value",
+  "mysite.settings_test",
   "NAME",
   "NAME=value; OTHER=value",
   "node_modules/typescript",
   "PascalCase",
+  "polls.tests",
+  "CalculatorTest::testAdd",
+  "phpunit.xml",
+  "PHPUnit",
+  "tests/Unit",
+  "vendor/bin/phpunit",
+  "pylyzer --server",
   "pyproject.toml, .git",
-  "ruff server",
   "run pytest",
+  "run python",
   "snake_case",
   "tests",
   '{ "section": { "key": "value" } }',
@@ -225,6 +248,9 @@ const UNTRANSLATED = new Set<string>([
   "Running processes requires the desktop app.\n",
   "text",
 ]);
+
+/** Locales that must translate every UI text; the others show English for text they lack. */
+const COMPLETE_LOCALES = new Set(["zh"]);
 
 /**
  * Template literals that reach an exact lookup on purpose: the text around the
@@ -416,12 +442,27 @@ interface Scan {
   untranslatable: Use[];
   /** Translated templates that splice English words into the sentence. */
   spliced: Use[];
+  /** Literal message keys given to `t`. */
+  keys: Use[];
+}
+
+/** Local names of `t` and of the functions bound from `useT()` in a file. */
+function messageFunctions(source: string): Set<string> {
+  const names = new Set<string>();
+  for (const m of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*"(?:@\/platform|\.)\/i18n"/g))
+    for (const part of m[1]!.split(",")) {
+      const named = /^\s*t(?:\s+as\s+(\w+))?\s*$/.exec(part);
+      if (named) names.add(named[1] ?? "t");
+    }
+  for (const m of source.matchAll(/(?:const|let)\s+(\w+)\s*=\s*useT\(\)/g)) names.add(m[1]!);
+  return names;
 }
 
 function scanTypeScript(): Scan {
   const translated: Use[] = [];
   const untranslatable: Use[] = [];
   const spliced: Use[] = [];
+  const keys: Use[] = [];
   const literals = new Set<string>();
   const files = walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts"));
   for (const file of files) {
@@ -439,8 +480,14 @@ function scanTypeScript(): Scan {
     for (const m of source.matchAll(/(?:const|let)\s+(\w+)\s*=\s*useTx(Template)?\(\)/g))
       (m[2] ? template : exact).add(m[1]!);
     const checked = !UNCHECKED_FILES.has(path);
+    const messages = messageFunctions(source);
     const where = (node: ts.Node) => `${path}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
     const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && messages.has(node.expression.text)) {
+        const arg = node.arguments[0] && unwrap(node.arguments[0]);
+        const literal = arg && ts.isStringLiteralLike(arg) ? [arg.text] : arg && stringBranches(arg);
+        for (const text of literal ?? []) keys.push({ text, at: where(node), match: "exact" });
+      }
       if (checked && ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag) && exact.has(node.tag.text)) {
         // Without `${}` the tag looks its text up as written.
         const match = ts.isNoSubstitutionTemplateLiteral(node.template) ? "exact" : "shape";
@@ -478,8 +525,23 @@ function scanTypeScript(): Scan {
     };
     visit(sf);
   }
-  return { translated, literals, untranslatable, spliced };
+  return { translated, literals, untranslatable, spliced, keys };
 }
+
+/** Read strings without letting a Rust character literal open a string match. */
+function backendLiterals(source: string): string[] {
+  const out: string[] = [];
+  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\.)*)"/g)) {
+    if (m[1] !== undefined) out.push(m[1]);
+  }
+  return out;
+}
+
+it("reads backend messages after quote character literals", () => {
+  expect(
+    backendLiterals(`let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'";`),
+  ).toEqual(["Select a .NET project", "Expected 'x'"]);
+});
 
 /** String literals of the Rust crates and language definitions (backend messages). */
 function scanBackend(literals: Set<string>) {
@@ -489,7 +551,7 @@ function scanBackend(literals: Set<string>) {
     ...walk(`${ROOT}languages`, (p) => p.endsWith(".toml")),
   ];
   for (const file of files)
-    for (const m of readFileSync(file, "utf8").matchAll(/"((?:[^"\\]|\\.)*)"/g)) literals.add(shape(m[1]!));
+    for (const literal of backendLiterals(readFileSync(file, "utf8"))) literals.add(shape(literal));
 }
 
 /** Text that needs no translation: no words, a path / glob / option, or listed in `UNTRANSLATED`. */
@@ -532,6 +594,21 @@ it("translates built text as whole sentences, one per variant", () => {
   expect(report(scan.spliced)).toEqual([]);
 });
 
+it("reads the imported and bound names of the message function", () => {
+  expect(messageFunctions(`import { t, tx } from "@/platform/i18n";`)).toEqual(new Set(["t"]));
+  expect(messageFunctions(`import { t as translate, useT } from "./i18n"; const tr = useT();`)).toEqual(
+    new Set(["translate", "tr"]),
+  );
+  // `t` bound from `useTx()` takes English text, not a key.
+  expect(messageFunctions(`import { useTx } from "@/platform/i18n"; const t = useTx();`)).toEqual(new Set());
+});
+
+it("uses only message keys of the English catalog", () => {
+  // Ensure the check cannot pass because the scanner stopped finding keys.
+  expect(scan.keys.some((use) => use.text === "app.unsaved.title")).toBe(true);
+  expect(report(scan.keys.filter(({ text }) => !Object.hasOwn(en, text)))).toEqual([]);
+});
+
 describe.each(Object.keys(catalogs))("source-text catalog %s", (locale) => {
   const catalog = catalogs[locale]!;
   const patterns = templatePatterns(catalog);
@@ -542,7 +619,7 @@ describe.each(Object.keys(catalogs))("source-text catalog %s", (locale) => {
   const found = ({ text, match }: Use) =>
     has(text) || (match === "pattern" && matchesTemplate(text)) || (match === "shape" && shapes.has(shape(text)));
 
-  it("translates every literal UI text", () => {
+  it.runIf(COMPLETE_LOCALES.has(locale))("translates every literal UI text", () => {
     const missing = new Map<string, string>();
     for (const use of scan.translated)
       if (!found(use) && needsTranslation(use.text) && !missing.has(use.text)) missing.set(use.text, use.at);

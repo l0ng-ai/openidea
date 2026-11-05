@@ -216,6 +216,9 @@ pub trait Handler: Send + Sync + 'static {
     fn on_request_with_data(&self, method: &str, params: Value) -> Result<Value, (i64, String, Option<Value>)> {
         self.on_request(method, params).map_err(|(code, message)| (code, message, None))
     }
+
+    /// Called once the response to a `method` request is queued: what it sends follows the response.
+    fn after_response(&self, _method: &str) {}
 }
 
 /// A [`Handler`] that ignores notifications and rejects requests.
@@ -243,6 +246,9 @@ struct Inner {
     pid: Option<u32>,
     /// Fired when the reader task has stopped (EOF, error or kill).
     reader_done: CancellationToken,
+    /// Fired once the child process has exited and been reaped (after [`Peer::kill`],
+    /// also what it started); at once when there is no child.
+    exited: CancellationToken,
 }
 
 impl Inner {
@@ -384,6 +390,9 @@ impl Peer {
         let resolved = resolve_spawn_program(command, env);
         let mut cmd = tokio::process::Command::new(&resolved);
         ide_core::process::prepare(cmd.as_std_mut());
+        // Wrappers (`npx`, `codex.cmd`, launcher scripts) start the real server as a child:
+        // stopping the connection stops the whole tree.
+        ide_core::process::own_group(cmd.as_std_mut());
         cmd.args(args)
             .current_dir(cwd)
             .envs(ide_core::process::shell_env())
@@ -422,10 +431,14 @@ impl Peer {
             let (status, killed) = tokio::select! {
                 status = child.wait() => (status.ok(), false),
                 _ = inner.kill.cancelled() => {
+                    if let Some(pid) = child.id() {
+                        let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
+                    }
                     let _ = child.start_kill();
                     (child.wait().await.ok(), true)
                 }
             };
+            inner.exited.cancel();
             if !killed {
                 // Bounded: a grandchild may keep the pipes open.
                 let drained = async {
@@ -504,7 +517,11 @@ impl Peer {
             kill: CancellationToken::new(),
             pid,
             reader_done: CancellationToken::new(),
+            exited: CancellationToken::new(),
         });
+        if pid.is_none() {
+            inner.exited.cancel();
+        }
 
         // Writer: a single task drains the queue so messages never interleave.
         {
@@ -698,6 +715,13 @@ impl Peer {
         self.inner.close_transport();
         self.inner.kill.cancel();
     }
+
+    /// Resolves once the child process is gone: exited on its own, or killed with what it
+    /// started and reaped. [`closed`](Self::closed) can come earlier, at EOF. Until then the
+    /// child may still hold files open, which on Windows can't be deleted.
+    pub async fn exited(&self) {
+        self.inner.exited.cancelled().await;
+    }
 }
 
 /// Removes the pending entry and tells the remote side to stop when a request
@@ -734,7 +758,8 @@ enum Incoming {
 
 async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {
     let m = method.clone();
-    let result = tokio::task::spawn_blocking(move || handler.on_request_with_data(&m, params)).await;
+    let h = handler.clone();
+    let result = tokio::task::spawn_blocking(move || h.on_request_with_data(&m, params)).await;
     let reply = match result {
         Ok(Ok(result)) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Ok(Err((code, message, data))) => {
@@ -749,7 +774,9 @@ async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value,
             "error": { "code": codes::INTERNAL_ERROR, "message": format!("handler for {method} panicked") }
         }),
     };
-    let _ = inner.send_value(&reply);
+    if inner.send_value(&reply).is_ok() {
+        handler.after_response(&method);
+    }
 }
 
 fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {

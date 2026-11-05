@@ -41,6 +41,17 @@ describe(".icls schemes", () => {
     expect(customs).toEqual(before);
   });
 
+  it("imports the global variable colour", () => {
+    const xml =
+      '<scheme name="G" parent_scheme="Darcula"><attributes><option name="DEFAULT_GLOBAL_VARIABLE"><value>' +
+      '<option name="FOREGROUND" value="9876aa"/><option name="FONT_TYPE" value="2"/></value></option></attributes></scheme>';
+    expect(parseIcls(xml).scheme.attributes.globalVariable).toEqual({
+      foreground: "#9876aa",
+      bold: false,
+      italic: true,
+    });
+  });
+
   it.each([
     ["Darcula", "ffffff", "dark"],
     ["Default", "000000", "light"],

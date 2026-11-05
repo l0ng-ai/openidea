@@ -39,7 +39,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             .await?;
     }
     if config.adapter == ide_dap::kotlin::ADAPTER {
-        let data_dir = host.data_dir.clone();
+        let data_dir = host.local_data_dir.clone();
         let runtime_root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
         let runtime_settings = settings.clone();
         let runtime = host
@@ -96,7 +96,13 @@ fn match_java_debug_encoding(mut config: LaunchConfig, windows: bool) -> LaunchC
     };
     let vm_args = extra.get("vmArgs").and_then(|v| v.as_str()).unwrap_or_default();
     let encoding = extra.get("encoding").and_then(|v| v.as_str());
-    if let Some(vm_args) = ide_core::output_encoding::java_debug_vm_args(vm_args, encoding, windows) {
+    if let Some(vm_args) = ide_core::output_encoding::java_debug_vm_args(
+        vm_args,
+        &config.env,
+        |key| std::env::var(key).ok(),
+        encoding,
+        windows,
+    ) {
         extra.insert("vmArgs".into(), vm_args.into());
         config.extra_json = Some(serde_json::Value::Object(extra).to_string());
     }
@@ -180,6 +186,19 @@ pub async fn debug_run_to(
 
 pub async fn debug_stop(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
     host.debugger.stop(session).await
+}
+
+/// The adapter's completions for an expression being typed in the frame `frame_id`.
+pub async fn debug_completions(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    frame_id: Option<i64>,
+    text: String,
+    line: u32,
+    column: u32,
+) -> IdeResult<Vec<ide_dap::DebugCompletion>> {
+    host.debugger.completions(session, frame_id, text, line, column).await
 }
 
 /// Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`.
@@ -370,6 +389,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_stop", |c| async move { debug_stop(&c.host, &c.window, c.arg("session")?).await });
+    d.add("debug_completions", |c| async move {
+        debug_completions(
+            &c.host,
+            &c.window,
+            c.arg("session")?,
+            c.arg("frameId")?,
+            c.arg("text")?,
+            c.arg("line")?,
+            c.arg("column")?,
+        )
+        .await
+    });
     d.add("debug_evaluate_in", |c| async move {
         debug_evaluate_in(
             &c.host,
@@ -452,7 +483,7 @@ mod tests {
             program: None,
             args: vec![],
             cwd: None,
-            env: Default::default(),
+            env: [("JDK_JAVA_OPTIONS".into(), "".into()), ("JAVA_TOOL_OPTIONS".into(), "".into())].into(),
             extra_json: Some(extra.to_string()),
         }
     }
@@ -468,7 +499,7 @@ mod tests {
         let fixed = match_java_debug_encoding(launch("java-debug", "launch", extra.clone()), true);
         assert_eq!(
             vm_args(&fixed),
-            "-Xmx1g -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
+            "-Xmx1g -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -Dfile.encoding=UTF-8"
         );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(fixed.extra_json.as_deref().unwrap()).unwrap()["mainClass"],
@@ -479,6 +510,15 @@ mod tests {
             [("java-debug", "attach", true), ("debugpy", "launch", true), ("java-debug", "launch", false)]
         {
             assert_eq!(vm_args(&match_java_debug_encoding(launch(adapter, request, extra.clone()), windows)), "-Xmx1g");
+        }
+    }
+
+    #[test]
+    fn java_debug_launches_respect_environment_encoding() {
+        for key in ["JDK_JAVA_OPTIONS", "JAVA_TOOL_OPTIONS"] {
+            let mut config = launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Dstdout.encoding=GBK"}));
+            config.env.insert(key.into(), "-Dfile.encoding=GBK".into());
+            assert_eq!(vm_args(&match_java_debug_encoding(config, true)), "-Dstdout.encoding=GBK");
         }
     }
 }

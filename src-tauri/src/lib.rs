@@ -8,8 +8,13 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+#[cfg(any(target_os = "linux", test))]
+mod linux_window_state;
 mod logging;
+#[cfg(target_os = "macos")]
+mod macos;
 mod menu;
+mod plugin_web;
 mod remote_dev;
 
 mod state;
@@ -17,6 +22,8 @@ mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
 mod window_groups;
+#[cfg(any(windows, test))]
+mod window_work_area;
 mod windows;
 
 use parking_lot::Mutex;
@@ -51,7 +58,7 @@ pub fn run() {
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
-    if let Some(data) = dirs::data_dir() {
+    if let Some(data) = dirs::data_local_dir() {
         ide_tools::extend_process_path(&data.join(&context.config().identifier));
         ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data.join(&context.config().identifier)));
         ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data.join(&context.config().identifier)));
@@ -68,18 +75,25 @@ pub fn run() {
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
+    // Install before window-state restores maximized geometry during window creation.
+    #[cfg(windows)]
+    let app = app.plugin(window_work_area::init());
+    let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
+    #[cfg(target_os = "linux")]
+    let app = app.plugin(linux_window_state::plugin());
+    #[cfg(not(target_os = "linux"))]
+    let app = app.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(window_state_flags())
+            // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
+            .map_label(windows::state_key)
+            .build(),
+    );
     let app = app
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state_flags())
-                // One remembered geometry shared by every project's settings window.
-                .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
-                .build(),
-        )
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Files of plugins' web views, for their sandboxed frames.
+    let app = app.register_asynchronous_uri_scheme_protocol(plugin_web::SCHEME, plugin_web::handle);
     // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
     #[cfg(debug_assertions)]
     let app = app.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
@@ -134,6 +148,7 @@ pub fn run() {
         if let Ok(cwd) = std::env::current_dir()
             && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
         {
+            windows::remember_cli_position(&windows, &std::env::args().collect::<Vec<_>>(), &path);
             windows.set_launch("main", windows::path_launch(path));
         }
         let menu_state = menu::MenuState::default();
@@ -152,6 +167,8 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
+        #[cfg(target_os = "linux")]
+        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -159,20 +176,26 @@ pub fn run() {
             }
         }
         tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
+        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+            window_groups::frame_changed(window.app_handle(), window.label());
+        }
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
-            titlebar::forget(window);
-            window_groups::destroyed(window.app_handle(), window.label());
-            if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
-                let _ = settings.destroy();
+            {
+                titlebar::forget(window);
+                macos::forget_fullscreen(window.label());
             }
-            if let Some(state) = window.try_state::<AppState>() {
-                state.close_project(window.label());
+            if windows::auxiliary_parent(window.label()).is_none() {
+                window_groups::destroyed(window.app_handle(), window.label());
+                windows::close_auxiliary_windows(window.app_handle(), window.label());
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.close_project(window.label());
+                }
             }
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.forget(window.label());
             }
-            if !windows::is_settings_window(window.label()) {
+            if windows::auxiliary_parent(window.label()).is_none() {
                 windows::continue_quit(window.app_handle(), Some(window.label()));
             }
         }
@@ -194,6 +217,7 @@ pub fn run() {
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
+                state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }
             // Cleanup must finish before update/restart replaces this process.
@@ -204,6 +228,7 @@ pub fn run() {
     });
 }
 
+#[cfg(not(target_os = "linux"))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
@@ -215,15 +240,20 @@ fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
-            // Settings is modal for its project window: only app-level items get through, to the parent.
-            let label = match windows::settings_parent(w.label()) {
-                Some(parent)
+            // App-level items of an auxiliary window go to its project window. Settings is modal for it:
+            // nothing else gets through. Others handle their own items; Close Tab closes the window.
+            let label = match windows::auxiliary(w.label()) {
+                Some((_, parent))
                     if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
                 {
                     parent
                 }
-                Some(_) => return,
-                None => w.label(),
+                Some((kind, _)) if kind.modal() => return,
+                Some(_) if route.action == "editor.closeTab" => {
+                    let _ = w.close();
+                    return;
+                }
+                _ => w.label(),
             };
             if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &route) {
                 tracing::warn!("failed to deliver menu event {id}: {e}");

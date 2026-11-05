@@ -904,6 +904,7 @@ impl Session {
                     if info.get("status").and_then(Value::as_str) == Some("rejected") {
                         st.limit_resets_ms = info.get("resetsAt").and_then(Value::as_f64).map(|s| s * 1000.0);
                     }
+                    updates.extend(st.tr.on_rate_limit(&info));
                 }
                 "command_lifecycle" => {
                     let uuid = msg.get("command_uuid").and_then(Value::as_str);

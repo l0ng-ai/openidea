@@ -1,11 +1,12 @@
 /**
- * Settings › Languages & Frameworks › Go / Java / Node.js / Rust / TypeScript and
+ * Settings › Languages & Frameworks › Go / Java / Node.js / PHP / Rust / TypeScript and
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
 import { useId, useMemo } from "react";
 import { IconButton, Input, type SelectOption } from "@/ui";
-import { Row, Section, Select, Toggle } from "../components/Form";
+import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
+import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
 import { SdkField, tildify, useDetected } from "./components";
@@ -104,6 +105,97 @@ export function NodePage() {
         <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
           <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
         </Row>
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PHP
+
+const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
+  level ? { value: level, label: level } : { value: "", label: "Auto", detail: "from composer.json" },
+);
+
+export function PhpPage() {
+  const [interpreter] = useSetting<string>("languages.php.interpreter");
+  const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
+  const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
+  const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
+  const { list } = useDetected("php");
+  const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
+  return (
+    <div className={styles.page}>
+      <Section>
+        <Row
+          label="PHP language level"
+          hint="The PHP version Intelephense checks the code against: newer syntax and functions are reported. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."
+        >
+          <Select value={level} options={PHP_LEVEL_OPTIONS} onChange={setLevel} aria-label="PHP language level" />
+        </Row>
+        <Row
+          label="Include paths"
+          stacked
+          hint="Folders outside the project whose classes and functions Intelephense indexes too, such as the platform a module extends. Absolute, or relative to the project."
+        >
+          <GlobListEditor
+            value={includePaths ?? []}
+            onChange={setIncludePaths}
+            placeholder="/path/to/platform"
+            emptyText="No include paths"
+            itemLabel="Include path"
+            aria-label="Include paths"
+          />
+        </Row>
+        <Row
+          label="Additional stubs"
+          stacked
+          hint="Intelephense stub sets loaded on top of its defaults, such as wordpress. Each ext-* in require or require-dev of composer.json adds its own."
+        >
+          <GlobListEditor
+            value={stubs ?? []}
+            onChange={setStubs}
+            placeholder="Stub name, e.g. wordpress"
+            emptyText="No additional stubs"
+            itemLabel="Stub"
+            aria-label="Additional stubs"
+          />
+        </Row>
+      </Section>
+      <Section title="CLI Interpreter">
+        <SdkRow
+          k="languages.php.interpreter"
+          label="PHP interpreter"
+          kind="php"
+          emptyLabel="Default"
+          emptyDetail="php on PATH"
+          browseTitle="Select PHP Interpreter"
+          aria-label="PHP interpreter"
+          hint="Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
+        />
+        {selected?.version && <Row label="Version">{selected.version}</Row>}
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ruby
+
+export function RubyPage() {
+  return (
+    <div className={styles.page}>
+      <Section>
+        <SdkRow
+          k="languages.ruby.interpreter"
+          label="Ruby interpreter"
+          kind="ruby"
+          emptyLabel="Auto"
+          emptyDetail=".ruby-version / mise / asdf, else ruby on PATH"
+          browseTitle="Select Ruby Interpreter"
+          aria-label="Ruby interpreter"
+          hint="Runs the ruby, rake and rspec configurations and lists the standard library and gems under External Libraries. Installs from rbenv, rvm, chruby, mise and asdf are detected."
+        />
       </Section>
     </div>
   );
@@ -249,7 +341,7 @@ export function JavaPage() {
         <Row
           label="JVM options"
           htmlFor={id}
-          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx4g. jdtls runs with -XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Xmx2G -Xms100m by default; an option set here replaces the default for the same setting, and another collector (e.g. -XX:+UseG1GC) replaces the default collector options. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
+          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx4g. jdtls runs with -XX:+UseG1GC -XX:G1PeriodicGCInterval=60000 -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=30 -Xmx2G -Xms100m by default; an option set here replaces the default for the same setting, and another collector (e.g. -XX:+UseZGC) replaces the default collector options. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
         >
           <Input
             id={id}
@@ -270,9 +362,24 @@ export function JavaPage() {
 
 export function GradlePage() {
   const [distribution, setDistribution] = useSetting<string>("languages.java.gradle.distribution");
+  const [runUsing, setRunUsing] = useSetting<string>("languages.java.gradle.runUsing");
   return (
     <div className={styles.page}>
       <Section>
+        <Row
+          label="Build and run using"
+          hint="Gradle runs a main class as a JavaExec task on its source set's runtime classpath (Gradle's resource processing included). OpenIDEA launches it on the Java language server's classpath."
+        >
+          <Select
+            value={runUsing || "gradle"}
+            onChange={setRunUsing}
+            aria-label="Build and run using"
+            options={[
+              { value: "gradle", label: "Gradle" },
+              { value: "ide", label: "OpenIDEA" },
+            ]}
+          />
+        </Row>
         <SdkRow
           k="languages.java.gradle.jvm"
           label="Gradle JVM"
@@ -319,6 +426,7 @@ export function GradlePage() {
 }
 
 export function MavenPage() {
+  const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   return (
     <div className={styles.page}>
       <Section>
@@ -331,7 +439,7 @@ export function MavenPage() {
           directory
           browseTitle="Select Maven Home Directory"
           aria-label="Maven home path"
-          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw."
+          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled."
         />
         <PathInput
           k="languages.java.maven.userSettings"
@@ -347,6 +455,19 @@ export function MavenPage() {
           placeholder="From settings.xml, else ~/.m2/repository"
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
+        />
+        <Toggle
+          label="Use Maven Daemon (mvnd)"
+          checked={daemon}
+          onChange={setDaemon}
+          hint="Builds, sync and Maven run configurations run through mvnd for speed. It embeds its own Maven (the home and mvnw are bypassed), needs Java 17+ and builds in parallel by default. Falls back to mvn when mvnd is missing or the JDK is too old."
+        />
+        <PathInput
+          k="languages.java.maven.mvndHome"
+          label="Maven Daemon home path"
+          placeholder="MVND_HOME, else auto-detected"
+          title="Select Maven Daemon Home Directory"
+          hint="The mvnd home (or its executable). Empty = $MVND_HOME, else mvnd on PATH."
         />
       </Section>
     </div>

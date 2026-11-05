@@ -1,8 +1,11 @@
 //! Child-process helpers shared by every crate that spawns tools.
 
 use std::ffi::{OsStr, OsString};
-use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
+use std::process::{Child, Command};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 /// Windows `CREATE_NO_WINDOW` creation flag, for call sites that combine it
 /// with other flags (and then call [`host_env`] themselves). Prefer [`prepare`] otherwise.
@@ -25,18 +28,195 @@ pub fn prepare(cmd: &mut Command) -> &mut Command {
     host_env(cmd)
 }
 
+/// Starts the child as the leader of its own process group on Unix, so [`kill_tree`] and
+/// [`terminate_tree`] reach what it starts in turn (`gh` → `git`, `npm` → `node`, `mvnw` →
+/// the JVM). A no-op elsewhere: on Windows the tree is found from the child's process id.
+pub fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
+}
+
+/// Kills the child and everything it started, then reaps it.
+///
+/// - Unix: `SIGKILL` to its process group, so spawn it with [`own_group`].
+/// - Windows: `taskkill /T /F`, which walks the tree from the child's process id, then a
+///   wait for what the child started to be gone.
+pub fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    signal_group(child, libc::SIGKILL);
+    #[cfg(windows)]
+    taskkill_tree_of(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// [`kill_tree`] for a child known by its process id (a `tokio` child): `SIGKILL` to its
+/// process group (spawn it with [`own_group`]) or `taskkill /T /F` and a wait for what the
+/// child started to be gone. Call it before the child is reaped, so the id still names it.
+/// The child itself is left to its owner to kill and reap.
+pub fn kill_tree_of(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall; see `signal_group`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    taskkill_tree_of(pid);
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
+/// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
+/// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
+/// git command fails. Windows has no such signal to send from outside the child's console,
+/// so there it is [`kill_tree`].
+pub fn terminate_tree(child: &mut Child, grace: Duration) {
+    #[cfg(unix)]
+    {
+        signal_group(child, libc::SIGTERM);
+        // Sleep rather than `try_wait`: the child stays unreaped, so its process id (and the
+        // group id) cannot be reused before the `SIGKILL` below.
+        std::thread::sleep(grace);
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    kill_tree(child);
+}
+
+#[cfg(unix)]
+fn signal_group(child: &Child, signal: libc::c_int) {
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: plain syscall. The child is not reaped yet, so `-pid` is still its group (or
+        // no group at all when it was not spawned with `own_group`, and the call fails).
+        unsafe {
+            libc::kill(-pid, signal);
+        }
+    }
+}
+
+/// How long killing a tree waits for the processes the child started to be gone.
+#[cfg(windows)]
+const TREE_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// `taskkill /T /F` from `pid`, then waits (up to [`TREE_EXIT_WAIT`]) until what the child
+/// started is gone: termination is asynchronous, and until a process is gone the files it
+/// holds open can't be opened or deleted. The child itself is left to its owner to reap.
+#[cfg(windows)]
+fn taskkill_tree_of(pid: u32) {
+    let started = windows_tree::descendants(pid);
+    let mut taskkill = Command::new("taskkill");
+    prepare(&mut taskkill)
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _ = taskkill.status();
+    windows_tree::wait_all(&started, TREE_EXIT_WAIT);
+}
+
+#[cfg(windows)]
+mod windows_tree {
+    use std::collections::HashSet;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{FILETIME, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    /// Every process `root` started, directly or not, opened so it can be waited for. A
+    /// parent's id is reused once it is gone, so a process counts only if it started after
+    /// its parent.
+    pub(super) fn descendants(root: u32) -> Vec<OwnedHandle> {
+        let Some(root_started) = open(root).as_ref().and_then(started) else { return Vec::new() };
+        let processes = processes();
+        let mut seen = HashSet::from([root]);
+        let mut parents = vec![(root, root_started)];
+        let mut found = Vec::new();
+        while let Some((parent, parent_started)) = parents.pop() {
+            for &(pid, ppid) in &processes {
+                if ppid != parent || !seen.insert(pid) {
+                    continue;
+                }
+                let Some(handle) = open(pid) else { continue };
+                if let Some(at) = started(&handle).filter(|&at| at >= parent_started) {
+                    parents.push((pid, at));
+                    found.push(handle);
+                }
+            }
+        }
+        found
+    }
+
+    pub(super) fn wait_all(processes: &[OwnedHandle], within: Duration) {
+        let until = Instant::now() + within;
+        for process in processes {
+            let left = until.saturating_duration_since(Instant::now());
+            // SAFETY: a live process handle opened with SYNCHRONIZE access.
+            unsafe { WaitForSingleObject(process.as_raw_handle(), left.as_millis().min(u32::MAX as u128 - 1) as u32) };
+        }
+    }
+
+    /// (process id, parent process id) of every running process.
+    fn processes() -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        // SAFETY: a snapshot handle owned here and an entry sized as the API requires.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
+                return out;
+            }
+            let snapshot = OwnedHandle::from_raw_handle(snapshot);
+            let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+            let mut more = Process32FirstW(snapshot.as_raw_handle(), &mut entry);
+            while more != 0 {
+                out.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                more = Process32NextW(snapshot.as_raw_handle(), &mut entry);
+            }
+        }
+        out
+    }
+
+    fn open(pid: u32) -> Option<OwnedHandle> {
+        // SAFETY: plain call; a non-null result is a process handle owned by the caller.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        // SAFETY: as above.
+        (!handle.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
+    }
+
+    /// When the process started, in 100 ns ticks since 1601.
+    fn started(process: &OwnedHandle) -> Option<u64> {
+        let (mut created, mut exited, mut kernel, mut user) =
+            (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        // SAFETY: a live process handle opened with query access; four out-parameters.
+        let ok = unsafe { GetProcessTimes(process.as_raw_handle(), &mut created, &mut exited, &mut kernel, &mut user) };
+        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+}
+
 /// Gives `cmd` the host's environment back when the IDE runs from an AppImage. `AppRun` and
 /// its hooks point `LD_LIBRARY_PATH`, `PATH`, `XDG_DATA_DIRS`, `GIO_MODULE_DIR`, `GTK_PATH`,
 /// `GST_PLUGIN_*`, ... into the mounted image for the IDE itself; a host program that
 /// inherits them loads the image's (older) libraries and plugins next to its own, e.g.
 /// `curl: symbol lookup error ... nghttp2_...`. The IDE process keeps its environment
 /// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables and
-/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]).
-/// Variables the call site has already set are kept. A no-op outside an AppImage
-/// without an overlay.
+/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]),
+/// and the login shell's variables this process lacks ([`shell_env`]: an app started from
+/// Finder/Dock doesn't have what rc files export, such as `GOPATH`, `JAVA_HOME` or
+/// `MAVEN_OPTS`). Variables the call site has already set are kept.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
     let fixes = child_env_changes();
-    if fixes.is_empty() {
+    let shell: Vec<_> = shell_env().collect();
+    if fixes.is_empty() && shell.is_empty() {
         return cmd;
     }
     let explicit: Vec<OsString> = cmd.get_envs().map(|(k, _)| k.to_owned()).collect();
@@ -45,6 +225,9 @@ pub fn host_env(cmd: &mut Command) -> &mut Command {
             Some(v) => cmd.env(key, v),
             None => cmd.env_remove(key),
         };
+    }
+    for (key, value) in shell.into_iter().filter(|(k, _)| !explicit.contains(k)) {
+        cmd.env(key, value);
     }
     cmd
 }
@@ -62,12 +245,13 @@ pub fn host_vars() -> impl Iterator<Item = (OsString, OsString)> {
     apply_changes(std::env::vars_os().collect(), &child_env_changes()).into_iter()
 }
 
-/// [`std::env::var_os`] as a child should see it (see [`host_env`]).
+/// [`std::env::var_os`] as a child should see it (see [`host_env`]), the login shell's value
+/// included when this process lacks the variable.
 pub fn host_var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
     let key = key.as_ref();
     match child_env_changes().into_iter().find(|(k, _)| k == key) {
         Some((_, fixed)) => fixed,
-        None => std::env::var_os(key),
+        None => std::env::var_os(key).or_else(|| shell_env().find(|(k, _)| k == key).map(|(_, v)| v)),
     }
 }
 
@@ -245,10 +429,7 @@ pub fn find_executable(name: &str, search: &OsStr) -> Option<std::path::PathBuf>
 #[cfg(windows)]
 pub fn user_path() -> Option<OsString> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegGetValueW,
-        RegOpenKeyExW,
-    };
+    use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegOpenKeyExW};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -259,43 +440,51 @@ pub fn user_path() -> Option<OsString> {
         if RegOpenKeyExW(HKEY_CURRENT_USER, wide("Environment").as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS {
             return None;
         }
-        let read = || {
-            // Only `Path`; `REG_EXPAND_SZ` is accepted so `%USERPROFILE%\…` entries expand.
-            let mut kind = 0u32;
-            let mut len = 0u32;
-            let name = wide("Path");
-            let status = RegGetValueW(
-                key,
-                std::ptr::null(),
-                name.as_ptr(),
-                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-                &mut kind,
-                std::ptr::null_mut(),
-                &mut len,
-            );
-            if status != ERROR_SUCCESS || len == 0 {
-                return None;
-            }
-            let mut buf = vec![0u16; (len as usize).div_ceil(2)];
-            let status = RegGetValueW(
-                key,
-                std::ptr::null(),
-                name.as_ptr(),
-                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-                &mut kind,
-                buf.as_mut_ptr() as *mut _,
-                &mut len,
-            );
-            if status != ERROR_SUCCESS {
-                return None;
-            }
-            let text = String::from_utf16_lossy(&buf);
-            Some(text.trim_end_matches('\0').to_owned())
-        };
-        let value = read();
+        let value = read_registry_string(key, &wide("Path"));
         RegCloseKey(key);
         value.filter(|v| !v.trim().is_empty()).map(OsString::from)
     }
+}
+
+/// The string of value `name` under open `key`: `REG_SZ` as-is, `REG_EXPAND_SZ` expanded
+/// against the current environment. `None` when the value is missing or unreadable.
+///
+/// A `REG_EXPAND_SZ` value's first size query reports the unexpanded size, so a value
+/// that grows when expanded is re-read at the size the failed call reports. And the
+/// terminating NUL can leak into the read buffer with a stray UTF-16 unit behind it —
+/// seen with a `REG_EXPAND_SZ` user `Path`, where it made `env::set_var("PATH", …)`
+/// panic with "strings passed to WinAPI cannot contain NULs" — so the text is cut at
+/// the first NUL, not just stripped of trailing ones.
+#[cfg(windows)]
+fn read_registry_string(key: windows_sys::Win32::System::Registry::HKEY, name: &[u16]) -> Option<String> {
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW};
+
+    const FLAGS: u32 = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+    let mut kind = 0u32;
+    let mut len = 0u32;
+    // SAFETY: `name` is NUL-terminated and the size query writes only `kind` and `len`.
+    let status =
+        unsafe { RegGetValueW(key, std::ptr::null(), name.as_ptr(), FLAGS, &mut kind, std::ptr::null_mut(), &mut len) };
+    if status != ERROR_SUCCESS || len == 0 {
+        return None;
+    }
+    let buf = loop {
+        let mut buf = vec![0u16; len as usize / 2 + 1];
+        // SAFETY: as above; the buffer holds at least the `len` bytes the call may write.
+        let status = unsafe {
+            RegGetValueW(key, std::ptr::null(), name.as_ptr(), FLAGS, &mut kind, buf.as_mut_ptr() as *mut _, &mut len)
+        };
+        if status == ERROR_SUCCESS {
+            break buf;
+        }
+        if status != ERROR_MORE_DATA || len == 0 {
+            return None;
+        }
+    };
+    let text = String::from_utf16_lossy(&buf);
+    let end = text.find('\0').unwrap_or(text.len());
+    Some(text[..end].to_owned())
 }
 
 /// The user's own `PATH` entries; `None` outside Windows (see the Windows impl).
@@ -323,6 +512,28 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_of_reaches_what_the_child_started() {
+        use std::io::BufRead;
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 30 & echo $!; wait"]).stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let grandchild: libc::pid_t = line.trim().parse().unwrap();
+        let alive = |pid: libc::pid_t| unsafe { libc::kill(pid, 0) } == 0;
+        assert!(alive(grandchild));
+        kill_tree_of(child.id());
+        let _ = child.wait();
+        // Reparented to init once its parent is gone, which reaps it.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !alive(grandchild)
+        });
+        assert!(gone, "the grandchild {grandchild} survived");
+    }
+
     #[cfg(windows)]
     #[test]
     fn user_path_reads_the_current_users_path() {
@@ -332,6 +543,96 @@ mod tests {
             let dirs: Vec<_> = std::env::split_paths(&path).collect();
             assert!(!dirs.is_empty(), "user PATH should hold at least one directory");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registry_strings_expand_and_stay_terminator_free() {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::{
+            HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ, RegCloseKey, RegCreateKeyExW,
+            RegDeleteTreeW, RegSetValueExW,
+        };
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        struct TestState {
+            key: HKEY,
+            name: String,
+            variable: String,
+            previous: Option<OsString>,
+        }
+        impl Drop for TestState {
+            fn drop(&mut self) {
+                // SAFETY: the key belongs to this test; Windows environment mutation is safe.
+                unsafe {
+                    RegCloseKey(self.key);
+                    RegDeleteTreeW(HKEY_CURRENT_USER, wide(&self.name).as_ptr());
+                    match &self.previous {
+                        Some(value) => std::env::set_var(&self.variable, value),
+                        None => std::env::remove_var(&self.variable),
+                    }
+                }
+            }
+        }
+        let name = format!("Software\\ai.l0ng.openidea.registry-read-test-{}", std::process::id());
+        let variable = format!("OPENIDEA_TEST_REGVAR_{}", std::process::id());
+        let long = "x".repeat(600);
+        let mut key: HKEY = std::ptr::null_mut();
+        let opened = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                wide(&name).as_ptr(),
+                0,
+                std::ptr::null(),
+                0,
+                KEY_READ | KEY_WRITE,
+                std::ptr::null(),
+                &mut key,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, ERROR_SUCCESS, "the test key must be creatable under HKCU\\Software");
+        let _cleanup = TestState { key, name, previous: std::env::var_os(&variable), variable: variable.clone() };
+        // SAFETY: Windows permits environment mutation. No other test uses this process-specific name.
+        unsafe { std::env::set_var(&variable, &long) };
+        let set = |value: &str, kind: u32, data: &[u16]| {
+            // SAFETY: `key` is open for writing and `data` holds `data.len() * 2` bytes.
+            assert_eq!(
+                unsafe {
+                    RegSetValueExW(
+                        key,
+                        wide(value).as_ptr(),
+                        0,
+                        kind,
+                        data.as_ptr() as *const _,
+                        (data.len() * 2) as u32,
+                    )
+                },
+                ERROR_SUCCESS
+            );
+        };
+        let read = |value: &str| read_registry_string(key, &wide(value));
+        set("Plain", REG_SZ, &wide("plain"));
+        set("Expand", REG_EXPAND_SZ, &wide(&format!("%{variable}%\\bin")));
+        set("ExpandLong", REG_EXPAND_SZ, &wide(&format!("%{variable}%")));
+        // Reproduce the reported interior terminator followed by a stale UTF-16 unit.
+        set("TrailingGarbage", REG_SZ, &wide("C:\\Zed\\bin\0n"));
+        set("ExpandTrailingGarbage", REG_EXPAND_SZ, &wide(&format!("%{variable}%\\bin\0n")));
+        set("Empty", REG_SZ, &wide(""));
+        let plain = read("Plain");
+        let expand = read("Expand");
+        let expand_long = read("ExpandLong");
+        assert_eq!(plain.as_deref(), Some("plain"));
+        assert_eq!(expand.as_deref(), Some(format!("{long}\\bin")).as_deref());
+        // Longer than its unexpanded form: needs the re-read at the expanded size.
+        assert_eq!(expand_long.as_deref(), Some(long.as_str()));
+        assert_eq!(read("TrailingGarbage").as_deref(), Some("C:\\Zed\\bin"));
+        assert_eq!(read("ExpandTrailingGarbage").as_deref(), Some(format!("{long}\\bin")).as_deref());
+        assert_eq!(read("Empty").as_deref(), Some(""));
+        assert_eq!(read("Missing"), None);
     }
 
     #[test]
@@ -363,6 +664,15 @@ mod tests {
         assert_eq!(get("HOME"), Some(None));
         let shell: Vec<_> = shell_env().map(|(k, _)| k).collect();
         assert_eq!(shell, [OsString::from("OPENIDEA_OVERLAY_B")]);
+        // Every child gets what the login shell exports and the IDE process lacks (a Finder
+        // launch: `GOPATH`, `JAVA_HOME`...), unless the call site sets it.
+        assert_eq!(get("OPENIDEA_OVERLAY_B"), Some(Some("b".into())));
+        let mut own = Command::new("true");
+        own.env("OPENIDEA_OVERLAY_B", "call site");
+        host_env(&mut own);
+        let value = own.get_envs().find(|(n, _)| *n == "OPENIDEA_OVERLAY_B").and_then(|(_, v)| v);
+        assert_eq!(value, Some(OsStr::new("call site")));
+        assert_eq!(host_var_os("OPENIDEA_OVERLAY_B"), Some("b".into()));
         assert_eq!(host_var_os("PATH"), Some("/reloaded".into()));
         assert!(host_vars().all(|(k, _)| k != "HOME"));
         assert!(host_vars().any(|(k, v)| k == "OPENIDEA_OVERLAY_A" && v == "project"));
@@ -500,5 +810,73 @@ mod tests {
             assert_eq!(find_executable("agent", &search), Some(a.join("agent")));
         }
         assert_eq!(find_executable("nope", &search), None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod kill_tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::Instant;
+
+    /// Runs `script` in `sh` as its own group's leader and waits for it to write `ready`.
+    fn start(script: &str, ready: &Path) -> Child {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        let child = own_group(&mut cmd).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "the script never got ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child
+    }
+
+    fn assert_gone(pid: libc::pid_t) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "process {pid} survived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn kill_tree_kills_what_the_child_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}'; wait", pid_file.display());
+        let mut child = start(&script, &pid_file);
+        let grandchild: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        kill_tree(&mut child);
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+        assert_gone(grandchild);
+    }
+
+    #[test]
+    fn terminate_tree_lets_the_child_clean_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ready, cleaned) = (dir.path().join("ready"), dir.path().join("cleaned"));
+        let script = format!(
+            "trap 'touch \"{}\"; exit 0' TERM; touch \"{}\"; sleep 30 & wait",
+            cleaned.display(),
+            ready.display()
+        );
+        let mut child = start(&script, &ready);
+        terminate_tree(&mut child, Duration::from_millis(500));
+        assert!(cleaned.exists(), "the SIGTERM handler ran before the SIGKILL");
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+    }
+
+    #[test]
+    fn terminate_tree_still_kills_a_child_that_ignores_sigterm() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let script = format!("trap '' TERM; touch \"{}\"; while :; do sleep 1; done", ready.display());
+        let mut child = start(&script, &ready);
+        let started = Instant::now();
+        terminate_tree(&mut child, Duration::from_millis(50));
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

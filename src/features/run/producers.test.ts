@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import type { RunConfig } from "@/platform/ipc";
+import { afterEach, describe, expect, it } from "vitest";
+import type { HierarchyItem, RunConfig } from "@/platform/ipc";
 import {
   innermostTarget,
   nodeTypeStripping,
@@ -15,8 +15,18 @@ import {
   type LocatedTool,
   type ToolEnv,
 } from "./producers";
+import { clearInheritedMain, resolveCandidates, unresolvedCandidates } from "./inheritedMain";
+
+afterEach(() => clearInheritedMain());
 
 const ROOT = "/work/app";
+const superItem: Omit<HierarchyItem, "name" | "path"> = {
+  kind: "class",
+  detail: null,
+  range: { start: { line: 0, col: 0 }, end: { line: 1, col: 0 } },
+  selectionRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+  fromRanges: [],
+};
 const SCRATCH = "/Users/me/Library/Application Support/ai.l0ng.openidea/scratches";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
@@ -150,6 +160,31 @@ describe("single-file producers (scratches)", () => {
       debugAdapter: "debugpy",
     });
     expect(produceContext(scratch("hi.py"), env({}))!.missing!.title).toBe("Cannot run 'hi.py'");
+  });
+
+  it("Python: a module with relative imports runs with -m from above its top package", () => {
+    const venv = [cfg({ id: "pytest", kind: "pytest", command: ".venv/bin/pytest" })];
+    const packages = new Set([`${ROOT}/src/tasks`, `${ROOT}/src/tasks/sub`]);
+    const at = (path: string, content: string) =>
+      run({ path, root: ROOT, configs: venv, content, pythonPackage: (d) => packages.has(d) });
+    const relative = "from .models import TaskList\n";
+    expect(at(`${ROOT}/src/tasks/cli.py`, relative)).toMatchObject({
+      command: `${ROOT}/.venv/bin/python`,
+      args: ["-m", "tasks.cli"],
+      cwd: "src",
+    });
+    expect(at(`${ROOT}/src/tasks/sub/__main__.py`, "from ..models import X\n")).toMatchObject({
+      args: ["-m", "tasks.sub"],
+      cwd: "src",
+    });
+    // A directory without `__init__.py` is still the module's package; a top-level one runs from the root.
+    expect(at(`${ROOT}/scripts/gen.py`, relative)).toMatchObject({ args: ["-m", "scripts.gen"], cwd: null });
+    // Without relative imports, the file runs as a script.
+    expect(at(`${ROOT}/src/tasks/cli.py`, "import argparse\n")).toMatchObject({
+      command: ".venv/bin/python",
+      args: ["src/tasks/cli.py"],
+      cwd: null,
+    });
   });
 
   it("shell scripts: the shell of the #! line, else by extension; extensionless files by #!", () => {
@@ -307,6 +342,45 @@ describe("single-file producers (scratches)", () => {
     )!;
     expect(p.config).toMatchObject({ kind: "application", name: "Hi" });
     expect(p.config!.args.at(-1)).toBe("demo.Hi");
+  });
+
+  it("Java: a main in a Gradle module outside the project runs on the module's classpath", () => {
+    // `includeFlat 'billing'`: the module folder is a sibling of the project folder.
+    const svc = "/work/billing/modules/core";
+    const boot =
+      "package com.example;\nimport org.springframework.boot.SpringApplication;\n@SpringBootApplication\n" +
+      "public class ShopApplication {\n  public static void main(String[] args) {\n" +
+      "    SpringApplication.run(ShopApplication.class, args);\n  }\n}";
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const input = (contentRoots?: string[]) => ({
+      path: `${svc}/src/main/java/com/example/ShopApplication.java`,
+      root: ROOT,
+      configs: gradle,
+      content: boot,
+      line: 4,
+      contentRoots,
+    });
+    expect(produceContext(input(), ALL)!.config!.kind).toBe("java-file");
+    const p = produceContext(input(["/work/billing", svc]), ALL)!;
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
+    expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
+  });
+
+  it("Java: a class whose superclass declares main runs as a Spring Boot application", async () => {
+    const path = `${ROOT}/src/main/java/demo/AiChatApplication.java`;
+    const content = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const input = { path, root: ROOT, configs: gradle, content, line: 3 };
+    expect(fileTargets(input, content)).toEqual([]);
+    await resolveCandidates(path, unresolvedCandidates(path, content), {
+      supertypes: async () => [{ ...superItem, name: "AtomStarter", path: "jdt://lib/AtomStarter.class" }],
+      text: async () => "package x; public class AtomStarter { public static void main(String[] a) {} }",
+    });
+    expect(fileTargets(input, content)).toMatchObject([
+      { kind: "main", className: "demo.AiChatApplication", spring: true },
+    ]);
+    expect(produceContext(input, ALL)!.config).toMatchObject({ kind: "spring-boot" });
+    expect(produceContext(input, ALL)!.config!.args.at(-1)).toBe("demo.AiChatApplication");
   });
 
   describe("Java / Kotlin mains in a build nested in a folder of repositories", () => {
@@ -496,6 +570,56 @@ describe("project producers", () => {
       "npm run test:unit",
     ]);
     expect(produceContextChoices({ ...input, configs }, ALL)).toHaveLength(1);
+  });
+
+  it("django: tests.py, TestCase classes and test packages run through manage.py test", () => {
+    const django = [
+      cfg({ id: "django:runserver", kind: "python", command: ".venv/bin/python", args: ["manage.py", "runserver"] }),
+      cfg({
+        id: "django:test",
+        kind: "django-test",
+        command: ".venv/bin/python",
+        args: ["manage.py", "test", "--keepdb"],
+        isTest: true,
+      }),
+    ];
+    const src = [
+      "from django.test import TestCase",
+      "",
+      "class QuestionTests(TestCase):",
+      "    def test_recent(self):",
+      "        pass",
+    ].join("\n");
+    const input = { path: `${ROOT}/polls/tests.py`, root: ROOT, configs: django, content: src };
+    expect(produceContext({ ...input, line: 4 }, ALL)).toMatchObject({
+      name: "QuestionTests.test_recent",
+      config: { kind: "django-test", args: ["manage.py", "test", "polls.tests.QuestionTests.test_recent", "--keepdb"] },
+    });
+    expect(produceContext({ ...input, line: 2 }, ALL)!.config!.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.QuestionTests",
+      "--keepdb",
+    ]);
+    expect(produceContext(input, ALL)).toMatchObject({
+      name: "tests.py",
+      config: { args: ["manage.py", "test", "polls.tests", "--keepdb"] },
+    });
+    expect(produceDirectory({ path: `${ROOT}/polls/tests`, root: ROOT, configs: django })).toMatchObject({
+      name: "Tests in 'tests'",
+      config: { args: ["manage.py", "test", "polls.tests", "--keepdb"] },
+    });
+    expect(produceDirectory({ path: `${ROOT}/polls/migrations`, root: ROOT, configs: django })).toBeNull();
+    // Outside Django projects `tests.py` is a script: no test targets, and the file runs as one.
+    const plain = { ...input, configs: [configs[1]!] };
+    expect(fileTargets(plain, src)).toEqual([]);
+    expect(produceContext(plain, ALL)).toMatchObject({ name: "tests.py", config: { kind: "python", isTest: false } });
+    // pytest detected as well (pytest-django): the user chooses, pytest first.
+    const both = [configs[1]!, ...django];
+    expect(produceContextChoices({ ...input, configs: both, line: 4 }, ALL).map((c) => c.detail)).toEqual([
+      "pytest",
+      "django:test",
+    ]);
   });
 
   it("python: test function > test class > file; __main__ runs the file", () => {

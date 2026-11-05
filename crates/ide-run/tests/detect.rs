@@ -372,13 +372,19 @@ fn python_projects() {
         ("manage.py", ""),
     ]);
     let c = detect(dir.path());
-    assert_eq!(ids(&c), ["django:runserver", "python:module:mypkg", "pytest"]);
+    // pytest stays ahead of `manage.py test`: the first test configuration is the default for context runs.
+    assert_eq!(ids(&c), ["django:runserver", "python:module:mypkg", "pytest", "django:test"]);
     let pytest = find(&c, "pytest");
     assert_eq!(cmdline(pytest), "uv run pytest");
     assert!(pytest.is_test);
     assert_eq!(pytest.debug_adapter.as_deref(), Some("debugpy"));
     assert_eq!(cmdline(find(&c, "python:module:mypkg")), "uv run python -m mypkg");
     assert_eq!(cmdline(find(&c, "django:runserver")), "uv run python manage.py runserver");
+    let django = find(&c, "django:test");
+    assert_eq!(cmdline(django), "uv run python manage.py test");
+    assert_eq!(django.kind, "django-test");
+    assert!(django.is_test);
+    assert_eq!(django.debug_adapter.as_deref(), Some("debugpy"));
 
     let dir = project(&[("pytest.ini", "[pytest]\n"), ("poetry.lock", "")]);
     assert_eq!(cmdline(find(&detect(dir.path()), "pytest")), "poetry run pytest");
@@ -398,6 +404,7 @@ fn python_virtualenv() {
     let c = detect(dir.path());
     assert_eq!(cmdline(find(&c, "pytest")), ".venv/bin/pytest");
     assert_eq!(cmdline(find(&c, "django:runserver")), ".venv/bin/python manage.py runserver");
+    assert_eq!(cmdline(find(&c, "django:test")), ".venv/bin/python manage.py test");
 }
 
 #[cfg(unix)]
@@ -651,4 +658,173 @@ fn go_default_build_output_is_ignored_by_version_control() {
     assert!(ide_run::go::plan(dir.path(), &config).unwrap().is_some());
     let ignore = fs::read_to_string(dir.path().join(".openidea/.gitignore")).unwrap();
     assert!(ignore.lines().any(|l| l == "/bin/"), "{ignore}");
+}
+
+#[test]
+fn cmake_profiles_control_commands_names_and_environment() {
+    use ide_core::settings::CMakeProfile;
+    let dir = project(&[("CMakeLists.txt", "project(app)")]);
+    for generator in ["", "Ninja", "Unix Makefiles", "Ninja Multi-Config", "Visual Studio 17 2022"] {
+        let profile = CMakeProfile {
+            name: "Production".into(),
+            build_type: "Release".into(),
+            generator: generator.into(),
+            cmake_args: ["-DFEATURE=ON", "-DMESSAGE=two words", "-DQUOTE=\"hello world\"", ""].map(String::from).into(),
+            build_dir: "output dir".into(),
+            build_args: ["-j", "8", "--", "VERBOSE=1"].map(String::from).into(),
+            env: [("MY_ENV".into(), "yes".into())].into(),
+        };
+        let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(std::slice::from_ref(&profile)));
+        let configure = find(&configs, "cmake:profile:0:configure");
+        let mut expected = vec!["-S", ".", "-B", "output dir"];
+        if !generator.is_empty() {
+            expected.extend(["-G", generator]);
+        }
+        expected.extend([
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-DFEATURE=ON",
+            "-DMESSAGE=two words",
+            "-DQUOTE=\"hello world\"",
+            "",
+        ]);
+        assert_eq!(configure.args, expected);
+        assert_eq!(configure.name, "CMake Configure (output dir)");
+        let build = find(&configs, "cmake:profile:0:build");
+        assert_eq!(build.args, ["--build", "output dir", "--config", "Release", "-j", "8", "--", "VERBOSE=1"]);
+        assert_eq!(build.extras.before_launch[0].target, configure.id);
+        assert!(configs.iter().all(|c| c.env == profile.env));
+        let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(&[CMakeProfile::default(), profile]));
+        assert!(find(&configs, "cmake:profile:0:build").name.ends_with("[Debug]"));
+        assert!(find(&configs, "cmake:profile:1:build").name.ends_with("[Production]"));
+        assert_eq!(find(&configs, "cmake:profile:0:build").args[1], "cmake-build-debug");
+    }
+    assert_eq!(ide_run::detect_with_profiles(dir.path(), &[], None), detect(dir.path()));
+    assert!(ide_run::detect_with_profiles(dir.path(), &[], Some(&[])).is_empty());
+}
+
+#[test]
+fn cmake_profile_build_configures_only_without_a_cache() {
+    use ide_core::settings::CMakeProfile;
+    let root = project(&[("CMakeLists.txt", "project(app)")]);
+    for dir in ["", "custom output"] {
+        let profile = CMakeProfile { build_dir: dir.into(), generator: "Ninja".into(), ..Default::default() };
+        let build_dir = root.path().join(if dir.is_empty() { "cmake-build-debug" } else { dir });
+        for cached in [false, true] {
+            if cached {
+                fs::create_dir_all(&build_dir).unwrap();
+                // Generator changes are handled by an explicit Configure, not every Build.
+                fs::write(build_dir.join("CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Unix Makefiles\n").unwrap();
+            }
+            let configs = ide_run::detect_with_profiles(root.path(), &[], Some(std::slice::from_ref(&profile)));
+            let build = find(&configs, "cmake:profile:0:build");
+            if cached {
+                assert!(build.extras.before_launch.is_empty());
+            } else {
+                assert_eq!(build.extras.before_launch.len(), 1);
+                assert_eq!(build.extras.before_launch[0].target, "cmake:profile:0:configure");
+            }
+            assert_eq!(find(&configs, "cmake:profile:0:test").extras.before_launch[0].target, build.id);
+        }
+    }
+}
+
+#[test]
+fn php_phpunit_project() {
+    let dir = project(&[
+        (
+            "composer.json",
+            r#"{"require-dev":{"phpunit/phpunit":"^11"},"scripts":{"test":"phpunit","post-install-cmd":"x","lint":"phpcs"}}"#,
+        ),
+        ("phpunit.xml.dist", "<phpunit/>"),
+        ("vendor/bin/phpunit", ""),
+        ("vendor/bin/phpunit.bat", ""),
+    ]);
+    let c = detect(dir.path());
+    // PHPUnit comes before the generic `composer test` so it is the default test runner.
+    assert_eq!(ids(&c), ["composer:lint", "phpunit", "composer:test"]);
+    let phpunit = find(&c, "phpunit");
+    // Windows runs the `.bat` launcher; the extensionless file is a shebang script.
+    assert_eq!(cmdline(phpunit), if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" });
+    assert_eq!(phpunit.kind, "phpunit");
+    assert!(phpunit.is_test);
+    assert_eq!(phpunit.debug_adapter.as_deref(), Some("php-debug"));
+    assert!(find(&c, "composer:test").is_test);
+    assert!(!find(&c, "composer:lint").is_test);
+}
+
+#[test]
+fn php_detection_needs_a_marker() {
+    let dir = project(&[("index.php", "<?php")]);
+    assert!(detect(dir.path()).is_empty());
+    let dir = project(&[("phpunit.xml", "<phpunit/>")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "phpunit")), "phpunit");
+    let dir = project(&[("composer.json", "{}")]);
+    assert!(detect(dir.path()).is_empty());
+}
+
+#[test]
+fn ruby_projects_list_rake_tasks_rspec_and_rails() {
+    let rakefile = "\
+require 'rake/testtask'
+
+desc \"Build it\"
+task :build do
+  sh 'make'
+end
+task \"lint\" => [:build]
+task deploy: :build do |t|
+  puts t
+end
+namespace :db do
+  desc 'Migrate'
+  task :migrate, [:version] do |t, args|
+    puts args
+  end
+  namespace :schema do
+    task :load
+  end
+end
+Rake::TestTask.new do |t|
+  t.libs << 'test'
+end
+task default: :build
+";
+    let dir = project(&[
+        ("Gemfile", "source 'https://rubygems.org'\ngem 'rspec'\n"),
+        ("Rakefile", rakefile),
+        ("bin/rails", "#!/usr/bin/env ruby\n"),
+        ("spec/a_spec.rb", ""),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(
+        ids(&c),
+        [
+            "rails:server",
+            "rake:build",
+            "rake:lint",
+            "rake:deploy",
+            "rake:db:migrate",
+            "rake:db:schema:load",
+            "rake:test",
+            "rake:default",
+            "rspec"
+        ]
+    );
+    assert_eq!(cmdline(find(&c, "rails:server")), "ruby bin/rails server");
+    assert_eq!(cmdline(find(&c, "rake:db:migrate")), "bundle exec rake db:migrate");
+    assert_eq!(find(&c, "rake:db:migrate").kind, "rake");
+    assert!(find(&c, "rake:test").is_test);
+    assert_eq!(cmdline(find(&c, "rspec")), "bundle exec rspec");
+    assert!(find(&c, "rspec").is_test);
+    assert_eq!(find(&c, "rake:build").extras.folder.as_deref(), Some("Rake"));
+}
+
+#[test]
+fn ruby_without_bundler_runs_bare_tools() {
+    let dir = project(&[("Rakefile", "task :test\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rake:test"]);
+    assert_eq!(cmdline(&c[0]), "rake test");
+    assert!(detect(project(&[("a.rb", "puts 1\n")]).path()).is_empty());
 }

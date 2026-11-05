@@ -12,6 +12,7 @@ pub enum ToolKind {
     Debugger,
     /// Loaded into another tool's process, e.g. a jdtls agent.
     Plugin,
+    Formatter,
 }
 
 /// Where release archives come from.
@@ -105,7 +106,7 @@ impl ToolSpec {
 
 use Arch::{Arm64, X64};
 use Os::{Linux, Mac, Windows};
-use ToolKind::{Debugger, LanguageServer, Plugin};
+use ToolKind::{Debugger, Formatter, LanguageServer, Plugin};
 
 const V: Option<(&str, &[&str])> = None;
 const JAVA: &[(&str, &str)] = &[("java", "Java is required (https://adoptium.net)")];
@@ -122,6 +123,39 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 pub const TYPESCRIPT: &str = "typescript@6";
 
 pub static TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "prettier",
+        display: "Prettier",
+        kind: Formatter,
+        commands: &["prettier"],
+        method: Method::Npm { packages: &["prettier"] },
+        fallback: None,
+        version: ver("prettier"),
+        needs: NODE,
+        homepage: "https://prettier.io",
+    },
+    ToolSpec {
+        name: "oxfmt",
+        display: "oxfmt",
+        kind: Formatter,
+        commands: &["oxfmt"],
+        method: Method::Npm { packages: &["oxfmt"] },
+        fallback: None,
+        version: ver("oxfmt"),
+        needs: NODE,
+        homepage: "https://oxc.rs/docs/guide/usage/formatter",
+    },
+    ToolSpec {
+        name: "oxlint",
+        display: "oxlint",
+        kind: LanguageServer,
+        commands: &["oxlint"],
+        method: Method::Npm { packages: &["oxlint"] },
+        fallback: None,
+        version: ver("oxlint"),
+        needs: NODE,
+        homepage: "https://oxc.rs/docs/guide/usage/linter",
+    },
     ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
@@ -197,6 +231,28 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: ver("ty"),
         homepage: "https://docs.astral.sh/ty/",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "pyrefly",
+        display: "Pyrefly (Python)",
+        kind: LanguageServer,
+        commands: &["pyrefly"],
+        method: Method::PipVenv { package: "pyrefly" },
+        fallback: None,
+        version: ver("pyrefly"),
+        homepage: "https://pyrefly.org",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "ruff",
+        display: "Ruff",
+        kind: LanguageServer,
+        commands: &["ruff"],
+        method: Method::PipVenv { package: "ruff" },
+        fallback: None,
+        version: ver("ruff"),
+        homepage: "https://docs.astral.sh/ruff/",
         needs: &[],
     },
     ToolSpec {
@@ -581,13 +637,15 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Lombok (jdtls agent)",
         kind: Plugin,
         commands: &["lombok.jar"],
-        // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup.
-        // Return to Maven Central once an official release includes lombok#4059.
-        // Source commit, build instructions and checksum: plugins/lombok/README.md.
+        // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup (lombok#4059);
+        // ECJ 3.46.200 keeps the constructor call in a constructor's statements, which
+        // @SneakyThrows / @NonNull must not wrap or precede (lombok#4089).
+        // Return to Maven Central once an official release includes both.
+        // Source commit, build instructions and checksum: java/lombok/README.md.
         method: Method::Bundled {
-            filename: "lombok-1.18.48-openidea.1.jar",
-            version: "1.18.48-openidea.1",
-            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.48-openidea.1.jar"),
+            filename: "lombok-1.18.48-openidea.2.jar",
+            version: "1.18.48-openidea.2",
+            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.2.jar"),
         },
         fallback: None,
         version: V,
@@ -602,17 +660,29 @@ pub static TOOLS: &[ToolSpec] = &[
         method: Method::Release {
             source: ReleaseSource::GitHub { repo: "Kotlin/kotlin-lsp" },
             assets: &[
+                // Current releases (kotlin-server-*): the CLI distribution is a
+                // .sit on macOS, .tar.gz on Linux and .win.zip on Windows. x64 ships as the
+                // un-suffixed archive, aarch64 as `-aarch64`; the un-suffixed one
+                // comes first in the release notes, which is what the x64 pattern
+                // matches first. Without a matching rule the installer used to fall
+                // through to a loose `kotlin-*.zip` pattern and POSIX picked the
+                // Windows archive (#723).
+                rule(Mac, Arm64, "kotlin-server-*-aarch64.sit"),
+                rule(Mac, X64, "kotlin-server-*.sit"),
+                rule(Linux, Arm64, "kotlin-server-*-aarch64.tar.gz"),
+                rule(Linux, X64, "kotlin-server-*.tar.gz"),
+                rule(Windows, X64, "kotlin-server-*.win.zip"),
+                rule(Windows, Arm64, "kotlin-server-*-aarch64.win.zip"),
+                // Old releases named the archives kotlin-lsp-*.
                 rule(Mac, Arm64, "kotlin-lsp-*-mac-aarch64.zip"),
                 rule(Mac, X64, "kotlin-lsp-*-mac-x64.zip"),
                 rule(Linux, X64, "kotlin-lsp-*-linux-x64.zip"),
                 rule(Linux, Arm64, "kotlin-lsp-*-linux-aarch64.zip"),
                 rule(Windows, X64, "kotlin-lsp-*-win-x64.zip"),
-                // Older releases ship one platform-independent archive.
-                any_arch(Mac, "kotlin-*.zip"),
-                any_arch(Linux, "kotlin-*.zip"),
-                any_arch(Windows, "kotlin-*.zip"),
             ],
-            locate: &["kotlin-lsp", "kotlin-lsp.sh", "kotlin-lsp.cmd"],
+            // `bin/intellij-server` is the launcher; current releases still ship the
+            // `kotlin-lsp.sh` / `kotlin-lsp.cmd` wrappers around it, deprecated, and old ones only those.
+            locate: &["intellij-server", "kotlin-lsp", "kotlin-lsp.sh", "kotlin-lsp.cmd"],
         },
         fallback: None,
         version: V,
@@ -943,7 +1013,8 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        for t in TOOLS.iter().filter(|t| t.kind != Plugin) {
+        // The host selects the formatter of each file (Prettier or oxfmt).
+        for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
                 "{} / {} is not referenced by languages/*.toml",
@@ -970,5 +1041,71 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The v263 kotlin-server-* release notes: the CLI distribution archives plus
+    /// the VS Code extension and checksums; each platform must pick its native
+    /// distribution and the aarch64 archive must never be picked on x64.
+    #[test]
+    fn kotlin_lsp_runs_its_launcher_rather_than_the_deprecated_wrapper() {
+        let Method::Release { locate, .. } = &find("kotlin-lsp").unwrap().method else { unreachable!() };
+        let names: Vec<String> = locate.iter().map(|n| n.to_string()).collect();
+        let tmp = tempfile::tempdir().unwrap();
+        // Current releases: `kotlin-lsp.sh` warns that it will go and execs `bin/intellij-server`.
+        let current = tmp.path().join("current");
+        let dist = current.join("kotlin-server-263.7084.0");
+        std::fs::create_dir_all(dist.join("bin")).unwrap();
+        std::fs::write(dist.join("kotlin-lsp.sh"), "").unwrap();
+        std::fs::write(dist.join("bin/intellij-server"), "").unwrap();
+        assert_eq!(crate::archive::locate(&current, &names), Some(dist.join("bin/intellij-server")));
+        // Older releases have only the script.
+        let old = tmp.path().join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("kotlin-lsp.sh"), "").unwrap();
+        assert_eq!(crate::archive::locate(&old, &names), Some(old.join("kotlin-lsp.sh")));
+    }
+
+    #[test]
+    fn kotlin_lsp_picks_the_native_archive_for_each_platform() {
+        use crate::platform::{Platform, select_asset};
+        let names = [
+            "kotlin-server-0.0.27-mac-amd64.vsix",
+            "kotlin-server-0.0.27-mac-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-mac-aarch64.vsix",
+            "kotlin-server-0.0.27-mac-aarch64.vsix.sha256",
+            "kotlin-server-0.0.27-linux-amd64.vsix",
+            "kotlin-server-0.0.27-linux-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-linux-aarch64.vsix",
+            "kotlin-server-0.0.27-linux-aarch64.vsix.sha256",
+            "kotlin-server-0.0.27-win-amd64.vsix",
+            "kotlin-server-0.0.27-win-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-win-aarch64.vsix",
+            "kotlin-server-0.0.27-win-aarch64.vsix.sha256",
+            "kotlin-server-263.7084.0.sit",
+            "kotlin-server-263.7084.0.sit.sha256",
+            "kotlin-server-263.7084.0-aarch64.sit",
+            "kotlin-server-263.7084.0-aarch64.sit.sha256",
+            "kotlin-server-263.7084.0.tar.gz",
+            "kotlin-server-263.7084.0.tar.gz.sha256",
+            "kotlin-server-263.7084.0-aarch64.tar.gz",
+            "kotlin-server-263.7084.0-aarch64.tar.gz.sha256",
+            "kotlin-server-263.7084.0.win.zip",
+            "kotlin-server-263.7084.0.win.zip.sha256",
+            "kotlin-server-263.7084.0-aarch64.win.zip",
+            "kotlin-server-263.7084.0-aarch64.win.zip.sha256",
+        ];
+        let rules = find("kotlin-lsp").unwrap().asset_rules();
+        let mac_arm = Platform { os: Mac, arch: Arm64 };
+        assert_eq!(select_asset(&names, rules, mac_arm), Some("kotlin-server-263.7084.0-aarch64.sit"));
+        let mac_x64 = Platform { os: Mac, arch: X64 };
+        assert_eq!(select_asset(&names, rules, mac_x64), Some("kotlin-server-263.7084.0.sit"));
+        let linux_x64 = Platform { os: Linux, arch: X64 };
+        assert_eq!(select_asset(&names, rules, linux_x64), Some("kotlin-server-263.7084.0.tar.gz"));
+        let linux_arm = Platform { os: Linux, arch: Arm64 };
+        assert_eq!(select_asset(&names, rules, linux_arm), Some("kotlin-server-263.7084.0-aarch64.tar.gz"));
+        let win_x64 = Platform { os: Windows, arch: X64 };
+        assert_eq!(select_asset(&names, rules, win_x64), Some("kotlin-server-263.7084.0.win.zip"));
+        let win_arm = Platform { os: Windows, arch: Arm64 };
+        assert_eq!(select_asset(&names, rules, win_arm), Some("kotlin-server-263.7084.0-aarch64.win.zip"));
     }
 }

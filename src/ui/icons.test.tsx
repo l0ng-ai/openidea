@@ -4,7 +4,17 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { activateFeatures } from "@/features";
 import { useContributions } from "@/workbench/contributions";
-import { Icon, ICON_NAMES, SymbolBadge, fileIconName, hasIcon, iconMarkup, iconMarkupOrFallback } from "./icons";
+import {
+  Icon,
+  ICON_NAMES,
+  SymbolBadge,
+  fileIconName,
+  hasIcon,
+  iconMarkup,
+  iconMarkupOrFallback,
+  registerExternalIcons,
+  setFileIconTheme,
+} from "./icons";
 
 describe("tool window icons", () => {
   let dispose: () => void = () => {};
@@ -46,9 +56,33 @@ describe("Icon", () => {
 
   it("falls back like <Icon> for unknown names, without React", () => {
     const { container } = render(<Icon name="symbol-macro" />);
-    expect(iconMarkupOrFallback("symbol-macro")).toBe(container.innerHTML);
-    const withoutIds = (html: string) => html.replace(/\bm\d+-/g, "");
+    const withoutData = (html: string) => html.replace(/ data-icon(?:-[a-z]+)?="[^"]*"/g, "");
+    expect(withoutData(iconMarkupOrFallback("symbol-macro"))).toBe(container.innerHTML);
+    const withoutIds = (html: string) => withoutData(html).replace(/\bm\d+-/g, "");
     expect(withoutIds(iconMarkupOrFallback("no-such-icon"))).toBe(withoutIds(iconMarkup("file")!));
+  });
+
+  it("keeps the requested name on markup so a theme change can repaint it", () => {
+    expect(iconMarkupOrFallback("no-such-icon", 14, "x")).toContain(
+      'data-icon="no-such-icon" data-icon-size="14" data-icon-class="x"',
+    );
+    expect(iconMarkupOrFallback("symbol-macro")).toContain('data-icon="symbol-macro"');
+  });
+
+  it("repaints markup outside React when the icon theme changes", () => {
+    const unregister = registerExternalIcons([["ext:t/arrow", '<svg viewBox="0 0 16 16"><path d="M1 1h9z"/></svg>']]);
+    document.body.innerHTML = `<div>${iconMarkupOrFallback("chevron-right", 14)}</div>`;
+    setFileIconTheme({
+      file: () => null,
+      folder: () => null,
+      icon: (n) => (n === "chevron-right" ? "ext:t/arrow" : null),
+    });
+    expect(document.body.innerHTML).toContain("M1 1h9z");
+    expect(document.body.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("chevron-right");
+    setFileIconTheme(null);
+    expect(document.body.innerHTML).not.toContain("M1 1h9z");
+    unregister();
+    document.body.innerHTML = "";
   });
 
   it("renders monochrome icons with currentColor and coloured ones with both theme variants", () => {
@@ -172,6 +206,9 @@ describe("fileIconName", () => {
     ["main.dart", "file-dart"],
     ["App.vue", "file-vue"],
     ["App.svelte", "file-svelte"],
+    ["index.jsp", "file-jsp"],
+    ["footer.jspf", "file-jsp"],
+    ["card.tag", "file-jsp"],
     ["styles.scss", "file-scss"],
     ["styles.sass", "file-sass"],
     ["styles.less", "file-less"],

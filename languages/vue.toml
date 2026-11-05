@@ -1,5 +1,6 @@
 id = "vue"
 name = "Vue"
+formatter = { tool = "prettier", parser = "vue", range = true }
 extensions = ["vue"]
 block-comment = ["<!--", "-->"]
 indent = { tab-size = 2, insert-spaces = true }
@@ -21,3 +22,26 @@ command = "vtsls"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
 install-hint = "npm i -g @vtsls/language-server"
+
+# Rename renames the symbol everywhere: no `import { a as b }` alias in the file renamed from.
+[language-servers.initialization-options.typescript.preferences]
+useAliasesForRenames = false
+
+[language-servers.initialization-options.javascript.preferences]
+useAliasesForRenames = false
+
+# Moving a file: the IDE asks for the import updates up front (preview, undo); the server
+# doesn't prompt after the move.
+[language-servers.initialization-options.typescript.updateImportsOnFileMove]
+enabled = "never"
+
+[language-servers.initialization-options.javascript.updateImportsOnFileMove]
+enabled = "never"
+
+[[language-servers]]
+name = "oxlint"
+command = "oxlint"
+args = ["--lsp"]
+root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
+require-root-marker = true
+install-hint = "npm i -D oxlint"

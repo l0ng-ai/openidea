@@ -3,6 +3,7 @@
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
+import { onEditorEvent, registerEditorContribution } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
@@ -18,6 +19,7 @@ import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
 import { ExecutePopupHost } from "./ExecutePopup";
 import { buildToolsRunAnything } from "./runAnything";
+import { versionCatalogExtension } from "./versionCatalog";
 import { expandableKeys, gradleChildren, gradleRoots, mavenChildren, mavenRoots } from "./model";
 import {
   ANALYZER_KIND,
@@ -25,6 +27,9 @@ import {
   unlinkProjects,
   cancelSync,
   loadModel,
+  changedOutsideIde,
+  noteExternalBuildChange,
+  noteIdeSave,
   openAnalyzer,
   resetBuild,
   setExpanded,
@@ -39,7 +44,8 @@ export const MAVEN_WHEN = "projectOpen && build.maven";
 export const GRADLE_WHEN = "projectOpen && build.gradle";
 
 /** Build files whose creation / change / removal re-reads the model. */
-const BUILD_FILE = /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/;
+const BUILD_FILE =
+  /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|gradle\.properties|gradle-wrapper\.properties|[^/]+\.versions\.toml)$/;
 
 function expandAll(tool: BuildTool) {
   const { model, configs } = useBuild.getState();
@@ -73,6 +79,18 @@ function analyzerPom(arg: unknown): string | null {
     if (projects.some((p) => p.pom === rel)) return rel;
   }
   return current.maven ?? null;
+}
+
+/** The analyzer module of a Gradle project from an action argument: `{ gradlePath }`, or `{ path }` of its build script. */
+function analyzerGradle(arg: unknown): string | null {
+  const { model, root } = useBuild.getState();
+  const a = (arg ?? {}) as { gradlePath?: unknown; path?: unknown };
+  if (typeof a.gradlePath === "string") return `gradle:${a.gradlePath}`;
+  const project =
+    typeof a.path === "string" && root
+      ? model?.gradle?.projects.find((p) => p.buildFile && `${root}/${p.buildFile}` === a.path)
+      : undefined;
+  return project ? `gradle:${project.path}` : null;
 }
 
 const synced = new Set<string>();
@@ -128,6 +146,7 @@ export function activate(): () => void {
   };
   const disposers: Array<() => void> = [
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
+    registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,
@@ -135,6 +154,19 @@ export function activate(): () => void {
       title: () => "Dependency Analyzer",
       icon: () => "build-dependencies",
       restorable: true,
+    }),
+    // A Gradle build script in the editor, its tab and the project view: that project's dependencies.
+    registerMenuGroup({
+      id: "gradle.analyzeDependencies",
+      menus: ["editor", "editorTab", "projectView"],
+      order: 30,
+      items: (_menu, { paths, dirs }) => {
+        const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
+        if (!path || !/\/build\.gradle(\.kts)?$/.test(path) || !analyzerGradle({ path })) return [];
+        return [
+          { kind: "action", action: "gradle.analyzeDependencies", arg: { path }, label: "Analyze Dependencies…" },
+        ];
+      },
     }),
     // pom.xml in the editor, its tab and the project view: Analyze Dependencies of that module.
     registerMenuGroup({
@@ -158,8 +190,16 @@ export function activate(): () => void {
       resetBuild();
       if (s.project) void loadModel();
     }),
+    onEditorEvent((e) => {
+      if (e.type === "docSaved" && BUILD_FILE.test(e.path)) noteIdeSave(e.path);
+    }),
     onIdeEvent("fsChanged", (e) => {
-      if ([...e.created, ...e.modified, ...e.removed].some((p) => BUILD_FILE.test(p))) scheduleLoad();
+      const changed = [...e.created, ...e.modified, ...e.removed].filter((p) => BUILD_FILE.test(p));
+      if (!changed.length) return;
+      // Changes the IDE's own saves didn't make came from outside (a VCS update, another tool),
+      // also for a build file open in a tab.
+      if (changedOutsideIde(changed)) noteExternalBuildChange();
+      scheduleLoad();
     }),
     onIdeEvent("projectRootsChanged", scheduleLoad),
     // Project JDK / Maven home and options are applied to the model's launchers.
@@ -280,6 +320,17 @@ export function activate(): () => void {
         when: GRADLE_WHEN,
         keywords: ["gradle", "sync", "refresh"],
         run: () => syncTool("gradle"),
+      },
+      {
+        id: "gradle.analyzeDependencies",
+        title: "Analyze Dependencies…",
+        description:
+          "Shows a Gradle project's resolved dependencies per configuration, version conflicts and where each library comes from",
+        category: "Gradle",
+        icon: "build-dependencies",
+        when: GRADLE_WHEN,
+        keywords: ["gradle", "dependency", "dependencies", "conflict", "tree", "configuration", "analyzer"],
+        run: ({ arg }) => openAnalyzer(analyzerGradle(arg)),
       },
       {
         id: "gradle.cancelReload",

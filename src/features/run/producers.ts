@@ -17,7 +17,9 @@ import { formatArgs } from "./configs";
 import { goGenerateConfig } from "./goGenerate";
 import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
+import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { isWindows } from "./jvmTypes";
+import { inheritedRunTargets } from "./inheritedMain";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
 
@@ -53,8 +55,16 @@ export interface ContextInput {
   content?: string;
   /** Go: the module path of a module directory (`go.mod`), when known. */
   goModule?: (dir: string) => string | null | undefined;
+  /** Python: whether a directory is a package (`__init__.py`), when known. */
+  pythonPackage?: (dir: string) => boolean | undefined;
   /** 0-based caret line: the element at the caret wins over the file. */
   line?: number;
+  /**
+   * Absolute folders outside `root` that belong to the project (IDEA's module content
+   * roots: `includeFlat` Gradle modules, Project Structure roots); their files run like
+   * the project's own, through its build.
+   */
+  contentRoots?: readonly string[];
 }
 
 export interface Missing {
@@ -362,8 +372,14 @@ interface FileSite {
   inProject: boolean;
 }
 
+/** In the project folder or one of its content roots: run through the project's build. */
+function isProjectPath(input: Pick<ContextInput, "path" | "root" | "contentRoots">): boolean {
+  if (!input.root) return false;
+  return [input.root, ...(input.contentRoots ?? [])].some((r) => inProject(input.path, r));
+}
+
 function site(input: ContextInput): FileSite {
-  const inside = inProject(input.path, input.root);
+  const inside = isProjectPath(input);
   const rel = relTo(input.path, input.root);
   return {
     idPath: rel,
@@ -393,6 +409,31 @@ function fileConfig(
     isTest: false,
     debugAdapter,
   };
+}
+
+const PYTHON_RELATIVE_IMPORT = /^\s*from\s+\.+[\w.]*\s+import\b/m;
+
+/** Whether Python source imports relatively (`from .models import X`): it only runs as a module. */
+export function hasRelativeImports(content: string | undefined): boolean {
+  return !!content && PYTHON_RELATIVE_IMPORT.test(content);
+}
+
+/**
+ * A module with relative imports, run as `python -m package.module` from the directory above
+ * its top package (its own directory is a package for the import, `__init__.py` or not).
+ */
+function pythonModule(input: ContextInput): { name: string; dir: string } | null {
+  if (!hasRelativeImports(input.content)) return null;
+  let top = dirName(input.path);
+  for (let up = dirName(top); up && up !== top && input.pythonPackage?.(up); up = dirName(up)) top = up;
+  const dir = dirName(top);
+  if (!dir || dir === top) return null;
+  const parts = input.path
+    .slice(dir === "/" ? 1 : dir.length + 1)
+    .replace(/\.py$/, "")
+    .split("/");
+  if (parts.length > 1 && (parts.at(-1) === "__init__" || parts.at(-1) === "__main__")) parts.pop();
+  return { name: parts.join("."), dir };
 }
 
 /** Python: the interpreter from settings, the detected project interpreter, then `python3` on the PATH. */
@@ -590,7 +631,7 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     }
     if (/\.t?scn$/i.test(rel)) return godotScene(rel, configs);
     // Project-aware: test files through the project's test runner, Cargo / Go / Gradle / Maven mains.
-    const role = fileRole(rel, input.content);
+    const role = fileRole(rel, input.content, undefined, hasDjangoTests(configs));
     if (role === "test") {
       const found = testConfigFor(rel, configs);
       const test = found && goTestNamed(found, input);
@@ -623,7 +664,10 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     }
     if (/\.(java|kt)$/.test(rel) && hasBuildTool(rel, configs, JVM_BUILDS)) {
       if (input.content === undefined) return null;
-      const targets = detectRunTargets(input.content, rel).filter((t) => t.className);
+      const targets = [
+        ...detectRunTargets(input.content, rel),
+        ...inheritedRunTargets(input.path, input.content),
+      ].filter((t) => t.className);
       const target = targets.find((t) => t.kind === "main") ?? targets.find((t) => t.kind === "suite");
       const config = target ? targetConfig(target, rel, configs, input.content) : null;
       return config ? { name: config.name, scope: "file", config } : null;
@@ -638,6 +682,22 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     case "python": {
       const py = pythonCommand(input, env, s);
       if (!py) return { name: s.file, scope: "file", missing: missing("python", s.file, ["python3", "python"]) };
+      const module = pythonModule(input);
+      if (module) {
+        // It runs in another directory: a venv-relative interpreter is relative to the project root.
+        const command =
+          input.root && py.command.includes("/") && !py.command.startsWith("/")
+            ? `${input.root}/${py.command}`
+            : py.command;
+        return {
+          name: s.file,
+          scope: "file",
+          config: {
+            ...fileConfig(s, "python", command, [...py.prefix, "-m", module.name], "debugpy"),
+            cwd: module.dir === input.root ? null : relTo(module.dir, input.root),
+          },
+        };
+      }
       return {
         name: s.file,
         scope: "file",
@@ -808,8 +868,11 @@ export function standaloneTargets(content: string, path: string): RunTarget[] {
 }
 
 /** Run targets of a file for the caret / gutter: project-aware inside the project, standalone outside. */
-export function fileTargets(input: Pick<ContextInput, "path" | "root" | "configs">, content: string): RunTarget[] {
-  const s = { inProject: inProject(input.path, input.root), rel: relTo(input.path, input.root) };
+export function fileTargets(
+  input: Pick<ContextInput, "path" | "root" | "configs" | "contentRoots">,
+  content: string,
+): RunTarget[] {
+  const s = { inProject: isProjectPath(input), rel: relTo(input.path, input.root) };
   const rust = /\.rs$/.test(input.path);
   if (/\.(c|cpp|cc|cxx)$/.test(input.path)) return standaloneTargets(content, input.path);
   const cargo =
@@ -823,7 +886,8 @@ export function fileTargets(input: Pick<ContextInput, "path" | "root" | "configs
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  return detectRunTargets(content, s.rel);
+  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 
 function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget): Produced | null {
@@ -878,8 +942,7 @@ export function produceContext(input: ContextInput, env: ToolEnv): Produced | nu
  */
 export function produceContextChoices(input: ContextInput, env: ToolEnv): Produced[] {
   const produced = produceContext(input, env);
-  if (!produced?.config || produced.scope === "directory" || !inProject(input.path, input.root))
-    return produced ? [produced] : [];
+  if (!produced?.config || produced.scope === "directory" || !isProjectPath(input)) return produced ? [produced] : [];
   const rel = relTo(input.path, input.root);
   const cmake = cmakeTargets(input);
   if (cmake.length > 1) return cmake.map((config) => ({ name: config.name, scope: produced.scope, config }));
@@ -906,7 +969,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
 }
 
 function cmakeTargets(input: ContextInput): RunConfig[] {
-  if (!inProject(input.path, input.root)) return [];
+  if (!isProjectPath(input)) return [];
   const lang = scriptLanguage(input.path, input.content);
   if (lang !== "c" && lang !== "cpp") return [];
   const rel = relTo(input.path, input.root);
@@ -920,7 +983,7 @@ const TEST_DIR = /(^|\/)(tests?|__tests__|specs?|test_?\w*)$/;
 
 export function produceDirectory(input: ContextInput): Produced | null {
   const { root } = input;
-  if (!root || !inProject(input.path, root) || input.path === root) return null;
+  if (!root || !isProjectPath(input) || input.path === root) return null;
   const rel = relTo(input.path, root);
   const name = baseName(rel);
   const jvmRoot = /^(?:(.*)\/)?src\/test(?:\/(java|kotlin|scala|groovy))?$/.exec(rel);
@@ -969,10 +1032,19 @@ export function produceDirectory(input: ContextInput): Produced | null {
   }
   const js = closest(["npm", "bun", "deno"]);
   const py = closest(["pytest"]);
+  const django = closest(["django-test"]);
   const go = closest(["go"]);
   const cargo = closest(["cargo"]);
   if (cargo && /(^|\/)tests$/.test(rel) && !js && !py) return make(cargo, "All Tests", [...cargo.args, "--tests"]);
   if (py && (!js || /(^|\/)tests?$/.test(rel))) return make(py, testsIn, [...py.args, relToCwd(py)]);
+  // Django runs a test package by its dotted label (`polls/tests` → `polls.tests`).
+  if (django && !js && relToCwd(django)) {
+    const tests = djangoTestsOf(django, [djangoLabel(relToCwd(django))]);
+    if (tests) {
+      const produced = make(django, testsIn, tests.args);
+      return { ...produced, config: { ...produced.config!, ...tests } };
+    }
+  }
   if (js) {
     const dir = relToCwd(js);
     if (js.kind === "deno") return make(js, testsIn, [...js.args, dir]);

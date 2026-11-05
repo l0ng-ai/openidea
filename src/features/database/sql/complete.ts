@@ -7,7 +7,15 @@
  */
 import type { DbCompletion, DbCompletionColumn, DbCompletionTable, DbDriver } from "@/platform/ipc";
 import type { Analysis, Clause, TableRef } from "./analyze";
-import { DATA_TYPES, functions, isReserved, joinKeywords, predicateKeywords, statementStarters } from "./dialect";
+import {
+  DATA_TYPES,
+  functions,
+  isReserved,
+  joinKeywords,
+  nameMatcher,
+  predicateKeywords,
+  statementStarters,
+} from "./dialect";
 
 export type CandidateKind =
   | "table"
@@ -55,13 +63,16 @@ export function shouldAutoCompleteSql(analysis: Analysis): boolean {
 
 const MAX_ALL_COLUMNS = 3000;
 
-const eq = (a: string | null | undefined, b: string | null | undefined) =>
-  !!a && !!b && a.toLowerCase() === b.toLowerCase();
-
 /** `name`, quoted when the dialect needs it (case, characters, reserved words). */
 export function quoteIdent(name: string, driver: DbDriver): string {
-  const plain = driver === "postgres" ? /^[a-z_][a-z0-9_$]*$/ : /^[A-Za-z_][A-Za-z0-9_$]*$/;
+  const plain =
+    driver === "postgres"
+      ? /^[a-z_][a-z0-9_$]*$/
+      : driver === "clickhouse"
+        ? /^[A-Za-z_][A-Za-z0-9_]*$/
+        : /^[A-Za-z_][A-Za-z0-9_$]*$/;
   if (plain.test(name) && !isReserved(name)) return name;
+  if (driver === "clickhouse") return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   const q = driver === "mysql" ? "`" : '"';
   return q + name.split(q).join(q + q) + q;
 }
@@ -94,6 +105,7 @@ export interface CompletionInput {
 }
 
 export function sqlCandidates({ model, analysis: a, driver, sourceName }: CompletionInput): SqlCandidate[] {
+  const eq = nameMatcher(driver);
   const ctx = a.context;
   if (ctx.kind === "none") return [];
   const typedLower = /[a-z]/.test(a.prefix.text) && !/[A-Z]/.test(a.prefix.text);
@@ -224,7 +236,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
       else {
         if (ctx.ref.viaJoin) {
           out.push(
-            ...conditionCandidates(a, model, ctx.ref, kw).map((c) => ({
+            ...conditionCandidates(a, model, ctx.ref, kw, driver).map((c) => ({
               ...c,
               label: `${kw("ON")} ${c.label}`,
               insert: `${kw("ON")} ${c.insert ?? c.label}`,
@@ -238,7 +250,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
     }
 
     case "joinCondition":
-      out.push(...conditionCandidates(a, model, ctx.ref, kw));
+      out.push(...conditionCandidates(a, model, ctx.ref, kw, driver));
       columnContext("on");
       return out;
 
@@ -322,7 +334,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
       if (!visible.some((r) => eq(r.name, c.name))) out.push({ label: c.name, kind: "table", tail: "(CTE)", boost: 0 });
     const fnBoost = clause === "select" || clause === "having" ? 15 : 8;
     for (const f of functions(driver)) {
-      const name = lower ? f.name : f.name.toUpperCase();
+      const name = lower || driver === "clickhouse" ? f.name : f.name.toUpperCase();
       out.push({
         label: name,
         kind: "function",
@@ -372,7 +384,7 @@ function clauseKeywords(clause: Clause, driver: DbDriver, a: Analysis): string[]
     case "returning":
       return ["AS"];
     default:
-      return [...pred, ...DATA_TYPES[driver].map((t) => t.toUpperCase())];
+      return [...pred, ...DATA_TYPES[driver].map((t) => (driver === "clickhouse" ? t : t.toUpperCase()))];
   }
 }
 
@@ -390,6 +402,7 @@ function joinCandidates(
   kw: Kw,
 ): SqlCandidate[] {
   if (!model) return [];
+  const eq = nameMatcher(driver);
   const out: SqlCandidate[] = [];
   const q = (n: string) => quoteIdent(n, driver);
   const seen = new Set<string>();
@@ -446,8 +459,15 @@ function joinCandidates(
 }
 
 /** `JOIN t x ON |` → conditions relating `ref` to the other tables in scope. */
-function conditionCandidates(a: Analysis, model: DbCompletion | null, ref: TableRef, kw: Kw): SqlCandidate[] {
+function conditionCandidates(
+  a: Analysis,
+  model: DbCompletion | null,
+  ref: TableRef,
+  kw: Kw,
+  driver: DbDriver,
+): SqlCandidate[] {
   if (!model || ref.kind !== "table") return [];
+  const eq = nameMatcher(driver);
   const out: SqlCandidate[] = [];
   const find = (r: TableRef) =>
     model.tables.find((t) => eq(t.name, r.name) && (r.schema ? eq(t.schema, r.schema) : true));

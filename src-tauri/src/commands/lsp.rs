@@ -240,6 +240,38 @@ pub async fn lsp_rename(
     ide_host::ops::lsp::lsp_rename(&state.host, window.label(), request, doc, pos, new_name).await
 }
 
+/// The class at `pos` and the members Pull Members Up / Push Members Down can move.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_hierarchy_members(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+) -> IdeResult<HierarchyMembers> {
+    ide_host::ops::lsp::lsp_hierarchy_members(&state.host, window.label(), request, doc, pos, kind).await
+}
+
+/// Checks Pull Members Up / Push Members Down and computes the edit without applying it.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_hierarchy_refactor(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+    target: Option<String>,
+    choices: Vec<HierarchyChoice>,
+) -> IdeResult<HierarchyRefactored> {
+    ide_host::ops::lsp::lsp_hierarchy_refactor(&state.host, window.label(), request, doc, pos, kind, target, choices)
+        .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_format(
@@ -337,8 +369,30 @@ pub async fn lsp_restart(window: Window, state: State<'_, AppState>, server: Ser
 /// Applies a (previewed) workspace edit, e.g. after rename confirmation.
 #[tauri::command]
 #[specta::specta]
-pub fn apply_workspace_edit(window: Window, state: State<'_, AppState>, edit: WorkspaceEdit) -> IdeResult<()> {
-    ide_host::ops::lsp::apply_workspace_edit(&state.host, window.label(), edit)
+pub async fn apply_workspace_edit(window: Window, state: State<'_, AppState>, edit: WorkspaceEdit) -> IdeResult<()> {
+    ide_host::ops::lsp::apply_workspace_edit(&state.host, window.label(), edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn prepare_workspace_edit(
+    window: Window,
+    state: State<'_, AppState>,
+    edit: WorkspaceEdit,
+) -> IdeResult<WorkspaceEdit> {
+    ide_host::ops::lsp::prepare_workspace_edit(&state.host, window.label(), edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn undo_workspace_edit(window: Window, state: State<'_, AppState>, id: u32) -> IdeResult<()> {
+    ide_host::ops::lsp::undo_workspace_edit(&state.host, window.label(), id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn redo_workspace_edit(window: Window, state: State<'_, AppState>, id: u32) -> IdeResult<()> {
+    ide_host::ops::lsp::redo_workspace_edit(&state.host, window.label(), id).await
 }
 
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's

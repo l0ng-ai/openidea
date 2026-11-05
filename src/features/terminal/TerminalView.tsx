@@ -1,46 +1,62 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { useProject } from "@/platform/project";
 import { toolWindowService } from "@/workbench/contributions";
+import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { usePlatform } from "@/platform/platformInfo";
 import { commands, isTauri } from "@/platform/ipc";
 import {
+  dropZoneAt,
   IconButton,
   Input,
   Menu,
   Popup,
+  registerDropTarget,
   showContextMenu,
   SplitGroup,
   SplitHandle,
   SplitPanel,
   Tabs,
+  type DropEdge,
   type MenuItem,
   type TabItem,
 } from "@/ui";
 import {
+  activateGroup,
+  activeSession,
   getSession,
+  groupDropIndex,
+  groupTabs,
+  layoutGroups,
+  moveTab,
+  moveTabToSplit,
   newTab,
   publishFocus,
   renameTab,
-  requestClosePane,
+  requestCloseSession,
   requestCloseTab,
   selectTab,
   tabFullTitle,
   tabTitle,
+  topRightGroup,
   useTerminals,
-  type PaneLayout,
+  type GroupLayout,
   type TerminalTab,
 } from "./store";
-import { pasteTerminalClipboard } from "./paste";
 import { TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
+/**
+ * Drag type of terminal tabs: dragging one reorders its group's strip or moves
+ * it to another group's, like IDEA's terminal tabs.
+ */
+const TAB_MIME = "application/x-openidea-terminal-tab";
 
 /** Full title when the label is trimmed, then the working directory. */
 function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]): string | undefined {
   const full = tabFullTitle(tab, sessions);
-  const cwd = sessions?.[tab.activePane]?.cwd;
+  const cwd = sessions?.[tab.session]?.cwd;
   if (full === tabTitle(tab, sessions)) return cwd;
   return cwd ? `${full}\n${cwd}` : full;
 }
@@ -103,7 +119,7 @@ function paneMenu(e: MouseEvent, key: string) {
     {
       label: "Paste",
       shortcut: mac ? "⌘V" : "Ctrl+Shift+V",
-      run: () => void pasteTerminalClipboard((text) => session.paste(text)),
+      run: () => void session.pasteClipboard(),
     },
     { label: "Select All", run: () => session.term.selectAll() },
     { kind: "separator" },
@@ -111,7 +127,14 @@ function paneMenu(e: MouseEvent, key: string) {
     { kind: "separator" },
     { kind: "action", action: "terminal.splitRight" },
     { kind: "action", action: "terminal.splitDown" },
-    { label: "Close Session", icon: "close", run: () => void requestClosePane(key) },
+    {
+      label: "Close Session",
+      icon: "close",
+      run: () =>
+        void requestCloseSession(key).then((closed) => {
+          if (closed) requestAnimationFrame(() => activeSession()?.focus());
+        }),
+    },
   ];
   if (exited)
     items.splice(
@@ -123,14 +146,14 @@ function paneMenu(e: MouseEvent, key: string) {
   showContextMenu(e, items);
 }
 
-function TabPanes({ tab, active }: { tab: TerminalTab; active: boolean }) {
-  return <LayoutNode node={tab.layout} tab={tab} active={active} />;
+/** The groups of a split window whose headers show its title and its buttons. */
+interface Corners {
+  title: string;
+  actions: string;
 }
 
-function LayoutNode({ node, tab, active }: { node: PaneLayout; tab: TerminalTab; active: boolean }) {
-  if (typeof node === "string") {
-    return <TerminalPane sessionKey={node} autofocus={active && node === tab.activePane} />;
-  }
+function LayoutNode({ node, corners }: { node: GroupLayout; corners: Corners | null }) {
+  if (typeof node === "string") return <TabGroup group={node} corners={corners} />;
   return (
     <SplitGroup orientation={node.orientation} className={styles.split} id={`terminal-split-${node.id}`}>
       {node.children.map((child, i) => {
@@ -139,12 +162,80 @@ function LayoutNode({ node, tab, active }: { node: PaneLayout; tab: TerminalTab;
           <Fragment key={id}>
             {i > 0 && <SplitHandle />}
             <SplitPanel id={id} minSize={60} className={styles.splitPanel}>
-              <LayoutNode node={child} tab={tab} active={active} />
+              <LayoutNode node={child} corners={corners} />
             </SplitPanel>
           </Fragment>
         );
       })}
     </SplitGroup>
+  );
+}
+
+/** A tab group: its own header while the window is split, then its selected tab's terminal. */
+function TabGroup({ group, corners }: { group: string; corners: Corners | null }) {
+  const allTabs = useTerminals((s) => s.tabs);
+  const selected = useTerminals((s) => s.selected[group] ?? null);
+  const activeTab = useTerminals((s) => s.activeTab);
+  const tabs = useMemo(() => groupTabs(allTabs, group), [allTabs, group]);
+  const active = tabs.find((t) => t.id === activeTab);
+
+  // A tab dropped on this group, like an editor tab on a pane: an edge of the terminal
+  // splits off a new group, the middle (and the header's empty part) joins at the end.
+  // The strip, the innermost target, still picks the exact slot.
+  const ref = useRef<HTMLDivElement>(null);
+  const panelsRef = useRef<HTMLDivElement>(null);
+  const [dropZone, setDropZone] = useState<DropEdge | "center" | null>(null);
+  const focusRaf = useRef(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const zoneAt = (id: string, x: number, y: number): DropEdge | "center" | null => {
+      const { tabs } = useTerminals.getState();
+      const rect = panelsRef.current?.getBoundingClientRect();
+      const zone = rect && y >= rect.top ? dropZoneAt(x, y, rect) : "center";
+      if (zone === "center") return groupDropIndex(tabs, id, group) === null ? null : zone;
+      const tab = tabs.find((t) => t.id === id);
+      return tab && (tab.group !== group || groupTabs(tabs, group).length > 1) ? zone : null;
+    };
+    return registerDropTarget(el, {
+      accepts: (type) => type === TAB_MIME,
+      over: (data, x, y) => setDropZone(zoneAt(data.payload, x, y)),
+      leave: () => setDropZone(null),
+      drop: (data, x, y) => {
+        setDropZone(null);
+        const zone = zoneAt(data.payload, x, y);
+        if (!zone) return;
+        if (zone === "center") moveTab(data.payload, group, groupTabs(useTerminals.getState().tabs, group).length);
+        else moveTabToSplit(data.payload, group, zone);
+        focusActiveTab(focusRaf);
+      },
+    });
+  }, [group]);
+
+  return (
+    <div ref={ref} className={styles.group}>
+      {corners && (
+        <ToolWindowHeader title={corners.title === group} actions={corners.actions === group} closeTarget={!!active}>
+          <GroupTabs group={group} />
+        </ToolWindowHeader>
+      )}
+      {active && <TerminalFindBar sessionKey={active.session} />}
+      <div ref={panelsRef} className={styles.panels}>
+        {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} />}
+        {tabs.map((t) => (
+          <div
+            key={t.id}
+            role="tabpanel"
+            id={`${TAB_PREFIX}-panel-${t.id}`}
+            aria-labelledby={`${TAB_PREFIX}-tab-${t.id}`}
+            className={styles.panel}
+            hidden={t.id !== selected}
+          >
+            <TerminalPane sessionKey={t.session} autofocus={t.id === activeTab} />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -173,10 +264,12 @@ function RenamePopup({ tab, anchor, onClose }: { tab: TerminalTab; anchor: Eleme
 }
 
 export function TerminalView() {
-  const tabs = useTerminals((s) => s.tabs);
-  const activeTab = useTerminals((s) => s.activeTab);
+  const layout = useTerminals((s) => s.layout);
   const root = useProject((s) => s.project?.root);
   const rootRef = useRef<HTMLDivElement>(null);
+  const split = typeof layout !== "string";
+  // Split, each group shows a header of its own, as in IDEA.
+  useOwnToolWindowHeader(split);
 
   // Showing an empty terminal window opens a "Local" tab, like IDEA. The window stays
   // mounted while hidden, so wait until it takes space again (not right after the last
@@ -201,21 +294,10 @@ export function TerminalView() {
       onFocusCapture={(e) => publishFocus(!!(e.target as Element).closest?.("[data-terminal-session]"))}
       onBlurCapture={() => publishFocus(false)}
     >
-      <TerminalFindBar sessionKey={tabs.find((t) => t.id === activeTab)?.activePane ?? null} />
-      <div className={styles.panels}>
-        {tabs.map((t) => (
-          <div
-            key={t.id}
-            role="tabpanel"
-            id={`${TAB_PREFIX}-panel-${t.id}`}
-            aria-labelledby={`${TAB_PREFIX}-tab-${t.id}`}
-            className={styles.panel}
-            hidden={t.id !== activeTab}
-          >
-            <TabPanes tab={t} active={t.id === activeTab} />
-          </div>
-        ))}
-      </div>
+      <LayoutNode
+        node={layout}
+        corners={split ? { title: layoutGroups(layout)[0]!, actions: topRightGroup(layout) } : null}
+      />
     </div>
   );
 }
@@ -248,11 +330,25 @@ export function shellItems(paths: string[]): MenuItem[] {
   }));
 }
 
-/** Session tabs shown in the tool window header: "Local ×  +  ▾". */
+/** Session tabs shown in the tool window header while it isn't split: "Local ×  +  ▾". */
 export function TerminalTabs() {
-  const tabs = useTerminals((s) => s.tabs);
-  const activeTab = useTerminals((s) => s.activeTab);
+  const group = useTerminals((s) => layoutGroups(s.layout)[0]!);
+  return <GroupTabs group={group} />;
+}
+
+/** Focuses the active tab's terminal once the panes have (re-)mounted. */
+function focusActiveTab(raf: { current: number }) {
+  cancelAnimationFrame(raf.current);
+  raf.current = requestAnimationFrame(() => activeSession()?.focus());
+}
+
+/** A tab group's session tabs. */
+function GroupTabs({ group }: { group: string }) {
+  const allTabs = useTerminals((s) => s.tabs);
+  const selected = useTerminals((s) => s.selected[group] ?? null);
   const sessions = useTerminals((s) => s.sessions);
+  const split = useTerminals((s) => typeof s.layout !== "string");
+  const tabs = useMemo(() => groupTabs(allTabs, group), [allTabs, group]);
   const [renaming, setRenaming] = useState<{ id: string; anchor: Element } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [shells, setShells] = useState<string[]>([]);
@@ -260,8 +356,8 @@ export function TerminalTabs() {
   const focusRaf = useRef(0);
 
   const items: TabItem[] = tabs.map((t) => {
-    const status = t.panes.map((p) => sessions[p]?.status);
-    const dead = status.every((s) => s === "exited" || s === "error");
+    const status = sessions[t.session]?.status;
+    const dead = status === "exited" || status === "error";
     return {
       id: t.id,
       label: tabTitle(t, sessions),
@@ -275,22 +371,32 @@ export function TerminalTabs() {
   const onClose = async (id: string) => {
     if (!(await requestCloseTab(id))) return;
     if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+    else focusActiveTab(focusRaf);
   };
 
   const tabMenu = (id: string, e: MouseEvent) => {
     e.preventDefault();
     const anchor = (e.currentTarget as Element) ?? null;
+    const others = tabs.length > 1;
     showContextMenu(e, [
       { label: "Rename Session…", icon: "edit", run: () => setRenaming({ id, anchor }) },
       { kind: "separator" },
       { label: "Close Tab", icon: "close", run: () => void onClose(id) },
       {
         label: "Close Other Tabs",
-        disabled: tabs.length < 2,
+        disabled: !others,
         run: async () => {
           for (const t of tabs.filter((x) => x.id !== id)) if (!(await requestCloseTab(t.id))) return;
+          focusActiveTab(focusRaf);
         },
       },
+      { kind: "separator" },
+      // IDEA's tool window splits: each part gets its own tabs.
+      { kind: "action", action: "terminal.splitRight", arg: id },
+      ...(others ? [{ kind: "action" as const, action: "terminal.splitAndMoveRight", arg: id }] : []),
+      { kind: "action", action: "terminal.splitDown", arg: id },
+      ...(others ? [{ kind: "action" as const, action: "terminal.splitAndMoveDown", arg: id }] : []),
+      ...(split ? [{ kind: "action" as const, action: "terminal.unsplit", arg: group }] : []),
     ]);
   };
 
@@ -325,21 +431,32 @@ export function TerminalTabs() {
         className={styles.tabStrip}
         aria-label="Terminal sessions"
         items={items}
-        activeId={activeTab}
+        activeId={selected}
         onSelect={(id) => {
           selectTab(id);
-          cancelAnimationFrame(focusRaf.current);
-          focusRaf.current = requestAnimationFrame(() => {
-            const tab = useTerminals.getState().tabs.find((t) => t.id === id);
-            if (tab) getSession(tab.activePane)?.focus();
-          });
+          focusActiveTab(focusRaf);
         }}
         onClose={(id) => void onClose(id)}
         onContextMenu={tabMenu}
         panelIdPrefix={TAB_PREFIX}
+        dnd={{
+          type: TAB_MIME,
+          payload: (id) => id,
+          onDrop: (id, index) => {
+            moveTab(id, group, index);
+            focusActiveTab(focusRaf);
+          },
+        }}
         trailing={
           <div className={styles.tabActions}>
-            <IconButton icon="plus" size="small" action="terminal.new" title="New Tab" />
+            {/* New Tab and the menu's actions go to this group. */}
+            <IconButton
+              icon="plus"
+              size="small"
+              action="terminal.new"
+              title="New Tab"
+              onClick={() => activateGroup(group)}
+            />
             <IconButton
               ref={menuRef}
               icon="chevron-down"
@@ -348,7 +465,10 @@ export function TerminalTabs() {
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={() => {
-                if (!menuOpen) void availableShells().then(setShells);
+                if (!menuOpen) {
+                  activateGroup(group);
+                  void availableShells().then(setShells);
+                }
                 setMenuOpen((v) => !v);
               }}
             />

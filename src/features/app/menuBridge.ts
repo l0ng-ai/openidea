@@ -7,13 +7,13 @@
  * shortcut text of every keymap binding, so the menu shows the JS keymap's
  * shortcuts without registering native accelerators (see src-tauri/src/menu.rs).
  */
-import { executeAction, getAction, isActionEnabled, useActions } from "@/platform/actions";
+import { executeActionFrom, getAction, isActionEnabled, useActions } from "@/platform/actions";
 import { useContextKeys } from "@/platform/context";
 import { keysWithPrefix, t, tx, useI18n } from "@/platform/i18n";
 import { commands, isTauri, type DynamicItem, type MenuConfig, type MenuNode } from "@/platform/ipc";
 import { effectiveBindings, formatBinding, primaryKeyBinding, useKeymap } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
-import { useContributions } from "@/workbench/contributions";
+import { useContributions, useMenuSlotItems } from "@/workbench/contributions";
 import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFree";
 import { useToolWindowLayouts } from "@/workbench/toolwindows/layouts";
 import { hostOs, type HostOs } from "./host";
@@ -30,7 +30,10 @@ export function isMenuRoute(v: unknown): v is MenuRoute {
 }
 
 /** Runs the action a menu item stands for. Returns whether it ran. */
-export function routeMenuEvent(payload: unknown, run = executeAction): Promise<boolean> {
+export function routeMenuEvent(
+  payload: unknown,
+  run = (id: string, arg?: unknown) => executeActionFrom("menu", id, arg),
+): Promise<boolean> {
   if (!isMenuRoute(payload) || !payload.action) return Promise.resolve(false);
   return run(payload.action, payload.arg ?? undefined);
 }
@@ -62,7 +65,15 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
   const layouts = useToolWindowLayouts
     .getState()
     .layouts.map((l) => ({ action: "layout.restore", arg: l.name, label: l.name }));
-  return { toolWindows, toolWindowLayouts: layouts };
+  const slots = Object.fromEntries(
+    Object.entries(useMenuSlotItems.getState().slots).map(([slot, items]) => [
+      slot,
+      [...items]
+        .map((i) => ({ action: i.action, arg: i.arg ?? null, label: tx(i.label) ?? i.label }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    ]),
+  );
+  return { ...slots, toolWindows, toolWindowLayouts: layouts };
 }
 
 /** Action ids of every IDE item in a menu model. */
@@ -150,6 +161,7 @@ export function installMenuBridge(): () => void {
       if (s.toolWindows !== prev.toolWindows) push();
     }),
     useToolWindowLayouts.subscribe(push),
+    useMenuSlotItems.subscribe(push),
     useContextKeys.subscribe(() => pushEnablement()),
     useActions.subscribe(() => pushEnablement()),
     // Opening / closing a project changes the Open Recent list.

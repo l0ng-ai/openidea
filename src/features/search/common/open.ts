@@ -14,6 +14,11 @@ export async function openLocation(
   pos?: Position | null,
   options: Omit<OpenOptions, "selection"> = {},
 ): Promise<void> {
+  if (path.startsWith("git-log:")) {
+    const { executeAction } = await import("@/platform/actions");
+    await executeAction("vcs.log.revealBookmark", path);
+    return;
+  }
   const service = maybeEditorService();
   if (!service) {
     notifications().notify({
@@ -81,4 +86,18 @@ export function saveJson(key: string, value: unknown) {
   } catch {
     /* storage unavailable */
   }
+}
+
+/** Open persistent tabs in list order, then restore the lead's focus and position. */
+export async function openInListOrder<T>(
+  items: readonly T[],
+  lead: T | undefined,
+  open: (item: T, options: Omit<OpenOptions, "selection">) => Promise<void>,
+  side = false,
+  afterOpen?: () => Promise<void>,
+): Promise<void> {
+  for (const item of items) await open(item, { preview: false, focus: false, side });
+  await afterOpen?.();
+  const target = lead && items.includes(lead) ? lead : items.at(-1);
+  if (target) await open(target, { preview: false, focus: true, side });
 }

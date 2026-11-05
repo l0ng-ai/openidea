@@ -5,7 +5,7 @@
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import { tokenSpans, useLineTokens } from "@/editor/lineTokens";
+import { previewColors, tokenSpans, useLineTokens } from "@/editor/lineTokens";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -54,7 +54,7 @@ export function UsagePreview({ usage }: { usage: Usage }) {
   return (
     <span className={styles.preview}>
       {tokenSpans(text, 0, from, tokens, "b:")}
-      <mark className={styles.match}>{tokenSpans(text, from, to, tokens, "m:")}</mark>
+      <mark className={styles.match}>{text.slice(from, to)}</mark>
       {tokenSpans(text, to, text.length, tokens, "a:")}
     </span>
   );
@@ -230,7 +230,7 @@ export function UsagesView() {
       const path = n.group.path;
       return (
         <span className={clsx(styles.row, isExcluded(n) && styles.excluded)}>
-          <Icon name={fileIconName(basename(path))} size={16} className={styles.icon} />
+          <Icon name={fileIconName(basename(path), path)} size={16} className={styles.icon} />
           <span className={styles.file}>{basename(path)}</span>
           <span className={styles.muted}>{relativeDir(root, path)}</span>
           <span className={styles.count}>
@@ -399,6 +399,12 @@ function UsagesPreview({ node }: { node: Node | null }) {
     return (group?.usages ?? []).map((u) => ({ line: u.line, ranges: [[u.col, u.endCol] as const] }));
   }, [usage, search?.groups]);
   return (
-    <SourcePreview path={usage?.path ?? null} line={usage?.line ?? 0} highlights={highlights} load={previewText} />
+    <SourcePreview
+      path={usage?.path ?? null}
+      line={usage?.line ?? 0}
+      highlights={highlights}
+      load={previewText}
+      colorize={previewColors}
+    />
   );
 }

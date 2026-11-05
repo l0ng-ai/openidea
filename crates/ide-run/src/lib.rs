@@ -2,9 +2,12 @@
 
 mod config;
 mod detect;
+pub mod dotnet;
 pub mod envfile;
+mod external;
 pub mod go;
 pub mod gradle_jvm;
+pub mod import;
 pub mod java_cmdline;
 pub mod junit;
 mod process;
@@ -190,6 +193,8 @@ pub struct RunInfo {
     pub pty: bool,
 }
 
+pub use external::{EXTERNAL_PREFIX, ExternalDetection, set_external_detection};
+
 /// Detects configs from package.json scripts, Cargo.toml targets, build.gradle(.kts),
 /// pom.xml, go.mod, pyproject/pytest, Makefile.
 pub fn detect(root: &Path) -> Vec<RunConfig> {
@@ -199,6 +204,15 @@ pub fn detect(root: &Path) -> Vec<RunConfig> {
 /// Detects configurations excluding the supplied project-relative Maven POM paths.
 pub fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
     detect::detect_excluding(root, excluded_poms)
+}
+
+/// Detects configurations with explicit CMake profiles, or legacy discovery when absent.
+pub fn detect_with_profiles(
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    profiles: Option<&[ide_core::settings::CMakeProfile]>,
+) -> Vec<RunConfig> {
+    detect::detect_with_profiles(root, excluded_poms, profiles)
 }
 
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
@@ -244,6 +258,17 @@ pub fn system_env() -> BTreeMap<String, String> {
 /// Complete environment for a preparatory tool belonging to this run configuration.
 pub fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
     process::resolved_env(root, config)
+}
+
+/// Run configurations from another IDE's project file (`.vscode/launch.json`), not yet saved:
+/// names already in `existing` are skipped, so importing again adds nothing twice.
+pub fn import_configs(
+    root: &Path,
+    source: import::RunImportSource,
+    existing: &[RunConfig],
+) -> IdeResult<import::RunImport> {
+    // `${env:NAME}` reads what a run inherits, the login shell's variables included.
+    import::import(root, source, existing, &process::inherited_env())
 }
 
 /// Path of the user run configuration file for `root`.

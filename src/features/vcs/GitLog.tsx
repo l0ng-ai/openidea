@@ -1,3 +1,5 @@
+import { useBookmarkPopups } from "@/features/search/bookmarks/store";
+import { commitBookmarkPath } from "./logBookmarks";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
@@ -6,6 +8,7 @@ import { BranchFilterPopup } from "./BranchFilterPopup";
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -13,11 +16,13 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Branch, ChangedFile, Commit, RevisionChange } from "@/bindings";
+import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
+import { executeAction } from "@/platform/actions";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
@@ -28,6 +33,9 @@ import {
   SplitHandle,
   SplitPanel,
   Spinner,
+  Dialog,
+  Popup,
+  TOOLTIP_DELAY,
   Tabs,
   Tree,
   fileIconName,
@@ -36,9 +44,13 @@ import {
   type TreeHandle,
   T,
   copyText,
+  lazyComponent,
 } from "@/ui";
 import { hasPrimaryModifier } from "@/platform/keymap";
-import { collapseLinear, computeGraph, hideLongEdges, laneColor, reachableFrom, type GraphRow } from "./graph";
+import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
+import { nextSpeedMatch } from "./logSearch";
+import { LogIndexStatus } from "./logIndex";
+import { presentLogGraph } from "./logPresentation";
 import {
   closeLogTab,
   extendCommitSelection,
@@ -48,16 +60,23 @@ import {
   isPushed,
   isMine,
   loadMore,
+  logState,
+  loadNewer,
   ME,
   dateRangeLabel,
   refsSignature,
   reloadLog,
+  openLogTab,
+  recentLogFilters,
+  recentFilterValues,
+  toggleCommitBookmark,
   selectCommit,
   selectGitTab,
   selectedCommits,
   setLogBranches,
   setLogFilters,
   toggleCommitSelection,
+  toggleRepository,
   updateLogOptions,
   useGitLog,
 } from "./logStore";
@@ -76,7 +95,7 @@ import {
   isFavoriteBranch,
   type BranchTreeNode,
 } from "./branches";
-import { chooseDateRange, chooseMany, promptText } from "./dialogs";
+import { chooseDateRange, chooseMany, openDialog } from "./dialogs";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
 import { DIFF_KIND, diffInput } from "./diffInput";
 import {
@@ -93,11 +112,39 @@ import styles from "./GitLog.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { gitTabs, shownTab } from "./gitTabs";
-import { ChangesTree, StashContent, tabItems, useStashTabCounts } from "./CommitView";
+import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import { WorktreesPanel } from "./gitMenuDialogs";
+import { chooseLogPaths } from "./PathFilterDialog";
+import { goToRef } from "./logStore";
+import { LogIdContext } from "./logContext";
+import { LogScope } from "./LogScope";
+import { browseRepositoryAt, openExternalLog } from "./RevisionBrowser";
+import { invalidateLogDetails, loadLogDetails, useCommitDetails } from "./logDetails";
 
 const ROW = 26;
 const LANE = 14;
+interface LogColumn {
+  id: string;
+  title: string;
+  width: number;
+  render(commit: Commit): ReactNode;
+}
+const LogMergePreview = lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff));
+const LogDiffPreview = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
+
+function useLogRepositories() {
+  const scope = useContext(LogIdContext);
+  const tab = useGitLog((s) => s.logTabs.find((t) => t.id === (scope ?? s.shownLog)));
+  const roots = useVcs((s) => s.roots);
+  const repo = tab?.repo;
+  const repositories = tab?.repositories;
+  return useMemo(() => (repositories?.length ? repositories : repo ? [repo] : roots), [repo, roots, repositories]);
+}
+
+function useReadOnlyLog() {
+  const scope = useContext(LogIdContext);
+  return useGitLog((s) => s.logTabs.find((t) => t.id === (scope ?? s.shownLog))?.readOnly === true);
+}
 
 /** The Git window's tabs (they depend on the commit interface) and the one shown. */
 function useGitTabs() {
@@ -114,8 +161,9 @@ function useGitTabs() {
 /** Tool window header: [Local Changes / Stash…] Log, log tabs, Console and Worktrees content tabs. */
 export function GitTabs() {
   const available = useVcs((s) => s.available);
+  const external = useGitLog((s) => s.logTabs.some((t) => t.id === s.tab && t.readOnly));
   const { tabs, shown } = useGitTabs();
-  if (!available) return null;
+  if (!available && !external) return null;
   return (
     <Tabs
       variant="compact"
@@ -132,9 +180,9 @@ export function GitTabs() {
 
 export function GitToolWindow() {
   const { shown } = useGitTabs();
-  const shownLog = useGitLog((s) => s.shownLog);
   const available = useVcs((s) => s.available);
-  if (!available)
+  const external = useGitLog((s) => s.logTabs.some((t) => t.id === s.tab && t.readOnly));
+  if (!available && !external)
     return (
       <EmptyState title="Version control is not configured">
         <T>The project is not a Git repository.</T>
@@ -148,7 +196,7 @@ export function GitToolWindow() {
       aria-labelledby={`openidea-git-tab-${shown}`}
     >
       {shown === "changes" ? (
-        <ChangesTree mode="local" />
+        <LocalChangesView />
       ) : shown === "shelf" || shown === "stashes" ? (
         <StashContent tab={shown} />
       ) : shown === "console" ? (
@@ -157,7 +205,9 @@ export function GitToolWindow() {
         <WorktreesPanel className={styles.worktrees} listClassName={styles.worktreeList} />
       ) : (
         // Each log tab has its own view (its filters and commits are swapped into the store).
-        <LogView key={shownLog} />
+        <LogScope id={shown}>
+          <LogView key={shown} />
+        </LogScope>
       )}
     </div>
   );
@@ -166,43 +216,78 @@ export function GitToolWindow() {
 // ---------------------------------------------------------------------------
 // Log
 
-function LogView() {
+export function LogView() {
+  const scope = useContext(LogIdContext);
+  const shown = useGitLog((s) => s.shownLog);
+  const active = !scope || scope === shown;
   const version = useVcs((s) => s.version);
   const commits = useGitLog((s) => s.commits);
   const selection = useGitLog((s) => s.selection);
   const root = useVcs((s) => s.root);
-  const repo = useVcs((s) => s.roots);
+  const repo = useLogRepositories();
+  const readOnly = useReadOnlyLog();
   const showBranches = useLogOptions((s) => s.showBranches);
+  const showDetails = useLogOptions((s) => s.showDetails);
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const lastRefs = useRef<string | null>(null);
   const allRefs = useRef<string | null>(null);
+  const externalRefs = useRef<string | null>(null);
   useEffect(() => {
     let live = true;
-    void branchesByRepo(repo)
-      .then((all) => {
+    void Promise.all([
+      branchesByRepo(repo),
+      Promise.all(repo.map(async (root) => [root, await call(commands.vcsLogRefs(root))] as const)),
+    ])
+      .then(([all, refs]) => {
         if (!live) return;
-        const signature = JSON.stringify(all);
-        if (allRefs.current !== null && allRefs.current !== signature) void reloadLog({ preserve: true });
+        const signature = JSON.stringify([all, refs]);
+        if (allRefs.current !== null && allRefs.current !== signature) {
+          invalidateLogDetails(repo);
+          void reloadLog({ preserve: true }, scope ?? undefined);
+        }
         allRefs.current = signature;
+        if (readOnly) externalRefs.current = JSON.stringify(refs.map(([, value]) => value));
       })
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, [repo, version]);
+  }, [repo, version, readOnly, scope]);
+  useEffect(() => {
+    if (!readOnly) return;
+    let live = true;
+    const timer = setInterval(() => {
+      void Promise.all(repo.map((root) => call(commands.vcsLogRefs(root))))
+        .then((refs) => {
+          if (!live) return;
+          const signature = JSON.stringify(refs);
+          if (externalRefs.current && externalRefs.current !== signature) {
+            invalidateLogDetails(repo);
+            void reloadLog({ preserve: true }, scope ?? undefined);
+          }
+          externalRefs.current = signature;
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [repo, readOnly, scope]);
 
   // On mount, when the window switches to another project and when another of its
   // repositories is selected (its branches are needed to notice its refs moving).
   useEffect(() => {
     lastRefs.current = null;
     allRefs.current = null;
-    if (!useGitLog.getState().commits.length) void reloadLog();
-    void loadBranches().catch(() => undefined);
-  }, [root, repo]);
+    void reloadLog({ preserve: logState(scope ?? undefined).commits.length > 0 }, scope ?? undefined);
+    if (!readOnly) void loadBranches().catch(() => undefined);
+  }, [root, repo, readOnly, scope]);
 
   // Once the repository's branches are known, settle the branch filter (the
   // remembered refs, else the current branch) and load the log with it.
   useEffect(() => {
+    if (!active) return;
     if (!branchesLoaded) return;
     // The refs the log is loaded with, so the first checkout or commit after this reloads it.
     const { branch, branches } = useVcs.getState();
@@ -210,10 +295,11 @@ function LogView() {
     const settled = initLogBranchFilter();
     const { commits, loading } = useGitLog.getState();
     if (settled || (!commits.length && !loading)) void reloadLog();
-  }, [root, repo, branchesLoaded]);
+  }, [root, repo, branchesLoaded, active]);
 
   // HEAD or a branch tip moved (commit, undo, reset, rebase, fetch…): reload (keeps the selection).
   useEffect(() => {
+    if (!active) return;
     const { branch, branches, branchesLoaded } = useVcs.getState();
     if (!branchesLoaded) return;
     const refs = refsSignature(branch, branches) + JSON.stringify(useVcs.getState().heads);
@@ -221,7 +307,7 @@ function LogView() {
     lastRefs.current = refs;
     if (previous !== null && previous !== refs && useGitLog.getState().commits.length)
       void reloadLog({ preserve: true });
-  }, [version]);
+  }, [version, active]);
 
   return (
     // Its own layout without the Branches pane, so each keeps its sizes.
@@ -242,13 +328,18 @@ function LogView() {
       <SplitPanel id="commits" defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
+          <LogIndexStatus repositories={repo} />
           <CommitList />
         </div>
       </SplitPanel>
-      <SplitHandle />
-      <SplitPanel id="details" defaultSize="28%" minSize="15%">
-        <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
-      </SplitPanel>
+      {showDetails && (
+        <>
+          <SplitHandle />
+          <SplitPanel id="details" defaultSize="28%" minSize="15%">
+            <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
+          </SplitPanel>
+        </>
+      )}
     </SplitGroup>
   );
 }
@@ -263,12 +354,24 @@ function branchDetail(n: BranchTreeNode): string | undefined {
 }
 
 export function BranchesPanel() {
+  const scope = useContext(LogIdContext);
+  const shown = useGitLog((s) => s.shownLog);
+  const active = !scope || scope === shown;
+  const logGeneration = useGitLog((s) => s.generation);
   const selectedBranches = useVcs((s) => s.branches);
-  const repositories = useVcs((s) => s.roots);
+  const repositories = useLogRepositories();
+  const readOnly = useReadOnlyLog();
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
   const [allTags, setAllTags] = useState<Record<string, string[]>>({});
-  const branches = selectedBranches;
+  const currentRepository = currentRepo();
+  const branches = useMemo(
+    () =>
+      repositories.length === 1 && repositories[0] !== currentRepository
+        ? (allBranches[repositories[0]!] ?? [])
+        : selectedBranches,
+    [repositories, currentRepository, allBranches, selectedBranches],
+  );
   const root = useVcs((s) => s.root);
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const current = useVcs((s) => s.branch?.head ?? null);
@@ -281,14 +384,14 @@ export function BranchesPanel() {
   // Branches reload when refs move (fetch, new tag…): the tags are re-read with them.
   useEffect(() => {
     let live = true;
-    call(commands.vcsTags(currentRepo())).then(
+    call(commands.vcsTags(repositories[0] ?? currentRepo())).then(
       (t) => live && setTags(t),
       () => live && setTags([]),
     );
     return () => {
       live = false;
     };
-  }, [root, branches]);
+  }, [root, branches, repositories]);
   useEffect(() => {
     let live = true;
     void branchesByRepo(repositories)
@@ -300,7 +403,7 @@ export function BranchesPanel() {
     return () => {
       live = false;
     };
-  }, [repositories, version]);
+  }, [repositories, version, logGeneration]);
   const allRoots = useMemo(() => {
     if (repositories.length < 2) return buildBranchTree(branches, favorites, tags);
     return buildRepositoryBranchTree(
@@ -355,9 +458,10 @@ export function BranchesPanel() {
     [refs, selected],
   );
   useEffect(() => {
+    if (!active) return;
     useBranchesPane.setState({ selected: targets });
-  }, [targets]);
-  useEffect(() => () => useBranchesPane.setState({ selected: [] }), []);
+    return () => useBranchesPane.setState({ selected: [] });
+  }, [targets, active]);
   const target = targets[0] ?? undefined;
   const favorite = !!target?.branch && isFavoriteBranch(target.branch, favorites);
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -374,42 +478,51 @@ export function BranchesPanel() {
     <div className={styles.branches} onKeyDownCapture={onKeyDownCapture}>
       <div className={styles.branchesTools} role="toolbar" aria-orientation="vertical" aria-label={tx("Branches")}>
         <IconButton icon="chevron-left" title="Hide Branches" size="small" action="vcs.log.showBranches" />
-        <IconButton icon="plus" title="New Branch…" size="small" action="vcs.log.branches.new" actionArg={target} />
+        {!readOnly && (
+          <>
+            <IconButton icon="plus" title="New Branch…" size="small" action="vcs.log.branches.new" actionArg={target} />
+            <IconButton
+              icon="git-pull"
+              size="small"
+              title="Update Selected"
+              action="vcs.log.branches.update"
+              actionArg={target}
+              disabled={!canUpdateBranch(target ?? null)}
+            />
+            <IconButton
+              icon="trash"
+              size="small"
+              title="Delete Branch"
+              action="vcs.log.branches.delete"
+              actionArg={target}
+              disabled={!canDeleteBranch(target ?? null)}
+            />
+            <IconButton
+              icon="locate"
+              size="small"
+              title="Navigate Log to Selected Branch"
+              action="vcs.log.branches.navigate"
+              actionArg={target}
+              disabled={!target}
+            />
+            <IconButton
+              icon={favorite ? "star" : "star-outline"}
+              title={favorite ? "Remove from Favorites" : "Add to Favorites"}
+              size="small"
+              action="vcs.log.branches.toggleFavorite"
+              actionArg={target}
+              pressed={favorite}
+              disabled={!target?.branch}
+            />
+            <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />
+          </>
+        )}
         <IconButton
-          icon="git-pull"
+          icon="refresh"
+          title="Refresh"
           size="small"
-          title="Update Selected"
-          action="vcs.log.branches.update"
-          actionArg={target}
-          disabled={!canUpdateBranch(target ?? null)}
+          onClick={() => (readOnly ? void reloadLog({ preserve: true }) : void loadBranches())}
         />
-        <IconButton
-          icon="trash"
-          size="small"
-          title="Delete Branch"
-          action="vcs.log.branches.delete"
-          actionArg={target}
-          disabled={!canDeleteBranch(target ?? null)}
-        />
-        <IconButton
-          icon="locate"
-          size="small"
-          title="Navigate Log to Selected Branch"
-          action="vcs.log.branches.navigate"
-          actionArg={target}
-          disabled={!target}
-        />
-        <IconButton
-          icon={favorite ? "star" : "star-outline"}
-          title={favorite ? "Remove from Favorites" : "Add to Favorites"}
-          size="small"
-          action="vcs.log.branches.toggleFavorite"
-          actionArg={target}
-          pressed={favorite}
-          disabled={!target?.branch}
-        />
-        <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void loadBranches()} />
       </div>
       <div className={styles.branchesMain}>
         <div className={styles.branchesBar}>
@@ -460,11 +573,22 @@ export function BranchesPanel() {
             setLogFilters({ branches: sel, repositories: n.repo ? [n.repo] : [] });
           }}
           onContextMenu={(n, _s, e) => {
+            if (readOnly) {
+              if (!n?.ref) return;
+              e.preventDefault();
+              showContextMenu(e, [
+                { label: "Show in Git Log", run: () => setLogBranches([n.ref!]) },
+                { label: "Copy", run: () => void copyText(n.ref!) },
+              ]);
+              return;
+            }
             const menu = n?.branch
               ? branchMenu(n.branch, n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current)
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
-                : [];
+                : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
+                  ? REMOTES_MENU
+                  : [];
             const items = n?.repo ? inRepo(n.repo, menu) : menu;
             if (!items.length) return;
             e.preventDefault();
@@ -484,6 +608,9 @@ export function BranchesPanel() {
     </div>
   );
 }
+
+/** IDEA: the Remote node and each remote of the Branches pane offer Manage Remotes…. */
+const REMOTES_MENU: MenuItem[] = [{ label: "Manage Remotes…", run: () => void executeAction("vcs.manageRemotes") }];
 
 // --- filters ----------------------------------------------------------------
 
@@ -551,13 +678,19 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
 }
 
 function FilterBar() {
+  const scope = useContext(LogIdContext);
+  const shown = useGitLog((s) => s.shownLog);
+  const active = !scope || scope === shown;
+  const logGeneration = useGitLog((s) => s.generation);
   const filters = useGitLog((s) => s.filters);
   const commits = useGitLog((s) => s.commits);
   const selectedBranches = useVcs((s) => s.branches);
   const [branches, setBranches] = useState(selectedBranches);
   const version = useVcs((s) => s.version);
   const root = useVcs((s) => s.root);
-  const repositories = useVcs((s) => s.roots);
+  const repositories = useLogRepositories();
+  const readOnly = useReadOnlyLog();
+  const bookmarks = useGitLog((s) => s.bookmarks);
   const showBranches = useLogOptions((s) => s.showBranches);
   useEffect(() => {
     let live = true;
@@ -577,7 +710,7 @@ function FilterBar() {
     return () => {
       live = false;
     };
-  }, [repositories, filters.repositories, version]);
+  }, [repositories, filters.repositories, version, logGeneration]);
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
@@ -606,10 +739,10 @@ function FilterBar() {
   }
 
   useEffect(() => {
-    if (text === filters.text) return;
+    if (!active || text === filters.text) return;
     const t = setTimeout(() => setLogFilters({ text }), 300);
     return () => clearTimeout(t);
-  }, [text, filters.text]);
+  }, [text, filters.text, active]);
 
   const branchNames = () => branches.filter((b) => !b.name.endsWith("/HEAD")).map((b) => b.name);
 
@@ -617,19 +750,38 @@ function FilterBar() {
     setBranchAnchor(null);
     const r = await chooseMany({
       title: "Filter by Branch",
-      options: ["HEAD", ...branchNames()],
+      options: [
+        ...new Set([
+          "HEAD",
+          ...branchNames(),
+          ...recentFilterValues("branches").flat(),
+          ...recentFilterValues("range").filter((s): s is string => !!s),
+        ]),
+      ],
       initial: filters.branches,
-      customLabel: "Other revisions (comma-separated):",
+      customLabel: "Branches, patterns, exclusions or ranges (comma-separated):",
     });
     if (r) setLogBranches(r);
   };
 
-  const openUser = (anchor: HTMLElement) => {
-    const authors = [...new Set(commits.map((c) => c.author))].sort((a, b) => a.localeCompare(b)).slice(0, 30);
+  const openUser = async (anchor: HTMLElement) => {
+    const roots = filters.repositories?.length
+      ? filters.repositories
+      : repositories.length
+        ? repositories
+        : [currentRepo()];
+    const users = await Promise.all(roots.map((repo) => call(commands.vcsLogUsers(repo)).catch(() => [] as string[])));
+    const authors = [...new Set(users.flat().concat(commits.map((c) => `${c.author} <${c.email}>`)))].sort((a, b) =>
+      a.localeCompare(b),
+    );
     menuBelow(anchor, [
+      ...recentFilterValues("authors").map((authors) => ({
+        label: authors.join(", "),
+        run: () => setLogFilters({ authors }),
+      })),
       { label: ME, checked: filters.authors.includes(ME), run: () => setLogFilters({ authors: [ME] }) },
       ...(authors.length ? [{ kind: "separator" as const }] : []),
-      ...authors.map((a) => ({
+      ...authors.slice(0, 30).map((a) => ({
         label: a,
         checked: filters.authors.includes(a),
         run: () => setLogFilters({ authors: [a] }),
@@ -652,6 +804,9 @@ function FilterBar() {
 
   const openDate = (anchor: HTMLElement) =>
     menuBelow(anchor, [
+      ...recentFilterValues("date")
+        .filter((date) => date != null)
+        .map((date) => ({ label: date.label, run: () => setLogFilters({ date }) })),
       ...DATE_OPTIONS.map((o) => ({
         label: o.label,
         checked: filters.date?.label === o.label,
@@ -669,14 +824,18 @@ function FilterBar() {
 
   const openPaths = (anchor: HTMLElement) =>
     menuBelow(anchor, [
+      ...recentFilterValues("paths")
+        .filter((paths) => paths?.length)
+        .map((paths) => ({ label: paths!.join(", "), run: () => setLogFilters({ paths, path: null }) })),
       {
         label: "Select Folders…",
         run: async () => {
-          const cur = filters.path && root ? relTo(root, filters.path) : (filters.path ?? "");
-          const r = await promptText({ title: "Filter by Path", label: "File or folder", initial: cur, mono: true });
-          if (!r) return;
-          const v = r.value.trim();
-          setLogFilters({ path: v ? (v.startsWith("/") || !root ? v : `${root}/${v}`) : null });
+          const paths = await chooseLogPaths(
+            repositories.length ? repositories : root ? [root] : [],
+            filters.paths ?? (filters.path ? [filters.path] : []),
+            readOnly,
+          );
+          if (paths) setLogFilters({ path: null, paths });
         },
       },
     ]);
@@ -693,7 +852,7 @@ function FilterBar() {
                 repositories.map((repo) => ({
                   label: repoName(repo),
                   checked: filters.repositories?.includes(repo) ?? false,
-                  run: () => setLogFilters({ repositories: [repo] }),
+                  run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
                 })),
               ),
             onClear: () => setLogFilters({ repositories: [] }),
@@ -702,7 +861,7 @@ function FilterBar() {
       : []),
     {
       label: "Branch",
-      value: filters.branches.join(", ") || null,
+      value: filters.range || filters.branches.join(", ") || null,
       onOpen: setBranchAnchor,
       onClear: () => setLogBranches([]),
     },
@@ -720,9 +879,13 @@ function FilterBar() {
     },
     {
       label: "Paths",
-      value: filters.path ? (root ? relTo(root, filters.path) : filters.path) || "." : null,
+      value: filters.paths?.length
+        ? filters.paths.map((p) => (root ? relTo(root, p) : p)).join(", ")
+        : filters.path
+          ? (root ? relTo(root, filters.path) : filters.path) || "."
+          : null,
       onOpen: openPaths,
-      onClear: () => setLogFilters({ path: null }),
+      onClear: () => setLogFilters({ path: null, paths: [] }),
     },
   ];
 
@@ -791,6 +954,71 @@ function FilterBar() {
         />
       )}
       <span className={styles.grow} />
+      <IconButton
+        icon="bookmark"
+        title="Bookmarked Commits"
+        size="small"
+        disabled={!Object.keys(bookmarks).length}
+        onClick={(e) =>
+          menuBelow(
+            e,
+            Object.entries(bookmarks).map(([key, summary]) => ({
+              label: summary,
+              run: () => {
+                const split = key.lastIndexOf("\0");
+                void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : undefined);
+              },
+            })),
+          )
+        }
+      />
+      <IconButton
+        icon="plus"
+        title="Open Another Log Tab"
+        size="small"
+        onClick={(e) =>
+          menuBelow(e, [
+            {
+              label: "In Tool Window",
+              run: () => {
+                openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`);
+              },
+            },
+            {
+              label: "In Editor",
+              run: () => {
+                openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`, "editor");
+              },
+            },
+            { label: "External Repository…", run: openExternalLog },
+          ])
+        }
+      />
+      <IconButton
+        icon="clock"
+        title="Recent Filters"
+        size="small"
+        onClick={(e) =>
+          menuBelow(
+            e,
+            recentLogFilters().map((filters) => ({
+              label:
+                [
+                  filters.range,
+                  filters.branches.join(", "),
+                  filters.authors.join(", "),
+                  filters.text,
+                  filters.path,
+                  filters.paths?.join(", "),
+                  filters.date?.label,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || tx("All commits"),
+              run: () => setLogFilters(filters),
+            })),
+          )
+        }
+      />
       <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog({ preserve: true })} />
       <IconButton
         icon="sort"
@@ -823,10 +1051,21 @@ export function graphOptionsMenu(o: LogOptions): MenuItem[] {
     { kind: "header", label: "Sort" },
     { label: "By Commit Date", checked: o.sort === "date", run: () => updateLogOptions({ sort: "date" }) },
     { label: "Topologically", checked: o.sort === "topo", run: () => updateLogOptions({ sort: "topo" }) },
+    {
+      label: "Incoming Commits First",
+      checked: o.sort === "standard",
+      run: () => updateLogOptions({ sort: "standard" }),
+    },
     { kind: "separator" },
     { kind: "header", label: "Options" },
     toggle("First Parent", o, "firstParent"),
     toggle("No Merges", o, "noMerges"),
+    {
+      label: "Linearize Merges",
+      checked: o.linearizeMerges,
+      run: () =>
+        updateLogOptions({ linearizeMerges: !o.linearizeMerges, ...(!o.linearizeMerges ? { sort: "standard" } : {}) }),
+    },
     { kind: "separator" },
     { kind: "header", label: "Branch Actions" },
     { kind: "action", action: "vcs.log.collapseLinear" },
@@ -843,9 +1082,16 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
     toggle("Long Edges", o, "longEdges"),
     toggle("Commit Timestamp", o, "commitTimestamp"),
     toggle("References on the Left", o, "refsOnLeft"),
+    toggle("Details", o, "showDetails"),
+    toggle("Repository", o, "showRepository"),
     {
       label: "Columns",
-      submenu: [toggle("Author", o, "showAuthor"), toggle("Date", o, "showDate"), toggle("Hash", o, "showHash")],
+      submenu: [
+        toggle("Author", o, "showAuthor"),
+        toggle("Date", o, "showDate"),
+        toggle("Hash", o, "showHash"),
+        toggle("Signature", o, "showSignature"),
+      ],
     },
     { kind: "separator" },
     { kind: "header", label: "Highlight" },
@@ -857,6 +1103,22 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
 
 /** IDEA's Git Log commit context menu (Git.Log.ContextMenu); `selection` = all selected commits, newest first. */
 export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
+  if ((c as RepoCommit).readOnly)
+    return [
+      { kind: "action", action: "vcs.log.copyRevision", arg: c },
+      { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
+      {
+        label: useGitLog.getState().bookmarks[commitKey(c)] ? "Remove Commit Bookmark" : "Bookmark Commit",
+        run: () => toggleCommitBookmark(c),
+      },
+      {
+        label: "Assign Mnemonic",
+        run: () => useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(c), line: 0, text: c.summary } }),
+      },
+      { kind: "action", action: "vcs.log.goToParent", arg: c },
+      { kind: "action", action: "vcs.log.goToChild", arg: c },
+      { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
+    ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
   const head = (commitRepo(c) ? useVcs.getState().heads[commitRepo(c)!]?.head : useVcs.getState().branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
@@ -887,11 +1149,16 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       : true);
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: c },
-    { label: "Copy Commit Message", run: () => void navigator.clipboard?.writeText(c.message) },
+    {
+      label: useGitLog.getState().bookmarks[commitKey(c)] ? "Remove Commit Bookmark" : "Bookmark Commit",
+      run: () => toggleCommitBookmark(c),
+    },
+    { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
     { kind: "action", action: "vcs.log.createPatch", arg: c },
     { kind: "action", action: "vcs.log.cherryPick", arg: c },
     { kind: "separator" },
     { kind: "action", action: "vcs.log.checkoutRevision", arg: c },
+    { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
     { kind: "action", action: "vcs.log.compareWithLocal", arg: c },
     { kind: "separator" },
     { kind: "action", action: "vcs.log.resetToHere", arg: c },
@@ -915,6 +1182,10 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "action", action: "vcs.log.newBranch", arg: c },
     { kind: "action", action: "vcs.log.newTag", arg: c },
     { kind: "separator" },
+    {
+      label: "Assign Mnemonic",
+      run: () => useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(c), line: 0, text: c.summary } }),
+    },
     { kind: "action", action: "vcs.log.goToChild", arg: c },
     { kind: "action", action: "vcs.log.goToParent", arg: c, disabled: !c.parents.length },
     { kind: "separator" },
@@ -922,10 +1193,58 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
   ];
 }
 
+async function copyCommitMessage(c: Commit) {
+  const message = c.messageTruncated ? (await loadLogDetails(c)).message : c.message;
+  await copyText(message);
+}
+
 function CommitList() {
+  const scope = useContext(LogIdContext);
+  const shown = useGitLog((s) => s.shownLog);
+  const active = !scope || scope === shown;
   const all = useGitLog((s) => s.commits);
-  const allRows = useGitLog((s) => s.rows);
+  const selection = useGitLog((s) => s.selection);
+  const earlier = useMemo(() => {
+    const seen = new Set<string | null | undefined>();
+    return all.some((c) => {
+      const repo = commitRepo(c);
+      if (seen.has(repo)) return false;
+      seen.add(repo);
+      return (c.logPosition ?? 0) > 0;
+    });
+  }, [all]);
   const opts = useLogOptions();
+  const bookmarks = useGitLog((s) => s.bookmarks);
+  const fragments = useGitLog((s) => s.fragments);
+  const { expanded: expandedFragments, collapsed: collapsedFragments, merges: expandedMerges } = fragments;
+  const [hoverColor, setHoverColor] = useState<string | null>(null);
+  const [boundaryTitles, setBoundaryTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const boundaryRequests = useRef(new Set<string>());
+  const [speedSearch, setSpeedSearch] = useState("");
+  const speedGeneration = useRef(0);
+  const speedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(speedTimer.current), []);
+  const columns = useMemo(() => {
+    const builtins: LogColumn[] = [
+      ...(opts.showAuthor ? [{ id: "author", title: "Author", width: 130, render: (c: Commit) => c.author }] : []),
+      ...(opts.showDate
+        ? [
+            {
+              id: "date",
+              title: "Date",
+              width: 120,
+              render: (c: Commit) => formatTime(opts.commitTimestamp ? (c.commitTimeMs ?? c.timeMs) : c.timeMs),
+            },
+          ]
+        : []),
+      ...(opts.showHash ? [{ id: "hash", title: "Hash", width: 72, render: (c: Commit) => c.shortId }] : []),
+      ...(opts.showSignature
+        ? [{ id: "signature", title: "Signature", width: 100, render: (c: Commit) => <CommitSignature commit={c} /> }]
+        : []),
+    ];
+    const order = [...new Set([...opts.columnOrder, ...builtins.map((c) => c.id)])];
+    return builtins.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  }, [opts.showAuthor, opts.showDate, opts.showHash, opts.showSignature, opts.commitTimestamp, opts.columnOrder]);
   const user = useGitLog((s) => s.user);
   const headCommit = useVcs((s) => s.branch?.headCommit ?? null);
   const branches = useVcs((s) => s.branches);
@@ -936,23 +1255,66 @@ function CommitList() {
   const headKeys = useMemo(
     () =>
       new Set(
-        all.filter((c) => c.id === (commitRepo(c) ? heads[commitRepo(c)!]?.headCommit : headCommit)).map(commitKey),
+        all
+          .filter(
+            (c) => c.refs.includes("HEAD") || c.id === (commitRepo(c) ? heads[commitRepo(c)!]?.headCommit : headCommit),
+          )
+          .map(commitKey),
       ),
     [all, heads, headCommit],
   );
-  const collapsed = useMemo(
-    () => (opts.collapseLinear ? collapseLinear(all.map(graphCommit), headKeys) : null),
-    [all, opts.collapseLinear, headKeys],
+  const {
+    commits,
+    rows,
+    linear,
+    collapsed,
+    graph: displayedGraph,
+  } = useMemo(
+    () => presentLogGraph(all, opts, fragments, new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])),
+    [all, opts, fragments, headKeys, selection, bookmarks],
   );
-  const commits = useMemo(() => {
-    if (!collapsed) return all;
-    const byKey = new Map(all.map((c) => [commitKey(c), c]));
-    return collapsed.commits.map((c) => byKey.get(c.id)!);
-  }, [all, collapsed]);
-  const rows = useMemo(() => {
-    const laid = collapsed ? computeGraph(collapsed.graph).rows : allRows;
-    return opts.longEdges ? laid : hideLongEdges(laid);
-  }, [collapsed, allRows, opts.longEdges]);
+  const { edges: highlighted, nodes: highlightedNodes } = useMemo(() => {
+    const empty = { edges: new Set<string>(), nodes: new Set<string>() };
+    if (!hoverColor) return empty;
+    const nodeId = hoverColor.startsWith("node:") ? hoverColor.slice(5) : null;
+    const merge = nodeId ?? linear?.fragments.get(hoverColor);
+    const fragment = merge ? linear?.nodes.get(merge) : null;
+    const nodes = new Set(fragment);
+    if (!fragment) {
+      const source = nodeId
+        ? displayedGraph.find((c) => c.id === nodeId)
+        : displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === hoverColor));
+      const target = source?.parents.find((p) => nodeId || `${source.id}\0${p}` === hoverColor);
+      if (source) nodes.add(source.id);
+      const byId = new Map(displayedGraph.map((c) => [c.id, c]));
+      const children = new Map<string, number>();
+      for (const c of displayedGraph) for (const p of c.parents) children.set(p, (children.get(p) ?? 0) + 1);
+      for (let current = target; current && !nodes.has(current);) {
+        nodes.add(current);
+        const c = byId.get(current);
+        if (!c || c.parents.length !== 1 || children.get(current) !== 1 || c.refs?.length || headKeys.has(current))
+          break;
+        current = c.parents[0];
+      }
+    }
+    return {
+      nodes,
+      edges: new Set(
+        displayedGraph.flatMap((c) =>
+          nodes.has(c.id) ? c.parents.filter((p) => nodes.has(p)).map((p) => `${c.id}\0${p}`) : [],
+        ),
+      ),
+    };
+  }, [hoverColor, linear, displayedGraph, headKeys]);
+  const minWidth = useMemo(
+    () =>
+      rows.reduce((width, row) => Math.max(width, row.width * LANE), 100) +
+      columns.reduce(
+        (width, column) => width + (opts.columnWidths[column.id] ?? column.width ?? 120),
+        opts.showRepository && useVcs.getState().roots.length > 1 ? 220 : 120,
+      ),
+    [rows, columns, opts.columnWidths, opts.showRepository],
+  );
   const filterBranches = useGitLog((s) => s.filters.branches);
   const currentBranch = useVcs((s) => s.branch?.head ?? null);
   // Nothing to tell apart when the log is filtered to the current branch.
@@ -961,29 +1323,48 @@ function CommitList() {
     if (!opts.highlightCurrentBranch || onlyCurrent) return null;
     const reach = new Set<string>();
     for (const head of headKeys) for (const id of reachableFrom(all.map(graphCommit), head)) reach.add(id);
+    for (const c of all) {
+      if (c.onCurrentBranch === true) reach.add(commitKey(c));
+      else if (c.onCurrentBranch === false) reach.delete(commitKey(c));
+    }
     return reach;
   }, [all, headKeys, opts.highlightCurrentBranch, onlyCurrent]);
   const loading = useGitLog((s) => s.loading);
   const done = useGitLog((s) => s.done);
   const error = useGitLog((s) => s.error);
   const selected = useGitLog((s) => s.selected);
-  const selection = useGitLog((s) => s.selection);
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const previousRows = useRef(commits);
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    const previous = previousRows.current;
+    previousRows.current = commits;
+    if (!element || previous === commits) return;
+    const top = Math.max(0, Math.floor((element.scrollTop - ROW) / ROW));
+    // Preserve the first surviving visible commit and its pixel offset.
+    for (let i = top; i < previous.length; i++) {
+      const next = commits.findIndex((c) => commitKey(c) === commitKey(previous[i]!));
+      if (next < 0) continue;
+      element.scrollTop += (next - i) * ROW;
+      break;
+    }
+  }, [commits]);
   const finished = done;
   const virtualizer = useVirtualizer({
     count: commits.length + (finished ? 0 : 1),
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW,
     overscan: 20,
+    scrollMargin: ROW,
   });
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
 
   useEffect(() => {
-    if (!finished && !loading && last && last.index >= commits.length - 40) void loadMore();
-  }, [last, commits.length, finished, loading]);
+    if (!finished && !loading && last && last.index >= commits.length - 40) void loadMore(scope ?? undefined);
+  }, [last, commits.length, finished, loading, active, scope]);
 
   const selectedIndex = selected ? commits.findIndex((c) => commitKey(c) === selected) : -1;
   useLayoutEffect(() => {
@@ -1004,6 +1385,54 @@ function CommitList() {
   }, []);
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === "Backspace" || e.key === "Escape")) {
+      const query = e.key === "Escape" ? "" : e.key === "Backspace" ? speedSearch.slice(0, -1) : speedSearch + e.key;
+      setSpeedSearch(query);
+      speedGeneration.current++;
+      clearTimeout(speedTimer.current);
+      speedTimer.current = setTimeout(() => setSpeedSearch(""), 1500);
+      if (query) {
+        const found = nextSpeedMatch(commits, query, opts, -1);
+        if (found >= 0) {
+          selectCommit(commitKey(commits[found]!), true);
+          virtualizer.scrollToIndex(found, { align: "auto" });
+        } else if (query.length >= 2) {
+          const generation = ++speedGeneration.current;
+          const roots = [...new Set(all.map(commitRepo))];
+          void Promise.all(
+            roots.map(async (repo) => {
+              const [hit] = await call(
+                commands.vcsLog(repo ?? currentRepo(), {
+                  skip: 0,
+                  limit: 1,
+                  summaryOnly: true,
+                  speedSearch: query,
+                  searchFields: [...(opts.showAuthor ? ["author"] : []), ...(opts.showHash ? ["hash"] : [])],
+                  branch: null,
+                  path: null,
+                  author: null,
+                  text: null,
+                }),
+              );
+              return hit ? { ...hit, repo } : null;
+            }),
+          )
+            .then((hits) => {
+              const hit = hits.find(Boolean);
+              if (hit && speedGeneration.current === generation) void goToRef(hit.id, commitRepo(hit));
+            })
+            .catch(() => undefined);
+        }
+      }
+      e.preventDefault();
+      return;
+    }
+    if (speedSearch && (e.key === "F3" || e.key === "Enter")) {
+      e.preventDefault();
+      const found = nextSpeedMatch(commits, speedSearch, opts, selectedIndex, e.shiftKey ? -1 : 1);
+      if (found >= 0) selectCommit(commitKey(commits[found]!), true);
+      return;
+    }
     const lead = selectedIndex >= 0 ? commits[selectedIndex] : undefined;
     if (lead && (e.key === "ArrowLeft" || e.key === "ArrowRight") && !e.altKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
@@ -1030,8 +1459,113 @@ function CommitList() {
 
   if (error && !commits.length) return <div className={styles.message}>{error}</div>;
 
+  const fragment = (from: string, target: string, expand: boolean) => {
+    if (from === target && (expandedMerges.has("*") ? !expandedMerges.has(from) : expandedMerges.has(from))) {
+      useGitLog.setState({
+        fragments: {
+          ...fragments,
+          merges: expandedMerges.has("*")
+            ? new Set([...expandedMerges, from])
+            : new Set([...expandedMerges].filter((id) => id !== from)),
+        },
+      });
+      return;
+    }
+    if (
+      from === target &&
+      linear &&
+      all.find((c) => commitKey(c) === from)?.parents.length === 2 &&
+      linear.graph.find((c) => c.id === from)?.parents.length === 1
+    ) {
+      useGitLog.setState({
+        fragments: {
+          ...fragments,
+          merges: expandedMerges.has("*")
+            ? new Set([...expandedMerges].filter((id) => id !== from))
+            : new Set([...expandedMerges, from]),
+        },
+      });
+      return;
+    }
+    if (from === target) {
+      const shown = (linear?.graph ?? collapsed?.graph ?? all.map(graphCommit)).find((c) => c.id === from);
+      target = shown?.parents[0] ?? target;
+      expand = !!shown?.dashed?.[0];
+    }
+    const merge = linear?.fragments.get(`${from}\0${target}`);
+    if (merge) {
+      useGitLog.setState({
+        fragments: {
+          ...fragments,
+          merges: expandedMerges.has("*")
+            ? new Set([...expandedMerges].filter((id) => id !== merge))
+            : new Set([...expandedMerges, merge]),
+        },
+      });
+      return;
+    }
+    const graph = new Map(
+      all.map((c) => {
+        const g = graphCommit(c);
+        return [g.id, g] as const;
+      }),
+    );
+    const childCounts = new Map<string, number>();
+    for (const c of graph.values())
+      for (const parent of c.parents) childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1);
+    const hidden: string[] = [];
+    for (const start of expand ? (graph.get(from)?.parents ?? []) : [target]) {
+      const chain: string[] = [];
+      let current: string | undefined = start;
+      const seen = new Set<string>();
+      while (current && !seen.has(current)) {
+        seen.add(current);
+        const node = graph.get(current);
+        if (
+          !node ||
+          (expand && current === target) ||
+          node.parents.length !== 1 ||
+          childCounts.get(current) !== 1 ||
+          node.refs.length ||
+          headKeys.has(current)
+        )
+          break;
+        chain.push(current);
+        current = node.parents[0];
+      }
+      if (!expand || current === target) hidden.push(...chain);
+    }
+    if (expand) {
+      useGitLog.setState({
+        fragments: {
+          ...fragments,
+          expanded: new Set([...expandedFragments, ...hidden]),
+          collapsed: new Set([...collapsedFragments].filter((id) => !hidden.includes(id))),
+        },
+      });
+    } else {
+      useGitLog.setState({
+        fragments: {
+          ...fragments,
+          expanded: new Set([...expandedFragments].filter((id) => !hidden.includes(id))),
+          collapsed: new Set([...collapsedFragments, ...hidden]),
+        },
+      });
+    }
+  };
+
   return (
     <div className={styles.listWrap}>
+      {earlier && (
+        <button type="button" disabled={loading} onClick={() => void loadNewer(scope ?? undefined)}>
+          {tx("Load Newer Commits")}
+        </button>
+      )}
+      {speedSearch && (
+        <div role="status" className={styles.speedSearch}>
+          {speedSearch}
+        </div>
+      )}
       {error && (
         <div role="alert" className={styles.message}>
           {error}
@@ -1043,19 +1577,51 @@ function CommitList() {
         role="listbox"
         aria-label={tx("Commits")}
         aria-multiselectable
-        aria-activedescendant={selectedIndex >= 0 ? `commit-${selectedIndex}` : undefined}
+        aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
         onKeyDown={onKeyDown}
+        onCopy={(e) => {
+          if (window.getSelection()?.toString()) return;
+          const selected = commits.filter((c) => selectedSet.has(commitKey(c)));
+          if (!selected.length) return;
+          e.preventDefault();
+          e.clipboardData.setData(
+            "text/plain",
+            selected
+              .map((c) =>
+                [
+                  c.summary,
+                  c.refs.join(" "),
+                  ...(opts.showRepository ? [commitRepo(c) ?? ""] : []),
+                  ...columns.map((column) => (typeof column.render(c) === "string" ? column.render(c) : "")),
+                ].join("\t"),
+              )
+              .join("\n"),
+          );
+          e.clipboardData.setData(
+            "application/x-openidea-vcs-commits",
+            JSON.stringify({ version: 1, commits: selected.map((c) => ({ root: commitRepo(c), hash: c.id })) }),
+          );
+        }}
       >
+        <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+          {opts.showRepository && useVcs.getState().roots.length > 1 && (
+            <span className={styles.colRepository}>{tx("Repository")}</span>
+          )}
+          <span className={styles.colSubject}>{tx("Commit")}</span>
+          {columns.map((column) => (
+            <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
+          ))}
+        </div>
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}
-        <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+        <div style={{ height: virtualizer.getTotalSize(), position: "relative", minWidth }}>
           {items.map((v) => {
             const c = commits[v.index];
             if (!c)
               return (
-                <div key="loading" className={styles.row} style={{ top: v.start }}>
+                <div key="loading" className={styles.row} style={{ top: v.start - ROW }}>
                   <Spinner size={12} />{" "}
                   <span className={styles.muted}>
                     <T>Loading…</T>
@@ -1065,10 +1631,10 @@ function CommitList() {
             return (
               <CommitRow
                 key={commitKey(c)}
-                id={`commit-${v.index}`}
+                id={`commit-${scope ?? "log"}-${v.index}`}
                 commit={c}
                 graph={rows[v.index]}
-                top={v.start}
+                top={v.start - ROW}
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}
                 mine={opts.highlightMine && isMine(c, user)}
@@ -1076,12 +1642,158 @@ function CommitList() {
                 opts={opts}
                 remoteNames={new Set((c as RepoCommit).remoteNames ?? remoteNames)}
                 onPick={pick}
+                hoverColor={hoverColor}
+                highlighted={highlighted}
+                highlightedNodes={highlightedNodes}
+                onHover={(edge) => {
+                  setHoverColor(edge);
+                  if (!edge) return;
+                  const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
+                  const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
+                  if (
+                    !source ||
+                    !target ||
+                    commits.some((c) => commitKey(c) === target) ||
+                    boundaryRequests.current.has(target)
+                  )
+                    return;
+                  const original = all.find((c) => commitKey(c) === source.id);
+                  if (!original) return;
+                  boundaryRequests.current.add(target);
+                  const split = target.lastIndexOf("\0"),
+                    id = target.slice(split + 1);
+                  void loadLogDetails({ ...original, id })
+                    .then((details) =>
+                      setBoundaryTitles((current) =>
+                        new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
+                      ),
+                    )
+                    .catch(() => undefined);
+                }}
+                onFragment={fragment}
+                onNavigate={(index, key) => {
+                  const target = commits[index];
+                  if (target) selectCommit(commitKey(target), true);
+                  else if (key) {
+                    const split = key.lastIndexOf("\0");
+                    void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
+                  }
+                }}
+                targetTitle={(index, key) => {
+                  const target = commits[index];
+                  return target
+                    ? `${target.shortId} ${target.summary} — ${target.author}`
+                    : (key && boundaryTitles.get(key)) ||
+                        `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
+                }}
+                columns={columns}
+                bookmarked={!!bookmarks[commitKey(c)]}
               />
             );
           })}
         </div>
       </div>
     </div>
+  );
+}
+
+function LogColumnHeader({
+  column,
+  columns,
+  options,
+}: {
+  column: LogColumn;
+  columns: LogColumn[];
+  options: LogOptions;
+}) {
+  const drag = useRef<{ x: number; width: number } | null>(null);
+  const width = options.columnWidths[column.id] ?? column.width ?? 120;
+  const resize = (value: number) =>
+    updateLogOptions({
+      columnWidths: { ...logOptions().columnWidths, [column.id]: Math.max(40, Math.min(800, value)) },
+    });
+  const move = (source: string, target: string) => {
+    const ids = columns.map((c) => c.id);
+    const from = ids.indexOf(source),
+      to = ids.indexOf(target);
+    if (from < 0 || to < 0 || from === to) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, source);
+    updateLogOptions({ columnOrder: ids });
+  };
+  const index = columns.findIndex((c) => c.id === column.id);
+  return (
+    <span
+      className={clsx(styles.columnCell, styles.columnHeading)}
+      style={{ width }}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("application/x-openidea-log-column", column.id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("application/x-openidea-log-column")) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        move(e.dataTransfer.getData("application/x-openidea-log-column"), column.id);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, [
+          {
+            label: "Move Left",
+            disabled: index === 0,
+            run: () => move(column.id, columns[index - 1]?.id ?? column.id),
+          },
+          {
+            label: "Move Right",
+            disabled: index === columns.length - 1,
+            run: () => move(column.id, columns[index + 1]?.id ?? column.id),
+          },
+          { label: "Reset Width", run: () => resize(column.width ?? 120) },
+        ]);
+      }}
+    >
+      {tx(column.title)}
+      <span
+        className={styles.columnResize}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={tx`Resize ${tx(column.title)} column`}
+        aria-valuemin={40}
+        aria-valuemax={800}
+        aria-valuenow={width}
+        tabIndex={0}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          drag.current = { x: e.clientX, width };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          if (drag.current && e.currentTarget.hasPointerCapture(e.pointerId))
+            resize(drag.current.width + e.clientX - drag.current.x);
+        }}
+        onPointerUp={(e) => {
+          drag.current = null;
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+        }}
+        onLostPointerCapture={() => {
+          drag.current = null;
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.altKey) move(column.id, columns[index + (e.key === "ArrowLeft" ? -1 : 1)]?.id ?? column.id);
+          else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
+        }}
+      />
+    </span>
   );
 }
 
@@ -1097,6 +1809,15 @@ const CommitRow = memo(function CommitRow({
   opts,
   remoteNames,
   onPick,
+  hoverColor,
+  highlighted,
+  highlightedNodes,
+  onHover,
+  onFragment,
+  onNavigate,
+  targetTitle,
+  columns,
+  bookmarked,
 }: {
   id: string;
   commit: Commit;
@@ -1109,8 +1830,35 @@ const CommitRow = memo(function CommitRow({
   opts: LogOptions;
   remoteNames: ReadonlySet<string>;
   onPick: (id: string, e: ReactMouseEvent) => void;
+  hoverColor: string | null;
+  highlighted: ReadonlySet<string>;
+  highlightedNodes: ReadonlySet<string>;
+  onHover: (color: string | null) => void;
+  onFragment: (from: string, target: string, expand: boolean) => void;
+  onNavigate: (index: number, key?: string) => void;
+  targetTitle: (index: number, key?: string) => string;
+  columns: LogColumn[];
+  bookmarked: boolean;
 }) {
   const merge = opts.highlightMerges && c.parents.length > 1;
+  const subjectRef = useRef<HTMLSpanElement>(null);
+  const [tooltip, setTooltip] = useState(false);
+  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(tooltipTimer.current), []);
+  useEffect(() => {
+    if (!tooltip) return;
+    const hide = () => setTooltip(false);
+    window.addEventListener("scroll", hide, true);
+    return () => window.removeEventListener("scroll", hide, true);
+  }, [tooltip]);
+  const enterTooltip = () => {
+    clearTimeout(tooltipTimer.current);
+    tooltipTimer.current = setTimeout(() => setTooltip(true), TOOLTIP_DELAY);
+  };
+  const leaveTooltip = () => {
+    clearTimeout(tooltipTimer.current);
+    tooltipTimer.current = setTimeout(() => setTooltip(false), 120);
+  };
   const refs = c.refs.length > 0 && (
     <RefLabels
       refs={c.refs}
@@ -1120,7 +1868,6 @@ const CommitRow = memo(function CommitRow({
       left={opts.refsOnLeft}
     />
   );
-  const time = opts.commitTimestamp ? (c.commitTimeMs ?? c.timeMs) : c.timeMs;
   return (
     <div
       id={id}
@@ -1137,29 +1884,70 @@ const CommitRow = memo(function CommitRow({
         showContextMenu(e, commitMenu(c, selectedCommits()));
       }}
     >
-      {commitRepo(c) && useVcs.getState().roots.length > 1 && (
+      {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (
         <span className={styles.colRepository} title={commitRepo(c)!}>
           {repoName(commitRepo(c)!)}
         </span>
       )}
       <span className={styles.colSubject}>
-        {graph && <GraphCell row={graph} head={head} />}
+        {graph && (
+          <GraphCell
+            row={graph}
+            head={head}
+            activeColor={hoverColor}
+            highlighted={highlighted}
+            highlightedNodes={highlightedNodes}
+            onHover={onHover}
+            onNavigate={onNavigate}
+            targetTitle={targetTitle}
+            onFragment={(target, expand, source) => onFragment(source ?? commitKey(c), target, expand)}
+            onNode={() => onFragment(commitKey(c), commitKey(c), false)}
+          />
+        )}
+        {bookmarked && <Icon name="bookmark" size={12} />}
         {opts.refsOnLeft && refs}
         <span
+          ref={subjectRef}
           className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
-          title={c.message}
+          onPointerEnter={enterTooltip}
+          onPointerLeave={leaveTooltip}
+          onPointerDown={() => {
+            clearTimeout(tooltipTimer.current);
+            setTooltip(false);
+          }}
         >
-          {c.summary}
+          <IssueText text={c.summary} />
         </span>
         {!opts.refsOnLeft && refs}
+        <Popup
+          open={tooltip}
+          anchor={subjectRef}
+          role="tooltip"
+          autoFocus={false}
+          restoreFocus={false}
+          onClose={() => setTooltip(false)}
+          className={styles.commitTooltip}
+        >
+          <div onPointerEnter={() => clearTimeout(tooltipTimer.current)} onPointerLeave={leaveTooltip}>
+            <CommitMessage commit={c} />
+          </div>
+        </Popup>
       </span>
-      {opts.showAuthor && (
-        <span className={clsx(styles.colAuthor, styles.muted, mine && styles.mine)} title={`${c.author} <${c.email}>`}>
-          {c.author}
+      {columns.map((column) => (
+        <span
+          key={column.id}
+          className={clsx(
+            styles.columnCell,
+            styles.muted,
+            column.id === "author" && mine && styles.mine,
+            column.id === "hash" && styles.hash,
+          )}
+          style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
+          title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
+        >
+          {column.render(c)}
         </span>
-      )}
-      {opts.showDate && <span className={clsx(styles.colDate, styles.muted)}>{formatTime(time)}</span>}
-      {opts.showHash && <span className={clsx(styles.colHash, styles.muted, styles.hash)}>{c.shortId}</span>}
+      ))}
     </div>
   );
 });
@@ -1174,44 +1962,136 @@ function seg(fromX: number, fromY: number, toX: number, toY: number) {
   return `M${fromX} ${fromY}C${fromX} ${mid} ${toX} ${mid} ${toX} ${toY}`;
 }
 
-export function GraphCell({ row, head }: { row: GraphRow; head?: boolean }) {
-  const width = Math.min(row.width, 24) * LANE;
+export function GraphCell({
+  row,
+  head,
+  activeColor,
+  highlighted,
+  highlightedNodes,
+  onHover,
+  onNavigate,
+  onFragment,
+  targetTitle,
+  onNode,
+}: {
+  row: GraphRow;
+  head?: boolean;
+  activeColor?: string | null;
+  highlighted?: ReadonlySet<string>;
+  highlightedNodes?: ReadonlySet<string>;
+  onHover?: (edge: string | null) => void;
+  onNavigate?: (index: number, key?: string) => void;
+  onFragment?: (target: string, expand: boolean, source?: string) => void;
+  targetTitle?: (index: number, key?: string) => string;
+  onNode?: () => void;
+}) {
   const cy = ROW / 2;
+  const draw = (s: GraphSegment, i: number, up: boolean) => {
+    const target = (up ? row.upTargets : row.downTargets)?.[i];
+    const canFragment =
+      !!target &&
+      !!onFragment &&
+      s.kind !== "filtered" &&
+      s.kind !== "shallow" &&
+      (!!s.source || (!up && s.from === row.lane));
+    const canNavigate = s.targetRow != null && s.kind !== "shallow" && !!onNavigate;
+    const actionable = canNavigate || canFragment;
+    const label =
+      s.kind === "shallow"
+        ? tx("Shallow history boundary")
+        : s.targetRow != null
+          ? (targetTitle?.(s.targetRow, target) ?? tx("Go to connected commit"))
+          : s.dashed
+            ? tx("Expand this fragment")
+            : tx("Collapse this fragment");
+    const activate = () => {
+      if (canNavigate) onNavigate?.(s.targetRow!, target);
+      else if (canFragment) onFragment?.(target!, !!s.dashed, s.source);
+    };
+    const path =
+      seg(x(s.from), up ? 0 : cy, x(s.to), up ? cy : ROW) +
+      (s.arrow ? arrowHead(x(up ? s.from : s.to), up ? 0 : ROW, up ? -1 : 1) : "");
+    return (
+      <g
+        key={`${up ? "u" : "d"}${i}`}
+        role={actionable ? "button" : undefined}
+        tabIndex={actionable ? 0 : undefined}
+        aria-label={actionable ? label : undefined}
+        onMouseEnter={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          activate();
+        }}
+        onKeyDown={(e) => {
+          if (actionable && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            e.stopPropagation();
+            activate();
+          }
+        }}
+      >
+        <title>{label}</title>
+        <rect
+          x={Math.min(x(s.from), x(s.to)) - 5}
+          y={up ? 0 : cy}
+          width={Math.max(10, Math.abs(x(s.from) - x(s.to)) + 10)}
+          height={cy}
+          fill="transparent"
+          pointerEvents="none"
+        />
+        <path d={path} stroke="transparent" strokeWidth={10} style={{ pointerEvents: "stroke" }} />
+        <path
+          d={path}
+          stroke={laneColor(s.color)}
+          strokeWidth={s.edge != null && (activeColor === s.edge || highlighted?.has(s.edge)) ? 2.8 : 1.4}
+          pointerEvents="none"
+          strokeLinecap={s.dashed ? "butt" : "square"}
+          strokeDasharray={s.dashed ? "2 2" : undefined}
+        />
+      </g>
+    );
+  };
   return (
-    <svg className={styles.graph} width={width} height={ROW} aria-hidden>
-      {row.up.map((s, i) => (
-        <path
-          key={`u${i}`}
-          d={seg(x(s.from), 0, x(s.to), cy) + (s.arrow ? arrowHead(x(s.from), 0, -1) : "")}
-          stroke={laneColor(s.color)}
-          strokeLinecap={s.dashed ? "butt" : "square"}
-          strokeDasharray={s.dashed ? "2 2" : undefined}
+    <svg
+      className={styles.graph}
+      width={row.width * LANE}
+      height={ROW}
+      aria-label={tx("Commit graph")}
+      onMouseLeave={() => onHover?.(null)}
+    >
+      {row.up.map((s, i) => draw(s, i, true))}
+      {row.down.map((s, i) => draw(s, i, false))}
+      <g
+        role={onNode ? "button" : undefined}
+        tabIndex={onNode ? 0 : undefined}
+        aria-label={onNode ? tx("Collapse or expand this branch") : undefined}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseEnter={() => row.id && onHover?.(`node:${row.id}`)}
+        onClick={(e) => {
+          e.stopPropagation();
+          onNode?.();
+        }}
+        onKeyDown={(e) => {
+          if (onNode && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            e.stopPropagation();
+            onNode();
+          }
+        }}
+      >
+        <circle cx={x(row.lane)} cy={cy} r={8} fill="transparent" />
+        <circle
+          cx={x(row.lane)}
+          cy={cy}
+          r={row.id && highlightedNodes?.has(row.id) ? 6 : head ? 5 : 3.8}
+          fill={head ? "var(--log-row-bg, var(--bg-app))" : laneColor(row.color)}
+          stroke={laneColor(row.color)}
+          strokeWidth={head ? 1.5 : 0}
+          pointerEvents="none"
         />
-      ))}
-      {row.down.map((s, i) => (
-        <path
-          key={`d${i}`}
-          d={seg(x(s.from), cy, x(s.to), ROW) + (s.arrow ? arrowHead(x(s.to), ROW, 1) : "")}
-          stroke={laneColor(s.color)}
-          strokeLinecap={s.dashed ? "butt" : "square"}
-          strokeDasharray={s.dashed ? "2 2" : undefined}
-        />
-      ))}
-      {head ? (
-        <>
-          <circle
-            cx={x(row.lane)}
-            cy={cy}
-            r={5}
-            fill="var(--log-row-bg, var(--bg-app))"
-            stroke={laneColor(row.color)}
-            strokeWidth={1.5}
-          />
-          <circle cx={x(row.lane)} cy={cy} r={2.5} fill={laneColor(row.color)} />
-        </>
-      ) : (
-        <circle cx={x(row.lane)} cy={cy} r={3.8} fill={laneColor(row.color)} />
-      )}
+        {head && <circle cx={x(row.lane)} cy={cy} r={2.5} fill={laneColor(row.color)} pointerEvents="none" />}
+      </g>
     </svg>
   );
 }
@@ -1261,6 +2141,10 @@ export function RefLabels({
  * (IDEA), their combined changes with every selected commit listed below.
  */
 export function CommitDetails({ commits }: { commits: Commit[] }) {
+  const scope = useContext(LogIdContext);
+  const shown = useGitLog((s) => s.shownLog);
+  const active = !scope || scope === shown;
+  const readOnly = useReadOnlyLog();
   const selected = useGitLog((s) => s.selected);
   const selection = useGitLog((s) => s.selection);
   // Newest first (log order).
@@ -1272,40 +2156,104 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const many = chosen.length > 1;
   const idsKey = chosen.map(commitKey).join(" ");
   const commitRoot = commit ? commitRepo(commit) : null;
-  const root = useVcs((s) => s.root) ?? "";
-  const [files, setFiles] = useState<(ChangedFile | RevisionChange)[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    key: string;
+    files: LogChange[] | null;
+    error: string | null;
+  } | null>(null);
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
+  const [parentIndex, setParentIndex] = useState(-1);
+  const fromParents = useLogOptions((s) => s.changesFromParents);
+  const onlyAffected = useLogOptions((s) => s.showOnlyAffected);
+  const preview = useLogOptions((s) => s.diffPreview);
+  const diffLocation = useLogOptions((s) => s.diffLocation);
+  const filters = useGitLog((s) => s.filters);
+  const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot]);
+  const files = result?.key === filesKey ? result.files : null;
+  const error = result?.key === filesKey ? result.error : null;
 
   useEffect(() => {
     if (!idsKey) return;
-    const ids = chosen.map((c) => c.id);
     let alive = true;
-    const load =
-      ids.length > 1
-        ? call(commands.vcsCommitsChanges(commitRoot ?? currentRepo(), ids.reverse()))
-        : call(commands.vcsCommitFiles(commitRoot ?? currentRepo(), ids[0]!));
-    load.then((f) => alive && setFiles(f)).catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    const load = (async () => {
+      if (many) {
+        const roots = [...new Set(chosen.map(commitRepo))];
+        return (
+          await Promise.all(
+            roots.map(async (repo) => {
+              const group = chosen.filter((c) => commitRepo(c) === repo);
+              const files = await call(
+                commands.vcsCommitsChanges(repo ?? currentRepo(), group.map((c) => c.id).reverse()),
+              );
+              return toLogChanges(files, null, repo, readOnly);
+            }),
+          )
+        ).flat();
+      }
+      const c = chosen[0]!;
+      if (c.parents.length > 1) {
+        const groups = await Promise.all(
+          c.parents.map(async (id, index) => {
+            const files = await call(commands.vcsDiffRevisions(commitRoot ?? currentRepo(), id, c.id));
+            return toLogChanges(files, { ...c, parents: [id] }, commitRoot, readOnly).map((f) => ({
+              ...f,
+              group: `${tx("Parent")} ${index + 1}: ${id.slice(0, 8)}`,
+            }));
+          }),
+        );
+        if (fromParents) return parentIndex < 0 ? groups.flat() : (groups[parentIndex] ?? []);
+        // A merge's combined changes are files changed against every parent.
+        return groups[0]!
+          .filter((f) => groups.every((group) => group.some((x) => x.path === f.path)))
+          .map((f) => ({
+            ...f,
+            group: undefined,
+            mergeParents: c.parents
+              .slice(0, 2)
+              .map((rev, i) => ({ rev, path: groups[i]!.find((x) => x.path === f.path)?.oldPath ?? f.path })),
+          }));
+      }
+      const files = await call(commands.vcsCommitFiles(commitRoot ?? currentRepo(), c.id));
+      return toLogChanges(files, c, commitRoot, readOnly);
+    })();
+    load
+      .then((files) => alive && setResult({ key: filesKey, files, error: null }))
+      .catch(
+        (e) => alive && setResult({ key: filesKey, files: null, error: e instanceof Error ? e.message : String(e) }),
+      );
     return () => {
       alive = false;
     };
-  }, [idsKey]);
+  }, [idsKey, chosen, fromParents, parentIndex, commitRoot, filesKey, many, readOnly]);
 
   const groupByDirectory = useLogOptions((s) => s.groupByDirectory);
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
   const treeRef = useRef<TreeHandle>(null);
   const [diffToReveal, setDiffToReveal] = useState<{ key: string } | null>(null);
   const syncingDiff = useRef(false);
-  const changes = useMemo(
-    () => (files && commit ? toLogChanges(files, many ? null : commit, commitRoot) : []),
-    [files, commit, many, commitRoot],
+  const changes = useMemo(() => {
+    const changes = files ?? [];
+    const paths = filters.paths?.length ? filters.paths : filters.path ? [filters.path] : [];
+    return onlyAffected && paths.length
+      ? changes.filter((c) =>
+          paths.some((p) => {
+            const matches = (rel: string) => {
+              const abs = absolutePath(rel, c.repo);
+              return abs === p || abs.startsWith(`${p}/`) || (!many && commit?.historyPath === rel);
+            };
+            return matches(c.path) || (c.oldPath != null && matches(c.oldPath));
+          }),
+        )
+      : changes;
+  }, [files, commit, many, filters.path, filters.paths, onlyAffected]);
+  const multipleRoots = new Set(chosen.map(commitRepo)).size > 1;
+  const changeTreePath = useCallback(
+    (f: LogChange) => `${multipleRoots ? `${repoName(f.repo ?? "")}/` : ""}${f.group ? `${f.group}/` : ""}${f.path}`,
+    [multipleRoots],
   );
   const tree = useMemo(
-    () =>
-      groupByDirectory
-        ? buildFileTree(changes, (f) => relTo(root, f.path))
-        : flatFileNodes(changes, (f) => relTo(root, f.path)),
-    [changes, root, groupByDirectory],
+    () => (groupByDirectory ? buildFileTree(changes, changeTreePath) : flatFileNodes(changes, changeTreePath)),
+    [changes, groupByDirectory, changeTreePath],
   );
   const allDirs = useMemo(() => dirKeys(tree), [tree]);
   const ordered = useMemo(() => filesUnder(tree), [tree]);
@@ -1313,11 +2261,14 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
 
   // Show Diff Preview: a single selected file follows into the editor's preview tab.
   const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(previewTimer.current), []);
+  useEffect(() => {
+    if (!active) clearTimeout(previewTimer.current);
+    return () => clearTimeout(previewTimer.current);
+  }, [active]);
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
     if (syncingDiff.current) return;
-    if (!logOptions().diffPreview || sel.size !== 1) return;
+    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || sel.size !== 1) return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
     // A preview that cannot open (no editor yet, the file went away) is just skipped.
     if (file)
@@ -1333,7 +2284,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       const change = ordered.find((c) => diffInput(c.diff).key === input.key);
       if (!change) return;
       clearTimeout(previewTimer.current);
-      const rel = relTo(root, change.path);
+      const rel = changeTreePath(change);
       setExpanded((current) => {
         const next = new Set(current ?? allDirs);
         for (const key of allDirs) if (rel.startsWith(key.slice(2) + "/")) next.add(key);
@@ -1343,7 +2294,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     };
     followDiff(editor?.activeInput?.() ?? null);
     return editor?.onActiveInputChange?.(followDiff);
-  }, [ordered, allDirs, root]);
+  }, [ordered, allDirs, changeTreePath]);
 
   // Tree.reveal needs the expanded rows to have rendered. Suppress the reverse
   // preview update so it cannot reopen the diff and lose its requested chunk.
@@ -1355,9 +2306,16 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   }, [diffToReveal]);
 
   useEffect(() => {
+    if (!active) return;
     useLogChanges.setState({ commits: chosen, all: ordered, selected: chosenChanges });
-  }, [chosen, ordered, chosenChanges]);
-  useEffect(() => () => useLogChanges.setState({ commits: [], all: [], selected: [] }), []);
+  }, [chosen, ordered, chosenChanges, active]);
+  useEffect(
+    () => () => {
+      if (!scope || useGitLog.getState().shownLog === scope)
+        useLogChanges.setState({ commits: [], all: [], selected: [] });
+    },
+    [scope],
+  );
 
   if (!commit)
     return (
@@ -1374,6 +2332,16 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       { kind: "action", action: "vcs.log.changes.groupByDirectory" },
       { kind: "separator" },
       { kind: "action", action: "vcs.log.changes.diffPreview" },
+      toggle("Show Only Affected Changes", logOptions(), "showOnlyAffected"),
+      toggle("Show Changes from Parents", logOptions(), "changesFromParents"),
+      {
+        label: "Diff Preview Location",
+        submenu: (["editor", "right", "bottom"] as const).map((location) => ({
+          label: location === "editor" ? "Editor" : location === "right" ? "Right" : "Bottom",
+          checked: diffLocation === location,
+          run: () => updateLogOptions({ diffLocation: location }),
+        })),
+      },
     ]);
 
   const onFileMenu = (node: FileTreeNode<LogChange> | null, sel: ReadonlySet<string>, e: ReactMouseEvent) => {
@@ -1384,106 +2352,186 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     showContextMenu(e, changesMenu(target));
   };
 
+  const details = (
+    <SplitGroup orientation="vertical" id="git-log-details">
+      <SplitPanel id="files" defaultSize="60%" minSize="60px">
+        <div className={styles.filesPane}>
+          <div className={styles.detailsBar} role="toolbar" aria-label={tx("Changed files")}>
+            <IconButton
+              icon="diff"
+              size="small"
+              title="Show Diff"
+              action="vcs.log.changes.showDiff"
+              actionArg={chosenChanges}
+              disabled={!chosenChanges.length}
+            />
+            <IconButton
+              icon="revert"
+              size="small"
+              title="Revert Selected Changes"
+              action="vcs.log.changes.revert"
+              actionArg={chosenChanges}
+              disabled={readOnly || !chosenChanges.length || new Set(chosenChanges.map((c) => c.repo)).size > 1}
+            />
+            <IconButton icon="eye" title="View Options" size="small" aria-haspopup="menu" onClick={openViewOptions} />
+            {!many && fromParents && commit.parents.length > 1 && (
+              <button
+                type="button"
+                className={styles.filterMain}
+                onClick={(e) =>
+                  menuBelow(e, [
+                    { label: tx("All Parents"), checked: parentIndex < 0, run: () => setParentIndex(-1) },
+                    ...commit.parents.map((id, index) => ({
+                      label: `${tx("Parent")} ${index + 1}: ${id.slice(0, 8)}`,
+                      checked: index === parentIndex,
+                      run: () => setParentIndex(index),
+                    })),
+                  ])
+                }
+              >
+                {parentIndex < 0 ? tx("All Parents") : `${tx("Parent")} ${parentIndex + 1}`}
+              </button>
+            )}
+            <span className={styles.detailsCount}>
+              {files ? fileCount(changes.length) : ""}
+              {many ? " " + tx`in ${chosen.length} commits` : ""}
+            </span>
+            <span className={styles.grow} />
+            <IconButton
+              icon="expand-all"
+              title="Expand All"
+              size="small"
+              disabled={!allDirs.length}
+              onClick={() => setExpanded(new Set(allDirs))}
+            />
+            <IconButton
+              icon="collapse-all"
+              title="Collapse All"
+              size="small"
+              disabled={!allDirs.length}
+              onClick={() => setExpanded(new Set())}
+            />
+          </div>
+          {error && <div className={styles.message}>{error}</div>}
+          {!files && !error && (
+            <div className={styles.message}>
+              <Spinner size={12} />
+            </div>
+          )}
+          {files && (
+            <Tree<FileTreeNode<LogChange>>
+              handleRef={treeRef}
+              roots={tree}
+              getKey={(n) => n.key}
+              getLabel={(n) => n.name}
+              getChildren={(n) => (n.file ? undefined : n.children)}
+              isExpandable={(n) => !n.file}
+              expanded={expanded ?? new Set(allDirs)}
+              onExpandedChange={(next) => setExpanded(next)}
+              selected={selectedKeys}
+              onSelectionChange={(sel) => {
+                setSelectedKeys(sel);
+                previewSelection(sel);
+              }}
+              renderNode={(n) => <ChangedFileRow node={n} flat={!groupByDirectory} />}
+              onActivate={(n) => n.file && void showChangesDiff([n.file])}
+              onContextMenu={onFileMenu}
+              aria-label="Changed files"
+              className={styles.fileTree}
+            />
+          )}
+        </div>
+      </SplitPanel>
+      <SplitHandle />
+      <SplitPanel id="message" minSize="60px">
+        <div className={styles.messageBox}>
+          {many ? (
+            chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
+          ) : (
+            <CommitMessage commit={commit} />
+          )}
+        </div>
+      </SplitPanel>
+    </SplitGroup>
+  );
+  const embedded = preview && diffLocation !== "editor";
+  const selectedChange = chosenChanges.length === 1 ? chosenChanges[0] : undefined;
   return (
     <div className={styles.details}>
-      <SplitGroup orientation="vertical" id="git-log-details">
-        <SplitPanel id="files" defaultSize="60%" minSize="60px">
-          <div className={styles.filesPane}>
-            <div className={styles.detailsBar} role="toolbar" aria-label={tx("Changed files")}>
-              <IconButton
-                icon="diff"
-                size="small"
-                title="Show Diff"
-                action="vcs.log.changes.showDiff"
-                actionArg={chosenChanges}
-                disabled={!chosenChanges.length}
-              />
-              <IconButton
-                icon="revert"
-                size="small"
-                title="Revert Selected Changes"
-                action="vcs.log.changes.revert"
-                actionArg={chosenChanges}
-                disabled={!chosenChanges.length}
-              />
-              <IconButton icon="eye" title="View Options" size="small" aria-haspopup="menu" onClick={openViewOptions} />
-              <span className={styles.detailsCount}>
-                {files ? fileCount(files.length) : ""}
-                {many ? " " + tx`in ${chosen.length} commits` : ""}
-              </span>
-              <span className={styles.grow} />
-              <IconButton
-                icon="expand-all"
-                title="Expand All"
-                size="small"
-                disabled={!allDirs.length}
-                onClick={() => setExpanded(new Set(allDirs))}
-              />
-              <IconButton
-                icon="collapse-all"
-                title="Collapse All"
-                size="small"
-                disabled={!allDirs.length}
-                onClick={() => setExpanded(new Set())}
-              />
-            </div>
-            {error && <div className={styles.message}>{error}</div>}
-            {!files && !error && (
-              <div className={styles.message}>
-                <Spinner size={12} />
-              </div>
-            )}
-            {files && (
-              <Tree<FileTreeNode<LogChange>>
-                handleRef={treeRef}
-                roots={tree}
-                getKey={(n) => n.key}
-                getLabel={(n) => n.name}
-                getChildren={(n) => (n.file ? undefined : n.children)}
-                isExpandable={(n) => !n.file}
-                expanded={expanded ?? new Set(allDirs)}
-                onExpandedChange={(next) => setExpanded(next)}
-                selected={selectedKeys}
-                onSelectionChange={(sel) => {
-                  setSelectedKeys(sel);
-                  previewSelection(sel);
-                }}
-                renderNode={(n) => <ChangedFileRow node={n} flat={!groupByDirectory} />}
-                onActivate={(n) => n.file && void showChangesDiff([n.file])}
-                onContextMenu={onFileMenu}
-                aria-label="Changed files"
-                className={styles.fileTree}
-              />
-            )}
-          </div>
-        </SplitPanel>
-        <SplitHandle />
-        <SplitPanel id="message" minSize="60px">
-          <div className={styles.messageBox}>
-            {many ? (
-              chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
+      {embedded ? (
+        <SplitGroup
+          orientation={diffLocation === "right" ? "horizontal" : "vertical"}
+          id={`git-log-preview-${diffLocation}`}
+        >
+          <SplitPanel id="changes" defaultSize="55%" minSize="20%">
+            {details}
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel id="preview" minSize="20%">
+            {selectedChange ? (
+              selectedChange.mergeParents?.length === 2 && selectedChange.after ? (
+                <LogMergePreview
+                  input={{
+                    kind: "git-merge-diff",
+                    key: `git-merge-diff:${selectedChange.repo}:${selectedChange.after}:${selectedChange.path}`,
+                    data: {
+                      repo: selectedChange.repo,
+                      revision: selectedChange.after,
+                      path: selectedChange.path,
+                      parents: selectedChange.mergeParents,
+                    },
+                  }}
+                />
+              ) : (
+                <LogDiffPreview key={diffInput(selectedChange.diff).key} input={diffInput(selectedChange.diff)} />
+              )
             ) : (
-              <CommitMessage commit={commit} />
+              <EmptyState>
+                <T>Select a file to preview its changes</T>
+              </EmptyState>
             )}
-          </div>
-        </SplitPanel>
-      </SplitGroup>
+          </SplitPanel>
+        </SplitGroup>
+      ) : (
+        details
+      )}
     </div>
   );
 }
 
 /** A commit's message and metadata; `compact` (one of several selected): without the body. */
 function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: boolean }) {
-  const [subject, ...bodyLines] = commit.message.replace(/\s+$/, "").split("\n");
+  const { details, error } = useCommitDetails(commit, !compact);
+  const repo = commitRepo(commit) ?? currentRepo();
+  const message = details?.message || commit.message;
+  const [subject, ...bodyLines] = message.replace(/\s+$/, "").split("\n");
   const body = compact ? "" : bodyLines.join("\n").replace(/^\n+/, "");
   return (
     <div className={clsx(compact && styles.commitEntry)}>
       <div className={styles.subjectLine}>
-        <IssueText text={subject ?? ""} />
+        <CommitMessageText text={subject ?? ""} repo={repo} />
+        {/* Only a message with a body has more to show. */}
+        {body && (
+          <button
+            type="button"
+            className={clsx(styles.linkButton, styles.expandMessage)}
+            onClick={() =>
+              openDialog((close) => (
+                <Dialog open title={tx`Commit ${commit.shortId}`} width={760} onClose={close}>
+                  <div className={clsx(styles.messageBox, styles.fullMessage)}>
+                    <CommitMessageText text={message} repo={repo} />
+                  </div>
+                </Dialog>
+              ))
+            }
+          >
+            {tx("Expand Commit Message")}
+          </button>
+        )}
       </div>
       {body && (
         <div className={styles.fullMessage}>
-          <IssueText text={body} />
+          <CommitMessageText text={body} repo={repo} />
         </div>
       )}
       <div className={clsx(styles.meta, compact && styles.metaCompact)}>
@@ -1498,8 +2546,57 @@ function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: 
         {commit.author} &lt;{commit.email}&gt;
         {commit.timeMs ? " " + tx`on ${new Date(commit.timeMs).toLocaleString()}` : ""}
       </div>
-      {commit.parents.length > 1 && (
-        <div className={styles.meta}>{tx`Merge of ${commit.parents.map((p) => p.slice(0, 8)).join(", ")}`}</div>
+      {!compact &&
+        commit.committer &&
+        (commit.committer !== commit.author ||
+          commit.committerEmail !== commit.email ||
+          commit.commitTimeMs !== commit.timeMs) && (
+          <div className={styles.meta}>
+            {tx("Committed by")} {commit.committer} &lt;{commit.committerEmail}&gt;{" "}
+            {commit.commitTimeMs ? new Date(commit.commitTimeMs).toLocaleString() : ""}
+          </div>
+        )}
+      {commit.parents.length > 0 && (
+        <div className={styles.meta}>
+          {tx(commit.parents.length > 1 ? "Merge of" : "Parent")}{" "}
+          {commit.parents.map((id, i) => (
+            <span key={id}>
+              {i > 0 ? ", " : ""}
+              <button type="button" className={styles.linkButton} onClick={() => void goToRef(id, repo)}>
+                {id.slice(0, 8)}
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {details && (
+        <>
+          <div className={styles.meta}>
+            {tx("Containing branches")}:{" "}
+            {details.containingBranches.length
+              ? details.containingBranches.map((branch, i) => (
+                  <span key={branch}>
+                    {i > 0 ? ", " : ""}
+                    <button type="button" className={styles.linkButton} onClick={() => void goToRef(branch, repo)}>
+                      {branch}
+                    </button>
+                  </span>
+                ))
+              : tx("None")}
+          </div>
+          <div
+            className={styles.meta}
+            title={[details.signer, details.key, details.fingerprint].filter(Boolean).join("\n")}
+          >
+            {tx("Signature")}: {signatureLabel(details.signature)}
+            {details.signer ? ` · ${details.signer}` : ""}
+          </div>
+        </>
+      )}
+      {error && (
+        <div role="status" className={styles.meta}>
+          {tx("Could not load containing branches or signature details")}
+        </div>
       )}
       {commit.refs.length > 0 && (
         <div className={styles.meta}>
@@ -1510,30 +2607,87 @@ function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: 
   );
 }
 
+function signatureLabel(code: string) {
+  return tx(
+    (
+      {
+        G: "Verified",
+        U: "Good signature with unknown trust",
+        B: "Bad signature",
+        E: "Could not verify",
+        N: "Unsigned",
+        X: "Expired signature",
+        Y: "Expired signing key",
+        R: "Revoked signing key",
+      } as Record<string, string>
+    )[code] ?? "Could not verify",
+  );
+}
+
+function CommitSignature({ commit }: { commit: Commit }) {
+  const { details, error } = useCommitDetails(commit);
+  return (
+    <span title={details ? [details.signer, details.key, details.fingerprint].filter(Boolean).join("\n") : undefined}>
+      {details ? signatureLabel(details.signature) : error ? tx("Could not verify") : tx("Loading…")}
+    </span>
+  );
+}
+
+function CommitMessageText({ text, repo }: { text: string; repo: string | null | undefined }) {
+  return text.split(/\b([a-fA-F0-9]{7,64})\b/g).map((part, i) =>
+    i % 2 ? (
+      <button type="button" className={styles.linkButton} key={i} onClick={() => void goToRef(part, repo)}>
+        {part}
+      </button>
+    ) : (
+      <IssueText key={i} text={part} />
+    ),
+  );
+}
+
 /** IDEA's changes browser context menu in the Git Log; `changes` = the files it acts on. */
 export function changesMenu(changes: LogChange[]): MenuItem[] {
   const one = changes.length === 1 ? changes[0]! : null;
   return [
     { kind: "action", action: "vcs.log.changes.showDiff", arg: changes },
-    { kind: "action", action: "vcs.log.changes.compareWithLocal", arg: changes, disabled: !one?.after },
-    { kind: "action", action: "vcs.log.changes.compareBeforeWithLocal", arg: changes, disabled: !one?.before },
+    { kind: "action", action: "vcs.log.changes.compareWithLocal", arg: changes, disabled: !one?.after || one.readOnly },
+    {
+      kind: "action",
+      action: "vcs.log.changes.compareBeforeWithLocal",
+      arg: changes,
+      disabled: !one?.before || one.readOnly,
+    },
     { kind: "separator" },
     {
       kind: "action",
       action: "vcs.log.changes.jumpToSource",
       arg: changes,
-      disabled: !changes.some((c) => c.after),
+      disabled: !changes.some((c) => c.after && !c.readOnly),
     },
-    { kind: "separator" },
-    { kind: "action", action: "vcs.log.changes.revert", arg: changes },
-    { kind: "action", action: "vcs.log.changes.getFromRevision", arg: changes },
     { kind: "separator" },
     {
       kind: "action",
-      action: "vcs.showHistory",
-      arg: one ? absolutePath(one.path, one.repo) : undefined,
-      disabled: !one?.after,
+      action: "vcs.log.changes.revert",
+      arg: changes,
+      disabled: changes.some((c) => c.readOnly) || new Set(changes.map((c) => c.repo)).size > 1,
     },
+    {
+      kind: "action",
+      action: "vcs.log.changes.getFromRevision",
+      arg: changes,
+      disabled: changes.some((c) => c.readOnly),
+    },
+    { kind: "separator" },
+    ...(one?.readOnly
+      ? [{ label: "Show History for File", run: () => openLogTab("history", absolutePath(one.path, one.repo)) }]
+      : [
+          {
+            kind: "action",
+            action: "vcs.showHistory",
+            arg: one ? absolutePath(one.path, one.repo) : undefined,
+            disabled: !one?.after,
+          } satisfies MenuItem,
+        ]),
   ];
 }
 

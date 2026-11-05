@@ -113,7 +113,16 @@ describe("service reordering integration", () => {
     const target = within(tree()).getByText("Gateway").closest('[role="treeitem"]')!;
     Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
     const pointer = (el: Element | Window, type: string, y: number) =>
-      fireEvent(el, new MouseEvent(type, { bubbles: true, button: 0, clientX: 70, clientY: y }));
+      fireEvent(
+        el,
+        new MouseEvent(type, {
+          bubbles: true,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          clientX: 70,
+          clientY: y,
+        }),
+      );
     pointer(source, "pointerdown", 60);
     pointer(window, "pointermove", 26);
     expect(document.querySelector('[aria-hidden="true"][role="treeitem"]')).not.toBeNull();

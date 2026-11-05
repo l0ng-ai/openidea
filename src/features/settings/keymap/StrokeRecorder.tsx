@@ -5,6 +5,7 @@
 import { forwardRef, useEffect, useRef, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { formatBinding, strokeOf, suspendKeyboardDispatch } from "@/platform/keymap";
+import { T } from "@/ui";
 import styles from "./Keymap.module.css";
 
 export interface StrokeRecorderProps {
@@ -81,7 +82,9 @@ export const StrokeRecorder = forwardRef<HTMLDivElement, StrokeRecorderProps>(fu
       {value ? (
         <span className={styles.recorded}>{formatBinding(value)}</span>
       ) : (
-        <span className={styles.recorderPlaceholder}>{placeholder}</span>
+        <span className={styles.recorderPlaceholder}>
+          <T>{placeholder}</T>
+        </span>
       )}
     </div>
   );

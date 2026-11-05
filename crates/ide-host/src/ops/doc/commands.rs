@@ -18,7 +18,7 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send
 /// editor buffer, so syntax features and language-server requests work in it.
 pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResult<DocumentInfo> {
     let project = host.project(window)?;
-    let vd = project.lsp.virtual_document(&uri).await?;
+    let vd = crate::ops::lsp::lsp_virtual_document(host, window, uri).await?;
     blocking(move || project.documents.open_virtual(&vd.uri, vd.language_id, &vd.text)).await
 }
 
@@ -127,7 +127,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });
     d.add("doc_set_line_ending", |c| async move {
-        doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)
+        blocking(move || doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)).await
     });
     d.add("doc_outline", |c| async move { doc_outline(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_folding", |c| async move { doc_folding(&c.host, &c.window, c.arg("doc")?).await });

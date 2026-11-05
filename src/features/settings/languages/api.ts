@@ -4,7 +4,16 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { call, commands, isTauri, nextRequestId, type PythonPackage, type Sdk, type SdkKind } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isTauri,
+  nextRequestId,
+  type PhpLanguageLevels,
+  type PythonPackage,
+  type Sdk,
+  type SdkKind,
+} from "@/platform/ipc";
 
 export type { PythonPackage, Sdk, SdkKind };
 
@@ -95,6 +104,11 @@ export function pip(
 /** Interpreter the project uses when none is configured (its virtualenv). */
 export function effectivePython(): Promise<string | null> {
   return isTauri() ? call(commands.sdkPythonEffective()) : Promise.resolve(null);
+}
+
+/** The PHP language level of the project `path` belongs to; null outside Tauri. */
+export function phpLanguageLevel(path: string): Promise<PhpLanguageLevels | null> {
+  return isTauri() ? call(commands.sdkPhpLanguageLevel(path)) : Promise.resolve(null);
 }
 
 /** File / folder chooser (Tauri dialog); null when cancelled or outside Tauri. */

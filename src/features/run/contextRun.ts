@@ -8,6 +8,8 @@ import { activeEditor } from "@/editor/api";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { validateProjectStructure } from "@/platform/languageSettings";
+import { useBuildModel } from "@/platform/buildModel";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { showContextMenu, type MenuItem } from "@/ui";
 import {
@@ -27,9 +29,11 @@ import {
   scriptLanguage,
   type ContextInput,
   type Produced,
+  hasRelativeImports,
 } from "./producers";
 import { runWithExecutor } from "./executors";
 import { goModulePath, loadGoModules } from "./goModules";
+import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
 import { toolEnv } from "./runtimes";
 import { adoptTemporary, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
@@ -42,6 +46,31 @@ async function ensureConfigs() {
 }
 
 /** The focused editor's file, text and caret line. */
+/** Project folders outside its root: Project Structure content roots and Gradle modules (as of the last sync). */
+export function projectContentRoots(): string[] {
+  const own = validateProjectStructure(useProject.getState().settings?.projectStructure).contentRoots;
+  // The build model keeps the folders of modules outside the project absolute.
+  const gradle = (useBuildModel.getState().model?.gradle?.projects ?? [])
+    .map((p) => p.dir)
+    .filter((d) => isAbsolute(d));
+  return [...new Set([...own, ...gradle])];
+}
+
+const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+
+/**
+ * The project side of every run input (editor, gutter, menus, actions): built in one place
+ * so no entry point runs a project file as a stray one.
+ */
+export function projectContext(): Pick<ContextInput, "root" | "configs" | "goModule" | "contentRoots"> {
+  return {
+    root: useProject.getState().project?.root ?? null,
+    configs: useRun.getState().configs,
+    goModule: goModulePath,
+    contentRoots: projectContentRoots(),
+  };
+}
+
 export function editorInput(): ContextInput | null {
   const path = maybeEditorService()?.activePath() ?? activeEditor()?.ctx.path ?? null;
   if (!path || isVirtualUri(path)) return null;
@@ -49,12 +78,10 @@ export function editorInput(): ContextInput | null {
   const same = editor && editor.ctx.path === path;
   const state = same ? editor.view.state : null;
   return {
+    ...projectContext(),
     path,
-    root: useProject.getState().project?.root ?? null,
-    configs: useRun.getState().configs,
     content: state ? state.doc.sliceString(0, CONTENT_LIMIT) : undefined,
     line: state ? state.doc.lineAt(state.selection.main.head).number - 1 : undefined,
-    goModule: goModulePath,
   };
 }
 
@@ -63,7 +90,8 @@ export async function produceResolved(input: ContextInput, dir = false): Promise
   const configs = useRun.getState().configs;
   if (dir || /\.go$/.test(input.path)) await loadGoModules(input.root, configs);
   if (dir) return produceDirectory({ ...input, goModule: goModulePath });
-  const fresh = { ...input, configs, goModule: goModulePath };
+  if (/\.py$/.test(input.path) && hasRelativeImports(input.content)) await loadPythonPackages(input.path);
+  const fresh = { ...input, configs, goModule: goModulePath, pythonPackage: isPythonPackage };
   const named = produceContext(fresh, OPTIMISTIC);
   if (!named) return null;
   // Project configurations (tests, cargo, gradle…) need no runtime lookup.
@@ -148,7 +176,7 @@ export async function compiledDebugPlan(config: RunConfig): Promise<Produced | n
   } catch {
     return null;
   }
-  const input: ContextInput = { path, root, configs: useRun.getState().configs, content };
+  const input: ContextInput = { ...projectContext(), root, path, content };
   const env = await toolEnv(neededTools(input), path, root, false);
   if (m[2]) {
     // A test: find the target by name again.
@@ -262,13 +290,11 @@ function contextArg(arg: unknown): (ContextInput & { dir?: boolean }) | null {
   const editor = activeEditor();
   const state = editor && editor.ctx.path === a.path ? editor.view.state : null;
   return {
+    ...projectContext(),
     path: a.path,
     dir: a.dir,
-    root: useProject.getState().project?.root ?? null,
-    configs: useRun.getState().configs,
     content: a.content ?? state?.doc.sliceString(0, CONTENT_LIMIT) ?? peekContent(a.path),
     line: a.line,
-    goModule: goModulePath,
   };
 }
 
@@ -327,12 +353,11 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
   const content = ctx.text ?? peekContent(path);
   const line = menu === "editor" ? ctx.line : undefined;
   const input: ContextInput = {
-    path,
+    ...projectContext(),
     root,
-    configs: useRun.getState().configs,
+    path,
     content: content?.slice(0, CONTENT_LIMIT),
     line,
-    goModule: goModulePath,
   };
   const p = dir ? produceDirectory(input) : produceContext(input, OPTIMISTIC);
   if (!p) return [];

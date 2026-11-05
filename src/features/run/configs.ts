@@ -13,6 +13,8 @@ const KIND_LABELS: Record<string, string> = {
   go: "Go",
   python: "Python",
   pytest: "pytest",
+  phpunit: "PHPUnit",
+  composer: "Composer",
   make: "Make",
   cmake: "CMake",
   just: "Just",
@@ -67,6 +69,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-gradle";
     case "maven":
       return "file-maven";
+    case "dotnet":
+    case "dotnet-test":
+      return "file-csharp";
     case "go":
       return "file-go";
     case "node":
@@ -108,6 +113,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "python":
     case "pytest":
       return "file-python";
+    case "phpunit":
+    case "composer":
+      return "file-php";
     default:
       return useRunConfigTypes.getState().types.get(config.kind)?.icon ?? "terminal";
   }
@@ -220,7 +228,7 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
   for (const t of config.beforeLaunch ?? []) {
     if (t.kind === "run" && (t.target === config.id || !all.some((c) => c.id === t.target)))
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";
-    else if (t.kind !== "build" && t.kind !== "run" && !(t.target ?? "").trim())
+    else if (t.kind !== "build" && t.kind !== "dotnetBuild" && t.kind !== "run" && !(t.target ?? "").trim())
       errors.beforeLaunch = "A before launch task is incomplete";
   }
   for (const key of Object.keys(config.env)) {

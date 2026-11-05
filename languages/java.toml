@@ -6,6 +6,13 @@ block-comment = ["/*", "*/"]
 indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "Java"
 tree-sitter = "java"
+scratch-template = '''
+class Scratch {
+    public static void main(String[] args) {
+        $END$
+    }
+}
+'''
 
 # Microsoft java-debug runs inside jdtls as a bundle (`initializationOptions.bundles`,
 # added when installed); sessions start with `vscode.java.startDebugSession` and the

@@ -56,9 +56,9 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.1"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.2"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.1.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.2.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
@@ -71,7 +71,7 @@ fn bundled_lombok_is_available_offline_and_repairs_missing_or_corrupt_files() {
     let env = Env::new();
     let data = env.root.parent().unwrap();
     let agent = managed_bundle(data, "lombok").unwrap();
-    let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+    let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
     assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
     for contents in [None, Some(b"incomplete jar".as_slice())] {
         if let Some(contents) = contents {
@@ -93,7 +93,7 @@ fn concurrent_windows_get_the_same_complete_bundled_lombok() {
         let windows: Vec<_> = (0..8).map(|_| scope.spawn(|| managed_bundle(data, "lombok").unwrap())).collect();
         let paths: Vec<_> = windows.into_iter().map(|window| window.join().unwrap()).collect();
         assert!(paths.iter().all(|path| path == &paths[0]));
-        let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+        let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
         assert_eq!(sources::sha256_file(&paths[0]).unwrap(), checksum);
     });
 }
@@ -130,6 +130,11 @@ fn everything_missing_on_an_empty_system() {
     assert_eq!(ty.command, "ty");
     assert_eq!(ty.install_method.as_deref(), Some("pip (virtualenv)"));
     assert!(ty.languages.iter().any(|language| language == "Python"));
+    let pyrefly = find(&list, "pyrefly");
+    assert_eq!(pyrefly.status, ToolStatus::Missing);
+    assert_eq!(pyrefly.command, "pyrefly");
+    assert_eq!(pyrefly.install_method.as_deref(), Some("pip (virtualenv)"));
+    assert!(pyrefly.languages.iter().any(|language| language == "Python"));
     let angular = find(&list, "angular-language-server");
     assert_eq!(angular.command, "ngserver");
     assert_eq!(angular.install_method.as_deref(), Some("npm"));
@@ -150,14 +155,30 @@ fn everything_missing_on_an_empty_system() {
 fn interchangeable_servers_list_their_alternatives() {
     let env = Env::new();
     let list = env.tools().list(&langs());
-    let python = ["basedpyright", "pyright", "ty"];
+    let python = ["basedpyright", "pyright", "ty", "pyrefly"];
     for name in python {
         assert_eq!(find(&list, name).alternatives, python);
     }
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
+    assert!(find(&list, "ruff").alternatives.is_empty());
     assert!(find(&list, "rust-analyzer").alternatives.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn python_servers_name_uv_when_it_makes_the_virtualenv() {
+    let env = Env::new();
+    env.script(&env.sys, "uv", "exit 0");
+    let list = env.tools().list(&langs());
+    for name in ["basedpyright", "ty", "ruff"] {
+        let tool = find(&list, name);
+        assert_eq!(tool.install_method.as_deref(), Some("uv (virtualenv)"), "{name}");
+        assert!(tool.can_install, "{name}: uv alone is enough");
+    }
+    // debugpy's private copy is always made by `python -m pip`.
+    assert_eq!(find(&list, "debugpy").install_method.as_deref(), Some("pip (private copy)"));
 }
 
 #[cfg(unix)]
@@ -677,4 +698,18 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     }
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();
     assert!(!env.root.join("rust-analyzer").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn python_probes_run_in_an_empty_private_directory() {
+    let env = Env::new();
+    // A stand-in interpreter that reports where it was started.
+    env.script(&env.sys, "python3", "pwd; ls -A");
+    let tools = env.tools();
+    let python = tools.python().unwrap();
+    let out = tools.python_command(&python).output().unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let dir = env.root.join(".python-cwd");
+    assert_eq!(out.trim(), dir.canonicalize().unwrap().to_string_lossy());
 }

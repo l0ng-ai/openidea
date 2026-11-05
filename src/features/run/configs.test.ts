@@ -152,14 +152,22 @@ describe("context configuration", () => {
     cfg({ id: "pytest", kind: "pytest", command: "uv", args: ["run", "pytest"], isTest: true }),
     cfg({ id: "python:module:app", kind: "python", command: ".venv/bin/python", args: ["-m", "app"] }),
     cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true }),
+    cfg({ id: "rspec", kind: "rspec", command: "bundle", args: ["exec", "rspec"], isTest: true }),
+    cfg({ id: "rake:test", kind: "rake", command: "bundle", args: ["exec", "rake", "test"], isTest: true }),
   ];
 
   it("classifies files", () => {
     expect(fileRole("src/a.test.ts")).toBe("test");
     expect(fileRole("pkg/x_test.go")).toBe("test");
     expect(fileRole("tests/test_api.py")).toBe("test");
+    // Django's default test module (pattern `test*.py`); a script outside Django projects.
+    expect(fileRole("polls/tests.py", undefined, false, true)).toBe("test");
+    expect(fileRole("polls/tests.py")).toBe("script");
     expect(fileRole("src/test/kotlin/OrderControllerTest.kt")).toBe("test");
     expect(fileRole("tests/integration.rs")).toBe("test");
+    expect(fileRole("spec/models/user_spec.rb")).toBe("test");
+    expect(fileRole("test/user_test.rb")).toBe("test");
+    expect(fileRole("lib/tasks/gen.rb")).toBe("script");
     expect(fileRole("src/main.rs")).toBe("main");
     expect(fileRole("cmd/main.go", "package main\nfunc main() {}")).toBe("main");
     expect(fileRole("tools/gen.py")).toBe("script");
@@ -181,10 +189,45 @@ describe("context configuration", () => {
     expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "--", "src/a.spec.js"]);
   });
 
+  it("narrows rspec and rake test runs to the file", () => {
+    expect(contextConfig("spec/models/user_spec.rb", configs)!.args).toEqual([
+      "exec",
+      "rspec",
+      "spec/models/user_spec.rb",
+    ]);
+    expect(contextConfig("test/user_test.rb", configs)!.args).toEqual([
+      "exec",
+      "rake",
+      "test",
+      "TEST=test/user_test.rb",
+    ]);
+  });
+
   it("narrows go, cargo, pytest and gradle runs", () => {
     expect(contextConfig("internal/calc/calc_test.go", configs)!.args).toEqual(["test", "./internal/calc"]);
     expect(contextConfig("tests/api.rs", configs)!.args).toEqual(["test", "--test", "api"]);
     expect(contextConfig("tests/test_math.py", configs)!.args).toEqual(["run", "pytest", "tests/test_math.py"]);
+    // `tests.py` is a test module in Django projects only.
+    expect(contextConfig("polls/tests.py", configs)).toMatchObject({
+      kind: "python",
+      isTest: false,
+      command: ".venv/bin/python",
+      args: ["polls/tests.py"],
+    });
+    const django = cfg({
+      id: "django:test",
+      kind: "django-test",
+      command: "uv",
+      args: ["run", "python", "manage.py", "test"],
+      isTest: true,
+    });
+    expect(contextConfig("polls/tests.py", [django])!.args).toEqual([
+      "run",
+      "python",
+      "manage.py",
+      "test",
+      "polls.tests",
+    ]);
     expect(contextConfig("src/test/kotlin/OrderControllerTest.kt", configs)!.args).toEqual([
       "test",
       "--tests",
@@ -211,6 +254,37 @@ describe("context configuration", () => {
     });
     expect(contextConfig("scripts/build.bat", configs, undefined, false)).toBeNull();
     expect(contextConfig("docs/readme.md", configs)).toBeNull();
+  });
+
+  it("runs a module that imports relatively as a module of its package", () => {
+    const cli = "from .models import Priority, TaskList\n\n\ndef main():\n    pass\n";
+    expect(contextConfig("src/tasks/cli.py", configs, cli)).toMatchObject({
+      kind: "python",
+      command: "../.venv/bin/python",
+      args: ["-m", "tasks.cli"],
+      cwd: "src",
+      debugAdapter: "debugpy",
+    });
+    expect(contextConfig("app/api/routes.py", [], "from . import models\n")).toMatchObject({
+      command: "python3",
+      args: ["-m", "app.api.routes"],
+      cwd: null,
+    });
+    expect(contextConfig("src/app/__main__.py", [], "from .cli import main\n")).toMatchObject({
+      args: ["-m", "app"],
+      cwd: "src",
+    });
+    // Inside a nested Python project: from its folder (the venv command stays relative to the root).
+    const nested = [cfg({ id: "pytest", kind: "pytest", command: "backend/.venv/bin/pytest", cwd: "backend" })];
+    expect(contextConfig("backend/app/jobs.py", nested, "from .db import session\n")).toMatchObject({
+      command: "../backend/.venv/bin/python",
+      args: ["-m", "app.jobs"],
+      cwd: "backend",
+    });
+    // Absolute imports, a top-level file, a folder that can't be a package: as a script.
+    expect(contextConfig("src/tasks/cli.py", configs, "import os\n")!.args).toEqual(["src/tasks/cli.py"]);
+    expect(contextConfig("tool.py", [], "from .x import y\n")!.args).toEqual(["tool.py"]);
+    expect(contextConfig("my-scripts/run.py", [], "from .x import y\n")!.args).toEqual(["my-scripts/run.py"]);
   });
 
   it("runs pytest for a test file even without a detected pytest config", () => {
@@ -246,5 +320,27 @@ describe("context configuration", () => {
     expect(contextConfig("tools/gen.py", venv)).toMatchObject({ command: ".venv/bin/python", args: ["tools/gen.py"] });
     const uv = [cfg({ id: "pytest", kind: "pytest", command: "uv", args: ["run", "pytest"], isTest: true })];
     expect(contextConfig("tools/gen.py", uv)).toMatchObject({ command: "uv", args: ["run", "python", "tools/gen.py"] });
+  });
+
+  it("takes the interpreter from a Django runserver config without its arguments", () => {
+    const runserver = (command: string, args: string[]) =>
+      cfg({ id: "django:runserver", kind: "python", command, args: [...args, "manage.py", "runserver"] });
+    expect(contextConfig("tools/seed.py", [runserver(".venv/bin/python", [])])).toMatchObject({
+      command: ".venv/bin/python",
+      args: ["tools/seed.py"],
+    });
+    expect(contextConfig("tools/seed.py", [runserver("uv", ["run", "python"])])).toMatchObject({
+      command: "uv",
+      args: ["run", "python", "tools/seed.py"],
+    });
+    expect(contextConfig("worker/test_worker.py", [runserver(".venv/bin/python", [])])).toMatchObject({
+      args: ["-m", "pytest", "worker/test_worker.py"],
+    });
+  });
+
+  it("keeps the interpreter of a plain python config", () => {
+    const plain = [cfg({ id: "python:module:app", kind: "python", command: "python3", args: ["-m", "app"] })];
+    expect(contextConfig("tools/gen.py", plain)).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+    expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
   });
 });

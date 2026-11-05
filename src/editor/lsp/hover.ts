@@ -26,7 +26,7 @@ import { offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { caretAnchor, focusPopup, openPopup, useLspPopup, type DefinitionTarget, type DocEntry } from "./popupStore";
 import { selectedLookupDoc, showLookupDocs } from "./completion";
-import { identifierAt, readFileLines, withDocument } from "./files";
+import { readFileLines, targetLabel, withDocument } from "./files";
 import { docWindowVisible, moveDocPopupToWindow, showInDocWindow } from "./docs";
 import { structure } from "@/editor/structure";
 import { basename } from "@/platform/project";
@@ -98,7 +98,7 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
     fix.className = "cm-lsp-link-button";
     const keys = shortcutLabel("code.showIntentions");
     fix.textContent = keys ? `More actions… ${keys}` : "More actions…";
-    if (d.severity === "error" || d.severity === "warning") offerQuickFix(view, meta, fix, from, to);
+    if (d.severity !== "hint") offerQuickFix(view, meta, fix, from, to);
     fix.addEventListener("mousedown", (e) => e.preventDefault());
     fix.addEventListener("click", () => {
       view.dispatch({ selection: EditorSelection.cursor(from) });
@@ -326,7 +326,7 @@ async function definitionTarget(loc: Location, fallbackLanguage: string | null):
   const [lines, declaration] = await Promise.all([readFileLines(loc.path), declarationRange(loc)]);
   if (!lines) return null;
   const { first, last } = definitionSpan(loc, lines.length, declaration);
-  const name = identifierAt(lines[loc.range.start.line] ?? "", loc.range.start.col) ?? basename(loc.path);
+  const name = targetLabel(lines[loc.range.start.line] ?? "", loc.range.start.col) ?? basename(loc.path);
   return {
     location: loc,
     name,

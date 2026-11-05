@@ -38,6 +38,8 @@ export interface DebugSession {
   /** Originating configuration, retained for toolbar targeting and prepared debug reruns. */
   runConfig?: RunConfig;
   startedAt?: number;
+  /** When it terminated. */
+  endedAt?: number;
   adapter: string;
   parent: DebugSessionId | null;
   /** Launch configuration (root sessions), used by Rerun. */
@@ -223,14 +225,56 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   return event.kind === "started" ? adoptSession(id, { name: event.name, adapter: event.adapter }) : adoptSession(id);
 }
 
-/** A start finished (`id` on success): sessions no start claimed are failed starts' leftovers. */
-function settleStart(id: DebugSessionId | null) {
+/**
+ * A start finished (`id` on success): sessions no start claimed are failed starts' leftovers,
+ * kept as terminated or, with `discard`, removed.
+ */
+function settleStart(id: DebugSessionId | null, discard = false) {
   pendingStarts = Math.max(0, pendingStarts - 1);
   if (id != null) provisional.delete(id);
   if (pendingStarts > 0) return;
   const leftovers = [...provisional];
   provisional.clear();
+  if (discard) {
+    useDebug.setState((st) => {
+      const sessions = { ...st.sessions };
+      const console = { ...st.console };
+      for (const s of leftovers) {
+        delete sessions[s];
+        delete console[s];
+        ansiStreams.delete(s);
+      }
+      return { sessions, console, active: st.active != null && sessions[st.active] ? st.active : null };
+    });
+    publishContext();
+    return;
+  }
   for (const s of leftovers) if (isLive(useDebug.getState().sessions[s])) markTerminated(s);
+}
+
+/** Drops finished sessions; running ones stay (multiple concurrent sessions are fine). */
+function dropFinished() {
+  useDebug.setState((s) => {
+    const sessions = Object.fromEntries(Object.entries(s.sessions).filter(([, v]) => isLive(v)));
+    const consoleLines = Object.fromEntries(Object.entries(s.console).filter(([k]) => sessions[+k]));
+    for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
+    return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
+  });
+  publishContext();
+}
+
+/**
+ * A JDWP agent in server mode listens again, on a new port, when its debugger detaches; a
+ * debugger that detaches as the JVM exits leaves an announcement of a JVM about to be gone.
+ * An attach to `process` this soon after a session on it ended may be to such a JVM.
+ */
+const RELISTEN_MS = 3000;
+function justDetached(process: RunId | null | undefined): boolean {
+  if (process == null) return false;
+  const now = Date.now();
+  return Object.values(useDebug.getState().sessions).some(
+    (s) => s.process === process && s.status === "terminated" && s.endedAt != null && now - s.endedAt < RELISTEN_MS,
+  );
 }
 
 export function publishContext() {
@@ -460,14 +504,10 @@ export async function startSession(
     notifications().notify({ group: "run", level: "warning", title: "Debugging needs the desktop app" });
     return null;
   }
-  // Drop finished sessions; keep running ones (multiple concurrent sessions are fine).
-  useDebug.setState((s) => {
-    const sessions = Object.fromEntries(Object.entries(s.sessions).filter(([, v]) => isLive(v)));
-    const consoleLines = Object.fromEntries(Object.entries(s.console).filter(([k]) => sessions[+k]));
-    for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
-    return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
-  });
-  publishContext();
+  // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
+  const afterDetach = justDetached(options.process);
+  const previousActive = useDebug.getState().active;
+  if (!afterDetach) dropFinished();
   try {
     if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -482,6 +522,7 @@ export async function startSession(
     const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
+    if (afterDetach) dropFinished();
     if (options.preparation?.signal.aborted) {
       await call(commands.debugStop(id)).catch(() => undefined);
       settleStart(id);
@@ -526,7 +567,16 @@ export async function startSession(
     void syncSpecial();
     return id;
   } catch (e) {
-    settleStart(null);
+    settleStart(null, afterDetach);
+    if (afterDetach) {
+      // The JVM that announced the port ended as its previous debugger detached.
+      console.info("Debugger not attached: the JVM is gone", { name: launch.name, error: e });
+      const { sessions, active } = useDebug.getState();
+      if (active == null && previousActive != null && sessions[previousActive])
+        useDebug.setState({ active: previousActive });
+      publishContext();
+      return null;
+    }
     if (options.preparation?.signal.aborted || isCancelled(e)) return null;
     if (options.preparation)
       appendConsole(options.preparation.id, "stderr", (e instanceof Error ? e.message : String(e)) + "\n");
@@ -612,7 +662,7 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
 }
 
 function markTerminated(id: DebugSessionId) {
-  patch(id, { status: "terminated", frames: [], selectedFrame: null, stoppedThread: null });
+  patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
   if (st.active === id) {
     // Prefer another live session (e.g. the parent of a finished child).
@@ -644,6 +694,7 @@ export function selectSession(id: DebugSessionId) {
 
 export async function selectThread(id: DebugSessionId, threadId: number) {
   patch(id, { selectedThread: threadId, frames: [], selectedFrame: null });
+  updateExecutionPoint();
   await loadFrames(id, threadId, true);
 }
 
@@ -652,7 +703,7 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
   updateExecutionPoint();
   const s = useDebug.getState().sessions[id];
   const frame = s?.frames.find((f) => f.id === frameId);
-  if (reveal && frame?.path) {
+  if (reveal && useDebug.getState().active === id && frame?.path) {
     void maybeEditorService()?.openFile(frame.path, {
       selection: { line: frame.line, col: frame.column },
       focus: false,
@@ -662,6 +713,7 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
 }
 
 async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean) {
+  const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
   try {
     frames = await call(commands.debugStackTrace(id, threadId));
@@ -669,7 +721,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean)
     console.warn("stackTrace failed", e);
   }
   const s = useDebug.getState().sessions[id];
-  if (!s || s.status !== "paused" || s.selectedThread !== threadId) return;
+  if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames });
   const top = frames.find((f) => f.path && f.presentationHint !== "label") ?? frames[0];
   if (top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
@@ -707,19 +759,21 @@ async function loadThreads(id: DebugSessionId) {
 
 /** Locals of `frameId` (first non-expensive scope) for inline values. */
 async function loadLocals(id: DebugSessionId, frameId: number) {
-  const values: Record<string, string> = {};
+  const frames = useDebug.getState().sessions[id]?.frames;
+  const values: Record<string, string> = Object.create(null);
   try {
     const scopes = await call(commands.debugScopes(id, frameId));
     const scope = scopes.find((sc) => !sc.expensive);
     if (scope) {
       const vars = await call(commands.debugVariables(id, scope.variablesReference));
-      for (const v of vars) if (v.name && !(v.name in values)) values[v.name] = v.value;
+      for (const v of vars) if (v.name && !Object.hasOwn(values, v.name)) values[v.name] = v.value;
     }
   } catch {
     // No inline values.
   }
   const s = useDebug.getState().sessions[id];
-  if (useDebug.getState().active !== id || s?.selectedFrame !== frameId) return;
+  if (useDebug.getState().active !== id || s?.status !== "paused" || s.selectedFrame !== frameId || s.frames !== frames)
+    return;
   useExecutionPoint.setState({ values });
 }
 
@@ -729,6 +783,7 @@ export async function showExecutionPoint(id: DebugSessionId) {
   if (!s || s.status !== "paused" || s.stoppedThread == null) return;
   if (s.selectedThread !== s.stoppedThread) {
     patch(id, { selectedThread: s.stoppedThread, frames: [], selectedFrame: null });
+    updateExecutionPoint();
     await loadFrames(id, s.stoppedThread, false);
   }
   const cur = useDebug.getState().sessions[id];
@@ -755,6 +810,32 @@ export function updateExecutionPoint() {
   const cur = useExecutionPoint.getState();
   if (cur.path === frame.path && cur.line === frame.line && cur.top === top) return;
   useExecutionPoint.setState({ path: frame.path, line: frame.line, top, values: {} });
+}
+
+/** Invalidate suspended data before sending a command that resumes execution. */
+export async function resumeExecution(id: DebugSessionId, request: () => Promise<unknown>) {
+  const before = useDebug.getState().sessions[id];
+  if (!before || before.status !== "paused") return;
+  const frames: StackFrame[] = [];
+  patch(id, { status: "running", frames, selectedFrame: null, stoppedThread: null });
+  updateExecutionPoint();
+  try {
+    await request();
+  } catch (e) {
+    const current = useDebug.getState().sessions[id];
+    // A stop/continue/termination received during the request owns the newer state.
+    if (current?.status === "running" && current.frames === frames) {
+      patch(id, {
+        status: before.status,
+        frames: before.frames,
+        selectedFrame: before.selectedFrame,
+        stoppedThread: before.stoppedThread,
+      });
+      updateExecutionPoint();
+      if (before.selectedFrame != null) void loadLocals(id, before.selectedFrame);
+    }
+    throw e;
+  }
 }
 
 // --- watches -------------------------------------------------------------------
@@ -862,6 +943,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       });
       useDebug.setState((st) => ({ active: id, stopSeq: st.stopSeq + 1 }));
       publishContext();
+      updateExecutionPoint();
       void loadThreads(id);
       void loadFrames(id, event.threadId, true);
       const dbg = workflowSettings().debugger;
@@ -876,6 +958,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "continued": {
       const cur = useDebug.getState().sessions[id]!;
       if (cur.status === "terminated") break;
+      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) break;
       patch(id, {
         status: "running",
         frames: [],

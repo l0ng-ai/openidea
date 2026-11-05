@@ -8,6 +8,7 @@
  * at either level (`ide:<key>` / `project:<key>`).
  * Mirrors `ide-core::inspection_settings`.
  */
+import { create } from "zustand";
 import type { Diagnostic, Severity } from "@/bindings";
 import { useProject } from "./project";
 
@@ -222,6 +223,16 @@ export interface BuiltinInspection {
 export const SPELLING_PRODUCER = "spelling";
 export const SPELLING_INSPECTION = "builtin:spelling";
 
+/** Syntax errors of the built-in parser, for files no language server checks. */
+export const SYNTAX_ERRORS_PRODUCER = "syntax";
+
+export const DEPENDENCY_PRODUCER = "dependency-versions";
+export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
+
+/** Conflict markers left in a file by a merge, rebase, cherry-pick or stash that stopped on conflicts. */
+export const CONFLICT_MARKERS_PRODUCER = "merge-conflict-markers";
+export const CONFLICT_MARKERS_INSPECTION = "builtin:merge-conflict-markers";
+
 /** IDEA's Typo options: which parts of source files are checked (plain text always is). */
 export const SPELLING_OPTIONS = {
   code: "processCode",
@@ -231,6 +242,32 @@ export const SPELLING_OPTIONS = {
 
 /** Checks the IDE runs itself (not a language server). */
 export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
+  {
+    id: CONFLICT_MARKERS_INSPECTION,
+    producer: CONFLICT_MARKERS_PRODUCER,
+    name: "Unresolved merge conflict markers",
+    group: "Version control",
+    description:
+      "Reports the <<<<<<<, ======= and >>>>>>> lines a merge leaves in a file, whatever its language and whether or not a language server is installed.",
+    defaultLevel: "error",
+  },
+  {
+    id: DEPENDENCY_INSPECTION,
+    producer: DEPENDENCY_PRODUCER,
+    name: "Newer dependency version available",
+    group: "Cargo",
+    description: "Reports newer crate versions that Cargo.toml requirements do not already allow.",
+    defaultLevel: "weakWarning",
+  },
+  {
+    id: "builtin:syntax",
+    producer: SYNTAX_ERRORS_PRODUCER,
+    name: "Syntax errors",
+    group: "General",
+    description:
+      "Reports code the built-in parser cannot read, in files no language server checks (none is configured for the language, or it is not installed, stopped or crashed). A running language server reports syntax errors itself.",
+    defaultLevel: "error",
+  },
   {
     id: "builtin:file-references",
     producer: "file-references",
@@ -447,6 +484,12 @@ function loadSeen(): Map<string, SeenCode> {
   }
   return seen;
 }
+
+/**
+ * Names of the producers that aren't language servers, for Settings ›
+ * Inspections: plugins (`plugin:<id>`) by their names.
+ */
+export const useProducerNames = create<{ names: ReadonlyMap<string, string> }>(() => ({ names: new Map() }));
 
 /** Records the codes of a producer's diagnostics (persisted, shared with the Settings window). */
 export function noteDiagnosticCodes(producer: string, items: readonly Diagnostic[]) {

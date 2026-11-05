@@ -9,7 +9,7 @@ import { addFieldWatchpoint } from "../breakpoints/special";
 import { methodAt } from "../breakpoints/symbols";
 import { activeSession, addWatch, removeWatch, revealFrame, sessionSupports, setVariableValue } from "../state";
 import { blurDebugView, focusDebugView } from "./focusedView";
-import { classifyValue, sortVariables } from "../values";
+import { classifyValue, oneLine, sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./VariablesView.module.css";
 
@@ -428,11 +428,11 @@ function VarRow({ node, changed }: { node: VarNode; changed: boolean }) {
       </span>
       <span className={styles.eq}>=</span>
       {node.error ? (
-        <span className={styles.error}>{node.error}</span>
+        <span className={styles.error}>{oneLine(node.error)}</span>
       ) : (
         <>
           {node.typeName && <span className={styles.type}>{`{${node.typeName}}`}</span>}
-          <span className={clsx(styles.value, kind && styles[kind])}>{node.value}</span>
+          <span className={clsx(styles.value, kind && styles[kind])}>{oneLine(node.value)}</span>
         </>
       )}
     </span>

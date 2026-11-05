@@ -171,6 +171,8 @@ export const intellijWindows: Record<string, string[]> = {
   "refactor.inline": ["Ctrl+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Alt+Delete"],
+  "refactor.pullMembersUp": [],
+  "refactor.pushMembersDown": [],
 
   // File / editor tabs
   "file.save": ["Ctrl+S"],
@@ -278,7 +280,7 @@ export const intellijWindows: Record<string, string[]> = {
   "debug.setValue": ["F2"],
   "debug.jumpToSource": ["F4"],
   "debug.evaluate": ["Alt+F8"],
-  "debug.quickEvaluate": ["Ctrl+Alt+F8"],
+  "debug.quickEvaluate": ["Ctrl+Alt+F8", "Alt+Button1"],
   "debug.browseConsoleHistory": ["Ctrl+Alt+E"],
 
   // VCS
@@ -290,6 +292,7 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.showMessageHistory": ["Ctrl+M"],
   "vcs.update": ["Ctrl+T"],
   "vcs.rollback": ["Ctrl+Alt+Z"],
+  "vcs.addToVcs": ["Ctrl+Alt+A"],
   "vcs.showDiff": ["Ctrl+D"],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
@@ -344,6 +347,7 @@ export const intellijWindows: Record<string, string[]> = {
   "markdown.previewOnly": [],
   // HTTP Client / Database console: run the request or statement at the caret.
   "http.runRequest": ["Ctrl+Enter"],
+  "graphql.runQuery": ["Ctrl+Enter"],
   "http.runAll": [],
   "db.execute": ["Ctrl+Enter"],
   "db.showToolWindow": [],

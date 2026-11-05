@@ -3,7 +3,6 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  container-type: inline-size;
 }
 .content {
   flex: 1;
@@ -137,7 +136,7 @@
   gap: 5px;
 }
 
-/* A conversation docked in the tool window, above the task list. */
+/* A docked conversation owns the tool window; history opens on demand. */
 .docked {
   flex: 1 1 0;
   min-height: 0;
@@ -168,30 +167,31 @@
   flex-direction: column;
 }
 .tasks {
-  flex: 2 1 0;
+  flex: 1;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border);
+}
+.history {
+  display: flex;
+  flex-direction: column;
+  width: min(400px, calc(100vw - 24px));
+  height: min(420px, 65vh);
+  overflow: hidden;
+}
+.historyTitle {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
 }
 
-/* Keep the conversation usable in a short bottom tool window; the tree scrolls. */
-.docked + .tasks {
-  flex: 0 0 20%;
-  max-height: 160px;
-}
-
-/* A wide bottom window has room beside the conversation, preserving message height. */
-@container (min-width: 600px) {
-  .content {
-    flex-direction: row;
-  }
-  .docked + .tasks {
-    flex: 0 0 220px;
-    max-width: 30%;
-    max-height: none;
-    border-top: 0;
-    border-left: 1px solid var(--border);
-  }
+.location {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
 }

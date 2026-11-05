@@ -7,6 +7,7 @@ import { lazyComponent } from "@/ui";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { selectionValueTooltip, valueTooltip } from "./editor/valueTooltip";
+import { quickEvaluateMouse } from "./editor/quickEvaluate";
 import { registerEditorContribution } from "@/editor/api";
 import {
   registerMenuGroup,
@@ -24,7 +25,16 @@ import { executionPoint } from "./editor/execution";
 import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
 import { onHotCodeReplace } from "./hotswap";
-import { handleDebugEvent, isLive, loadWatches, publishContext, resetSessions, stopSession, useDebug } from "./state";
+import {
+  activeSession,
+  handleDebugEvent,
+  isLive,
+  loadWatches,
+  publishContext,
+  resetSessions,
+  stopSession,
+  useDebug,
+} from "./state";
 import { DebuggerOverlays } from "./ui/Overlays";
 import { REMOTE_TYPES } from "./remote";
 
@@ -53,6 +63,11 @@ export function activate(): () => void {
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
     }),
     registerOverlay({ id: "debugger", component: DebuggerOverlays }),
+    registerMenuGroup({
+      id: "debugger.evaluate",
+      menus: ["editor"],
+      items: () => (activeSession()?.status === "paused" ? [{ kind: "action", action: "debug.evaluate" }] : []),
+    }),
     // Stop (⌘F2) offers the running debug sessions beside run processes.
     registerMenuGroup({
       id: "debugger.stop",
@@ -71,6 +86,7 @@ export function activate(): () => void {
         runToCursorInlay(ctx),
         valueTooltip(),
         selectionValueTooltip(),
+        quickEvaluateMouse(),
         smartStepTargets(ctx),
       ],
     }),

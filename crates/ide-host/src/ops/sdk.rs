@@ -34,6 +34,42 @@ pub fn sdk_python_effective(host: &Host, window: &str) -> IdeResult<Option<ide_c
     Ok(ide_sdk::apply::python_interpreter(&project.root, &project.settings.effective()).map(Into::into))
 }
 
+/// The PHP language level of the project `path` belongs to (a workspace member, by path, as
+/// the language server configuration picks it).
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PhpLanguageLevels {
+    /// The one Intelephense checks against; `None`: its default.
+    pub effective: Option<ide_sdk::php::PhpLanguageLevel>,
+    /// The one Auto picks, from `composer.json`.
+    pub auto: Option<ide_sdk::php::PhpLanguageLevel>,
+    /// The workspace member `path` belongs to: its own settings choose the level, not the
+    /// workspace's. `None`: the opened project.
+    pub member: Option<ide_core::IpcPath>,
+}
+
+pub async fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) -> IdeResult<PhpLanguageLevels> {
+    let project = host.project(window)?;
+    let (project_root, project_settings) = (project.root.clone(), project.settings.effective());
+    let config_dir = host.config_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let member = ide_workspace::workspace::Workspace::load(&project_root).ok().flatten().and_then(|w| {
+            w.projects.into_iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.components().count())
+        });
+        let (root, settings) = match &member {
+            Some(member) => (member, ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective()),
+            None => (&project_root, project_settings),
+        };
+        PhpLanguageLevels {
+            effective: ide_sdk::php::language_level(root, &settings),
+            auto: ide_sdk::php::composer_level(root),
+            member: member.map(ide_core::IpcPath),
+        }
+    })
+    .await
+    .map_err(join_err)
+}
+
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
 pub async fn sdk_project_libraries(host: &Host, window: &str) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
@@ -122,6 +158,7 @@ pub async fn sdk_python_pip(
     on_output: Channel<String>,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
+    let project_root = host.project(window).ok().map(|p| p.root.clone());
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let send = |line: String| {
@@ -130,7 +167,7 @@ pub async fn sdk_python_pip(
         if uninstall {
             ide_sdk::python::uninstall_package(&python, &requirement, &cancel, &send)
         } else {
-            ide_sdk::python::install_package(&python, &requirement, upgrade, &cancel, &send)
+            ide_sdk::python::install_package(&python, &requirement, upgrade, project_root.as_deref(), &cancel, &send)
         }
     })
     .await
@@ -143,6 +180,10 @@ pub async fn sdk_python_pip(
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window) });
+    d.add(
+        "sdk_php_language_level",
+        |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?).await },
+    );
     d.add("sdk_project_libraries", |c| async move { sdk_project_libraries(&c.host, &c.window).await });
     d.add("sdk_locate_tools", |c| async move {
         sdk_locate_tools(&c.host, &c.window, c.arg("names")?, c.arg("near")?).await

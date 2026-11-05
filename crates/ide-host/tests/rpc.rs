@@ -56,6 +56,7 @@ async fn serves_projects_files_documents_search_and_runs() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
@@ -87,6 +88,40 @@ async fn serves_projects_files_documents_search_and_runs() {
     }
     let call = Invoke { window: "unknown".into(), cmd: "coverage_collect".into(), args: json!({}) };
     assert!(peer.request::<_, Value>("invoke", call, None).await.is_err());
+    // Manual workspace edits remain available in Restricted Mode, like doc/fs
+    // editing. They do not ask a language server to execute project commands.
+    let manual = project.join("src/manual.txt");
+    std::fs::write(&manual, "old").unwrap();
+    let edit = json!({ "files": [{ "kind": "edit", "path": manual, "edits": [{
+        "range": { "start": { "line": 0, "col": 0 }, "end": { "line": 0, "col": 3 } },
+        "new_text": "new"
+    }] }] });
+    let edit = invoke(&peer, "prepare_workspace_edit", json!({ "edit": edit })).await.unwrap();
+    assert_eq!(edit["preconditions"].as_array().unwrap().len(), 1);
+    invoke(&peer, "apply_workspace_edit", json!({ "edit": edit })).await.unwrap();
+    until("workspace edit history", || {
+        client.events.lock().iter().any(|event| matches!(event.event, ide_core::IdeEvent::WorkspaceEditApplied { .. }))
+    })
+    .await;
+    let undo_id = client
+        .events
+        .lock()
+        .iter()
+        .find_map(|event| match &event.event {
+            ide_core::IdeEvent::WorkspaceEditApplied { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&manual).unwrap(), "new");
+    invoke(&peer, "undo_workspace_edit", json!({ "id": undo_id })).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&manual).unwrap(), "old");
+    invoke(&peer, "redo_workspace_edit", json!({ "id": undo_id })).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&manual).unwrap(), "new");
+    assert_eq!(invoke(&peer, "project_current", json!({})).await.unwrap()["trusted"], false);
+    for command in ["lsp_execute_command", "lsp_apply_code_action"] {
+        let error = invoke(&peer, command, json!({})).await.unwrap_err();
+        assert!(error.message.contains("Restricted Mode"), "{command}: {error:?}");
+    }
     invoke(&peer, "project_trust_set", json!({"path": project, "trusted": true, "folder": false})).await.unwrap();
     let current = invoke(&peer, "project_current", json!({})).await.unwrap();
     assert_eq!(current["name"], "demo");
@@ -183,10 +218,19 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "vcs_init", json!({ "dir": project })).await.unwrap();
     until("git repository", || project.join(".git").is_dir()).await;
 
+    // A Docker run configuration's environment comes from the host its command runs on.
+    let env =
+        invoke(&peer, "docker_run_env", json!({ "endpoint": { "kind": "socket", "path": "/run/user/1/docker.sock" } }))
+            .await
+            .unwrap();
+    assert_eq!(env["DOCKER_HOST"], "unix:///run/user/1/docker.sock");
+
     // Real project-host ignore writes travel through the remote command dispatcher.
     assert!(Dispatcher::standard().commands().contains(&"vcs_add_to_ignore"));
     let ignore_root = dunce::canonicalize(&project).unwrap();
-    for (name, destination) in [("shared.tmp", "gitignore"), ("private.tmp", "localExclude")] {
+    // Not `.tmp`: a machine's global excludes file (often `*.tmp`) already
+    // ignores those, so the backend never writes the entry anywhere.
+    for (name, destination) in [("shared.ignore-me", "gitignore"), ("private.ignore-me", "localExclude")] {
         let path = ignore_root.join(name);
         std::fs::write(&path, "temporary").unwrap();
         invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [path], "destination": destination })).await.unwrap();
@@ -195,9 +239,9 @@ async fn serves_projects_files_documents_search_and_runs() {
         assert_eq!(entry["ignored"], true);
         assert_eq!(entry["excluded"], false);
     }
-    assert!(std::fs::read_to_string(project.join(".gitignore")).unwrap().contains("/shared.tmp"));
-    assert!(std::fs::read_to_string(project.join(".git/info/exclude")).unwrap().contains("/private.tmp"));
-    let outside = tmp.path().join("outside.tmp");
+    assert!(std::fs::read_to_string(project.join(".gitignore")).unwrap().contains("/shared.ignore-me"));
+    assert!(std::fs::read_to_string(project.join(".git/info/exclude")).unwrap().contains("/private.ignore-me"));
+    let outside = tmp.path().join("outside.ignore-me");
     std::fs::write(&outside, "keep").unwrap();
     assert!(
         invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [outside], "destination": "gitignore" })).await.is_err()
@@ -261,6 +305,7 @@ async fn local_deployment_runs_on_the_project_host() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: tmp.path().join("config"),
         data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_slot.clone(), Some(w.to_owned()))),
@@ -285,6 +330,33 @@ async fn local_deployment_runs_on_the_project_host() {
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
+        "db_sources",
+        "db_save_sources",
+        "db_set_password",
+        "db_test",
+        "db_set_ssh_secret",
+        "db_trust_ssh_host",
+        "db_connected",
+        "db_connect",
+        "db_set_manual_commit",
+        "db_finish_transaction",
+        "db_disconnect",
+        "db_databases",
+        "db_schemas",
+        "db_tables",
+        "db_table_details",
+        "db_ddl",
+        "db_schema_objects",
+        "db_object_ddl",
+        "db_explain",
+        "db_history",
+        "db_remove_history",
+        "db_completion",
+        "db_statements",
+        "db_execute",
+        "db_table_page",
+        "db_apply_edits",
+        "db_console_path",
     ] {
         assert!(dispatcher.commands().contains(&cmd), "missing host command {cmd}");
     }
@@ -328,6 +400,7 @@ async fn properties_conversion_through_remote_dispatch_without_a_remote_host() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: tmp.path().join("config"),
         data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),

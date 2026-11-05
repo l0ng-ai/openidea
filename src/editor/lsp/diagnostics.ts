@@ -12,7 +12,7 @@ import type { Diagnostic, Severity } from "@/bindings";
 import { commands, ideEventsReady, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { publishLocalDiagnostics } from "@/platform/localDiagnostics";
-import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { intentionsChanged, scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { rangeToOffsets } from "./positions";
 import { lspDoc } from "./lsp";
 import { showHint } from "./hint";
@@ -199,7 +199,10 @@ const diagnosticsSync = ViewPlugin.fromClass(
         if (!path || !this.view.dom.isConnected) return;
         const lint = toLintDiagnostics(this.view.state.doc, diagnosticsFor(path));
         const tr = setDiagnostics(this.view.state, lint);
-        this.view.dispatch({ ...tr, effects: [...[tr.effects ?? []].flat(), setMarks.of(diagnosticMarks(lint))] });
+        this.view.dispatch({
+          ...tr,
+          effects: [...[tr.effects ?? []].flat(), setMarks.of(diagnosticMarks(lint)), intentionsChanged.of(null)],
+        });
       });
     }
     destroy() {
@@ -210,21 +213,26 @@ const diagnosticsSync = ViewPlugin.fromClass(
 
 // Effects follow the IDEA schemes: errors wavy red; warnings wavy yellow (dark) or
 // a yellow background (light, via --editor-warning-*); weak warnings dotted; typos wavy green.
+// WebKit drops a `text-decoration` with a style or colour; `-webkit-text-decoration`, set after
+// it, takes the whole value there.
 const lintTheme = EditorView.theme({
   ".cm-lintRange": { backgroundImage: "none", paddingBottom: "0" },
   ".cm-lintRange-error": {
     textDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
+    WebkitTextDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
   ".cm-lintRange-warning": {
     textDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
+    WebkitTextDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
     backgroundColor: "var(--editor-warning-background, transparent)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
   ".cm-lintRange-info": {
     textDecoration: "underline dotted color-mix(in srgb, var(--fg-muted) 80%, transparent)",
+    WebkitTextDecoration: "underline dotted color-mix(in srgb, var(--fg-muted) 80%, transparent)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
@@ -232,6 +240,7 @@ const lintTheme = EditorView.theme({
   // Typo level: IDEA's green wavy underline.
   ".cm-lintRange.cm-lsp-typo": {
     textDecoration: "underline wavy color-mix(in srgb, var(--success) 85%, transparent)",
+    WebkitTextDecoration: "underline wavy color-mix(in srgb, var(--success) 85%, transparent)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
@@ -245,9 +254,11 @@ const lintTheme = EditorView.theme({
   // An error or warning on the same range (merged into one mark) keeps its underline.
   ".cm-lintRange-error.cm-lsp-typo, .cm-lintRange-error.cm-lsp-unnecessary": {
     textDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
+    WebkitTextDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
   },
   ".cm-lintRange-warning.cm-lsp-typo, .cm-lintRange-warning.cm-lsp-unnecessary": {
     textDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
+    WebkitTextDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
   },
   ".cm-lintRange-active": { backgroundColor: "transparent" },
   ".cm-lintRange-warning.cm-lintRange-active": { backgroundColor: "var(--editor-warning-background, transparent)" },

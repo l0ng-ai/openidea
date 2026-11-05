@@ -113,6 +113,7 @@ export interface OpenTabOptions {
   /** Insert at this index instead of after the active tab. */
   index?: number;
   activate?: boolean;
+  preservePreview?: boolean;
 }
 
 export function openTab(
@@ -152,7 +153,7 @@ export function openTab(
     tabs.splice(index, 0, tab);
   }
   let active = pane.active;
-  if (!tab.preview && tabs.some((t) => t.preview)) {
+  if (!tab.preview && !opts.preservePreview && tabs.some((t) => t.preview)) {
     // A new regular editor closes the preview tab (IDEA trims previews on every open).
     const previews = new Set(tabs.filter((t) => t.preview).map((t) => t.id));
     tabs.splice(0, tabs.length, ...tabs.filter((t) => !previews.has(t.id)));
@@ -362,15 +363,32 @@ export function cycleTab(s: TabsState, delta: number, paneId = s.activePane): Ta
 }
 
 /** Moves a tab (drag & drop) within or across panes. */
-export function moveTab(s: TabsState, fromPane: string, tabId: string, toPane: string, index: number): TabsState {
+/**
+ * Moves a tab to `index` of `toPane`. `pin` set (a drop on the pinned or the other row of a
+ * split tab bar): the tab takes that state and lands inside the matching group.
+ */
+export function moveTab(
+  s: TabsState,
+  fromPane: string,
+  tabId: string,
+  toPane: string,
+  index: number,
+  pin?: boolean,
+): TabsState {
   const src = paneOf(s, fromPane);
   const tab = src.tabs.find((t) => t.id === tabId);
   if (!tab) return s;
+  const place = (tabs: Tab[], at: number): Tab[] => {
+    const moved = pin === undefined ? tab : { ...tab, pinned: pin, preview: pin ? false : tab.preview };
+    const pins = tabs.filter((t) => t.pinned).length;
+    const clamped = Math.max(0, Math.min(at, tabs.length));
+    tabs.splice(pin === undefined ? clamped : pin ? Math.min(clamped, pins) : Math.max(clamped, pins), 0, moved);
+    return tabs;
+  };
   if (fromPane === toPane) {
     const tabs = src.tabs.filter((t) => t.id !== tabId);
-    const at = Math.max(0, Math.min(index > src.tabs.indexOf(tab) ? index - 1 : index, tabs.length));
-    tabs.splice(at, 0, tab);
-    return { ...withPane(s, touch({ ...src, tabs }, tabId)), activePane: toPane };
+    const next = place(tabs, index > src.tabs.indexOf(tab) ? index - 1 : index);
+    return { ...withPane(s, touch({ ...src, tabs: next }, tabId)), activePane: toPane };
   }
   const dst = paneOf(s, toPane);
   const dup = dst.tabs.find((t) => t.input.key === tab.input.key);
@@ -378,9 +396,7 @@ export function moveTab(s: TabsState, fromPane: string, tabId: string, toPane: s
   next = { ...next, closed: s.closed };
   if (dup) return { ...activateTab(next, toPane, dup.id), activePane: toPane };
   const dstNow = paneOf(next, toPane);
-  const tabs = [...dstNow.tabs];
-  tabs.splice(Math.max(0, Math.min(index, tabs.length)), 0, tab);
-  return { ...withPane(next, touch({ ...dstNow, tabs }, tab.id)), activePane: toPane };
+  return { ...withPane(next, touch({ ...dstNow, tabs: place([...dstNow.tabs], index) }, tab.id)), activePane: toPane };
 }
 
 // --- splits -----------------------------------------------------------------

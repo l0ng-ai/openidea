@@ -22,6 +22,7 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -111,5 +112,56 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     assert_eq!(automatic.root, updated.root.as_ref());
     assert!(automatic.index.wait_idle(Duration::from_secs(10)));
     assert_eq!(automatic.index.find_files("same.txt", 100).len(), 1);
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn php_language_level_follows_the_member_of_the_file() {
+    use ide_sdk::php::{PhpLanguageLevel, PhpLevelSource};
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let (api, legacy) = (base.join("api"), base.join("legacy"));
+    for (member, composer) in [
+        (&api, r#"{"require": {"php": "^7.4"}}"#),
+        (&legacy, r#"{"require": {"php": "^7.4"}, "config": {"platform": {"php": "8.0.5"}}}"#),
+    ] {
+        std::fs::create_dir(member).unwrap();
+        std::fs::write(member.join("composer.json"), composer).unwrap();
+    }
+    let root = base.join("workspace");
+    Workspace::save(&root, "PHP", vec![api.clone(), legacy.clone()], true).unwrap();
+    std::fs::write(root.join("composer.json"), r#"{"require": {"php": "^8.2"}}"#).unwrap();
+    let config_dir = base.join("config");
+    ide_workspace::SettingsStore::load(&config_dir, Some(&legacy))
+        .set(ide_workspace::SettingsScope::Project, "languages.php.languageLevel", "8.3".into())
+        .unwrap();
+    let host = Host::new(HostConfig {
+        config_dir,
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    let found = |version: &str, source| Some(PhpLanguageLevel { version: version.into(), source });
+    let level = async |path: std::path::PathBuf| ops::sdk::sdk_php_language_level(&host, "main", path).await.unwrap();
+
+    let level_of_api = level(api.join("src/Invoice.php")).await;
+    assert_eq!(level_of_api.effective, found("7.4.0", PhpLevelSource::Require));
+    assert_eq!(level_of_api.auto, level_of_api.effective);
+    assert_eq!(level_of_api.member.as_deref(), Some(api.as_path()));
+    // The member's own settings, not the workspace's.
+    let level_of_legacy = level(legacy.join("index.php")).await;
+    assert_eq!(level_of_legacy.effective, found("8.3.0", PhpLevelSource::Settings));
+    assert_eq!(level_of_legacy.auto, found("8.0.5", PhpLevelSource::Platform));
+    // Outside every member: the workspace's own.
+    let level_elsewhere = level(base.join("elsewhere.php")).await;
+    assert_eq!(level_elsewhere.effective, found("8.2.0", PhpLevelSource::Require));
+    assert_eq!(level_elsewhere.member, None);
     host.close_project("main");
 }

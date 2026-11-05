@@ -117,7 +117,7 @@ struct FileConfig {
     target: Option<String>,
 }
 
-fn slug(s: &str) -> String {
+pub(crate) fn slug(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
         if c.is_alphanumeric() {

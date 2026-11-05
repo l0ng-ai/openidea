@@ -10,7 +10,7 @@ import { editorsFor, activeEditor, type EditorDocContext, type TextEditorHandle 
 import { call, commands, type DebugSessionId, type StepInTarget } from "@/platform/ipc";
 import { suspendKeyboardDispatch } from "@/platform/keymap";
 import { notifications } from "@/workbench/contributions";
-import { useExecutionPoint } from "../state";
+import { useExecutionPoint, resumeExecution } from "../state";
 import { useOverlays, type InlineStepTarget } from "../ui/popoverStore";
 import styles from "./editor.module.css";
 
@@ -29,7 +29,8 @@ function callPattern(name: string, flags: string): RegExp {
 }
 
 function isCallBoundary(text: string, from: number): boolean {
-  return !/[\p{L}\p{N}_$]$/u.test(text.slice(Math.max(0, from - 2), from));
+  // Not `[\p{L}\p{N}_$]$`: V8 (Node 26) misses an astral letter with a lone class before `$`.
+  return !/(?:\p{L}|\p{N}|[_$])$/u.test(text.slice(Math.max(0, from - 2), from));
 }
 
 function identifierEnd(text: string, from: number): number {
@@ -139,7 +140,7 @@ export function chooseStepTarget(id?: number) {
   const target = id ?? s.inline?.ranges[s.inline.index]?.id;
   cancelSmartStep();
   if (target == null) return;
-  void call(commands.debugStepInTarget(s.session, s.thread, target)).catch((e) =>
+  void resumeExecution(s.session, () => call(commands.debugStepInTarget(s.session, s.thread, target))).catch((e) =>
     notifications().notify({
       group: "run",
       level: "error",

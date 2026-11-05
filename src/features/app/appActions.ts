@@ -3,7 +3,7 @@ import { EditorView } from "@codemirror/view";
 import type { Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications, runUndoHandlers } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
 import { quitApp } from "./closeGuard";
 import { guessOs } from "./host";
@@ -46,6 +46,7 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
         (command === "undo" ? undo : redo)(view);
         return;
       }
+      if (focused instanceof Element && runUndoHandlers(command, focused)) return;
     }
     if (command === "paste" && navigator.clipboard?.readText) {
       void navigator.clipboard.readText().then((text) => document.execCommand("insertText", false, text));

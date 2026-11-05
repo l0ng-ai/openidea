@@ -6,6 +6,7 @@ fn host(base: &std::path::Path) -> Arc<Host> {
     Arc::new(Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -81,6 +82,46 @@ async fn gradle_defaults_are_not_saved_as_explicit_run_choices() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maven_defaults_are_resolved_at_launch_and_explicit_choices_survive_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    std::fs::write(root.join("pom.xml"), "<project/>").unwrap();
+    let home = root.join("maven");
+    std::fs::create_dir_all(home.join("bin")).unwrap();
+    let launcher = home.join("bin").join(if cfg!(windows) { "mvn.cmd" } else { "mvn" });
+    std::fs::write(&launcher, "").unwrap();
+    let host = host(&root.join("app"));
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    for (key, value) in [
+        ("languages.java.maven.home", home.to_string_lossy().into_owned()),
+        ("languages.java.maven.userSettings", "settings.xml".into()),
+    ] {
+        ops::project::set_settings(
+            &host,
+            "main",
+            ide_workspace::settings::SettingsScope::Project,
+            key,
+            &serde_json::to_string(&value).unwrap(),
+        )
+        .unwrap();
+    }
+    let mut config = ops::run::configs(&host, "main").unwrap().into_iter().find(|c| c.id == "maven:test").unwrap();
+    assert_eq!(config.command, "mvn");
+    assert_eq!(config.args, ["test"]);
+    assert!(config.env.is_empty());
+    config.command = launcher.to_string_lossy().into_owned();
+    config.args = vec!["-s".into(), "own-settings.xml".into(), "test".into()];
+    config.env.insert("JAVA_HOME".into(), "own-jdk".into());
+    config.detected = false;
+    ops::run::save_configs(&host, "main", &[config.clone()], &[]).unwrap();
+    let saved = ops::run::configs(&host, "main").unwrap().into_iter().find(|c| c.id == config.id).unwrap();
+    assert_eq!(saved.command, config.command);
+    assert_eq!(saved.args, config.args);
+    assert_eq!(saved.env, config.env);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_cmake_before_launch_tasks_resolve_in_the_member() {
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap();
@@ -99,4 +140,20 @@ async fn workspace_cmake_before_launch_tasks_resolve_in_the_member() {
     for task in &build.extras.before_launch {
         assert!(configs.iter().any(|c| c.id == task.target && c.cwd == build.cwd));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gradle_init_scripts_are_written_by_the_host_that_runs_the_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(tmp.path());
+    let text = "allprojects { }\n".to_string();
+    let path =
+        ops::run::run_gradle_init_script(&host, "main", "openidea-gradle-tests".into(), text.clone()).await.unwrap();
+    assert!(path.contains("openidea-gradle-tests-"), "{path}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    let again = ops::run::run_gradle_init_script(&host, "main", "openidea-gradle-tests".into(), text).await.unwrap();
+    assert_eq!(again, path);
+    // A name is not a path.
+    let escaped = ops::run::run_gradle_init_script(&host, "main", "../escape".into(), String::new()).await;
+    assert!(escaped.is_err(), "{escaped:?}");
 }

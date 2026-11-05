@@ -1,5 +1,6 @@
 id = "graphql"
 name = "GraphQL"
+formatter = { tool = "prettier", parser = "graphql", range = true }
 extensions = ["graphql", "graphqls", "gql"]
 line-comment = "#"
 indent = { tab-size = 2, insert-spaces = true }
@@ -9,5 +10,5 @@ tree-sitter = "graphql"
 name = "graphql-lsp"
 command = "graphql-lsp"
 args = ["server", "-m", "stream"]
-root-markers = [".graphqlrc", ".graphqlrc.yml", ".graphqlrc.yaml", ".graphqlrc.json", "graphql.config.js", "graphql.config.ts", "graphql.config.yml"]
+root-markers = [".graphqlrc", ".graphqlrc.yml", ".graphqlrc.yaml", ".graphqlrc.json", "graphql.config.js", "graphql.config.ts", "graphql.config.yml", "graphql.config.yaml", "graphql.config.json"]
 install-hint = "npm i -g graphql-language-service-cli"

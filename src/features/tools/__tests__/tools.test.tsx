@@ -7,7 +7,7 @@ import { useTasks } from "@/workbench/tasks";
 import { MemoryToolsBackend, sampleTools, setToolsBackend } from "../backend";
 import { cancelInstall, installTool, refreshTools, uninstallTool, useTools } from "../store";
 import { filterTools, LanguageServersPage } from "../LanguageServersPage";
-import { installMissingServerPrompts, missingKey } from "../missing";
+import { installMissingServerPrompts, installServerWarningPrompts, missingKey, promptInstall } from "../missing";
 import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
 type Note = Parameters<NotificationService["notify"]>[0];
@@ -104,6 +104,34 @@ describe("tools store", () => {
 });
 
 describe("missing language server prompt", () => {
+  it("uses the same install prompt for Prettier with a Reformat Code explanation", async () => {
+    const template = sampleTools()[0]!;
+    backend.tools.push({
+      ...template,
+      name: "prettier",
+      displayName: "Prettier",
+      command: "prettier",
+      kind: "formatter",
+      status: "missing",
+      installMethod: "npm",
+      languages: ["Markdown"],
+    });
+    await promptInstall("prettier");
+    expect(notes[0]).toMatchObject({
+      title: "Prettier is not installed",
+      key: missingKey("prettier"),
+      sticky: true,
+      body: "Reformat Code needs Prettier. Install it via npm?",
+    });
+    expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Install", "Language Servers…"]);
+    await promptInstall("prettier", false);
+    expect(notes.at(-1)).toMatchObject({ key: missingKey("prettier"), sticky: false });
+    notes[0]!.actions![0]!.run();
+    await waitFor(() =>
+      expect(notes.at(-1)).toMatchObject({ title: "Prettier installed", key: missingKey("prettier") }),
+    );
+  });
+
   it("offers Install for installable servers, once, replacing the generic notice", async () => {
     const off = installMissingServerPrompts();
     const ev = { type: "languageServer", server: 1, name: "gopls", status: "missing", message: null } as const;
@@ -127,6 +155,53 @@ describe("missing language server prompt", () => {
       await new Promise((r) => setTimeout(r, 20));
     });
     expect(notes).toHaveLength(0);
+    off();
+  });
+
+  it("offers only the first missing server of interchangeable ones", async () => {
+    const off = installMissingServerPrompts();
+    // basedpyright is missing, so its fallbacks start and turn out missing too; gopls isn't one of them.
+    ["basedpyright", "pyright", "ty", "pyrefly", "gopls"].forEach((name, i) =>
+      emitLocalIdeEvent({ type: "languageServer", server: 10 + i, name, status: "missing", message: null }),
+    );
+    await waitFor(() => expect(notes).toHaveLength(2));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(notes.map((n) => n.key)).toEqual([missingKey("basedpyright"), missingKey("gopls")]);
+    off();
+  });
+
+  it("offers a fallback when the servers before it can't be installed", async () => {
+    setToolsBackend(
+      new MemoryToolsBackend(
+        sampleTools().map((t) => (t.name === "basedpyright" ? { ...t, canInstall: false } : t)),
+        1,
+      ),
+    );
+    const off = installMissingServerPrompts();
+    for (const [i, name] of ["basedpyright", "pyright", "ty"].entries()) {
+      emitLocalIdeEvent({ type: "languageServer", server: 20 + i, name, status: "missing", message: null });
+    }
+    await waitFor(() => expect(notes).toHaveLength(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(notes.map((n) => n.key)).toEqual([missingKey("pyright")]);
+    off();
+  });
+
+  it("offers the first server that reports missing when earlier ones are off from the start", async () => {
+    const off = installMissingServerPrompts();
+    // basedpyright turned off in settings never starts, so never reports.
+    for (const [i, name] of ["pyright", "ty"].entries()) {
+      emitLocalIdeEvent({ type: "languageServer", server: 40 + i, name, status: "missing", message: null });
+    }
+    await waitFor(() => expect(notes).toHaveLength(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(notes.map((n) => n.key)).toEqual([missingKey("pyright")]);
     off();
   });
 
@@ -242,6 +317,52 @@ describe("tools.install action", () => {
       expect(opened).toEqual(["languages.servers"]);
     } finally {
       disposers.reverse().forEach((d) => d());
+    }
+  });
+});
+
+describe("language server capability warning", () => {
+  const event = {
+    type: "languageServerWarning",
+    name: "clangd",
+    message:
+      "Apple's clangd does not run clang-tidy, so checks from .clang-tidy are not shown. Install clangd (LLVM) to get them.",
+    installTool: "clangd",
+  } as const;
+
+  it("offers a managed replacement for system clangd once and restarts it after installation", async () => {
+    backend.tools.push({
+      ...sampleTools()[0]!,
+      name: "clangd",
+      displayName: "clangd",
+      command: "clangd",
+      status: "onPath",
+      path: "/usr/bin/clangd",
+      languages: ["C", "C++", "Objective-C", "Objective-C++"],
+    });
+    const off = installServerWarningPrompts();
+    try {
+      emitLocalIdeEvent(event);
+      emitLocalIdeEvent(event);
+      await waitFor(() => expect(notes).toHaveLength(1));
+      expect(notes[0]).toMatchObject({ title: "clangd", level: "warning", sticky: true, body: event.message });
+      expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Install", "Language Servers…"]);
+      notes[0]!.actions![0]!.run();
+      await waitFor(() => expect(backend.restarted).toEqual(["clangd"]));
+      expect(notes.at(-1)).toMatchObject({ title: "clangd installed", key: notes[0]!.key });
+    } finally {
+      off();
+    }
+  });
+
+  it("keeps the Settings action when the tool cannot be installed", async () => {
+    const off = installServerWarningPrompts();
+    try {
+      emitLocalIdeEvent(event);
+      await waitFor(() => expect(notes).toHaveLength(1));
+      expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Language Servers…"]);
+    } finally {
+      off();
     }
   });
 });

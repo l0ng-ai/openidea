@@ -1,5 +1,6 @@
 id = "scss"
 name = "SCSS"
+formatter = { tool = "prettier", parser = "scss", range = false }
 extensions = ["scss"]
 line-comment = "//"
 block-comment = ["/*", "*/"]
