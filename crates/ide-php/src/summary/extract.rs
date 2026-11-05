@@ -48,6 +48,58 @@ fn variable_name(name: &[u8]) -> String {
     lossy(name.strip_prefix(b"$").unwrap_or(name))
 }
 
+/// A native type hint, its class names resolved in `scope`.
+pub(crate) fn type_hint(scope: &NameScope, hint: &Hint<'_>) -> TypeHint {
+    let builtin = |name: &str| TypeHint::Builtin(name.to_owned());
+    match hint {
+        Hint::Identifier(identifier) => {
+            match scope.resolve(NameKind::ClassLike, &lossy(identifier.value())).resolution {
+                Resolution::Relative(relative) => TypeHint::Relative(relative),
+                Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => TypeHint::Named(fqn),
+            }
+        }
+        Hint::Parenthesized(inner) => type_hint(scope, inner.hint),
+        Hint::Nullable(inner) => TypeHint::Nullable(Box::new(type_hint(scope, inner.hint))),
+        Hint::Union(union) => {
+            let mut members = Vec::new();
+            for side in [union.left, union.right] {
+                match type_hint(scope, side) {
+                    TypeHint::Union(inner) => members.extend(inner),
+                    other => members.push(other),
+                }
+            }
+            TypeHint::Union(members)
+        }
+        Hint::Intersection(intersection) => {
+            let mut members = Vec::new();
+            for side in [intersection.left, intersection.right] {
+                match type_hint(scope, side) {
+                    TypeHint::Intersection(inner) => members.extend(inner),
+                    other => members.push(other),
+                }
+            }
+            TypeHint::Intersection(members)
+        }
+        Hint::Null(_) => builtin("null"),
+        Hint::True(_) => builtin("true"),
+        Hint::False(_) => builtin("false"),
+        Hint::Array(_) => builtin("array"),
+        Hint::Callable(_) => builtin("callable"),
+        Hint::Static(_) => TypeHint::Relative(crate::names::RelativeClass::Static),
+        Hint::Self_(_) => TypeHint::Relative(crate::names::RelativeClass::Self_),
+        Hint::Parent(_) => TypeHint::Relative(crate::names::RelativeClass::Parent),
+        Hint::Void(_) => builtin("void"),
+        Hint::Never(_) => builtin("never"),
+        Hint::Float(_) => builtin("float"),
+        Hint::Bool(_) => builtin("bool"),
+        Hint::Integer(_) => builtin("int"),
+        Hint::String(_) => builtin("string"),
+        Hint::Object(_) => builtin("object"),
+        Hint::Mixed(_) => builtin("mixed"),
+        Hint::Iterable(_) => builtin("iterable"),
+    }
+}
+
 /// The visibility a modifier sets, if any: (read visibility, write visibility).
 fn visibility_of(modifier: &Modifier<'_>) -> (Option<Visibility>, Option<Visibility>) {
     match modifier {
@@ -131,54 +183,7 @@ impl Extractor<'_> {
     }
 
     fn hint(&self, hint: &Hint<'_>) -> TypeHint {
-        let builtin = |name: &str| TypeHint::Builtin(name.to_owned());
-        match hint {
-            Hint::Identifier(identifier) => {
-                match self.scope.resolve(NameKind::ClassLike, &lossy(identifier.value())).resolution {
-                    Resolution::Relative(relative) => TypeHint::Relative(relative),
-                    Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => TypeHint::Named(fqn),
-                }
-            }
-            Hint::Parenthesized(inner) => self.hint(inner.hint),
-            Hint::Nullable(inner) => TypeHint::Nullable(Box::new(self.hint(inner.hint))),
-            Hint::Union(union) => {
-                let mut members = Vec::new();
-                for side in [union.left, union.right] {
-                    match self.hint(side) {
-                        TypeHint::Union(inner) => members.extend(inner),
-                        other => members.push(other),
-                    }
-                }
-                TypeHint::Union(members)
-            }
-            Hint::Intersection(intersection) => {
-                let mut members = Vec::new();
-                for side in [intersection.left, intersection.right] {
-                    match self.hint(side) {
-                        TypeHint::Intersection(inner) => members.extend(inner),
-                        other => members.push(other),
-                    }
-                }
-                TypeHint::Intersection(members)
-            }
-            Hint::Null(_) => builtin("null"),
-            Hint::True(_) => builtin("true"),
-            Hint::False(_) => builtin("false"),
-            Hint::Array(_) => builtin("array"),
-            Hint::Callable(_) => builtin("callable"),
-            Hint::Static(_) => TypeHint::Relative(crate::names::RelativeClass::Static),
-            Hint::Self_(_) => TypeHint::Relative(crate::names::RelativeClass::Self_),
-            Hint::Parent(_) => TypeHint::Relative(crate::names::RelativeClass::Parent),
-            Hint::Void(_) => builtin("void"),
-            Hint::Never(_) => builtin("never"),
-            Hint::Float(_) => builtin("float"),
-            Hint::Bool(_) => builtin("bool"),
-            Hint::Integer(_) => builtin("int"),
-            Hint::String(_) => builtin("string"),
-            Hint::Object(_) => builtin("object"),
-            Hint::Mixed(_) => builtin("mixed"),
-            Hint::Iterable(_) => builtin("iterable"),
-        }
+        type_hint(&self.scope, hint)
     }
 
     fn return_type(&self, hint: &Option<FunctionLikeReturnTypeHint<'_>>) -> Option<TypeHint> {

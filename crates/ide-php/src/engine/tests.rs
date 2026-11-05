@@ -311,3 +311,26 @@ fn resolved_types_are_dropped_on_edit() {
     engine.document_closed(doc);
     assert_eq!(engine.resolver().function_return(r"App\a"), Some(Type::Int));
 }
+
+#[test]
+fn expression_type_at_a_position() {
+    use crate::types::Type;
+    let f = Fixture::new();
+    f.write("src/repo.php", "<?php\nnamespace App;\nclass Repo { public function find(): ?Book { return null; } }\n");
+    f.write("src/book.php", "<?php\nnamespace App;\nclass Book { public string $title = ''; }\n");
+    let main = f.write("src/main.php", "<?php\n");
+    let engine = f.open();
+
+    let doc = DocId::next();
+    let text = "<?php\nnamespace App;\n$book = (new Repo)->find();\n$book?->title;\n$len = strlen('x');\n";
+    engine.document_opened(doc, &main, 1, text);
+    // `$book` on line 3, across files.
+    assert_eq!(engine.type_at(doc, Pos::new(3, 2)), Some(Type::named(r"App\Book").nullable()));
+    // The nullsafe access, at its end.
+    assert_eq!(engine.type_at(doc, Pos::new(3, 13)), Some(Type::string().nullable()));
+    // A built-in function from the stubs.
+    assert_eq!(engine.type_at(doc, Pos::new(4, 3)), Some(Type::int_range(Some(0), None)));
+    // Not an expression.
+    assert_eq!(engine.type_at(doc, Pos::new(1, 3)), None);
+    assert_eq!(engine.type_at(DocId::next(), Pos::new(0, 0)), None);
+}

@@ -37,7 +37,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ide_core::event::ServerStatus;
-use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, ServerId, SharedSink};
+use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::index::{IndexStats, PhpIndex};
@@ -46,7 +46,7 @@ use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
 use crate::stubs::{BundledStubs, StubFilter, StubSet};
 use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl};
 use crate::syntax::{ParseCache, ParsedFile};
-use crate::types::{ClassModel, Declarations, Resolver, TypeCache};
+use crate::types::{ClassModel, Declarations, Resolver, Type, TypeCache};
 
 /// The name the engine reports itself under in `IdeEvent::LanguageServer`.
 pub const SERVER_NAME: &str = "PHP (native)";
@@ -418,6 +418,15 @@ impl PhpEngine {
     /// included), cached for the current modification count.
     pub fn class_model(&self, fqn: &str) -> Option<std::sync::Arc<ClassModel>> {
         self.resolver().class_model(fqn)
+    }
+
+    /// The type of the innermost expression at `pos` in an open document
+    /// (see [`crate::types::expr`]). `None` when the engine doesn't hold the
+    /// document or there is no expression there.
+    pub fn type_at(&self, doc: DocId, pos: Pos) -> Option<Type> {
+        let parsed = self.parsed_document(doc)?;
+        let offset = parsed.line_index().byte(pos);
+        crate::types::type_at(&parsed, &self.resolver(), offset)
     }
 
     /// How many declaration types are cached for the current modification

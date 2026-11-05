@@ -36,6 +36,8 @@
 mod extract;
 mod render;
 
+pub(crate) use extract::type_hint;
+
 use std::fmt;
 
 use ide_core::Range;

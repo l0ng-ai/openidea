@@ -212,7 +212,7 @@ The design:
 
   Tests: diamond interfaces, trait aliasing, and enum methods.
 
-- [ ] Phase 2.4: Expression types
+- [x] Phase 2.4: Expression types
       Infer the type of every expression, using local information and resolving lazy types when needed:
   - literals, `new`, calls (function, method, static, nullsafe)
   - property and constant access, array access and shapes

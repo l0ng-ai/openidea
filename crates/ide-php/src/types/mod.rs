@@ -40,14 +40,17 @@
 //! conditional return type `(T is X ? A : B)` becomes `A|B`.
 
 mod display;
+pub mod expr;
 mod lazy;
 pub mod model;
+pub(crate) mod ops;
 mod parse;
 pub mod resolve;
 mod subtype;
 
 use serde::{Deserialize, Serialize};
 
+pub use expr::{ExprTypes, Frame, type_at};
 pub use lazy::LazyType;
 pub use model::ClassModel;
 pub use parse::{TypeParseError, parse_doc_type};

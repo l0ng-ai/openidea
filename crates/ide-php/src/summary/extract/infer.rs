@@ -9,11 +9,12 @@
 use mago_syntax::cst::{
     Access, AnonymousClass, ArrayElement, ArrowFunction, AssignmentOperator, BinaryOperator, Block, Call, Class,
     ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function, Interface,
-    Literal, MagicConstant, MatchArm, Return, Trait, UnaryPrefixOperator, Variable, Yield,
+    MagicConstant, MatchArm, Return, Trait, UnaryPrefixOperator, Variable, Yield,
 };
 use mago_syntax::walker::Walker;
 
 use crate::names::{NameKind, NameScope, Resolution};
+use crate::types::ops::{Op, is_int, is_string, literal_type, op_type, unary_type};
 use crate::types::{LazyType, Relative, Type};
 
 /// Infers types from expressions in one name scope.
@@ -109,64 +110,27 @@ impl Infer<'_> {
     }
 
     fn unary(&self, operator: &UnaryPrefixOperator<'_>, operand: &Expression<'_>) -> LazyType {
-        use UnaryPrefixOperator as Op;
-        known(match operator {
-            Op::ArrayCast(..) => Type::array(),
-            Op::BoolCast(..) | Op::BooleanCast(..) | Op::Not(..) => Type::Bool,
-            Op::DoubleCast(..) | Op::RealCast(..) | Op::FloatCast(..) => Type::Float,
-            Op::IntCast(..) | Op::IntegerCast(..) | Op::BitwiseNot(..) => Type::Int,
-            Op::ObjectCast(..) => Type::Object,
-            Op::StringCast(..) | Op::BinaryCast(..) => Type::string(),
-            Op::UnsetCast(..) | Op::VoidCast(..) => Type::Null,
-            Op::Negation(..) | Op::Plus(..) => {
-                let negate = matches!(operator, Op::Negation(..));
-                match self.expr_inner(operand) {
-                    LazyType::Known(Type::LiteralInt(value)) if negate => Type::LiteralInt(value.wrapping_neg()),
-                    LazyType::Known(Type::LiteralFloat(text)) if negate => Type::LiteralFloat(format!("-{text}")),
-                    LazyType::Known(ty) if is_int(&ty) || is_float(&ty) => ty,
-                    _ => Type::union([Type::Int, Type::Float]),
-                }
-            }
-            _ => return self.expr_inner(operand),
-        })
+        let value = self.expr_inner(operand);
+        match unary_type(operator, value.known()) {
+            Some(ty) => known(ty),
+            None => value,
+        }
     }
 
     fn binary(&self, operator: &BinaryOperator<'_>, lhs: &Expression<'_>, rhs: &Expression<'_>) -> LazyType {
-        use BinaryOperator as Op;
-        match operator {
-            Op::StringConcat(..) => known(Type::string()),
-            Op::NullCoalesce(..) => {
+        match Op::of_binary(operator) {
+            Op::Coalesce => {
                 let left = match self.expr_inner(lhs) {
                     LazyType::Known(ty) => known(ty.without_null()),
                     other => other,
                 };
                 LazyType::union([left, self.expr_inner(rhs)])
             }
-            Op::Addition(..) | Op::Subtraction(..) | Op::Multiplication(..) | Op::Exponentiation(..) => {
+            op @ (Op::Add | Op::Sub | Op::Mul | Op::Exp) => {
                 let (left, right) = (self.expr_inner(lhs), self.expr_inner(rhs));
-                let (Some(left), Some(right)) = (left.known(), right.known()) else {
-                    return known(Type::union([Type::Int, Type::Float]));
-                };
-                let numeric = |ty: &Type| is_int(ty) || is_float(ty);
-                known(if matches!(operator, Op::Addition(..)) && is_array(left) && is_array(right) {
-                    Type::array()
-                } else if is_int(left) && is_int(right) && !matches!(operator, Op::Exponentiation(..)) {
-                    Type::Int
-                } else if numeric(left) && numeric(right) && (is_float(left) || is_float(right)) {
-                    Type::Float
-                } else {
-                    Type::union([Type::Int, Type::Float])
-                })
+                known(op_type(op, left.known(), right.known()))
             }
-            Op::Division(..) => known(Type::union([Type::Int, Type::Float])),
-            Op::Modulo(..)
-            | Op::BitwiseAnd(..)
-            | Op::BitwiseOr(..)
-            | Op::BitwiseXor(..)
-            | Op::LeftShift(..)
-            | Op::RightShift(..)
-            | Op::Spaceship(..) => known(Type::Int),
-            _ => known(Type::Bool),
+            op => known(op_type(op, None, None)),
         }
     }
 
@@ -303,39 +267,6 @@ impl Infer<'_> {
             }
         }
     }
-}
-
-fn literal_type(literal: &Literal<'_>) -> Type {
-    match literal {
-        Literal::String(string) => match string.value {
-            Some(value) => Type::LiteralString(lossy(value)),
-            None => Type::string(),
-        },
-        Literal::Integer(integer) => match integer.value.and_then(|value| i64::try_from(value).ok()) {
-            Some(value) => Type::LiteralInt(value),
-            None => Type::Int,
-        },
-        Literal::Float(float) => Type::LiteralFloat(lossy(float.raw)),
-        Literal::True(_) => Type::LiteralBool(true),
-        Literal::False(_) => Type::LiteralBool(false),
-        Literal::Null(_) => Type::Null,
-    }
-}
-
-fn is_int(ty: &Type) -> bool {
-    matches!(ty, Type::Int | Type::LiteralInt(_) | Type::IntRange { .. })
-}
-
-fn is_float(ty: &Type) -> bool {
-    matches!(ty, Type::Float | Type::LiteralFloat(_))
-}
-
-fn is_string(ty: &Type) -> bool {
-    matches!(ty, Type::String(_) | Type::LiteralString(_))
-}
-
-fn is_array(ty: &Type) -> bool {
-    matches!(ty, Type::Array { .. } | Type::List { .. } | Type::Shape(_))
 }
 
 /// What a function-like body returns, from its `return` statements (not

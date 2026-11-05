@@ -224,6 +224,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Where this resolver looks declarations up.
+    pub fn declarations(&self) -> &'a dyn Declarations {
+        self.decls
+    }
+
     /// The type a lazy type stands for, `self`/`parent` (and `static`/
     /// `$this` when the context knows them) bound by `context`.
     pub fn resolve(&self, lazy: &LazyType, context: &Context) -> Type {
