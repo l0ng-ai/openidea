@@ -79,7 +79,9 @@ impl Capability {
             Self::Secrets => "Store secrets in the system keychain".into(),
             Self::Events => "Observe workbench events (files opened, saved, focus)".into(),
             Self::InputEvents => "Observe keystrokes and editor input".into(),
-            Self::Clipboard => "Read and write the clipboard from its web views".into(),
+            Self::Clipboard => {
+                "Copy to the clipboard from its commands, and read and write it from its web views".into()
+            }
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
