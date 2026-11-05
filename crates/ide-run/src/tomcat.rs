@@ -71,6 +71,62 @@ pub fn context_xml(doc_base: &Path, reload: bool) -> String {
     format!("<Context docBase=\"{}\" reloadable=\"{reload}\" />\n", escape(&doc_base.to_string_lossy()))
 }
 
+/// The web app's own `META-INF/context.xml`, from an exploded directory or a WAR.
+fn app_context_xml(doc_base: &Path) -> Option<String> {
+    if doc_base.is_dir() {
+        return fs::read_to_string(doc_base.join("META-INF/context.xml")).ok();
+    }
+    let mut zip = zip::ZipArchive::new(fs::File::open(doc_base).ok()?).ok()?;
+    let mut text = String::new();
+    zip.by_name("META-INF/context.xml").ok()?.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// The context descriptor for `conf/Catalina/localhost`. Tomcat ignores the app's
+/// `META-INF/context.xml` once a descriptor exists there, so its content (`<Resource>`,
+/// `<Environment>`, `<Valve>`…) is carried over, with `docBase` and `reloadable` set by the IDE.
+pub fn deployed_context_xml(doc_base: &Path, reload: bool) -> String {
+    let Some(app) = app_context_xml(doc_base) else { return context_xml(doc_base, reload) };
+    merge_context_xml(&app, doc_base, reload).unwrap_or_else(|e| {
+        tracing::warn!("ignoring the web app's META-INF/context.xml: {e}");
+        context_xml(doc_base, reload)
+    })
+}
+
+fn merge_context_xml(app: &str, doc_base: &Path, reload: bool) -> IdeResult<String> {
+    let mut reader = Reader::from_str(app);
+    let mut writer = Writer::new(Vec::new());
+    let mut root = false;
+    loop {
+        let event = reader.read_event().map_err(invalid)?;
+        let event = match event {
+            Event::Eof => break,
+            Event::Start(ref tag) | Event::Empty(ref tag) if !root => {
+                if tag.name().as_ref() != "Context" {
+                    return Err(invalid("the root element is not <Context>"));
+                }
+                root = true;
+                let mut new = BytesStart::new("Context");
+                for a in tag.attributes() {
+                    let a = a.map_err(invalid)?;
+                    if !matches!(a.key.as_ref(), "docBase" | "reloadable" | "path") {
+                        new.push_attribute(a);
+                    }
+                }
+                new.push_attribute(("docBase", doc_base.to_string_lossy().as_ref()));
+                new.push_attribute(("reloadable", if reload { "true" } else { "false" }));
+                if matches!(event, Event::Empty(_)) { Event::Empty(new) } else { Event::Start(new) }
+            }
+            e => e,
+        };
+        writer.write_event(event).map_err(invalid)?;
+    }
+    if !root {
+        return Err(invalid("no <Context> element"));
+    }
+    String::from_utf8(writer.into_inner()).map_err(invalid)
+}
+
 pub fn patch_server_xml(xml: &str, http: u16, shutdown: u16, secret: &str) -> IdeResult<String> {
     let mut reader = Reader::from_str(xml);
     let mut writer = Writer::new(Vec::new());
@@ -442,7 +498,7 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     let server = patch_server_xml(&fs::read_to_string(home.join("conf/server.xml"))?, port, shutdown, &secret)?;
     fs::write(base.join("conf/server.xml"), server)?;
     let debug = config.extras.params.get("tomcatDebug").is_some_and(|v| v == "true");
-    fs::write(contexts.join(format!("{context}.xml")), context_xml(&doc, !debug))?;
+    fs::write(contexts.join(format!("{context}.xml")), deployed_context_xml(&doc, !debug))?;
     config.env.insert("CATALINA_HOME".into(), home.to_string_lossy().into_owned());
     config.env.insert("CATALINA_BASE".into(), base.to_string_lossy().into_owned());
     if let Some(jre) = config.extras.params.get("jre").filter(|s| !s.trim().is_empty()) {
@@ -500,6 +556,48 @@ mod tests {
             zip.write_all(text.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
+    }
+    #[test]
+    fn keeps_the_apps_own_context_descriptor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Context path=\"/old\" docBase=\"old\" reloadable=\"false\" antiResourceLocking=\"true\">\n  <!-- JNDI -->\n  <Resource name=\"jdbc/x\" auth=\"Container\" type=\"javax.sql.DataSource\" url=\"jdbc:h2:mem:a;b=&amp;c\"/>\n  <Environment name=\"mode\" value=\"dev\" type=\"java.lang.String\"/>\n</Context>\n";
+        let dir = tmp.path().join("web app");
+        fs::create_dir_all(dir.join("META-INF")).unwrap();
+        fs::write(dir.join("META-INF/context.xml"), app).unwrap();
+        let war = tmp.path().join("app.war");
+        archive(&war, &[("META-INF/context.xml", app), ("index.jsp", "")]);
+        for doc in [&dir, &war] {
+            let xml = deployed_context_xml(doc, true);
+            let doc_base = escape(&doc.to_string_lossy());
+            assert!(
+                xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Context antiResourceLocking=\"true\""),
+                "{xml}"
+            );
+            assert!(xml.contains(&format!("docBase=\"{doc_base}\" reloadable=\"true\">")), "{xml}");
+            assert!(!xml.contains("/old") && !xml.contains("\"old\"") && !xml.contains("\"false\""), "{xml}");
+            assert!(xml.contains("<!-- JNDI -->"));
+            assert!(xml.contains("<Resource name=\"jdbc/x\" auth=\"Container\" type=\"javax.sql.DataSource\" url=\"jdbc:h2:mem:a;b=&amp;c\"/>"));
+            assert!(xml.contains("<Environment name=\"mode\""));
+            assert!(xml.trim_end().ends_with("</Context>"));
+        }
+
+        fs::write(dir.join("META-INF/context.xml"), "<Context/>").unwrap();
+        let doc_base = escape(&dir.to_string_lossy());
+        assert_eq!(
+            deployed_context_xml(&dir, false),
+            format!("<Context docBase=\"{doc_base}\" reloadable=\"false\"/>")
+        );
+        // Unreadable or not a context: the IDE's own descriptor, as before.
+        for broken in ["<Context><Resource></Context>", "<Server/>", ""] {
+            fs::write(dir.join("META-INF/context.xml"), broken).unwrap();
+            assert_eq!(deployed_context_xml(&dir, false), context_xml(&dir, false), "{broken}");
+        }
+        let plain = tmp.path().join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        assert_eq!(deployed_context_xml(&plain, true), context_xml(&plain, true));
+        let bare = tmp.path().join("bare.war");
+        archive(&bare, &[("index.jsp", "")]);
+        assert_eq!(deployed_context_xml(&bare, true), context_xml(&bare, true));
     }
     fn config() -> RunConfig {
         RunConfig {
