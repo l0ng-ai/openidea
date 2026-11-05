@@ -6,20 +6,20 @@
 import { onFileOperation, type FileOperation } from "@/platform/fileOps";
 import { tx } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { ipcPath, isSameOrInside } from "@/platform/paths";
 import { loadSettings } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { ask } from "@/workbench/messages";
 import { effectiveKind, relTo, stripSlash } from "./model";
 import { runOp } from "./ops";
 import { refreshNow, useVcs } from "./store";
-
-const inside = (root: string, p: string) => p === root || p.startsWith(root.endsWith("/") ? root : root + "/");
+import { createUnityMetadataStaging } from "./unityMetadata";
 
 /** Status paths affected by `paths` (a deleted folder covers its content). */
 function matching(paths: readonly string[], kind: "untracked" | "deleted"): string[] {
   const out = new Set<string>();
   for (const f of useVcs.getState().status) {
-    const p = stripSlash(f.path);
+    const p = stripSlash(ipcPath(f.path));
     if (effectiveKind(f) !== kind || f.staged) continue;
     for (const q of paths) {
       if (p === q || p.startsWith(q + "/")) out.add(p);
@@ -59,27 +59,33 @@ async function confirmFiles(op: FileOperation["kind"], files: string[]): Promise
   return { ok: r.button === "ok", remember: r.checked };
 }
 
-async function handle(op: FileOperation) {
+async function handle(op: FileOperation, metadata: ReturnType<typeof createUnityMetadataStaging>) {
   const vcs = useVcs.getState();
   if (!vcs.available || !vcs.root || !isTauri()) return;
   const conf = workflowSettings().vcs.confirmation;
   const mode = op.kind === "created" ? conf.onCreate : conf.onDelete;
   if (mode === "never") return;
-  const paths = op.paths.map(stripSlash).filter((p) => inside(vcs.root!, p));
+  const paths = op.paths.map((p) => stripSlash(ipcPath(p))).filter((p) => isSameOrInside(p, vcs.root!));
   if (!paths.length) return;
+  const addition = metadata.begin(op.kind === "created" ? paths : []);
   await refreshNow();
+  if (!addition.current()) return;
   const files = matching(paths, op.kind === "created" ? "untracked" : "deleted");
   if (!files.length) return;
+  const confirmed = addition.include(files);
   if (mode === "ask") {
-    const { ok, remember } = await confirmFiles(op.kind, files);
+    const { ok, remember } = await confirmFiles(op.kind, confirmed);
+    if (!addition.current()) return;
     if (remember) {
       const key = op.kind === "created" ? "vcs.confirmation.onCreate" : "vcs.confirmation.onDelete";
       await rememberSetting(key, ok ? "silently" : "never");
     }
     if (!ok) return;
   }
-  const n = files.length;
-  await runOp(
+  const stageFiles = await addition.beforeStage(files);
+  if (!addition.current() || !stageFiles.length) return;
+  const n = stageFiles.length;
+  const ok = await runOp(
     op.kind === "created"
       ? n === 1
         ? tx("Add 1 file to Git")
@@ -87,10 +93,19 @@ async function handle(op: FileOperation) {
       : n === 1
         ? tx("Remove 1 file from Git")
         : tx`Remove ${n} files from Git`,
-    () => call(commands.vcsStage(files)),
+    async () => {
+      await call(commands.vcsStage(stageFiles));
+      return true;
+    },
   );
+  await addition.finished(!!ok);
 }
 
 export function installFileConfirmations(): () => void {
-  return onFileOperation((op) => void handle(op));
+  const metadata = createUnityMetadataStaging();
+  const stopFiles = onFileOperation((op) => void handle(op, metadata));
+  return () => {
+    stopFiles();
+    metadata.dispose();
+  };
 }
