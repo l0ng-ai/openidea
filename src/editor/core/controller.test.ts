@@ -262,6 +262,24 @@ describe("EditorController", () => {
     useProject.setState({ lightEdit: false });
   });
 
+  it("opens a file requested while the LightEdit session is being restored", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/x/a.txt": "a", "/y/b.md": "b", "/z/launch.lua": "l" }));
+    ctrl.start();
+    useProject.setState({ lightEdit: true });
+    await ctrl.openFile("/x/a.txt", { focus: false });
+    await ctrl.openFile("/y/b.md", { focus: false });
+    useProject.setState({ lightEdit: false });
+    // A launch with a file path: LightEdit starts and the file opens before the old tabs are back.
+    useProject.setState({ lightEdit: true });
+    await ctrl.openFile("/z/launch.lua", { focus: false });
+    expect(openFilePaths(useTabs.getState())).toEqual(["/x/a.txt", "/y/b.md", "/z/launch.lua"]);
+    const s = useTabs.getState();
+    const active = s.panes[s.activePane]!;
+    expect(active.tabs.find((t) => t.id === active.active)?.input.path).toBe("/z/launch.lua");
+    await ctrl.closeEverything();
+    useProject.setState({ lightEdit: false });
+  });
+
   it("closes a tab by its input key", async () => {
     ctrl = new EditorController(createMemoryBackend());
     ctrl.start();
