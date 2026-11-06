@@ -57,6 +57,12 @@ pub trait HostApi: Send + Sync {
     }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
+    /// for window `client` (every window if `None`).
+    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
+        let _ = (client, key, value);
+        Ok(())
+    }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
     /// Unsaved text of an open editor's file.

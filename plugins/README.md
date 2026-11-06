@@ -187,6 +187,10 @@ The path is exact (no globs) and relative to the project root; in a workspace th
 key is true when any of its projects contains the path. It updates when
 files change. An IDE that doesn't know the key treats it as
 false: the plugin still installs and the key reads as false there.
+Plugins can set their own keys, `plugin.<id>.<key>`, with `host::set_context`:
+a key set from a command or event applies to that window, one set outside any
+applies to every window, and a window's value wins over the global one. Keys are
+kept across a window reload and idle reclaim, and dropped when the plugin stops.
 
 ### Background associations
 
@@ -349,6 +353,7 @@ then run `openidea-plugin check`.
 | `host::begin_task(title, cancellable)` → `Task`                          | `tasks.begin`                    | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                               |
 | `host::storage::{get, set, delete, keys}`                                | `storage`                        | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                             |
 | `host::set_status_item(id, item)`, `remove_status_item`                  | `ui`                             | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                 |
+| `host::set_context(key, value)`, `remove_context`                        | `ui.{set,remove}-context`        | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                       |
 | `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
 | `host::copy_to_clipboard(text)`                                          | `ui.copy-to-clipboard`           | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                            |
 | `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |

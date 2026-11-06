@@ -2691,6 +2691,131 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
 }
 
+#[test]
+fn plugins_set_their_own_context_keys() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.run("jobs", "context", Some("connected=true")).unwrap();
+    let changed: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, e)| match e {
+            PluginEvent::ContextChanged { plugin_id, key, value } => Some((client, plugin_id, key, value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed, [(Some("main".into()), "jobs".into(), "connected".into(), Some("true".into()))]);
+    assert_eq!(f.host.context_keys(Some("main")).len(), 1);
+    assert!(f.host.context_keys(Some("other")).is_empty(), "window-scoped");
+
+    for bad in ["bad key=true", "a.b=true", "x=NaN"] {
+        assert!(f.run("jobs", "context", Some(bad)).unwrap_err().contains("invalid"), "{bad}");
+    }
+
+    f.run("jobs", "context", Some("connected=")).unwrap();
+    assert!(f.host.context_keys(Some("main")).is_empty());
+
+    f.run("jobs", "context", Some("connected=true")).unwrap();
+    f.host.set_enabled("jobs", false).unwrap();
+    assert!(f.host.context_keys(Some("main")).is_empty(), "cleared when the plugin stops");
+}
+
+#[test]
+fn context_keys_are_capped_and_windows_overlay_global_ones() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    for i in 0..100 {
+        f.run("jobs", "context", Some(&format!("k{i}=1"))).unwrap();
+    }
+    assert!(f.run("jobs", "context", Some("k100=1")).unwrap_err().contains("invalid"));
+    f.run("jobs", "context", Some("k0=2")).unwrap();
+    for i in 1..4 {
+        f.run("jobs", "context", Some(&format!("k{i}="))).unwrap();
+    }
+
+    let global = Invocation { client: None, ..f.inv() };
+    f.host.run_command("jobs", "context", Some("g=1"), global.clone()).unwrap();
+    f.host.run_command("jobs", "context", Some("w=global"), global).unwrap();
+    f.run("jobs", "context", Some("w=window")).unwrap();
+    let w = |client| f.host.context_keys(Some(client)).into_iter().find(|k| k.key == "w").map(|k| k.value);
+    assert_eq!(w("main").as_deref(), Some("\"window\""));
+    assert_eq!(w("other").as_deref(), Some("\"global\""));
+
+    f.run("jobs", "context", Some("w=")).unwrap();
+    assert_eq!(w("main").as_deref(), Some("\"global\""), "removing the window key reveals the global one");
+}
+
+#[test]
+fn context_values_are_stored_as_json_and_bounded() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let value = |arg: &str| {
+        f.run("jobs", "context", Some(arg)).unwrap();
+        f.host.context_keys(Some("main")).into_iter().find(|k| k.key == "x").unwrap().value
+    };
+    assert_eq!(value("x=true"), "true");
+    assert_eq!(value("x=2.5"), "2.5");
+    assert_eq!(value("x=say \"hi\""), "\"say \\\"hi\\\"\"");
+    assert_eq!(value("x=1"), "1");
+    f.take_events();
+    f.run("jobs", "context", Some("x=1.0")).unwrap();
+    assert!(f.take_events().is_empty(), "the same value emits nothing");
+    let long = format!("x={}", "a".repeat(1025));
+    assert!(f.run("jobs", "context", Some(&long)).unwrap_err().contains("invalid"));
+}
+
+#[test]
+fn forgetting_a_window_drops_its_context_keys_silently() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.run("jobs", "context", Some("w=1")).unwrap();
+    f.take_events();
+    f.host.forget_client("main");
+    assert!(f.host.context_keys(Some("main")).is_empty());
+    assert!(f.take_events().is_empty());
+}
+
+#[test]
+fn a_closed_window_ignores_late_context_writes_until_its_label_is_reused() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.forget_client("main");
+    f.take_events();
+    f.run("jobs", "context", Some("late=1")).unwrap();
+    assert!(f.host.context_keys(Some("main")).is_empty());
+    let events = f.take_events();
+    assert!(
+        !events.iter().any(|(_, e)| matches!(e, PluginEvent::ContextChanged { .. })),
+        "no context event: {events:?}"
+    );
+
+    f.host.reopen_client("main");
+    f.run("jobs", "context", Some("fresh=1")).unwrap();
+    assert_eq!(f.host.context_keys(Some("main"))[0].key, "fresh");
+}
+
+#[test]
+fn stopping_a_plugin_withdraws_each_context_key_in_its_own_scope() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let global = Invocation { client: None, ..f.inv() };
+    f.host.run_command("jobs", "context", Some("g=1"), global).unwrap();
+    f.run("jobs", "context", Some("w=1")).unwrap();
+    f.take_events();
+    f.host.set_enabled("jobs", false).unwrap();
+    let mut removed: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, e)| match e {
+            PluginEvent::ContextChanged { key, value: None, .. } => Some((client, key)),
+            _ => None,
+        })
+        .collect();
+    removed.sort();
+    assert_eq!(removed, [(None, "g".to_owned()), (Some("main".to_owned()), "w".to_owned())]);
+}
+
 /// A data-only package `id` in `dir` whose manifest ends with `extra`, plus `files`.
 fn icon_package(dir: &Path, id: &str, extra: &str, files: &[(&str, &str)]) -> PathBuf {
     let pkg = dir.join(id);

@@ -73,6 +73,19 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        let value = match value {
+            ContextValue::Flag(b) => wit::ui::ContextValue::Flag(b),
+            ContextValue::Number(n) => wit::ui::ContextValue::Number(n),
+            ContextValue::Text(t) => wit::ui::ContextValue::Text(t),
+        };
+        wit::ui::set_context(key, &value).map_err(error)
+    }
+
+    pub fn remove_context(key: &str) {
+        wit::ui::remove_context(key)
+    }
+
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         wit::ui::copy_to_clipboard(text).map_err(error)
     }
@@ -553,6 +566,19 @@ pub fn set_status_item(id: &str, item: &StatusItem) {
 
 pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
+}
+
+/// Sets the plugin's context key that `when` clauses test as `plugin.<id>.<key>`, in
+/// the window the current command or event came from (every window when there is
+/// none): `set_context("connected", true)`. A window's value takes precedence over
+/// the global one. The key is 1-64 of `A-Za-z0-9_-`; at most 100 keys.
+pub fn set_context(key: &str, value: impl Into<ContextValue>) -> Result<(), Error> {
+    imp::set_context(key, value.into())
+}
+
+/// Removes the key [`set_context`] set in the same scope.
+pub fn remove_context(key: &str) {
+    imp::remove_context(key)
 }
 
 /// Copies `text` to the system clipboard. Needs `clipboard`.

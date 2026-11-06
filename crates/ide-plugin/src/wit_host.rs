@@ -244,6 +244,36 @@ impl ui::Host for StoreData {
         Ok(())
     }
 
+    fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
+        let valid_key =
+            (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+        if !valid_key {
+            return Ok(Err(wit::Error::Invalid(format!("context key {key:?}: expected 1-64 of A-Za-z0-9_-"))));
+        }
+        // Kept as JSON text, which the windows parse into their context.
+        let json = match value {
+            ui::ContextValue::Flag(b) => b.to_string(),
+            ui::ContextValue::Number(n) if n.fract() == 0.0 && n.abs() < 9e15 => (n as i64).to_string(),
+            ui::ContextValue::Number(n) => match serde_json::Number::from_f64(n) {
+                Some(n) => n.to_string(),
+                None => return Ok(Err(wit::Error::Invalid("context value: not a finite number".into()))),
+            },
+            ui::ContextValue::Text(t) if t.len() <= 1024 => serde_json::Value::String(t).to_string(),
+            ui::ContextValue::Text(_) => {
+                return Ok(Err(wit::Error::Invalid("context value: text longer than 1024 bytes".into())));
+            }
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_context(client.as_deref(), &key, Some(json)).map_err(to_wit))
+    }
+
+    fn remove_context(&mut self, key: String) -> wasmtime::Result<()> {
+        let client = self.invocation.client.clone();
+        // Nothing to remove under an invalid key.
+        let _ = self.host.set_context(client.as_deref(), &key, None);
+        Ok(())
+    }
+
     fn copy_to_clipboard(&mut self, text: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Clipboard) {
             return Ok(Err(e));

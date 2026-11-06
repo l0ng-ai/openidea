@@ -60,6 +60,7 @@ struct State {
     notifications: Vec<Notification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
+    context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
     tasks: Vec<MockTask>,
@@ -189,6 +190,10 @@ impl MockHost {
 
     pub fn status_items(&self) -> BTreeMap<String, StatusItem> {
         self.state.borrow().status.clone()
+    }
+
+    pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
+        self.state.borrow().context.clone()
     }
 
     pub fn storage(&self) -> BTreeMap<String, String> {
@@ -381,6 +386,15 @@ pub mod current {
 
     pub fn remove_status_item(id: &str) {
         with(|s| s.status.remove(id));
+    }
+
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        with(|s| s.context.insert(key.to_owned(), value));
+        Ok(())
+    }
+
+    pub fn remove_context(key: &str) {
+        with(|s| s.context.remove(key));
     }
 
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
@@ -751,6 +765,13 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
+        host::set_context("a", 1.0).unwrap();
+        host::set_context("b", "x").unwrap();
+        assert_eq!(mock.context_keys()["a"], ContextValue::Number(1.0));
+        assert_eq!(mock.context_keys()["b"], ContextValue::Text("x".into()));
+        host::remove_context("a");
+        host::remove_context("b");
+        assert!(mock.context_keys().is_empty());
         mock.set_vcs_remotes(&[("origin", "git@github.com:o/r.git")]);
         assert_eq!(project.vcs_remotes().unwrap(), [("origin".into(), "git@github.com:o/r.git".into())]);
         host::copy_to_clipboard("copied").unwrap();

@@ -1260,6 +1260,23 @@ impl PluginHost {
         self.shared.status_items()
     }
 
+    /// Plugin context keys in effect for window `client`: global keys overlaid with its own.
+    pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
+        self.shared.context_keys(client)
+    }
+
+    /// A window labelled `label` is about to exist again (labels are reused).
+    pub fn reopen_client(&self, label: &str) {
+        self.shared.reopen_client(label);
+    }
+
+    /// Window `label` closed: drops its context keys and queued events, and ignores
+    /// context writes of commands still running for it.
+    pub fn forget_client(&self, label: &str) {
+        self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
+        self.shared.forget_client(label);
+    }
+
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
     pub fn cancel_task(&self, task_id: &str) -> bool {
         task_id.parse().is_ok_and(|id| self.shared.cancel_task(id))

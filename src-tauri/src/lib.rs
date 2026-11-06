@@ -209,6 +209,7 @@ pub fn run() {
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
                 if let Some(state) = window.try_state::<AppState>() {
                     state.close_project(window.label());
+                    state.plugins.forget_client(window.label());
                 }
             }
             if let Some(w) = window.try_state::<WindowsState>() {

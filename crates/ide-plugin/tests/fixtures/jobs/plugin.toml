@@ -26,6 +26,11 @@ title = "Jobs: Follow Selected Job"
 category = "Jobs"
 
 [[contributes.commands]]
+id = "context"
+title = "Jobs: Set Context"
+category = "Jobs"
+
+[[contributes.commands]]
 id = "selection"
 title = "Jobs: Show Selected Paths"
 category = "Jobs"
