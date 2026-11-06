@@ -977,6 +977,19 @@ fn api_retries_are_announced() {
 }
 
 #[test]
+fn background_tasks_are_announced_wholesale() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let tasks = json!([{"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"}]);
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": tasks}));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].session, "s");
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": tasks}));
+    // The list is replaced with every report: an empty one says every task is done.
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": []}));
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": []}));
+}
+
+#[test]
 fn streamed_text_is_not_sent_twice() {
     let mut t = Translator::new("s", PathBuf::from("/w"), true);
     let se = |event: Value| json!({"type": "stream_event", "parent_tool_use_id": null, "event": event});
