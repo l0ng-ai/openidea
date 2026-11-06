@@ -70,7 +70,8 @@ class Partial extends \Vendor\Missing {}
 "#,
         ),
     ]);
-    p.engine.set_inspections(Inspections::builtin());
+    // The variable inspections have tests of their own.
+    p.engine.set_inspections(super::without_variables());
     p
 }
 

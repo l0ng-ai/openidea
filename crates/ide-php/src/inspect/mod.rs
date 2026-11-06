@@ -7,7 +7,8 @@
 //!   `WorkspaceEdit`. The checks are registered in
 //!   [`Inspections::builtin`] ([`undefined`]: undefined class-likes,
 //!   functions and constants; [`members`]: undefined methods, properties
-//!   and class constants); [`PhpEngine::set_inspections`] replaces the
+//!   and class constants; [`variables`]: undefined, possibly undefined and
+//!   unused local variables); [`PhpEngine::set_inspections`] replaces the
 //!   set (tests, and the settings of phase 4.10).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
@@ -36,6 +37,7 @@ pub mod suppress;
 #[cfg(test)]
 mod tests;
 pub mod undefined;
+pub mod variables;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -81,6 +83,8 @@ impl Inspections {
             Arc::new(members::UndefinedMethod),
             Arc::new(members::UndefinedField),
             Arc::new(members::UndefinedClassConstant),
+            Arc::new(variables::UndefinedVariable),
+            Arc::new(variables::UnusedVariable),
         ])
     }
 
@@ -230,6 +234,7 @@ pub struct InspectionContext<'a> {
     names: OnceLock<FileNames>,
     summary: OnceLock<FileSummary>,
     members: OnceLock<Vec<members::Found>>,
+    variables: OnceLock<Vec<variables::Found>>,
 }
 
 impl<'a> InspectionContext<'a> {
@@ -242,6 +247,7 @@ impl<'a> InspectionContext<'a> {
             names: OnceLock::new(),
             summary: OnceLock::new(),
             members: OnceLock::new(),
+            variables: OnceLock::new(),
         }
     }
 
@@ -259,6 +265,12 @@ impl<'a> InspectionContext<'a> {
     /// inspections).
     pub(crate) fn undefined_members(&self) -> &[members::Found] {
         self.members.get_or_init(|| members::find(self))
+    }
+
+    /// The file's variable problems (computed once for the variable
+    /// inspections).
+    pub(crate) fn variables(&self) -> &[variables::Found] {
+        self.variables.get_or_init(|| variables::find(self))
     }
 
     pub fn resolver(&self) -> Resolver<'a> {

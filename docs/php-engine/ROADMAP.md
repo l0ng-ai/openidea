@@ -333,7 +333,7 @@ The design:
 - [x] Phase 4.3: Undefined members
       Inspections for undefined methods, properties and class constants. They respect `__call`, `__callStatic`, `__get`, `__set`, `@method`, `@property`, `@mixin`, `stdClass`, and `mixed` receivers (no warning). Tests: unit tests, and a false-positive count on the corpora.
 
-- [ ] Phase 4.4: Variables
+- [x] Phase 4.4: Variables
       Inspections for undefined, possibly undefined and unused variables, from the flow graph. Handle `compact`/`extract`, `$$var` (which turns the check off), references, `global` and `static`. Tests: unit tests.
 
 - [ ] Phase 4.5: Calls and types

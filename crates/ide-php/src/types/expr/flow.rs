@@ -30,7 +30,7 @@
 //!   returning `never`.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -101,6 +101,10 @@ pub struct Flow {
     /// By the offset of a read or write of [`PROBE_VARIABLE`]: every
     /// variable of the scope there (for completion).
     probes: HashMap<u32, BTreeMap<Vec<u8>, VarState>>,
+    /// Offsets of variable reads that may bind rather than read: by-reference
+    /// bindings (`&$x`, `use (&$x)`, arguments to by-reference parameters)
+    /// and arguments of calls whose signature isn't known.
+    bindings: HashSet<u32>,
 }
 
 /// The variable completion puts at the caret (`$__ideProbe`): the flow keeps
@@ -141,6 +145,14 @@ impl Flow {
     /// included (with [`Defined::No`]).
     pub fn variables_at(&self, offset: u32) -> Option<&BTreeMap<Vec<u8>, VarState>> {
         self.probes.get(&offset)
+    }
+
+    /// True when the variable at byte `offset` may be bound there rather
+    /// than read: a by-reference binding (`&$x`, `use (&$x)`, an argument
+    /// for a by-reference parameter, which may create the variable) or an
+    /// argument of a call whose signature isn't known.
+    pub fn is_binding(&self, offset: u32) -> bool {
+        self.bindings.contains(&offset)
     }
 }
 
@@ -265,7 +277,9 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 let outer = self.types.flow_cell(outer_scope(&self.frames[..self.frames.len() - 1]));
                 for variable in closure.use_clause.iter().flat_map(|clause| clause.variables.iter()) {
                     let state = outer.borrow().reads.get(&variable.variable.span.start.offset).cloned();
-                    let state = state.unwrap_or_else(|| VarState::defined(Type::Mixed));
+                    // Inside, a captured variable always exists (`null` when
+                    // it didn't outside, which the `use` clause reports).
+                    let state = state.map_or_else(|| VarState::defined(Type::Mixed), |s| VarState::defined(s.ty));
                     self.env.vars.insert(name_of(&variable.variable).to_vec(), state);
                 }
                 self.parameters(&closure.parameter_list, frame);
@@ -321,6 +335,10 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     fn dynamic(&mut self) {
         self.flow.borrow_mut().dynamic = true;
+    }
+
+    fn binding(&mut self, variable: &DirectVariable<'a>) {
+        self.flow.borrow_mut().bindings.insert(variable.span.start.offset);
     }
 
     fn type_of(&self, expr: &'a Expression<'a>) -> Type {
@@ -735,6 +753,9 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 for variable in closure.use_clause.iter().flat_map(|clause| clause.variables.iter()) {
                     self.read(&variable.variable);
                     let name = name_of(&variable.variable);
+                    if variable.ampersand.is_some() {
+                        self.binding(&variable.variable);
+                    }
                     if variable.ampersand.is_some() && self.env.get(name).defined == Defined::No {
                         // Captured by reference: it exists from now on.
                         self.write(&variable.variable, Type::Null);
@@ -837,6 +858,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 // `&$x` creates `$x` (as `null`) when it doesn't exist.
                 Expression::Variable(Variable::Direct(direct)) => {
                     self.read(direct);
+                    self.binding(direct);
                     if self.env.get(name_of(direct)).defined == Defined::No {
                         self.write(direct, Type::Null);
                     }
@@ -1087,6 +1109,9 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             match param {
                 Some(param) if param.by_ref && is_destination(value) => {
                     self.expr(value);
+                    if let Some(variable) = direct(value) {
+                        self.binding(variable);
+                    }
                     let current = match value {
                         Expression::Variable(Variable::Direct(direct)) => {
                             let state = self.env.get(name_of(direct));
@@ -1100,7 +1125,19 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                     };
                     self.assign_to(value, ty);
                 }
-                _ => self.expr(value),
+                Some(_) => self.expr(value),
+                None => {
+                    self.expr(value);
+                    // Unknown callee: it may take the argument by reference.
+                    if signature.is_none()
+                        && let Some(variable) = direct(value)
+                    {
+                        self.binding(variable);
+                        if self.env.get(name_of(variable)).defined != Defined::Yes {
+                            self.write(variable, Type::Mixed);
+                        }
+                    }
+                }
             }
         }
     }
@@ -1195,6 +1232,9 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                         let name = name_of(variable);
                         let ty = then.get(name).ty.without_null();
                         then.vars.insert(name.to_vec(), VarState::defined(ty));
+                    } else if let Some(variable) = base_variable(value) {
+                        // `isset($a['k'])`, `isset($o->p)`: `$a`/`$o` exists.
+                        defined_in(&mut then, variable);
                     }
                 }
                 (then, self.env.clone())
@@ -1204,12 +1244,17 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 match direct(empty.value) {
                     Some(variable) => {
                         let mut other = self.update(&self.env, variable, falsy_removed);
-                        if let Some(state) = other.vars.get_mut(name_of(variable)) {
-                            state.defined = Defined::Yes;
-                        }
+                        defined_in(&mut other, variable);
                         (self.env.clone(), other)
                     }
-                    None => self.split(),
+                    None => match base_variable(empty.value) {
+                        Some(variable) => {
+                            let mut other = self.env.clone();
+                            defined_in(&mut other, variable);
+                            (self.env.clone(), other)
+                        }
+                        None => self.split(),
+                    },
                 }
             }
             Expression::Variable(Variable::Direct(variable)) => {
@@ -1310,7 +1355,31 @@ fn direct<'a>(expr: &'a Expression<'a>) -> Option<&'a DirectVariable<'a>> {
     }
 }
 
-/// Something a value can be stored into.
+/// The variable at the bottom of an element or property access
+/// (`$a['k']['l']`, `$o->p`, `$o?->p[0]`); not of a bare variable.
+fn base_variable<'a>(expr: &'a Expression<'a>) -> Option<&'a DirectVariable<'a>> {
+    let mut current = expr;
+    let mut nested = false;
+    loop {
+        current = match current {
+            Expression::Parenthesized(inner) => inner.expression,
+            Expression::ArrayAccess(access) => access.array,
+            Expression::Access(Access::Property(access)) => access.object,
+            Expression::Access(Access::NullSafeProperty(access)) => access.object,
+            _ => break,
+        };
+        nested = true;
+    }
+    if nested { direct(current) } else { None }
+}
+
+/// `env` with `variable` known to exist (its type kept).
+fn defined_in(env: &mut Env, variable: &DirectVariable<'_>) {
+    let name = name_of(variable);
+    let ty = env.vars.get(name).map_or(Type::Mixed, |state| state.ty.clone());
+    env.vars.insert(name.to_vec(), VarState::defined(ty));
+}
+
 /// Members a type joined from several paths keeps before its arrays are
 /// collapsed.
 const MAX_JOINED: usize = 16;
@@ -1403,6 +1472,7 @@ fn may_write(arguments: &ArgumentList<'_>, object: &Expression<'_>) -> bool {
         && super::chain_depth(object) <= super::MAX_CHAIN
 }
 
+/// Something a value can be stored into.
 fn is_destination(expr: &Expression<'_>) -> bool {
     matches!(
         expr,

@@ -15,7 +15,8 @@ fn project() -> Project {
             "<?php\nnamespace App;\n\nfunction helper() {}\nconst LIMIT = 3;\ndefine('LEGACY_FLAG', true);\n",
         ),
     ]);
-    p.engine.set_inspections(Inspections::builtin());
+    // The variable inspections have tests of their own.
+    p.engine.set_inspections(super::without_variables());
     p
 }
 

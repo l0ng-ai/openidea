@@ -371,7 +371,9 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpUndefinedConstant",
             "PhpUndefinedMethod",
             "PhpUndefinedField",
-            "PhpUndefinedClassConstant"
+            "PhpUndefinedClassConstant",
+            "PhpUndefinedVariable",
+            "PhpUnusedLocalVariable",
         ]
     );
 }
@@ -392,8 +394,16 @@ fn tag_ids_and_matching() {
     assert!(!found.suppresses("D", at) && !found.suppresses("F", at));
 }
 
+/// The built-in inspections without the variable ones.
+fn without_variables() -> Inspections {
+    Inspections::new(Inspections::builtin().iter().filter(|i| !i.id().contains("Variable")).cloned().collect())
+}
+
 #[path = "undefined_tests.rs"]
 mod undefined_tests;
 
 #[path = "members_tests.rs"]
 mod members_tests;
+
+#[path = "variables_tests.rs"]
+mod variables_tests;

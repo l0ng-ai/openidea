@@ -211,7 +211,14 @@ fn definedness() {
     assert_eq!(defined("function f() { global $g; return $g/*|*/; }"), Some(Defined::Yes));
     assert_eq!(defined("try { $x = f(); } catch (\\Exception $e) { $x/*|*/; }"), Some(Defined::Maybe));
     assert_eq!(defined("if (isset($x)) { $x/*|*/; }"), Some(Defined::Yes));
-    assert_eq!(defined("preg_match('/a/', 'a', $m);\n$m/*|*/;"), Some(Defined::No));
+    // No stubs here: a callee whose signature isn't known may take the
+    // argument by reference (and create it).
+    assert_eq!(defined("preg_match('/a/', 'a', $m);\n$m/*|*/;"), Some(Defined::Yes));
+    assert_eq!(defined("function take($in) {}\ntake($m);\n$m/*|*/;"), Some(Defined::No));
+    assert_eq!(defined("if (isset($x['k'])) { $x/*|*/; }"), Some(Defined::Yes));
+    assert_eq!(defined("if (!empty($o->p)) { $o/*|*/; }"), Some(Defined::Yes));
+    assert_eq!(defined("if (!empty($x)) { $x/*|*/; }"), Some(Defined::Yes));
+    assert_eq!(defined("if ($c) { $x = 1; }\n$f = function () use ($x) { return $x/*|*/; };"), Some(Defined::Yes));
     assert_eq!(defined("function grab(&$out) {}\ngrab($m);\n$m/*|*/;"), Some(Defined::Yes));
     // The assigned variable itself is written there.
     assert_eq!(defined("$x/*|*/ = 1;"), Some(Defined::Yes));
