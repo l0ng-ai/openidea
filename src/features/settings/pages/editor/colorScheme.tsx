@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Editor › Color Scheme: scheme chooser, the IDEA attribute tree (General,
  * Language Defaults, languages) with a foreground / background / bold /
  * italic / effects editor, and a live preview. Edits are staged in
@@ -21,12 +21,14 @@ import { HEX_COLOR } from "../../model/schema";
 import { Row, Select } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import { editorPage } from "./kit";
+import type { PageSpec } from "../spec";
 import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
 import { parseIcls, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx } from "@/platform/i18n";
+import { selectPage } from "../../model/staging";
 
 type Overrides = Record<string, Record<string, TextAttributesOverride>>;
 
@@ -54,6 +56,24 @@ function buildTree(): Node[] {
 }
 
 const TREE = buildTree();
+
+/** Roots of one page's attribute tree, in JetBrains fashion: scopes are pages, not tree panes. */
+function pageTree(scopes: readonly string[]): Node[] {
+  return TREE.filter((n) => scopes.includes(n.label));
+}
+
+function firstLeafId(nodes: readonly Node[]): string {
+  const n = nodes[0]!;
+  return n.attr ? n.attr.id : firstLeafId(n.children!);
+}
+
+function treeIds(nodes: readonly Node[], out = new Set<string>()): Set<string> {
+  for (const n of nodes) {
+    if (n.attr) out.add(n.attr.id);
+    if (n.children) treeIds(n.children, out);
+  }
+  return out;
+}
 
 /**
  * CSS custom properties of a scheme plus pending overrides (for the preview); with
@@ -271,7 +291,7 @@ function ColorRow({
   );
 }
 
-function ColorSchemePage() {
+function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landing?: boolean }) {
   const [scheme, setScheme] = useSetting<string>("editor.colorScheme", "global");
   const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides", "global");
   const [weight] = useSetting<number>("editor.fontWeight");
@@ -281,6 +301,18 @@ function ColorSchemePage() {
   const [report, setReport] = useState("");
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string>("keyword");
+  // One scope per page: the scope's own name is the page, not a tree level.
+  const roots = useMemo(() => pageTree(scopes)[0]?.children ?? [], [scopes]);
+  const ids = useMemo(() => treeIds(roots), [roots]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expandedFor, setExpandedFor] = useState(scopes);
+  if (expandedFor !== scopes) {
+    // Scope pages share this component; restart expansion on page switch.
+    setExpandedFor(scopes);
+    setExpanded(new Set(roots.filter((n) => n.children?.length).map((n) => n.key)));
+  }
+  // Language pages have their own attributes; keep the editor on a row of this page.
+  if (roots.length && !ids.has(selected)) setSelected(firstLeafId(roots));
   const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
   const attr = ATTRIBUTES.find((a) => a.id === selected);
@@ -288,6 +320,10 @@ function ColorSchemePage() {
   const vars = useMemo(
     () => ({ ...previewVars(id, mine, customs, language), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
     [id, mine, customs, language, weight, boldFontWeight],
+  );
+  const baseVars = useMemo(
+    () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
+    [id, mine, customs, weight, boldFontWeight],
   );
   const update = (attrId: string, v: TextAttributesOverride | undefined) => {
     const next: Overrides = { ...(overrides ?? {}) };
@@ -436,55 +472,107 @@ function ColorSchemePage() {
       {scheme === "theme-default" && (
         <div className={styles.note}>{tx`Follows the IDE theme: currently ${schemeName}.`}</div>
       )}
-      <div className={styles.schemeBody}>
-        <div className={styles.attrTree}>
-          <Tree<Node>
-            aria-label="Color scheme attributes"
-            roots={TREE}
-            getKey={(n) => n.key}
-            getLabel={(n) => n.label}
-            getChildren={(n) => n.children}
-            isExpandable={(n) => !!n.children}
-            defaultExpanded={["/Language Defaults", "/General", "/General/Code"]}
-            multiSelect={false}
-            selected={new Set([selected])}
-            onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
-            getColor={(n) => (n.attr && mine?.[n.attr.id] ? "var(--accent)" : undefined)}
-            speedSearch
-          />
-        </div>
-        {attr ? (
-          <AttributeEditor
-            key={`${id}/${attr.id}`}
-            attr={attr}
-            value={mine?.[attr.id]}
-            onChange={(v) => update(attr.id, v)}
-          />
-        ) : (
-          <div />
-        )}
-      </div>
-      <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
-        {SAMPLE.map((line, i) => (
-          <div key={i} className={`${styles.previewLine} ${i === 6 ? styles.previewCaretLine : ""}`}>
-            <span className={styles.previewGutter}>{i + 1}</span>
-            <code>
-              {line.map(([text, attrId], j) => (
-                <span
-                  key={j}
-                  style={tokenStyle(attrId ? A(attrId) : undefined)}
-                  className={attrId ? styles.clickable : undefined}
-                  onClick={attrId ? () => setSelected(attrId) : undefined}
-                >
-                  {text}
-                </span>
-              ))}
-            </code>
+      {landing ? (
+        <nav className={styles.schemeLinks} aria-label={tx("Color scheme pages")}>
+          {SCHEME_SUBPAGES.map((p) => (
+            <button key={p.id} type="button" className={styles.schemeLink} onClick={() => selectPage(p.id)}>
+              {tx(p.title)}
+            </button>
+          ))}
+        </nav>
+      ) : (
+        <>
+          <div className={styles.schemeBody} style={baseVars}>
+            <div className={styles.attrTree}>
+              <Tree<Node>
+                aria-label="Color scheme attributes"
+                roots={roots}
+                getKey={(n) => n.key}
+                getLabel={(n) => n.label}
+                getChildren={(n) => n.children}
+                isExpandable={(n) => !!n.children?.length}
+                expanded={expanded}
+                onExpandedChange={setExpanded}
+                multiSelect={false}
+                selected={new Set([selected])}
+                onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
+                renderNode={(n) =>
+                  n.attr ? (
+                    <span
+                      className={`${styles.treeLabel} ${mine?.[n.attr.id] ? styles.attrModified : ""}`}
+                      style={tokenStyle(n.attr)}
+                    >
+                      {n.label}
+                    </span>
+                  ) : (
+                    <span className={styles.treeLabel}>{n.label}</span>
+                  )
+                }
+                speedSearch
+              />
+            </div>
+            {attr ? (
+              <div className={styles.attrPanel}>
+                <AttributeEditor
+                  key={`${id}/${attr.id}`}
+                  attr={attr}
+                  value={mine?.[attr.id]}
+                  onChange={(v) => update(attr.id, v)}
+                />
+              </div>
+            ) : (
+              <div />
+            )}
           </div>
-        ))}
-      </pre>
+          <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
+            {SAMPLE.map((line, i) => (
+              <div key={i} className={`${styles.previewLine} ${i === 6 ? styles.previewCaretLine : ""}`}>
+                <span className={styles.previewGutter}>{i + 1}</span>
+                <code>
+                  {line.map(([text, attrId], j) => (
+                    <span
+                      key={j}
+                      style={tokenStyle(attrId ? A(attrId) : undefined)}
+                      className={attrId ? styles.clickable : undefined}
+                      onClick={attrId ? () => setSelected(attrId) : undefined}
+                    >
+                      {text}
+                    </span>
+                  ))}
+                </code>
+              </div>
+            ))}
+          </pre>
+        </>
+      )}
     </div>
   );
+}
+
+const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
+  (s) => !["General", "Debugger", "Language Defaults"].includes(s),
+);
+
+/** Sub-pages linked from the Color Scheme landing page, in sidebar order. */
+const SCHEME_SUBPAGES = [
+  { id: "editor.colorScheme.general", title: "General" },
+  { id: "editor.colorScheme.language-defaults", title: "Language Defaults" },
+  { id: "editor.colorScheme.debugger", title: "Debugger" },
+  ...LANGUAGES.map((l) => ({ id: `editor.colorScheme.${l.toLowerCase()}`, title: l })),
+];
+
+/** The scope chooser, import/export buttons and preview are identical on every sub-page. */
+function colorSchemeSection(scopes: readonly string[]) {
+  return {
+    items: [
+      {
+        t: "custom" as const,
+        label: "Scheme",
+        keywords: ATTRIBUTES.filter((a) => scopes.includes(a.path[0]!)).map((a) => a.name),
+        component: () => <ColorSchemePage scopes={scopes} />,
+      },
+    ],
+  };
 }
 
 export const COLOR_SCHEME_PAGE = editorPage({
@@ -500,27 +588,76 @@ export const COLOR_SCHEME_PAGE = editorPage({
     "background",
     "bold",
     "italic",
-    "rainbow",
     ...SCHEMES.map((s) => s.name),
   ],
   sections: [
-    { items: [{ t: "custom", label: "Scheme", keywords: ATTRIBUTES.map((a) => a.name), component: ColorSchemePage }] },
     {
-      title: "Language Defaults",
       items: [
         {
-          t: "check",
-          key: "editor.semanticHighlighting",
-          label: "Semantic highlighting",
-          hint: "Local variables and parameters get a colour derived from their name (needs a language server).",
-        },
-        {
-          t: "check",
-          key: "editor.rainbowBrackets",
-          label: "Rainbow brackets",
-          hint: "Color (), [] and {} by nesting depth; unmatched brackets use the error color.",
+          t: "custom" as const,
+          label: "Scheme",
+          keywords: SCHEMES.map((s) => s.name),
+          component: () => <ColorSchemePage scopes={[]} landing />,
         },
       ],
     },
   ],
 });
+
+/** JetBrains layout: scopes and languages live in the settings tree under Color Scheme, one page each. */
+export const COLOR_SCHEME_PAGES: PageSpec[] = [
+  COLOR_SCHEME_PAGE,
+  editorPage({
+    id: "editor.colorScheme.general",
+    title: "General",
+    order: 1,
+    projectScope: false,
+    keywords: ATTRIBUTES.filter((a) => a.path[0] === "General").map((a) => a.name),
+    sections: [colorSchemeSection(["General"])],
+  }),
+  editorPage({
+    id: "editor.colorScheme.language-defaults",
+    title: "Language Defaults",
+    order: 2,
+    projectScope: false,
+    keywords: ["semantic highlighting", "rainbow"],
+    sections: [
+      colorSchemeSection(["Language Defaults"]),
+      {
+        title: "Language Defaults",
+        items: [
+          {
+            t: "check",
+            key: "editor.semanticHighlighting",
+            label: "Semantic highlighting",
+            hint: "Local variables and parameters get a colour derived from their name (needs a language server).",
+          },
+          {
+            t: "check",
+            key: "editor.rainbowBrackets",
+            label: "Rainbow brackets",
+            hint: "Color (), [] and {} by nesting depth; unmatched brackets use the error color.",
+          },
+        ],
+      },
+    ],
+  }),
+  editorPage({
+    id: "editor.colorScheme.debugger",
+    title: "Debugger",
+    order: 3,
+    projectScope: false,
+    keywords: ["breakpoint", "inline values"],
+    sections: [colorSchemeSection(["Debugger"])],
+  }),
+  ...LANGUAGES.map((language, i) =>
+    editorPage({
+      id: `editor.colorScheme.${language.toLowerCase()}`,
+      title: language,
+      order: 4 + i,
+      projectScope: false,
+      keywords: ATTRIBUTES.filter((a) => a.path[0] === language).map((a) => a.name),
+      sections: [colorSchemeSection([language])],
+    }),
+  ),
+];
