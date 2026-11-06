@@ -36,13 +36,14 @@ import { iconNode } from "@/editor/lsp/iconMarkup";
 import type { DbDriver, DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, Select } from "@/ui";
-import { sourceLabel, splitTarget, targetOf } from "./model";
+import { activeSchema, schemaSwitchable, sourceLabel, splitTarget, targetOf } from "./model";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
 import { shouldAutoCompleteSql, sqlCandidates, type CandidateKind, type SqlCandidate } from "./sql/complete";
 import { sqlSupport } from "./sqlSupport";
 import {
   bindConsole,
   cancelConsole,
+  consoleSchema,
   consoleSource,
   executeConsole,
   explainConsole,
@@ -51,7 +52,9 @@ import {
   loadCompletion,
   listsDatabases,
   loadDatabases,
+  loadSchemas,
   loadSources,
+  setConsoleSchema,
   setManualCommit,
   sourceById,
   targetLabel,
@@ -231,10 +234,27 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const databases = useDatabase((s) => s.databases);
   const boundId = bound ? splitTarget(bound).id : null;
   const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
+  const switchable = schemaSwitchable(sourceById(boundId)?.driver);
+  // The console's active schema: its pick, else the connection's default (`completion.defaultSchema`).
+  const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
+  const defaultSchema = useDatabase((s) => (bound ? s.completion[bound]?.defaultSchema : undefined));
+  const schemaList = useDatabase((s) => (bound ? s.schemas[bound] : undefined));
+  const schema = activeSchema(pickedSchema, defaultSchema);
   useEffect(() => {
     if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
       void loadDatabases(boundId);
   }, [boundId]);
+  useEffect(() => {
+    if (bound && switchable && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
+  }, [bound, switchable]);
+  const schemaOptions = useMemo(() => {
+    if (!switchable) return [];
+    const names = schemaList?.status === "ok" ? schemaList.value : [];
+    const out = names.map((n) => ({ value: n, label: n }));
+    // The connection's default is offered even before its schema list loads.
+    if (defaultSchema && !names.includes(defaultSchema)) out.unshift({ value: defaultSchema, label: defaultSchema });
+    return out;
+  }, [switchable, schemaList, defaultSchema]);
   const targets = useMemo(() => {
     const out: Array<{ value: string; label: string; detail?: string; icon: string }> = [];
     for (const s of sources) {
@@ -324,6 +344,17 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         </>
       )}
       <span className={styles.spacer} />
+      {switchable && (
+        <Select
+          aria-label="Schema"
+          value={schema || null}
+          placeholder="<schema>"
+          options={schemaOptions}
+          searchable={schemaOptions.length > 10}
+          onChange={(v) => setConsoleSchema(path, v)}
+          disabled={!bound}
+        />
+      )}
       <Select
         aria-label="Data source"
         value={bound ?? null}
@@ -425,6 +456,9 @@ function completionSource(path: string): CompletionSource {
     const driver: DbDriver = source?.driver ?? "sqlite";
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
     if (id && !model) void loadCompletion(id);
+    // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
+    const schema = consoleSchema(path);
+    const scoped = model && schema ? { ...model, defaultSchema: schema } : model;
     // A selected template placeholder (`alias`) is about to be replaced: analyze without it.
     const sel = ctx.state.selection.main;
     const placeholder = !sel.empty && (ctx.pos === sel.from || ctx.pos === sel.to);
@@ -433,7 +467,7 @@ function completionSource(path: string): CompletionSource {
       ? analyze(doc.slice(0, sel.from) + doc.slice(sel.to), sel.from, driver)
       : analyze(doc, ctx.pos, driver);
     if (!ctx.explicit && !shouldAutoCompleteSql(analysis)) return null;
-    const candidates = sqlCandidates({ model, analysis, driver, sourceName: source?.name ?? undefined });
+    const candidates = sqlCandidates({ model: scoped, analysis, driver, sourceName: source?.name ?? undefined });
     if (!candidates.length) return null;
     return {
       from: analysis.prefix.from,

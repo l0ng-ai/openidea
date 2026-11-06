@@ -33,7 +33,16 @@ import {
 } from "@/workbench/contributions";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, confirm } from "@/workbench/messages";
-import { colorVar, connectRemedy, databaseKey, effectiveSsh, idleTargets, newSourceId, splitTarget } from "./model";
+import {
+  activeSchema,
+  colorVar,
+  connectRemedy,
+  databaseKey,
+  effectiveSsh,
+  idleTargets,
+  newSourceId,
+  splitTarget,
+} from "./model";
 import { tableFolder, type DbNode } from "./nodes";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
@@ -46,6 +55,7 @@ import { tx } from "@/platform/i18n";
 export const DB_TOOL_WINDOW = "database";
 export const RESULTS_VIEW = "dbResults";
 const BINDINGS_KEY = "openidea.database.consoles";
+const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
 const MAX_TABS = 12;
 
 export interface ResultTab {
@@ -127,6 +137,10 @@ interface DatabaseState {
   objects: Record<string, DbSchemaObjects>;
   /** Console / SQL file path → data source id. */
   consoles: Record<string, string>;
+  /** Console path → its active schema (unqualified names resolve there; see `consoleSchema`). */
+  consoleSchemas: Record<string, string>;
+  /** The Database tree's quick object filter (empty: everything shows). */
+  treeFilter: string;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
@@ -163,6 +177,15 @@ function readBindings(): Record<string, string> {
   }
 }
 
+function readConsoleSchemas(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(CONSOLE_SCHEMAS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
 export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
   loaded: false,
@@ -173,6 +196,8 @@ export const useDatabase = create<DatabaseState>(() => ({
   details: {},
   objects: {},
   consoles: readBindings(),
+  consoleSchemas: readConsoleSchemas(),
+  treeFilter: "",
   completion: {},
   results: [],
   activeResult: null,
@@ -593,7 +618,39 @@ export function bindConsole(path: string, id: string | null) {
     } catch {
       // Per-viewer convenience only.
     }
-    return { consoles };
+    // Re-bound to another data source: the console starts from its default schema again.
+    const consoleSchemas = { ...s.consoleSchemas };
+    if (consoles[path] !== s.consoles[path]) {
+      delete consoleSchemas[path];
+      try {
+        localStorage.setItem(CONSOLE_SCHEMAS_KEY, JSON.stringify(consoleSchemas));
+      } catch {
+        // Per-viewer convenience only.
+      }
+    }
+    return { consoles, consoleSchemas };
+  });
+}
+
+/** The schema a console's statements run in: its pick, else the connection's default. */
+export function consoleSchema(path: string): string {
+  const s = useDatabase.getState();
+  const id = consoleSource(path);
+  return activeSchema(s.consoleSchemas[path], id ? s.completion[id]?.defaultSchema : undefined);
+}
+
+/** Sets (or clears, for `null`) the console's active schema and remembers it per console file. */
+export function setConsoleSchema(path: string, schema: string | null) {
+  useDatabase.setState((s) => {
+    const consoleSchemas = { ...s.consoleSchemas };
+    if (schema) consoleSchemas[path] = schema;
+    else delete consoleSchemas[path];
+    try {
+      localStorage.setItem(CONSOLE_SCHEMAS_KEY, JSON.stringify(consoleSchemas));
+    } catch {
+      // Per-viewer convenience only.
+    }
+    return { consoleSchemas };
   });
 }
 
@@ -653,6 +710,8 @@ function promptOf(id: string): string {
 /**
  * Runs `statements` on `id`, logging to Output; errors stop the batch (backend).
  * Results keep `maxRows` rows after the first `skip`, which the backend reads past.
+ * `schema` is a console's active context: the backend puts the connection that runs
+ * each statement in it, so unqualified names resolve there.
  */
 async function run(
   id: string,
@@ -660,12 +719,16 @@ async function run(
   request: RequestId,
   maxRows = useDatabase.getState().maxRows,
   skip = 0,
+  schema?: string,
 ): Promise<DbStatementOutcome[]> {
   const wasConnected = useDatabase.getState().connected.has(id);
-  const outcomes = await withConnection(id, () => call(commands.dbExecute(request, id, statements, skip, maxRows)));
+  const outcomes = await withConnection(id, () =>
+    call(commands.dbExecute(request, id, statements, skip, maxRows, schema || null)),
+  );
   if (!wasConnected) log("info", "Connected");
+  const prompt = schema || promptOf(id);
   for (const o of outcomes) {
-    log("statement", o.statement.text, `${promptOf(id)}>`);
+    log("statement", o.statement.text, `${prompt}>`);
     log(o.error ? "error" : "result", o.error ? `[${targetLabel(id)}] ${o.error}` : outcomeSummary(o));
   }
   if (useDatabase.getState().manualCommit.has(id) && outcomes.some((o) => !o.error && !READS.test(o.statement.text)))
@@ -806,7 +869,7 @@ export async function executeConsole(
   useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
   try {
     const pageSize = useDatabase.getState().maxRows;
-    const outcomes = await run(id, statements, request, pageSize);
+    const outcomes = await run(id, statements, request, pageSize, 0, consoleSchema(path) || undefined);
     const tabs: ResultTab[] = outcomes
       .filter((o) => o.result?.columns.length)
       .map((outcome) => {
@@ -870,9 +933,11 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
   showServiceView(RESULTS_VIEW, false);
 }
 
-async function explain(id: string, statement: SqlStatement): Promise<DbPlanNode[]> {
-  const plan = await withConnection(id, () => call(commands.dbExplain(nextRequestId(), id, statement.text)));
-  log("statement", `explain ${statement.text}`, `${promptOf(id)}>`);
+async function explain(id: string, statement: SqlStatement, schema?: string): Promise<DbPlanNode[]> {
+  const plan = await withConnection(id, () =>
+    call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null)),
+  );
+  log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`);
   log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`);
   return plan;
 }
@@ -884,7 +949,7 @@ export async function explainConsole(path: string, text: string, from: number, t
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;
-    showPlan(path, id, statement, await explain(id, statement));
+    showPlan(path, id, statement, await explain(id, statement, consoleSchema(path) || undefined));
   } catch (e) {
     if (isCancelled(e)) return;
     log("error", `[${targetLabel(id)}] ${message(e)}`);
@@ -930,7 +995,10 @@ export async function rerunResult(tabId: number): Promise<void> {
   if (tab.plan) {
     patchResult(tabId, { busy: true });
     try {
-      patchResult(tabId, { plan: await explain(tab.sourceId, tab.outcome.statement), busy: false });
+      patchResult(tabId, {
+        plan: await explain(tab.sourceId, tab.outcome.statement, consoleSchema(tab.path) || undefined),
+        busy: false,
+      });
     } catch (e) {
       patchResult(tabId, { busy: false });
       if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`);
@@ -961,7 +1029,14 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
   patchResult(tabId, { busy: true });
   const { maxRows, skip } = pageFetch(page, pageSize);
   try {
-    const [outcome] = await run(tab.sourceId, [tab.outcome.statement], nextRequestId(), maxRows, skip);
+    const [outcome] = await run(
+      tab.sourceId,
+      [tab.outcome.statement],
+      nextRequestId(),
+      maxRows,
+      skip,
+      consoleSchema(tab.path) || undefined,
+    );
     const r = outcome?.result;
     if (r) {
       const sizeChanged = pageSize !== tab.pageSize;
@@ -999,7 +1074,14 @@ export async function countResult(tabId: number): Promise<number | null> {
   const text = countQuery(tab.outcome.statement.text)!;
   patchResult(tabId, { busy: true });
   try {
-    const [outcome] = await run(tab.sourceId, [{ from: 0, to: text.length, text }], nextRequestId(), 1);
+    const [outcome] = await run(
+      tab.sourceId,
+      [{ from: 0, to: text.length, text }],
+      nextRequestId(),
+      1,
+      0,
+      consoleSchema(tab.path) || undefined,
+    );
     const total = Number(outcome?.result?.rows[0]?.[0]);
     const known = outcome?.error || !Number.isFinite(total) ? null : total;
     patchResult(tabId, { busy: false, ...(known === null ? {} : { total: known }) });
