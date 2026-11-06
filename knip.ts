@@ -1,10 +1,9 @@
 import type { KnipConfig } from "knip";
 
 const config: KnipConfig = {
-  // Standalone browser fixtures are loaded by their own HTML pages.
+  // Entries come from the Vite (index.html), Vitest, Playwright and package.json script plugins;
+  // standalone browser fixtures are loaded by their own HTML pages.
   entry: ["e2e/*.fixture.{ts,tsx}"],
-  // Entries come from the Vite (index.html), Vitest, Playwright and package.json script plugins.
-  entry: ["e2e/pythonHighlight.fixture.ts"],
   project: [
     "src/**/*.{ts,tsx,css}",
     "!src/editor/core/cm/angular/parser.terms.ts",

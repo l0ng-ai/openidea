@@ -634,7 +634,9 @@ const linkPlugin = ViewPlugin.fromClass(
       ) {
         const found = hit.result;
         this.set(
-          found ? { from: found.plugin?.from ?? target.from, to: found.plugin?.to ?? target.to, info: found.info } : null,
+          found
+            ? { from: found.plugin?.from ?? target.from, to: found.plugin?.to ?? target.to, info: found.info }
+            : null,
         );
         return;
       }
