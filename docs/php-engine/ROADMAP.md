@@ -306,7 +306,7 @@ The design:
 
   Tests: unit tests and the Native `language_smoke` rename check.
 
-- [ ] Phase 3.4: Move file or class
+- [x] Phase 3.4: Move file or class
       When a PHP file is moved or renamed inside a PSR-4 root, update its namespace and all references and imports. Use the `willRenameFiles` path in `crates/ide-host/src/ops/refactor.rs` with an engine-provided edit. Tests: an ide-host test that moves a fixture file.
 
 - [ ] Phase 3.5: Imports

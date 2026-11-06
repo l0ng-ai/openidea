@@ -30,9 +30,13 @@
 //! - [`PhpEngine::prepare_rename`] and [`PhpEngine::rename`]: the usages,
 //!   widened to member hierarchies and promoted parameters, as a
 //!   `WorkspaceEdit` that also renames a class's file ([`rename`]).
+//! - [`PhpEngine::file_moves_edit`]: moving PHP files or folders inside the
+//!   autoload roots changes their namespace (and a class named after its
+//!   renamed file), its references and its imports ([`moves`]).
 
 pub mod hierarchy;
 pub mod hover;
+pub mod moves;
 pub mod references;
 pub mod rename;
 pub(crate) mod symbol;

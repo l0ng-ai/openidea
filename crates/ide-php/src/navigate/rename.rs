@@ -230,7 +230,7 @@ impl PhpEngine {
     }
 
     /// Whether `path` is the bundled stubs' or a Composer package's.
-    fn is_library(&self, path: &Path) -> bool {
+    pub(super) fn is_library(&self, path: &Path) -> bool {
         let key = path_key(path);
         if key.starts_with(&path_key(&self.stub_dir())) {
             return true;

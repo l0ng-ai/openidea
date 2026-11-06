@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ide_core::settings::{PhpEngineKind, Settings};
-use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink};
+use ide_core::{
+    CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink, WorkspaceEdit,
+};
 use ide_lsp::types::{
     CallHierarchy, CompletionItem, CompletionKind, CompletionList, GotoKind, HierarchyDirection, HierarchyItem, Hover,
     InlayHint, InlayKind, Markup, References, Renamed, SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
@@ -189,7 +191,7 @@ impl DocumentObserver for PhpObserver {
 /// hints (parameter names and types; Editor › Inlay Hints decides which
 /// kinds the editor shows), semantic tokens, find usages, goto
 /// implementation (also for the gutter markers), the type and call
-/// hierarchies, and rename.
+/// hierarchies, rename, and the reference updates of file moves.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -395,6 +397,16 @@ impl crate::language_service::LanguageService for PhpService {
         let engine = self.0.engine()?;
         let edit = engine.rename(doc, pos, new_name, cancel)?;
         Some(edit.map(|edit| Renamed { edit, incomplete: None }))
+    }
+
+    /// Moving PHP files inside the autoload roots updates their namespace,
+    /// references and imports (and renames a class named after its file).
+    fn will_rename_files(&self, moves: &[(PathBuf, PathBuf)], cancel: &CancellationToken) -> Answer<WorkspaceEdit> {
+        let engine = self.0.engine()?;
+        if !moves.iter().any(|(from, _)| from.is_dir() || ide_php::project::is_php_path(from)) {
+            return None;
+        }
+        Some(engine.file_moves_edit(moves, cancel))
     }
 }
 

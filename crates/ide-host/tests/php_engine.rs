@@ -161,3 +161,59 @@ async fn native_engine_stays_inactive_without_php() {
     assert!(!PathBuf::from(&project.cache_dir).join("php").exists());
     host.close_project("main");
 }
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Moving a class of `fixtures/php-app` to another PSR-4 folder changes its
+/// namespace and every import of it, through the file-move refactoring.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_engine_updates_namespaces_and_imports_when_a_file_moves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("php-app");
+    copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app"), &root);
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(WAIT));
+
+    let from = root.join("src/Support/Collection.php");
+    let to = root.join("src/Collections/Collection.php");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    let moves = vec![ide_workspace::FileMove { from: from.clone().into(), to: to.clone().into() }];
+    let edits =
+        ops::refactor::refactor_file_move_edits(&host, "main", ide_core::RequestId(1), moves.clone()).await.unwrap();
+    assert!(edits.errors.is_empty(), "{:?}", edits.errors);
+    assert_eq!(edits.servers.first().map(String::as_str), Some(SERVER_NAME));
+    ops::refactor::refactor_move_files(&host, "main", moves, edits.edit, "Move".into()).await.unwrap();
+
+    let read = |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap();
+    assert!(!from.exists());
+    assert!(read("src/Collections/Collection.php").contains(r"namespace App\Collections;"));
+    for user in [
+        "src/Library.php",
+        "src/Contracts/Repository.php",
+        "src/Repository/AbstractRepository.php",
+        "src/Repository/BookRepository.php",
+        "tests/CollectionTest.php",
+    ] {
+        let text = read(user);
+        assert!(text.contains(r"use App\Collections\Collection;"), "{user}:\n{text}");
+        assert!(!text.contains(r"App\Support\Collection"), "{user}:\n{text}");
+    }
+    host.close_project("main");
+}

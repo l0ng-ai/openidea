@@ -31,7 +31,7 @@ impl Project {
 
     /// The texts of the edited files after `edit`, and the file renames as
     /// `"from -> to"` entries under the key `"renamed"`.
-    fn apply(&self, edit: &WorkspaceEdit) -> BTreeMap<String, String> {
+    pub(super) fn apply(&self, edit: &WorkspaceEdit) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
         let mut renamed = Vec::new();
         for file in &edit.files {

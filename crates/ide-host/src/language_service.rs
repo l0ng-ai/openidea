@@ -11,9 +11,10 @@
 //! honour the `CancellationToken` they get.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use ide_core::{CancellationToken, DocId, IdeResult, LanguageId, Location, OutlineItem, Pos, Range};
+use ide_core::{CancellationToken, DocId, IdeResult, LanguageId, Location, OutlineItem, Pos, Range, WorkspaceEdit};
 use ide_lsp::types::*;
 use parking_lot::RwLock;
 
@@ -141,6 +142,15 @@ pub trait LanguageService: Send + Sync {
     fn type_hierarchy(&self, doc: DocId, pos: Pos, direction: HierarchyDirection) -> Answer<Vec<HierarchyItem>> {
         None
     }
+
+    /// The edits keeping references intact when files or folders move
+    /// (`moves`: from → to, before the move), as `workspace/willRenameFiles`
+    /// answers them: in terms of the paths before the move. Not tied to a
+    /// document: every service is asked, and their edits join the language
+    /// servers'.
+    fn will_rename_files(&self, moves: &[(PathBuf, PathBuf)], cancel: &CancellationToken) -> Answer<WorkspaceEdit> {
+        None
+    }
 }
 
 /// The services of a project, one per language.
@@ -190,7 +200,8 @@ pub(crate) async fn ask<T: Send + 'static>(
     run(move || request(&*service)).await
 }
 
-/// Asks every service (workspace symbols): the answers of those that handle it.
+/// Asks every service (workspace symbols, file moves): the answers of those
+/// that handle it.
 pub(crate) async fn ask_all<T: Send + 'static>(
     project: &crate::Project,
     request: impl Fn(&dyn LanguageService) -> Answer<T> + Send + 'static,

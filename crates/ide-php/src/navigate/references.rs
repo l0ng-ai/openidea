@@ -251,7 +251,7 @@ impl PhpEngine {
     }
 
     /// The indexed files and open buffers containing `word`.
-    fn files_with_word(&self, word: &str) -> IdeResult<Vec<PathBuf>> {
+    pub(super) fn files_with_word(&self, word: &str) -> IdeResult<Vec<PathBuf>> {
         let mut out = match self.index() {
             Some(index) => index.files_with_word(word)?,
             None => Vec::new(),
@@ -612,7 +612,7 @@ impl<'a> Scan<'a, '_, '_> {
 /// split into names (`list<Foo|Bar>` gives `Foo` and `Bar`, `\A\Foo` stays
 /// whole). Keywords and lower-case scalar names are left to the resolver to
 /// not match.
-fn doc_type_names(text: &str) -> Vec<(usize, usize)> {
+pub(super) fn doc_type_names(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;

@@ -10,6 +10,7 @@ use crate::stubs::StubFilter;
 use crate::syntax::{LineIndex, ParsedFile};
 
 mod hierarchy;
+mod moves;
 mod references;
 mod rename;
 
