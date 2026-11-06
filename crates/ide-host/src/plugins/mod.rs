@@ -1088,8 +1088,13 @@ impl PluginHost {
         self.declared_view(id, view)?;
         let plugin =
             self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("plugin {id:?}")))?;
-        if matches!(plugin.status(), PluginStatus::Disabled | PluginStatus::NeedsConsent | PluginStatus::Failed) {
+        if !plugin.status().is_live() {
             return Err(IdeError::unavailable(format!("plugin {id:?} is not running")));
+        }
+        let cap = Capability::Process(program.to_owned());
+        if !plugin.meta.lock().granted.iter().any(|g| g.covers(&cap)) {
+            let denied = HostError::Denied(cap.to_string()).to_string();
+            return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, denied));
         }
         let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
         api.stream_process(program, args, cwd.as_deref(), cancel, on_line).map_err(|e| match e {

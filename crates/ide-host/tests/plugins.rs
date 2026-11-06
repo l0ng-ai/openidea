@@ -2707,7 +2707,8 @@ fn view_process_needs_the_grant() {
     let marker = tmp.path().join("ran");
     let script = format!("touch {}", marker.display());
     let err = stream(&f, &script, &Default::default(), |_| {}).unwrap_err();
-    assert!(err.message.contains("process:sh"), "{err:?}");
+    assert_eq!(err.kind, ErrorKind::PermissionDenied);
+    assert!(err.message.contains("permission denied: process:sh is not granted"), "{err:?}");
     assert!(!marker.exists(), "nothing was started");
     let err = f.host.stream_view_process("hello", "nope/pod:a", "sh", Vec::new(), None, &Default::default(), &|_| {});
     assert_eq!(err.unwrap_err().kind, ErrorKind::NotFound);
