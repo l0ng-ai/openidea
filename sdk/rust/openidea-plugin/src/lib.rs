@@ -40,6 +40,7 @@
 //! wasm32-wasip2`); see `plugins/README.md`.
 
 pub mod host;
+pub mod indexing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mock;
 pub mod providers;
@@ -114,6 +115,17 @@ pub mod views_bindings {
     });
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod indexing_bindings {
+    wit_bindgen::generate!({
+        world: "indexing", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_indexing_world",
+        default_bindings_module: "openidea_plugin::indexing_bindings",
+        with: { "openidea:plugin/types@1.2.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
 /// The plugin API version this SDK targets.
 pub const API_VERSION: &str = "1.2";
 
@@ -161,6 +173,29 @@ macro_rules! register_plugin {
             struct __OpenideaComponent;
             $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
             $crate::__providers_exports!($plugin, __OpenideaComponent);
+    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
+        };
+    };
+    ($plugin:ty, indexing) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
+        #[cfg(target_arch = "wasm32")]
+        const _: () = {
+            struct __OpenideaComponent;
+            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
+            $crate::__indexing_exports!($plugin, __OpenideaComponent);
+    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
+        };
+    };
+    ($plugin:ty, providers, indexing) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
+        #[cfg(target_arch = "wasm32")]
+        const _: () = {
+            struct __OpenideaComponent;
+            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
+            $crate::__providers_exports!($plugin, __OpenideaComponent);
+            $crate::__indexing_exports!($plugin, __OpenideaComponent);
     $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
         };
     };
@@ -310,6 +345,20 @@ macro_rules! __views_exports {
         }
 
         $crate::views_bindings::__export_views_world!($component with_types_in $crate::views_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __indexing_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::indexing_bindings::exports::openidea::plugin::document_indexer::Guest for $component {
+            fn index(doc: $crate::indexing_bindings::exports::openidea::plugin::document_indexer::Document)
+                -> $crate::indexing_bindings::exports::openidea::plugin::document_indexer::Edges {
+                $crate::__rt::index_document::<$plugin>(doc)
+            }
+        }
+        $crate::indexing_bindings::__export_indexing_world!($component with_types_in $crate::indexing_bindings);
     };
 }
 
@@ -520,6 +569,37 @@ pub mod __rt {
             .into_iter()
             .map(|m| w::LineMarker { line: m.line, icon: m.icon, tooltip: m.tooltip, target: m.target.map(loc) })
             .collect()
+    }
+
+    pub fn index_document<T: Plugin + crate::indexing::DocumentIndexer + Default>(
+        d: crate::indexing_bindings::exports::openidea::plugin::document_indexer::Document,
+    ) -> crate::indexing_bindings::exports::openidea::plugin::document_indexer::Edges {
+        use crate::indexing as i;
+        use crate::indexing_bindings::exports::openidea::plugin::document_indexer as w;
+        let doc = i::Document {
+            path: d.path,
+            text: d.text,
+            symbols: d
+                .symbols
+                .into_iter()
+                .map(|s| i::Symbol {
+                    name: s.name,
+                    kind: s.kind,
+                    container: s.container,
+                    range: crate::host::__range_from(s.range),
+                })
+                .collect(),
+        };
+        let e = with::<T, _>(|p| p.index(&doc));
+        fn anchor(a: i::Anchor) -> w::Anchor {
+            w::Anchor { key: a.key, range: crate::host::__range_to(a.range) }
+        }
+        w::Edges {
+            definitions: e.definitions.into_iter().map(anchor).collect(),
+            references: e.references.into_iter().map(anchor).collect(),
+            aliases: e.aliases.into_iter().map(|a| w::Alias { prefix: a.prefix, target: a.target }).collect(),
+            markers: e.markers.into_iter().map(anchor).collect(),
+        }
     }
 
     // ---- views ----

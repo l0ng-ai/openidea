@@ -1,3 +1,9 @@
+import {
+  contributedNavigation,
+  navigationEpoch,
+  onNavigationProvidersChanged,
+  type NavigationMatch,
+} from "../navigationProviders";
 /**
  * Go to declaration / implementation / type declaration (⌘B, ⌥⌘B, ⇧⌘B,
  * ⌘-click with a link underline while ⌘ is held, and a plain middle-button
@@ -69,7 +75,7 @@ import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
-import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
+import { isNavigationGesture, onNavigationModifier, navigationModifierHeld } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
 
@@ -251,6 +257,21 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
     if (own?.(view, offset)) return;
     if (showPhpConstructDocumentation(view, offset)) return;
+    const before = view.state.doc;
+    const plugin = await contributedNavigation(view, offset).catch(() => null);
+    if (view.state.doc !== before) return;
+    if (plugin) {
+      if (plugin.targets.length === 1) await navigateTo(plugin.targets[0]!);
+      else
+        openPopup({
+          kind: "list",
+          anchor: caretAnchor(view, offset),
+          title: tx`Choose Declaration`,
+          items: await locationItems(plugin.targets),
+          pin: pinToFind(view.state.sliceDoc(plugin.from, plugin.to), plugin.targets),
+        });
+      return;
+    }
   }
   const doc = docOf(view);
   if (!doc) return;
@@ -468,7 +489,12 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
  * Whether ⌘-click at `offset` would navigate somewhere, with the declaration
  * info to show; null when there is no target (no underline then, as in IDEA).
  */
-async function probeNavigation(view: EditorView, offset: number): Promise<{ info: NavInfo | null } | null> {
+async function probeNavigation(
+  view: EditorView,
+  offset: number,
+): Promise<{ info: NavInfo | null; plugin?: NavigationMatch } | null> {
+  const plugin = await contributedNavigation(view, offset).catch(() => null);
+  if (plugin) return { info: null, plugin };
   const doc = docOf(view);
   let navigable = !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
   if (!navigable && doc) {
@@ -490,10 +516,12 @@ const linkPlugin = ViewPlugin.fromClass(
   class {
     last: { x: number; y: number } | null = null;
     /** Probe results per word (`from:to`) for the current document. */
-    private probed = new Map<string, { info: NavInfo | null } | null>();
+    private probed = new Map<string, { info: NavInfo | null; plugin?: NavigationMatch } | null>();
     private probedDoc: Text | null = null;
+    private providerEpoch = -1;
     private probing: string | null = null;
     private off: () => void;
+    private offProviders: () => void;
     private disposed = false;
     private hovered: string | null = null;
     private probeVersion = 0;
@@ -502,6 +530,15 @@ const linkPlugin = ViewPlugin.fromClass(
       // Window-wide, so ⌘/Ctrl over an unfocused editor underlines too; released anywhere clears it.
       const offModifier = onNavigationModifier((held) => {
         if (!held || this.last) this.show(held);
+      });
+      this.offProviders = onNavigationProvidersChanged(() => {
+        if (this.disposed) return;
+        this.probeVersion++;
+        clearTimeout(this.probeTimer);
+        this.probing = null;
+        this.probed.clear();
+        this.set(null);
+        if (this.last) this.show(navigationModifierHeld());
       });
       // IDEA's macOS "Force touch" shortcut: a force click navigates like ⌘-click
       // (the keyboard dispatcher keeps the system Look Up popover away).
@@ -518,6 +555,7 @@ const linkPlugin = ViewPlugin.fromClass(
     }
     destroy() {
       this.off();
+      this.offProviders();
       this.disposed = true;
       this.probeVersion++;
       clearTimeout(this.probeTimer);
@@ -560,14 +598,17 @@ const linkPlugin = ViewPlugin.fromClass(
         this.set({ from: target.from, to: target.to, info: null });
         return;
       }
-      if (this.probedDoc !== view.state.doc) {
+      if (this.probedDoc !== view.state.doc || this.providerEpoch !== navigationEpoch()) {
+        this.providerEpoch = navigationEpoch();
         this.probed.clear();
         this.probedDoc = view.state.doc;
       }
       const key = `${target.from}:${target.to}`;
       if (this.probed.has(key)) {
         const hit = this.probed.get(key);
-        this.set(hit ? { from: target.from, to: target.to, info: hit.info } : null);
+        this.set(
+          hit ? { from: hit.plugin?.from ?? target.from, to: hit.plugin?.to ?? target.to, info: hit.info } : null,
+        );
         return;
       }
       const current = view.state.field(linkField);
@@ -584,15 +625,23 @@ const linkPlugin = ViewPlugin.fromClass(
         }
       }, 3000);
       const docAt = view.state.doc;
+      const epochAt = navigationEpoch();
       void probeNavigation(view, target.from)
         .then((result) => {
-          if (this.disposed || view.state.doc !== docAt || this.probeVersion !== version) return;
+          if (
+            this.disposed ||
+            view.state.doc !== docAt ||
+            this.probeVersion !== version ||
+            epochAt !== navigationEpoch()
+          )
+            return;
           clearTimeout(this.probeTimer);
           this.probed.set(key, result);
           if (this.probing !== key) return;
           this.probing = null;
           if (result) {
-            this.set({ from: target.from, to: target.to, info: null });
+            this.set({ from: result.plugin?.from ?? target.from, to: result.plugin?.to ?? target.to, info: null });
+            if (result.plugin) return;
             // Documentation must never delay the link cursor or underline.
             void requestHover(view, target.from)
               .then((hover) => {

@@ -159,6 +159,13 @@ key is true when any of its projects contains the path. It updates when
 files change. An IDE that doesn't know the key treats it as
 false: the plugin still installs and the key reads as false there.
 
+### Background associations
+
+`[[contributes.documentIndexers]]` declares file `extensions` and requires the optional
+`document-indexer` export. It publishes cross-file associations (definitions, references,
+aliases and gutter markers) in background batches, not on the editing path. See
+[Background document indexers](../docs/plugins/indexing.md).
+
 ### Activation
 
 Code is instantiated lazily: when one of the plugin's commands runs, or when

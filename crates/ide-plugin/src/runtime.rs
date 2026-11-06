@@ -11,7 +11,7 @@ use crate::types::{
 use crate::types::{
     FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
-use crate::wit_host::{bindings, providers_bindings, syntax_bindings, views_bindings};
+use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -27,6 +27,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
+use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
@@ -484,6 +485,7 @@ struct Exports {
     plugin: bindings::Plugin,
     syntax: Option<wit_syntax::Guest>,
     providers: Option<wit_prov::Guest>,
+    indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
 }
 
@@ -560,6 +562,7 @@ impl Runtime {
         let pre = engine.linker.instantiate_pre(component).map_err(api_hint)?;
         let plugin_indices = bindings::PluginIndices::new(&pre).map_err(api_hint)?;
         let syntax_indices = wit_syntax::GuestIndices::new(&pre).ok();
+        let index_indices = wit_index::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
@@ -572,13 +575,17 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let indexer = match index_indices {
+            Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         let views = match view_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views },
+            exports: Exports { plugin, syntax, providers, views, indexer },
             limits: setup.limits,
             version: setup.version,
         })
@@ -649,6 +656,47 @@ impl Runtime {
             return Err(CallError::missing_export("syntax-provider"));
         }
         self.call(Invocation::default(), timeout, |exports, store| f(exports.syntax.as_ref().expect("checked"), store))
+    }
+
+    pub fn index_document(
+        &mut self,
+        path: &str,
+        text: &str,
+        symbols: &[crate::indexing::IndexSymbol],
+        invocation: Invocation,
+    ) -> Result<crate::indexing::Edges, CallError> {
+        if self.exports.indexer.is_none() {
+            return Err(CallError::missing_export("document-indexer"));
+        }
+        let doc = wit_index::Document {
+            path: path.into(),
+            text: text.into(),
+            symbols: symbols
+                .iter()
+                .map(|s| wit_index::Symbol {
+                    name: s.name.clone(),
+                    kind: s.kind.clone(),
+                    container: s.container.clone(),
+                    range: range_to_wit(s.range),
+                })
+                .collect(),
+        };
+        let edges = self.call(invocation, self.limits.timeout, |e, store| {
+            e.indexer.as_ref().expect("checked").call_index(store, &doc)
+        })?;
+        fn anchor(a: wit_index::Anchor) -> crate::indexing::Anchor {
+            crate::indexing::Anchor { key: a.key, range: range_from_wit(a.range) }
+        }
+        Ok(crate::indexing::Edges {
+            definitions: edges.definitions.into_iter().map(anchor).collect(),
+            references: edges.references.into_iter().map(anchor).collect(),
+            aliases: edges
+                .aliases
+                .into_iter()
+                .map(|a| crate::indexing::Alias { prefix: a.prefix, target: a.target })
+                .collect(),
+            markers: edges.markers.into_iter().map(anchor).collect(),
+        })
     }
 
     /// The component exports `providers`.

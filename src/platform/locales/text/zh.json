@@ -6329,5 +6329,9 @@
   "HR (ALTER SESSION SET CURRENT_SCHEMA)": "HR（ALTER SESSION SET CURRENT_SCHEMA）",
   "Instant Client:": "Instant Client：",
   "Directory of Oracle Instant Client 19 or later. Empty: ORACLE_HOME or the system library path.": "Oracle Instant Client 19 或更高版本的目录。留空则使用 ORACLE_HOME 或系统库路径。",
-  "Session parameters set after connecting (ALTER SESSION SET name = value). connect_timeout is in seconds.": "连接后设置的会话参数（ALTER SESSION SET name = value）。connect_timeout 以秒为单位。"
+  "Session parameters set after connecting (ALTER SESSION SET name = value). connect_timeout is in seconds.": "连接后设置的会话参数（ALTER SESSION SET name = value）。connect_timeout 以秒为单位。",
+  "Choose Mapping Target": "选择映射目标",
+  "Plugin navigation indexing incomplete": "插件导航索引未完成",
+  "Choose Declaration": "选择声明",
+  "Go to mapping: {target}": "跳转到映射：{target}"
 }

@@ -1043,6 +1043,14 @@ export const commands = {
 	pluginWebReadFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_web_read_file", { path })),
 	/**  Gutter markers of plugin `line-markers` providers for an open document. */
 	pluginLineMarkers: (doc: DocId) => typedError<LineMarkerInfo[], IdeError>(__TAURI_INVOKE("plugin_line_markers", { doc })),
+	pluginNavigationFiles: () => typedError<NavigationFiles, IdeError>(__TAURI_INVOKE("plugin_navigation_files")),
+	pluginNavigationInvalidate: (paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_invalidate", { paths })),
+	pluginNavigationIndex: (paths: string[], request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_index", { paths, request })),
+	pluginNavigationGoto: (doc: DocId, pos: Pos) => typedError<{
+	range: Range,
+	targets: Location[],
+} | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
+	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -3632,6 +3640,13 @@ export type FileLineStats = {
 	removed: number,
 };
 
+/**  The resolved gutter markers of one file. */
+export type FileMarkers = {
+	path: string,
+	version: number | null,
+	markers: NavigationResult[],
+};
+
 export type FileMatch = {
 	path: IpcPath,
 	/**  Path relative to the project root, as displayed. */
@@ -5346,6 +5361,17 @@ export type MethodStat = {
 	total: number | null,
 };
 
+export type NavigationFiles = {
+	paths: IpcPath[],
+	indexing: boolean,
+	extensions: string[],
+};
+
+export type NavigationResult = {
+	range: Range,
+	targets: Location[],
+};
+
 export type NewAgentTask = {
 	/**  Validated by the host; defaults to the window project root. */
 	projectRoot?: IpcPath | null,
@@ -5592,6 +5618,8 @@ export type PluginEditor = {
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
 { type: "commandsChanged" } | 
+/**  Cached document associations were disposed (reload, disable or failure). */
+{ type: "documentIndexesChanged" } | 
 /**
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
