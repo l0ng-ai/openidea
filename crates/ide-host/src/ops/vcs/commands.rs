@@ -157,9 +157,11 @@ pub enum GitOperation {
     Continue,
     Abort,
     Skip,
-    /// Commits oldest first.
+    /// Commits oldest first; `record_origin` adds "(cherry picked from commit …)".
     CherryPick {
         commits: Vec<String>,
+        #[serde(default, rename = "recordOrigin")]
+        record_origin: bool,
     },
     /// Commits newest first.
     Revert {
@@ -572,6 +574,33 @@ pub async fn vcs_undo_commit(host: &Host, window: &str, repo: Option<PathBuf>, c
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.undo_commit(&commit))).await
 }
 
+/// Edit Commit Message: rewrites the commit and its descendants without touching the
+/// working tree.
+pub async fn vcs_reword(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    commit: String,
+    message: String,
+) -> IdeResult<ide_vcs::HeadChange> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.reword(&commit, &message))).await
+}
+
+/// Undo of a history rewrite (Edit Commit Message, Drop, Squash).
+pub async fn vcs_restore_head(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    before: String,
+    after: String,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.restore_head(&before, &after))).await
+}
+
 pub async fn vcs_delete_branch(
     host: &Host,
     window: &str,
@@ -836,7 +865,9 @@ pub async fn vcs_operation(
             GitOperation::Continue => r.continue_operation(&cancel, &out),
             GitOperation::Abort => r.abort_operation(&cancel, &out),
             GitOperation::Skip => r.skip_operation(&cancel, &out),
-            GitOperation::CherryPick { commits } => r.cherry_pick(&commits, &cancel, &out),
+            GitOperation::CherryPick { commits, record_origin } => {
+                r.cherry_pick_with(&commits, record_origin, &cancel, &out)
+            }
             GitOperation::Revert { commits } => r.revert(&commits, &cancel, &out),
             GitOperation::Reset { commit, mode } => r.reset(&commit, mode, &cancel, &out),
             GitOperation::InteractiveRebase { base, entries } => {
@@ -1247,6 +1278,12 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "vcs_undo_commit",
         |c| async move { vcs_undo_commit(&c.host, &c.window, c.arg("repo")?, c.arg("commit")?).await },
     );
+    d.add("vcs_reword", |c| async move {
+        vcs_reword(&c.host, &c.window, c.arg("repo")?, c.arg("commit")?, c.arg("message")?).await
+    });
+    d.add("vcs_restore_head", |c| async move {
+        vcs_restore_head(&c.host, &c.window, c.arg("repo")?, c.arg("before")?, c.arg("after")?).await
+    });
     d.add("vcs_delete_branch", |c| async move {
         vcs_delete_branch(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?).await
     });

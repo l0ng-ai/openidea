@@ -273,6 +273,12 @@ pub struct CommitOptions {
     /// entries of the index change; afterwards their index entries match the new commit.
     #[serde(default)]
     pub partial: Vec<PartialCommitFile>,
+    /// Files committed with their working-tree content, staged or not.
+    #[serde(default)]
+    pub stage: Vec<ide_core::IpcPath>,
+    /// Staged files left out of the commit; they stay staged afterwards.
+    #[serde(default)]
+    pub exclude: Vec<ide_core::IpcPath>,
 }
 
 /// A file of a partial commit: which of its changes against HEAD to commit.
@@ -480,6 +486,10 @@ pub enum CheckoutOutcome {
     LocalChanges {
         files: Vec<String>,
     },
+    /// These untracked files (repository-relative paths) would be overwritten.
+    UntrackedFiles {
+        files: Vec<String>,
+    },
     /// Local branch `local` has commits that remote branch `remote` does not.
     LocalBranchAhead {
         local: String,
@@ -490,6 +500,14 @@ pub enum CheckoutOutcome {
     Conflicts {
         files: Vec<String>,
     },
+}
+
+/// HEAD before and after a history rewrite, for its Undo.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadChange {
+    pub before: String,
+    pub after: String,
 }
 
 /// A deleted local branch, enough to restore it (IDEA's "Restore" notification action).
@@ -1006,7 +1024,7 @@ impl Repo {
     /// `amend` keeps the previous message.
     pub fn commit(&self, message: &str, amend: bool, sign_off: bool) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        let options = CommitOptions { amend, sign_off, author: None, run_hooks: true, partial: Vec::new() };
+        let options = CommitOptions { amend, sign_off, author: None, run_hooks: true, ..Default::default() };
         write::commit(self, message, &options, &|_| Ok(encoding_rs::UTF_8.into()))
     }
     /// Commits with the Commit Options popup's choices.
@@ -1048,6 +1066,17 @@ impl Repo {
         write::undo_commit(self, commit)
     }
     /// Deletes a local branch (`git branch -d`, `-D` when `force`).
+    /// Edit Commit Message without touching the index or the working tree; returns HEAD
+    /// before and after.
+    pub fn reword(&self, commit: &str, message: &str) -> IdeResult<HeadChange> {
+        write::reword(self, commit, message).map(|(before, after)| HeadChange { before, after })
+    }
+
+    /// Undoes a history rewrite: HEAD goes from `after` back to `before`, local changes kept.
+    pub fn restore_head(&self, before: &str, after: &str) -> IdeResult<()> {
+        write::restore_head(self, before, after)
+    }
+
     pub fn delete_branch(&self, branch: &str, force: bool) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::delete_branch(self, branch, force)
@@ -1214,8 +1243,18 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
+        self.cherry_pick_with(commits, false, cancel, on_output)
+    }
+    /// [`Repo::cherry_pick`]; `record_origin` adds "(cherry picked from commit …)" (`-x`).
+    pub fn cherry_pick_with(
+        &self,
+        commits: &[String],
+        record_origin: bool,
+        cancel: &CancellationToken,
+        on_output: &dyn Fn(String),
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        ops::cherry_pick(self, commits, cancel, on_output)
+        ops::cherry_pick(self, commits, record_origin, cancel, on_output)
     }
     /// Reverts `commits` in order (newest first) with git's default messages.
     pub fn revert(&self, commits: &[String], cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {

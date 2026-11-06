@@ -280,6 +280,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_restore_branch,
         vcs::vcs_create_branch,
         vcs::vcs_undo_commit,
+        vcs::vcs_reword,
+        vcs::vcs_restore_head,
         vcs::vcs_rename_branch,
         vcs::vcs_merge,
         vcs::vcs_rebase,

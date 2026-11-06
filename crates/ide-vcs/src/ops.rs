@@ -128,12 +128,16 @@ pub(crate) fn continue_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(Str
         "revert" => &["revert", "--continue"],
         _ => &["am", "--continue"],
     };
-    cli::run_streaming(r.root(), args, cancel, out)
+    let result = cli::run_streaming(r.root(), args, cancel, out);
+    finish_rebase(r, out)?;
+    result
 }
 
 pub(crate) fn abort_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
     let op = sequencer(r)?;
-    cli::run_streaming(r.root(), &[op, "--abort"], cancel, out)
+    let result = cli::run_streaming(r.root(), &[op, "--abort"], cancel, out);
+    finish_rebase(r, out)?;
+    result
 }
 
 pub(crate) fn skip_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
@@ -141,7 +145,9 @@ pub(crate) fn skip_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)
     if op == "merge" {
         return Err(IdeError::invalid("a merge cannot be skipped; abort it instead"));
     }
-    cli::run_streaming(r.root(), &[op, "--skip"], cancel, out)
+    let result = cli::run_streaming(r.root(), &[op, "--skip"], cancel, out);
+    finish_rebase(r, out)?;
+    result
 }
 
 /// Merge commits need a mainline (`-m`), which IDEA doesn't offer for cherry-pick / revert.
@@ -157,18 +163,23 @@ fn reject_merges(r: &Repo, commits: &[String], verb: &str) -> IdeResult<()> {
     Ok(())
 }
 
-/// Applies `commits` on top of HEAD, in the given order (pass oldest first).
+/// Applies `commits` on top of HEAD, in the given order (pass oldest first);
+/// `record_origin` adds "(cherry picked from commit …)" to their messages.
 pub(crate) fn cherry_pick(
     r: &Repo,
     commits: &[String],
+    record_origin: bool,
     cancel: &CancellationToken,
     out: &dyn Fn(String),
 ) -> IdeResult<()> {
     check_commits(commits)?;
     reject_merges(r, commits, "cherry-pick")?;
     let mut args = vec!["cherry-pick"];
+    if record_origin {
+        args.push("-x");
+    }
     args.extend(commits.iter().map(String::as_str));
-    cli::run_streaming(r.root(), &args, cancel, out)
+    apply_skipping_empty(r, "cherry-pick", &args, cancel, out)
 }
 
 /// Creates commits undoing `commits`, in the given order (pass newest first).
@@ -177,7 +188,42 @@ pub(crate) fn revert(r: &Repo, commits: &[String], cancel: &CancellationToken, o
     reject_merges(r, commits, "revert")?;
     let mut args = vec!["revert", "--no-edit"];
     args.extend(commits.iter().map(String::as_str));
-    cli::run_streaming(r.root(), &args, cancel, out)
+    apply_skipping_empty(r, "revert", &args, cancel, out)
+}
+
+/// Runs a cherry-pick / revert sequence. A commit whose changes are already there leaves
+/// nothing to commit: it is skipped and the rest of the sequence goes on.
+fn apply_skipping_empty(
+    r: &Repo,
+    verb: &str,
+    args: &[&str],
+    cancel: &CancellationToken,
+    out: &dyn Fn(String),
+) -> IdeResult<()> {
+    let head_file = if verb == "revert" { "REVERT_HEAD" } else { "CHERRY_PICK_HEAD" };
+    let said_nothing = std::cell::Cell::new(false);
+    let watch = |line: String| {
+        // git runs with LC_ALL=C; a single commit with nothing left to apply stops here.
+        said_nothing.set(said_nothing.get() || line.contains("nothing to commit"));
+        out(line)
+    };
+    let mut result = cli::run_streaming(r.root(), args, cancel, &watch);
+    if result.is_err() && said_nothing.get() && r.branch_info()?.operation.is_none() {
+        out("Skipped: its changes are already applied".into());
+        return Ok(());
+    }
+    while result.is_err() && !cancel.is_cancelled() {
+        let Ok(stopped) = std::fs::read_to_string(r.git_dir.join(head_file)) else { break };
+        let empty = unmerged_paths(r)?.is_empty()
+            && cli::run_raw(r.root(), &["diff", "--cached", "--quiet", "HEAD", "--"], None)?.code == Some(0);
+        if !empty {
+            break;
+        }
+        let id = stopped.trim();
+        out(format!("{} skipped: its changes are already applied", &id[..id.len().min(8)]));
+        result = cli::run_streaming(r.root(), &[verb, "--skip"], cancel, out);
+    }
+    result
 }
 
 pub(crate) fn reset(
@@ -289,14 +335,54 @@ pub(crate) fn interactive_rebase(
     let todo_file = work.join("todo");
     std::fs::write(&todo_file, todo)?;
     let editor = format!("cp {}", quote(&todo_file));
-    let mut args = vec!["rebase", "--interactive", "--autostash", "--no-autosquash"];
+    // Local changes are put aside and restored when the rebase is over, staged ones as
+    // staged (git's --autostash would bring them all back unstaged).
+    save_local_changes(r, &work)?;
+    let mut args = vec!["rebase", "--interactive", "--no-autosquash"];
     args.push(base.unwrap_or("--root"));
     let env = [("GIT_SEQUENCE_EDITOR", std::ffi::OsStr::new(&editor))];
-    cli::run_streaming_env(r.root(), &args, &env, cancel, out)?;
+    let result = cli::run_streaming_env(r.root(), &args, &env, cancel, out);
     // A stopped rebase still needs the message files for its remaining `exec` lines.
-    if r.branch_info()?.operation.is_none() {
-        let _ = std::fs::remove_dir_all(&work);
+    finish_rebase(r, out)?;
+    result
+}
+
+const SAVED_CHANGES: &str = "saved-changes";
+
+/// Stashes the local changes for the rebase run from `work` (`.git/openidea-rebase`).
+fn save_local_changes(r: &Repo, work: &std::path::Path) -> IdeResult<()> {
+    if run(r.root(), &["status", "--porcelain", "--untracked-files=no"], None)?.stdout_str().trim().is_empty() {
+        return Ok(());
     }
+    run(r.root(), &["stash", "push", "-q", "-m", "Local changes saved before rebase"], None)?;
+    let id = run(r.root(), &["rev-parse", "stash@{0}"], None)?.stdout_str();
+    std::fs::write(work.join(SAVED_CHANGES), id.trim())?;
+    Ok(())
+}
+
+/// Once the rebase run by [`interactive_rebase`] is over (done or aborted), brings back
+/// the local changes it saved and cleans up; a stopped rebase keeps both for later.
+pub(crate) fn finish_rebase(r: &Repo, out: &dyn Fn(String)) -> IdeResult<()> {
+    let work = r.git_dir.join("openidea-rebase");
+    if !work.exists() || r.branch_info()?.operation.is_some() {
+        return Ok(());
+    }
+    let saved = std::fs::read_to_string(work.join(SAVED_CHANGES)).ok();
+    let _ = std::fs::remove_dir_all(&work);
+    let Some(saved) = saved.map(|s| s.trim().to_string()) else { return Ok(()) };
+    let stashes = run(r.root(), &["stash", "list", "--format=%H"], None)?.stdout_str();
+    let Some(index) = stashes.lines().position(|id| id.trim() == saved) else { return Ok(()) };
+    let entry = format!("stash@{{{index}}}");
+    if cli::run_raw(r.root(), &["stash", "pop", "-q", "--index", &entry], None)?.code == Some(0) {
+        return Ok(());
+    }
+    if unmerged_paths(r)?.is_empty() {
+        let pop = cli::run_raw(r.root(), &["stash", "pop", "-q", &entry], None)?;
+        if pop.code == Some(0) {
+            return Ok(());
+        }
+    }
+    out("Local changes could not be restored cleanly; resolve the conflicts (they are kept in the stash)".into());
     Ok(())
 }
 

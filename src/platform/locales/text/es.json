@@ -6057,7 +6057,7 @@
   "Create patch": "Crear parche",
   "Apply patch ({source})": "Aplicar parche ({source})",
   "Undo commit {id}": "Deshacer confirmación {id}",
-  "Undid commit {id} “{summary}”; its changes are staged": "Se deshizo la confirmación {id} “{summary}”; sus cambios están preparados (staged)",
+  "Undid commit {id} “{summary}”": "Se deshizo la confirmación {id} “{summary}”",
   "Shelve changes “{trim}”": "Guardar cambios en el shelf “{trim}”",
   "Unshelve “{name}”": "Restaurar “{name}” del shelf",
   "Delete shelved changes “{name}”": "Eliminar cambios del shelf “{name}”",

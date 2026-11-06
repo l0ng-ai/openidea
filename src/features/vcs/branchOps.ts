@@ -98,6 +98,16 @@ async function performCheckout(
         });
         await openConflictsInstead();
         return true;
+      case "untrackedFiles": {
+        const files = outcome.files.join("\n");
+        notifications().notify({
+          group: "vcs",
+          level: "error",
+          title: "Untracked files prevent checkout",
+          body: tx`The following untracked working tree files would be overwritten by checkout:\n${files}\nPlease move or remove them before you switch branches.`,
+        });
+        return false;
+      }
       case "localChanges": {
         const mode = await askSmartCheckout(outcome.files);
         if (!mode) return false;

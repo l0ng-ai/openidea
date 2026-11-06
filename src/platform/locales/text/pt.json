@@ -5981,7 +5981,7 @@
   "Create patch": "Criar patch",
   "Apply patch ({source})": "Aplicar patch ({source})",
   "Undo commit {id}": "Desfazer commit {id}",
-  "Undid commit {id} “{summary}”; its changes are staged": "Commit {id} “{summary}” desfeito; suas alterações estão preparadas",
+  "Undid commit {id} “{summary}”": "Commit {id} “{summary}” desfeito",
   "Shelve changes “{trim}”": "Guardar alterações no shelf “{trim}”",
   "Unshelve “{name}”": "Restaurar “{name}” do shelf",
   "Delete shelved changes “{name}”": "Excluir alterações do shelf “{name}”",

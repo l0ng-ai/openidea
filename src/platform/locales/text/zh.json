@@ -6153,7 +6153,7 @@
   "Create patch": "创建补丁",
   "Apply patch ({source})": "应用补丁（{source}）",
   "Undo commit {id}": "撤销提交 {id}",
-  "Undid commit {id} “{summary}”; its changes are staged": "已撤销提交 {id}“{summary}”，其更改已暂存",
+  "Undid commit {id} “{summary}”": "已撤销提交 {id}“{summary}”",
   "Shelve changes “{trim}”": "搁置更改“{trim}”",
   "Unshelve “{name}”": "取消搁置“{name}”",
   "Delete shelved changes “{name}”": "删除搁置的更改“{name}”",
@@ -6333,5 +6333,14 @@
   "Choose Mapping Target": "选择映射目标",
   "Plugin navigation indexing incomplete": "插件导航索引未完成",
   "Choose Declaration": "选择声明",
-  "Go to mapping: {target}": "跳转到映射：{target}"
+  "Go to mapping: {target}": "跳转到映射：{target}",
+  "Untracked files prevent checkout": "未跟踪的文件阻止了签出",
+  "The following untracked working tree files would be overwritten by checkout:\n{files}\nPlease move or remove them before you switch branches.": "签出将覆盖以下未跟踪的工作区文件：\n{files}\n请在切换分支前移动或删除它们。",
+  "Select Target Changelist": "选择目标更改列表",
+  "Rebase undone": "已撤销变基",
+  "Edit commit message of {id}": "编辑 {id} 的提交消息",
+  "Commit message of {id} changed": "已更改 {id} 的提交消息",
+  "Commit message change undone": "已撤销提交消息的更改",
+  "Drop undone": "已撤销丢弃",
+  "Squash undone": "已撤销压缩"
 }

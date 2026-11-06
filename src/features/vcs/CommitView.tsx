@@ -41,6 +41,7 @@ import {
   checkOf,
   filesOf,
   groupFileNodes,
+  groupOf,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
@@ -51,7 +52,9 @@ import {
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
-import { moveToChangelist } from "./changelistsUi";
+import { commitFiles, moveToChangelist } from "./changelistsUi";
+import { acceptSide } from "./conflictsUi";
+import { copyChangesAsPatch } from "./patches";
 import {
   messageHistory,
   setAmend,
@@ -243,6 +246,26 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
   const toIgnore = ignoreTargets(nodes, repos);
   const conflicted = files.filter((f) => f.unstaged === "conflicted");
   const items: MenuItem[] = [
+    ...(conflicted.length
+      ? [
+          {
+            label: "Accept Yours",
+            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "ours"))).then(() => refreshNow()),
+          },
+          {
+            label: "Accept Theirs",
+            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "theirs"))).then(() => refreshNow()),
+          },
+          { kind: "separator" as const },
+        ]
+      : []),
+    {
+      label: "Commit File…",
+      icon: "commit",
+      disabled: !files.some((f) => groupOf(f) === "changes"),
+      run: () => commitFiles(paths),
+    },
+    { kind: "separator" },
     { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
       label: "Jump to Source",
@@ -297,6 +320,7 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
       : []),
     { kind: "action", action: "vcs.shelve", arg: paths },
     { kind: "action", action: "vcs.createPatch", arg: paths },
+    { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
     { kind: "separator" },
     {
       label: "Show History",

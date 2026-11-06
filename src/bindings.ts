@@ -530,6 +530,13 @@ export const commands = {
 	 *  Returns the undone commit's message.
 	 */
 	vcsUndoCommit: (repo: string | null, commit: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_undo_commit", { repo, commit })),
+	/**
+	 *  Edit Commit Message: rewrites the commit and its descendants without touching the
+	 *  working tree.
+	 */
+	vcsReword: (repo: string | null, commit: string, message: string) => typedError<HeadChange, IdeError>(__TAURI_INVOKE("vcs_reword", { repo, commit, message })),
+	/**  Undo of a history rewrite (Edit Commit Message, Drop, Squash). */
+	vcsRestoreHead: (repo: string | null, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_head", { repo, before, after })),
 	vcsRenameBranch: (repo: string | null, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to })),
 	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
 	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
@@ -2081,6 +2088,8 @@ export type CheckoutOptions = {
 export type CheckoutOutcome = { kind: "done" } | 
 /**  These local changes (repository-relative paths) would be overwritten. */
 { kind: "localChanges"; files: string[] } | 
+/**  These untracked files (repository-relative paths) would be overwritten. */
+{ kind: "untrackedFiles"; files: string[] } | 
 /**  Local branch `local` has commits that remote branch `remote` does not. */
 { kind: "localBranchAhead"; local: string; remote: string } | 
 /**
@@ -2225,6 +2234,10 @@ export type CommitOptions = {
 	 *  entries of the index change; afterwards their index entries match the new commit.
 	 */
 	partial?: PartialCommitFile[],
+	/**  Files committed with their working-tree content, staged or not. */
+	stage?: IpcPath[],
+	/**  Staged files left out of the commit; they stay staged afterwards. */
+	exclude?: IpcPath[],
 };
 
 /**  Version Control › Commit: commit checks and commit-message inspections. */
@@ -3910,8 +3923,8 @@ export type GitExecutableInfo = {
 export type GitOperation = 
 /**  Continue the merge / rebase / cherry-pick / revert in progress. */
 { op: "continue" } | { op: "abort" } | { op: "skip" } | 
-/**  Commits oldest first. */
-{ op: "cherryPick"; commits: string[] } | 
+/**  Commits oldest first; `record_origin` adds "(cherry picked from commit …)". */
+{ op: "cherryPick"; commits: string[]; recordOrigin?: boolean } | 
 /**  Commits newest first. */
 { op: "revert"; commits: string[] } | { op: "reset"; commit: string; mode: ResetMode } | 
 /**  Rebases `base..HEAD` (`base: None` = from the root) following `entries`, oldest first. */
@@ -4060,6 +4073,12 @@ export type GradleTask = {
 	/**  Lower-case group (`build`, `build setup`, `other`). */
 	group: string,
 	description: string | null,
+};
+
+/**  HEAD before and after a history rewrite, for its Undo. */
+export type HeadChange = {
+	before: string,
+	after: string,
 };
 
 export type HierarchyChoice = {
