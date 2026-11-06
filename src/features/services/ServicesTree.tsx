@@ -209,9 +209,12 @@ export function ServicesTreeView() {
                 getKey={(n) => n.key}
                 getLabel={(n) => n.label}
                 getChildren={(n) => n.children}
-                isExpandable={(n) => !!n.children?.length}
+                isExpandable={(n) => !!n.children?.length || !!n.expandable}
                 expanded={expanded}
-                onExpandedChange={(next) => useServicesTree.setState({ expanded: next })}
+                onExpandedChange={(next, node, open) => {
+                  useServicesTree.setState({ expanded: next });
+                  providers.find((p) => p.id === index.get(node.key)?.provider)?.expand?.(node, open);
+                }}
                 selected={selectedKeys}
                 onSelectionChange={(keys, lead) =>
                   useServicesTree.setState({ selectedKeys: keys, selectedKey: keys.size ? (lead?.key ?? null) : null })

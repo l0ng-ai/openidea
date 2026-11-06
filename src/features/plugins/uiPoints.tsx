@@ -34,6 +34,7 @@ import {
   registerFileEditorProvider,
   registerMenuGroup,
   registerMenuSlotItem,
+  registerServiceProvider,
   registerSettingsPage,
   registerTextEditorWrapper,
   registerToolWindow,
@@ -57,6 +58,7 @@ import {
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
 import { PluginView } from "./views/PluginView";
+import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
 import styles from "./PluginsPage.module.css";
 
@@ -222,7 +224,7 @@ interface ViewDecl {
   id: string;
   title: string;
   icon?: string | null;
-  location: ToolWindowAnchor;
+  location: ToolWindowAnchor | "services";
   web?: string;
 }
 
@@ -291,6 +293,7 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
 export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
 
 function registerView(pluginId: string, decl: ViewDecl, icon: string): () => void {
+  if (decl.location === "services") return registerServiceProvider(pluginServiceProvider(pluginId, decl, icon));
   return registerToolWindow({
     id: pluginToolWindowId(pluginId, decl.id),
     title: decl.title,
