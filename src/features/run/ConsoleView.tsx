@@ -498,6 +498,19 @@ export function ConsoleView({
   const items = virtualizer.getVirtualItems();
   return (
     <div className={styles.consoleWrap}>
+      {/* A console whose find bar is not driven by a toolbar (a stack-trace tab, say) still
+          needs a visible way in: the same Find the Run toolbar offers, over the output. */}
+      {controlledFindOpen === undefined && !findOpen && (
+        <button
+          type="button"
+          className={styles.consoleFindOpen}
+          title="Find…"
+          aria-label="Find in console"
+          onClick={() => setFindOpen(true)}
+        >
+          <Icon name="search" size={14} />
+        </button>
+      )}
       {findOpen && (
         <ConsoleFindBar
           query={query}
