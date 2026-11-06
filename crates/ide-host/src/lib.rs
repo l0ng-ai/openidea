@@ -349,6 +349,14 @@ impl Host {
         }
     }
 
+    /// Called on desktop exit: kills the runs and terminal shells still alive. Closing a
+    /// window stops what it started, but a quit from the Dock, the app menu or a logout
+    /// exits without closing the windows, and the process trees would outlive the app.
+    pub fn stop_processes_on_exit(&self) {
+        self.processes.kill_all();
+        self.terminals.kill_all();
+    }
+
     /// Called before desktop exit, which may bypass document destructors.
     pub fn clear_workspace_edit_history_on_exit(&self) {
         for project in self.projects() {
