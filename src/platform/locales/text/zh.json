@@ -269,6 +269,7 @@
   "Allow placing breakpoints in any file": "允许在任意文件中设置断点",
   "Also expand in comments and strings": "也在注释和字符串中展开",
   "Always": "始终",
+  "Always Select Opened File": "始终选择打开的文件",
   "Always show full path in window header": "始终在窗口标题中显示完整路径",
   "Amend": "修改",
   "Analysing…": "正在分析…",
