@@ -17,6 +17,7 @@ import type {
   PluginEditor,
   PluginEvent,
   PluginInfo,
+  PluginOutputLine,
   PluginsSnapshot,
   PluginSecretState,
   PluginStatusItem,
@@ -24,10 +25,11 @@ import type {
   View,
   ViewEvent,
   Viewport,
+  ViewProcess,
   WorkbenchEvent,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { call, commands, IpcError, isTauri } from "@/platform/ipc";
+import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorContext } from "./editorContext";
 
 export interface PluginsBackend {
@@ -84,6 +86,18 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  /**
+   * Runs a view's `process` body (with the args of the toggles in `on`) and streams its
+   * lines until the returned stop function is called.
+   */
+  streamProcess(
+    pluginId: string,
+    view: string,
+    process: ViewProcess,
+    on: ReadonlySet<string>,
+    onLine: (line: PluginOutputLine) => void,
+    onError: (message: string) => void,
+  ): () => void;
   /** The URL of a web view's page (`web = …`), under the `openidea-plugin` scheme. */
   webPageUrl(pluginId: string, view: string): Promise<string>;
   /** Save dialog for a web view's `openidea.saveFile`; the path written, or `null` when cancelled. */
@@ -193,6 +207,16 @@ export const tauriPluginsBackend: PluginsBackend = {
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
   viewEvent: async (pluginId, view, event, doc) => {
     await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
+  },
+  streamProcess: (pluginId, view, process, on, onLine, onError) => {
+    const request = nextRequestId();
+    const channel = new Channel<PluginOutputLine>();
+    channel.onmessage = onLine;
+    const args = [...process.args, ...process.toggles.filter((t) => on.has(t.id)).flatMap((t) => t.args)];
+    call(commands.pluginViewProcess(request, pluginId, view, process.program, args, channel)).catch((e: unknown) => {
+      if (!isCancelled(e)) onError(e instanceof Error ? e.message : String(e));
+    });
+    return () => void commands.cancelRequest(request);
   },
   webPageUrl: async (pluginId, view) => {
     const page = await call(commands.pluginWebPage(pluginId, view));
@@ -526,6 +550,10 @@ export function createMemoryPluginsBackend(
       status: null,
     }),
     viewEvent: async () => {},
+    streamProcess: (pluginId, view, process, _on, _onLine, onError) => {
+      onError(`${pluginId} · ${view}: running ${process.program} needs the desktop app`);
+      return () => {};
+    },
     webPageUrl: async (pluginId, view) => {
       throw new IpcError({ kind: "unavailable", message: `${pluginId} · ${view}: web views need the desktop app` });
     },

@@ -209,3 +209,26 @@
   width: var(--h-floating-toolbar-button);
   height: var(--h-floating-toolbar-button);
 }
+
+.pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.text {
+  flex: 1;
+  box-sizing: border-box;
+  min-height: 100%;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  color: var(--fg-editor);
+  background: var(--bg-editor);
+  white-space: pre;
+  -webkit-user-select: text;
+  user-select: text;
+}

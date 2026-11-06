@@ -281,3 +281,73 @@ describe("PluginView", () => {
     expect(await screen.findByText("boom")).toBeInTheDocument();
   });
 });
+
+describe("tabs, text and process bodies", () => {
+  const process = {
+    program: "kubectl",
+    args: ["logs", "x"],
+    toggles: [{ id: "ts", label: "Timestamps", args: ["--timestamps"] }],
+  };
+  const tabs: View = {
+    toolbar: [],
+    status: null,
+    body: {
+      kind: "tabs",
+      value: [
+        { id: "log", label: "Log", body: { kind: "process", value: process } },
+        { id: "inspect", label: "Inspect", body: { kind: "text", value: "a: 1" } },
+      ],
+    },
+  };
+
+  function streaming(view: View) {
+    const stops: ReturnType<typeof vi.fn>[] = [];
+    const backend = {
+      ...backendWith(() => view),
+      streamProcess: vi.fn<PluginsBackend["streamProcess"]>(() => {
+        const stop = vi.fn();
+        stops.push(stop);
+        return stop;
+      }),
+    };
+    setPluginsBackend(backend);
+    return { backend, stops };
+  }
+
+  it("switches tabs without calling the plugin", async () => {
+    const { backend } = streaming(tabs);
+    const user = userEvent.setup();
+    render(<PluginView pluginId="kube" view="pods/pod:a" />);
+    await user.click(await screen.findByRole("tab", { name: "Inspect" }));
+    expect(screen.getByRole("document").textContent).toBe("a: 1");
+    expect(backend.renderView).toHaveBeenCalledTimes(1);
+    expect(backend.viewEvent).not.toHaveBeenCalled();
+  });
+
+  it("shows text as a selectable document", async () => {
+    streaming({ toolbar: [], status: null, body: { kind: "text", value: "Name: nginx" } });
+    render(<PluginView pluginId="kube" view="pods/pod:a" />);
+    expect((await screen.findByRole("document")).textContent).toBe("Name: nginx");
+  });
+
+  it("streams a process body through the backend and restarts it on a toggle", async () => {
+    const { backend, stops } = streaming(tabs);
+    const user = userEvent.setup();
+    const { unmount } = render(<PluginView pluginId="kube" view="pods/pod:a" />);
+    await waitFor(() => expect(backend.streamProcess).toHaveBeenCalledTimes(1));
+    expect(backend.streamProcess.mock.calls[0]).toEqual([
+      "kube",
+      "pods/pod:a",
+      process,
+      new Set(),
+      expect.any(Function),
+      expect.any(Function),
+    ]);
+    await user.click(screen.getByRole("switch", { name: "Timestamps" }));
+    expect(backend.streamProcess).toHaveBeenCalledTimes(2);
+    expect(backend.streamProcess.mock.calls[1]?.[3]).toEqual(new Set(["ts"]));
+    expect(stops.at(0)).toHaveBeenCalled();
+    unmount();
+    expect(stops.at(1)).toHaveBeenCalled();
+  });
+});

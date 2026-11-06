@@ -15,7 +15,17 @@ import {
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
+import type {
+  View,
+  ViewBody,
+  ViewEvent,
+  ViewField,
+  ViewProcess,
+  ViewTab,
+  ViewTable,
+  ViewTreeItem,
+  Viewport,
+} from "@/bindings";
 import { tx } from "@/platform/i18n";
 import {
   Checkbox,
@@ -23,12 +33,15 @@ import {
   Icon,
   IconButton,
   Input,
+  LogPane,
   Select,
   Spinner,
+  Tabs,
   Tree,
   showContextMenu,
   type MenuItem,
 } from "@/ui";
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { pluginsBackend } from "../backend";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
@@ -182,7 +195,61 @@ function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
       return <TableBody table={body.value} send={send} onViewport={onViewport} />;
     case "html":
       return <HtmlBody html={body.value} send={send} pluginId={pluginId} view={view} />;
+    case "tabs":
+      return <TabsBody tabs={body.value} pluginId={pluginId} view={view} />;
+    case "text":
+    case "process":
+      return <PaneBody body={body} pluginId={pluginId} view={view} />;
   }
+}
+
+// --- tabs, text, process ----------------------------------------------------------
+
+function TabsBody({ tabs, pluginId, view }: { tabs: ViewTab[]; pluginId: string; view: string }) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const active = tabs.find((t) => t.id === picked) ?? tabs[0];
+  if (!active) return null;
+  return (
+    <div className={styles.pane}>
+      <Tabs
+        variant="compact"
+        activeId={active.id}
+        onSelect={setPicked}
+        items={tabs.map((t) => ({ id: t.id, label: t.label }))}
+      />
+      <PaneBody key={active.id} body={active.body} pluginId={pluginId} view={view} />
+    </div>
+  );
+}
+
+/** A tab's body, or a text / process body on its own. */
+function PaneBody({ body, pluginId, view }: { body: ViewBody; pluginId: string; view: string }) {
+  switch (body.kind) {
+    case "text":
+      return (
+        <pre role="document" tabIndex={0} className={styles.text} onKeyDown={copySelectionOnKeyDown}>
+          {body.value}
+        </pre>
+      );
+    case "process":
+      return <ProcessBody process={body.value} pluginId={pluginId} view={view} />;
+    case "message":
+      return <EmptyState className={styles.empty} title={body.value} />;
+    default:
+      return null;
+  }
+}
+
+function ProcessBody({ process, pluginId, view }: { process: ViewProcess; pluginId: string; view: string }) {
+  return (
+    <LogPane
+      sourceKey={[pluginId, view, process.program, ...process.args].join("\0")}
+      live
+      toggles={process.toggles}
+      ariaLabel={process.program}
+      start={(onLine, onError, on) => pluginsBackend().streamProcess(pluginId, view, process, on, onLine, onError)}
+    />
+  );
 }
 
 // --- tree -------------------------------------------------------------------------
