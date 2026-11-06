@@ -21,7 +21,7 @@ import { debounce, docOf, isUnavailable, lspRequest, reportLspError } from "./ls
 import { offsetsToRange } from "./positions";
 import { showHint } from "./hint";
 import { formatLines } from "./format";
-import { pythonMemberIntentions } from "./pythonMembers";
+import { pythonMemberIntentions } from "./semantic/python/members";
 import { caretAnchor, openPopup, type ListPopupItem, type ListPreview } from "./popupStore";
 import { editPreviewLines } from "./workspaceEdit";
 import { featureBackoff } from "./availability";
