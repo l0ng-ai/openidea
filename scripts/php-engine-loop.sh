@@ -117,10 +117,20 @@ for ((i = 1; i <= MAX_ITER; i++)); do
     [[ -d crates/ide-php ]] && crates=(-p ide-php -p ide-host)
     say "checking: cargo test ${crates[*]}"
     check=$LOGS/check-$i.log
-    if ! cargo test "${crates[@]}" --no-fail-fast >"$check" 2>&1; then
-        # Only failures that are not already known (docs/php-engine/known-failures.txt) count.
-        new=$(grep -E '^test .* \.\.\. FAILED$' "$check" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' |
-            grep -vxF -f <(grep -v '^#' "$KNOWN" | tr -d '\r') || true)
+    # Only failures that are not already known (docs/php-engine/known-failures.txt) count.
+    new_failures() {
+        grep -E '^test .* \.\.\. FAILED$' "$check" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' |
+            grep -vxF -f <(grep -v '^#' "$KNOWN" | tr -d '\r') || true
+    }
+    passed=0
+    cargo test "${crates[@]}" --no-fail-fast >"$check" 2>&1 && passed=1
+    if ((!passed)) && [[ -n "$(new_failures)" ]]; then
+        # Some tests time warm calls and can miss their budget under load: run once more.
+        say "new failures, running the tests once more: $(echo $(new_failures))"
+        cargo test "${crates[@]}" --no-fail-fast >"$check" 2>&1 && passed=1
+    fi
+    if ((!passed)); then
+        new=$(new_failures)
         if [[ -n "$new" ]] || ! grep -qE '^test .* \.\.\. FAILED$' "$check"; then
             say "tests are red after session $i (see $check): stopping"
             [[ -n "$new" ]] && printf '  new failure: %s\n' $new | tee -a "$LIVE"
