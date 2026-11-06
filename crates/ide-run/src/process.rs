@@ -633,15 +633,18 @@ impl ProcessManager {
         self.stop_with_grace(id, STOP_GRACE)
     }
 
-    /// [`Self::stop`] with an explicit grace period before the kill. A configuration's
-    /// stop command runs first; signals follow only if the process outlives it.
+    /// [`Self::stop`] with an explicit grace period for the configured stop command. The
+    /// first stop only asks the process tree to exit (stop command, then `SIGINT`) and waits;
+    /// a second stop kills it.
     pub fn stop_with_grace(&self, id: RunId, grace: Duration) -> IdeResult<()> {
         let entry = self.entry(id)?;
-        if entry.exited.load(Ordering::Acquire) {
-            return Ok(());
-        }
         let already_stopping = entry.stopping.swap(true, Ordering::AcqRel);
         let Some(pid) = *entry.pid.lock() else { return Ok(()) };
+        // "Exited" is reported while a group that ignored its interrupt may still be alive
+        // (the waiter gives up after its own bound): a Stop must still be able to kill it.
+        if entry.exited.load(Ordering::Acquire) && !group_alive(pid, &entry) {
+            return Ok(());
+        }
         if already_stopping {
             // Second stop request: don't wait out the grace period.
             kill_tree(pid, true);
@@ -671,9 +674,11 @@ impl ProcessManager {
                     }
                     kill_tree(pid, false);
                 }
-                if !exits_within(grace) {
-                    tracing::debug!(id = %entry.id, pid, "process ignored interrupt; killing");
-                    kill_tree(pid, true);
+                // A first Stop only asks the process tree to exit, as IDEA does: it waits for
+                // the shutdown to finish (a Spring Boot app can take seconds) and a second Stop
+                // is what kills. Killing on a timer here cut shutdown logs off with SIGKILL.
+                while group_alive(pid, &entry) {
+                    std::thread::sleep(Duration::from_millis(50));
                 }
             })
             .map_err(|e| IdeError::internal(format!("failed to start stop thread: {e}")))?;
@@ -1060,6 +1065,21 @@ fn spawn_pump(
         entry.stdin.lock().take();
         if let Some(pty) = &entry.pty {
             pty.lock().take();
+        }
+        // A stopped run is over when the whole process group is gone, not when the child we
+        // spawned exits: a shell or `mvn` can end while the application it started keeps its
+        // port, and reporting "finished" then would let Run start into an occupied port.
+        // `stop_with_grace` kills the group after its grace period, so this is bounded.
+        #[cfg(unix)]
+        if entry.stopping.load(Ordering::Acquire)
+            && let Some(pid) = *entry.pid.lock()
+        {
+            // The session is over only when the whole group is gone: a child that exited
+            // early can leave the program it started holding the port. A second Stop kills
+            // the group, which ends this wait.
+            while group_alive(pid, &entry) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
         entry.exited.store(true, Ordering::Release);
         tracing::debug!(id = %entry.id, ?code, "run exited");

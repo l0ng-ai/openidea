@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-futures.workspace = true
 tempfile.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
@@ -19,6 +18,9 @@ parking_lot.workspace = true
 memchr = "2"
 portable-pty.workspace = true
 tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

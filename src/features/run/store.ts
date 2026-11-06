@@ -62,7 +62,12 @@ import { tx } from "@/platform/i18n";
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
 export const CURRENT_FILE = "current-file";
 
-export type SessionStatus = "starting" | "running" | "finished" | "failed";
+export type SessionStatus = "starting" | "running" | "stopping" | "finished" | "failed";
+
+/** Whether the process is alive: starting, running, or shutting down after Stop. */
+export function isLive(s: { status: SessionStatus }): boolean {
+  return s.status === "starting" || s.status === "running" || s.status === "stopping";
+}
 
 export interface RunSession {
   id: string;
@@ -384,9 +389,7 @@ export function adoptTemporary(config: RunConfig): RunConfig {
     return existing;
   }
   let temporary = [...state.temporary.filter((id) => id !== config.id), config.id];
-  const busy = new Set(
-    state.sessions.filter((x) => x.status === "running" || x.status === "starting").map((x) => x.config.id),
-  );
+  const busy = new Set(state.sessions.filter(isLive).map((x) => x.config.id));
   for (const session of useDebugRunSessions.getState().sessions) if (session.configId) busy.add(session.configId);
   while (temporary.length > MAX_TEMPORARY) {
     const evict = temporary.find((id) => id !== config.id && !busy.has(id)) ?? temporary[0]!;
@@ -668,7 +671,7 @@ export async function startRun(
   }
   if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain))) return null;
   const state = useRun.getState();
-  const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
+  const busy = (s: RunSession) => isLive(s);
   let session = reuse ? state.sessions.find((s) => s.id === reuse) : undefined;
   // As in IDEA, a configuration that doesn't allow parallel
   // runs asks before stopping its running instances; rerunning a tab restarts it without asking.
@@ -915,7 +918,13 @@ const pendingExits = new Map<RunId, number | null>();
 function finishSession(sessionId: string, code: number | null) {
   const rt = runtimes.get(sessionId);
   const session = getSession(sessionId);
-  if (!rt || !session) return;
+  if (!session) return;
+  if (!rt) {
+    // Nothing to flush: the run's output runtime is gone already. The exit is still the
+    // authority on the process being over, so the tab must not stay "stopping" for ever.
+    patchSession(sessionId, { status: "finished", exitCode: code, endedAt: Date.now() });
+    return;
+  }
   // Output still on the channel lands before the exit is applied.
   setTimeout(() => {
     void (async () => {
@@ -1035,11 +1044,14 @@ export async function stopSession(sessionId: string): Promise<void> {
     await commands.cancelRequest(request.id);
     return;
   }
-  if (session.runId === null || session.status !== "running") return;
-  patchSession(sessionId, { stopped: true });
+  if (session.runId === null || !isLive(session)) return;
+  // Stopping keeps the process live (IDEA: the Stop button stays until the process is gone);
+  // a second Stop meanwhile skips the grace period and kills it.
+  patchSession(sessionId, { stopped: true, status: "stopping" });
   try {
     await call(commands.runStop(session.runId));
   } catch (e) {
+    patchSession(sessionId, { status: "running" });
     notifications().notify({
       group: "run",
       level: "error",
@@ -1054,7 +1066,7 @@ export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): 
   const live = () =>
     sessionIds.some((id) => {
       const s = getSession(id);
-      return !!s && s.runId !== null && s.status === "running";
+      return !!s && s.runId !== null && isLive(s);
     });
   if (!live()) return Promise.resolve();
   return new Promise((resolve) => {
@@ -1120,7 +1132,7 @@ export function failedTests(sessionId: string): string[][] {
 /** "Rerun Failed Tests": reruns only the failed tests in the same tab. Returns false when unsupported. */
 export function rerunFailed(sessionId: string): boolean {
   const session = getSession(sessionId);
-  if (!session || session.status === "running" || session.status === "starting") return false;
+  if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
   const derived = rerunFailedConfig(base, failedTests(sessionId));
   if (!derived) return false;
@@ -1221,7 +1233,7 @@ export function clearConsole(sessionId: string) {
 export async function closeSessionTab(sessionId: string): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
-  const running = session.status === "running" || session.status === "starting";
+  const running = isLive(session);
   if (running && workflowSettings().run.confirmTerminate && !(await confirmTerminate(session.config.name)))
     return false;
   closeSession(sessionId);
@@ -1231,7 +1243,7 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
 export function closeSession(sessionId: string) {
   const session = getSession(sessionId);
   if (!session) return;
-  if (session.status === "running" || session.status === "starting") void stopSession(sessionId);
+  if (isLive(session)) void stopSession(sessionId);
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);
@@ -1247,7 +1259,7 @@ export function closeSession(sessionId: string) {
 }
 
 export function runningSessions(): RunSession[] {
-  return useRun.getState().sessions.filter((s) => s.status === "running" || s.status === "starting");
+  return useRun.getState().sessions.filter(isLive);
 }
 
 /** Stops everything and forgets sessions (project closed). */

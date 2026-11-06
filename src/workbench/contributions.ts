@@ -1447,6 +1447,8 @@ export interface DebugRunSession {
   configId: string | null;
   name: string;
   startedAt: number;
+  /** Set while the session shuts down after Stop. */
+  status?: "starting" | "running" | "paused" | "stopping" | "terminated";
   paused: boolean;
   rerun: (() => void) | null;
   stop: () => void;
@@ -1458,7 +1460,7 @@ export interface DebugServiceSession {
   id: number;
   config: RunConfig;
   startedAt: number;
-  status: "starting" | "running" | "paused" | "terminated";
+  status: "starting" | "running" | "paused" | "stopping" | "terminated";
   processId: number | null;
   rerun: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;

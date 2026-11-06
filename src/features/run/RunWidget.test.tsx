@@ -98,6 +98,12 @@ it("targets the selected debug session while npm runs, through buttons and short
   expect(useRun.getState().sessions[0]?.stopped).toBeUndefined();
 });
 
+it("shows a spinner Stop while the process is shutting down", () => {
+  useRun.setState({ sessions: [{ ...run(app), status: "stopping" }] });
+  render(<RunWidget />);
+  expect(screen.getByRole("button", { name: `Stopping '${app.name}'` })).toBeTruthy();
+});
+
 it("lists every running process with Stop All for the Stop shortcut, like IDEA", async () => {
   const session = debug(app);
   useRun.setState({ sessions: [run(npm, 3)] });

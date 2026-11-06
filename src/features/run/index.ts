@@ -77,6 +77,7 @@ import {
   stopSession,
   trackRecentConfigurations,
   useRun,
+  isLive,
 } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
@@ -241,7 +242,22 @@ function stopAction(arg?: unknown) {
     })),
     ...menuGroupItems("stopProcess", { paths: [] }),
   ].filter((i): i is MenuItem & { run: () => void } => "run" in i && !!i.run);
-  if (items.length === 0) return;
+  // A Debug launch has no Run process: with nothing else to stop, the title-bar Stop reaches
+  // the debug session itself (the Debug window need not be focused).
+  if (items.length === 0) {
+    if (debug.length === 0) return;
+    if (debug.length === 1) {
+      debug[0]!.stop();
+      return;
+    }
+    const anchor = document.querySelector("[data-run-chooser]")?.getBoundingClientRect();
+    const at = anchor ? { x: anchor.left, y: anchor.bottom + 4 } : { x: window.innerWidth / 2 - 120, y: 44 };
+    showContextMenu(at, [
+      { kind: "header", label: "Stop Process" },
+      ...debug.map((s): MenuItem => ({ label: s.name, verbatim: true, icon: "debug", run: () => s.stop() })),
+    ]);
+    return;
+  }
   if (items.length === 1) {
     items[0]!.run();
     return;
@@ -264,7 +280,7 @@ function rerunActive() {
 }
 
 function useRunningCount(): number | null {
-  return useRun((s) => s.sessions.filter((x) => x.status === "running" || x.status === "starting").length || null);
+  return useRun((s) => s.sessions.filter(isLive).length || null);
 }
 
 const CONFIG_FILES =
