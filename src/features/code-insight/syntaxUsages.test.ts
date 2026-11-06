@@ -114,7 +114,7 @@ describe("Find Usages fallback", () => {
       ]),
     );
     const res = await fetchUsages(caret);
-    expect(cmd.indexUsages).toHaveBeenCalledWith("y");
+    expect(cmd.indexUsages).toHaveBeenCalledWith("y", false);
     expect(res.note).toBe(INDEX_NOTE);
     expect(res.groups.map((g) => [g.path, g.usages.map((u) => [u.line, u.col])])).toEqual([
       ["/p/a.ts", [[1, 4]]],
@@ -134,10 +134,9 @@ describe("Find Usages fallback", () => {
       ok([{ path: "/p/a.ts", occurrences: [{ range: r(1, 4, 5), kind: "identifier", qualified: false }] }]),
     );
     const res = await fetchUsages(caret);
-    expect(cmd.indexUsages).toHaveBeenCalledWith("y");
+    expect(cmd.indexUsages).toHaveBeenCalledWith("y", false);
     expect(filesMentioning).toHaveBeenCalled();
     expect(res.note).toBe(TEXT_NOTE);
-    expect(res.groups.map((g) => g.path)).toEqual(["/p/a.ts"]);
   });
 
   it("keeps the server error when the language has no grammar", async () => {

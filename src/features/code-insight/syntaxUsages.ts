@@ -58,9 +58,11 @@ export async function syntaxUsages(c: CaretContext): Promise<SyntaxUsages | null
     name = locals.name;
   }
   if (!name || !IDENT.test(name)) return null;
-  // Non-local name: the project index first (identifiers + component tags),
-  // then whole-word text search as the last resort when the index is empty.
-  const indexed = await call(commands.indexUsages(name)).catch(() => null);
+  // Non-local name: the project index first (identifiers, component tags and
+  // — from a stylesheet — CSS class tokens in their own namespace), then
+  // whole-word text search as the last resort when the index is empty.
+  const css = /\.(css|scss|less)$/i.test(c.path);
+  const indexed = await call(commands.indexUsages(name, css)).catch(() => null);
   if (indexed?.length) return { locs: indexed.map((l) => ({ path: l.path, range: l.range })), note: INDEX_NOTE };
   const { paths, limitHit } = await filesMentioning(nextRequestId(), name);
   if (!paths.includes(c.path)) paths.push(c.path);
