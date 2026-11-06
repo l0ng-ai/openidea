@@ -125,6 +125,7 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let key = match (d.menu == VIEW_ITEM_MENU, &d.view) {
         (true, None) => return Err(format!("contributes.menus: {VIEW_ITEM_MENU} needs `view`")),
         (true, Some(v)) => {
+            pkg.manifest.needs_api(&format!("contributes.menus: {VIEW_ITEM_MENU}"), 2)?;
             let Some(view) = declared_view(pkg, v) else {
                 return Err(format!("contributes.menus: view {v:?} is not declared under [[contributes.views]]"));
             };

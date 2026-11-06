@@ -1937,8 +1937,12 @@ fn official_csv_editor_edits_the_shared_document() {
 
 #[test]
 fn view_item_menus_name_a_declared_view() {
+    /// The menu is new in API 1.2.
+    fn api_1_2(m: &str) -> String {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.2\"")
+    }
     fn with_menu(extra: &str) -> impl Fn(&str) -> String + '_ {
-        move |m: &str| format!("{m}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n")
+        move |m: &str| format!("{}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n", api_1_2(m))
     }
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
@@ -1977,12 +1981,21 @@ fn view_item_menus_name_a_declared_view() {
     let web_view = "[[contributes.views]]\nid = \"page\"\ntitle = \"Page\"\nicon = \"plugin\"\nlocation = \"right\"\nweb = \"web/index.html\"\n";
     let pkg = hello_variant(dir.path(), |m| {
         let on_page = with_menu("menu = \"viewItem.context\"\nview = \"page\"")("");
-        format!("{m}\n{web_view}\n{on_page}")
+        format!("{}\n{web_view}\n{on_page}", api_1_2(m))
     });
     std::fs::create_dir_all(pkg.join("web")).unwrap();
     std::fs::write(pkg.join("web/index.html"), "<p>hi</p>").unwrap();
     let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
     assert!(err.message.contains("is a web view"), "{}", err.message);
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = hello_variant(dir.path(), |m| {
+        format!(
+            "{m}\n[[contributes.menus]]\nmenu = \"viewItem.context\"\nview = \"greetings\"\ncommand = \"word-count\"\n"
+        )
+    });
+    let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
 }
 
 /// The sample plugin makes a tool window with a tree view.
