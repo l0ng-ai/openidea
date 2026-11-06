@@ -27,7 +27,7 @@ vi.mock("@/platform/project", async (orig) => {
   return { ...real, openProject: (p: string) => openProject(p) };
 });
 
-const { reopenLastProject, _resetSessionForTests } = await import("./session");
+const { cancelReopen, reopenLastProject, useSession, _resetSessionForTests } = await import("./session");
 const { provideStartupLaunch, useProject } = await import("@/platform/project");
 
 beforeEach(() => {
@@ -86,5 +86,26 @@ describe("reopenLastProject", () => {
     await reopenLastProject();
     expect(connectRemote).toHaveBeenCalledWith({ kind: "wsl", distro: "Ubuntu" }, "/home/me/app");
     expect(openProject).not.toHaveBeenCalled();
+  });
+
+  it("clears the remembered project while reopening and lets the user cancel", async () => {
+    let resolveOpen!: () => void;
+    openProject.mockImplementation(
+      () =>
+        new Promise<void>((r) => {
+          resolveOpen = r;
+        }),
+    );
+    provideStartupLaunch(Promise.resolve());
+    const promise = reopenLastProject();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(localStorage.getItem("openidea.session.openProject")).toBeNull();
+    expect(useSession.getState().reopening).toBe("/p/last");
+
+    cancelReopen();
+    expect(useSession.getState().reopening).toBeNull();
+    resolveOpen();
+    await promise;
+    expect(localStorage.getItem("openidea.session.openProject")).toBeNull();
   });
 });

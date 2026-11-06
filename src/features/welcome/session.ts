@@ -7,7 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isCancelled, isTauri, type Settings } from "@/platform/ipc";
 import { openProject, startupLaunchHandled, useProject } from "@/platform/project";
-import { connectRemote, projectLocation, resolveRemoteLocation } from "@/platform/remote";
+import { connectRemote, projectLocation, resolveRemoteLocation, useRemoteProgress } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 
 const SESSION_KEY = "openidea.session.openProject";
@@ -82,6 +82,21 @@ export function lastSessionProject(): string | null {
 }
 
 let attempted = false;
+let reopenEpoch = 0;
+
+/** Cancels an in-flight startup project reopen or remote connection and returns to the Welcome screen. */
+export function cancelReopen() {
+  reopenEpoch++;
+  write(SESSION_KEY, null);
+  windowProject(null);
+  useSession.setState({ reopening: null });
+  useRemoteProgress.setState({ progress: null, location: null });
+  useProject.setState({ opening: false, openingPath: null });
+  if (isTauri()) {
+    void commands.remoteDisconnect().catch(() => {});
+    void commands.closeProject().catch(() => {});
+  }
+}
 
 /** On startup: reopens the project that was open at exit. Robust against a missing folder. */
 export async function reopenLastProject(): Promise<void> {
@@ -114,16 +129,25 @@ export async function reopenLastProject(): Promise<void> {
 }
 
 async function reopen(path: string) {
+  const epoch = ++reopenEpoch;
   const name = path.slice(path.lastIndexOf("/") + 1) || path;
+  // Clear before connecting so force-quitting a hung reopen does not loop on the next launch.
+  write(SESSION_KEY, null);
+  windowProject(null);
   useSession.setState({ reopening: path });
   try {
     const remote = await resolveRemoteLocation(path);
     if (remote) await connectRemote(remote.target, remote.path);
     else await openProject(path);
+    if (reopenEpoch === epoch) {
+      const opened = projectLocation(useProject.getState().project?.root) ?? path;
+      write(SESSION_KEY, opened);
+      windowProject(opened);
+    }
   } catch (e) {
     write(SESSION_KEY, null);
     windowProject(null);
-    if (isCancelled(e)) return;
+    if (reopenEpoch !== epoch || isCancelled(e)) return;
     notifications().notify({
       level: "warning",
       title: `Cannot reopen ${name}`,
@@ -131,12 +155,13 @@ async function reopen(path: string) {
       key: "welcome.reopen",
     });
   } finally {
-    useSession.setState({ reopening: null });
+    if (reopenEpoch === epoch) useSession.setState({ reopening: null });
   }
 }
 
 /** Tests only. */
 export function _resetSessionForTests() {
   attempted = false;
+  reopenEpoch = 0;
   useSession.setState({ reopening: null, reopenPref: read(PREF_KEY) !== "false" });
 }
