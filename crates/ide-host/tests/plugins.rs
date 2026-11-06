@@ -2755,3 +2755,25 @@ fn view_process_stops_when_the_grant_is_revoked() {
     let err = result.unwrap_err();
     assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
 }
+
+/// A detail pane's `html` script gets the plugin's replies, under the full
+/// `<view>/<item key>` id however long the key.
+#[test]
+fn detail_panes_get_view_messages() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    f.install(&hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"services\"")));
+    let detail = format!("greetings/pod:default/{}", "n".repeat(100));
+    f.take_events();
+    let ping = ide_plugin::ViewEvent::Message { text: "ping".into() };
+    f.host.view_event("hello", &detail, ping, f.inv()).unwrap();
+    let replies: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(_, e)| match e {
+            PluginEvent::ViewMessage { view, message, .. } => Some((view, message)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replies, [(detail, "ping".to_owned())]);
+}

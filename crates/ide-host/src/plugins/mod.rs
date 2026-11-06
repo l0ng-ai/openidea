@@ -1106,20 +1106,12 @@ impl PluginHost {
         })
     }
 
-    /// `view` is a declared view or custom editor, or `"<view>/<item key>"`:
-    /// the detail pane of an item of a `services` view.
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        let declared = match view.split_once('/') {
-            Some((services, _)) => self
-                .ui
-                .items(ui_points::VIEWS, Some(id))
-                .iter()
-                .any(|i| i.key == services && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION)),
-            None => [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
-                .iter()
-                .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view)),
-        };
-        if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
+        if view_is_declared(&self.ui, id, view) {
+            Ok(())
+        } else {
+            Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}")))
+        }
     }
 
     /// One call into a plugin's code for the UI: checks it may run (asking
@@ -2369,6 +2361,20 @@ impl ide_language::ExternalSyntax for PluginSyntax {
                 .map(|f| ide_language::ExternalFold { start_line: f.start_line, end_line: f.end_line, kind: f.kind })
                 .collect(),
         )
+    }
+}
+
+/// `view` is one of plugin `id`'s views or custom editors, or `"<view>/<item
+/// key>"`: the detail pane of an item of one of its `services` views.
+fn view_is_declared(ui: &UiStore, id: &str, view: &str) -> bool {
+    match view.split_once('/') {
+        Some((services, _)) => ui
+            .items(ui_points::VIEWS, Some(id))
+            .iter()
+            .any(|i| i.key == services && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION)),
+        None => [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
+            .iter()
+            .any(|point| ui.items(point, Some(id)).iter().any(|i| i.key == view)),
     }
 }
 

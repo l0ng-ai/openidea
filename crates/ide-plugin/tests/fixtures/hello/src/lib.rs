@@ -83,6 +83,8 @@ impl Views for Hello {
                 self.expanded.remove(&key);
             }
             ViewEvent::Button(b) if b == "collapse" => self.expanded.clear(),
+            // An html body's script gets its message back.
+            ViewEvent::Message(text) => return host::post_view_message(view, &text),
             ViewEvent::Activate(key) => {
                 if let Some((language, word)) = key.split_once('/') {
                     host::notify(NotificationLevel::Info, word, &format!("A greeting in {language}"));

@@ -764,10 +764,7 @@ impl HostApi for PluginApi {
     }
 
     fn post_view_message(&self, view: &str, message: String) -> Result<(), HostError> {
-        let declared = [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
-            .iter()
-            .any(|point| self.shared.ui.items(point, Some(self.id())).iter().any(|i| i.key == view));
-        if !declared {
+        if !super::view_is_declared(&self.shared.ui, self.id(), view) {
             return Err(HostError::NotFound(format!("the plugin declares no view {view:?}")));
         }
         let event = PluginEvent::ViewMessage { plugin_id: self.id().to_owned(), view: view.to_owned(), message };
