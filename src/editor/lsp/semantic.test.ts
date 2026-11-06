@@ -13,7 +13,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspSemanticTokens } };
 });
 
-const { semanticExtension } = await import("./semantic");
+const { semanticExtension, semanticRanges } = await import("./semantic");
 const { lspDoc } = await import("./lsp");
 
 const views: EditorView[] = [];
@@ -59,5 +59,89 @@ describe("semantic decorations vs the syntax highlighter", () => {
       expect(lspSemanticTokens).toHaveBeenCalled();
       view.destroy();
     }
+  });
+});
+
+describe("semanticRanges classification (gopls legend, absolute positions)", () => {
+  // The subset of gopls v0.23's legend the classification depends on.
+  const TYPES = ["namespace", "type", "parameter", "property", "variable", "function", "method"];
+  const MODS = ["definition", "readonly", "static", "defaultLibrary"];
+  type Row = [line: number, col: number, len: number, type: string, mods: string[]];
+  const pack = (rows: Row[]) => ({
+    data: rows.flatMap(([line, col, len, type, mods]) => [
+      line,
+      col,
+      len,
+      TYPES.indexOf(type),
+      MODS.reduce((bits, mod, i) => (mods.includes(mod) ? bits | (1 << i) : bits), 0),
+    ]),
+    tokenTypes: TYPES,
+    tokenModifiers: MODS,
+  });
+  /** `text: class list` per range, in document order. */
+  const classify = (source: string, rows: Row[], language = "go", rainbow = false) => {
+    const doc = EditorState.create({ doc: source }).doc;
+    return semanticRanges(doc, pack(rows), rainbow, language).map(
+      (r) => `${doc.sliceString(r.from, r.to)}: ${r.className}`,
+    );
+  };
+
+  it("gopls consts (`variable`+`readonly`, no `static`) are constants", () => {
+    expect(classify("const ErrNotFound = 1\n", [[0, 6, 11, "variable", ["definition", "readonly"]]])).toEqual([
+      "ErrNotFound: cm-sem-constant cm-sem-declaration",
+    ]);
+  });
+
+  it("gopls package-level vars (`variable`+`static`) are global variables", () => {
+    expect(classify("var notes = 1\n", [[0, 4, 5, "variable", ["definition", "static"]]])).toEqual([
+      "notes: cm-sem-global cm-sem-declaration cm-sem-static",
+    ]);
+  });
+
+  it("package qualifiers get the namespace class", () => {
+    expect(
+      classify("fmt.Println(1)\n", [
+        [0, 0, 3, "namespace", []],
+        [0, 4, 7, "function", []],
+      ]),
+    ).toEqual(["fmt: cm-sem-namespace", "Println: cm-sem-function"]);
+  });
+
+  it("declarations vs calls of functions and methods", () => {
+    expect(
+      classify("func New() {}\ns.New()\n", [
+        [0, 5, 3, "function", ["definition"]],
+        [1, 0, 1, "parameter", []],
+        [1, 2, 3, "method", []],
+      ]),
+    ).toEqual(["New: cm-sem-function cm-sem-declaration", "s: cm-sem-parameter", "New: cm-sem-function"]);
+  });
+
+  it("local variables carry no colour class unless rainbow is on", () => {
+    const rows: Row[] = [
+      [0, 0, 1, "variable", ["definition"]],
+      [0, 5, 1, "variable", []],
+    ];
+    // The declaration mark is unstyled on its own; plain uses are dropped entirely.
+    expect(classify("x := x\n", rows)).toEqual(["x: cm-sem-declaration"]);
+    expect(classify("x := x\n", rows, "go", true).length).toBe(2);
+  });
+
+  it("`variable`+`readonly` only means constant for Go", () => {
+    // A `const` local in TypeScript (`variable`+`readonly`, no `static`) keeps the plain variable
+    // treatment outside Go.
+    expect(classify("const x = 1\n", [[0, 6, 1, "variable", ["readonly"]]], "typescript")).toEqual([]);
+  });
+
+  it("`readonly`+`static` still means constant without the Go rule (rust-analyzer, jdtls)", () => {
+    expect(classify("MAX = 1\n", [[0, 0, 3, "variable", ["definition", "readonly", "static"]]], "rust")).toEqual([
+      "MAX: cm-sem-constant cm-sem-declaration cm-sem-static",
+    ]);
+  });
+
+  it("instance fields keep the property class (jdtls shape)", () => {
+    expect(classify("nasProperties\n", [[0, 0, 13, "property", []]], "java")).toEqual([
+      "nasProperties: cm-sem-property",
+    ]);
   });
 });

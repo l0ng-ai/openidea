@@ -20,6 +20,10 @@ command = "gopls"
 root-markers = ["go.work", "go.mod"]
 install-hint = "go install golang.org/x/tools/gopls@latest"
 
+[language-servers.initialization-options]
+# gopls only advertises semanticTokensProvider when this option is set.
+semanticTokens = true
+
 [debugger]
 adapter = "delve"
 command = "dlv"

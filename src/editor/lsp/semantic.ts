@@ -103,9 +103,15 @@ export function semanticRanges(doc: Text, tokens: SemanticTokens, rainbow = fals
     // jdtls marks constructors as a class with a `constructor` modifier; IDEA colours them as methods.
     if (names.includes("constructor")) base = "function";
     const constant =
-      names.includes("constant") || (type === "variable" && names.includes("readonly") && names.includes("static"));
+      names.includes("constant") ||
+      ((type === "variable" || type === "property") &&
+        names.includes("readonly") &&
+        (names.includes("static") || language === "go"));
     if (constant && (type === "variable" || type === "property")) base = "constant";
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
+    // gopls package-level variables are `variable`+`static` (consts carry `readonly` and became
+    // `constant` above): the Global variable colour, still italic through `cm-sem-static`.
+    else if (base === "variable" && names.includes("static")) classes.push("cm-sem-global");
     // `hasOwn`: servers send names like `constructor` (jdtls) that `Object.prototype` also has.
     for (const n of names) if (Object.hasOwn(MODIFIER_CLASS, n)) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
     if (language === "python" && names.includes("static")) classes.push("cm-sem-python-static");

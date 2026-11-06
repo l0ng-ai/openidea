@@ -350,6 +350,9 @@ export const lspTheme = EditorView.theme({
 
   // --- semantic tokens -----------------------------------------------------
   ".cm-sem-type, .cm-sem-typeParameter": { color: "var(--syn-type)" },
+  // Package references (`fmt`, `store`): plain foreground in IDEA's schemes, its own token so
+  // schemes can tell them apart (gopls sends `namespace` for every package qualifier).
+  ".cm-sem-namespace": { color: "var(--syn-namespace)" },
   // IDEA colours declarations, calls stay (nearly) plain text.
   ".cm-sem-function": { color: "var(--syn-function-call, var(--syn-function))" },
   ".cm-sem-function.cm-sem-declaration": { color: "var(--syn-function)" },
