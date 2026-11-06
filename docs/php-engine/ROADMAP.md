@@ -291,7 +291,7 @@ The design:
 
   Tests: unit tests and the Native `language_smoke` references check.
 
-- [ ] Phase 3.2: Implementations and hierarchies
+- [x] Phase 3.2: Implementations and hierarchies
   - Goto implementation (interfaces and abstract methods, through the subclass index, transitively).
   - Type hierarchy: supertypes and subtypes.
   - Call hierarchy: incoming calls through the references, outgoing calls through the method body.

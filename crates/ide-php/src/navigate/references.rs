@@ -69,7 +69,7 @@ pub struct Usage {
 
 /// What is searched for.
 #[derive(Clone, Debug)]
-enum Sought {
+pub(super) enum Sought {
     /// A class-like, function or constant.
     Name {
         kind: NameKind,
@@ -173,7 +173,7 @@ impl PhpEngine {
         out
     }
 
-    fn find_usages(
+    pub(super) fn find_usages(
         &self,
         sought: &[Sought],
         path: &Path,
@@ -312,7 +312,7 @@ fn parameter_owner(here: &FileSummary, start: u32) -> Option<Sought> {
     None
 }
 
-fn sought_decl(decl: &Decl) -> Option<Sought> {
+pub(super) fn sought_decl(decl: &Decl) -> Option<Sought> {
     Some(match decl {
         Decl::ClassLike(fqn) => Sought::Name { kind: NameKind::ClassLike, fqn: fqn.clone() },
         Decl::Function(fqn) => Sought::Name { kind: NameKind::Function, fqn: fqn.clone() },

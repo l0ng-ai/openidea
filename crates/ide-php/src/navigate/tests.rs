@@ -9,6 +9,7 @@ use crate::project::LayoutConfig;
 use crate::stubs::StubFilter;
 use crate::syntax::{LineIndex, ParsedFile};
 
+mod hierarchy;
 mod references;
 
 const WAIT: Duration = Duration::from_secs(60);

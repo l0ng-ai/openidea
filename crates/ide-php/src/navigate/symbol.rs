@@ -255,6 +255,20 @@ impl PhpEngine {
                 }
             }
         }
+        if first.is_none() {
+            // Open buffers not indexed yet (new, unsaved files).
+            for document in self.open_documents() {
+                if document.path == here {
+                    continue;
+                }
+                let summary = FileSummary::extract(&self.parse_open(&document));
+                match find_declaration(&summary, kind, fqn) {
+                    Some((_, loc)) if loc == name_loc => return Some(document.path),
+                    Some(_) if first.is_none() => first = Some(document.path),
+                    _ => {}
+                }
+            }
+        }
         first.or_else(|| self.stub_declaration(kind, fqn).map(|target| target.path))
     }
 }
@@ -332,7 +346,7 @@ impl<'a> Lookup<'a, '_> {
     }
 
     /// Members, named arguments and variables at `offset`.
-    fn syntax(&self, offset: u32) -> Option<AtCaret> {
+    pub(super) fn syntax(&self, offset: u32) -> Option<AtCaret> {
         if let Some(found) = self.member_declaration(offset) {
             return Some(found);
         }

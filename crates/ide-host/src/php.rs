@@ -16,8 +16,8 @@ use std::sync::Arc;
 use ide_core::settings::{PhpEngineKind, Settings};
 use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink};
 use ide_lsp::types::{
-    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, InlayHint, InlayKind, Markup, References,
-    SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
+    CallHierarchy, CompletionItem, CompletionKind, CompletionList, GotoKind, HierarchyDirection, HierarchyItem, Hover,
+    InlayHint, InlayKind, Markup, References, SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -187,7 +187,9 @@ impl DocumentObserver for PhpObserver {
 /// definition (names, members, named arguments and variables),
 /// completion with lazily resolved documentation, signature help, inlay
 /// hints (parameter names and types; Editor › Inlay Hints decides which
-/// kinds the editor shows) and semantic tokens.
+/// kinds the editor shows), semantic tokens, find usages, goto
+/// implementation (also for the gutter markers), and the type and call
+/// hierarchies.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -322,9 +324,45 @@ impl crate::language_service::LanguageService for PhpService {
         let targets = match kind {
             GotoKind::Definition | GotoKind::Declaration => engine.definition(doc, pos)?,
             GotoKind::TypeDefinition => engine.type_definition(doc, pos)?,
-            GotoKind::Implementation => return None,
+            GotoKind::Implementation => match engine.implementations(doc, &[pos], &CancellationToken::new())? {
+                Ok(mut found) => found.pop().unwrap_or_default(),
+                Err(e) => return Some(Err(e)),
+            },
         };
         Some(Ok(targets.into_iter().map(|t| Location::file(t.path, t.range)).collect()))
+    }
+
+    /// Gutter markers: the implementations at each position.
+    fn implementations(&self, doc: DocId, positions: &[Pos], cancel: &CancellationToken) -> Answer<Vec<Vec<Location>>> {
+        let engine = self.0.engine()?;
+        let found = engine.implementations(doc, positions, cancel)?.map(|lists| {
+            lists
+                .into_iter()
+                .map(|targets| targets.into_iter().map(|t| Location::file(t.path, t.range)).collect())
+                .collect()
+        });
+        Some(found)
+    }
+
+    fn type_hierarchy(&self, doc: DocId, pos: Pos, direction: HierarchyDirection) -> Answer<Vec<HierarchyItem>> {
+        let engine = self.0.engine()?;
+        let found = engine.type_hierarchy(doc, pos, engine_direction(direction))?;
+        Some(found.map(|entries| entries.into_iter().map(hierarchy_item).collect()))
+    }
+
+    fn call_hierarchy(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        direction: HierarchyDirection,
+        cancel: &CancellationToken,
+    ) -> Answer<CallHierarchy> {
+        let engine = self.0.engine()?;
+        let found = engine.call_hierarchy(doc, pos, engine_direction(direction), cancel)?;
+        Some(found.map(|entries| CallHierarchy {
+            items: entries.into_iter().map(hierarchy_item).collect(),
+            incomplete: None,
+        }))
     }
 
     /// Find usages: every file of the engine's index is in scope, so
@@ -345,6 +383,27 @@ impl crate::language_service::LanguageService for PhpService {
         };
         let locations = usages.into_iter().map(|usage| Location::file(usage.path, usage.range)).collect();
         Some(Ok(References { locations, ..References::default() }))
+    }
+}
+
+/// Incoming (callers, supertypes) is the engine's `Up`.
+fn engine_direction(direction: HierarchyDirection) -> ide_php::navigate::Direction {
+    match direction {
+        HierarchyDirection::Incoming => ide_php::navigate::Direction::Up,
+        HierarchyDirection::Outgoing => ide_php::navigate::Direction::Down,
+    }
+}
+
+fn hierarchy_item(entry: ide_php::navigate::HierarchyEntry) -> HierarchyItem {
+    HierarchyItem {
+        name: entry.name,
+        kind: entry.kind,
+        detail: entry.detail,
+        path: entry.path.into(),
+        uri: None,
+        range: entry.range,
+        selection_range: entry.selection_range,
+        from_ranges: entry.from_ranges,
     }
 }
 

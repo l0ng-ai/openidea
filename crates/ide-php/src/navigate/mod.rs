@@ -23,13 +23,19 @@
 //!   Markdown, inherited docblocks included ([`hover`]).
 //! - [`PhpEngine::references`]: find usages through the word index, each
 //!   candidate resolved again ([`references`]).
+//! - [`PhpEngine::implementations`], [`PhpEngine::type_hierarchy`] and
+//!   [`PhpEngine::call_hierarchy`]: subtypes and implementing methods
+//!   through the subclass index, supertypes, callers and callees
+//!   ([`hierarchy`]).
 
+pub mod hierarchy;
 pub mod hover;
 pub mod references;
 pub(crate) mod symbol;
 #[cfg(test)]
 mod tests;
 
+pub use hierarchy::{Direction, HierarchyEntry};
 pub use hover::HoverInfo;
 pub use references::{Usage, UsageKind};
 
