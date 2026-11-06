@@ -1,0 +1,37 @@
+{
+  "name": "@openidea/website",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.0.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 3000",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "release:refresh": "node scripts/update-release.mjs",
+    "check:static": "node scripts/check-static.mjs"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.9.0",
+    "@stylexjs/stylex": "0.19.1",
+    "@tanstack/react-router": "1.170.46",
+    "@tanstack/react-start": "1.169.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@stylexjs/unplugin": "0.19.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "typescript": "^5.9.0",
+    "unplugin": "^2.3.11",
+    "vite": "^8.0.0"
+  }
+}

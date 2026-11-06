@@ -1,0 +1,45 @@
+@font-face {
+  font-family: Inter;
+  src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@layer reset {
+  * {
+    box-sizing: border-box;
+  }
+  html {
+    color-scheme: dark;
+    background: #191a1c;
+  }
+  body {
+    margin: 0;
+    color: #dfe1e5;
+    font:
+      15px/1.7 Inter,
+      Arial,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  p,
+  h1,
+  h2,
+  h3,
+  figure {
+    margin: 0;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+  }
+  :focus-visible {
+    outline: 2px solid #dfe1e5;
+    outline-offset: 5px;
+  }
+}

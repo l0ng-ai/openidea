@@ -1,0 +1,76 @@
+{
+  "version": "0.1.24",
+  "tag": "v0.1.24",
+  "releaseUrl": "https://github.com/l0ng-ai/openidea/releases/tag/v0.1.24",
+  "packages": {
+    "macos": [
+      {
+        "id": "mac-arm",
+        "label": "Apple Silicon",
+        "detail": "Macs with an Apple Silicon processor",
+        "format": "DMG",
+        "url": "https://github.com/l0ng-ai/openidea/releases/download/v0.1.24/OpenIDEA_0.1.24_aarch64.dmg",
+        "name": "OpenIDEA_0.1.24_aarch64.dmg",
+        "size": 43591698
+      },
+      {
+        "id": "mac-intel",
+        "label": "Intel",
+        "detail": "Macs with an Intel processor",
+        "format": "DMG",
+        "url": "https://github.com/l0ng-ai/openidea/releases/download/v0.1.24/OpenIDEA_0.1.24_x64.dmg",
+        "name": "OpenIDEA_0.1.24_x64.dmg",
+        "size": 47708074
+      }
+    ],
+    "windows": [
+      {
+        "id": "windows-exe",
+        "label": "Windows installer",
+        "detail": "64-bit Intel and AMD PCs",
+        "format": "EXE",
+        "url": "https://github.com/l0ng-ai/openidea/releases/download/v0.1.24/OpenIDEA_0.1.24_x64-setup.exe",
+        "name": "OpenIDEA_0.1.24_x64-setup.exe",
+        "size": 36126071
+      },
+      {
+        "id": "windows-msi",
+        "label": "MSI package",
+        "detail": "64-bit installer for managed deployments",
+        "format": "MSI",
+        "url": "https://github.com/l0ng-ai/openidea/releases/download/v0.1.24/OpenIDEA_0.1.24_x64_en-US.msi",
+        "name": "OpenIDEA_0.1.24_x64_en-US.msi",
+        "size": 48439296
+      }
+    ],
+    "linux": [
+      {
+        "id": "linux-appimage",
+        "label": "AppImage",
+        "detail": "Standalone app for x86_64 Linux",
+        "format": "AppImage",
+        "url": "https://github.com/l0ng-ai/openidea/releases/download/v0.1.24/OpenIDEA_0.1.24_amd64.AppImage",
+        "name": "OpenIDEA_0.1.24_amd64.AppImage",
+        "size": 122984952
+      },
+      {
+        "id": "linux-deb",
+        "label": "Debian / Ubuntu",
+        "detail": "DEB package for x86_64",
+        "format": "DEB",
+        "url": "https://github.com/l0ng-ai/openidea/releases/download/v0.1.24/OpenIDEA_0.1.24_amd64.deb",
+        "name": "OpenIDEA_0.1.24_amd64.deb",
+        "size": 48842078
+      },
+      {
+        "id": "linux-rpm",
+        "label": "Fedora / RHEL",
+        "detail": "RPM package for x86_64",
+        "format": "RPM",
+        "url": "https://github.com/l0ng-ai/openidea/releases/download/v0.1.24/OpenIDEA-0.1.24-1.x86_64.rpm",
+        "name": "OpenIDEA-0.1.24-1.x86_64.rpm",
+        "size": 48845523
+      }
+    ]
+  }
+}
