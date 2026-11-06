@@ -2610,3 +2610,40 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
 }
+
+#[test]
+fn services_location_is_accepted() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let services = hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"services\""));
+    let info = f.install(&services);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let view = f.host.ui_items("views").remove(0);
+    assert_eq!(view.decl["location"].as_str(), Some("services"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let middle = hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"middle\""));
+    let err = f.host.install_from_dir(&middle, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("view \"greetings\": `location` is left, right, bottom or services"), "{err:?}");
+}
+
+#[test]
+fn detail_id_only_for_services_views() {
+    let undeclared = |r: ide_core::IdeResult<ide_plugin::View>| {
+        r.is_err_and(|e| e.kind == ide_core::error::ErrorKind::NotFound && e.message.contains("declares no view"))
+    };
+
+    let f = fixture(Limits::default());
+    f.install(&sample("hello"));
+    assert!(undeclared(f.host.render_view("hello", "greetings/English", None, f.inv())), "a right view has no detail");
+    assert!(undeclared(f.host.render_view("hello", "nope/English", None, f.inv())));
+
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    f.install(&hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"services\"")));
+    assert!(!undeclared(f.host.render_view("hello", "greetings/pod:default/nginx", None, f.inv())));
+    assert!(undeclared(f.host.render_view("hello", "nope/pod:default/nginx", None, f.inv())));
+    let event = ide_plugin::ViewEvent::Select { key: "x".into() };
+    let err = f.host.view_event("hello", "greetings/pod:default/nginx", event, f.inv()).err();
+    assert!(err.as_ref().is_none_or(|e| !e.message.contains("declares no view")), "{err:?}");
+}

@@ -1070,10 +1070,19 @@ impl PluginHost {
         })
     }
 
+    /// `view` is a declared view or custom editor, or `"<view>/<item key>"`:
+    /// the detail pane of an item of a `services` view.
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        let declared = [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
-            .iter()
-            .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
+        let declared = match view.split_once('/') {
+            Some((services, _)) => self
+                .ui
+                .items(ui_points::VIEWS, Some(id))
+                .iter()
+                .any(|i| i.key == services && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION)),
+            None => [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
+                .iter()
+                .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view)),
+        };
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
     }
 
