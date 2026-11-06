@@ -813,19 +813,20 @@ mod tests {
 
     /// A theme package `id` signed by `publisher` with `key`, packed into `out`.
     fn signed_theme(tmp: &Path, id: &str, publisher: &str, key: &str, out: &Path) {
-        signed_theme_version(tmp, id, "0.1.0", "^1.0", publisher, key, out);
+        signed_theme_version(tmp, id, "0.1.0", "^1.2", publisher, key, out);
     }
 
     fn signed_theme_version(tmp: &Path, id: &str, version: &str, engine: &str, publisher: &str, key: &str, out: &Path) {
         let src = tmp.join("src").join(format!("{id}-{version}"));
         let vars = templates::Vars { id, name: id, sdk: None };
+        // A manifest icon needs API 1.2.
+        let icon = if engine == "^1.2" { "\nicon = \"icon.svg\"" } else { "" };
         for (rel, content) in templates::render(templates::Template::Theme, &vars) {
             let path = src.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let content = content.replace("version = \"0.1.0\"", &format!("version = \"{version}\"")).replace(
-                "engines.openidea = \"^1.0\"",
-                &format!("engines.openidea = \"{engine}\"\nicon = \"icon.svg\""),
-            );
+            let content = content
+                .replace("version = \"0.1.0\"", &format!("version = \"{version}\""))
+                .replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = \"{engine}\"{icon}"));
             std::fs::write(path, content).unwrap();
         }
         std::fs::write(src.join("icon.svg"), r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#)
@@ -953,6 +954,7 @@ mod tests {
             std::fs::write(path, content).unwrap();
         }
         let manifest = std::fs::read_to_string(src.join("plugin.toml")).unwrap();
+        let manifest = manifest.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.2\"");
         std::fs::write(src.join("plugin.toml"), format!("icon = \"icon.svg\"\n{manifest}")).unwrap();
         std::fs::write(src.join("icon.svg"), r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#)
             .unwrap();

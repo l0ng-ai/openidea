@@ -2618,7 +2618,7 @@ fn icon_package(dir: &Path, id: &str, extra: &str, files: &[(&str, &str)]) -> Pa
     std::fs::create_dir_all(&pkg).unwrap();
     std::fs::write(
         pkg.join("plugin.toml"),
-        format!("id = \"{id}\"\nname = \"Iconic\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n{extra}"),
+        format!("id = \"{id}\"\nname = \"Iconic\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n{extra}"),
     )
     .unwrap();
     for (name, text) in files {

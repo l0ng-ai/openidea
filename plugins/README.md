@@ -122,7 +122,9 @@ ignored (`check` warns about both).
 marketplace; `icon-dark`, if given, replaces it with dark themes. Each is at
 most 16 KiB and sanitised like file icons (no scripts, external references or
 `foreignObject`); an invalid one fails the package. Without `icon`, the
-plugin gets the generic plugin icon.
+plugin gets the generic plugin icon. `icon` is new in API 1.2: IDEs before it
+refuse the manifest, so a package with one declares `engines.openidea = "^1.2"`
+(`check` and installing refuse it otherwise).
 
 All paths are relative to the package directory and may not leave it. A
 manifest is validated as a whole: if one contribution is invalid, nothing is

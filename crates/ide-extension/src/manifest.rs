@@ -280,6 +280,16 @@ impl Manifest {
         Self::parse(&src).map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// Refuses `what`, new in plugin API 1.`minor`, while `engines.openidea`
+    /// still admits an older 1.x: those IDEs reject the manifest at install.
+    pub fn needs_api(&self, what: &str, minor: u64) -> Result<(), String> {
+        let older = |m| engine_compatible_with(&self.engine, &semver::Version::new(1, m, u64::MAX));
+        if self.legacy || (0..minor).any(older) {
+            return Err(format!("{what} is new in plugin API 1.{minor}: set engines.openidea to \"^1.{minor}\""));
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), String> {
         validate_plugin_id(&self.id)?;
         if self.name.trim().is_empty() {
@@ -302,6 +312,7 @@ impl Manifest {
             check_relative(wasm, "wasm")?;
         }
         if let Some(icon) = &self.icon {
+            self.needs_api("`icon`", 2)?;
             check_relative(icon, "icon")?;
         }
         if let Some(dark) = &self.icon_dark {
@@ -395,9 +406,11 @@ pub fn engine_compatible(engine: &str, legacy: bool) -> bool {
     if legacy {
         return engine == LEGACY_API || engine.strip_prefix(LEGACY_API).is_some_and(|rest| rest.starts_with('.'));
     }
-    let Ok(req) = semver::VersionReq::parse(engine) else { return false };
-    let host = semver::Version::parse(ENGINE_VERSION).expect("valid engine version");
-    req.matches(&host)
+    engine_compatible_with(engine, &semver::Version::parse(ENGINE_VERSION).expect("valid engine version"))
+}
+
+fn engine_compatible_with(engine: &str, api: &semver::Version) -> bool {
+    semver::VersionReq::parse(engine).is_ok_and(|req| req.matches(api))
 }
 
 /// Segments of `[a-z0-9][a-z0-9_-]*` joined by `.` (an optional publisher
@@ -568,7 +581,7 @@ mod tests {
         assert!(err("id = \"ok\"\nname = \"N\"\nversion = \"1.0\"\nengines.openidea = \"^1.0\"").contains("version"));
     }
 
-    const BASE: &str = "id = \"ok\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n";
+    const BASE: &str = "id = \"ok\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n";
 
     #[test]
     fn parses_icons() {
@@ -584,6 +597,10 @@ mod tests {
         assert!(err(&format!("{BASE}icon = \"../x.svg\"\n")).contains("icon"));
         assert!(err(&format!("{BASE}icon = \"/abs.svg\"\n")).contains("icon"));
         assert!(err(&format!("{BASE}icon = \"i.svg\"\nicon-dark = \"../d.svg\"\n")).contains("icon-dark"));
+        for engine in ["^1.0", ">=1.1, <2"] {
+            let old = BASE.replace("^1.2", engine);
+            assert!(err(&format!("{old}icon = \"i.svg\"\n")).contains("new in plugin API 1.2"), "{engine}");
+        }
     }
 
     #[test]
