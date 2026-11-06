@@ -89,6 +89,21 @@ pub struct AgentTask {
     /// by its next output or any status change.
     #[serde(default)]
     pub retry: Option<AgentRetry>,
+    /// What the agent runs in the background (shells, subagents, monitors), oldest first.
+    #[serde(default)]
+    pub background: Vec<AgentBackgroundTask>,
+}
+
+/// A task the agent runs in the background while the conversation goes on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBackgroundTask {
+    pub id: String,
+    /// What it is, as the agent names it (`local_bash`, `local_agent`, `monitor`…).
+    pub kind: String,
+    pub description: String,
+    /// When the client first saw it (ms since the epoch).
+    pub started_ms: f64,
 }
 
 /// An API request the agent is about to retry.

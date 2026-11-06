@@ -1093,3 +1093,28 @@ fn tool_calls_plans_and_subagents() {
     assert_eq!(finished[1].update["content"][0]["text"], "It is x");
     assert_eq!(finished[1].update["senderSessionId"], "ag");
 }
+
+#[test]
+fn background_tasks_are_reported_as_one_list() {
+    let mut translator = Translator::new("s", PathBuf::from("/w"), true);
+    let changed = translator.on_message(&json!({
+        "type": "system", "subtype": "background_tasks_changed",
+        "tasks": [
+            {"task_id": "b1", "run_id": "r1", "task_type": "local_bash", "description": "pnpm test"},
+            {"task_id": "b2", "task_type": "monitor", "description": "Watch the deploy"},
+        ],
+    }));
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].session, "s");
+    assert_eq!(changed[0].update["sessionUpdate"], crate::BACKGROUND_UPDATE);
+    assert_eq!(
+        changed[0].update["tasks"],
+        json!([
+            {"id": "b1", "kind": "local_bash", "description": "pnpm test"},
+            {"id": "b2", "kind": "monitor", "description": "Watch the deploy"},
+        ])
+    );
+    let empty = translator.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": []}));
+    assert_eq!(empty[0].update["tasks"], json!([]));
+    assert_eq!(translator.stop_background().update["tasks"], json!([]));
+}

@@ -54,6 +54,8 @@ const SESSION_STATE: [&str; 5] =
 pub(crate) const RETRY_UPDATE: &str = "openidea_retry";
 /// A native agent's own update: the usage limits of its account (see [`AgentLimit`]).
 pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
+/// A native agent's own update: every task it runs in the background now (see [`AgentBackgroundTask`]).
+pub(crate) const BACKGROUND_UPDATE: &str = "openidea_background";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
@@ -297,6 +299,7 @@ impl AgentManager {
                         f.task.status = AgentStatus::Ready;
                     }
                     f.task.retry = None;
+                    f.task.background.clear();
                     let task = Task::restore(f, shared.clone());
                     task.state.lock().conversation.settle(now_ms());
                     tasks.insert(task.id.clone(), task);
@@ -465,6 +468,7 @@ impl AgentManager {
             capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
             resets_ms: None,
             retry: None,
+            background: Vec::new(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -659,6 +663,7 @@ impl AgentManager {
                 queue: Vec::new(),
                 resets_ms: None,
                 retry: None,
+                background: Vec::new(),
                 ..s.task.clone()
             };
             TaskFile {
@@ -955,6 +960,44 @@ impl Task {
         self.emit_task();
     }
 
+    /// Replaces the background tasks with `tasks` (the agent's full list), keeping when each
+    /// one was first seen.
+    fn set_background(self: &Arc<Self>, tasks: Option<&Value>) {
+        let now = now_ms();
+        let (changed, ended) = {
+            let mut state = self.state.lock();
+            let known = &state.task.background;
+            let next: Vec<AgentBackgroundTask> = tasks
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|task| {
+                    let id = task.get("id")?.as_str()?.to_owned();
+                    let started_ms = known.iter().find(|seen| seen.id == id).map_or(now, |seen| seen.started_ms);
+                    let text = |key: &str| task.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+                    Some(AgentBackgroundTask { id, kind: text("kind"), description: text("description"), started_ms })
+                })
+                .collect();
+            let changed = next != state.task.background;
+            let ended = !state.task.background.is_empty() && next.is_empty() && !state.busy;
+            state.task.background = next;
+            (changed, ended)
+        };
+        if changed {
+            self.emit_task();
+        }
+        if ended {
+            self.release_when_idle();
+        }
+    }
+
+    fn clear_background(&self) {
+        let changed = !std::mem::take(&mut self.state.lock().task.background).is_empty();
+        if changed {
+            self.emit_task();
+        }
+    }
+
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
         {
             let mut s = self.state.lock();
@@ -1080,8 +1123,10 @@ impl Task {
         self.shared.runtime.spawn(async move {
             tokio::time::sleep(delay).await;
             let Some(task) = task.upgrade() else { return };
+            // Stopping the agent would stop what it runs in the background too.
             if task.turns.load(Ordering::Acquire) != turn
                 || task.state.lock().busy
+                || !task.state.lock().task.background.is_empty()
                 || !task.permissions.lock().is_empty()
             {
                 return;
@@ -1093,6 +1138,7 @@ impl Task {
             if let Some(live) = live {
                 tracing::debug!("agent task {}: idle, stopping the agent until the next message", task.id);
                 live.peer.kill();
+                task.clear_background();
             }
         });
     }
@@ -1111,6 +1157,7 @@ impl Task {
         if !gone && let Some(live) = self.live.lock().take() {
             live.peer.kill();
         }
+        self.clear_background();
         match failure.limit {
             Some(resets) => {
                 self.state.lock().task.resets_ms = resets;
@@ -1436,6 +1483,12 @@ impl Task {
             }
             return;
         }
+        if kind == BACKGROUND_UPDATE {
+            if !self.replaying.load(Ordering::Acquire) {
+                self.set_background(update.get("tasks"));
+            }
+            return;
+        }
         if kind == LIMITS_UPDATE {
             if !self.replaying.load(Ordering::Acquire) {
                 let provider = self.state.lock().task.provider.clone();
@@ -1617,6 +1670,7 @@ impl Task {
         self.cancel_permissions();
         let live = self.live.lock().take()?;
         live.peer.kill();
+        self.clear_background();
         Some(live.peer)
     }
 }

@@ -5,7 +5,7 @@
 //! Agent tool use that launched them: their messages carry it as `parent_tool_use_id`.
 
 use super::tools;
-use crate::{LIMITS_UPDATE, RETRY_UPDATE};
+use crate::{BACKGROUND_UPDATE, LIMITS_UPDATE, RETRY_UPDATE};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -448,6 +448,23 @@ impl Translator {
                     }),
                 }]
             }
+            // Claude Code sends every live background task on each change.
+            Some("background_tasks_changed") => {
+                let tasks: Vec<Value> = msg
+                    .get("tasks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|task| {
+                        Some(json!({
+                            "id": task.get("task_id")?.as_str()?,
+                            "kind": task.get("task_type").and_then(Value::as_str).unwrap_or_default(),
+                            "description": task.get("description").and_then(Value::as_str).unwrap_or_default(),
+                        }))
+                    })
+                    .collect();
+                vec![self.background(tasks)]
+            }
             Some("task_notification") if self.children.get(&tool_use).is_some_and(|c| c.background != Some(false)) => {
                 let stop = match msg.get("status").and_then(Value::as_str) {
                     Some("failed") => "error",
@@ -470,6 +487,15 @@ impl Translator {
             session: child.parent.clone(),
             update: json!({ "sessionUpdate": "subagent_update", "sessionId": session, "state": { "state": state } }),
         })
+    }
+
+    fn background(&self, tasks: Vec<Value>) -> Update {
+        Update { session: self.root.clone(), update: json!({ "sessionUpdate": BACKGROUND_UPDATE, "tasks": tasks }) }
+    }
+
+    /// Background tasks end with their process.
+    pub fn stop_background(&self) -> Update {
+        self.background(Vec::new())
     }
 
     /// Subagents still working when their agent is gone.

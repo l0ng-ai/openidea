@@ -695,8 +695,9 @@ impl Session {
                     _ => {}
                 }
             }
-            // Background subagents of the old process are gone.
+            // Background subagents and shells of the old process are gone.
             updates.extend(st.tr.stop_children());
+            updates.push(st.tr.stop_background());
             if let Some(title) = chain_title(self) {
                 st.titled = true;
                 updates.push(Update {
@@ -817,7 +818,12 @@ impl Session {
         if proc.kill.is_cancelled() || !current {
             return;
         }
-        let updates = self.st.lock().tr.stop_children();
+        let updates = {
+            let mut st = self.st.lock();
+            let mut updates = st.tr.stop_children();
+            updates.push(st.tr.stop_background());
+            updates
+        };
         let Some(shim) = self.shim() else { return };
         shim.notify(updates);
         self.fail_turn("Claude Code exited.");

@@ -1110,6 +1110,46 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     mgr.shutdown();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_agents_keep_running_until_their_background_tasks_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let background = |tasks: Value| json!({"sessionUpdate": BACKGROUND_UPDATE, "tasks": tasks});
+    let live = || mgr.task(&task.id).unwrap().live.lock().as_ref().is_some_and(|live| !live.peer.is_closed());
+    let running = || mgr.task(&task.id).unwrap().state.lock().task.background.len();
+
+    agent.update("s1", background(json!([{"id": "b1", "kind": "local_bash", "description": "cargo build"}])));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while running() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(live(), "the agent keeps running what it started");
+
+    agent.update("s1", background(json!([])));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(running(), 0);
+    assert!(!live(), "released once nothing runs");
+    mgr.shutdown();
+}
+
 /// Deleting a task whose agent still runs in the worktree removes both and leaves no
 /// process behind, whether it is waiting for permission or idle without session/load.
 #[tokio::test(flavor = "multi_thread")]
