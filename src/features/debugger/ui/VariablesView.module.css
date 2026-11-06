@@ -1,7 +1,9 @@
 .root {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
+  width: 100%;
   flex: 1;
 }
 
@@ -10,6 +12,9 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
   white-space: pre;
@@ -38,8 +43,47 @@
 
 .value {
   min-width: 0;
+  flex: 1 1 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.showValue {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+
+.showValue:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.showValue:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-small);
+}
+
+.valuePopupContent {
+  padding: 12px 16px;
+}
+
+.valuePopupValue {
+  max-height: min(420px, calc(100vh - 120px));
+  margin: 0;
+  overflow: auto;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  font-weight: var(--fw-code);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
 
 .number {
@@ -59,7 +103,10 @@
 }
 
 .type {
-  flex: none;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-subtle);
 }
 
@@ -105,6 +152,7 @@
 .hint {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   width: 460px;
   height: 260px;
 }

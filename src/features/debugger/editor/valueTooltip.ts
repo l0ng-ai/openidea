@@ -44,6 +44,7 @@ export function valueHint(
   expression: string,
   value: Variable,
   session: DebugSessionId,
+  max: number | null = 400,
 ): { dom: HTMLElement; destroy: () => void } {
   const dom = document.createElement("div");
   dom.className = `${styles.valueTooltip} ${selectableText}`;
@@ -69,7 +70,7 @@ export function valueHint(
   const name = document.createElement("span");
   name.className = styles.valueName!;
   name.textContent = `${expression} = `;
-  dom.append(name, inlineValue(value.value, 400));
+  dom.append(name, max === null ? value.value : inlineValue(value.value, max));
   if (value.typeName) {
     const type = document.createElement("span");
     type.className = styles.valueType!;
