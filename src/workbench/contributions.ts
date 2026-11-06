@@ -325,6 +325,16 @@ export const registerToolWindow = (c: ToolWindowContribution) => register("toolW
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
 
+type GitLogChecksCell = ComponentType<{ root: string; revision: string }>;
+export const useGitLogChecks = create<{ cell: GitLogChecksCell | null }>(() => ({ cell: null }));
+
+export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
+  useGitLogChecks.setState({ cell });
+  return () => {
+    if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
 const EditorShown = createContext(true);
 export const EditorShownProvider = EditorShown.Provider;
 /** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
