@@ -54,6 +54,7 @@ use parking_lot::Mutex;
 use super::model::{self, ClassModel, EnumMethod, EnumProperty, MethodSource, ModelMethod, PropertySource};
 use super::provider::TypeProviders;
 use super::{Hierarchy, LazyType, Relative, SignatureParam, Type};
+use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
 use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, TypeHint};
 
@@ -100,6 +101,11 @@ pub trait Declarations {
     fn function(&self, fqn: &str) -> Option<FunctionDecl>;
     /// The constant with this fully qualified name (case-sensitive name).
     fn constant(&self, fqn: &str) -> Option<ConstantDecl>;
+    /// The `.phpstorm.meta.php` directives of the project, merged. The
+    /// [`Resolver`] caches them per modification counter.
+    fn meta(&self) -> PhpStormMeta {
+        PhpStormMeta::default()
+    }
 }
 
 /// [`Declarations`] over a fixed set of summaries, the first declaration
@@ -132,6 +138,10 @@ impl Declarations for SummarySet {
             .find(|constant| fqn_eq(NameKind::Constant, &constant.fqn, fqn))
             .cloned()
     }
+
+    fn meta(&self) -> PhpStormMeta {
+        PhpStormMeta::merge(self.summaries.iter().map(|summary| &summary.meta))
+    }
 }
 
 /// A cached declaration.
@@ -163,6 +173,8 @@ struct CacheState {
     entries: HashMap<Key, Option<Type>>,
     /// Class models by lower-case FQN; `None` for unknown class-likes.
     models: HashMap<String, Option<Arc<ClassModel>>>,
+    /// The merged `.phpstorm.meta.php` directives.
+    meta: Option<Arc<PhpStormMeta>>,
 }
 
 impl CacheState {
@@ -171,6 +183,7 @@ impl CacheState {
         if self.generation != generation {
             self.entries.clear();
             self.models.clear();
+            self.meta = None;
             self.generation = generation;
         }
         self
@@ -214,6 +227,18 @@ impl TypeCache {
 
     fn insert_model(&self, generation: u64, key: String, value: Option<Arc<ClassModel>>) {
         self.state.lock().at(generation).models.insert(key, value);
+    }
+
+    fn meta(&self, generation: u64) -> Option<Arc<PhpStormMeta>> {
+        let state = self.state.lock();
+        if state.generation != generation {
+            return None;
+        }
+        state.meta.clone()
+    }
+
+    fn insert_meta(&self, generation: u64, meta: Arc<PhpStormMeta>) {
+        self.state.lock().at(generation).meta = Some(meta);
     }
 }
 
@@ -279,6 +304,17 @@ impl<'a> Resolver<'a> {
     /// Where this resolver looks declarations up.
     pub fn declarations(&self) -> &'a dyn Declarations {
         self.decls
+    }
+
+    /// The project's `.phpstorm.meta.php` directives, cached for the
+    /// modification counter.
+    pub fn meta(&self) -> Arc<PhpStormMeta> {
+        if let Some(meta) = self.cache.meta(self.generation) {
+            return meta;
+        }
+        let meta = Arc::new(self.decls.meta());
+        self.cache.insert_meta(self.generation, meta.clone());
+        meta
     }
 
     /// The type a lazy type stands for, `self`/`parent` (and `static`/

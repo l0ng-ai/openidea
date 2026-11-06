@@ -247,7 +247,7 @@ The design:
 
   Tests: the PHPUnit cases in the fixture.
 
-- [ ] Phase 2.8: .phpstorm.meta.php
+- [x] Phase 2.8: .phpstorm.meta.php
       Read the metadata directives in any `.phpstorm.meta.php` file or directory:
   - `override` with `map`, `type` and `elementType`
   - `expectedArguments`, `expectedReturnValues`, `registerArgumentsSet` / `argumentsSet`

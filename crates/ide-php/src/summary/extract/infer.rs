@@ -9,15 +9,15 @@
 //! ([`TypeProviders::builtin`]), the core one giving the plain recipes.
 
 use mago_syntax::cst::{
-    Access, AnonymousClass, ArgumentList, ArrayElement, ArrowFunction, Assignment, AssignmentOperator, BinaryOperator,
-    Block, Call, Class, ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression,
-    Function, Interface, MagicConstant, MatchArm, Return, Trait, UnaryPrefixOperator, Variable, Yield,
+    Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, Assignment, AssignmentOperator,
+    BinaryOperator, Block, Call, Class, ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum,
+    Expression, Function, Interface, MagicConstant, MatchArm, Return, Trait, UnaryPrefixOperator, Variable, Yield,
 };
 use mago_syntax::walker::Walker;
 
 use crate::names::{NameKind, NameScope, Resolution};
 use crate::types::ops::{Op, is_int, is_string, literal_type, op_type, unary_type};
-use crate::types::provider::{CallKind, CallSite, site_args};
+use crate::types::provider::{CallKind, CallSite, NO_NEXT, site_args};
 use crate::types::{LazyType, Relative, Type, TypeProviders};
 
 /// Infers types from expressions in one name scope.
@@ -211,6 +211,17 @@ impl Infer<'_> {
         }
     }
 
+    /// The lazy types of a call's arguments.
+    fn arg_types(&self, list: &ArgumentList<'_>) -> Vec<LazyType> {
+        list.arguments
+            .iter()
+            .map(|argument| match argument {
+                Argument::Positional(argument) => self.expr_inner(argument.value),
+                Argument::Named(argument) => self.expr_inner(argument.value),
+            })
+            .collect()
+    }
+
     fn call(&self, call: &Call<'_>) -> LazyType {
         let method = |kind: CallKind,
                       receiver: LazyType,
@@ -220,7 +231,17 @@ impl Infer<'_> {
                 let name = lossy(name.value);
                 let core = || LazyType::MethodReturn { receiver: Box::new(receiver.clone()), name: name.clone() };
                 let args = site_args(self.scope, arguments);
-                let site = CallSite { kind, name: &name, receiver: Some(&receiver), args: &args, core: &core };
+                let arg_types = || self.arg_types(arguments);
+                let site = CallSite {
+                    kind,
+                    name: &name,
+                    receiver: Some(&receiver),
+                    args: &args,
+                    arg_types: &arg_types,
+                    stored: true,
+                    core: &core,
+                    next: NO_NEXT,
+                };
                 TypeProviders::builtin().call(&site)
             }
             _ => LazyType::mixed(),
@@ -238,8 +259,17 @@ impl Infer<'_> {
                     let LazyType::FunctionReturn { fqn, .. } = &core else { return LazyType::mixed() };
                     let args = site_args(self.scope, &call.argument_list);
                     let core_fn = || core.clone();
-                    let site =
-                        CallSite { kind: CallKind::Function, name: fqn, receiver: None, args: &args, core: &core_fn };
+                    let arg_types = || self.arg_types(&call.argument_list);
+                    let site = CallSite {
+                        kind: CallKind::Function,
+                        name: fqn,
+                        receiver: None,
+                        args: &args,
+                        arg_types: &arg_types,
+                        stored: true,
+                        core: &core_fn,
+                        next: NO_NEXT,
+                    };
                     TypeProviders::builtin().call(&site)
                 }
                 _ => LazyType::mixed(),

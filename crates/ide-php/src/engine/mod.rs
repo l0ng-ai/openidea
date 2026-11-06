@@ -41,6 +41,7 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, Ser
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::index::{IndexStats, PhpIndex};
+use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
 use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
 use crate::stubs::{BundledStubs, StubFilter, StubSet};
@@ -420,6 +421,13 @@ impl PhpEngine {
         self.resolver().class_model(fqn)
     }
 
+    /// The project's `.phpstorm.meta.php` directives (expected argument and
+    /// return values for completion, overrides, exit points), cached for the
+    /// current modification count.
+    pub fn meta(&self) -> Arc<PhpStormMeta> {
+        self.resolver().meta()
+    }
+
     /// The type of the innermost expression at `pos` in an open document
     /// (see [`crate::types::expr`]). `None` when the engine doesn't hold the
     /// document or there is no expression there.
@@ -463,6 +471,26 @@ impl Declarations for PhpEngine {
         })
         .or_else(|| self.stubs().constant(fqn).map(|(_, constant)| constant.clone()))
     }
+
+    /// The directives of the indexed files that have some (their open
+    /// buffers first), and of open `.phpstorm.meta.php` buffers not indexed
+    /// yet.
+    fn meta(&self) -> PhpStormMeta {
+        let mut paths = self.index().and_then(|index| index.meta_files().ok()).unwrap_or_default();
+        let open: Vec<PathBuf> = self.shared.documents.lock().values().map(|d| d.path.clone()).collect();
+        for path in open {
+            if is_meta_path(&path) && !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        let summaries: Vec<FileSummary> = paths.iter().filter_map(|path| self.summary(path).ok().flatten()).collect();
+        PhpStormMeta::merge(summaries.iter().map(|summary| &summary.meta))
+    }
+}
+
+/// `.phpstorm.meta.php`, or a file inside a `.phpstorm.meta.php` directory.
+fn is_meta_path(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str().eq_ignore_ascii_case(".phpstorm.meta.php"))
 }
 
 impl Drop for PhpEngine {

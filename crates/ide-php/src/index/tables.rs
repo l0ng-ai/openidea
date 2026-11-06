@@ -20,8 +20,13 @@ pub(super) const FQNS: MultiDef = MultimapTableDefinition::new("fqns");
 pub(super) const SHORT_NAMES: MultiDef = MultimapTableDefinition::new("short_names");
 pub(super) const SUBCLASSES: MultiDef = MultimapTableDefinition::new("subclasses");
 pub(super) const NAMESPACES: MultiDef = MultimapTableDefinition::new("namespaces");
+/// [`META_FILES_KEY`] → the files with `.phpstorm.meta.php` directives.
+pub(super) const META_FILES: MultiDef = MultimapTableDefinition::new("meta_files");
 
-const MULTIMAPS: [MultiDef; 4] = [FQNS, SHORT_NAMES, SUBCLASSES, NAMESPACES];
+/// The only key of [`META_FILES`].
+pub const META_FILES_KEY: &str = "phpstorm_meta";
+
+const MULTIMAPS: [MultiDef; 5] = [FQNS, SHORT_NAMES, SUBCLASSES, NAMESPACES, META_FILES];
 
 type Result<T> = std::result::Result<T, redb::Error>;
 
@@ -86,6 +91,10 @@ fn entries(file: &str, summary: &FileSummary) -> Vec<Entry> {
     for (index, constant) in summary.constants.iter().enumerate() {
         add(DeclKind::Constant, &constant.fqn, index, &mut out);
     }
+    if !summary.meta.is_empty() {
+        let decl = Decl { kind: DeclKind::Namespace, fqn: "PHPSTORM_META".to_owned(), file: file.to_owned(), index: 0 };
+        out.push(Entry { table: 4, key: META_FILES_KEY.to_owned(), decl });
+    }
     // Every namespace that holds a declaration is a child of its parent,
     // up to the global namespace.
     namespaces.sort();
@@ -108,7 +117,7 @@ pub(super) struct Writer<'txn> {
     files: Table<'txn, &'static str, &'static [u8]>,
     summaries: Table<'txn, [u8; 32], &'static [u8]>,
     refs: Table<'txn, [u8; 32], u32>,
-    names: [MultimapTable<'txn, &'static str, &'static [u8]>; 4],
+    names: [MultimapTable<'txn, &'static str, &'static [u8]>; 5],
 }
 
 impl<'txn> Writer<'txn> {
@@ -122,6 +131,7 @@ impl<'txn> Writer<'txn> {
                 txn.open_multimap_table(SHORT_NAMES)?,
                 txn.open_multimap_table(SUBCLASSES)?,
                 txn.open_multimap_table(NAMESPACES)?,
+                txn.open_multimap_table(META_FILES)?,
             ],
         })
     }

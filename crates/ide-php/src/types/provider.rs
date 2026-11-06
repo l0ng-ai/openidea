@@ -20,9 +20,11 @@
 //! order and the first answer wins. The built-in [`CoreProvider`] is what
 //! the resolver does on its own (declared and inferred returns, generics);
 //! providers ordered before it override it, those after it only answer when
-//! it doesn't know (`mixed`). [`TypeProviders::builtin`] holds the core and
-//! the PHPUnit provider ([`PhpUnitProvider`]); summaries are always
-//! extracted with it.
+//! it doesn't know (`mixed`). A provider can wrap the ones after it through
+//! [`CallSite::next`]. [`TypeProviders::builtin`] holds the
+//! `.phpstorm.meta.php` provider ([`MetaProvider`]), the PHPUnit provider
+//! ([`PhpUnitProvider`]) and the core; summaries are always extracted with
+//! it.
 
 use std::sync::{Arc, LazyLock};
 
@@ -30,6 +32,7 @@ use mago_syntax::cst::{Access, Argument, ArgumentList, ClassLikeConstantSelector
 
 use super::ops::literal_type;
 use super::{Context, LazyType, Resolver, Type};
+use crate::meta::MetaProvider;
 use crate::names::{NameKind, NameScope, Resolution, fqn_eq};
 
 /// Builds the lazy payload of provider `key`: `payload` and `args` are
@@ -116,6 +119,7 @@ fn is_class_name(text: &str) -> bool {
 }
 
 /// A call, for the local step.
+#[derive(Clone, Copy)]
 pub struct CallSite<'s> {
     pub kind: CallKind,
     /// The method name, or the function's FQN.
@@ -123,9 +127,22 @@ pub struct CallSite<'s> {
     /// The receiver of a method call (`$this`, the object, the class).
     pub receiver: Option<&'s LazyType>,
     pub args: &'s [SiteArg],
+    /// The types of the arguments, positional ones in order (computed on
+    /// demand).
+    pub arg_types: &'s dyn Fn() -> Vec<LazyType>,
+    /// The answer is stored in a file summary (rather than used at once to
+    /// type an expression): providers that would answer for many calls
+    /// should only answer where they are likely to matter.
+    pub stored: bool,
     /// What the core inference says about the call (computed on demand).
     pub core: &'s dyn Fn() -> LazyType,
+    /// What the providers after this one say (computed on demand; set by
+    /// [`TypeProviders::call`], `mixed` before).
+    pub next: &'s dyn Fn() -> LazyType,
 }
+
+/// The `next` of a [`CallSite`] before the registry sets it.
+pub const NO_NEXT: &dyn Fn() -> LazyType = &LazyType::mixed;
 
 impl CallSite<'_> {
     /// The class named by the first argument, else by the first named
@@ -194,11 +211,13 @@ pub struct TypeProviders {
 }
 
 impl Default for TypeProviders {
-    /// The core and the PHPUnit provider.
+    /// `.phpstorm.meta.php` ([`MetaProvider`], first: its fallback is what
+    /// the others say), PHPUnit and the core.
     fn default() -> Self {
         let mut providers = Self::empty();
         providers.register(CORE_ORDER, Arc::new(CoreProvider));
         providers.register(CORE_ORDER - 10, Arc::new(PhpUnitProvider));
+        providers.register(CORE_ORDER - 20, Arc::new(MetaProvider));
         providers
     }
 }
@@ -233,9 +252,21 @@ impl TypeProviders {
         self.providers.iter().map(|(_, provider)| provider.as_ref()).find(|provider| provider.key() == key)
     }
 
-    /// The first local answer for a call; `mixed` when none.
+    /// The first local answer for a call; `mixed` when none. Each provider
+    /// sees what the ones after it say as [`CallSite::next`].
     pub fn call(&self, site: &CallSite<'_>) -> LazyType {
-        self.providers.iter().find_map(|(_, provider)| provider.call(site)).unwrap_or_else(LazyType::mixed)
+        self.call_from(0, site)
+    }
+
+    fn call_from(&self, start: usize, site: &CallSite<'_>) -> LazyType {
+        for (i, (_, provider)) in self.providers.iter().enumerate().skip(start) {
+            let next = || self.call_from(i + 1, site);
+            let local = CallSite { next: &next, ..*site };
+            if let Some(answer) = provider.call(&local) {
+                return answer;
+            }
+        }
+        LazyType::mixed()
     }
 
     /// The first local answer for an untyped property.

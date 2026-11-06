@@ -1,8 +1,12 @@
 ---
 source: crates/ide-php/src/summary/tests.rs
+assertion_line: 638
 expression: golden
 ---
 == .phpstorm.meta.php
+meta override \App\Container::make() arg 0: map(['books' => 'App\Repository\BookRepository', 'library' => 'App\Library', '' => '@'])
+meta override \App\Support\Collection::first() arg 0: type(0)
+meta expectedArguments \App\Container::make() #0: 'books', 'library'
 == bin/library.php
 == src/Container.php
 class App\Container final @13:12-13:21 [13:0-49:1]

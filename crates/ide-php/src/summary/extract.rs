@@ -645,6 +645,9 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
     }
 
     fn walk_in_function_call(&self, node: &'ast FunctionCall<'arena>, cx: &mut Extractor<'f>) {
+        let mut meta = std::mem::take(&mut cx.summary.meta);
+        crate::meta::directive(&cx.scope, node, &|span| cx.source(span), &mut meta);
+        cx.summary.meta = meta;
         if !is_define(node.function) {
             return;
         }

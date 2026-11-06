@@ -43,12 +43,13 @@ use std::fmt;
 use ide_core::Range;
 use serde::{Deserialize, Serialize};
 
+use crate::meta::MetaDirectives;
 use crate::names::RelativeClass;
 use crate::syntax::ParsedFile;
 use crate::types::LazyType;
 
 /// Bump whenever a type in this module changes shape.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,6 +72,8 @@ pub struct FileSummary {
     pub functions: Vec<FunctionDecl>,
     /// `const` statements and `define('NAME', …)` calls.
     pub constants: Vec<ConstantDecl>,
+    /// `.phpstorm.meta.php` directives (in the `PHPSTORM_META` namespace).
+    pub meta: MetaDirectives,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

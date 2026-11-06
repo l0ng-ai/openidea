@@ -34,6 +34,9 @@
 //!   a background worker that keeps the indexes up to date with the layout
 //!   and watcher batches, dumb-mode and readiness events, and open
 //!   documents overriding the disk.
+//! - [`meta`]: `.phpstorm.meta.php` directives ([`meta::PhpStormMeta`]):
+//!   return-type overrides and exit points applied through a type provider,
+//!   expected argument and return values for completion.
 //! - [`navigate`]: document symbols, fuzzy workspace symbols and goto
 //!   definition of class-like, function and constant names.
 //! - [`types`]: the type model ([`types::Type`]): parsing from native hints
@@ -44,6 +47,7 @@
 
 pub mod engine;
 pub mod index;
+pub mod meta;
 pub mod names;
 pub mod navigate;
 pub mod probe;

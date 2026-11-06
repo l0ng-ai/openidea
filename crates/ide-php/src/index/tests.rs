@@ -329,3 +329,18 @@ fn path_keys_use_one_separator() {
         assert_eq!(path_key(Path::new(r"C:\p\src\User.php")), "C:/p/src/User.php");
     }
 }
+
+#[test]
+fn meta_files_are_listed() {
+    const META: &str = "<?php\nnamespace PHPSTORM_META;\nexitPoint(\\App\\halt());\n";
+    let p = Project::new(&[("Model.php", MODEL), ("meta.php", META)]);
+    let index = PhpIndex::open(&p.cache()).unwrap();
+    index.sync(&p.files(), &token()).unwrap();
+    assert_eq!(index.meta_files().unwrap(), [p.path("meta.php")]);
+
+    // Removing the directives drops the file from the list.
+    p.write("meta.php", "<?php\nnamespace PHPSTORM_META;\n");
+    p.bump_mtime("meta.php", 10);
+    index.sync(&p.files(), &token()).unwrap();
+    assert!(index.meta_files().unwrap().is_empty());
+}

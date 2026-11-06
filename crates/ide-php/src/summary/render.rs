@@ -12,6 +12,7 @@ use super::{
     ClassLike, ConstantKind, DocBlock, DocTemplate, DocType, FileSummary, Loc, Param, Property, PropertyAccess,
     TraitRule, TypeHint, Variance, Visibility,
 };
+use crate::meta::{MetaDirectives, MetaValue, OverrideKind};
 use crate::types::LazyType;
 
 pub(super) fn render(summary: &FileSummary) -> String {
@@ -54,7 +55,36 @@ pub(super) fn render(summary: &FileSummary) -> String {
         doc(&mut out, "  ", &constant.doc);
         lazy(&mut out, "  ", "type", &constant.value_type);
     }
+    meta(&mut out, &summary.meta);
     out
+}
+
+/// `.phpstorm.meta.php` directives, one per line.
+fn meta(out: &mut String, meta: &MetaDirectives) {
+    let values = |values: &[MetaValue]| values.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    for item in &meta.overrides {
+        let kind = match &item.kind {
+            OverrideKind::Map(entries) => {
+                let entries: Vec<String> = entries.iter().map(|(key, value)| format!("'{key}' => '{value}'")).collect();
+                format!("map([{}])", entries.join(", "))
+            }
+            OverrideKind::Type(index) => format!("type({index})"),
+            OverrideKind::ElementType(index) => format!("elementType({index})"),
+        };
+        let _ = writeln!(out, "meta override {} arg {}: {kind}", item.callee, item.arg);
+    }
+    for item in &meta.expected_arguments {
+        let _ = writeln!(out, "meta expectedArguments {} #{}: {}", item.callee, item.index, values(&item.values));
+    }
+    for item in &meta.expected_return_values {
+        let _ = writeln!(out, "meta expectedReturnValues {}: {}", item.callee, values(&item.values));
+    }
+    for (name, set) in &meta.arguments_sets {
+        let _ = writeln!(out, "meta registerArgumentsSet '{name}': {}", values(set));
+    }
+    for callee in &meta.exit_points {
+        let _ = writeln!(out, "meta exitPoint {callee}");
+    }
 }
 
 /// A lazy type, as `~ returns: …` or `~ type: …`.

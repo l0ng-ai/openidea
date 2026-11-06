@@ -357,3 +357,58 @@ fn generic_types_with_the_bundled_stubs() {
     assert_eq!(engine.type_at(doc, Pos::new(3, 22)), book);
     assert_eq!(engine.type_at(doc, Pos::new(4, 37)), book);
 }
+
+#[test]
+fn phpstorm_meta_from_the_project() {
+    use crate::meta::{CallTarget, MetaValue};
+    use crate::types::{Context, Type};
+    let f = Fixture::new();
+    f.write(
+        "src/Factory.php",
+        "<?php\nnamespace App;\nclass Clock {}\nclass Factory { public function make(string $id): object { return new \\stdClass(); } }\n",
+    );
+    let meta = f.write(
+        ".phpstorm.meta.php",
+        r"<?php
+namespace PHPSTORM_META;
+override(\App\Factory::make(0), map(['clock' => \App\Clock::class]));
+expectedArguments(\App\Factory::make(), 0, 'clock');
+",
+    );
+    // A file inside a `.phpstorm.meta.php` directory counts too.
+    f.write(
+        "lib/.phpstorm.meta.php/more.php",
+        r"<?php
+namespace PHPSTORM_META;
+expectedArguments(\App\Factory::make(), 0, 'timer');
+",
+    );
+    let main = f.write("src/main.php", "<?php\n");
+    let engine = f.open();
+    assert_eq!(engine.index().unwrap().meta_files().unwrap().len(), 2);
+
+    let factory = Type::named(r"App\Factory");
+    let target = CallTarget::Method { receiver: &factory, name: "make" };
+    let resolver = engine.resolver();
+    let expected = engine.meta().expected_arguments(target, 0, &resolver, &Context::default());
+    assert_eq!(expected, [MetaValue::String("clock".into()), MetaValue::String("timer".into())]);
+
+    let doc = DocId::next();
+    engine.document_opened(doc, &main, 1, "<?php\nnamespace App;\n(new Factory)->make('clock');\n");
+    assert_eq!(engine.type_at(doc, Pos::new(2, 16)), Some(Type::named(r"App\Clock")));
+
+    // Editing the meta file (an open buffer) takes effect at once.
+    let meta_doc = DocId::next();
+    engine.document_opened(
+        meta_doc,
+        &meta,
+        1,
+        r"<?php
+namespace PHPSTORM_META;
+override(\App\Factory::make(0), map(['clock' => \App\Factory::class]));
+",
+    );
+    assert_eq!(engine.type_at(doc, Pos::new(2, 16)), Some(Type::named(r"App\Factory")));
+    engine.document_closed(meta_doc);
+    assert_eq!(engine.type_at(doc, Pos::new(2, 16)), Some(Type::named(r"App\Clock")));
+}

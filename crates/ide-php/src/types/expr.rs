@@ -44,7 +44,7 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use super::ops::{Op, literal_type, op_type, unary_type};
-use super::provider::{CallKind, CallSite, site_args};
+use super::provider::{CallKind, CallSite, NO_NEXT, site_args};
 use super::resolve::{CallArg, declared_params};
 use super::{Context, LazyType, Relative, Resolver, Shape, ShapeField, ShapeKey, Signature, SignatureParam, Type};
 use crate::names::{FileNames, NameKind, NameScope, Resolution};
@@ -640,7 +640,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                             .unwrap_or(Type::Mixed)
                     };
                     let Some(fqn) = resolved.resolution.candidates().next() else { return core() };
-                    self.provided(CallKind::Function, fqn, None, &call.argument_list, &core, &context)
+                    self.provided(CallKind::Function, fqn, None, &call.argument_list, &core, frames)
                 }
                 callee => {
                     let callable = self.expr(callee, frames);
@@ -653,7 +653,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                     let name = lossy(name.value);
                     let args = || self.call_args(&call.argument_list, frames);
                     let core = || self.resolver.method_call(&receiver, &name, &args, &context);
-                    self.provided(CallKind::Method, &name, Some(&receiver), &call.argument_list, &core, &context)
+                    self.provided(CallKind::Method, &name, Some(&receiver), &call.argument_list, &core, frames)
                 }
                 _ => Type::Mixed,
             },
@@ -664,8 +664,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                     let name = lossy(name.value);
                     let args = || self.call_args(&call.argument_list, frames);
                     let core = || self.resolver.method_call(&object, &name, &args, &context);
-                    let ty =
-                        self.provided(CallKind::Method, &name, Some(&object), &call.argument_list, &core, &context);
+                    let ty = self.provided(CallKind::Method, &name, Some(&object), &call.argument_list, &core, frames);
                     if receiver.is_nullable() { ty.nullable() } else { ty }
                 }
                 _ => Type::Mixed,
@@ -676,7 +675,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                     let name = lossy(name.value);
                     let args = || self.call_args(&call.argument_list, frames);
                     let core = || self.resolver.method_call(&class, &name, &args, &context);
-                    self.provided(CallKind::StaticMethod, &name, Some(&class), &call.argument_list, &core, &context)
+                    self.provided(CallKind::StaticMethod, &name, Some(&class), &call.argument_list, &core, frames)
                 }
                 _ => Type::Mixed,
             },
@@ -692,12 +691,23 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         receiver: Option<&Type>,
         arguments: &'a ArgumentList<'a>,
         core: &dyn Fn() -> Type,
-        context: &Context,
+        frames: &[Frame<'a>],
     ) -> Type {
+        let context = &self.context(frames);
         let receiver = receiver.map(|receiver| LazyType::Known(receiver.clone()));
         let args = site_args(self.scope(arguments.span().start.offset), arguments);
         let core = || LazyType::Known(core());
-        let site = CallSite { kind, name, receiver: receiver.as_ref(), args: &args, core: &core };
+        let arg_types = || self.call_args(arguments, frames).into_iter().map(|arg| LazyType::Known(arg.ty)).collect();
+        let site = CallSite {
+            kind,
+            name,
+            receiver: receiver.as_ref(),
+            args: &args,
+            arg_types: &arg_types,
+            stored: false,
+            core: &core,
+            next: NO_NEXT,
+        };
         match self.resolver.providers().call(&site) {
             LazyType::Known(ty) => ty,
             lazy => self.resolver.resolve(&lazy, context),

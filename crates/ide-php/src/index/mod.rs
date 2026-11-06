@@ -17,6 +17,8 @@
 //!   that extend or implement it directly.
 //! - **namespaces**: lower-case namespace (empty for the global one) → its
 //!   child declarations and child namespaces.
+//! - **meta files**: [`META_FILES_KEY`] → a `PHPSTORM_META` namespace
+//!   [`Decl`] per file with `.phpstorm.meta.php` directives.
 //!
 //! The name tables are multimaps whose values carry the declaring file, so
 //! two files declaring the same name (polyfills, stubs) keep both entries,
@@ -55,10 +57,11 @@ use serde::{Deserialize, Serialize};
 use crate::names::NameKind;
 use crate::summary::{ClassKind, FileSummary, SCHEMA_VERSION};
 use crate::syntax::ParsedFile;
+pub use tables::META_FILES_KEY;
 use tables::*;
 
 /// Bump whenever the tables or their encodings change.
-pub const INDEX_SCHEMA: u32 = 1;
+pub const INDEX_SCHEMA: u32 = 2;
 
 /// The database file inside the cache directory.
 pub const FILE_NAME: &str = "php-index.redb";
@@ -429,6 +432,11 @@ impl PhpIndex {
         let mut namespaces = HashSet::new();
         out.retain(|d| d.kind != DeclKind::Namespace || namespaces.insert(d.fqn.to_ascii_lowercase()));
         Ok(out)
+    }
+
+    /// The files with `.phpstorm.meta.php` directives, sorted.
+    pub fn meta_files(&self) -> IdeResult<Vec<PathBuf>> {
+        Ok(self.multimap(META_FILES, META_FILES_KEY)?.iter().map(Decl::path).collect())
     }
 
     fn multimap(&self, def: MultiDef, key: &str) -> IdeResult<Vec<Decl>> {
