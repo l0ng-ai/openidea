@@ -840,7 +840,10 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
     const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
     await revealItemInDir(paths.length === 1 ? paths[0]! : paths);
   } catch (e) {
-    fail("Cannot reveal in Finder", e);
+    // Same names as contextMenu.revealLabel (kept local: contextMenu imports
+    // this module, so importing it back would be a cycle).
+    const desktop = usePlatform.getState().os;
+    fail(`Cannot reveal in ${desktop === "windows" ? "Explorer" : desktop === "linux" ? "Files" : "Finder"}`, e);
   }
 }
 
