@@ -193,6 +193,7 @@ fn anchor_of(members: &[String]) -> Option<String> {
 }
 
 /// Whether `label`'s group is in fullscreen, in its anchor's Space.
+#[cfg(target_os = "macos")]
 pub fn in_fullscreen(app: &AppHandle, label: &str) -> bool {
     app.state::<WindowsState>().groups.lock().group(label).is_some_and(|group| anchor_of(&group.members).is_some())
 }
