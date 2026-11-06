@@ -250,8 +250,10 @@ html {
 
   /* metrics (theme JSON at 100%) */
   --h-titlebar: 40px;
+  --titlebar-tool-button: 30px;
   /* tool window stripe button, icons only */
   --stripe-icon-button: 28px;
+  --stripe-outer-padding: 4px;
   --h-header: 40px;
   --h-tabbar: 38px;
   --h-tab: 28px;
