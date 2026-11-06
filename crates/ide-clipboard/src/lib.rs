@@ -433,8 +433,10 @@ mod tests {
     #[test]
     fn the_text_flavor_is_the_file_names() {
         assert_eq!(names_text(&paths(&["C:/work/project/a.txt", "C:/work/project/sub"]), "\r\n"), "a.txt\r\nsub");
-        // A root has no file name; its whole path is the text then.
-        assert_eq!(names_text(&paths(&["C:/"]), "\n"), "C:/");
+        // A path with no file name (the filesystem root) keeps its whole path.
+        let root = PathBuf::from("/");
+        assert!(root.file_name().is_none());
+        assert_eq!(names_text(std::slice::from_ref(&root), "\n"), root.to_string_lossy());
     }
 
     #[test]
