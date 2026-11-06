@@ -21,7 +21,17 @@ import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } 
 import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
 import { pasteRows } from "./EnvDialog";
-import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
+import {
+  CURRENT_FILE,
+  prepareLaunch,
+  resetRuns,
+  selectConfig,
+  sessionsOf,
+  setBeforeLaunchRunner,
+  startCompound,
+  startRun,
+  useRun,
+} from "./store";
 import {
   BUILTIN_TYPES,
   blankTemplate,
@@ -584,6 +594,18 @@ describe("before launch tasks", () => {
     expect(await runBeforeLaunch(cfg("x", { beforeLaunch: [{ kind: "run", target: "x" }] }), ["x"])).toBe(false);
     dispose();
     disposeBuild();
+  });
+
+  it("forwards the tool-window visibility choice to the before launch runner", async () => {
+    const runner = vi.fn(async () => true);
+    setBeforeLaunchRunner(runner);
+    try {
+      const app = cfg("app", { beforeLaunch: [{ kind: "run", target: "other" }] });
+      expect(await prepareLaunch(app, [], false)).toBe(true);
+      expect(runner).toHaveBeenCalledWith(app, ["app"], false);
+    } finally {
+      setBeforeLaunchRunner(null);
+    }
   });
 });
 

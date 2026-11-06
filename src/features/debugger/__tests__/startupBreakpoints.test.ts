@@ -39,6 +39,14 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+it.each([true, false])("shows the Debug tool window only for a foreground start (%s)", async (foreground) => {
+  const show = vi.fn();
+  provideToolWindowService({ show } as unknown as ToolWindowService);
+  await startSession(config("launch"), { show: foreground });
+  if (foreground) expect(show).toHaveBeenCalledWith("debug");
+  else expect(show).not.toHaveBeenCalled();
+});
+
 it.each(["launch", "attach"])("awaits every file before %s can send configurationDone", async (request) => {
   const completed: string[] = [];
   const release: Array<() => void> = [];

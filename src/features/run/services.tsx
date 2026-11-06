@@ -31,6 +31,7 @@ import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import {
   configRemoved,
+  debugSession,
   loadConfigs,
   persistTemporary,
   rerunConfig,
@@ -352,7 +353,7 @@ function showOutput(s: RunSession) {
 /** Runs (or reruns, in its tab) a configuration; the output stays in Services instead of opening Run. */
 function run(r: Resolved) {
   const debug = serviceDebugger(r.session);
-  if (debug) debug.rerun?.();
+  if (debug) (debug.rerunInPlace ?? debug.rerun)?.();
   else if (r.session?.run) {
     const s = r.session.run;
     void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
@@ -361,8 +362,8 @@ function run(r: Resolved) {
 
 function debug(r: Resolved) {
   const session = serviceDebugger(r.session);
-  if (session) session.rerun?.();
-  else if (r.config) void executeAction("run.debugConfig", r.config);
+  if (session) (session.rerunInPlace ?? session.rerun)?.();
+  else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false });
 }
 
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
@@ -461,12 +462,13 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   if (r.session?.run) {
     const execution = r.session;
     const d = serviceDebugger(execution);
+    const rerun = d ? (d.rerunInPlace ?? d.rerun) : undefined;
     return (
       <SessionPanel
         key={execution.run!.id}
         session={execution.run!}
-        onRerun={d ? d.rerun : undefined}
-        onDebug={d ? d.rerun : undefined}
+        onRerun={rerun}
+        onDebug={d ? rerun : () => debugSession(execution.run!.id, { show: false })}
         onStop={d ? () => void stopServiceSessions([execution]) : undefined}
       />
     );

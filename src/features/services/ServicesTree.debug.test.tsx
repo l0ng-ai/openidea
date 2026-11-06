@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { registerActions } from "@/platform/actions";
 import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { validateSettings } from "@/features/settings/model/schema";
@@ -99,6 +100,68 @@ it("shows debug output/state, pins actions, and does not rebuild the tree for st
   expect(within(screen.getByRole("tree")).getByText("Suspended")).toBeTruthy();
   fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
   expect(d.stop).toHaveBeenCalledOnce();
+});
+
+it("debugs a service in place without switching to the Debug tool window", async () => {
+  const start = vi.fn();
+  const disposeAction = registerActions([
+    { id: "run.debugConfig", title: "Debug Configuration", run: ({ arg }) => start(arg) },
+  ]);
+  try {
+    render(<ServicesTreeView />);
+    select();
+    fireEvent.click(toolbar().getByRole("button", { name: "Debug" }));
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ config, show: false }));
+  } finally {
+    disposeAction();
+  }
+});
+
+it("reruns a debug service in place from the Services panel", () => {
+  const d = summary(1, { rerun: vi.fn(), rerunInPlace: vi.fn() });
+  useDebugRunSessions.setState({ serviceSessions: [d] });
+  render(<ServicesTreeView />);
+  select();
+  fireEvent.click(toolbar().getByRole("button", { name: "Rerun" }));
+  expect(d.rerunInPlace).toHaveBeenCalledOnce();
+  expect(d.rerun).not.toHaveBeenCalled();
+});
+
+it("starts a debug session in place from a run service's detail toolbar", async () => {
+  const start = vi.fn();
+  const disposeAction = registerActions([
+    { id: "run.debugConfig", title: "Debug Configuration", run: ({ arg }) => start(arg) },
+  ]);
+  const c = { ...config, kind: "shell", command: "echo", debugAdapter: "java-debug" };
+  const s = await startRun(c);
+  expect(s).not.toBeNull();
+  useRun.setState({ configs: [c], sessions: [{ ...s!, config: c, status: "running" as const }] });
+  try {
+    render(<ServicesTreeView />);
+    select();
+    const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
+    fireEvent.click(actions.getByRole("button", { name: "Debug" }));
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ config: c, show: false }));
+  } finally {
+    disposeAction();
+  }
+});
+
+it("reruns an attached debugger in place from a run service's detail toolbar", async () => {
+  const c = { ...config, kind: "shell", command: "echo", debugAdapter: null };
+  const s = await startRun(c);
+  expect(s).not.toBeNull();
+  const active = { ...s!, config, status: "running" as const, runId: 7 };
+  runtime(s!.id)!.console.append({ kind: "stdout", text: "Maven application log\n" });
+  useRun.setState({ configs: [config], sessions: [active] });
+  const d = summary(1, { processId: 7, rerun: vi.fn(), rerunInPlace: vi.fn() });
+  useDebugRunSessions.setState({ serviceSessions: [d] });
+  render(<ServicesTreeView />);
+  select();
+  const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
+  fireEvent.click(actions.getByRole("button", { name: "Debug" }));
+  expect(d.rerunInPlace).toHaveBeenCalledOnce();
+  expect(d.rerun).not.toHaveBeenCalled();
 });
 
 it("keeps the other parallel instance alive and then displays it", async () => {
