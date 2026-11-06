@@ -1461,6 +1461,8 @@ export interface DebugServiceSession {
   status: "starting" | "running" | "paused" | "terminated";
   processId: number | null;
   rerun: (() => void) | null;
+  /** Rerun without opening the Debug tool window (the Services panel debugs in place). */
+  rerunInPlace?: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
 }
