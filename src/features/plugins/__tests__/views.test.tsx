@@ -201,9 +201,9 @@ describe("plugin menus", () => {
         {
           pluginId: "k",
           point: "menus",
-          key: "view.item.context/res/logs",
+          key: "viewItem.context/res/logs",
           decl: {
-            menu: "view.item.context",
+            menu: "viewItem.context",
             view: "res",
             command: "logs",
             when: "viewItemKind == pod",

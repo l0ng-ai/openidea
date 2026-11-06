@@ -63,7 +63,7 @@ import styles from "./PluginsPage.module.css";
 // --- menus ------------------------------------------------------------------------
 
 interface MenuDecl {
-  menu: "editor.context" | "projectView.context" | "editorTab.context" | "view.item.context" | "tools";
+  menu: "editor.context" | "projectView.context" | "editorTab.context" | "viewItem.context" | "tools";
   view?: string | null;
   command: string;
   when?: string | null;
@@ -96,7 +96,7 @@ export function pluginViewItemMenuItems(pluginId: string, view: string, key: str
   const ctx = { ...getContext(), viewItem: key, viewItemKind: key.split(":")[0] };
   const out: MenuItem[] = [];
   for (const { pluginId: owner, decl } of contextItems.values()) {
-    if (owner !== pluginId || decl.menu !== "view.item.context" || decl.view !== view) continue;
+    if (owner !== pluginId || decl.menu !== "viewItem.context" || decl.view !== view) continue;
     if (!evaluateWhen(decl.when ?? undefined, ctx)) continue;
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;

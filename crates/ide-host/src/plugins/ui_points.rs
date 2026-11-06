@@ -5,10 +5,10 @@
 //!
 //! ```toml
 //! [[contributes.menus]]
-//! menu = "editor.context"          # projectView.context, editorTab.context, tools, view.item.context
+//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context
 //! command = "check"
 //! when = "editorLang == java"
-//! # view = "<view id>"             # required for (only allowed on) view.item.context
+//! # view = "<view id>"             # required for (only allowed on) viewItem.context
 //!
 //! [[contributes.keymaps]]
 //! command = "check"
@@ -64,7 +64,7 @@ pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 
-const VIEW_ITEM_MENU: &str = "view.item.context";
+const VIEW_ITEM_MENU: &str = "viewItem.context";
 const MENU_IDS: [&str; 5] = ["editor.context", "projectView.context", "editorTab.context", "tools", VIEW_ITEM_MENU];
 const MAX_TITLE: usize = 256;
 const MAX_SETTINGS: usize = 200;
@@ -130,7 +130,7 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
             };
             if view.get("web").is_some() {
                 return Err(format!(
-                    "contributes.menus: view {v:?} is a web view (view.item.context needs a tree or list the plugin renders)"
+                    "contributes.menus: view {v:?} is a web view (viewItem.context needs a tree or list the plugin renders)"
                 ));
             }
             format!("{VIEW_ITEM_MENU}/{v}/{}", d.command)
