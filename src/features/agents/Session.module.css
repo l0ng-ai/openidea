@@ -301,11 +301,41 @@
   opacity: 0;
 }
 .markdown :global(pre:hover) .codeCopy,
+.markdown :global([data-mermaid]:hover) .codeCopy,
 .codeCopy:focus-visible {
   opacity: 1;
 }
 .codeCopy:hover {
   background: var(--bg-hover);
+}
+/* Mermaid diagrams: the source stays until the diagram is drawn (and next to an
+   error), and the Copy button lives on the block — the drawn diagram hides the
+   code block that would otherwise carry it. */
+.markdown :global([data-mermaid]) {
+  position: relative;
+  margin: 0 0 8px;
+}
+.markdown :global([data-mermaid] > pre) {
+  margin: 0;
+}
+.markdown :global([data-mermaid-state="ok"] > pre) {
+  display: none;
+}
+.markdown :global(.mermaid-output) {
+  overflow: hidden;
+  text-align: center;
+}
+.markdown :global([data-mermaid-state="error"] > .mermaid-output) {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  text-align: left;
+  white-space: pre-wrap;
 }
 .fileLink {
   color: var(--link);
