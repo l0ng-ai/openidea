@@ -26,7 +26,8 @@ import {
 import { iconResolver, selectedIconTheme, useIconThemes } from "../iconThemes";
 import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
-import { usePluginStatusItems } from "../runtimeUi";
+import { handleRuntimeEvent, usePluginStatusItems } from "../runtimeUi";
+import { evaluateWhen } from "@/platform/context";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
@@ -1040,5 +1041,79 @@ describe("catalog helpers", () => {
     expect(enabled()).toEqual({ a: false, b: false, d: true });
     expect(await setAllInstalledEnabled(true)).toBe(2);
     expect(enabled()).toEqual({ a: true, b: true, d: true });
+  });
+});
+
+describe("plugin context keys", () => {
+  it("applies plugin context keys from the backend", async () => {
+    let keys = [
+      { pluginId: "p", key: "isEntity", value: "true" },
+      { pluginId: "p", key: "kind", value: '"pod"' },
+    ];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      contextKeys: async () => keys,
+    });
+    const changed = {
+      type: "contextChanged",
+      pluginId: "p",
+      key: "isEntity",
+      value: "true",
+    } as const;
+    expect(handleRuntimeEvent(changed)).toBe(true);
+    await waitFor(() => expect(evaluateWhen("plugin.p.isEntity")).toBe(true));
+    expect(evaluateWhen("plugin.p.kind == pod")).toBe(true);
+    keys = keys.slice(1);
+    handleRuntimeEvent({ ...changed, value: null });
+    await waitFor(() => expect(evaluateWhen("plugin.p.isEntity")).toBe(false));
+    expect(evaluateWhen("plugin.p.kind == pod")).toBe(true);
+    keys = [];
+    handleRuntimeEvent({ ...changed, key: "kind", value: null });
+    await waitFor(() => expect(evaluateWhen("plugin.p.kind == pod")).toBe(false));
+  });
+
+  it("coalesces a burst of changes into one follow-up fetch", async () => {
+    type Keys = { pluginId: string; key: string; value: string }[];
+    const pending: ((k: Keys) => void)[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      contextKeys: () => new Promise<Keys>((resolve) => pending.push(resolve)),
+    });
+    const event = { type: "contextChanged", pluginId: "p", key: "a", value: "true" } as const;
+    for (let i = 0; i < 5; i++) handleRuntimeEvent(event);
+    expect(pending).toHaveLength(1);
+    pending[0]!([{ pluginId: "q", key: "b", value: "true" }]);
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!([
+      { pluginId: "p", key: "a", value: "true" },
+      { pluginId: "q", key: "b", value: "true" },
+    ]);
+    await waitFor(() => expect(evaluateWhen("plugin.p.a")).toBe(true));
+    expect(evaluateWhen("plugin.q.b")).toBe(true);
+    await Promise.resolve();
+    expect(pending).toHaveLength(2);
+
+    handleRuntimeEvent({ ...event, value: null });
+    expect(pending).toHaveLength(3);
+    pending[2]!([{ pluginId: "q", key: "b", value: "true" }]);
+    await waitFor(() => expect(evaluateWhen("plugin.p.a")).toBe(false));
+    expect(evaluateWhen("plugin.q.b")).toBe(true);
+  });
+
+  it("fetches again after a failed fetch when changes arrived meanwhile", async () => {
+    type Keys = { pluginId: string; key: string; value: string }[];
+    const pending: { resolve: (k: Keys) => void; reject: () => void }[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      contextKeys: () =>
+        new Promise<Keys>((resolve, reject) => pending.push({ resolve, reject: () => reject(new Error("x")) })),
+    });
+    const event = { type: "contextChanged", pluginId: "p", key: "f", value: "true" } as const;
+    handleRuntimeEvent(event);
+    handleRuntimeEvent(event);
+    pending[0]!.reject();
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.resolve([{ pluginId: "p", key: "f", value: "true" }]);
+    await waitFor(() => expect(evaluateWhen("plugin.p.f")).toBe(true));
   });
 });

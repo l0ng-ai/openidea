@@ -14,6 +14,7 @@ import type {
   InstallPreview,
   IntellijThemeSource,
   MarketPlugin,
+  PluginContextKey,
   PluginEditor,
   PluginEvent,
   PluginInfo,
@@ -60,6 +61,7 @@ export interface PluginsBackend {
   eventKinds(): Promise<EventKind[]>;
   /** Plugin status bar items (later changes arrive as `statusItemChanged`). */
   statusItems(): Promise<PluginStatusItem[]>;
+  contextKeys(): Promise<PluginContextKey[]>;
   cancelTask(taskId: string): Promise<void>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
@@ -156,6 +158,7 @@ export const tauriPluginsBackend: PluginsBackend = {
   },
   eventKinds: () => commands.pluginEventKinds(),
   statusItems: () => commands.pluginStatusItems(),
+  contextKeys: () => commands.pluginContextKeys(),
   cancelTask: async (taskId) => {
     await commands.pluginCancelTask(taskId);
   },
@@ -496,6 +499,7 @@ export function createMemoryPluginsBackend(
     postEvents: async () => {},
     eventKinds: async () => [],
     statusItems: async () => [],
+    contextKeys: async () => [],
     cancelTask: async () => {},
     market: async () => [],
     marketUrl: async () => marketUrl,
