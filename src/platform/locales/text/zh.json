@@ -4714,6 +4714,7 @@
   "Upgrading": "正在升级",
   "Uninstalling": "正在卸载",
   "Contents are identical": "内容完全一致",
+  "Contents differ only in line separators": "内容仅在行分隔符上有差异",
   "working copy": "工作副本",
   "No commits match the filters": "没有与筛选条件匹配的提交",
   "No commits yet": "还没有提交",
