@@ -863,6 +863,13 @@ export const commands = {
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
+	/**
+	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
+	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
+	 *  Linux sets the urgency hint). A focused window is never flashed: the user is already
+	 *  looking at it, and re-flashing it would steal attention for nothing.
+	 */
+	windowFlashTaskbar: (flash: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_flash_taskbar", { flash })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
 	/**

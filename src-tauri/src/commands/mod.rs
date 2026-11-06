@@ -424,6 +424,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_open_deployment,
         window::window_cycle,
         window::window_toggle_fullscreen,
+        window::window_flash_taskbar,
         window::window_set_titlebar_height,
         window_drag::window_start_drag,
         window::window_take_launch,
