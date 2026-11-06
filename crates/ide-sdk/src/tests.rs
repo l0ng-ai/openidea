@@ -721,6 +721,50 @@ fn venv_creation_ignores_modules_in_the_working_directory() {
 }
 
 #[test]
+fn env_tools_are_reported_missing_before_they_run() {
+    // Without uv / Poetry on PATH the error names the install, not a spawn failure.
+    let dir = tempfile::tempdir().unwrap();
+    let location = dir.path().join(".venv");
+    let base = dir.path().join("python");
+    fn none(_: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+    let uv = crate::python::create_venv_with(
+        crate::python::VenvTool::Uv,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(uv.message.contains("uv is not installed"), "{}", uv.message);
+    let poetry = crate::python::create_venv_with(
+        crate::python::VenvTool::Poetry,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(poetry.message.contains("Poetry is not installed"), "{}", poetry.message);
+    // An existing environment is refused before any tool runs.
+    std::fs::create_dir_all(&location).unwrap();
+    std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
+    let again = crate::python::create_venv_with(
+        crate::python::VenvTool::Uv,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(again.message.contains("already contains a virtual environment"), "{}", again.message);
+}
+
+#[test]
 fn neutral_dir_is_fresh_and_empty() {
     let a = crate::python::neutral_dir().unwrap();
     let b = crate::python::neutral_dir().unwrap();
