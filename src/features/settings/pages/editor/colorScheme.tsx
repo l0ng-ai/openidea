@@ -47,6 +47,17 @@ function attrSegs(attr: AttributeDef): string[] {
   return [...attr.path, ...parts.slice(0, -1)];
 }
 
+/** Tree keys of every ancestor group of an attribute, from the scope root down. */
+function ancestorKeys(attr: AttributeDef): string[] {
+  const keys: string[] = [];
+  let key = "";
+  for (const seg of attrSegs(attr)) {
+    key += `/${seg}`;
+    keys.push(key);
+  }
+  return keys;
+}
+
 function buildTree(): Node[] {
   const roots: Node[] = [];
   for (const attr of ATTRIBUTES) {
@@ -83,6 +94,16 @@ function treeIds(nodes: readonly Node[], out = new Set<string>()): Set<string> {
   }
   return out;
 }
+
+/** Settings sub-page that owns an attribute, for preview clicks that cross pages. */
+function attrPageId(attr: AttributeDef): string {
+  return `editor.colorScheme.${
+    attr.path[0] === "Language Defaults" ? "language-defaults" : attr.path[0]!.toLowerCase()
+  }`;
+}
+
+/** Preview click on another sub-page: the target page selects and reveals the attribute. */
+let crossPageReveal: string | null = null;
 
 /**
  * CSS custom properties of a scheme plus pending overrides (for the preview); with
@@ -302,9 +323,8 @@ const SAMPLES: Record<string, CodeSample> = {
     ],
   },
   Python: {
-    caret: 7,
+    caret: 4,
     code: [
-      [["# Python", "lineComment"]],
       [
         ["import ", "keyword"],
         ["os", "pyStaticSymbol"],
@@ -314,96 +334,243 @@ const SAMPLES: Record<string, CodeSample> = {
         [" = ", "operator"],
         ["3", "number"],
       ],
+      [],
       [
-        ["counter", "pyGlobalVariable"],
-        [" = ", "operator"],
-        ["0", "number"],
+        ["@decorator", "pyDecorator"],
+        ["(", "pyParentheses"],
+        ["param", "pyKeywordArg"],
+        ["=", "operator"],
+        ["1", "number"],
+        [")", "pyParentheses"],
       ],
-      [["@dataclass", "pyDecorator"]],
       [
-        ["class ", "keyword"],
-        ["Greeter", "className"],
-        ["[", "pyBrackets"],
-        ["T", "pyTypeParameter"],
-        ["]", "pyBrackets"],
+        ["def ", "keyword"],
+        ["f", "functionDeclaration"],
+        ["(", "pyParentheses"],
+        ["x", "parameter"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [['    """', "pyDocstring"]],
+      [["    Syntax Highlighting Demo", "pyDocstring"]],
+      [["    @param x Parameter", "pyDocstring"]],
+      [],
+      [["    语义高亮显示:", "pyDocstring"]],
+      [["    生成的光谱为局部变量和形参选择颜色:", "pyDocstring"]],
+      [
+        ["     ", "pyDocstring"],
+        ["Color#1 ", "semantic1"],
+        ["SC1.1 SC1.2 SC1.3 SC1.4 ", "semantic1"],
+        ["Color#2 ", "semantic2"],
+        ["SC2.1 SC2.2 SC2.3 SC2.4 ", "semantic2"],
+        ["Color#3", "semantic3"],
+      ],
+      [
+        ["     ", "pyDocstring"],
+        ["Color#3 ", "semantic3"],
+        ["SC3.1 SC3.2 SC3.3 SC3.4 ", "semantic3"],
+        ["Color#4 ", "semantic4"],
+        ["SC4.1 SC4.2 SC4.3 SC4.4 ", "semantic4"],
+        ["Color#5", "semantic5"],
+      ],
+      [['    """', "pyDocstring"]],
+      [],
+      [
+        ["    def ", "keyword"],
+        ["nested_func", "pyNestedFunction"],
+        ["(", "pyParentheses"],
+        ["y", "parameter"],
+        [")", "pyParentheses"],
         [":", "operator"],
       ],
       [
-        ["    flag", "pyClassAttribute"],
-        [": ", "text"],
-        ["bool", "pyAnnotation"],
-        [" = ", "operator"],
-        ["True", "pyBuiltin"],
+        ["        ", "text"],
+        ["print", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        ["y", "identifier"],
+        [" + ", "operator"],
+        ["1", "number"],
+        [")", "pyParentheses"],
       ],
+      [],
+      [
+        ["    s", "pyLocalVariable"],
+        [" = ", "operator"],
+        ["(", "pyParentheses"],
+        ['"Test"', "string"],
+        [", ", "operator"],
+        ["2", "number"],
+        ["+", "operator"],
+        ["3", "number"],
+        [", ", "operator"],
+        ["{", "pyBraces"],
+        ["'a'", "string"],
+        [": ", "operator"],
+        ["'b'", "string"],
+        ["}", "pyBraces"],
+        [",", "operator"],
+      ],
+      [
+        ["         ", "text"],
+        ["f", "pyFString"],
+        ["'{", "pyFString"],
+        ["x", "parameter"],
+        ["!s:", "pyFormat"],
+        ["{", "pyFormat"],
+        ['"^10"', "string"],
+        ["}", "pyFormat"],
+        ["}'", "pyFString"],
+        [", ", "operator"],
+        ["f", "pyFString"],
+        ['"{', "pyFString"],
+        ["1", "number"],
+        [":", "pyFString"],
+        ["01d", "pyFormat"],
+        ['}"', "pyFString"],
+        [")", "pyParentheses"],
+        ["  ", "text"],
+        ["# Comment", "lineComment"],
+      ],
+      [
+        ["    ", "text"],
+        ["f", "functionCall"],
+        ["(", "pyParentheses"],
+        ["s", "pyLocalVariable"],
+        ["[", "pyBrackets"],
+        ["0", "number"],
+        ["]", "pyBrackets"],
+        [".", "operator"],
+        ["lower", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        [")", "pyParentheses"],
+        [")", "pyParentheses"],
+      ],
+      [
+        ["    ", "text"],
+        ["nested_func", "functionCall"],
+        ["(", "pyParentheses"],
+        ["42", "number"],
+        [")", "pyParentheses"],
+      ],
+      [],
+      [
+        ["class ", "keyword"],
+        ["Foo", "className"],
+        [":", "operator"],
+      ],
+      [
+        ["    tags", "pyClassAttribute"],
+        [": ", "text"],
+        ["List", "pyAnnotation"],
+        ["[", "pyBrackets"],
+        ["str", "pyAnnotation"],
+        ["]", "pyBrackets"],
+      ],
+      [],
       [
         ["    def ", "keyword"],
         ["__init__", "pyPredefinedDefinition"],
         ["(", "pyParentheses"],
         ["self", "pySelf"],
-        [", ", "operator"],
-        ["name", "parameter"],
+        [": ", "text"],
+        ["Foo", "pyAnnotation"],
         [")", "pyParentheses"],
-        [" -> ", "operator"],
-        ["str", "pyAnnotation"],
+        [":", "operator"],
+      ],
+      [
+        ["        byte_string", "pyLocalVariable"],
+        [": ", "text"],
+        ["bytes", "pyAnnotation"],
+        [" = ", "operator"],
+        ["b'newline:", "pyBytes"],
+        ["\\n", "escape"],
+        [" also newline:", "pyBytes"],
+        ["\\x0a", "escape"],
+        ["'", "pyBytes"],
+      ],
+      [
+        ["        text_string", "pyLocalVariable"],
+        [" = ", "operator"],
+        ['u"Cyrillic Я is ', "string"],
+        ["\\u042f", "escape"],
+        [". Oops: ", "string"],
+        ["\\u042g", "weakWarning"],
+        ['"', "string"],
+      ],
+      [
+        ["        ", "text"],
+        ["self", "pySelf"],
+        [".", "operator"],
+        ["make_sense", "pyMethodCall"],
+        ["(", "pyParentheses"],
+        ["whatever", "pyKeywordArg"],
+        ["=", "operator"],
+        ["1", "number"],
+        [")", "pyParentheses"],
+      ],
+      [],
+      [["@property", "pyDecorator"]],
+      [
+        ["    def ", "keyword"],
+        ["alias", "pyProperty"],
+        ["(", "pyParentheses"],
+        ["self", "pySelf"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [
+        ["        return ", "keyword"],
+        ["self", "pySelf"],
+        [".", "operator"],
+        ["sense", "pyInstanceAttribute"],
+      ],
+      [],
+      [
+        ["    def ", "keyword"],
+        ["make_sense", "functionDeclaration"],
+        ["[", "pyBrackets"],
+        ["T", "pyTypeParameter"],
+        ["]", "pyBrackets"],
+        ["(", "pyParentheses"],
+        ["self", "pySelf"],
+        [", ", "operator"],
+        ["whatever", "parameter"],
+        [": ", "text"],
+        ["T", "pyAnnotation"],
+        [")", "pyParentheses"],
         [":", "operator"],
       ],
       [
         ["        ", "text"],
         ["self", "pySelf"],
         [".", "operator"],
-        ["greeting", "pyInstanceAttribute"],
+        ["sense", "pyInstanceAttribute"],
         [" = ", "operator"],
-        ["name", "parameter"],
+        ["whatever", "parameter"],
       ],
-      [["@property", "pyDecorator"]],
+      [],
       [
-        ["    def ", "keyword"],
-        ["greeting", "pyProperty"],
-        ["(", "pyParentheses"],
-        ["self", "pySelf"],
-        [")", "pyParentheses"],
-        [":", "operator"],
-      ],
-      [
-        ["        return ", "keyword"],
-        ["f", "pyFString"],
-        ['"hi {', "pyFString"],
-        ["name", "pyLocalVariable"],
-        [":>10", "pyFormat"],
-        ['}"', "pyFString"],
-      ],
-      [
-        ["    def ", "keyword"],
-        ["_wrap", "pyNestedFunction"],
-        ["(", "pyParentheses"],
-        [")", "pyParentheses"],
-        [":", "operator"],
-      ],
-      [
-        ["        data", "pyLocalVariable"],
+        ["x", "pyGlobalVariable"],
         [" = ", "operator"],
-        ["b", "pyBytes"],
-        ['"\\x00"', "pyBytes"],
+        ["len", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        ['"abc"', "string"],
+        [")", "pyParentheses"],
       ],
       [
-        ["        return ", "keyword"],
-        ["sys", "pyStaticSymbol"],
-        [".", "operator"],
-        ["maxsize", "pyPredefinedUsage"],
+        ["type ", "keyword"],
+        ["my_int", "pyGlobalVariable"],
+        [" = ", "operator"],
+        ["int", "pyBuiltin"],
       ],
       [
         ["print", "pyPredefinedUsage"],
         ["(", "pyParentheses"],
-        ["greeter", "pyLocalVariable"],
+        ["f", "functionCall"],
         [".", "operator"],
-        ["greeting", "pyMethodCall"],
-        [", ", "operator"],
-        ["end", "pyKeywordArg"],
-        ["=", "operator"],
-        ['""', "string"],
+        ["__doc__", "pyInstanceAttribute"],
         [")", "pyParentheses"],
       ],
-      [['    """Sample docstring."""', "pyDocstring"]],
     ],
   },
   Markdown: {
@@ -815,11 +982,16 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   const customs = useMemo(() => customSchemes(rawCustoms), [rawCustoms]);
   const [report, setReport] = useState("");
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<string>("keyword");
   // One scope per page: the scope's own name is the page, not a tree level.
   const roots = useMemo(() => pageTree(scopes)[0]?.children ?? [], [scopes]);
   const ids = useMemo(() => treeIds(roots), [roots]);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // A preview click on another sub-page starts this page on that attribute.
+  const crossReveal =
+    crossPageReveal && ids.has(crossPageReveal) ? ATTRIBUTES.find((x) => x.id === crossPageReveal) : undefined;
+  const [selected, setSelected] = useState<string>(() => crossReveal?.id ?? "keyword");
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    crossReveal ? new Set(ancestorKeys(crossReveal)) : new Set(),
+  );
   const [expandedFor, setExpandedFor] = useState(scopes);
   if (expandedFor !== scopes) {
     // Scope pages share this component; restart expansion on page switch.
@@ -837,19 +1009,19 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
     setSelected(attrId);
     setExpanded((prev) => {
       const next = new Set(prev);
-      let key = "";
-      for (const seg of attrSegs(a)) {
-        key += `/${seg}`;
-        next.add(key);
-      }
+      for (const key of ancestorKeys(a)) next.add(key);
       return next;
     });
     pendingReveal.current = attrId;
   };
   useEffect(() => {
-    if (!pendingReveal.current) return;
-    treeRef.current?.reveal(pendingReveal.current);
-    pendingReveal.current = null;
+    if (pendingReveal.current) {
+      treeRef.current?.reveal(pendingReveal.current);
+      pendingReveal.current = null;
+    } else if (crossReveal) {
+      treeRef.current?.reveal(crossReveal.id);
+    }
+    crossPageReveal = null;
   });
   const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
@@ -1081,13 +1253,24 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
                 <span className={styles.previewGutter}>{i + 1}</span>
                 <code>
                   {line.map(([text, attrId], j) => {
-                    const inPage = attrId !== undefined && ids.has(attrId);
+                    const attr = attrId !== undefined ? A(attrId) : undefined;
+                    const inPage = attr !== undefined && ids.has(attrId!);
                     return (
                       <span
                         key={j}
-                        style={tokenStyle(attrId ? A(attrId) : undefined)}
-                        className={inPage ? styles.clickable : undefined}
-                        onClick={inPage && attrId ? () => reveal(attrId) : undefined}
+                        style={tokenStyle(attr)}
+                        className={attr ? styles.clickable : undefined}
+                        onClick={
+                          attr
+                            ? () => {
+                                if (inPage) reveal(attrId!);
+                                else {
+                                  crossPageReveal = attrId!;
+                                  selectPage(attrPageId(attr));
+                                }
+                              }
+                            : undefined
+                        }
                       >
                         {text}
                       </span>
