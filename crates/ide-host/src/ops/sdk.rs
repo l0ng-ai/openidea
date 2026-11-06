@@ -71,6 +71,19 @@ pub fn sdk_php_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core
     Ok(ide_sdk::apply::setting_path(&project.root, &settings.languages.php.interpreter).map(Into::into))
 }
 
+/// The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
+/// project root).
+pub async fn sdk_php_xdebug(
+    host: &Host,
+    window: &str,
+    php: PathBuf,
+    cwd: Option<PathBuf>,
+) -> IdeResult<ide_sdk::php::PhpXdebug> {
+    host.require_trust(window)?;
+    let cwd = cwd.or_else(|| host.project(window).ok().map(|p| p.root.clone()));
+    tokio::task::spawn_blocking(move || ide_sdk::php::xdebug(&php, cwd.as_deref())).await.map_err(join_err)?
+}
+
 /// The PHP language level of the project `path` belongs to (a workspace member, by path, as
 /// the language server configuration picks it).
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
@@ -245,6 +258,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
+    d.add("sdk_php_xdebug", |c| async move { sdk_php_xdebug(&c.host, &c.window, c.arg("php")?, c.arg("cwd")?).await });
     d.add(
         "sdk_php_language_level",
         |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?).await },

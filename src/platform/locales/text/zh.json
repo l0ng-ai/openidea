@@ -6382,5 +6382,8 @@
   "Update source": "更新源",
   "Where updates are downloaded from. If it can't be reached, the other source is tried.": "从哪里下载更新。无法连接时会改用另一个源。",
   "CNB (China mirror)": "CNB（国内镜像）",
-  "Remote connection cancelled": "远程连接已取消"
+  "Remote connection cancelled": "远程连接已取消",
+  "Xdebug is not loaded in PHP {version}": "PHP {version} 未加载 Xdebug",
+  "{php} runs without Xdebug, so breakpoints are skipped. Install Xdebug 3 for this PHP or choose another PHP interpreter.": "{php} 运行时没有 Xdebug，断点会被跳过。请为此 PHP 安装 Xdebug 3，或选择其他 PHP 解释器。",
+  "Open PHP Settings": "打开 PHP 设置"
 }
