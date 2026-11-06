@@ -77,15 +77,11 @@ describe("Typo inspection", () => {
     expect(diagnosticMarks(lint)).toEqual([]);
 
     view.dispatch({ selection: { anchor: 5 } });
-    expect(spellingIntentions(view).map((i) => i.label)).toEqual([
-      "Typo: Change to…",
-      "Save 'mesage' to project-level dictionary",
-      "Save 'mesage' to application-level dictionary",
-    ]);
-    // IDEA's → menu: the dictionaries and the inspection's controls.
+    expect(spellingIntentions(view).map((i) => i.label)).toEqual(["Typo: Change to…", "Save 'mesage' to dictionary"]);
+    // IDEA's → menu: each dictionary level and the inspection's controls.
     expect(spellingIntentions(view)[0]!.submenu?.map((i) => ("label" in i ? i.label : "-"))).toEqual([
-      "Save 'mesage' to project-level dictionary",
-      "Save 'mesage' to application-level dictionary",
+      "Save to project-level dictionary",
+      "Save to application-level dictionary",
       "-",
       "Edit inspection profile setting",
       "Disable inspection",

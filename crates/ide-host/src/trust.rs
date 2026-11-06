@@ -74,6 +74,21 @@ impl TrustStore {
         Ok(())
     }
 
+    pub fn add_location(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        if !root.is_dir() {
+            return Err(IdeError::invalid("trusted location must be an existing directory"));
+        }
+        let mut state = self.state.lock();
+        let mut next = state.clone()?;
+        if !next.locations.contains(&root) {
+            next.locations.push(root);
+            persist(&self.file, &next)?;
+            *state = Ok(next);
+        }
+        Ok(())
+    }
+
     pub fn remove_location(&self, path: &Path) -> IdeResult<()> {
         let mut state = self.state.lock();
         let mut next = state.clone()?;

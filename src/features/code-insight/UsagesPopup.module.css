@@ -15,6 +15,16 @@
   font-size: var(--fs-small);
   color: var(--fg-muted);
 }
+.scope {
+  flex: none;
+}
+
+.searching {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
 .title {
   flex: 1;
   min-width: 0;
