@@ -1248,6 +1248,8 @@ mod tests {
                 kind: None,
                 preferred: false,
                 edits: vec![(path.into(), Vec::new())],
+                operations: Vec::new(),
+                open: None,
                 data: None,
             };
             assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
