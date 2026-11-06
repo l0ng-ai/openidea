@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Editor › Color Scheme: scheme chooser, the IDEA attribute tree (General,
  * Language Defaults, languages) with a foreground / background / bold /
  * italic / effects editor, and a live preview. Edits are staged in
@@ -107,7 +107,11 @@ function previewVars(
 
 /** Text styled like an attribute in the preview. */
 function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
-  if (!attr?.token) return attr?.fg ? { color: `var(${attr.fg})` } : {};
+  if (!attr?.token)
+    return {
+      ...(attr?.fg ? { color: `var(${attr.fg})` } : null),
+      ...(attr?.bg ? { backgroundColor: `var(${attr.bg})` } : null),
+    };
   if (attr.italicOnly)
     return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
   const t = attr.token;
@@ -125,40 +129,482 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
 const A = (id: string) => ATTRIBUTES.find((a) => a.id === id);
 
 type Seg = [string, string?];
-const SAMPLE: Seg[][] = [
-  [["# OpenIDEA color scheme preview", "lineComment"]],
-  [["import ", "keyword"], ["os"]],
-  [["@dataclass", "pyDecorator"]],
-  [["class ", "keyword"], ["Greeter", "className"], [":"]],
-  [['    """Says hello."""', "pyDocstring"]],
-  [
-    ["    MAX_RETRIES", "constant"],
-    [" = ", "operator"],
-    ["3", "number"],
-  ],
-  [["    static_field", "staticSymbol"], [" = 3"]],
-  [["    python_field", "pyStaticSymbol"], [" = 3"]],
-  [
-    ["    def ", "keyword"],
-    ["greet", "functionDeclaration"],
-    ["("],
-    ["self", "pySelf"],
-    [", "],
-    ["name", "parameter"],
-    ["):"],
-  ],
-  [
-    ["        text", "identifier"],
-    [" = ", "operator"],
-    ['"Hello, ', "string"],
-    ["\\n", "escape"],
-    ['"', "string"],
-    [" + name"],
-  ],
-  [["        "], ["print", "pyBuiltin"], ["(text, "], ["end", "pyKeywordArg"], ["="], ['""', "string"], [")"]],
-  [["        return ", "keyword"], ["len", "functionCall"], ["(text)"]],
-  [["# TODO: localize", "todo"]],
-];
+interface CodeSample {
+  code: Seg[][];
+  /** Line shown with the caret-row background. */
+  caret?: number;
+}
+
+/** One sample per page, each covering as much of that scope's token set as possible. */
+const SAMPLES: Record<string, CodeSample> = {
+  General: {
+    code: [
+      [["# General: text, gutter, hints and matches", "lineComment"]],
+      [
+        ["TODO", "todo"],
+        [" check the wave decorations below", "text"],
+      ],
+      [
+        ["erroneous", "error"],
+        ["   ", "text"],
+        ["suspicious", "warning"],
+        ["   ", "text"],
+        ["could be const", "weakWarning"],
+        ["   ", "text"],
+        ["legacyCall", "unused"],
+      ],
+      [
+        ["bad\u203dchar", "invalid"],
+        ["   \u00b7   ", "whitespaces"],
+        ["\u2192 indent guides \u2192", "indentGuide"],
+      ],
+      [
+        ["const", "inlay"],
+        [" name", "text"],
+        [" = ", "operator"],
+        ["value", "text"],
+        ["   ", "text"],
+        ["\u2026", "folded"],
+        [" folded region ", "folded"],
+        ["\u2026", "folded"],
+      ],
+      [
+        ["search hit ", "text"],
+        ["token", "searchResult"],
+        [" and current ", "text"],
+        ["token", "searchResultCurrent"],
+      ],
+      [
+        ["matched ", "text"],
+        ["()", "matchedBrace"],
+        ["   identifier under caret ", "text"],
+        ["name", "identifierUnderCaret"],
+        [" / ", "text"],
+        ["name", "identifierUnderCaretWrite"],
+      ],
+    ],
+  },
+  Debugger: {
+    code: [
+      [["# Debugger: inline values and breakpoint rows", "lineComment"]],
+      [
+        ["len", "inlineValue"],
+        [" = ", "text"],
+        ["3", "text"],
+        ["    ", "text"],
+        ["name", "inlineValue"],
+        [" = ", "text"],
+        ['"world"', "string"],
+      ],
+      [
+        ["return", "keyword"],
+        [" len(text)", "text"],
+      ],
+    ],
+    caret: 2,
+  },
+  "Language Defaults": {
+    code: [
+      [["# Language Defaults", "lineComment"]],
+      [["@Entity", "metadata"]],
+      [
+        ["class ", "keyword"],
+        ["Session", "className"],
+        [" implements ", "keyword"],
+        ["Runnable", "className"],
+        [" {", "operator"],
+      ],
+      [
+        ["  /**", "docComment"],
+        [" doc comment ", "docComment"],
+        ["@param", "docComment"],
+        [" id", "docComment"],
+        [" */", "docComment"],
+      ],
+      [
+        ["  static", "staticSymbol"],
+        [" MAX", "constant"],
+        [" = ", "operator"],
+        ["0xff", "number"],
+        [";", "operator"],
+      ],
+      [
+        ["  field", "field"],
+        [" = ", "operator"],
+        ['"a', "string"],
+        ["\\n", "escape"],
+        ["\\t", "escape"],
+        ["z", "string"],
+        ['\\"', "escape"],
+        ['"', "string"],
+        [";", "operator"],
+      ],
+      [
+        ["  def ", "keyword"],
+        ["greet", "functionDeclaration"],
+        ["(", "operator"],
+        ["name", "parameter"],
+        [", ", "operator"],
+        ["GLOBAL", "globalVariable"],
+        ["):", "operator"],
+      ],
+      [
+        ["    ", "text"],
+        ["greet", "functionCall"],
+        ["(", "operator"],
+        ["predefined", "predefined"],
+        [", ", "operator"],
+        ["local", "identifier"],
+        [")", "operator"],
+      ],
+      [
+        ["    x", "identifier"],
+        [" = ", "operator"],
+        ["[", "bracket1"],
+        ["(", "bracket2"],
+        ["{", "bracket3"],
+        ["1", "number"],
+        ["}", "bracket3"],
+        [")", "bracket2"],
+        ["]", "bracket1"],
+        [";", "operator"],
+      ],
+      [
+        ["    s1", "semantic1"],
+        [" s2", "semantic2"],
+        [" s3", "semantic3"],
+        [" s4", "semantic4"],
+        [" s5", "semantic5"],
+      ],
+      [
+        ["    <", "operator"],
+        ["div", "markupTag"],
+        [" ", "text"],
+        ["class", "markupAttribute"],
+        ["=", "operator"],
+        ['"row"', "string"],
+        [">", "operator"],
+        ["\u2026", "text"],
+        ["</", "operator"],
+        ["div", "markupTag"],
+        [">", "operator"],
+      ],
+      [["}", "operator"]],
+    ],
+  },
+  Python: {
+    caret: 7,
+    code: [
+      [["# Python", "lineComment"]],
+      [
+        ["import ", "keyword"],
+        ["os", "pyStaticSymbol"],
+      ],
+      [
+        ["MAX_RETRIES", "pyConstant"],
+        [" = ", "operator"],
+        ["3", "number"],
+      ],
+      [
+        ["counter", "pyGlobalVariable"],
+        [" = ", "operator"],
+        ["0", "number"],
+      ],
+      [["@dataclass", "pyDecorator"]],
+      [
+        ["class ", "keyword"],
+        ["Greeter", "className"],
+        ["[", "pyBrackets"],
+        ["T", "pyTypeParameter"],
+        ["]", "pyBrackets"],
+        [":", "operator"],
+      ],
+      [
+        ["    flag", "pyClassAttribute"],
+        [": ", "text"],
+        ["bool", "pyAnnotation"],
+        [" = ", "operator"],
+        ["True", "pyBuiltin"],
+      ],
+      [
+        ["    def ", "keyword"],
+        ["__init__", "pyPredefinedDefinition"],
+        ["(", "pyParentheses"],
+        ["self", "pySelf"],
+        [", ", "operator"],
+        ["name", "parameter"],
+        [")", "pyParentheses"],
+        [" -> ", "operator"],
+        ["str", "pyAnnotation"],
+        [":", "operator"],
+      ],
+      [
+        ["        ", "text"],
+        ["self", "pySelf"],
+        [".", "operator"],
+        ["greeting", "pyInstanceAttribute"],
+        [" = ", "operator"],
+        ["name", "parameter"],
+      ],
+      [["@property", "pyDecorator"]],
+      [
+        ["    def ", "keyword"],
+        ["greeting", "pyProperty"],
+        ["(", "pyParentheses"],
+        ["self", "pySelf"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [
+        ["        return ", "keyword"],
+        ["f", "pyFString"],
+        ['"hi {', "pyFString"],
+        ["name", "pyLocalVariable"],
+        [":>10", "pyFormat"],
+        ['}"', "pyFString"],
+      ],
+      [
+        ["    def ", "keyword"],
+        ["_wrap", "pyNestedFunction"],
+        ["(", "pyParentheses"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [
+        ["        data", "pyLocalVariable"],
+        [" = ", "operator"],
+        ["b", "pyBytes"],
+        ['"\\x00"', "pyBytes"],
+      ],
+      [
+        ["        return ", "keyword"],
+        ["sys", "pyStaticSymbol"],
+        [".", "operator"],
+        ["maxsize", "pyPredefinedUsage"],
+      ],
+      [
+        ["print", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        ["greeter", "pyLocalVariable"],
+        [".", "operator"],
+        ["greeting", "pyMethodCall"],
+        [", ", "operator"],
+        ["end", "pyKeywordArg"],
+        ["=", "operator"],
+        ['""', "string"],
+        [")", "pyParentheses"],
+      ],
+      [['    """Sample docstring."""', "pyDocstring"]],
+    ],
+  },
+  Markdown: {
+    code: [
+      [["# Heading level one", "mdHeading"]],
+      [["## Heading level two", "mdHeading"]],
+      [
+        ["Inline ", "text"],
+        ["`code`", "mdCode"],
+        [" and ", "text"],
+        ["[link](https://example.com)", "mdLink"],
+        [" text", "text"],
+      ],
+      [
+        ["<", "operator"],
+        ["em", "markupTag"],
+        [">", "operator"],
+        ["emphasis", "text"],
+        ["</", "operator"],
+        ["em", "markupTag"],
+        [">", "operator"],
+      ],
+      [
+        ["- ", "operator"],
+        ["list item ", "text"],
+        ["`x`", "mdCode"],
+      ],
+    ],
+  },
+  RegExp: {
+    code: [
+      [["# Regular expressions", "lineComment"]],
+      [
+        ["^[a-z]", "regexp"],
+        ["+", "operator"],
+        ["(\\d{2,3})", "regexp"],
+        ["?", "operator"],
+        ["$", "regexp"],
+      ],
+      [
+        ["(?P<year>", "regexp"],
+        ["\\d{4}", "regexp"],
+        [")", "regexp"],
+        ["-", "operator"],
+        ["(\\d{2})", "regexp"],
+      ],
+      [
+        ["\\bword\\b", "regexp"],
+        [" | ", "operator"],
+        ["[[:alpha:]]", "regexp"],
+      ],
+    ],
+  },
+  Java: {
+    code: [
+      [["// Java", "java.lineComment"]],
+      [["@Override", "java.metadata"]],
+      [
+        ["public class ", "java.keyword"],
+        ["Greeter", "java.className"],
+        [" {", "java.operator"],
+      ],
+      [
+        ["    private static final ", "java.keyword"],
+        ["int", "java.keyword"],
+        [" MAX", "java.constant"],
+        [" = ", "java.operator"],
+        ["3", "java.number"],
+        [";", "java.separator"],
+      ],
+      [
+        ["    private ", "java.keyword"],
+        ["String", "java.className"],
+        [" name", "java.field"],
+        [" = ", "java.operator"],
+        ['"a', "java.string"],
+        ["\\n", "java.escape"],
+        ['"', "java.string"],
+        [";", "java.separator"],
+      ],
+      [["    /** doc comment */", "java.docComment"]],
+      [
+        ["    public ", "java.keyword"],
+        ["void", "java.keyword"],
+        ["greet", "java.functionDeclaration"],
+        ["(", "java.operator"],
+        ["String", "java.className"],
+        [" name", "java.parameter"],
+        [")", "java.operator"],
+        [" {", "java.operator"],
+      ],
+      [
+        ["        ", "text"],
+        ["System", "java.predefined"],
+        [".", "java.operator"],
+        ["out", "java.field"],
+        [".", "java.operator"],
+        ["println", "java.functionCall"],
+        ["(", "java.operator"],
+        ["name", "java.identifier"],
+        [")", "java.operator"],
+        [";", "java.separator"],
+      ],
+      [
+        ["        ", "text"],
+        ["Greeter", "java.className"],
+        [".", "java.operator"],
+        ["MAX", "java.staticSymbol"],
+      ],
+      [["    }", "java.operator"]],
+      [["}", "java.operator"]],
+    ],
+  },
+  Kotlin: {
+    code: [
+      [["// Kotlin", "kotlin.lineComment"]],
+      [["@JvmStatic", "kotlin.metadata"]],
+      [
+        ["class ", "kotlin.keyword"],
+        ["Greeter", "kotlin.className"],
+        ["(", "kotlin.operator"],
+        ["val", "kotlin.keyword"],
+        [" name", "kotlin.parameter"],
+        [": ", "text"],
+        ["String", "kotlin.className"],
+        [")", "kotlin.operator"],
+        [" {", "kotlin.operator"],
+      ],
+      [
+        ["    companion ", "kotlin.keyword"],
+        ["object", "kotlin.keyword"],
+        [" {", "kotlin.operator"],
+        [" const ", "kotlin.keyword"],
+        ["val", "kotlin.keyword"],
+        [" MAX", "kotlin.constant"],
+        [" = ", "kotlin.operator"],
+        ["3", "kotlin.number"],
+        [" }", "kotlin.operator"],
+      ],
+      [
+        ["    fun ", "kotlin.keyword"],
+        ["greet", "kotlin.functionDeclaration"],
+        ["(", "kotlin.operator"],
+        ["name", "kotlin.parameter"],
+        [": ", "text"],
+        ["String", "kotlin.className"],
+        ["): ", "text"],
+        ["String", "kotlin.className"],
+        [" = ", "kotlin.operator"],
+        ['"a', "kotlin.string"],
+        ["\\n", "kotlin.escape"],
+        ['"', "kotlin.string"],
+      ],
+      [
+        ["    ", "text"],
+        ["println", "kotlin.predefined"],
+        ["(", "kotlin.operator"],
+        ["name", "kotlin.identifier"],
+        [")", "kotlin.operator"],
+      ],
+      [["}", "kotlin.operator"]],
+    ],
+  },
+  PHP: {
+    code: [
+      [["<?php", "php.scriptTag"]],
+      [
+        ["#[", "php.metadata"],
+        ["Attr", "php.metadata"],
+        ["]", "php.metadata"],
+      ],
+      [
+        ["class ", "php.keyword"],
+        ["Greeter", "php.className"],
+        [" {", "php.brackets"],
+      ],
+      [
+        ["    private static ", "php.keyword"],
+        ["int", "php.className"],
+        [" $max", "php.staticField"],
+        [" = ", "php.operator"],
+        ["3", "php.number"],
+        [";", "php.separator"],
+      ],
+      [
+        ["    public function ", "php.keyword"],
+        ["greet", "php.functionDeclaration"],
+        ["(", "php.brackets"],
+        ["string", "php.className"],
+        [" $name", "php.parameter"],
+        ["): ", "text"],
+        ["string", "php.className"],
+        [" {", "php.brackets"],
+      ],
+      [
+        ["        ", "text"],
+        ["return", "php.keyword"],
+        [" ", "text"],
+        ['"hi', "php.string"],
+        ["\\n", "php.escape"],
+        ['"', "php.string"],
+        ["  ", "text"],
+        ["$name", "php.identifier"],
+        [";", "php.separator"],
+      ],
+      [["    }", "php.brackets"]],
+      [["}", "php.brackets"]],
+    ],
+  },
+};
 
 function AttributeEditor({
   attr,
@@ -313,6 +759,21 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   }
   // Language pages have their own attributes; keep the editor on a row of this page.
   if (roots.length && !ids.has(selected)) setSelected(firstLeafId(roots));
+  /** Preview click: select the attribute and expand its ancestors. */
+  const reveal = (attrId: string) => {
+    const a = ATTRIBUTES.find((x) => x.id === attrId);
+    if (!a) return;
+    setSelected(attrId);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      let key = "";
+      for (const seg of a.path) {
+        key += `/${seg}`;
+        next.add(key);
+      }
+      return next;
+    });
+  };
   const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
   const attr = ATTRIBUTES.find((a) => a.id === selected);
@@ -335,6 +796,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
     setOverrides(next);
   };
   const schemes = listSchemes(customs);
+  const sample = SAMPLES[scopes[0] ?? ""] ?? SAMPLES["Language Defaults"]!;
   const schemeName = schemes.find((s) => s.id === id)?.name ?? id;
   const options: SelectOption[] = [
     { value: "theme-default", label: "Theme default" },
@@ -525,20 +987,23 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
             )}
           </div>
           <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
-            {SAMPLE.map((line, i) => (
-              <div key={i} className={`${styles.previewLine} ${i === 6 ? styles.previewCaretLine : ""}`}>
+            {sample.code.map((line, i) => (
+              <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
                 <span className={styles.previewGutter}>{i + 1}</span>
                 <code>
-                  {line.map(([text, attrId], j) => (
-                    <span
-                      key={j}
-                      style={tokenStyle(attrId ? A(attrId) : undefined)}
-                      className={attrId ? styles.clickable : undefined}
-                      onClick={attrId ? () => setSelected(attrId) : undefined}
-                    >
-                      {text}
-                    </span>
-                  ))}
+                  {line.map(([text, attrId], j) => {
+                    const inPage = attrId !== undefined && ids.has(attrId);
+                    return (
+                      <span
+                        key={j}
+                        style={tokenStyle(attrId ? A(attrId) : undefined)}
+                        className={inPage ? styles.clickable : undefined}
+                        onClick={inPage && attrId ? () => reveal(attrId) : undefined}
+                      >
+                        {text}
+                      </span>
+                    );
+                  })}
                 </code>
               </div>
             ))}
