@@ -26,8 +26,8 @@ import {
 import { iconResolver, selectedIconTheme, useIconThemes } from "../iconThemes";
 import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
-import { handleRuntimeEvent, usePluginStatusItems } from "../runtimeUi";
-import { evaluateWhen } from "@/platform/context";
+import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
+import { evaluateWhen, getContext } from "@/platform/context";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
@@ -1070,6 +1070,24 @@ describe("plugin context keys", () => {
     keys = [];
     handleRuntimeEvent({ ...changed, key: "kind", value: null });
     await waitFor(() => expect(evaluateWhen("plugin.p.kind == pod")).toBe(false));
+    expect("plugin.p.kind" in getContext()).toBe(false);
+    expect("plugin.p.isEntity" in getContext()).toBe(false);
+  });
+
+  it("refreshes the keys when another backend publishes a project with the same root", async () => {
+    let keys = [{ pluginId: "p", key: "backend", value: '"a"' }];
+    setPluginsBackend({ ...createMemoryPluginsBackend(), contextKeys: async () => keys });
+    const project = { root: "/p", trusted: true } as never;
+    act(() => useProject.setState({ project }));
+    const stop = startRuntimeUi();
+    try {
+      keys = [{ pluginId: "p", key: "backend", value: '"b"' }];
+      act(() => useProject.setState({ project: { root: "/p", trusted: true } as never }));
+      await waitFor(() => expect(evaluateWhen("plugin.p.backend == b")).toBe(true));
+    } finally {
+      stop();
+      act(() => useProject.setState({ project: null }));
+    }
   });
 
   it("coalesces a burst of changes into one follow-up fetch", async () => {

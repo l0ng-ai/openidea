@@ -8,7 +8,7 @@ import { create } from "zustand";
 import type { EventKind, PluginContextKey, PluginEvent, StatusItem, WorkbenchEvent } from "@/bindings";
 import { onEditorEvent } from "@/editor/api";
 import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
-import { setContext, type ContextValue } from "@/platform/context";
+import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
@@ -144,13 +144,15 @@ function refreshStatusItems() {
 }
 
 function applyPluginContext(pluginId: string, key: string, value: string | null) {
+  const name = `plugin.${pluginId}.${key}`;
   let parsed: ContextValue;
   try {
     parsed = value === null ? undefined : JSON.parse(value);
   } catch {
     parsed = undefined;
   }
-  setContext(`plugin.${pluginId}.${key}`, parsed);
+  if (parsed === undefined) clearContext(name);
+  else setContext(name, parsed);
 }
 
 const appliedContextKeys = new Map<string, Set<string>>();
@@ -334,11 +336,12 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
 /**
  * The backend refuses the event kinds and status items until this window's
  * project is open and trusted (`authorize_command`), but startup asks before
- * that: ask again when it changes.
+ * that: ask again when it changes. Any new project object counts, even with the same
+ * root and trust: connecting another backend publishes one and changes where calls go.
  */
 function refreshOnProjectChange(): () => void {
   return useProject.subscribe((s, prev) => {
-    if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
+    if (s.project === prev.project) return;
     refreshEventKinds();
     refreshStatusItems();
     refreshContextKeys();
