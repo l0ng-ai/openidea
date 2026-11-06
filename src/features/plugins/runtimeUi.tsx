@@ -69,8 +69,10 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   if (!entry) return null;
   const { pluginId, item } = entry;
   const command = item.command;
-  const tooltip = item.tooltip ? t(item.tooltip) : undefined;
-  const text = t(item.text);
+  // Declared items were translated with their declaration.
+  const translate = running ? t : (text: string) => text;
+  const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
+  const text = translate(item.text);
   return (
     <BarButton
       tooltip={tooltip}

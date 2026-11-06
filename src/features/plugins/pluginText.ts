@@ -56,35 +56,41 @@ export async function loadPluginCatalogs(ui: readonly UiContribution[], locale: 
     usePluginCatalogs.setState({ catalogs });
 }
 
+/** `map[key]` when `map` has the key itself, not through its prototype (`constructor`, `__proto__`). */
+function ownEntry<T>(map: Record<string, T> | undefined, key: string): T | undefined {
+  return map && Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
 export function translatorOf(catalogs: Record<string, Catalog>, pluginId: string): PluginTranslate {
-  const catalog = catalogs[pluginId];
-  return catalog ? (text) => catalog[text] ?? text : (text) => text;
+  const catalog = ownEntry(catalogs, pluginId);
+  return catalog ? (text) => ownEntry(catalog, text) ?? text : (text) => text;
 }
 
 /** `text` in the active language, for the plugin's own text; re-renders when the catalog changes. */
 export function usePluginT(pluginId: string): PluginTranslate {
-  const catalog = usePluginCatalogs((s) => s.catalogs[pluginId]);
-  return useCallback((text) => catalog?.[text] ?? text, [catalog]);
+  const catalog = usePluginCatalogs((s) => ownEntry(s.catalogs, pluginId));
+  return useCallback((text) => (catalog ? (ownEntry(catalog, text) ?? text) : text), [catalog]);
 }
 
-const TEXT_KEYS = ["title", "category", "label", "text", "tooltip", "description", "name"];
-const TRANSLATED_POINTS = new Set([
-  "commands",
-  "views",
-  "customEditors",
-  "statusBar",
-  "settings",
-  "fileTemplates",
-  "iconThemes",
-  "themes",
-  "secrets",
-]);
+/** The keys of each point's declaration that are shown text; ids, names of secrets and option values are not. */
+const TEXT_KEYS: Record<string, readonly string[]> = {
+  commands: ["title", "category"],
+  views: ["title"],
+  customEditors: ["title"],
+  statusBar: ["text", "tooltip"],
+  settings: ["title"],
+  fileTemplates: ["name"],
+  iconThemes: ["label"],
+  themes: ["name"],
+  secrets: ["label", "description"],
+};
 
-function localizeDecl(decl: unknown, t: PluginTranslate): unknown {
+function localizeDecl(decl: unknown, keys: readonly string[], t: PluginTranslate): unknown {
   if (!decl || typeof decl !== "object") return decl;
   const out: Record<string, unknown> = { ...(decl as Record<string, unknown>) };
-  for (const key of TEXT_KEYS) if (typeof out[key] === "string") out[key] = t(out[key]);
-  if (Array.isArray(out.properties)) out.properties = out.properties.map((p) => localizeDecl(p, t));
+  for (const key of keys) if (typeof out[key] === "string") out[key] = t(out[key]);
+  if (Array.isArray(out.properties))
+    out.properties = out.properties.map((p) => localizeDecl(p, ["title", "description"], t));
   return out;
 }
 
@@ -94,11 +100,25 @@ export function localizeContributions(
   catalogs: Record<string, Catalog>,
 ): readonly UiContribution[] {
   if (Object.keys(catalogs).length === 0) return items;
-  return items.map((item) =>
-    TRANSLATED_POINTS.has(item.point) && catalogs[item.pluginId]
-      ? { ...item, decl: localizeDecl(item.decl, translatorOf(catalogs, item.pluginId)) }
-      : item,
+  const localized = items.map((item) => {
+    const keys = TEXT_KEYS[item.point];
+    return keys && ownEntry(catalogs, item.pluginId)
+      ? { ...item, decl: localizeDecl(item.decl, keys, translatorOf(catalogs, item.pluginId)) }
+      : item;
+  });
+  // A menu entry is labelled with its command's title, which changes with the language but not with the entry.
+  const titles = new Map(
+    localized
+      .filter((c) => c.point === "commands")
+      .map((c) => [`${c.pluginId}/${(c.decl as { id: string }).id}`, (c.decl as { title: string }).title]),
   );
+  return localized.map((item) => {
+    const title =
+      item.point === "menus" ? titles.get(`${item.pluginId}/${(item.decl as { command: string }).command}`) : undefined;
+    return title !== undefined && ownEntry(catalogs, item.pluginId)
+      ? { ...item, decl: { ...(item.decl as object), commandTitle: title } }
+      : item;
+  });
 }
 
 /** A view with the buttons, labels, columns and messages translated; `html` bodies and cell data are left as they are. */

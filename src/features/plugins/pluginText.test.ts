@@ -47,6 +47,33 @@ describe("localizeContributions", () => {
     expect(out[3]).toBe(items[3]);
   });
 
+  it("keeps the names of secrets and translates their labels", () => {
+    const secret = item("a", "secrets", { id: "k", name: "Refresh", label: "Cancel", description: "Refresh" });
+    expect(localizeContributions([secret], { a: fr })[0]!.decl).toMatchObject({
+      name: "Refresh",
+      label: "Annuler",
+      description: "Actualiser",
+    });
+  });
+
+  it("gives a tools menu entry the translated title of its command", () => {
+    const items = [
+      item("a", "commands", { id: "x", title: "Refresh" }),
+      item("a", "menus", { id: "m", menu: "tools", command: "x" }),
+    ];
+    expect(localizeContributions(items, { a: fr })[1]!.decl).toMatchObject({ commandTitle: "Actualiser" });
+  });
+
+  it("ignores catalog entries inherited from Object.prototype", () => {
+    const items = [item("a", "commands", { id: "x", title: "constructor", category: "__proto__" })];
+    expect(localizeContributions(items, { a: fr })[0]!.decl).toMatchObject({
+      title: "constructor",
+      category: "__proto__",
+    });
+    expect(translatorOf({ a: fr }, "constructor")("Refresh")).toBe("Refresh");
+    expect(translatorOf({ a: fr }, "a")("toString")).toBe("toString");
+  });
+
   it("returns the declarations as they are without a catalog", () => {
     const items = [item("a", "commands", { id: "x", title: "Refresh" })];
     expect(localizeContributions(items, {})).toBe(items);

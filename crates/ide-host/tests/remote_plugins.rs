@@ -164,6 +164,9 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     let kinds = invoke(&peer, "plugin_event_kinds", json!({})).await.unwrap();
     assert!(kinds.as_array().unwrap().contains(&json!("file-saved")), "{kinds}");
 
+    invoke(&peer, "plugin_set_ui_locale", json!({ "tag": "fr" })).await.unwrap();
+    assert_eq!(plugins.host().ui_locale(), "fr");
+
     // Saving a file that exists only on the server: Checkstyle reads that file.
     let java = project.join("src/A.java");
     std::fs::write(&java, "class A {\n\tint x;\n}\n").unwrap();

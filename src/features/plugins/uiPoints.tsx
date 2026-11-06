@@ -67,6 +67,8 @@ interface MenuDecl {
   view?: string | null;
   command: string;
   when?: string | null;
+  /** The command's title in the plugin's language, when it ships one. */
+  commandTitle?: string;
 }
 
 const CONTEXT_MENUS: Record<string, ContextMenuId> = {
@@ -108,7 +110,7 @@ export function pluginViewItemMenuItems(pluginId: string, view: string, key: str
 function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () => void {
   if (decl.menu === "tools") {
     const action = pluginActionId(pluginId, decl.command);
-    const title = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
+    const title = decl.commandTitle ?? getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
     return registerMenuSlotItem("pluginTools", { action, label: title });
   }
   const key = `${++menuSeq}`;

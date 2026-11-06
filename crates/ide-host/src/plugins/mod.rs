@@ -693,6 +693,10 @@ impl PluginHost {
         *self.shared.locale.write() = tag.to_owned();
     }
 
+    pub fn ui_locale(&self) -> String {
+        self.shared.locale.read().clone()
+    }
+
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;

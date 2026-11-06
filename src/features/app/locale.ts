@@ -15,7 +15,9 @@ export function installLocaleSync(): () => void {
     if (value === undefined || value === current) return;
     current = value;
     void setLocale(value).then((locale) => {
-      if (isTauri()) void commands.pluginSetUiLocale(LOCALES[locale].tag).catch(() => {});
+      // A later switch may have superseded this one while its catalog loaded.
+      if (isTauri() && useI18n.getState().locale === locale)
+        void commands.pluginSetUiLocale(LOCALES[locale].tag).catch(() => {});
     });
   };
   const initial = useProject.getState().settings;
