@@ -529,6 +529,30 @@ fn revoking_one_project_stops_only_its_runs() {
     h.pm.stop(theirs.id).unwrap();
 }
 
+/// Quitting the app kills what every project's runs started, forked children included (#1691).
+#[test]
+fn kill_all_stops_every_projects_process_trees() {
+    let h = harness();
+    let other = tempfile::tempdir().unwrap();
+    let (mine, chunks) = start(&h, &cfg("mine", "/bin/sh", &["-c", "sleep 30 & echo $!; wait"]));
+    let grandchild: i32 = wait_for(&chunks, "\n").trim().parse().expect("pid");
+    let theirs =
+        h.pm.start(
+            other.path(),
+            &cfg("theirs", "/bin/sh", &["-c", "sleep 30"]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(|_| {}),
+        )
+        .unwrap();
+    h.pm.kill_all();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while alive(grandchild) || h.pm.list().iter().any(|r| (r.id == mine || r.id == theirs.id) && r.running) {
+        assert!(Instant::now() < deadline, "a run survived kill_all");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 #[ignore = "requires CMake, CTest and a C++ compiler"]
 fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
