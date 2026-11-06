@@ -193,8 +193,10 @@ pub fn compose_container_root(config_json: &str, service: &str, root: &Path) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::path::PathBuf;
 
+    #[cfg(unix)]
     fn config(command: &str, args: &[&str]) -> RunConfig {
         RunConfig {
             id: "app".into(),
@@ -212,6 +214,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn run<'a>(
         target: &'a RunTarget,
         endpoint: &'a BTreeMap<String, String>,
