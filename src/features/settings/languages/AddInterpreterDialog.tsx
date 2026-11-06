@@ -15,6 +15,7 @@ type Mode = "new" | "existing";
 /** Environment types of the left column, in PyCharm's order. */
 const KINDS: { tool: VenvTool; label: string; missing: string }[] = [
   { tool: "venv", label: "Virtualenv Environment", missing: "" },
+  { tool: "conda", label: "Conda Environment", missing: "conda is not installed" },
   { tool: "uv", label: "uv Environment", missing: "uv is not installed" },
   { tool: "poetry", label: "Poetry Environment", missing: "Poetry is not installed" },
 ];
@@ -76,6 +77,7 @@ export function AddInterpreterDialog({
   const canOk = mode === "new" ? !!baseValue && !!location.trim() && !busy : !!existing;
   const note = {
     venv: tx("Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter."),
+    conda: tx("Runs “conda create -p <location>”; the new interpreter becomes the project interpreter."),
     uv: tx("Runs “uv venv <location> --python <base>”; the new interpreter becomes the project interpreter."),
     poetry: tx(
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",

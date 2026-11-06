@@ -64,7 +64,7 @@ describe("Add Python Interpreter", () => {
   it("lists the environment types PyCharm offers", async () => {
     open();
     await waitFor(() => expect(mocks.detect).toHaveBeenCalled());
-    for (const label of ["Virtualenv Environment", "uv Environment", "Poetry Environment"]) {
+    for (const label of ["Virtualenv Environment", "Conda Environment", "uv Environment", "Poetry Environment"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
   });
@@ -86,21 +86,26 @@ describe("Add Python Interpreter", () => {
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("/project/.venv/bin/python"));
   });
 
-  it("passes uv as the tool and Poetry hides the location field", async () => {
+  it("passes each tool and Poetry hides the location field", async () => {
     let finish: (v: unknown) => void = () => {};
     mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));
     open();
     await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "uv Environment" }));
-    fireEvent.click(screen.getByRole("button", { name: "OK" }));
-    expect(mocks.createVenv).toHaveBeenCalledWith(
-      "uv",
-      "/usr/bin/python3",
-      "/project/.venv",
-      expect.anything(),
-      expect.anything(),
-    );
-    await act(async () => finish(ok(VENV)));
+    for (const [label, tool] of [
+      ["uv Environment", "uv"],
+      ["Conda Environment", "conda"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("button", { name: label }));
+      fireEvent.click(screen.getByRole("button", { name: "OK" }));
+      expect(mocks.createVenv).toHaveBeenLastCalledWith(
+        tool,
+        "/usr/bin/python3",
+        "/project/.venv",
+        expect.anything(),
+        expect.anything(),
+      );
+      await act(async () => finish(ok(VENV)));
+    }
     fireEvent.click(screen.getByRole("button", { name: "Poetry Environment" }));
     await waitFor(() => expect(screen.getByLabelText("Location:")).toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "OK" }));

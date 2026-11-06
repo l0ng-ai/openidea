@@ -82,7 +82,7 @@ function streamed<T>(
 }
 
 /** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
-export type VenvTool = "venv" | "uv" | "poetry";
+export type VenvTool = "venv" | "uv" | "poetry" | "conda";
 
 export function createVenv(
   tool: VenvTool,
