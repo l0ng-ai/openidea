@@ -312,6 +312,7 @@ impl AgentManager {
                         f.task.status = AgentStatus::Ready;
                     }
                     f.task.retry = None;
+                    f.task.background.clear();
                     let task = Task::restore(f, shared.clone());
                     task.state.lock().conversation.settle(now_ms());
                     tasks.insert(task.id.clone(), task);
@@ -480,6 +481,7 @@ impl AgentManager {
             capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
             resets_ms: None,
             retry: None,
+            background: Box::default(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -674,6 +676,7 @@ impl AgentManager {
                 queue: Vec::new(),
                 resets_ms: None,
                 retry: None,
+                background: Box::default(),
                 ..s.task.clone()
             };
             TaskFile {
@@ -809,6 +812,21 @@ impl AgentManager {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Stops background task `background` of task `id`.
+    pub async fn stop_background(&self, id: &str, background: &str) -> IdeResult<()> {
+        let task = self.task(id)?;
+        let live = task.live.lock().clone().ok_or_else(|| IdeError::invalid("the agent is not running"))?;
+        if !live.capabilities.background_tasks {
+            return Err(IdeError::invalid("this agent can't stop a background task"));
+        }
+        let _: Value = live
+            .peer
+            .request("_openidea/stop_task", json!({ "sessionId": live.session, "taskId": background }), None)
+            .await
+            .map_err(|error| IdeError::internal(task.describe(error)))?;
         Ok(())
     }
 
@@ -975,18 +993,34 @@ impl Task {
     /// Keeps the agent's background tasks that outlive its turn. Returns whether the last
     /// one just finished, so the idle release starts over from this report.
     fn set_background_tasks(&self, tasks: Vec<Value>) -> bool {
-        let mut s = self.state.lock();
-        if s.background_tasks == tasks {
-            return false;
-        }
-        let emptied = !s.background_tasks.is_empty() && tasks.is_empty();
-        s.background_tasks = tasks;
-        if emptied {
-            // Void a release scheduled while the tasks still ran: it would stop the
-            // agent sooner than the usual delay after this one.
-            self.idle_epoch.fetch_add(1, Ordering::AcqRel);
+        let (emptied, shown) = {
+            let mut state = self.state.lock();
+            if state.background_tasks == tasks {
+                return false;
+            }
+            let emptied = !state.background_tasks.is_empty() && tasks.is_empty();
+            let background = shown_background(&tasks, &state.task.background);
+            let shown = background != *state.task.background;
+            *state.task.background = background;
+            state.background_tasks = tasks;
+            if emptied {
+                // Void a release scheduled while the tasks still ran: it would stop the
+                // agent sooner than the usual delay after this one.
+                self.idle_epoch.fetch_add(1, Ordering::AcqRel);
+            }
+            (emptied, shown)
+        };
+        if shown {
+            self.emit_task();
         }
         emptied
+    }
+
+    fn clear_shown_background(&self) {
+        let cleared = !std::mem::take(&mut self.state.lock().task.background).is_empty();
+        if cleared {
+            self.emit_task();
+        }
     }
 
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
@@ -1140,6 +1174,7 @@ impl Task {
             if let Some(live) = live {
                 tracing::debug!("agent task {}: idle, stopping the agent until the next message", task.id);
                 live.peer.kill();
+                task.clear_shown_background();
             }
         });
     }
@@ -1158,6 +1193,7 @@ impl Task {
         if !gone && let Some(live) = self.live.lock().take() {
             live.peer.kill();
         }
+        self.clear_shown_background();
         match failure.limit {
             Some(resets) => {
                 self.state.lock().task.resets_ms = resets;
@@ -1400,6 +1436,7 @@ impl Task {
             s.session_id = Some(session_id.clone());
             // The (re)started process runs nothing yet: whatever it reports next is all of it.
             s.background_tasks = Vec::new();
+            s.task.background.clear();
         }
         self.persist();
         self.emit_task();
@@ -1676,6 +1713,7 @@ impl Task {
         self.cancel_permissions();
         let live = self.live.lock().take()?;
         live.peer.kill();
+        self.clear_shown_background();
         Some(live.peer)
     }
 }
@@ -1789,6 +1827,19 @@ fn client_info() -> Value {
 }
 
 /// What the agent said it can do, and whether it takes embedded files.
+fn shown_background(tasks: &[Value], known: &[AgentBackgroundTask]) -> Vec<AgentBackgroundTask> {
+    let now = now_ms();
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let id = task.get("task_id")?.as_str()?.to_owned();
+            let started_ms = known.iter().find(|seen| seen.id == id).map_or(now, |seen| seen.started_ms);
+            let text = |key: &str| task.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+            Some(AgentBackgroundTask { id, kind: text("task_type"), description: text("description"), started_ms })
+        })
+        .collect()
+}
+
 fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
     let meta = |p: &str| init.meta(p).and_then(Value::as_bool) == Some(true);
     let capabilities = AgentCapabilities {
@@ -1796,6 +1847,7 @@ fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
         fork: init.session("fork"),
         rollback: meta("/openidea/rollback"),
         steer: meta("/openidea/steer"),
+        background_tasks: meta("/openidea/backgroundTasks"),
     };
     (capabilities, init.prompt("embeddedContext"))
 }

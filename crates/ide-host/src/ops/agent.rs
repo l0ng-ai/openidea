@@ -238,6 +238,11 @@ pub fn cancel(host: &Host, window: &str, task: String, subagent: Option<String>)
     host.project(window)?.agents.cancel(&task, subagent)
 }
 
+/// Stops one of the task's background tasks.
+pub async fn stop_background(host: &Host, window: &str, task: String, background: String) -> IdeResult<()> {
+    host.project(window)?.agents.stop_background(&task, &background).await
+}
+
 /// Answers a permission request; `option: None` cancels it.
 pub fn respond(host: &Host, window: &str, task: String, permission: u32, option: Option<String>) -> IdeResult<()> {
     host.require_trust(window)?;
@@ -297,6 +302,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_rollback", |c| async move { rollback(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await });
     d.add("agent_probe", |c| async move { probe(&c.host, &c.window, c.arg("provider")?, c.arg("refresh")?).await });
     d.add("agent_cancel", |c| async move { cancel(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
+    d.add("agent_stop_background", |call| async move {
+        stop_background(&call.host, &call.window, call.arg("task")?, call.arg("background")?).await
+    });
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
     });

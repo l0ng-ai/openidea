@@ -284,6 +284,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_commands"
             | "agent_unqueue"
             | "agent_cancel"
+            | "agent_stop_background"
             | "agent_archive"
             | "agent_unarchive"
             | "agent_registry_list"

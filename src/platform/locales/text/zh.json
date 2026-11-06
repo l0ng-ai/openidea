@@ -6410,5 +6410,7 @@
   "Remote connection cancelled": "远程连接已取消",
   "Xdebug is not loaded in PHP {version}": "PHP {version} 未加载 Xdebug",
   "{php} runs without Xdebug, so breakpoints are skipped. Install Xdebug 3 for this PHP or choose another PHP interpreter.": "{php} 运行时没有 Xdebug，断点会被跳过。请为此 PHP 安装 Xdebug 3，或选择其他 PHP 解释器。",
-  "Open PHP Settings": "打开 PHP 设置"
+  "Open PHP Settings": "打开 PHP 设置",
+  "Running in the background": "后台运行中",
+  "Couldn't stop the background task": "无法停止后台任务"
 }

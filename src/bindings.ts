@@ -155,6 +155,8 @@ export const commands = {
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
+	/**  Stops one of the task's background tasks. */
+	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
@@ -1362,6 +1364,16 @@ export type ActiveTheme = {
 	theme: ThemeDef,
 };
 
+/**  A task the agent runs in the background while the conversation goes on. */
+export type AgentBackgroundTask = {
+	id: string,
+	/**  What it is, as the agent names it (`local_bash`, `local_agent`, `monitor`…). */
+	kind: string,
+	description: string,
+	/**  When the client first saw it (ms since the epoch). */
+	startedMs: number | null,
+};
+
 /**
  *  What a task's agent can do beyond a plain conversation, as it reported when its
  *  session started.
@@ -1375,6 +1387,8 @@ export type AgentCapabilities = {
 	rollback?: boolean,
 	/**  A message can join the running turn instead of waiting for it. */
 	steer?: boolean,
+	/**  It reports its background tasks and stops them one by one. */
+	backgroundTasks?: boolean,
 };
 
 /**  A file the task changed, relative to [`AgentTask::base_commit`]. */
@@ -1665,6 +1679,8 @@ export type AgentTask = {
 	 *  by its next output or any status change.
 	 */
 	retry?: AgentRetry | null,
+	/**  What the agent runs in the background (shells, subagents, monitors), oldest first. */
+	background?: AgentBackgroundTask[],
 };
 
 export type AgentToolDiff = {

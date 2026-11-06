@@ -33,6 +33,7 @@ import {
   selectableText,
   useSelectionBoundary,
   showContextMenu,
+  type IconName,
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
@@ -59,6 +60,7 @@ import {
 } from "./model";
 import {
   cancelTask,
+  stopBackgroundTask,
   loadEntries,
   markVisible,
   refreshChanges,
@@ -1318,6 +1320,7 @@ function SessionComposer({
         </div>
       )}
       <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
+      <BackgroundTasks task={task} />
       {task.queue.length > 0 && <Queue task={task} />}
       <Composer
         id={task.id}
@@ -1349,6 +1352,38 @@ function SessionComposer({
 }
 
 /** Messages waiting for the turn to end: send now, edit, or drop. */
+const BACKGROUND_ICON: Record<string, IconName> = { local_bash: "terminal", monitor: "eye" };
+
+/** What the agent runs in the background; its subagents show as chips of their own. */
+function BackgroundTasks({ task }: { task: AgentTask }) {
+  const tx = useTx();
+  const running = (task.background ?? []).filter((background) => background.kind !== "local_agent");
+  if (!running.length) return null;
+  const fail = (e: unknown) =>
+    notifications().notify({ level: "error", title: "Couldn't stop the background task", body: String(e) });
+  return (
+    <div className={styles.background} aria-label={tx("Running in the background")}>
+      {running.map((background) => (
+        <div key={background.id} className={styles.backgroundTask}>
+          <Icon name={BACKGROUND_ICON[background.kind] ?? "clock"} size={12} className={styles.muted} />
+          <span className={styles.backgroundText} title={background.description}>
+            {background.description || background.kind}
+          </span>
+          {background.startedMs != null && <Elapsed since={background.startedMs} />}
+          {task.capabilities?.backgroundTasks && (
+            <IconButton
+              icon="stop"
+              title="Stop"
+              size="small"
+              onClick={() => void stopBackgroundTask(task.id, background.id).catch(fail)}
+            />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Queue({ task }: { task: AgentTask }) {
   const fail = (e: unknown) =>
     notifications().notify({ level: "error", title: "Couldn't update the queue", body: String(e) });
