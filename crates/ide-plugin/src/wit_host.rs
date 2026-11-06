@@ -419,6 +419,10 @@ impl invocation::HostInvocation for StoreData {
         }
     }
 
+    fn selected_paths(&mut self, _this: Resource<InvocationRes>) -> wasmtime::Result<Vec<String>> {
+        Ok(self.invocation.selected_paths.iter().take(MAX_FIND as usize).map(|p| to_ipc(p)).collect())
+    }
+
     fn drop(&mut self, rep: Resource<InvocationRes>) -> wasmtime::Result<()> {
         // Owned by the host for the duration of the call.
         let _ = rep;

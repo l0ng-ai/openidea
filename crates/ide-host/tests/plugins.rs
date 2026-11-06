@@ -231,7 +231,12 @@ fn fixture(limits: Limits) -> Fixture {
 
 impl Fixture {
     fn inv(&self) -> Invocation {
-        Invocation { client: Some("main".into()), workspace_root: Some(self.project.clone()), editor: None }
+        Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(self.project.clone()),
+            editor: None,
+            selected_paths: Vec::new(),
+        }
     }
 
     fn install(&self, dir: &Path) -> PluginInfo {
@@ -357,7 +362,7 @@ fn read_file_is_confined_to_the_project() {
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
     // Without a project there is nothing to read.
-    let inv = Invocation { client: None, workspace_root: None, editor: None };
+    let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
@@ -2076,6 +2081,17 @@ fn views_open_project_files_at_a_line() {
     let (result, opened) = press("log");
     assert!(result.unwrap_err().message.contains("project.read"), "needs project.read");
     assert!(opened.is_none());
+}
+
+#[test]
+fn commands_see_the_paths_they_were_run_on() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let (a, b) = (f.project.join("src/a.txt"), f.project.join("src/b.txt"));
+    let inv = Invocation { selected_paths: vec![a.clone(), b.clone()], ..f.inv() };
+    let out = f.host.run_command("jobs", "selection", Some(&to_ipc(&a)), inv).unwrap();
+    assert_eq!(out.as_deref(), Some(format!("{}\n{}", to_ipc(&a), to_ipc(&b)).as_str()));
+    assert_eq!(f.run("jobs", "selection", None).unwrap().as_deref(), Some(""));
 }
 
 #[test]

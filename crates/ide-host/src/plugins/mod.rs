@@ -1389,6 +1389,7 @@ impl PluginHost {
             workspace_root: client.as_deref().and_then(|c| self.shared.project_of(c)),
             client: client.clone(),
             editor: None,
+            selected_paths: Vec::new(),
         };
         let kinds: BTreeSet<EventKind> = events.iter().map(WorkbenchEvent::kind).collect();
         {

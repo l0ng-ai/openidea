@@ -371,6 +371,7 @@ impl RemotePlugins {
                     client: Some(c.window.clone()),
                     workspace_root: c.host.project(&c.window).ok().map(|p| p.root.clone()),
                     editor: editor.map(PluginEditor::context),
+                    selected_paths: Vec::new(),
                 };
                 blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
             }

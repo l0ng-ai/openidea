@@ -59,6 +59,10 @@ interface invocation {
         project: func() -> option<project>;
         /// The window's focused editor.
         editor: func() -> option<text-editor>;
+        /// The files and folders the command was run on (a multi-selection in
+        /// a file tree, for instance), as absolute paths (a URI for a virtual
+        /// document). Empty when it was not run on any.
+        selected-paths: func() -> list<string>;
     }
 }
 
