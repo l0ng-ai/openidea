@@ -10,7 +10,18 @@ import { LRLanguage, LanguageSupport, foldService, matchBrackets, syntaxTree } f
 import { html } from "@codemirror/lang-html";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import { styleTags, tags as t } from "@lezer/highlight";
-import { IterMode, parseMixed, type Input, type NestedParse, type SyntaxNode, type SyntaxNodeRef } from "@lezer/common";
+import {
+  IterMode,
+  Parser,
+  parseMixed,
+  type Input,
+  type NestedParse,
+  type PartialParse,
+  type SyntaxNode,
+  type SyntaxNodeRef,
+  type Tree,
+  type TreeFragment,
+} from "@lezer/common";
 import { parser } from "./parser";
 
 // @lezer/javascript styles `.` as a deref operator, but not `?.`.
@@ -84,8 +95,66 @@ const attrParser = baseParser.configure({
   top: "Attribute",
 });
 
-const textMixed = { parser: textParser },
-  attrMixed = { parser: attrParser };
+/**
+ * `inner` with its trees remembered by text. Most text and attribute nodes
+ * an edit recreates (the document's own text, nodes up to the viewport) are
+ * unchanged, but the mixed parser only reuses nested trees of nodes it kept, so
+ * each would be parsed again on every keystroke. Their parse depends on
+ * nothing but their text, and trees are relative to their start.
+ */
+class TextMemo extends Parser {
+  private readonly trees = new Map<string, Tree>();
+  private chars = 0;
+  constructor(private readonly inner: Parser) {
+    super();
+  }
+  createParse(
+    input: Input,
+    fragments: readonly TreeFragment[],
+    ranges: readonly { from: number; to: number }[],
+  ): PartialParse {
+    const range = ranges.length == 1 ? ranges[0]! : null;
+    if (!range || range.to - range.from > MEMO_MAX_TEXT) return this.inner.startParse(input, fragments, ranges);
+    const text = input.read(range.from, range.to);
+    const known = this.trees.get(text);
+    if (known) return { advance: () => known, parsedPos: range.to, stoppedAt: null, stopAt() {} };
+    const parse = this.inner.startParse(input, fragments, ranges);
+    const remember = (tree: Tree) => this.remember(text, tree);
+    return {
+      advance() {
+        const tree = parse.advance();
+        // Stopping past the text (the outer parse's stop point) still parses all of it.
+        if (tree && (parse.stoppedAt == null || parse.stoppedAt >= range.to)) remember(tree);
+        return tree;
+      },
+      get parsedPos() {
+        return parse.parsedPos;
+      },
+      get stoppedAt() {
+        return parse.stoppedAt;
+      },
+      stopAt: (pos) => parse.stopAt(pos),
+    };
+  }
+  private remember(text: string, tree: Tree) {
+    if (this.trees.has(text)) return;
+    this.trees.set(text, tree);
+    this.chars += text.length;
+    // Oldest first.
+    for (const [old] of this.trees) {
+      if (this.chars <= MEMO_CHARS) break;
+      this.trees.delete(old);
+      this.chars -= old.length;
+    }
+  }
+}
+
+/** Longer texts are parsed incrementally as usual; the memo holds about this much text. */
+const MEMO_MAX_TEXT = 4096,
+  MEMO_CHARS = 2_000_000;
+
+const textMixed = { parser: new TextMemo(textParser) },
+  attrMixed = { parser: new TextMemo(attrParser) };
 
 // Text is parsed per node, like upstream, so an unfinished `{{` or `@if (`
 // ends with it. But HTML splits text at each `&` (`@if (a && b) {`), so a run
