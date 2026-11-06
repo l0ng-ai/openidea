@@ -78,6 +78,7 @@ const ICONS = {
   "file-vue": "fileTypes/vue",
   "file-svelte": "openidea/fileTypes/svelte",
   "file-jsp": "openidea/fileTypes/jsp",
+  "file-astro": "fileTypes/astro",
   "file-yaml": "fileTypes/yaml",
   "file-toml": "fileTypes/toml",
   "file-html": "fileTypes/html",
@@ -944,6 +945,7 @@ const EXT_ICONS = table({
   "file-vue": "vue",
   "file-svelte": "svelte",
   "file-jsp": "jsp jspx jspf jsph tag tagf tagx",
+  "file-astro": "astro",
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-rst": "rst",
@@ -1027,7 +1029,7 @@ const EXT_ICONS = table({
 });
 
 /** Source files for languages without a file-type icon. */
-const CODE_EXT = new Set(["astro", "nim", "wit", "wat", "sol", "v", "sv"]);
+const CODE_EXT = new Set(["nim", "wit", "wat", "sol", "v", "sv"]);
 
 let iconOverride: ((fileName: string) => IconName | null) | null = null;
 

@@ -7,6 +7,7 @@ const config: KnipConfig = {
     "src/**/*.{ts,tsx,css}",
     "!src/editor/core/cm/angular/parser.terms.ts",
     "!src/editor/core/cm/jsp/parser.terms.ts",
+    "!src/editor/core/cm/astro/parser.terms.ts",
     "scripts/**/*.ts",
     "perf/**/*.ts",
     "e2e/**/*.ts",

@@ -14,6 +14,7 @@
     "crates",
     "src/bindings.ts",
     "src/editor/core/cm/angular/parser*.ts",
+    "src/editor/core/cm/astro/parser*.ts",
     "fixtures",
     "plugins",
     "test-results",
