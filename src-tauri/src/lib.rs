@@ -99,13 +99,14 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
     #[cfg(not(target_os = "linux"))]
-    let app = app.plugin(
-        tauri_plugin_window_state::Builder::default()
-            .with_state_flags(window_state_flags())
-            // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
-            .map_label(windows::state_key)
-            .build(),
-    );
+    let window_state = tauri_plugin_window_state::Builder::default()
+        .with_state_flags(window_state_flags())
+        // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
+        .map_label(windows::state_key);
+    #[cfg(target_os = "macos")]
+    let window_state = window_state.with_filter(windows::keeps_window_state);
+    #[cfg(not(target_os = "linux"))]
+    let app = app.plugin(window_state.build());
     let app = app
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
@@ -200,10 +201,6 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
-            #[cfg(target_os = "macos")]
-            {
-                macos::forget_fullscreen(window.label());
-            }
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
