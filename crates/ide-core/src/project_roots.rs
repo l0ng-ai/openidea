@@ -67,6 +67,7 @@ pub fn discover_matching(
 }
 
 /// The closest package manager declaration or lockfile, shared by build and run.
+/*
 pub fn package_manager(root: &Path) -> &'static str {
     for dir in root.ancestors() {
         let package = std::fs::read(dir.join("package.json"))
@@ -95,6 +96,45 @@ pub fn package_manager(root: &Path) -> &'static str {
     }
     "npm"
 }
+*/
+
+pub fn package_manager(root: &Path) -> &'static str {
+    for dir in root.ancestors() {
+        let package = std::fs::read(dir.join("package.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        if let Some(pm) = package.as_ref().and_then(|p| p.get("packageManager")).and_then(|p| p.as_str()) {
+            match pm.split('@').next().unwrap_or_default() {
+                "pnpm" => return "pnpm",
+                "yarn" => return "yarn",
+                "bun" => return "bun",
+                "npm" => return "npm",
+                _ => {}
+            }
+        }
+        
+        // Check if any script uses 'bun' command (bun project indicator)
+        if let Some(scripts) = package.as_ref().and_then(|p| p.get("scripts")).and_then(|s| s.as_object()) {
+            if scripts.values().any(|v| v.as_str().map(|s| s.starts_with("bun ")).unwrap_or(false)) {
+                return "bun";
+            }
+        }
+        
+        for (marker, pm) in [
+            ("pnpm-lock.yaml", "pnpm"),
+            ("yarn.lock", "yarn"),
+            ("bun.lock", "bun"),
+            ("bun.lockb", "bun"),
+            ("package-lock.json", "npm"),
+        ] {
+            if dir.join(marker).is_file() {
+                return pm;
+            }
+        }
+    }
+    "npm"
+}
+
 
 pub fn resolve(root: &Path, path: &Path) -> PathBuf {
     let mut out = PathBuf::new();

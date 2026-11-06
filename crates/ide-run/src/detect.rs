@@ -254,16 +254,81 @@ pub(crate) fn is_test_script(name: &str) -> bool {
     matches!(name, "test" | "vitest" | "jest") || name.starts_with("test:")
 }
 
+/*
+Update to use Bun check for bun files
+*/
+/*
 fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>, out: &mut Vec<RunConfig>) {
     let Some(scripts) = pkg.get("scripts").and_then(Json::as_object) else { return };
     let mut names: Vec<&String> = scripts.keys().collect();
     names.sort();
     for script in names {
+        let kind = match pm {
+           "bun" => "bun",           
+           "pnpm" => "pnpm",
+            "yarn" => "yarn",
+            _ => "npm",
+        };
         let (id, name) = match prefix {
-            Some(p) => (format!("npm:{p}:{script}"), format!("{p}: {pm} run {script}")),
-            None => (format!("npm:{script}"), format!("{pm} run {script}")),
+            Some(p) => (format!("{kind}:{p}:{script}"), format!("{p}: {pm} run {script}")),
+            None => (format!("{kind}:{script}"), format!("{pm} run {script}")),
         };
         let mut c = config(id, name, "npm", pm, &["run", script]).in_dir(cwd.clone()).debug("js-debug");
+        c.extras.module = cwd.as_deref().map(ide_core::ipc_path::to_ipc);
+        if is_test_script(script) {
+            c = c.test();
+        }
+        out.push(c);
+    }
+}*/
+/*
+fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>, out: &mut Vec<RunConfig>) {
+    let Some(scripts) = pkg.get("scripts").and_then(Json::as_object) else { return };
+    let mut names: Vec<&String> = scripts.keys().collect();
+    names.sort();
+    let kind = match pm {
+        "bun" => "bun",
+        "pnpm" => "pnpm",
+        "yarn" => "yarn",
+        _ => "npm",
+    };
+    for script in names {
+        let (id, name) = match prefix {
+            Some(p) => (format!("{kind}:{p}:{script}"), format!("{p}: {pm} run {script}")),
+            None => (format!("{kind}:{script}"), format!("{pm} run {script}")),
+        };
+        let mut c = config(id, name, kind, pm, &["run", script]).in_dir(cwd.clone()).debug("js-debug");
+        c.extras.module = cwd.as_deref().map(ide_core::ipc_path::to_ipc);
+        if is_test_script(script) {
+            c = c.test();
+        }
+        out.push(c);
+    }
+} */
+
+fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>, out: &mut Vec<RunConfig>) {
+    let Some(scripts) = pkg.get("scripts").and_then(Json::as_object) else { return };
+    let mut names: Vec<&String> = scripts.keys().collect();
+    names.sort();
+    let kind = match pm {
+        "bun" => "bun",
+        "pnpm" => "pnpm",
+        "yarn" => "yarn",
+        _ => "npm",
+    };
+    for script in names {
+        let base_name = if kind == "bun" {
+            format!("{pm} run")
+        } else {
+            format!("{pm} run {script}")
+        };
+        let (id, name) = match prefix {
+            Some(p) => (format!("{kind}:{p}:{script}"), format!("{p}: {base_name}")),
+            None => (format!("{kind}:{script}"), base_name),
+        };
+        let debugger = if kind == "bun" { "bun-dap" } else { "js-debug" };
+        let run_script = if kind == "bun" { "index.ts" } else { script };
+        let mut c = config(id, name, kind, pm, &["run", run_script]).in_dir(cwd.clone()).debug(debugger);
         c.extras.module = cwd.as_deref().map(ide_core::ipc_path::to_ipc);
         if is_test_script(script) {
             c = c.test();
@@ -299,6 +364,44 @@ fn node_workspace_patterns(root: &Path, pkg: &Json) -> Vec<String> {
     patterns
 }
 
+/*
+fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
+    let mut covered = HashSet::new();
+
+    let projects =
+        ide_core::project_roots::discover_matching(root, ide_core::project_roots::SEARCH_DEPTH, false, |dir| {
+            dir.join("package.json").is_file()
+        });
+    for dir in projects {
+        if !covered.insert(dir.clone()) {
+            continue;
+        }
+        let Some(pkg) = read_json(&dir.join("package.json")) else { continue };
+        let pm = package_manager(&dir, &pkg);
+        let rel = relative(root, &dir);
+        let label = ide_core::ipc_path::to_ipc(&rel);
+        if pm != "bun" {
+            push_scripts(&pkg, pm, (dir != root).then_some(label.as_str()), (dir != root).then_some(rel), out);
+        }
+        for member_dir in expand_members(&dir, &node_workspace_patterns(&dir, &pkg), "package.json") {
+            if !covered.insert(member_dir.clone()) {
+                continue;
+            }
+            let Some(member) = read_json(&member_dir.join("package.json")) else { continue };
+            let rel = relative(root, &member_dir);
+            let name = member
+                .get("name")
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| ide_core::ipc_path::to_ipc(&rel));
+            let name = if dir == root { name } else { format!("{label}:{name}") };
+            if pm != "bun" {
+                push_scripts(&member, pm, Some(&name), Some(rel), out);
+            }
+        }
+    }
+}*/
+
 fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
     let mut covered = HashSet::new();
     let projects =
@@ -330,6 +433,9 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
         }
     }
 }
+
+
+
 
 // ---------------------------------------------------------------- deno
 
