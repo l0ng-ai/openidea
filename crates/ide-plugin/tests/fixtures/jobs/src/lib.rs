@@ -4,7 +4,7 @@
 
 use openidea_plugin::host;
 use openidea_plugin::views::{Body, Button, TreeItem, View, ViewEvent, Viewport, Views};
-use openidea_plugin::{Error, Invocation, Plugin, register_plugin};
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, register_plugin};
 
 pub const VIEW: &str = "jobs";
 
@@ -47,6 +47,11 @@ impl Plugin for Jobs {
             "open-url" => {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)
+            }
+            "selection" => {
+                let paths = ctx.selected_paths().join("\n");
+                host::notify(NotificationLevel::Info, "Selected paths", &paths);
+                Ok(Some(paths))
             }
             _ => Err(Error::NotFound(format!("command {id}"))),
         }

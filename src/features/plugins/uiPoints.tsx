@@ -86,7 +86,11 @@ export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): 
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;
     // The editor menu runs with the focused editor; the others name their file.
-    out.push({ kind: "action", action, arg: menu === "editor" ? undefined : paths[0] });
+    out.push({
+      kind: "action",
+      action,
+      arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths] },
+    });
   }
   return out;
 }

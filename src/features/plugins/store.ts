@@ -392,10 +392,15 @@ export function commandTitle(pluginId: string, commandId: string): string {
 }
 
 /** Runs a plugin command from an action; failures become notifications. */
-export async function runPluginCommand(pluginId: string, commandId: string, arg: string | null = null) {
+export async function runPluginCommand(
+  pluginId: string,
+  commandId: string,
+  arg: string | null = null,
+  paths: string[] = [],
+) {
   const title = commandTitle(pluginId, commandId);
   try {
-    return await pluginsBackend().runCommand(pluginId, commandId, arg, editorContext());
+    return await pluginsBackend().runCommand(pluginId, commandId, arg, editorContext(), paths);
   } catch (e) {
     await refreshPlugins();
     const status = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.status;

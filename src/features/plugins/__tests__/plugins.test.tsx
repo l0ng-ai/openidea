@@ -446,8 +446,30 @@ describe("bridge events", () => {
           language: "plaintext",
           selections: [{ start: { line: 1, col: 0 }, end: { line: 1, col: 4 } }],
         },
+        [],
       ],
     ]);
+  });
+
+  it("forwards a menu's path and selection to the command", async () => {
+    const calls: unknown[][] = [];
+    setPluginsBackend({
+      ...backend,
+      runCommand: async (...args) => {
+        calls.push(args);
+        return null;
+      },
+    });
+    undefinePoints();
+    undefinePoints = () => {};
+    const stop = startPluginBridge();
+    await refreshPlugins();
+    await act(() =>
+      executeAction("plugin.hello.insert-date", { path: "/p/a.java", paths: ["/p/a.java", "/p/b.java"] }),
+    );
+    expect(calls[0]?.[2]).toBe("/p/a.java");
+    expect(calls[0]?.[4]).toEqual(["/p/a.java", "/p/b.java"]);
+    stop();
   });
 
   it("shows status items and tasks of running plugin code", () => {

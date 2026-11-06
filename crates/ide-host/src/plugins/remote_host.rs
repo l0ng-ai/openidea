@@ -367,10 +367,12 @@ impl RemotePlugins {
                 let command_id: String = c.arg("commandId")?;
                 let arg: Option<String> = c.arg("arg")?;
                 let editor: Option<PluginEditor> = c.arg("editor")?;
+                let paths: Option<Vec<PathBuf>> = c.arg("paths")?;
                 let invocation = Invocation {
                     client: Some(c.window.clone()),
                     workspace_root: c.host.project(&c.window).ok().map(|p| p.root.clone()),
                     editor: editor.map(PluginEditor::context),
+                    selected_paths: paths.unwrap_or_default(),
                 };
                 blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
             }

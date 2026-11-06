@@ -56,6 +56,7 @@ struct State {
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
     editor: Option<Editor>,
+    selected_paths: Vec<String>,
     notifications: Vec<Notification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
@@ -142,6 +143,11 @@ impl MockHost {
     /// A project file `read_file` can return (project-relative or absolute path).
     pub fn add_file(&self, path: &str, text: &str) {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
+    }
+
+    /// Sets the paths invocations report as selected.
+    pub fn select_paths(&self, paths: &[&str]) {
+        self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
     }
 
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
@@ -473,6 +479,10 @@ pub mod current {
         })
     }
 
+    pub fn invocation_selected_paths(_: InvocationRef<'_>) -> Vec<String> {
+        with(|s| s.selected_paths.clone())
+    }
+
     pub fn editor_path(_: &EditorRes) -> String {
         editor(|_, e| e.path.clone())
     }
@@ -716,6 +726,14 @@ fn glob_match(glob: &str, path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::host;
+
+    #[test]
+    fn invocations_carry_selected_paths() {
+        let host = MockHost::install();
+        assert!(host.invocation().selected_paths().is_empty());
+        host.select_paths(&["/p/a", "/p/b"]);
+        assert_eq!(host.invocation().selected_paths(), ["/p/a", "/p/b"]);
+    }
 
     #[test]
     fn records_and_enforces() {

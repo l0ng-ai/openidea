@@ -117,6 +117,10 @@ mod imp {
         i.editor()
     }
 
+    pub fn invocation_selected_paths(i: InvocationRef<'_>) -> Vec<String> {
+        i.selected_paths()
+    }
+
     pub fn editor_path(e: &EditorRes) -> String {
         e.path()
     }
@@ -326,6 +330,12 @@ impl<'a> Invocation<'a> {
     /// The window's focused editor.
     pub fn editor(&self) -> Option<TextEditor> {
         imp::invocation_editor(self.inner).map(|inner| TextEditor { inner })
+    }
+
+    /// The files and folders the command was run on, as absolute paths. Empty when it was not
+    /// run on any, or when the menu was for a tab without a file (a virtual document).
+    pub fn selected_paths(&self) -> Vec<String> {
+        imp::invocation_selected_paths(self.inner)
     }
 }
 
