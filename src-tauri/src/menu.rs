@@ -895,7 +895,7 @@ pub fn action_ids(spec: &[Entry]) -> Vec<&'static str> {
 }
 
 /// Localised labels and displayed shortcuts, pushed by the frontend.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MenuConfig {
     pub locale: String,
@@ -959,6 +959,17 @@ pub struct MenuState {
     pub config: Mutex<MenuConfig>,
     /// Action ids the focused window reports as disabled (no context / not registered).
     pub disabled: Mutex<HashSet<String>>,
+}
+
+/// Stores `next` when it differs from the config last used to build the menu.
+/// Callers must not replace the menu on `false`: `set_menu` redraws the macOS menu bar.
+pub fn store_config(state: &MenuState, next: MenuConfig) -> bool {
+    let mut current = state.config.lock();
+    if *current == next {
+        return false;
+    }
+    *current = next;
+    true
 }
 
 /// The action an item id stands for, if it is an IDE action item.
@@ -1265,6 +1276,16 @@ mod tests {
                 assert_eq!(route(&spec, id), Some(MenuRoute { action: id.into(), arg: None }), "{id} on {os:?}");
             }
         }
+    }
+
+    #[test]
+    fn unchanged_menu_config_is_not_rebuilt() {
+        let state = MenuState::default();
+        let mut config = MenuConfig { locale: "en".into(), ..MenuConfig::default() };
+        assert!(store_config(&state, config.clone()));
+        assert!(!store_config(&state, config.clone()));
+        config.labels.insert("menu.file".into(), "File".into());
+        assert!(store_config(&state, config));
     }
 
     #[test]

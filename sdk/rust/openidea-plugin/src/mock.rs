@@ -56,9 +56,11 @@ struct State {
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
     editor: Option<Editor>,
+    selected_paths: Vec<String>,
     notifications: Vec<Notification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
+    context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
     tasks: Vec<MockTask>,
@@ -146,6 +148,11 @@ impl MockHost {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
     }
 
+    /// Sets the paths invocations report as selected.
+    pub fn select_paths(&self, paths: &[&str]) {
+        self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
     pub fn open_editor(&self, path: &str, language: &str, text: &str, selections: &[(u32, u32, u32, u32)]) {
         let selections =
@@ -187,6 +194,10 @@ impl MockHost {
         self.state.borrow().status.clone()
     }
 
+    pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
+        self.state.borrow().context.clone()
+    }
+
     pub fn storage(&self) -> BTreeMap<String, String> {
         self.state.borrow().storage.clone()
     }
@@ -226,7 +237,7 @@ impl MockHost {
         self.state.borrow().opened_urls.clone()
     }
 
-    /// The answer the next [`crate::host::quick_pick`], [`crate::host::input`] or
+    /// The answer the next [`crate::host::pick`], [`crate::host::input`] or
     /// [`crate::host::confirm`] gets: the chosen keys, the text (one element),
     /// anything for OK, or `None` for dismissed. Unscripted prompts are dismissed.
     pub fn answer_next_prompt(&self, answer: Option<&[&str]>) {
@@ -392,6 +403,15 @@ pub mod current {
         with(|s| s.status.remove(id));
     }
 
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        with(|s| s.context.insert(key.to_owned(), value));
+        Ok(())
+    }
+
+    pub fn remove_context(key: &str) {
+        with(|s| s.context.remove(key));
+    }
+
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         with(|s| {
             require(s, "clipboard")?;
@@ -411,14 +431,19 @@ pub mod current {
         })
     }
 
-    pub fn quick_pick(_title: &str, items: &[PickItem], multiple: bool) -> Result<Option<Vec<String>>, Error> {
+    pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+        let keys = pick_many(title, items)?;
+        match keys {
+            Some(keys) if keys.len() > 1 => Err(Error::Invalid("more than one item chosen".into())),
+            keys => Ok(keys.and_then(|keys| keys.into_iter().next())),
+        }
+    }
+
+    pub fn pick_many(_title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
         let answer = with(|s| s.answers.pop_front().flatten());
         let Some(keys) = answer else { return Ok(None) };
         if let Some(unknown) = keys.iter().find(|k| !items.iter().any(|i| &i.key == *k)) {
             return Err(Error::Invalid(format!("{unknown:?} is not one of the items")));
-        }
-        if !multiple && keys.len() > 1 {
-            return Err(Error::Invalid("more than one item chosen".into()));
         }
         Ok(Some(keys))
     }
@@ -427,7 +452,7 @@ pub mod current {
         Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
     }
 
-    pub fn confirm(_title: &str, _message: &str) -> Result<bool, Error> {
+    pub fn confirm(_title: &str, _body: &str) -> Result<bool, Error> {
         Ok(with(|s| s.answers.pop_front().flatten()).is_some())
     }
 
@@ -511,6 +536,10 @@ pub mod current {
             s.editor = Some(e);
             r
         })
+    }
+
+    pub fn invocation_selected_paths(_: InvocationRef<'_>) -> Vec<String> {
+        with(|s| s.selected_paths.clone())
     }
 
     pub fn editor_path(_: &EditorRes) -> String {
@@ -758,6 +787,14 @@ mod tests {
     use crate::host;
 
     #[test]
+    fn invocations_carry_selected_paths() {
+        let host = MockHost::install();
+        assert!(host.invocation().selected_paths().is_empty());
+        host.select_paths(&["/p/a", "/p/b"]);
+        assert_eq!(host.invocation().selected_paths(), ["/p/a", "/p/b"]);
+    }
+
+    #[test]
     fn records_and_enforces() {
         let mock = MockHost::install();
         mock.add_file("src/a.txt", "hello");
@@ -773,6 +810,13 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
+        host::set_context("a", 1.0).unwrap();
+        host::set_context("b", "x").unwrap();
+        assert_eq!(mock.context_keys()["a"], ContextValue::Number(1.0));
+        assert_eq!(mock.context_keys()["b"], ContextValue::Text("x".into()));
+        host::remove_context("a");
+        host::remove_context("b");
+        assert!(mock.context_keys().is_empty());
         mock.set_vcs_remotes(&[("origin", "git@github.com:o/r.git")]);
         assert_eq!(project.vcs_remotes().unwrap(), [("origin".into(), "git@github.com:o/r.git".into())]);
         host::copy_to_clipboard("copied").unwrap();
@@ -781,11 +825,13 @@ mod tests {
         assert_eq!(mock.opened_urls(), ["https://example.com/a"]);
         assert!(matches!(host::open_url("file:///etc/passwd"), Err(Error::Invalid(_))));
         let items = [PickItem::new("a", "A"), PickItem::new("b", "B").description("second")];
-        assert_eq!(host::quick_pick("Pick", &items, false).unwrap(), None);
+        assert_eq!(host::pick("Pick", &items).unwrap(), None);
         mock.answer_next_prompt(Some(&["b"]));
-        assert_eq!(host::quick_pick("Pick", &items, false).unwrap(), Some(vec!["b".to_owned()]));
+        assert_eq!(host::pick("Pick", &items).unwrap().as_deref(), Some("b"));
+        mock.answer_next_prompt(Some(&["a", "b"]));
+        assert_eq!(host::pick_many("Pick", &items).unwrap(), Some(vec!["a".to_owned(), "b".to_owned()]));
         mock.answer_next_prompt(Some(&["zzz"]));
-        assert!(matches!(host::quick_pick("Pick", &items, true), Err(Error::Invalid(_))));
+        assert!(matches!(host::pick_many("Pick", &items), Err(Error::Invalid(_))));
         mock.answer_next_prompt(Some(&["x.txt"]));
         assert_eq!(host::input("Name", Some("a.txt")).unwrap().as_deref(), Some("x.txt"));
         mock.answer_next_prompt(Some(&[]));

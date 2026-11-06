@@ -230,6 +230,29 @@ impl StoreData {
         answer.map_err(to_wit)
     }
 
+    fn pick_prompt(
+        &mut self,
+        title: String,
+        items: Vec<ui::PickItem>,
+        multiple: bool,
+    ) -> Result<Option<Vec<String>>, wit::Error> {
+        if items.len() > MAX_PICK_ITEMS {
+            return Err(wit::Error::Invalid(format!("more than {MAX_PICK_ITEMS} items")));
+        }
+        if items.iter().any(|i| i.key.len() > MAX_PICK_KEY) {
+            return Err(wit::Error::Invalid(format!("an item key is longer than {MAX_PICK_KEY} bytes")));
+        }
+        let items = items
+            .into_iter()
+            .map(|i| PickItem {
+                key: i.key,
+                label: clip(i.label, MAX_TITLE),
+                description: i.description.map(|d| clip(d, 1024)),
+            })
+            .collect();
+        self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
+    }
+
     /// Dialogs belong to commands and events; rendering and providers have no one to ask.
     fn require_interactive(&self) -> Result<(), wit::Error> {
         if self.interactive {
@@ -271,6 +294,36 @@ impl ui::Host for StoreData {
         Ok(())
     }
 
+    fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
+        let valid_key =
+            (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+        if !valid_key {
+            return Ok(Err(wit::Error::Invalid(format!("context key {key:?}: expected 1-64 of A-Za-z0-9_-"))));
+        }
+        // Kept as JSON text, which the windows parse into their context.
+        let json = match value {
+            ui::ContextValue::Flag(b) => b.to_string(),
+            ui::ContextValue::Number(n) if n.fract() == 0.0 && n.abs() < 9e15 => (n as i64).to_string(),
+            ui::ContextValue::Number(n) => match serde_json::Number::from_f64(n) {
+                Some(n) => n.to_string(),
+                None => return Ok(Err(wit::Error::Invalid("context value: not a finite number".into()))),
+            },
+            ui::ContextValue::Text(t) if t.len() <= 1024 => serde_json::Value::String(t).to_string(),
+            ui::ContextValue::Text(_) => {
+                return Ok(Err(wit::Error::Invalid("context value: text longer than 1024 bytes".into())));
+            }
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_context(client.as_deref(), &key, Some(json)).map_err(to_wit))
+    }
+
+    fn remove_context(&mut self, key: String) -> wasmtime::Result<()> {
+        let client = self.invocation.client.clone();
+        // Nothing to remove under an invalid key.
+        let _ = self.host.set_context(client.as_deref(), &key, None);
+        Ok(())
+    }
+
     fn copy_to_clipboard(&mut self, text: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Clipboard) {
             return Ok(Err(e));
@@ -289,23 +342,13 @@ impl ui::Host for StoreData {
         Ok(self.host.open_url(client.as_deref(), trimmed.to_owned()).map_err(to_wit))
     }
 
-    fn quick_pick(&mut self, title: String, items: Vec<ui::PickItem>, multiple: bool) -> Fallible<Option<Vec<String>>> {
-        if items.len() > MAX_PICK_ITEMS {
-            return Ok(Err(wit::Error::Invalid(format!("more than {MAX_PICK_ITEMS} items"))));
-        }
-        if items.iter().any(|i| i.key.len() > MAX_PICK_KEY) {
-            return Ok(Err(wit::Error::Invalid(format!("an item key is longer than {MAX_PICK_KEY} bytes"))));
-        }
-        let items = items
-            .into_iter()
-            .map(|i| PickItem {
-                key: i.key,
-                label: clip(i.label, MAX_TITLE),
-                description: i.description.map(|d| clip(d, 1024)),
-            })
-            .collect();
-        let prompt = Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple };
-        Ok(self.ask(prompt))
+    fn pick(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<String>> {
+        let answer = self.pick_prompt(title, items, false);
+        Ok(answer.map(|keys| keys.and_then(|keys| keys.into_iter().next())))
+    }
+
+    fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
+        Ok(self.pick_prompt(title, items, true))
     }
 
     fn input(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
@@ -313,17 +356,9 @@ impl ui::Host for StoreData {
         Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
     }
 
-    fn confirm(&mut self, title: String, message: String) -> Fallible<bool> {
-        let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(message, 16 << 10) };
+    fn confirm(&mut self, title: String, body: String) -> Fallible<bool> {
+        let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(body, 16 << 10) };
         Ok(self.ask(prompt).map(|answer| answer.is_some()))
-    }
-
-    fn reveal_view(&mut self, view: String) -> Fallible<()> {
-        if let Err(e) = self.require_interactive() {
-            return Ok(Err(e));
-        }
-        let client = self.invocation.client.clone();
-        Ok(self.host.reveal_view(client.as_deref(), &clip(view, 64)).map_err(to_wit))
     }
 }
 
@@ -481,6 +516,10 @@ impl invocation::HostInvocation for StoreData {
             Some(ctx) => Ok(Some(self.push(EditorRes { ctx })?)),
             None => Ok(None),
         }
+    }
+
+    fn selected_paths(&mut self, _this: Resource<InvocationRes>) -> wasmtime::Result<Vec<String>> {
+        Ok(self.invocation.selected_paths.iter().take(MAX_FIND as usize).map(|p| to_ipc(p)).collect())
     }
 
     fn drop(&mut self, rep: Resource<InvocationRes>) -> wasmtime::Result<()> {
@@ -711,6 +750,14 @@ impl views::Host for StoreData {
     fn refresh(&mut self, view: String) -> wasmtime::Result<()> {
         self.host.refresh_view(&clip(view, 64));
         Ok(())
+    }
+
+    fn reveal(&mut self, view: String) -> Fallible<()> {
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.reveal_view(client.as_deref(), &clip(view, 64)).map_err(to_wit))
     }
 
     fn post_message(&mut self, view: String, message: String) -> Fallible<()> {

@@ -109,7 +109,7 @@ afterEach(() => {
   resetRuns();
   disconnect?.();
   server?.close();
-  if (base) rmSync(base, { recursive: true, force: true });
+  if (base) rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 async function open(c: Case): Promise<string> {

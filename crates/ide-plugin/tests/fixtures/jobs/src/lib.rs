@@ -4,7 +4,7 @@
 
 use openidea_plugin::host;
 use openidea_plugin::views::{Body, Button, TreeItem, View, ViewEvent, Viewport, Views};
-use openidea_plugin::{Error, Invocation, PickItem, Plugin, register_plugin};
+use openidea_plugin::{Error, Invocation, NotificationLevel, PickItem, Plugin, register_plugin};
 
 pub const VIEW: &str = "jobs";
 
@@ -40,6 +40,19 @@ impl Plugin for Jobs {
                 let remotes = project.vcs_remotes()?;
                 Ok(Some(remotes.into_iter().map(|(n, u)| format!("{n}={u}")).collect::<Vec<_>>().join("\n")))
             }
+            "context" => {
+                // `key=` removes; `true` / `false`, numbers and other text set.
+                let (key, value) = arg.unwrap_or_default().split_once('=').ok_or("expected key=value")?;
+                match value {
+                    "" => host::remove_context(key),
+                    "true" | "false" => host::set_context(key, value == "true")?,
+                    _ => match value.parse::<f64>() {
+                        Ok(n) => host::set_context(key, n)?,
+                        Err(_) => host::set_context(key, value)?,
+                    },
+                }
+                Ok(None)
+            }
             "copy" => {
                 host::copy_to_clipboard(arg.unwrap_or_default())?;
                 Ok(None)
@@ -55,12 +68,20 @@ impl Plugin for Jobs {
                     PickItem::new("b", "Beta"),
                     PickItem::new("c", "Gamma"),
                 ];
-                let picked = host::quick_pick("Pick", &items, id == "pick-many")?;
+                let picked = match id {
+                    "pick" => host::pick("Pick", &items)?.map(|key| vec![key]),
+                    _ => host::pick_many("Pick", &items)?,
+                };
                 Ok(Some(picked.map_or("none".to_owned(), |keys| keys.join(","))))
             }
             "input" => Ok(Some(host::input("Name", arg)?.unwrap_or_else(|| "none".to_owned()))),
             "confirm" => Ok(Some(host::confirm("Delete", "Really?")?.to_string())),
             "reveal" => host::reveal_view(arg.unwrap_or_default()).map(|()| None),
+            "selection" => {
+                let paths = ctx.selected_paths().join("\n");
+                host::notify(NotificationLevel::Info, "Selected paths", &paths);
+                Ok(Some(paths))
+            }
             _ => Err(Error::NotFound(format!("command {id}"))),
         }
     }

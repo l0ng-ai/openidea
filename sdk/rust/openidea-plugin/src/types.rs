@@ -143,7 +143,7 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
-/// An entry of [`crate::host::quick_pick`].
+/// An entry of [`crate::host::pick`] and [`crate::host::pick_many`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickItem {
     /// Returned when the item is chosen.
@@ -160,6 +160,40 @@ impl PickItem {
     pub fn description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
         self
+    }
+}
+
+/// A context key's value, as `when` clauses compare it ([`crate::host::set_context`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContextValue {
+    Flag(bool),
+    /// A finite number.
+    Number(f64),
+    /// At most 1024 bytes.
+    Text(String),
+}
+
+impl From<bool> for ContextValue {
+    fn from(value: bool) -> Self {
+        Self::Flag(value)
+    }
+}
+
+impl From<f64> for ContextValue {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<&str> for ContextValue {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_owned())
+    }
+}
+
+impl From<String> for ContextValue {
+    fn from(value: String) -> Self {
+        Self::Text(value)
     }
 }
 

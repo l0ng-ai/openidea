@@ -28,6 +28,8 @@ pub struct Invocation {
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
     pub editor: Option<EditorContext>,
+    /// Files and folders the command was run on.
+    pub selected_paths: Vec<PathBuf>,
 }
 
 /// A failed host call, as the plugin sees it (WIT `types.error`).
@@ -66,7 +68,7 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
-/// An entry of a plugin's `quick-pick`.
+/// An entry of a plugin's `pick` or `pick-many`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PickItem {
@@ -75,7 +77,7 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
-/// What a plugin asks the user (`ui.quick-pick`, `ui.input`, `ui.confirm`).
+/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Prompt {

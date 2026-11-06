@@ -482,6 +482,9 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         config.visible = false;
     }
     let state = app.try_state::<AppState>();
+    if let Some(state) = &state {
+        state.plugins.reopen_client(&config.label);
+    }
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
     let plugin_frame = state.as_ref().and_then(|s| s.plugins.startup_frame()).and_then(|c| hex_color(&c));

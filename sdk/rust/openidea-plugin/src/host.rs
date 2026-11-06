@@ -73,6 +73,19 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        let value = match value {
+            ContextValue::Flag(b) => wit::ui::ContextValue::Flag(b),
+            ContextValue::Number(n) => wit::ui::ContextValue::Number(n),
+            ContextValue::Text(t) => wit::ui::ContextValue::Text(t),
+        };
+        wit::ui::set_context(key, &value).map_err(error)
+    }
+
+    pub fn remove_context(key: &str) {
+        wit::ui::remove_context(key)
+    }
+
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         wit::ui::copy_to_clipboard(text).map_err(error)
     }
@@ -81,28 +94,35 @@ mod imp {
         wit::ui::open_url(url).map_err(error)
     }
 
-    pub fn quick_pick(title: &str, items: &[PickItem], multiple: bool) -> Result<Option<Vec<String>>, Error> {
-        let items: Vec<wit::ui::PickItem> = items
+    fn pick_items(items: &[PickItem]) -> Vec<wit::ui::PickItem> {
+        items
             .iter()
             .map(|i| wit::ui::PickItem {
                 key: i.key.clone(),
                 label: i.label.clone(),
                 description: i.description.clone(),
             })
-            .collect();
-        wit::ui::quick_pick(title, &items, multiple).map_err(error)
+            .collect()
+    }
+
+    pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+        wit::ui::pick(title, &pick_items(items)).map_err(error)
+    }
+
+    pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+        wit::ui::pick_many(title, &pick_items(items)).map_err(error)
     }
 
     pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
         wit::ui::input(prompt, value).map_err(error)
     }
 
-    pub fn confirm(title: &str, message: &str) -> Result<bool, Error> {
-        wit::ui::confirm(title, message).map_err(error)
+    pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
+        wit::ui::confirm(title, body).map_err(error)
     }
 
     pub fn reveal_view(view: &str) -> Result<(), Error> {
-        wit::ui::reveal_view(view).map_err(error)
+        wit::views::reveal(view).map_err(error)
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -139,6 +159,10 @@ mod imp {
 
     pub fn invocation_editor(i: InvocationRef<'_>) -> Option<EditorRes> {
         i.editor()
+    }
+
+    pub fn invocation_selected_paths(i: InvocationRef<'_>) -> Vec<String> {
+        i.selected_paths()
     }
 
     pub fn editor_path(e: &EditorRes) -> String {
@@ -350,6 +374,12 @@ impl<'a> Invocation<'a> {
     /// The window's focused editor.
     pub fn editor(&self) -> Option<TextEditor> {
         imp::invocation_editor(self.inner).map(|inner| TextEditor { inner })
+    }
+
+    /// The files and folders the command was run on, as absolute paths. Empty when it was not
+    /// run on any, or when the menu was for a tab without a file (a virtual document).
+    pub fn selected_paths(&self) -> Vec<String> {
+        imp::invocation_selected_paths(self.inner)
     }
 }
 
@@ -569,6 +599,19 @@ pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
 }
 
+/// Sets the plugin's context key that `when` clauses test as `plugin.<id>.<key>`, in
+/// the window the current command or event came from (every window when there is
+/// none): `set_context("connected", true)`. A window's value takes precedence over
+/// the global one. The key is 1-64 of `A-Za-z0-9_-`; at most 100 keys.
+pub fn set_context(key: &str, value: impl Into<ContextValue>) -> Result<(), Error> {
+    imp::set_context(key, value.into())
+}
+
+/// Removes the key [`set_context`] set in the same scope.
+pub fn remove_context(key: &str) {
+    imp::remove_context(key)
+}
+
 /// Copies `text` to the system clipboard. Needs `clipboard`.
 pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
     imp::copy_to_clipboard(text)
@@ -580,25 +623,29 @@ pub fn open_url(url: &str) -> Result<(), Error> {
 }
 
 /// Shows a list in the window the current command or event came from and
-/// waits: the keys of the chosen items (one unless `multiple`), or `None` when
-/// the user dismisses it. Needs no capability; [`Error::Invalid`] outside a
-/// command or event of a window (and in editor providers). The wait doesn't
-/// count against the call's time budget, but the plugin handles nothing else
-/// meanwhile.
-pub fn quick_pick(title: &str, items: &[PickItem], multiple: bool) -> Result<Option<Vec<String>>, Error> {
-    imp::quick_pick(title, items, multiple)
+/// waits for the key of the chosen item, or `None` when the user dismisses
+/// it. Needs no capability; [`Error::Invalid`] outside a command or event of a
+/// window (and in editor providers). The wait doesn't count against the
+/// call's time budget, but the plugin handles nothing else meanwhile.
+pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+    imp::pick(title, items)
+}
+
+/// Like [`pick`], with any number of items chosen.
+pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+    imp::pick_many(title, items)
 }
 
 /// Asks for a line of text, pre-filled with `value`; `None` when dismissed.
-/// Same rules as [`quick_pick`].
+/// Same rules as [`pick`].
 pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
     imp::input(prompt, value)
 }
 
 /// Asks for confirmation: `true` on OK, `false` on Cancel or Escape.
-/// Same rules as [`quick_pick`].
-pub fn confirm(title: &str, message: &str) -> Result<bool, Error> {
-    imp::confirm(title, message)
+/// Same rules as [`pick`].
+pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
+    imp::confirm(title, body)
 }
 
 /// Brings one of the plugin's declared views to the front in the window the

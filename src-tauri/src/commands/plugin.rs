@@ -8,8 +8,8 @@ use ide_core::{IdeError, IdeResult};
 use ide_extension::ActivationEvent;
 use ide_host::plugins::intellij::{self, InstalledIntellijTheme, IntellijThemeSource};
 use ide_host::plugins::{
-    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginEditor,
-    PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
+    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginContextKey,
+    PluginEditor, PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
 };
 use ide_plugin::{Invocation, Limits};
 use parking_lot::Mutex;
@@ -325,6 +325,7 @@ pub async fn plugin_run_command(
     command_id: String,
     arg: Option<String>,
     editor: Option<PluginEditor>,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -332,6 +333,7 @@ pub async fn plugin_run_command(
         client: Some(window.label().to_owned()),
         workspace_root: project.as_ref().map(|p| p.root.clone()),
         editor: editor.map(PluginEditor::context),
+        selected_paths: paths.unwrap_or_default(),
     };
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
 }
@@ -367,6 +369,13 @@ pub fn plugin_status_items(state: State<'_, AppState>) -> Vec<PluginStatusItem> 
         .into_iter()
         .map(|(plugin_id, id, item)| PluginStatusItem { plugin_id, id, item })
         .collect()
+}
+
+/// Plugin context keys in effect for this window (later changes arrive as `contextChanged`).
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_context_keys(window: Window, state: State<'_, AppState>) -> Vec<PluginContextKey> {
+    state.plugins.context_keys(Some(window.label()))
 }
 
 /// Cancels a plugin task (`taskStarted` with `cancellable`).

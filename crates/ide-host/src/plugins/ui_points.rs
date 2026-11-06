@@ -5,10 +5,10 @@
 //!
 //! ```toml
 //! [[contributes.menus]]
-//! menu = "editor.context"          # projectView.context, editorTab.context, tools, view.item.context
+//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context
 //! command = "check"
 //! when = "editorLang == java"
-//! # view = "<view id>"             # required for (only allowed on) view.item.context
+//! # view = "<view id>"             # required for (only allowed on) viewItem.context
 //!
 //! [[contributes.keymaps]]
 //! command = "check"
@@ -64,7 +64,7 @@ pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 
-const VIEW_ITEM_MENU: &str = "view.item.context";
+const VIEW_ITEM_MENU: &str = "viewItem.context";
 const MENU_IDS: [&str; 5] = ["editor.context", "projectView.context", "editorTab.context", "tools", VIEW_ITEM_MENU];
 const MAX_TITLE: usize = 256;
 const MAX_SETTINGS: usize = 200;
@@ -125,12 +125,13 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let key = match (d.menu == VIEW_ITEM_MENU, &d.view) {
         (true, None) => return Err(format!("contributes.menus: {VIEW_ITEM_MENU} needs `view`")),
         (true, Some(v)) => {
+            pkg.manifest.needs_api(&format!("contributes.menus: {VIEW_ITEM_MENU}"), 2)?;
             let Some(view) = declared_view(pkg, v) else {
                 return Err(format!("contributes.menus: view {v:?} is not declared under [[contributes.views]]"));
             };
             if view.get("web").is_some() {
                 return Err(format!(
-                    "contributes.menus: view {v:?} is a web view (view.item.context needs a tree or list the plugin renders)"
+                    "contributes.menus: view {v:?} is a web view (viewItem.context needs a tree or list the plugin renders)"
                 ));
             }
             format!("{VIEW_ITEM_MENU}/{v}/{}", d.command)
@@ -404,7 +405,7 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     out.files = files;
     if let Some(icon) = d.icon.as_deref().filter(|i| i.ends_with(".svg")) {
         let path = std::path::PathBuf::from(icon);
-        let svg = super::icons::read_icon(pkg, &path)?;
+        let svg = super::icons::read_icon(pkg, &path, super::icons::MAX_SVG)?;
         out.assets.push((view_icon_asset(&d.id), svg));
         out.files.push(path);
     }
@@ -497,7 +498,7 @@ pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Stri
     let mut assets = Vec::new();
     for (path, dark) in [(Some(&d.icon), false), (d.icon_dark.as_ref(), true)] {
         let Some(path) = path else { continue };
-        let svg = super::icons::read_icon(pkg, path)?;
+        let svg = super::icons::read_icon(pkg, path, super::icons::MAX_SVG)?;
         assets.push((file_icon_asset(&d.id, dark), svg));
         files.push(path.clone());
     }

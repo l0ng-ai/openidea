@@ -910,7 +910,7 @@ impl Repo {
         let id = commit_id.to_string();
         let contains = format!("--contains={id}");
         let branches =
-            cli::run_cancellable(self.root(), &["branch", "-a", &contains, "--format=%(refname:short)"], cancel)?;
+            cli::run_cancellable(self.root(), &["branch", "-a", &contains, refs::DIRECT_BRANCH_FORMAT], cancel)?;
         let cache_key = format!("{allowed}:{id}");
         let cached = self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).get(&cache_key).cloned();
         let mut details = if let Some(details) = cached {
@@ -952,7 +952,7 @@ impl Repo {
             details
         };
         details.containing_branches =
-            branches.stdout_str().lines().filter(|s| !s.ends_with("/HEAD")).map(str::to_string).collect();
+            branches.stdout_str().lines().filter(|s| !s.is_empty()).map(str::to_string).collect();
         Ok(details)
     }
 

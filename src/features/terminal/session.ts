@@ -57,8 +57,6 @@ export interface SessionSnapshot {
   commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
-  /** True while the viewport is pinned to the newest output. */
-  follow: boolean;
 }
 
 export interface SessionOptions {
@@ -210,7 +208,6 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       cwd: opts.cwd,
-      follow: true,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -284,11 +281,6 @@ export class TerminalSession {
         if (workflowSettings().terminal.mouseReporting) return false;
         const modes = params.map((p) => (Array.isArray(p) ? p[0] : p) ?? 0);
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
-      }),
-      // Track scroll position: follow when the user scrolls back to the bottom.
-      this.term.onScroll(() => {
-        const atBottom = this.isAtBottom();
-        if (atBottom !== this.snapshot.follow) this.update({ follow: atBottom });
       }),
     );
     this.disposables.push(
@@ -656,16 +648,6 @@ export class TerminalSession {
 
   clear() {
     this.term.clear();
-  }
-
-  isAtBottom(): boolean {
-    return this.term.buffer.active.viewportY >= this.term.buffer.active.baseY;
-  }
-
-  /** Sets the follow flag; when turning it on also scrolls to the bottom. */
-  setFollow(follow: boolean) {
-    if (follow) this.term.scrollToBottom();
-    if (follow !== this.snapshot.follow) this.update({ follow });
   }
 
   /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */
