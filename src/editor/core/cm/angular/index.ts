@@ -93,8 +93,15 @@ const textMixed = { parser: textParser },
 // document) holding it.
 const TEXT_NODES = new Set(["Text", "EntityReference", "CharacterReference", "InvalidEntity"]);
 
-/** The runs of text directly in `node` that entities split, `null` without any. */
-function entityRuns(node: SyntaxNode): { from: number; to: number }[] | null {
+/**
+ * Whether text holds Angular syntax: interpolations, blocks and their braces all
+ * need a `{`, `}` or `@`. Other text (mostly the whitespace between tags) stays
+ * plain HTML text instead of costing a nested parse each.
+ */
+const ANGULAR_TEXT = /[{}@]/;
+
+/** The runs of Angular text directly in `node` that entities split, `null` without any. */
+function entityRuns(node: SyntaxNode, input: Input): { from: number; to: number }[] | null {
   const runs: { from: number; to: number }[] = [];
   let from = -1,
     to = -1,
@@ -108,12 +115,12 @@ function entityRuns(node: SyntaxNode): { from: number; to: number }[] | null {
         parts++;
         continue;
       }
-      if (parts > 1) runs.push({ from, to });
+      if (parts > 1 && ANGULAR_TEXT.test(input.read(from, to))) runs.push({ from, to });
       ({ from, to } = child);
       parts = 1;
     } while (child.nextSibling());
   }
-  if (parts > 1) runs.push({ from, to });
+  if (parts > 1 && ANGULAR_TEXT.test(input.read(from, to))) runs.push({ from, to });
   return runs.length ? runs : null;
 }
 
@@ -125,10 +132,10 @@ function mixAngular(node: SyntaxNodeRef, input: Input): NestedParse | null {
       return /^[*#([]|\{\{/.test(input.read(node.from, node.to)) ? attrMixed : null;
     // Text in a run is covered by its parent's overlay, so not asked about.
     case "Text":
-      return textMixed;
+      return ANGULAR_TEXT.test(input.read(node.from, node.to)) ? textMixed : null;
     case "Document":
     case "Element": {
-      const overlay = entityRuns(node.node);
+      const overlay = entityRuns(node.node, input);
       return overlay && { parser: node.name == "Document" ? documentRunsParser : runsParser, overlay };
     }
   }

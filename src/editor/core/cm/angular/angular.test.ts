@@ -556,6 +556,18 @@ describe("Angular templates", () => {
     }
   });
 
+  it("parses only text with Angular syntax as Angular", () => {
+    const doc = "<ul>\n  <li>Tom &amp; Jerry</li>\n  <li>{{ a }} &amp; {{ b }}</li>\n</ul>\n@if (x) {\n}";
+    const tree = angularLanguage.parser.parse(doc);
+    const parentAt = (text: string) => tree.resolveInner(doc.indexOf(text) + 1, 1).parent?.name;
+    // Plain text and the whitespace between tags stay HTML text.
+    expect(parentAt("Tom")).toBe("Element");
+    expect(parentAt("\n  <li>")).toBe("Element");
+    expect(parentAt("{{ a")).toBe("Interpolation");
+    expect(tokens(doc)).toContain("@if:control");
+    expect(tokens(doc)).toContain("b:var");
+  });
+
   it("is generated from angular.grammar", () => {
     const dir = import.meta.dirname;
     const { parser, terms } = buildParserFile(readFileSync(resolve(dir, "angular.grammar"), "utf8"), {
