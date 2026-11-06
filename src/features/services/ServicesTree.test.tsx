@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { SERVICES_WINDOW, useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
 import { selectedServices, selectionActions, selectionMenu } from "./selection";
@@ -74,6 +75,16 @@ describe("Services selection → actions", () => {
     fireEvent.mouseDown(row("one"));
     fireEvent.mouseDown(row("two"));
     expect(select.mock.calls).toEqual([["one"], ["two"]]);
+  });
+
+  it("drops the detail pane (and what it streams) while the Services window is hidden", () => {
+    const { row } = setup();
+    fireEvent.mouseDown(row("one"));
+    expect(screen.getByTestId("detail")).toHaveTextContent("one");
+    act(() => useToolWindowLayout.setState({ mounted: new Set([SERVICES_WINDOW]) }));
+    expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+    act(() => useToolWindowLayout.setState({ mounted: new Set() }));
+    expect(screen.getByTestId("detail")).toHaveTextContent("one");
   });
 
   it("Shift click selects a range; Stop skips disabled services", () => {
