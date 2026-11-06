@@ -162,6 +162,7 @@ pub(super) struct Shared {
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
     /// (scope, plugin, key) → JSON value.
     contexts: Mutex<BTreeMap<ContextKey, String>>,
+    closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
     /// plugin → files it shows problems for, withdrawn when it stops.
@@ -191,6 +192,7 @@ impl Shared {
             next_task: AtomicU64::new(1),
             status: Mutex::default(),
             contexts: Mutex::default(),
+            closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
         })
@@ -249,9 +251,16 @@ impl Shared {
             .collect()
     }
 
-    /// Drops the context keys scoped to window `client` (it closed), without events.
+    /// Drops the context keys scoped to window `client` (it closed), without events, and
+    /// refuses further writes for it (late commands) until [`Self::reopen_client`].
     pub fn forget_client(&self, client: &str) {
+        self.closed_clients.lock().insert(client.to_owned());
         self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
+    }
+
+    /// A window labelled `client` is being created (labels are reused after a close).
+    pub fn reopen_client(&self, client: &str) {
+        self.closed_clients.lock().remove(client);
     }
 
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
@@ -415,6 +424,9 @@ impl HostApi for PluginApi {
         let map_key = (client.map(str::to_owned), self.id().to_owned(), key.to_owned());
         {
             let mut contexts = self.shared.contexts.lock();
+            if client.is_some_and(|c| self.shared.closed_clients.lock().contains(c)) {
+                return Ok(());
+            }
             match &value {
                 Some(value) => {
                     if contexts.get(&map_key) == Some(value) {

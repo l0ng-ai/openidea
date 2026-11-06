@@ -2692,6 +2692,25 @@ fn forgetting_a_window_drops_its_context_keys_silently() {
 }
 
 #[test]
+fn a_closed_window_ignores_late_context_writes_until_its_label_is_reused() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.forget_client("main");
+    f.take_events();
+    f.run("jobs", "context", Some("late=1")).unwrap();
+    assert!(f.host.context_keys(Some("main")).is_empty());
+    let events = f.take_events();
+    assert!(
+        !events.iter().any(|(_, e)| matches!(e, PluginEvent::ContextChanged { .. })),
+        "no context event: {events:?}"
+    );
+
+    f.host.reopen_client("main");
+    f.run("jobs", "context", Some("fresh=1")).unwrap();
+    assert_eq!(f.host.context_keys(Some("main"))[0].key, "fresh");
+}
+
+#[test]
 fn stopping_a_plugin_withdraws_each_context_key_in_its_own_scope() {
     let f = fixture(Limits::default());
     f.install(&sample("jobs"));

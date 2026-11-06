@@ -1261,8 +1261,15 @@ impl PluginHost {
         self.shared.context_keys(client)
     }
 
-    /// Forgets the context keys scoped to window `label`, which closed.
+    /// A window labelled `label` is about to exist again (labels are reused).
+    pub fn reopen_client(&self, label: &str) {
+        self.shared.reopen_client(label);
+    }
+
+    /// Window `label` closed: drops its context keys and queued events, and ignores
+    /// context writes of commands still running for it.
     pub fn forget_client(&self, label: &str) {
+        self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
         self.shared.forget_client(label);
     }
 
