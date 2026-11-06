@@ -6376,5 +6376,6 @@
   "Force-with-lease push {source} to {target} was rejected. Force-with-lease push prevents overriding remote changes that haven't been fetched to the local repository. Fetch recent changes to verify that they can be discarded safely and repeat the push operation.": "将 {source} 以 force-with-lease 方式推送到 {target} 被拒绝。force-with-lease 推送可防止覆盖尚未获取到本地仓库的远程更改。请先获取最新更改，确认可以安全丢弃后再重新推送。",
   "Force push anyway": "仍然强制推送",
   "Stage and Retry": "暂存并重试",
-  "Show Files": "显示文件"
+  "Show Files": "显示文件",
+  "Unable to load image: {path}": "无法加载图片：{path}"
 }

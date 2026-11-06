@@ -47,11 +47,16 @@ const REPLY = [
   "```",
 ].join("\n");
 
-async function openReply(page: Page, text: string) {
+async function openReply(page: Page, text: string, imageData?: string) {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
   await page.evaluate(
-    async ({ task, text }) => {
+    async ({ task, text, imageData }) => {
+      if (imageData) {
+        const routePath = "/src/platform/tauriCore.ts";
+        const { setInvokeRoute } = await import(routePath);
+        setInvokeRoute((cmd: string) => (cmd === "fs_read_image" ? Promise.resolve(imageData) : null));
+      }
       // Paths go through variables: knip can't resolve these browser-absolute URLs.
       const storePath = "/src/features/agents/store.ts";
       const store = await import(storePath);
@@ -66,7 +71,7 @@ async function openReply(page: Page, text: string) {
       });
       store.dockTask(task.id);
     },
-    { task: TASK, text },
+    { task: TASK, text, imageData },
   );
   const reply = page.locator("[class*='_markdown_']").first();
   await reply.locator("h1, p").first().waitFor();
@@ -127,4 +132,20 @@ test("styles quotes, rules, images and task lists", async ({ page }) => {
   expect(await css(reply, "img", "max-width")).toBe("100%");
   // A checkbox stands in for the bullet.
   expect(await css(reply, "li:has(> input)", "list-style-type")).toBe("none");
+});
+
+test("loads local and web reply images", async ({ page }) => {
+  await page.route("https://images.example.com/code.gif", (route) =>
+    route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") }),
+  );
+  const reply = await openReply(
+    page,
+    "![Local QR](/tmp/code.png)\n\n![Web QR](https://images.example.com/code.gif)",
+    PIXEL,
+  );
+  for (const name of ["Local QR", "Web QR"]) {
+    await expect
+      .poll(() => reply.getByRole("img", { name }).evaluate((img: HTMLImageElement) => img.naturalWidth))
+      .toBe(1);
+  }
 });
