@@ -312,7 +312,7 @@ impl Shim {
                         "loadSession": true,
                         "promptCapabilities": { "image": true, "embeddedContext": true },
                         "sessionCapabilities": { "fork": {} },
-                        "_meta": { "openidea": { "rollback": true, "steer": true } },
+                        "_meta": { "openidea": { "rollback": true, "steer": true, "backgroundTasks": true } },
                     },
                     "agentInfo": { "name": "claude", "title": "Claude Code", "version": self.version() },
                     "authMethods": [],
@@ -394,6 +394,13 @@ impl Shim {
             "_openidea/steer" => {
                 let session = self.session(&params)?;
                 session.steer(params.get("prompt").cloned().unwrap_or_default()).map_err(invalid)?;
+                Ok(json!({}))
+            }
+            "_openidea/stop_task" => {
+                let session = self.session(&params)?;
+                let task = params.get("taskId").and_then(Value::as_str).ok_or_else(|| invalid("no taskId"))?;
+                let proc = session.st.lock().proc.clone().ok_or_else(|| internal("Claude Code is not running"))?;
+                rt.block_on(proc.control(json!({ "subtype": "stop_task", "task_id": task }))).map_err(internal)?;
                 Ok(json!({}))
             }
             "_openidea/rollback" => {
@@ -611,7 +618,8 @@ impl Session {
                 session.on_exit(&reader_proc);
             }
         });
-        let init = proc.control(json!({ "subtype": "initialize" })).await?;
+        // Stop ends the turn only: the client stops background tasks one by one.
+        let init = proc.control(json!({ "subtype": "initialize", "perTaskStopAffordance": true })).await?;
         let applied = proc.control(json!({ "subtype": "get_settings" })).await.unwrap_or_default();
         let chosen = {
             let mut st = self.st.lock();

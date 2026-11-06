@@ -566,6 +566,31 @@
   padding: 6px 12px 12px;
 }
 
+.background {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backgroundTask {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-row);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.backgroundText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .queue {
   display: flex;
   flex-direction: column;

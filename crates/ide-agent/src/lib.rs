@@ -54,6 +54,9 @@ const SESSION_STATE: [&str; 5] =
 pub(crate) const RETRY_UPDATE: &str = "openidea_retry";
 /// A native agent's own update: the usage limits of its account (see [`AgentLimit`]).
 pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
+/// A native agent's own update: the background tasks its session runs
+/// (see [`TaskState::background_tasks`]).
+pub(crate) const BACKGROUND_TASKS_UPDATE: &str = "openidea_background_tasks";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
@@ -209,6 +212,10 @@ struct TaskState {
     pending_rollback: u32,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
+    /// Background tasks the agent reported as running (`run_in_background` commands and
+    /// the like), as it sent them: unlike a turn they outlive it, so an idle release
+    /// waits for the last one. A (re)started process runs nothing yet.
+    background_tasks: Vec<Value>,
 }
 
 /// A running agent and its session.
@@ -244,6 +251,9 @@ struct Task {
     turn_started: AtomicBool,
     /// Turns sent so far: an idle release scheduled before the latest one is void.
     turns: AtomicU64,
+    /// Bumped when the agent's last background task finishes: an idle release scheduled
+    /// before that is void, the usual delay starts over from the report.
+    idle_epoch: AtomicU64,
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
@@ -302,6 +312,7 @@ impl AgentManager {
                         f.task.status = AgentStatus::Ready;
                     }
                     f.task.retry = None;
+                    f.task.background.clear();
                     let task = Task::restore(f, shared.clone());
                     task.state.lock().conversation.settle(now_ms());
                     tasks.insert(task.id.clone(), task);
@@ -470,6 +481,7 @@ impl AgentManager {
             capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
             resets_ms: None,
             retry: None,
+            background: Box::default(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -664,6 +676,7 @@ impl AgentManager {
                 queue: Vec::new(),
                 resets_ms: None,
                 retry: None,
+                background: Box::default(),
                 ..s.task.clone()
             };
             TaskFile {
@@ -802,6 +815,21 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Stops background task `background` of task `id`.
+    pub async fn stop_background(&self, id: &str, background: &str) -> IdeResult<()> {
+        let task = self.task(id)?;
+        let live = task.live.lock().clone().ok_or_else(|| IdeError::invalid("the agent is not running"))?;
+        if !live.capabilities.background_tasks {
+            return Err(IdeError::invalid("this agent can't stop a background task"));
+        }
+        let _: Value = live
+            .peer
+            .request("_openidea/stop_task", json!({ "sessionId": live.session, "taskId": background }), None)
+            .await
+            .map_err(|error| IdeError::internal(task.describe(error)))?;
+        Ok(())
+    }
+
     /// Answers permission request `permission` with option `option` (`None` cancels it).
     pub fn respond(&self, id: &str, permission: u32, option: Option<String>) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -914,6 +942,7 @@ impl Task {
                 before: Arc::new(file.before),
                 pending_rollback: file.pending_rollback,
                 busy: false,
+                background_tasks: Vec::new(),
             }),
             live: Mutex::new(None),
             connecting: tokio::sync::Mutex::new(()),
@@ -924,6 +953,7 @@ impl Task {
             cancel_pending: AtomicBool::new(false),
             turn_started: AtomicBool::new(false),
             turns: AtomicU64::new(0),
+            idle_epoch: AtomicU64::new(0),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
             flush_scheduled: AtomicBool::new(false),
@@ -958,6 +988,39 @@ impl Task {
             s.task.retry = retry;
         }
         self.emit_task();
+    }
+
+    /// Keeps the agent's background tasks that outlive its turn. Returns whether the last
+    /// one just finished, so the idle release starts over from this report.
+    fn set_background_tasks(&self, tasks: Vec<Value>) -> bool {
+        let (emptied, shown) = {
+            let mut state = self.state.lock();
+            if state.background_tasks == tasks {
+                return false;
+            }
+            let emptied = !state.background_tasks.is_empty() && tasks.is_empty();
+            let background = shown_background(&tasks, &state.task.background);
+            let shown = background != *state.task.background;
+            *state.task.background = background;
+            state.background_tasks = tasks;
+            if emptied {
+                // Void a release scheduled while the tasks still ran: it would stop the
+                // agent sooner than the usual delay after this one.
+                self.idle_epoch.fetch_add(1, Ordering::AcqRel);
+            }
+            (emptied, shown)
+        };
+        if shown {
+            self.emit_task();
+        }
+        emptied
+    }
+
+    fn clear_shown_background(&self) {
+        let cleared = !std::mem::take(&mut self.state.lock().task.background).is_empty();
+        if cleared {
+            self.emit_task();
+        }
     }
 
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
@@ -1078,17 +1141,30 @@ impl Task {
     /// Stops the agent's process once the task has stayed idle for [`IDLE_RELEASE`], so
     /// finished tasks don't keep an agent (and what it started) running. Only an agent that
     /// reloads its session: the next message starts it again with the conversation intact.
+    /// A turn's background tasks outlive it: the release waits for the last one, and the
+    /// delay runs again once the agent reports it done.
     fn release_when_idle(self: &Arc<Self>) {
         let turn = self.turns.load(Ordering::Acquire);
+        let epoch = self.idle_epoch.load(Ordering::Acquire);
         let delay = Duration::from_millis(self.shared.idle_release_ms.load(Ordering::Relaxed));
         let task = Arc::downgrade(self);
         self.shared.runtime.spawn(async move {
             tokio::time::sleep(delay).await;
             let Some(task) = task.upgrade() else { return };
             if task.turns.load(Ordering::Acquire) != turn
+                || task.idle_epoch.load(Ordering::Acquire) != epoch
                 || task.state.lock().busy
                 || !task.permissions.lock().is_empty()
             {
+                return;
+            }
+            // Stopping now would orphan what the agent still runs in the background: its
+            // result would never reach the conversation. Wait for the last task; when it
+            // is done, its report voids this schedule and starts the delay over.
+            let waiting = !task.state.lock().background_tasks.is_empty();
+            if waiting && task.live.lock().as_ref().is_some_and(|l| l.resumable && !l.peer.is_closed()) {
+                tracing::debug!("agent task {}: idle, waiting for its background tasks", task.id);
+                task.release_when_idle();
                 return;
             }
             let live = {
@@ -1098,6 +1174,7 @@ impl Task {
             if let Some(live) = live {
                 tracing::debug!("agent task {}: idle, stopping the agent until the next message", task.id);
                 live.peer.kill();
+                task.clear_shown_background();
             }
         });
     }
@@ -1116,6 +1193,7 @@ impl Task {
         if !gone && let Some(live) = self.live.lock().take() {
             live.peer.kill();
         }
+        self.clear_shown_background();
         match failure.limit {
             Some(resets) => {
                 self.state.lock().task.resets_ms = resets;
@@ -1356,6 +1434,9 @@ impl Task {
             s.task.config = options;
             s.task.capabilities = capabilities;
             s.session_id = Some(session_id.clone());
+            // The (re)started process runs nothing yet: whatever it reports next is all of it.
+            s.background_tasks = Vec::new();
+            s.task.background.clear();
         }
         self.persist();
         self.emit_task();
@@ -1445,6 +1526,16 @@ impl Task {
             if !self.replaying.load(Ordering::Acquire) {
                 let provider = self.state.lock().task.provider.clone();
                 self.shared.emit(AgentEvent::Limits { provider, limits: config::limits_of(update) });
+            }
+            return;
+        }
+        if kind == BACKGROUND_TASKS_UPDATE {
+            if !self.replaying.load(Ordering::Acquire) {
+                let tasks = update.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+                // The last one finished while the agent is up: the usual delay starts over.
+                if self.set_background_tasks(tasks) {
+                    self.release_when_idle();
+                }
             }
             return;
         }
@@ -1622,6 +1713,7 @@ impl Task {
         self.cancel_permissions();
         let live = self.live.lock().take()?;
         live.peer.kill();
+        self.clear_shown_background();
         Some(live.peer)
     }
 }
@@ -1735,6 +1827,19 @@ fn client_info() -> Value {
 }
 
 /// What the agent said it can do, and whether it takes embedded files.
+fn shown_background(tasks: &[Value], known: &[AgentBackgroundTask]) -> Vec<AgentBackgroundTask> {
+    let now = now_ms();
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let id = task.get("task_id")?.as_str()?.to_owned();
+            let started_ms = known.iter().find(|seen| seen.id == id).map_or(now, |seen| seen.started_ms);
+            let text = |key: &str| task.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+            Some(AgentBackgroundTask { id, kind: text("task_type"), description: text("description"), started_ms })
+        })
+        .collect()
+}
+
 fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
     let meta = |p: &str| init.meta(p).and_then(Value::as_bool) == Some(true);
     let capabilities = AgentCapabilities {
@@ -1742,6 +1847,7 @@ fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
         fork: init.session("fork"),
         rollback: meta("/openidea/rollback"),
         steer: meta("/openidea/steer"),
+        background_tasks: meta("/openidea/backgroundTasks"),
     };
     (capabilities, init.prompt("embeddedContext"))
 }

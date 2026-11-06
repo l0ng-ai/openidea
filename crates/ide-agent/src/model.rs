@@ -34,6 +34,8 @@ pub struct AgentCapabilities {
     pub rollback: bool,
     /// A message can join the running turn instead of waiting for it.
     pub steer: bool,
+    /// It reports its background tasks and stops them one by one.
+    pub background_tasks: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -89,6 +91,22 @@ pub struct AgentTask {
     /// by its next output or any status change.
     #[serde(default)]
     pub retry: Option<AgentRetry>,
+    /// What the agent runs in the background (shells, subagents, monitors), oldest first.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub background: Box<Vec<AgentBackgroundTask>>,
+}
+
+/// A task the agent runs in the background while the conversation goes on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBackgroundTask {
+    pub id: String,
+    /// What it is, as the agent names it (`local_bash`, `local_agent`, `monitor`…).
+    pub kind: String,
+    pub description: String,
+    /// When the client first saw it (ms since the epoch).
+    pub started_ms: f64,
 }
 
 /// An API request the agent is about to retry.
