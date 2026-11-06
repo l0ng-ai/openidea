@@ -646,12 +646,13 @@ pub static TOOLS: &[ToolSpec] = &[
         // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup (lombok#4059);
         // ECJ 3.46.200 keeps the constructor call in a constructor's statements, which
         // @SneakyThrows / @NonNull must not wrap or precede (lombok#4089).
-        // Return to Maven Central once an official release includes both.
+        // Builders on compact record constructors need the patch in java/lombok/patches.
+        // Return to Maven Central once an official release includes all of these fixes.
         // Source commit, build instructions and checksum: java/lombok/README.md.
         method: Method::Bundled {
-            filename: "lombok-1.18.48-openidea.2.jar",
-            version: "1.18.48-openidea.2",
-            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.2.jar"),
+            filename: "lombok-1.18.48-openidea.3.jar",
+            version: "1.18.48-openidea.3",
+            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.3.jar"),
         },
         fallback: None,
         version: V,
