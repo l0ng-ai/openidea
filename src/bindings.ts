@@ -28,6 +28,7 @@ export const commands = {
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
 	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
 	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
+	projectTrustAddLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_add_location", { path })),
 	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
 	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
@@ -424,9 +425,12 @@ export const commands = {
 	/**
 	 *  References of the symbol at `pos`. `project_wide` also searches project files
 	 *  outside the language server's analysis scope; bulk scans over many symbols
-	 *  leave it off. Cancel with `cancel_request(request)`.
+	 *  leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
+	 *  are not searched; with it, those found in the sources arrive on `on_partial` before
+	 *  the slower search for the rest, and the result has them all. Cancel with
+	 *  `cancel_request(request)`.
 	 */
-	lspReferences: (request: RequestId, doc: DocId, pos: Pos, includeDeclaration: boolean, projectWide: boolean) => typedError<References, IdeError>(__TAURI_INVOKE("lsp_references", { request, doc, pos, includeDeclaration, projectWide })),
+	lspReferences: (request: RequestId, doc: DocId, pos: Pos, includeDeclaration: boolean, projectWide: boolean, libraries: boolean, onPartial: Channel<References>) => typedError<References, IdeError>(__TAURI_INVOKE("lsp_references", { request, doc, pos, includeDeclaration, projectWide, libraries, onPartial })),
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	lspWorkspaceSymbols: (request: RequestId, query: string) => typedError<WorkspaceSymbol[], IdeError>(__TAURI_INVOKE("lsp_workspace_symbols", { request, query })),
 	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
@@ -792,7 +796,7 @@ export const commands = {
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
-	sdkPythonEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective")),
+	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
 	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
 	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
@@ -897,7 +901,11 @@ export const commands = {
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**  A window vetoed the quit (user cancelled its unsaved-changes prompt). */
 	appCancelQuit: () => __TAURI_INVOKE<void>("app_cancel_quit"),
-	/**  Sets the menu's labels / shortcut text (on locale or keymap change) and rebuilds it. */
+	/**
+	 *  Sets the menu's labels / shortcut text and rebuilds it when they changed.
+	 *  Focusing another project window re-pushes the same shared menu; an identical
+	 *  config must not call `set_menu`, which redraws the macOS menu bar.
+	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
 	/**  Rebuilds the menu (e.g. after the recent-projects list changed). */
 	menuRefresh: () => __TAURI_INVOKE<void>("menu_refresh"),
@@ -2109,6 +2117,8 @@ export type ClassifiedReference = {
 	access?: ReferenceAccess | null,
 	location: Location,
 	kind: ReferenceKind,
+	/**  The usage's line, when the server has it at hand (a library class's). */
+	text?: string | null,
 };
 
 export type ClearCachesResult = {
@@ -6174,6 +6184,8 @@ export type References = {
 	classified?: ClassifiedReference[],
 	locations: Location[],
 	incomplete: ReferencesIncomplete | null,
+	/**  The dependencies and the JDK were not searched (asked for without `libraries`). */
+	librariesSkipped?: boolean,
 };
 
 /**  Why a references search may have missed usages. */
@@ -6470,7 +6482,10 @@ export type RunConfig_Serialize = {
 export type RunExtras = RunExtras_Serialize | RunExtras_Deserialize;
 
 export type RunExtras_Deserialize = {
-	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	/**
+	 *  Owning module, independent of the working directory; also supplies a JVM application's classpath.
+	 *  Empty means the project root.
+	 */
 	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
@@ -6509,7 +6524,10 @@ export type RunExtras_Deserialize = {
 };
 
 export type RunExtras_Serialize = {
-	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	/**
+	 *  Owning module, independent of the working directory; also supplies a JVM application's classpath.
+	 *  Empty means the project root.
+	 */
 	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },

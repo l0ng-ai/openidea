@@ -4032,8 +4032,6 @@
   "Rename '{name}'": "'{name}' 이름 변경",
   "Change '{word}' to": "'{word}'을(를) 다음으로 변경",
   "Rename '{word}' to": "'{word}'의 이름을 다음으로 변경",
-  "Save '{word}' to project-level dictionary": "'{word}'을(를) 프로젝트 수준 사전에 저장",
-  "Save '{word}' to application-level dictionary": "'{word}'을(를) 애플리케이션 수준 사전에 저장",
   "Typo: In word '{word}'": "단어 '{word}' 내 오타",
   "Choose Super Class or Interface ({count} found)": "슈퍼 클래스 또는 인터페이스 선택({count}개 찾음)",
   "Choose Super Method of {name} ({count} found)": "{name}의 슈퍼 메서드 선택({count}개 찾음)",

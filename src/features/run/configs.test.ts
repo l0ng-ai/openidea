@@ -235,6 +235,43 @@ describe("context configuration", () => {
     ]);
   });
 
+  it("does not borrow another Go module's run or test configuration", () => {
+    const go = [
+      cfg({ id: "go:run:api", kind: "go", command: "go", args: ["run", "."], cwd: "api" }),
+      cfg({ id: "go:test:api", kind: "go", command: "go", args: ["test", "./..."], cwd: "api", isTest: true }),
+    ];
+    expect(contextConfig("other/main.go", go, "package main\nfunc main() {}")).toBeNull();
+    expect(contextConfig("other/main_test.go", go, "package main")).toBeNull();
+  });
+
+  it("uses a nested Go module even when only the parent has a run configuration", () => {
+    const go = [
+      cfg({ id: "go:run", kind: "go", command: "go", args: ["run", "."] }),
+      cfg({ id: "go:test:api", kind: "go", command: "go", args: ["test", "./..."], cwd: "api", isTest: true }),
+    ];
+    expect(contextConfig("api/tool/main.go", go, "package main\nfunc main() {}")).toMatchObject({
+      cwd: "api",
+      args: ["run", "./tool"],
+    });
+  });
+
+  it("does not pass typed Go test flags to an application build", () => {
+    const go = cfg({
+      id: "user:go-test",
+      kind: "go",
+      command: "go",
+      args: ["test", "-count=1", "./..."],
+      isTest: true,
+      params: { goKind: "test", module: "api", toolArgs: "-count=1" },
+    });
+    expect(contextConfig("api/cmd/server/main.go", [go], "package main\nfunc main() {}")).toMatchObject({
+      cwd: "api",
+      args: ["run", "./cmd/server"],
+      params: undefined,
+      isTest: false,
+    });
+  });
+
   it("finds run targets and script invocations", () => {
     expect(contextConfig("src/bin/server.rs", configs)!.id).toBe("cargo:run:server");
     expect(contextConfig("tools/gen.py", configs)).toMatchObject({

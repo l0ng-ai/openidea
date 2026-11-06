@@ -23,7 +23,7 @@ export const notebookBackend = {
     request: RequestId,
     output: Channel<NotebookOutputEvent>,
   ) => call(commands.notebookExecute(id, cells, python, request, output)),
-  environments: () => Promise.all([call(commands.sdkDetect("python")), call(commands.sdkPythonEffective())]),
+  environments: () => Promise.all([call(commands.sdkDetect("python")), call(commands.sdkPythonEffective(null))]),
   cancel: (request: RequestId) => commands.cancelRequest(request),
 };
 

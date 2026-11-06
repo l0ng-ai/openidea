@@ -7,8 +7,9 @@ use objc2::{
     rc::Retained,
     runtime::{AnyClass, AnyObject, Imp, ProtocolObject, Sel},
 };
-use objc2_app_kit::{NSWindow, NSWindowUserTabbingPreference};
+use objc2_app_kit::{NSWindow, NSWindowAnimationBehavior, NSWindowUserTabbingPreference};
 use objc2_foundation::{NSNotificationCenter, NSObjectProtocol, NSRect};
+use std::cell::Cell;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 fn tabbing_preference(app: &AppHandle) -> IdeResult<TabbingPreference> {
@@ -275,16 +276,102 @@ type ConstrainFrameRect = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, NSRec
 
 static NATIVE_CONSTRAIN_FRAME_RECT: std::sync::OnceLock<ConstrainFrameRect> = std::sync::OnceLock::new();
 
+thread_local! {
+    /// Native window whose next frame assignment must keep the rectangle it was given.
+    static EXACT_FRAME: Cell<usize> = const { Cell::new(0) };
+}
+
+struct ExactFrame(usize);
+
+impl ExactFrame {
+    fn begin(native: usize) -> Self {
+        EXACT_FRAME.with(|slot| slot.set(native));
+        Self(native)
+    }
+}
+
+impl Drop for ExactFrame {
+    fn drop(&mut self) {
+        EXACT_FRAME.with(|slot| {
+            if slot.get() == self.0 {
+                slot.set(0);
+            }
+        });
+    }
+}
+
+/// Copies `from`'s frame onto `to`. `setFrame:display:animate:` finishes before it returns;
+/// tao's position and size setters only schedule the change.
+pub fn copy_window_frame(from: &WebviewWindow, to: &WebviewWindow) -> tauri::Result<()> {
+    apply_window_frame(from, to, false)
+}
+
+/// Copies the frame and orders `to` front before AppKit can animate or constrain it.
+/// A later `show` runs `constrainFrameRect:toScreen:` and slides a titled window into place.
+pub fn present_window_frame(from: &WebviewWindow, to: &WebviewWindow) -> tauri::Result<()> {
+    apply_window_frame(from, to, true)
+}
+
+fn apply_window_frame(from: &WebviewWindow, to: &WebviewWindow, show: bool) -> tauri::Result<()> {
+    if MainThreadMarker::new().is_some() {
+        return apply_window_frame_on_main(from, to, show);
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let from = from.clone();
+    let to = to.clone();
+    to.clone().run_on_main_thread(move || {
+        let _ = tx.send(apply_window_frame_on_main(&from, &to, show));
+    })?;
+    rx.recv().map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?
+}
+
+fn apply_window_frame_on_main(from: &WebviewWindow, to: &WebviewWindow, show: bool) -> tauri::Result<()> {
+    let source_pointer = from.ns_window()?;
+    let target_pointer = to.ns_window()?;
+    unsafe {
+        let source = &*source_pointer.cast::<NSWindow>();
+        let target = &*target_pointer.cast::<NSWindow>();
+        let frame = source.frame();
+        let current = target.frame();
+        let differs = frame.origin.x != current.origin.x
+            || frame.origin.y != current.origin.y
+            || frame.size.width != current.size.width
+            || frame.size.height != current.size.height;
+        if !differs && !show {
+            return Ok(());
+        }
+        // Zoom and ordering use the window's animation behavior. `animate: false` alone does not
+        // stop a zoomed window from sliding to the new frame as it is shown.
+        let behavior = target.animationBehavior();
+        target.setAnimationBehavior(NSWindowAnimationBehavior::None);
+        let result = (|| {
+            let _exact = ExactFrame::begin(target_pointer as usize);
+            if differs {
+                target.setFrame_display_animate(frame, false, false);
+            }
+            if show {
+                to.show()?;
+                to.set_focus()?;
+            }
+            Ok(())
+        })();
+        target.setAnimationBehavior(behavior);
+        result
+    }
+}
+
 /// AppKit keeps a titled window's top edge below the menu bar, and on a notched display below the
 /// camera housing, whenever the window is placed, shown or resized. A window in simple fullscreen
-/// is titled for its buttons but must still cover the whole screen.
+/// is titled for its buttons but must still cover the whole screen. A group-tab frame copy also
+/// keeps the rectangle it was given, so the window about to be shown is not shifted.
 unsafe extern "C-unwind" fn constrain_frame_rect(
     this: *mut AnyObject,
     selector: Sel,
     frame: NSRect,
     screen: *mut AnyObject,
 ) -> NSRect {
-    if COVERING.with_borrow(|windows| windows.values().any(|covering| covering.native == this as usize)) {
+    let exact = EXACT_FRAME.with(|slot| slot.get() == this as usize);
+    if exact || COVERING.with_borrow(|windows| windows.values().any(|covering| covering.native == this as usize)) {
         return frame;
     }
     match NATIVE_CONSTRAIN_FRAME_RECT.get() {
