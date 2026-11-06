@@ -18,6 +18,7 @@ install-hint = "npm i -g @vue/language-server typescript@6"
 # reaches it through `tsserver/request`, which the client forwards to vtsls.
 [[language-servers]]
 name = "vtsls"
+tsserver-project = true
 command = "vtsls"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]

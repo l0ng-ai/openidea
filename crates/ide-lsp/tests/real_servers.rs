@@ -135,6 +135,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     };
@@ -405,6 +406,7 @@ async fn typescript_language_server_end_to_end() {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     };
@@ -455,6 +457,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }

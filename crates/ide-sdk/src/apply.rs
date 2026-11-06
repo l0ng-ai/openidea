@@ -2,7 +2,7 @@
 //! language servers, run configurations and terminals.
 
 use crate::discover::{project_venv_python, workspace_tsdk};
-use crate::exec::{path_with, search_path};
+use crate::exec::{path_with, search_path, which};
 use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
@@ -817,6 +817,14 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
+        cfg.tsserver_project_extras.extensions = vec![vue::EXTENSION.into()];
+    }
+    if name == "vtsls"
+        && cfg.tsserver_project
+        && !server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file())
+    {
+        let node = node_dir(root, s).map(|d| d.join(exe("node"))).filter(|p| p.is_file()).or_else(|| which("node"));
+        cfg.tsserver_project_extras.paths = vue::cli_paths(server_root, node.as_deref());
     }
     if name == vue::SERVER {
         configure_vue_typescript(cfg, root, server_root, s);
@@ -916,6 +924,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
