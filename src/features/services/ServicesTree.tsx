@@ -216,9 +216,12 @@ export function ServicesTreeView() {
                   providers.find((p) => p.id === index.get(node.key)?.provider)?.expand?.(node, open);
                 }}
                 selected={selectedKeys}
-                onSelectionChange={(keys, lead) =>
-                  useServicesTree.setState({ selectedKeys: keys, selectedKey: keys.size ? (lead?.key ?? null) : null })
-                }
+                onSelectionChange={(keys, lead) => {
+                  const selectedKey = keys.size ? (lead?.key ?? null) : null;
+                  const changed = selectedKey !== useServicesTree.getState().selectedKey;
+                  useServicesTree.setState({ selectedKeys: keys, selectedKey });
+                  if (lead && changed) providers.find((p) => p.id === index.get(lead.key)?.provider)?.select?.(lead);
+                }}
                 renderNode={(n, state) => <Row item={n} state={state} />}
                 onActivate={(n) => {
                   const p = index.get(n.key);

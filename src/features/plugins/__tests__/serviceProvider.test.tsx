@@ -75,6 +75,8 @@ describe("plugin service providers", () => {
     const { events } = backend();
     const { provider, roots: nodes } = await roots("p");
     const nginx = nodes[0]!.children![0]!.children![0]!;
+    provider.select?.(nginx);
+    await waitFor(() => expect(events).toContainEqual(["p", "kube", { kind: "select", key: "pod:default/nginx" }]));
     provider.activate?.(nginx);
     await waitFor(() => expect(events).toContainEqual(["p", "kube", { kind: "activate", key: "pod:default/nginx" }]));
     provider.actions?.(nginx)[0]?.run();

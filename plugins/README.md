@@ -498,9 +498,10 @@ location = "services"
 optional = ["process:kubectl"]
 ```
 
-The items of the view's `tree` are Services nodes; its toolbar buttons show
-while one of them is selected (a click sends `Select(key)`, then
-`Button(id)`), and activate / expand / collapse arrive as in a tool window.
+The items of the view's `tree` are Services nodes; select / activate /
+expand / collapse arrive as in a tool window, and its toolbar buttons show
+while one of them is selected (with several selected, a click sends
+`Select(key)` then `Button(id)` for each).
 For the selected node the IDE renders the pane beside the tree with the same
 `render`, under the view id `"<view>/<item key>"` (view ids can't contain
 `/`; `views::split_detail` splits it), and sends that pane's events to

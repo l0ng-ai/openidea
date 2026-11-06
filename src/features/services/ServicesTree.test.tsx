@@ -12,6 +12,7 @@ const roots: ServiceTreeItem[] = ["one", "two", "three"].map((key) => ({ key, la
 const run = vi.fn();
 const stop = vi.fn();
 const remove = vi.fn();
+const select = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -32,6 +33,7 @@ beforeEach(() => {
             { label: "Remove from Services", run: () => remove(item.key) },
           ],
           detail: ({ item }) => <div data-testid="detail">{item.label}</div>,
+          select: (item) => select(item.key),
         },
       ],
     ]),
@@ -65,6 +67,13 @@ describe("Services selection → actions", () => {
     fireEvent.mouseDown(row("two"), { [modifier]: true });
     expect(selected()).toEqual([]);
     expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+  });
+
+  it("tells the provider which node became the lead selection", () => {
+    const { row } = setup();
+    fireEvent.mouseDown(row("one"));
+    fireEvent.mouseDown(row("two"));
+    expect(select.mock.calls).toEqual([["one"], ["two"]]);
   });
 
   it("Shift click selects a range; Stop skips disabled services", () => {

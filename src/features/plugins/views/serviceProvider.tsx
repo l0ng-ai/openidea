@@ -75,6 +75,7 @@ export function pluginServiceProvider(
           send({ kind: "button", id: b.id });
         },
       })),
+    select: (item) => send({ kind: "select", key: rawKey(item) }),
     activate: (item) => send({ kind: "activate", key: rawKey(item) }),
     expand: (item, expanded) => send({ kind: expanded ? "expand" : "collapse", key: rawKey(item) }),
     detail: Detail,

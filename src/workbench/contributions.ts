@@ -241,6 +241,8 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** A node of this provider became the lead selection. */
+  select?(item: ServiceTreeItem): void;
   /** A node of this provider was expanded or collapsed. */
   expand?(item: ServiceTreeItem, expanded: boolean): void;
   /** Right pane for a selected node. */
