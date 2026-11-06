@@ -266,7 +266,7 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
         openPopup({
           kind: "list",
           anchor: caretAnchor(view, offset),
-          title: "Choose Declaration",
+          title: tx`Choose Declaration`,
           items: await locationItems(plugin.targets),
           pin: pinToFind(view.state.sliceDoc(plugin.from, plugin.to), plugin.targets),
         });

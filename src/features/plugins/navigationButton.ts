@@ -12,7 +12,7 @@ async function openTargets(targets: Location[], element: HTMLElement) {
   const rect = element.getBoundingClientRect();
   openPopup({
     kind: "list",
-    title: "Choose Mapping Target",
+    title: tx`Choose Mapping Target`,
     anchor: { x: rect.left, y: rect.bottom + 2 },
     items: await locationItems(targets),
   });
