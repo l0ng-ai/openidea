@@ -125,6 +125,11 @@ impl Shared {
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
         let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
+        // A thinking level's values depend on the model (low/medium/high on one, none or a
+        // different set on another), but what ran last is remembered wholesale — after a
+        // model switch the New Task page would offer the previous model's levels. Until the
+        // session reports the new model's own, don't show the option at all.
+        config.retain(|o| o.category.as_deref() != Some("thought_level"));
         config::add_client_options(provider, &mut config);
         if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
             && let Some(o) = config.iter_mut().find(|c| c.id == o)

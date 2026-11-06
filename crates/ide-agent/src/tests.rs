@@ -11,6 +11,8 @@ struct FakeAgent {
     calls: Mutex<Vec<String>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
+    /// Config options `session/new` reports after the model one (per-model efforts, say).
+    extra_options: Mutex<Vec<Value>>,
 }
 
 impl FakeAgent {
@@ -94,10 +96,15 @@ impl Handler for FakeAgent {
                 Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !self.no_load,
                     "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true}}}}))
             }
-            "session/new" => Ok(json!({"sessionId": "s1",
+            "session/new" => {
+                let mut options = vec![json!({"id": "model", "category": "model", "type": "select",
+                    "currentValue": "big",
+                    "options": [{"value": "big", "name": "Big"}, {"value": "small", "name": "Small"}]})];
+                options.extend(self.extra_options.lock().iter().cloned());
+                Ok(json!({"sessionId": "s1",
                 "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
-                "configOptions": [{"id": "model", "category": "model", "type": "select", "currentValue": "big",
-                    "options": [{"value": "big", "name": "Big"}, {"value": "small", "name": "Small"}]}]})),
+                "configOptions": options}))
+            }
             "session/fork" => Ok(json!({"sessionId": "s2"})),
             "_openidea/rollback" | "_openidea/steer" => {
                 let detail = params.get("turns").cloned().unwrap_or_else(|| params["prompt"][0]["text"].clone());
@@ -786,6 +793,35 @@ async fn usage_limits_and_late_settings() {
     assert!(agent.calls.lock().iter().any(|c| c == "session/set_config_option \"high\""));
     let config = mgr.task(&task.id).unwrap().state.lock().task.config.clone();
     assert_eq!(config.iter().find(|o| o.id == "effort").unwrap().current.as_deref(), Some("high"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_settings_drop_per_model_choices_for_the_next_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    // The effort list depends on the model: what the last session ran means nothing once
+    // the user picks another model, so the New Task page shows the option without a choice.
+    *agent.extra_options.lock() = vec![json!({"id": "effort", "category": "thought_level",
+        "type": "select", "currentValue": "high",
+        "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]})];
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let provider = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+    assert!(provider.config.iter().all(|o| o.id != "effort"), "a per-model option isn't offered stale");
+    let model = provider.config.iter().find(|o| o.id == "model").unwrap();
+    assert_eq!(model.current.as_deref(), Some("big"), "the model choice survives");
 }
 
 #[test]
