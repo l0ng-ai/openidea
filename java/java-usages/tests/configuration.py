@@ -159,11 +159,28 @@ try:
     send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': file.as_uri(), 'languageId': 'java', 'version': 1, 'text': source}}})
     request('java/buildWorkspace', True)
     assert 'openidea.java.configuration' in init['capabilities']['executeCommandProvider']['commands'], init
+    def warmup(action='start'):
+        return request('workspace/executeCommand', {'command': 'openidea.java.configuration.warmup', 'arguments': [action, [(project / 'application.yml').as_uri()]]})
+    # Queuing is cheap and idempotent; the index is built by a background job.
+    queued_at = time.perf_counter()
+    queued = warmup()
+    assert queued['scheduled'] and queued['pending'] > 0 and not queued['completed'], queued
+    assert warmup()['pending'] == queued['pending'], 'a repeated start queued the project twice'
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        warmed = warmup('status')
+        if not warmed['scheduled']: break
+        time.sleep(.1)
+    assert not warmed['scheduled'] and warmed['completed'], warmed
+    assert warmup()['pending'] == 0, 'a repeated start queued a warmed project again'
+    prewarm_seconds = time.perf_counter() - queued_at
     results = {}
     for key in ['app', 'vendor', 'app.time-out', 'app.enabled', 'app.nested.url', 'app.clients[0].url', 'app.routes.east.url', 'app.tags[0]', 'app.labels.region', 'app.labels[region.name]', 'constructor.remote-name', 'record.name', 'bean.url', 'app.backup', 'app.required', 'vendor.port', 'extra.url']:
         start = time.perf_counter()
         result = query(key)
         results[key] = {'seconds': time.perf_counter() - start, 'response': result}
+        if key == 'app':
+            assert result['generation'] in warmed['completed'].values(), ('the first lookup rebuilt the warmed index', result, warmed)
         assert result['locations'], (key, result)
     attached = request('java/classFileContents', {'uri': results['vendor.port']['response']['locations'][0]['uri']})
     assert attached and 'LibrarySettings' in attached and 'port' in attached, attached
@@ -238,7 +255,9 @@ try:
     send({'jsonrpc': '2.0', 'method': 'textDocument/didClose', 'params': {'textDocument': {'uri': file.as_uri()}}})
     restored = query('app.nested.url')
     assert restored['locations'], restored
-    evidence = {'stress': os.environ.get('OPENIDEA_CONFIGURATION_STRESS') == '1', 'editRebuildMs': edit_ms, 'cases': results, 'warmMedianMs': sorted(warm)[len(warm)//2] * 1000, 'warmMaxMs': max(warm) * 1000, 'generations': [generation, after_save, after_close]}
+    cancelled = warmup('cancel')
+    assert not cancelled['scheduled'] and cancelled['pending'] == 0, cancelled
+    evidence = {'stress': os.environ.get('OPENIDEA_CONFIGURATION_STRESS') == '1', 'prewarmSeconds': prewarm_seconds, 'editRebuildMs': edit_ms, 'cases': results, 'warmMedianMs': sorted(warm)[len(warm)//2] * 1000, 'warmMaxMs': max(warm) * 1000, 'generations': [generation, after_save, after_close]}
     (work / 'evidence.json').write_text(json.dumps(evidence, indent=2))
     print(json.dumps(evidence, indent=2))
 finally:

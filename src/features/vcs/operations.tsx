@@ -15,6 +15,9 @@ import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, fileCount } from "./model";
 import { runGitOperation, runOp } from "./ops";
+import { loadLogDetails } from "./logDetails";
+import { isProtectedBranch } from "./remoteUi";
+import { showLocalChanges } from "./commitUi";
 import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -78,6 +81,38 @@ export function operationControls(op: InProgress): Array<"continue" | "skip" | "
 export function controlLabel(op: InProgress, control: "continue" | "skip" | "abort"): string {
   if (control === "skip") return "Skip Commit";
   return `${control === "continue" ? "Continue" : "Abort"} ${OP_NOUN[op]}`;
+}
+
+/** Why `git rebase --continue` refused (see the backend's UNSTAGED_CHANGES_PREVENT_REBASE). */
+const UNSTAGED_CHANGES_PREVENT_REBASE = "There are unstaged changes in tracked files preventing rebase from continuing";
+
+/**
+ * Links of the balloon of an operation that failed and is still stopped: Abort, and for
+ * a rebase held up by unstaged changes, Stage and Retry (stages the tracked files'
+ * changes and continues) and Show Files.
+ */
+export function stoppedActions(op: InProgress, message: string): Array<{ label: string; run: () => void }> {
+  if (!inProgress()) return [];
+  const abort = { label: "Abort", run: () => void controlOperation("abort", op) };
+  if (op !== "rebase" || !message.includes(UNSTAGED_CHANGES_PREVENT_REBASE)) return [abort];
+  return [
+    {
+      label: "Stage and Retry",
+      run: () =>
+        void runGitOperation(
+          { op: "stageAndContinue" },
+          {
+            progress: "Continuing rebase",
+            success: "Rebase continued",
+            failure: tx`${controlLabel(op, "continue")} failed`,
+            onError: conflictsInstead,
+            errorActions: (m) => stoppedActions(op, m),
+          },
+        ),
+    },
+    { label: "Show Files", run: () => showLocalChanges() },
+    abort,
+  ];
 }
 
 /** Opens the conflicts dialog instead of an error balloon when the operation stopped on conflicts. */
@@ -168,6 +203,7 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
       success,
       failure: tx`${controlLabel(op, control)} failed`,
       onError: control === "abort" ? undefined : conflictsInstead,
+      errorActions: control === "abort" ? undefined : (message) => stoppedActions(op, message),
     },
   );
   // A rebase that continued and stopped again (next conflict) is reported by the conflicts listener.
@@ -238,8 +274,20 @@ export async function cherryPick(commits: Commit[]) {
   const ordered = newestFirst(commits).reverse();
   const label =
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
+  // Commits already pushed to a protected branch get "(cherry picked from commit …)".
+  const remoteBranches = new Set(
+    useVcs
+      .getState()
+      .branches.filter((b) => b.remote)
+      .map((b) => b.name),
+  );
+  const fromProtected = async (c: Commit) =>
+    (await loadLogDetails(c).catch(() => null))?.containingBranches.some(
+      (b) => remoteBranches.has(b) && isProtectedBranch(b.slice(b.indexOf("/") + 1)),
+    ) ?? false;
+  const recordOrigin = (await Promise.all(ordered.map(fromProtected))).every(Boolean);
   await runGitOperation(
-    { op: "cherryPick", commits: ordered.map((c) => c.id) },
+    { op: "cherryPick", commits: ordered.map((c) => c.id), recordOrigin },
     {
       progress: "Cherry-picking",
       success: tx`Cherry-picked ${label}`,

@@ -880,7 +880,7 @@ mod tests {
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
         let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
         assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
-        let patched = Path::new("/managed/lombok-1.18.48-openidea.2.jar");
+        let patched = Path::new("/managed/lombok-1.18.48-openidea.3.jar");
         let mut fixed = jdtls();
         configure_jdtls(
             &mut fixed,
@@ -894,6 +894,23 @@ mod tests {
             Some(patched),
         );
         assert_ne!(data(&cfg), data(&fixed), "the patch must rebuild classes compiled with the official agent");
+        let mut previous = jdtls();
+        configure_jdtls(
+            &mut previous,
+            Path::new("/p"),
+            Path::new("/data"),
+            &[],
+            None,
+            None,
+            JDTLS_MIN_JAVA,
+            &[],
+            Some(Path::new("/managed/lombok-1.18.48-openidea.2.jar")),
+        );
+        assert_ne!(
+            data(&previous),
+            data(&fixed),
+            "the new patch must rebuild classes compiled with the previous bundle"
+        );
         let before = cfg.clone();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], Some(jar));
         assert_eq!(cfg, before, "idempotent");
@@ -1169,7 +1186,7 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.5.0.jar");
+    let extension = data_dir.join("java-usages-1.6.0.jar");
     let bytes = include_bytes!("../../../java/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         clean_usages_bundles(data_dir, &extension);

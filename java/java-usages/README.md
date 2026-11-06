@@ -57,7 +57,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.5.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.6.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -83,6 +83,10 @@ Version 1.5.0 answers `{locations, complete}`: `complete` when the type is decla
 dependencies' implementations after the first ones. The search also covers the project's Kotlin
 classes attached by the Kotlin bridge; its reproducible SHA-256 is
 `7588748c2797f9da2beb209714a75c29b4e31b155f095329bfb7e399d807c20a`.
+Version 1.6.0 adds `openidea.java.configuration.warmup`, which builds configuration indexes in a
+low-priority background job after import, and builds them under cancellable per-project locks
+instead of one global lock; its reproducible SHA-256 is
+`33cfa1bb8489247ffeb6fc8249966c8a2955b7b2858c8169a70486eb70ade696`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

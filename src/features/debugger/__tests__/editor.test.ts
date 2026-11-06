@@ -191,6 +191,17 @@ describe("breakpoint gutter clicks", () => {
     expect(breakpointsOf(ctx.path)[0]).toMatchObject({ line: 0, temporary: true });
   });
 
+  it("adds nothing on a blank line but still removes a breakpoint there", () => {
+    localStorage.clear();
+    loadBreakpoints("/proj");
+    const view = makeView("\na");
+    for (const init of [{}, { altKey: true }, { shiftKey: true }]) click(view, init);
+    expect(breakpointsOf(ctx.path)).toHaveLength(0);
+    toggleBreakpoint(ctx.path, 0);
+    click(view, {});
+    expect(breakpointsOf(ctx.path)).toHaveLength(0);
+  });
+
   it("middle-click enables / disables an existing breakpoint", () => {
     localStorage.clear();
     loadBreakpoints("/proj");

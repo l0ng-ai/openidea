@@ -48,6 +48,21 @@ export function showCreatePatchForChanges(paths?: readonly string[]) {
   openDialog((close) => <CreatePatchDialog origin={{ kind: "changes", files }} onClose={close} />);
 }
 
+/** Copy as Patch to Clipboard: the selected local changes, without a dialog. */
+export async function copyChangesAsPatch(paths: readonly string[]) {
+  const files = defaultChangeFiles(paths);
+  if (!files.length) return;
+  await saveAll();
+  await runOp(
+    tx("Create patch"),
+    async () => {
+      const source: PatchSource = { from: "changes", paths: files.map((f) => stripSlash(f.path)), reverse: false };
+      await navigator.clipboard.writeText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
+    },
+    { success: "Patch copied to the clipboard", refresh: false },
+  );
+}
+
 export function showCreatePatchForCommits(commits: Commit[]) {
   if (!commits.length) return;
   openDialog((close) => <CreatePatchDialog origin={{ kind: "commits", commits }} onClose={close} />);

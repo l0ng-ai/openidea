@@ -18,6 +18,7 @@ import {
 import { classFileBreakpointReason } from "@/platform/classFiles";
 import { tx } from "@/platform/i18n";
 import { showStatusInfo } from "@/workbench/contributions";
+import { lineHasCode } from "../breakpoints/codeLines";
 import { canPlaceBreakpoint } from "../breakpoints/languages";
 import {
   removeSpecial,
@@ -237,9 +238,10 @@ export function breakpointGutter(ctx: EditorDocContext): Extension {
       }
 
       /**
-       * IDEA's gutter clicks: click toggles; on an empty line ⇧-click adds a non-suspending
-       * logging breakpoint and opens its properties, ⌥-click a temporary one. On an existing
-       * breakpoint only a plain (or ⌘/Ctrl) click removes it; middle-click enables/disables.
+       * IDEA's gutter clicks: click toggles; on a line without a breakpoint ⇧-click adds a
+       * non-suspending logging breakpoint and opens its properties, ⌥-click a temporary one.
+       * Blank and comment-only lines take none. On an existing breakpoint only a plain
+       * (or ⌘/Ctrl) click removes it; middle-click enables/disables.
        */
       onMouseDown = (e: MouseEvent) => {
         if ((e.button !== 0 && e.button !== 1) || !inBreakpointArea(e)) return;
@@ -276,6 +278,7 @@ export function breakpointGutter(ctx: EditorDocContext): Extension {
           else removeBreakpoint(path, bp!.id);
           return;
         }
+        if (!lineHasCode(this.view.state, line)) return;
         if (e.altKey) {
           addBreakpoint(path, line, { temporary: true });
           return;

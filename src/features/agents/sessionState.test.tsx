@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { EditorShownProvider } from "@/workbench/contributions";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor } from "./SessionEditor";
@@ -179,6 +180,20 @@ describe("a pending permission request in the conversation", () => {
 });
 
 describe("session state across tasks and hosts", () => {
+  it("leaves a task unread while its kept-alive tab is hidden, and reads it once shown", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    useAgents.setState({ unread: new Set(["A"]) });
+    const session = (shown: boolean) => (
+      <EditorShownProvider value={shown}>
+        <SessionEditor input={input("A")} />
+      </EditorShownProvider>
+    );
+    const { rerender } = render(session(false));
+    expect(useAgents.getState().unread.has("A")).toBe(true);
+    rerender(session(true));
+    expect(useAgents.getState().unread.has("A")).toBe(false);
+  });
+
   it("fetches a conversation once and shows it again from the store when its tab reopens", async () => {
     const entries = new Map(useAgents.getState().entries);
     entries.delete("A");

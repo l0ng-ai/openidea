@@ -41,6 +41,7 @@ import {
   checkOf,
   filesOf,
   groupFileNodes,
+  groupOf,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
@@ -51,9 +52,12 @@ import {
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
-import { moveToChangelist } from "./changelistsUi";
+import { commitFiles, moveToChangelist } from "./changelistsUi";
+import { acceptSide } from "./conflictsUi";
+import { copyChangesAsPatch } from "./patches";
 import {
   messageHistory,
+  pendingFixup,
   setAmend,
   setCommitDiffPreview,
   setDiffPreview,
@@ -63,6 +67,7 @@ import {
   type CommitTab,
 } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
+import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
@@ -243,6 +248,26 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
   const toIgnore = ignoreTargets(nodes, repos);
   const conflicted = files.filter((f) => f.unstaged === "conflicted");
   const items: MenuItem[] = [
+    ...(conflicted.length
+      ? [
+          {
+            label: "Accept Yours",
+            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "ours"))).then(() => refreshNow()),
+          },
+          {
+            label: "Accept Theirs",
+            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "theirs"))).then(() => refreshNow()),
+          },
+          { kind: "separator" as const },
+        ]
+      : []),
+    {
+      label: "Commit File…",
+      icon: "commit",
+      disabled: !files.some((f) => groupOf(f) === "changes"),
+      run: () => commitFiles(paths),
+    },
+    { kind: "separator" },
     { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
       label: "Jump to Source",
@@ -297,6 +322,7 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
       : []),
     { kind: "action", action: "vcs.shelve", arg: paths },
     { kind: "action", action: "vcs.createPatch", arg: paths },
+    { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
     { kind: "separator" },
     {
       label: "Show History",
@@ -762,7 +788,7 @@ export interface CommitRunner {
   clearEmptyError: () => void;
   /** Whether the Commit buttons are enabled. */
   canCommit: boolean;
-  run: (push: boolean) => Promise<void>;
+  run: (push: boolean, rebaseFixup?: boolean) => Promise<void>;
 }
 
 /**
@@ -774,7 +800,7 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
   const merging = useVcs((s) => s.branch?.operation === "merge");
   const [emptyError, setEmptyError] = useState(false);
   const [busy, setBusy] = useState(false);
-  const run = async (push: boolean) => {
+  const run = async (push: boolean, rebaseFixup = false) => {
     if (busy) return;
     // IDEA keeps Commit enabled and reports an empty message at the field.
     if (!useCommit.getState().message.trim() && !useCommit.getState().amend) {
@@ -784,10 +810,12 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
     }
     setBusy(true);
     try {
+      const fixup = rebaseFixup ? pendingFixup(useCommit.getState().message, useCommit.getState().fixupTarget) : null;
       const id = await commitChanges();
       if (id === undefined) return;
       onCommitted?.();
-      if (push) void pushAfterCommit();
+      if (fixup) void rebaseAfterFixup(fixup);
+      else if (push) void pushAfterCommit();
     } finally {
       setBusy(false);
     }
@@ -950,6 +978,8 @@ function CommitPanel({ included }: { included: number }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const runner = useCommitRunner(included);
   const { canCommit } = runner;
+  // After Fixup… / Squash Into…, the second button commits and autosquashes the target.
+  const fixup = useCommit((s) => pendingFixup(s.message, s.fixupTarget));
 
   return (
     <div className={styles.commit}>
@@ -958,16 +988,29 @@ function CommitPanel({ included }: { included: number }) {
         <Button variant="primary" disabled={!canCommit} onClick={() => void runner.run(false)} title="⌘↩">
           <T>{commitLabel(amend, checkProblems.length > 0)}</T>
         </Button>
-        <Button
-          className={styles.pushButton}
-          disabled={!canCommit || !!remoteBusy}
-          onClick={() => void runner.run(true)}
-          title="⌥⌘↩"
-        >
-          <span>
-            <T>{commitAndPushLabel(amend)}</T>
-          </span>
-        </Button>
+        {fixup ? (
+          <Button
+            className={styles.pushButton}
+            disabled={!canCommit}
+            onClick={() => void runner.run(false, true)}
+            title="Commit and Rebase"
+          >
+            <span>
+              <T>Commit and Rebase</T>
+            </span>
+          </Button>
+        ) : (
+          <Button
+            className={styles.pushButton}
+            disabled={!canCommit || !!remoteBusy}
+            onClick={() => void runner.run(true)}
+            title="⌥⌘↩"
+          >
+            <span>
+              <T>{commitAndPushLabel(amend)}</T>
+            </span>
+          </Button>
+        )}
         <span className={styles.grow} />
         <IconButton
           ref={optionsRef}

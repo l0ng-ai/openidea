@@ -73,6 +73,8 @@ export function activate(): () => void {
       icon: () => "toolwindow-agents",
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      // Rebuilding a long conversation on every switch back is slow.
+      keepAlive: true,
     }),
     registerEditorKind({
       kind: HOME_KIND,
