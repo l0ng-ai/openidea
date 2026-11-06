@@ -1,6 +1,10 @@
 /**
  * Agent messages: Markdown → sanitized HTML (marked + DOMPurify). Fenced code is
  * highlighted and gets a Copy button; inline code naming a file of the task opens it.
+ * Mermaid fences become `[data-mermaid]` placeholders drawn by the Markdown viewer's
+ * shared renderer after each render; the block keeps a Copy button of its own, since
+ * the drawn diagram hides the code block, and `onDiagramDrawn` lets the conversation
+ * follow the end when a diagram draws after the last streamed chunk.
  */
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { Marked } from "marked";
@@ -12,11 +16,24 @@ import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { hasMermaid, renderMermaidIn } from "@/features/viewers/markdown/mermaid";
 import { fileHref, pathLink, type PathLink } from "./conversation";
 import { loadImages } from "./markdownImages";
 import styles from "./Session.module.css";
 
-const marked = new Marked({ gfm: true, breaks: true });
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+const marked = new Marked({
+  gfm: true,
+  breaks: true,
+  renderer: {
+    code({ text, lang }) {
+      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() !== "mermaid") return false;
+      return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+    },
+  },
+});
 
 /** Rendered messages by text, least recently used first: reopening a conversation renders it again. */
 const rendered = new Map<string, string>();
@@ -62,6 +79,9 @@ function renderHtml(text: string): string {
     FORBID_TAGS: ["style", "form", "source"],
     FORBID_ATTR: ["style", "srcset"],
     ALLOW_DATA_ATTR: false,
+    // Only the mermaid placeholder written by the renderer above; data attributes
+    // quoted in a reply stay out.
+    ADD_ATTR: ["data-mermaid"],
   }) as HTMLElement;
   root.querySelectorAll("li").forEach(wrapLooseText);
   return root.innerHTML;
@@ -121,7 +141,6 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
     const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice("language-".length) ?? null;
     const text = (code.textContent ?? "").replace(/\n+$/, "");
     code.textContent = text;
-    void highlightInto(code, text, lang);
     const copy = document.createElement("button");
     copy.type = "button";
     copy.className = styles.codeCopy!;
@@ -130,6 +149,13 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
     copy.setAttribute("aria-label", label);
     copy.appendChild(iconNode("copy", 14));
     copy.dataset.copy = text;
+    if (pre.parentElement?.hasAttribute("data-mermaid")) {
+      // Mermaid source: not highlighted (the diagram draws over it), and the Copy
+      // button sits on the block — the drawn diagram hides the code block itself.
+      pre.parentElement.appendChild(copy);
+      return;
+    }
+    void highlightInto(code, text, lang);
     pre.appendChild(copy);
   });
   root.querySelectorAll<HTMLElement>("code").forEach((code) => {
@@ -151,11 +177,36 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
   };
 }
 
-export function Markdown({ text, cwd }: { text: string; cwd: string }) {
+export function Markdown({
+  text,
+  cwd,
+  onDiagramDrawn,
+}: {
+  text: string;
+  cwd: string;
+  /** A diagram drew after the message rendered: the conversation may follow the end. */
+  onDiagramDrawn?: () => void;
+}) {
   const html = useMemo(() => markdownHtml(text), [text]);
   const ref = useRef<HTMLDivElement>(null);
   const images = useRef(new Map<string, Promise<string>>());
+  /** The last drawing of each mermaid block, stood in while a changed one renders. */
+  const diagrams = useRef<Node[]>([]);
   useLayoutEffect(() => (ref.current ? enhance(ref.current, cwd, images.current) : undefined), [html, cwd]);
+  // Mermaid diagrams: before paint, so cached ones don't flash their source. Only a
+  // draw that lands after the render needs the follow — cached ones are in place by
+  // the time the conversation's own render pass scrolls.
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root || !hasMermaid(root)) return;
+    const pass = renderMermaidIn(root, diagrams.current);
+    let live = true;
+    if (pass.async) void pass.done.then(() => live && onDiagramDrawn?.());
+    return () => {
+      live = false;
+      pass.cancel();
+    };
+  }, [html, onDiagramDrawn]);
   return (
     <div
       ref={ref}
