@@ -1,7 +1,7 @@
 //! IPC commands of `ide_host::ops::nav` (the shared implementation).
 
 use crate::state::AppState;
-use ide_core::{DocId, IdeResult, IpcPath, Pos};
+use ide_core::{DocId, IdeResult, IpcPath, Location, Pos};
 #[allow(unused_imports)]
 pub use ide_host::ops::nav::*;
 use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
@@ -81,6 +81,12 @@ pub fn recent_files(window: Window, state: State<'_, AppState>) -> IdeResult<Vec
 #[specta::specta]
 pub async fn web_goto(window: Window, state: State<'_, AppState>, doc: DocId, pos: Pos) -> IdeResult<Option<WebGoto>> {
     ide_host::ops::nav::web_goto(&state.host, window.label(), doc, pos).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn index_usages(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<Vec<Location>> {
+    ide_host::ops::nav::index_usages(&state.host, window.label(), name).await
 }
 
 #[tauri::command]

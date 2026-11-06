@@ -7,8 +7,9 @@
 //! (`application/json`, `text/template`, `importmap`, …), as are unknown
 //! `lang` values.
 
+use super::lines::LineIndex;
 use super::web::walk;
-use crate::ScriptRegion;
+use crate::{CodeOccurrence, ScriptRegion};
 use ide_core::LanguageId;
 use tree_sitter::{Node, Tree};
 
@@ -77,6 +78,50 @@ pub(crate) fn script_regions(tree: &Tree, text: &str) -> Vec<ScriptRegion> {
         false // the raw text is not markup
     });
     out
+}
+
+/// Component tag occurrences of the markup (both tags of an element): a tag
+/// names a component when it carries an uppercase letter or a hyphen; the
+/// name is normalized to PascalCase, matching the file-name registry.
+pub(crate) fn component_tags(tree: &Tree, text: &str) -> Vec<CodeOccurrence> {
+    let idx = LineIndex::new(text);
+    let mut out = Vec::new();
+    walk(tree.root_node(), &mut |n| {
+        if n.kind() != "tag_name" {
+            return true;
+        }
+        // Skip tags of script/style elements: their raw text is code, not markup.
+        if let Some(parent) = n.parent() {
+            if parent.kind() == "end_tag" || parent.kind() == "start_tag" {
+                if let Some(element) = parent.parent() {
+                    if matches!(element.kind(), "script_element" | "style_element") {
+                        return true;
+                    }
+                }
+            }
+        }
+        let name = n.utf8_text(text.as_bytes()).unwrap_or("");
+        if !name.is_empty() && (name.contains('-') || name.chars().any(|c| c.is_uppercase())) {
+            out.push(CodeOccurrence {
+                name: pascal_case(name),
+                range: idx.range(n.start_byte(), n.end_byte()),
+                qualified: false,
+            });
+        }
+        true
+    });
+    out
+}
+
+/// `my-widget` / `MyWidget` → `MyWidget`.
+fn pascal_case(word: &str) -> String {
+    word.split(['-', '_'])
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut c = p.chars();
+            c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
+        })
+        .collect()
 }
 
 /// An attribute's `(name, value)`; a bare attribute (`setup`) has an empty value.

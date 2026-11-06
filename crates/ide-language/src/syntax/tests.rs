@@ -1501,3 +1501,21 @@ fn script_facts_of_a_cjk_document() {
     assert_eq!(f.decls[0].range.start.line, 1);
     assert_eq!(f.decls[0].range.start.col, 6, "const 名前: the name starts after `const `");
 }
+
+#[test]
+fn script_occurrences_cover_identifiers_and_component_tags() {
+    let src = "<template>\n  <UserCard :user=\"user\" />\n</template>\n<script setup lang=\"ts\">\nimport { ref } from 'vue'\nconst user = ref(null)\nconst n = user.value\n</script>\n";
+    let occ = syntax().script_occurrences(&lang("vue"), src);
+    let names: Vec<&str> = occ.iter().map(|o| o.name.as_str()).collect();
+    // Template tags (PascalCase) and script identifiers, comments excluded.
+    assert!(names.contains(&"UserCard"), "{names:?}");
+    assert!(names.contains(&"ref"));
+    assert!(names.contains(&"user"));
+    assert!(names.contains(&"n"));
+    assert!(!names.contains(&"template") && !names.contains(&"div"), "native tags are not components: {names:?}");
+    // A member position (`user.value`) is flagged qualified.
+    assert!(occ.iter().any(|o| o.name == "value" && o.qualified));
+    // Ranges are document-absolute: `user` in the template is on line 1.
+    let tag = occ.iter().find(|o| o.name == "UserCard").unwrap();
+    assert_eq!(tag.range.start.line, 1);
+}

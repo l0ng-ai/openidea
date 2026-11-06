@@ -3,7 +3,7 @@
 //! Indexing never blocks the UI: queries answer from whatever is indexed so far
 //! and `IdeEvent::IndexState` tells the UI when it is complete ("dumb mode").
 
-use ide_core::{IdeResult, MatchIndices, Range, SharedSink, SymbolKind};
+use ide_core::{IdeResult, Location, MatchIndices, Range, SharedSink, SymbolKind};
 use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -223,6 +223,18 @@ impl ProjectIndex {
     /// Whether `path` is an indexed file: import-spec resolution's `exists`.
     pub fn has_file(&self, path: &Path) -> bool {
         self.shared.data.read().get(path).is_some()
+    }
+
+    /// Files and ranges where `name` occurs (identifiers, component tags):
+    /// the find-usages fallback's answer, one table lookup.
+    pub fn usages_of(&self, name: &str) -> Vec<Location> {
+        self.shared
+            .data
+            .read()
+            .occurrences_of(name)
+            .into_iter()
+            .map(|(path, range)| Location { path: path.into(), range, uri: None })
+            .collect()
     }
 
     /// Incrementally re-indexes changed paths (called from the vfs watcher).

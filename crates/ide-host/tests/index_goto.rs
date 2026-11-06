@@ -122,3 +122,20 @@ async fn resolves_default_imports_and_the_component_registry() {
     assert_eq!(hit.note, IndexNote::Candidate);
     assert_eq!(path_of(&hit), vroot.join("src/components/UserCard.vue"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finds_usages_through_the_inverted_index() {
+    let (host, root, doc, text) = opened("src/App.vue").await;
+    let _ = (doc, text);
+
+    // The component's usages: the template tags + the import binding, one lookup.
+    let hit = ide_host::ops::nav::index_usages(&host, "main", "UserCard".to_string()).await.unwrap();
+    let paths: Vec<PathBuf> = hit.iter().map(|l| PathBuf::from(l.path.clone())).collect();
+    assert!(paths.contains(&root.join("src/App.vue")), "{paths:?}");
+    // The declaration's usages: the `useAuth` binding in App.vue (script setup).
+    let hit = ide_host::ops::nav::index_usages(&host, "main", "useAuth".to_string()).await.unwrap();
+    assert!(hit.iter().any(|l| PathBuf::from(l.path.clone()) == root.join("src/App.vue")), "{hit:?}");
+    // An unknown name has no usages.
+    let hit = ide_host::ops::nav::index_usages(&host, "main", "noSuchName".to_string()).await.unwrap();
+    assert!(hit.is_empty());
+}

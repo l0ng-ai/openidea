@@ -358,6 +358,7 @@ export const commands = {
 	 */
 	note: IndexNote,
 } | null, IdeError>(__TAURI_INVOKE("index_goto", { doc, pos, word })),
+	indexUsages: (name: string) => typedError<Location[], IdeError>(__TAURI_INVOKE("index_usages", { name })),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
 	webGoto: (doc: DocId, pos: Pos) => typedError<{
 	reference: WebReference,

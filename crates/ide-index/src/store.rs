@@ -8,7 +8,7 @@ use std::path::Path;
 const FILES: TableDefinition<&str, &[u8]> = TableDefinition::new("files");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// Bump when [`FileRecord`] or its encoding changes.
-const SCHEMA: &str = "openidea-index-4";
+const SCHEMA: &str = "openidea-index-5";
 
 type Result<T> = std::result::Result<T, String>;
 

@@ -364,6 +364,20 @@ pub struct Reexport {
     pub range: Range,
 }
 
+/// An identifier occurrence of a TS/JS source, or of the `<script>` regions
+/// and component tags of a Vue SFC / HTML document: the find-usages index
+/// input (see `docs/vue-ts-semantic-index.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeOccurrence {
+    pub name: String,
+    /// The occurrence's range.
+    pub range: Range,
+    /// A member position (`obj.name`): refers to the member, not to a
+    /// binding of that name.
+    pub qualified: bool,
+}
+
 /// One `<script>` block of a Vue SFC / HTML document: what
 /// [`crate::Syntax::script_facts`] parses per block.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -381,6 +395,11 @@ pub struct ScriptRegion {
 }
 
 impl ScriptRegion {
+    /// A whole-file region: no shift at all.
+    pub(crate) fn whole(language: LanguageId) -> Self {
+        Self { base: 0, base_line: 0, base_col: 0, language, text: String::new() }
+    }
+
     /// A region-relative range in document coordinates: the region's first
     /// line maps onto the document line containing `base` (its columns are
     /// offset by the base column), later lines keep their columns.

@@ -9,9 +9,58 @@
 //! children); locals belong to the scope analysis in `ide-syntax`.
 
 use super::lines::LineIndex;
-use crate::{Decl, Facts, Import, ImportName, Reexport, ScriptRegion};
+use super::web::walk;
+use crate::{CodeOccurrence, Decl, Facts, Import, ImportName, Reexport, ScriptRegion};
 use ide_core::{Range, SymbolKind};
 use tree_sitter::{Node, Tree};
+
+/// Identifier occurrences of one TS/JS source text (find-usages index
+/// input): every identifier-class leaf, comments and strings excluded by
+/// the grammar. A member position (`obj.name`, the previous sibling `.`)
+/// is flagged `qualified`.
+pub(crate) fn occurrences(tree: &Tree, text: &str, region: &ScriptRegion) -> Vec<CodeOccurrence> {
+    let local = LineIndex::new(text);
+    let mut out = Vec::new();
+    walk(tree.root_node(), &mut |n| match n.kind() {
+        "identifier"
+        | "type_identifier"
+        | "property_identifier"
+        | "shorthand_property_identifier"
+        | "shorthand_property_identifier_pattern"
+        | "statement_identifier" => {
+            let qualified =
+                n.kind() == "property_identifier" || n.kind() == "shorthand_property_identifier" || prev_is_access(n);
+            if let Ok(name) = n.utf8_text(text.as_bytes()) {
+                out.push(CodeOccurrence {
+                    name: name.to_string(),
+                    range: region.shift(local.range(n.start_byte(), n.end_byte())),
+                    qualified,
+                });
+            }
+            false
+        }
+        "comment" | "string" | "template_string" | "regex" | "number" => false,
+        _ => true,
+    });
+    out
+}
+
+/// Whether the identifier follows a member access token (`obj.name`).
+fn prev_is_access(n: Node) -> bool {
+    let mut c = n.walk();
+    let parent = match n.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    let mut prev_kind = None;
+    for ch in parent.children(&mut c) {
+        if ch.id() == n.id() {
+            break;
+        }
+        prev_kind = Some(ch.kind());
+    }
+    matches!(prev_kind, Some("." | "?." | "::"))
+}
 
 /// Extracts the facts of one TS/JS source text. `idx` indexes the document
 /// the text belongs to and `base` is the text's byte offset into it (0 for a

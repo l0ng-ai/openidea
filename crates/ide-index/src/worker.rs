@@ -1,7 +1,7 @@
 //! The background indexing thread: initial load + full scan, then incremental
 //! updates queued by the watcher.
 
-use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
+use crate::data::{FileEntry, FileRecord, IndexData, StoredOccurrence, StoredSymbol};
 use crate::filter::{Found, PathFilter};
 use crate::store::Store;
 use ide_core::{IdeEvent, Range, SharedSink, SymbolKind, TaskId};
@@ -374,6 +374,12 @@ impl Shared {
         // `has_symbols` routes vue through the web grammar, but facts come
         // from the script grammars `script_facts` picks per region.
         rec.facts = self.syntax.script_facts(&lang, &text);
+        rec.occurrences = self
+            .syntax
+            .script_occurrences(&lang, &text)
+            .into_iter()
+            .map(|o| StoredOccurrence { name: o.name, range: o.range, qualified: o.qualified })
+            .collect();
         // Vue SFCs and HTML documents: the script declarations are index
         // symbols too (⌘O finds components and their functions; the outline
         // only has the markup's own tags). A component is its file name.

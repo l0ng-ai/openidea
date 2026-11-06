@@ -44,8 +44,18 @@ pub(crate) struct FileRecord {
     /// Import/export/declaration facts of TS/JS sources and the `<script>`
     /// regions of Vue SFCs / HTML documents; empty for other languages.
     pub facts: Facts,
+    /// Identifier and component-tag occurrences (find-usages index input);
+    /// empty for other languages.
+    pub occurrences: Vec<StoredOccurrence>,
     /// Matched by an ignore file: listed by name only (no hash, no symbols).
     pub ignored: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct StoredOccurrence {
+    pub name: String,
+    pub range: Range,
+    pub qualified: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,6 +89,8 @@ pub(crate) struct FileEntry {
     pub hash: [u8; 32],
     pub symbols: Box<[Sym]>,
     pub facts: Facts,
+    /// The file's own occurrences (names + ranges), for inverted-map removal.
+    pub occurrences: Box<[(Box<str>, Range, bool)]>,
     pub ignored: bool,
 }
 
@@ -109,6 +121,11 @@ impl FileEntry {
             hash: record.hash,
             symbols,
             facts: record.facts,
+            occurrences: record
+                .occurrences
+                .into_iter()
+                .map(|o| (o.name.into_boxed_str(), o.range, o.qualified))
+                .collect(),
             ignored: record.ignored,
         }
     }
@@ -127,6 +144,15 @@ impl FileEntry {
             size: self.size,
             hash: self.hash,
             facts: self.facts.clone(),
+            occurrences: self
+                .occurrences
+                .iter()
+                .map(|(name, range, qualified)| StoredOccurrence {
+                    name: name.to_string(),
+                    range: *range,
+                    qualified: *qualified,
+                })
+                .collect(),
             symbols: self
                 .symbols
                 .iter()
@@ -147,10 +173,23 @@ impl FileEntry {
     }
 }
 
+/// One occurrence entry in the inverted map: the file's slot in `files`.
+#[derive(Clone, Debug)]
+pub(crate) struct OccSlot {
+    pub slot: u32,
+    pub range: Range,
+    pub qualified: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct IndexData {
     pub files: Vec<Option<FileEntry>>,
     by_path: HashMap<PathBuf, u32>,
+    /// Identifier/component occurrences by name: inverted find-usages index.
+    /// Entries reference files by their slot; removal re-filters each name's
+    /// list from the entry's own occurrence list.
+    occ_by_name: HashMap<Box<str>, Vec<OccSlot>>,
+    occ_total: u32,
     /// Every folder holding an indexed file at any depth, keyed by its `rel` with a
     /// trailing `/`: its absolute path and the number of files below it.
     pub dirs: HashMap<Box<str>, (PathBuf, u32)>,
@@ -164,16 +203,59 @@ impl IndexData {
         self.by_path.get(path).and_then(|&i| self.files[i as usize].as_ref())
     }
 
+    /// Files and ranges where `name` occurs (identifiers, component tags).
+    pub(crate) fn occurrences_of(&self, name: &str) -> Vec<(PathBuf, Range)> {
+        self.occ_by_name
+            .get(name)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|o| Some((self.files.get(o.slot as usize)?.as_ref()?.path.clone(), o.range)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn occ_add(&mut self, slot: u32, entry: &FileEntry) {
+        for (name, range, qualified) in &entry.occurrences {
+            self.occ_by_name.entry(name.clone()).or_default().push(OccSlot {
+                slot,
+                range: *range,
+                qualified: *qualified,
+            });
+            self.occ_total += 1;
+        }
+    }
+
+    fn occ_remove(&mut self, slot: u32, entry: &FileEntry) {
+        for (name, ..) in &entry.occurrences {
+            if let Some(list) = self.occ_by_name.get_mut(name.as_ref()) {
+                list.retain(|o| o.slot != slot);
+                if list.is_empty() {
+                    self.occ_by_name.remove(name.as_ref());
+                }
+            }
+        }
+        self.occ_total -= entry.occurrences.len() as u32;
+    }
+
     pub(crate) fn slot(&self, path: &Path) -> Option<u32> {
         self.by_path.get(path).copied()
     }
 
     pub(crate) fn insert(&mut self, entry: FileEntry) {
         let symbols = entry.symbols.len() as u32;
+        // The entry's occurrences, staged so the move into `files` (which
+        // borrows self mutably) and the map insert (also self) don't collide.
+        let mut occs_staging: Vec<(Box<str>, Range, bool)> =
+            entry.occurrences.iter().map(|(name, range, qualified)| (name.clone(), *range, *qualified)).collect();
         if let Some(&slot) = self.by_path.get(&entry.path) {
-            let old = self.files[slot as usize].replace(entry);
-            self.symbol_count -= old.map_or(0, |o| o.symbols.len() as u32);
+            if let Some(old) = self.files[slot as usize].take() {
+                self.occ_remove(slot, &old);
+                self.symbol_count -= old.symbols.len() as u32;
+            }
+            self.occ_add(slot, &entry);
             self.symbol_count += symbols;
+            self.files[slot as usize] = Some(entry);
             return;
         }
         let slot = match self.free.pop() {
@@ -195,11 +277,23 @@ impl IndexData {
         self.by_path.insert(path, slot);
         self.file_count += 1;
         self.symbol_count += symbols;
+        // The entry was moved into the slot above; take the data occ_add
+        // needs before it, since both borrow `self`.
+        let occs = std::mem::take(&mut occs_staging);
+        for (name, range, qualified) in &occs {
+            self.occ_by_name.entry(name.clone()).or_default().push(OccSlot {
+                slot,
+                range: *range,
+                qualified: *qualified,
+            });
+            self.occ_total += 1;
+        }
     }
 
     pub(crate) fn remove(&mut self, path: &Path) -> Option<FileEntry> {
         let slot = self.by_path.remove(path)?;
         let old = self.files[slot as usize].take()?;
+        self.occ_remove(slot, &old);
         self.free.push(slot);
         for (rel, _) in ancestors(&old) {
             if let Some(d) = self.dirs.get_mut(rel) {

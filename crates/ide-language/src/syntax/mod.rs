@@ -14,7 +14,7 @@ mod selection;
 mod sfc;
 mod web;
 
-use crate::{Facts, FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
+use crate::{CodeOccurrence, Facts, FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
 pub use configuration::ConfigurationKey;
 pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};
@@ -270,38 +270,46 @@ impl Syntax {
     /// `<script>` region of a Vue SFC / HTML document. Ranges are
     /// document-absolute; empty for other languages.
     pub fn script_facts(&self, lang: &LanguageId, text: &str) -> Facts {
+        self.script_analysis(lang, text).0
+    }
+
+    /// Identifier occurrences (script regions) and component-tag occurrences
+    /// (markup) of the source: the find-usages index input.
+    pub fn script_occurrences(&self, lang: &LanguageId, text: &str) -> Vec<CodeOccurrence> {
+        self.script_analysis(lang, text).1
+    }
+
+    /// Import/export/declaration facts **and** identifier/component-tag
+    /// occurrences of a TS/JS source, or of every `<script>` region and
+    /// template tag of a Vue SFC / HTML document.
+    pub fn script_analysis(&self, lang: &LanguageId, text: &str) -> (Facts, Vec<CodeOccurrence>) {
         if text.len() > MAX_PARSE_BYTES {
-            return Facts::default();
+            return (Facts::default(), Vec::new());
         }
-        // A TS/JS source itself: a zero region keeps its coordinates.
+        // A TS/JS source itself.
         if let Some(g) = self.grammar(lang).filter(|g| matches!(g.spec.name, "typescript" | "tsx" | "javascript")) {
-            let region = ScriptRegion {
-                base: 0,
-                base_line: 0,
-                base_col: 0,
-                language: LanguageId::new(g.spec.name),
-                text: String::new(),
-            };
-            return self.facts_with(&g.language, text, &region);
+            let region = ScriptRegion::whole(LanguageId::new(g.spec.name));
+            let Some(tree) = parse(&g.language, text, None) else { return (Facts::default(), Vec::new()) };
+            return (modules::facts(&tree, text, &region), modules::occurrences(&tree, text, &region));
         }
         // A document with <script> regions: each parsed with its own grammar,
         // ranges shifted into document coordinates by the region.
-        let mut all = Facts::default();
+        let mut facts = Facts::default();
+        let mut occurrences = Vec::new();
         for region in self.script_regions(lang, text) {
             let Some(g) = self.grammar(&region.language) else { continue };
-            let mut part = self.facts_with(&g.language, &region.text, &region);
-            all.decls.append(&mut part.decls);
-            all.imports.append(&mut part.imports);
-            all.reexports.append(&mut part.reexports);
+            let Some(tree) = parse(&g.language, &region.text, None) else { continue };
+            let mut part = modules::facts(&tree, &region.text, &region);
+            facts.decls.append(&mut part.decls);
+            facts.imports.append(&mut part.imports);
+            facts.reexports.append(&mut part.reexports);
+            occurrences.append(&mut modules::occurrences(&tree, &region.text, &region));
         }
-        all
-    }
-
-    /// The facts of `text` (parsed with `language`), shifted into document
-    /// coordinates by `region` (a whole file uses a zero region).
-    fn facts_with(&self, language: &Language, text: &str, region: &ScriptRegion) -> Facts {
-        let Some(tree) = parse(language, text, None) else { return Facts::default() };
-        modules::facts(&tree, text, region)
+        // Component tags in the markup.
+        if let Some(tree) = self.with_web_tree(lang, text, |_g, _css, tree| tree.clone()) {
+            occurrences.append(&mut sfc::component_tags(&tree, text));
+        }
+        (facts, occurrences)
     }
 
     /// Highlighting from the grammar's own query; `None` without one.
