@@ -1,4 +1,6 @@
 {
+  "Overwrite existing branch": "Overwrite existing branch",
+  "Branch '{n}' already exists": "Branch '{n}' already exists",
   "Cannot copy reference": "Cannot copy reference",
   "Connect through:": "Connect through:",
   "Connect through": "Connect through",

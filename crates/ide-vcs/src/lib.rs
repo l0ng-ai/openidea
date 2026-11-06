@@ -1087,8 +1087,19 @@ impl Repo {
     /// Creates branch `name` at `start` (default HEAD), optionally switching to it. A
     /// remote-tracking start point (`origin/x`) becomes the new branch's upstream.
     pub fn create_branch(&self, name: &str, start: Option<&str>, checkout: bool) -> IdeResult<()> {
+        self.create_branch_with_overwrite(name, start, checkout, false)
+    }
+
+    /// Creates a branch or moves its tip when overwrite is explicitly enabled.
+    pub fn create_branch_with_overwrite(
+        &self,
+        name: &str,
+        start: Option<&str>,
+        checkout: bool,
+        overwrite: bool,
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::create_branch(self, name, start, checkout)
+        write::create_branch(self, name, start, checkout, overwrite)
     }
     /// Undo Commit: resets the current branch to the parent of `commit` (which must be
     /// HEAD and not a merge) keeping its changes staged; undoing the initial commit

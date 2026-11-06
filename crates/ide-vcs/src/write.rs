@@ -641,7 +641,13 @@ fn stash_count(r: &Repo) -> IdeResult<usize> {
 }
 
 /// Creates `name` at `start` (default HEAD); a remote-tracking start point is tracked.
-pub(crate) fn create_branch(r: &Repo, name: &str, start: Option<&str>, checkout: bool) -> IdeResult<()> {
+pub(crate) fn create_branch(
+    r: &Repo,
+    name: &str,
+    start: Option<&str>,
+    checkout: bool,
+    overwrite: bool,
+) -> IdeResult<()> {
     let name = name.trim();
     let valid = !name.is_empty()
         && !name.starts_with('-')
@@ -658,7 +664,12 @@ pub(crate) fn create_branch(r: &Repo, name: &str, start: Option<&str>, checkout:
         let repo = r.gix()?;
         resolve(&repo, s)?;
     }
-    let mut args = if checkout { vec!["switch", "-c", name] } else { vec!["branch", "--", name] };
+    let mut args = match (checkout, overwrite) {
+        (true, false) => vec!["switch", "-c", name],
+        (true, true) => vec!["switch", "-C", name],
+        (false, false) => vec!["branch", "--", name],
+        (false, true) => vec!["branch", "--force", "--", name],
+    };
     args.extend(start);
     run(r.root(), &args, None).map(|_| ())
 }
