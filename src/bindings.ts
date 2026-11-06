@@ -2021,6 +2021,7 @@ export type CatalogPlugin = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
+	icon: PluginIcon | null,
 	/**  Package directory; install with `install_from_dir(path)`. */
 	path: IpcPath,
 	hasCode: boolean,
@@ -4413,6 +4414,11 @@ export type IndexEntry = {
 	engine?: string,
 	/**  Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know. */
 	categories?: string[],
+	/**
+	 *  The manifest's icon, sanitised by whoever wrote the index and again by
+	 *  the IDE before showing it.
+	 */
+	icon?: PluginIcon | null,
 };
 
 export type IndexStatus = {
@@ -5691,6 +5697,12 @@ export type PluginEvent =
 /**  Open `url` (`http(s)://`) in the system browser. */
 { type: "openUrl"; pluginId: string; url: string };
 
+/**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
+export type PluginIcon = {
+	light: string,
+	dark: string | null,
+};
+
 export type PluginInfo = {
 	id: string,
 	name: string,
@@ -5699,6 +5711,7 @@ export type PluginInfo = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
+	icon: PluginIcon | null,
 	source: PluginSource,
 	/**  Package directory. */
 	path: IpcPath,

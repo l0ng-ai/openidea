@@ -350,7 +350,7 @@ pub struct IndexEntry {
     pub categories: Vec<String>,
     /// The manifest's icon, sanitised by whoever wrote the index and again by
     /// the IDE before showing it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub icon: Option<PluginIcon>,
 }
 
