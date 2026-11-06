@@ -17,6 +17,8 @@ struct Script {
     start_debugging: bool,
     ignore_configuration_done: bool,
     source_path: Option<String>,
+    /// Answer `setBreakpoints` only once this many are waiting (a client that waits for each never gets one).
+    hold_set_breakpoints: usize,
 }
 
 struct FakeLauncher {
@@ -49,6 +51,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut r = BufReader::new(r);
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
+    let mut held: Vec<Value> = Vec::new();
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -101,14 +104,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(json!({"type": "event", "event": "initialized"}));
             }
             "setBreakpoints" => {
-                let bps: Vec<Value> = msg["arguments"]["breakpoints"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| json!({"id": i + 1, "verified": true, "line": b["line"]}))
-                    .collect();
-                ok!(msg, json!({"breakpoints": bps}));
+                held.push(msg);
+                if held.len() < script.hold_set_breakpoints {
+                    continue;
+                }
+                for msg in std::mem::take(&mut held) {
+                    let bps: Vec<Value> = msg["arguments"]["breakpoints"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| json!({"id": i + 1, "verified": true, "line": b["line"]}))
+                        .collect();
+                    ok!(msg, json!({"breakpoints": bps}));
+                }
             }
             "setExceptionBreakpoints" => ok!(msg, json!({})),
             "setFunctionBreakpoints" | "setDataBreakpoints" => {
@@ -921,6 +930,7 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
     let b = PathBuf::from("/p/b.py");
     h.manager.set_breakpoints(a.clone(), vec![bp(1)]).await.unwrap();
     h.manager.set_breakpoints(b.clone(), vec![bp(3)]).await.unwrap();
+    h.manager.set_breakpoints(PathBuf::from("/p/off.py"), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
     h.manager.set_function_breakpoints(vec![function_bp("run", true)]).await.unwrap();
     let id = h.start(config()).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
@@ -949,6 +959,24 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
     h.manager.run_to(id, 1, a.clone(), 9, true).await.unwrap();
     assert_eq!(sent_for("/p/a.py").last().unwrap(), &json!([{"line": 10}]));
     assert_eq!(sent_for("/p/b.py").last().unwrap(), &json!([]));
+    assert!(sent_for("/p/off.py").is_empty(), "nothing enabled there, nothing to suspend or restore");
+}
+
+#[tokio::test]
+async fn startup_sends_every_file_at_once_and_skips_files_with_nothing_enabled() {
+    let h = harness(Script { hold_set_breakpoints: 2, ..Script::default() });
+    h.manager.set_breakpoints(PathBuf::from("/p/a.py"), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(PathBuf::from("/p/b.py"), vec![bp(3)]).await.unwrap();
+    let off = PathBuf::from("/p/off.py");
+    h.manager.set_breakpoints(off.clone(), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
+    // Waiting for each answer before the next request would stall until the request timeout.
+    tokio::time::timeout(Duration::from_secs(5), h.start(config())).await.expect("requests pipelined").unwrap();
+    let paths: Vec<Value> = requests(&h, "setBreakpoints").into_iter().map(|r| r["source"]["path"].clone()).collect();
+    assert_eq!(paths, [json!("/p/a.py"), json!("/p/b.py")]);
+    assert_eq!(
+        h.manager.breakpoint_states(&off),
+        [BreakpointState { line: 5, verified: false, message: Some("Disabled".into()) }]
+    );
 }
 
 #[tokio::test]
