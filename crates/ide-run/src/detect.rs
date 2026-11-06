@@ -712,11 +712,14 @@ fn detect_go(root: &Path, out: &mut Vec<RunConfig>) {
         detect_go_module(root, None, out);
         return;
     }
-    // A polyglot repository: Go modules one level down (`api/go.mod`).
-    for dir in subdirs(root) {
+    // Match Maven's shallow discovery without walking every source directory.
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = pending.pop() {
         if dir.join("go.mod").is_file() {
             let rel = relative(root, &dir);
             detect_go_module(&dir, Some(rel), out);
+        } else if depth < 3 {
+            pending.extend(subdirs(&dir).into_iter().rev().map(|child| (child, depth + 1)));
         }
     }
 }

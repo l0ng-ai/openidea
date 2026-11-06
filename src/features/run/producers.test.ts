@@ -273,6 +273,82 @@ describe("single-file producers (scratches)", () => {
     expect(p.config).toMatchObject({ args: ["run", "./cmd/tool"] });
   });
 
+  it("Go: nested modules win over previous single-file runs", () => {
+    const go = [
+      cfg({
+        id: "context:file:fixtures/go-app/cmd/server/main.go",
+        kind: "go",
+        args: ["run", "fixtures/go-app/cmd/server/main.go"],
+      }),
+      cfg({
+        id: "go:run:server:fixtures/go-app",
+        kind: "go",
+        args: ["run", "./cmd/server"],
+        cwd: "fixtures/go-app",
+      }),
+    ];
+    const input = {
+      path: `${ROOT}/fixtures/go-app/cmd/server/main.go`,
+      root: ROOT,
+      configs: go,
+      content: "package main\nfunc main() {}",
+    };
+    for (const line of [undefined, 1]) {
+      expect(produceContext({ ...input, line }, ALL)?.config).toMatchObject({
+        id: "go:run:server:fixtures/go-app",
+        args: ["run", "./cmd/server"],
+        cwd: "fixtures/go-app",
+      });
+    }
+  });
+
+  it("Go: single-file runs never become module configurations", () => {
+    const input = {
+      path: `${ROOT}/standalone/main.go`,
+      root: ROOT,
+      configs: [] as RunConfig[],
+      content: "package main\nfunc main() {}",
+    };
+    const first = produceContext(input, ALL)!;
+    expect(first.config).toMatchObject({ id: "context:file:standalone/main.go", args: ["run", "standalone/main.go"] });
+    expect(produceContext({ ...input, configs: [first.config!] }, ALL)?.config).toEqual(first.config);
+  });
+
+  it("Go: typed modules own only their own files", () => {
+    const configs = [
+      ...["api", "worker"].map((module) =>
+        cfg({
+          id: `go:run:${module}`,
+          kind: "go",
+          args: ["build", "-race", "."],
+          params: { module, goKind: "build", scope: "package", target: ".", toolArgs: "-race" },
+        }),
+      ),
+    ];
+    for (const module of ["api", "worker"]) {
+      expect(
+        produceContext(
+          {
+            path: `${ROOT}/${module}/cmd/server/main.go`,
+            root: ROOT,
+            configs,
+            content: "package main\nfunc main() {}",
+          },
+          ALL,
+        )?.config,
+      ).toMatchObject({
+        args: ["build", "-race", "./cmd/server"],
+        params: { module, target: "./cmd/server", goKind: "build", runAfterBuild: "true" },
+      });
+    }
+    expect(
+      produceContext(
+        { path: `${ROOT}/standalone/main.go`, root: ROOT, configs, content: "package main\nfunc main() {}" },
+        ALL,
+      )?.config,
+    ).toMatchObject({ id: "context:file:standalone/main.go", args: ["run", "standalone/main.go"] });
+  });
+
   it("Rust: rustc into the compile directory, then the binary; codelldb debugs the binary", () => {
     const p = produceContext(scratch("hihi.rs", 'fn main() {\n  println!("hi");\n}'), ALL)!;
     expect(p.name).toBe("hihi.rs");
