@@ -649,3 +649,54 @@ fn file_history_through_a_cyclic_rename() {
         pairs(&[("b to a", "a.txt"), ("Modified b", "b.txt"), ("a to b", "b.txt"), ("Created a", "a.txt")])
     );
 }
+
+/// One commit per file under `dir/`, made with fast-import so hundreds stay quick.
+fn commit_files(repo_dir: &Path, count: usize, name: impl Fn(usize) -> String) {
+    let mut stream = String::new();
+    for i in 0..count {
+        let path = name(i);
+        stream.push_str(&format!(
+            "commit refs/heads/main\ncommitter T <t@example.com> {} +0000\ndata 3\nc{}\n",
+            1_700_000_000 + i,
+            i % 10
+        ));
+        stream.push_str(&format!("M 100644 inline {path}\ndata 1\nx\n\n"));
+    }
+    let mut child = Command::new("git")
+        .current_dir(repo_dir)
+        .args(["fast-import", "--quiet"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stream.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    git(repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(repo_dir, &["reset", "-q", "--hard"]);
+}
+
+#[test]
+fn followed_directory_history_survives_hundreds_of_created_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    // Every created file adds a `^<sha>^@` exclusion: ~800 of them passed as arguments exceed
+    // Windows' command-line limit (os error 206).
+    commit_files(dir, 800, |i| format!("module/src/main/java/com/example/generated/Class{i:04}.java"));
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let log = repo.log(&LogQuery { path: Some("module".into()), follow: true, ..Default::default() }).unwrap();
+    assert_eq!(log.len(), 800);
+}
+
+#[test]
+fn many_selected_paths_filter_history_without_a_huge_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    commit_files(dir, 600, |i| format!("module/src/main/java/com/example/generated/Class{i:04}.java"));
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let paths: Vec<String> =
+        (0..500).map(|i| format!("module/src/main/java/com/example/generated/Class{i:04}.java")).collect();
+    let paths = paths.into_iter().map(Into::into).collect();
+    let log = repo.log(&LogQuery { paths, text: Some("c3".into()), ..Default::default() }).unwrap();
+    assert_eq!(log.len(), 50);
+}
