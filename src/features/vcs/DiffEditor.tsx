@@ -974,6 +974,9 @@ export function DiffEditor({
     [attached, statics],
   );
   const eolDiffers = ready && !binary && eolA !== null && eolB !== null && eolA !== eolB;
+  // The viewer normalizes line endings, so zero chunks with differing EOLs means
+  // the contents are equal apart from line separators.
+  const eolOnly = ready && chunkInfo.count === 0 && eolDiffers;
   const identical =
     ready &&
     chunkInfo.count === 0 &&
@@ -1098,9 +1101,11 @@ export function DiffEditor({
             : chunkInfo.count === 0
               ? identical
                 ? tx("Contents are identical")
-                : chunkInfo.whitespaceOnly
-                  ? tx("Whitespace-only changes")
-                  : tx("No differences")
+                : eolOnly
+                  ? tx("Contents differ only in line separators")
+                  : chunkInfo.whitespaceOnly
+                    ? tx("Whitespace-only changes")
+                    : tx("No differences")
               : chunkInfo.current >= 0
                 ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
                 : chunkInfo.count === 1
