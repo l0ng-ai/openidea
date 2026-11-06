@@ -252,7 +252,16 @@ pub fn run() {
 #[cfg(not(target_os = "linux"))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
-    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+    #[cfg(target_os = "windows")]
+    {
+        // Start at the configured size, centered, instead of restoring geometry after the
+        // window is visible (Windows briefly showed the default position before that move).
+        StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+    }
 }
 
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
