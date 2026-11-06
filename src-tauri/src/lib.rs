@@ -104,6 +104,7 @@ pub fn run() {
             .with_state_flags(window_state_flags())
             // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
             .map_label(windows::state_key)
+            .with_filter(windows::tracks_state)
             .build(),
     );
     let app = app

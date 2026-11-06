@@ -281,6 +281,26 @@ pub fn state_key(label: &str) -> &str {
     auxiliary(label).map_or(label, |(kind, _)| kind.name())
 }
 
+/// Project windows being created to take a group's frame rather than the state remembered for
+/// their label: one joining a fullscreen window's Space, or a group member reopened at startup.
+/// The label's last window may have closed in fullscreen, which would open a Space of its own.
+#[cfg(not(target_os = "linux"))]
+static UNTRACKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether window-state restores and remembers the window with this state key.
+#[cfg(not(target_os = "linux"))]
+pub fn tracks_state(key: &str) -> bool {
+    !UNTRACKED.lock().iter().any(|label| label == key)
+}
+
+/// Whether a project window is new or reopened at startup, on its own or as a group member.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Opening {
+    New,
+    Restored,
+    RestoredInGroup,
+}
+
 /// `parent`'s auxiliary windows that show its project's documents.
 pub fn document_windows(app: &AppHandle, parent: &str) -> Vec<String> {
     app.webview_windows()
@@ -562,7 +582,7 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new(), false)
+    create_window_with(app, project, Vec::new(), Opening::New)
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
@@ -570,27 +590,28 @@ fn create_window_with(
     app: &AppHandle,
     project: Option<PathBuf>,
     files: Vec<PathBuf>,
-    restoring: bool,
+    opening: Opening,
 ) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, opening)
 }
 
 /// Restoring a saved group preserves its membership and selected tab.
-pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
-    create_window_with(app, Some(project), Vec::new(), true)
+pub fn create_restored_window(app: &AppHandle, project: PathBuf, in_group: bool) -> IdeResult<WebviewWindow> {
+    let opening = if in_group { Opening::RestoredInGroup } else { Opening::Restored };
+    create_window_with(app, Some(project), Vec::new(), opening)
 }
 
 fn create_window_for(
     app: &AppHandle,
     title: Option<String>,
     launch: Launch,
-    _restoring: bool,
+    _opening: Opening,
 ) -> IdeResult<WebviewWindow> {
     #[cfg(target_os = "macos")]
-    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
+    let tab_target = if _opening == Opening::New { crate::macos::new_project_tab_target(app, &launch)? } else { None };
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -609,7 +630,28 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
-    let window = build_project_window(app, config)?;
+    // Shown now, a project joining a fullscreen window would open on the desktop; joining
+    // shows it in that window's Space.
+    #[cfg(target_os = "macos")]
+    let joining_fullscreen = tab_target.as_ref().is_some_and(|target| {
+        target.is_fullscreen().unwrap_or(false) || crate::window_groups::in_fullscreen(app, target.label())
+    });
+    #[cfg(target_os = "macos")]
+    if joining_fullscreen {
+        config.visible = false;
+    }
+    #[cfg(target_os = "macos")]
+    let untracked = joining_fullscreen || _opening == Opening::RestoredInGroup;
+    #[cfg(target_os = "macos")]
+    if untracked {
+        UNTRACKED.lock().push(label.clone());
+    }
+    let window = build_project_window(app, config);
+    #[cfg(target_os = "macos")]
+    if untracked {
+        UNTRACKED.lock().retain(|l| l != &label);
+    }
+    let window = window?;
     #[cfg(target_os = "macos")]
     crate::macos::intercept_toggle_fullscreen(&window);
     #[cfg(target_os = "macos")]
@@ -630,7 +672,7 @@ pub fn spawn_window(app: &AppHandle, project: Option<PathBuf>) {
 fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_with(&app, project, files, false) {
+        if let Err(e) = create_window_with(&app, project, files, Opening::New) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -673,7 +715,7 @@ pub fn open_project_window(
     if !new_window {
         return Ok(OpenOutcome::Current);
     }
-    let window = create_window_with(app, Some(root), files, false)?;
+    let window = create_window_with(app, Some(root), files, Opening::New)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -683,7 +725,7 @@ pub fn open_project_window(
 /// detach an editor tab out of its window.
 pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
     tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
-    let window = create_window_with(app, project, vec![file], false)?;
+    let window = create_window_with(app, project, vec![file], Opening::New)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -715,7 +757,7 @@ pub fn open_remote_window(
     }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { target: target.clone(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, Opening::New)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -981,7 +1023,7 @@ fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
                 tauri::async_runtime::spawn(async move {
                     let title = remote.path.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
                     let launch = Launch { remote: Some(remote), ..Default::default() };
-                    if let Err(e) = create_window_for(&app, title, launch, false) {
+                    if let Err(e) = create_window_for(&app, title, launch, Opening::New) {
                         tracing::warn!("cannot open window: {}", e.message);
                     }
                 });

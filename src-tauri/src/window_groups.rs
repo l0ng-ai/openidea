@@ -142,7 +142,10 @@ fn sync_member_frames(app: &AppHandle, selected: &str) {
         return;
     }
     let Some(from) = app.get_webview_window(selected) else { return };
-    if from.is_fullscreen().unwrap_or(false) || from.is_minimized().unwrap_or(false) || simple_fullscreen(selected) {
+    if from.is_fullscreen().unwrap_or(false)
+        || from.is_minimized().unwrap_or(false)
+        || anchor_of(&group.members).is_some()
+    {
         return;
     }
     for member in group.members.iter().filter(|member| member.as_str() != selected) {
@@ -178,61 +181,102 @@ pub fn frame_changed(app: &AppHandle, label: &str) {
     });
 }
 
-fn simple_fullscreen(label: &str) -> bool {
+/// The member whose native fullscreen Space a group in fullscreen shares (macOS).
+fn anchor_of(members: &[String]) -> Option<String> {
     #[cfg(target_os = "macos")]
-    return crate::macos::is_simple_fullscreen(label);
+    return members.iter().find(|member| crate::macos::is_anchor(member)).cloned();
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = label;
-        false
+        let _ = members;
+        None
     }
 }
 
+/// Whether `label`'s group is in fullscreen, in its anchor's Space.
 #[cfg(target_os = "macos")]
-fn set_simple_fullscreen(window: &WebviewWindow, on: bool) -> IdeResult<()> {
-    crate::macos::set_simple_fullscreen(window, on).map_err(|e| IdeError::internal(e.to_string()))
+pub fn in_fullscreen(app: &AppHandle, label: &str) -> bool {
+    app.state::<WindowsState>().groups.lock().group(label).is_some_and(|group| anchor_of(&group.members).is_some())
 }
 
-/// Fullscreen for `window`. On macOS a grouped window uses simple fullscreen, for every member
-/// at once: the group stays in one Space and each member keeps the screen's size, so switching
-/// projects is only showing one window and hiding the others.
+/// Fullscreen for `window`. On macOS a grouped window puts its whole group in one native
+/// fullscreen Space: the selected member enters it as the anchor and the others are shown over
+/// it there (see `select`), so switching projects never leaves the Space.
 pub fn toggle_fullscreen(window: &WebviewWindow) -> IdeResult<bool> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     #[cfg(target_os = "macos")]
     {
-        let simple = simple_fullscreen(window.label());
         let app = window.app_handle();
-        let members = app.state::<WindowsState>().groups.lock().group(window.label()).map(|g| g.members.clone());
-        if simple || (members.is_some() && !window.is_fullscreen().map_err(err)?) {
-            set_simple_fullscreen(window, !simple)?;
-            for member in members.iter().flatten().filter(|m| *m != window.label()) {
-                if let Some(other) = app.get_webview_window(member)
-                    && simple_fullscreen(member) == simple
-                {
-                    set_simple_fullscreen(&other, !simple)?;
-                }
+        let group = app.state::<WindowsState>().groups.lock().group(window.label()).cloned();
+        if let Some(group) = group {
+            if let Some(anchor) = anchor_of(&group.members) {
+                leave_group_fullscreen(app, &group.members, &anchor)?;
+                return Ok(false);
             }
-            return Ok(!simple);
+            let selected =
+                app.get_webview_window(&group.selected).ok_or_else(|| IdeError::not_found("Window closed"))?;
+            if !selected.is_fullscreen().map_err(err)? {
+                crate::macos::set_anchor(selected.label(), true);
+                crate::macos::native_toggle_fullscreen(&selected).map_err(err)?;
+                return Ok(true);
+            }
         }
     }
     let on = !window.is_fullscreen().map_err(err)?;
+    // `set_fullscreen` sends `toggleFullScreen:`, which would bring a grouped window back here.
+    #[cfg(target_os = "macos")]
+    crate::macos::native_toggle_fullscreen(window).map_err(err)?;
+    #[cfg(not(target_os = "macos"))]
     window.set_fullscreen(on).map_err(err)?;
     Ok(on)
+}
+
+/// The members shown in the anchor's Space leave it, back at their own frames; once the anchor
+/// has left fullscreen, the selected project is presented at the group's windowed frame.
+#[cfg(target_os = "macos")]
+fn leave_group_fullscreen(app: &AppHandle, members: &[String], anchor: &str) -> IdeResult<()> {
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    let anchor_window = app.get_webview_window(anchor).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    for member in members.iter().filter(|member| *member != anchor) {
+        if let Some(window) = app.get_webview_window(member) {
+            window.hide().map_err(err)?;
+            crate::macos::leave_space(&window)?;
+        }
+    }
+    leave_native_fullscreen(app, &anchor_window)
+}
+
+/// Takes `window` out of native fullscreen. That shows it again once done, so the group's
+/// selected project is presented then, at the group's windowed frame.
+#[cfg(target_os = "macos")]
+fn leave_native_fullscreen(app: &AppHandle, window: &WebviewWindow) -> IdeResult<()> {
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    let (app, label) = (app.clone(), window.label().to_owned());
+    crate::macos::after_fullscreen_exit(window, move || {
+        crate::macos::set_anchor(&label, false);
+        let selected = app.state::<WindowsState>().groups.lock().group(&label).map(|g| g.selected.clone());
+        if let Some(selected) = selected {
+            let _ = select(&app, &selected, &selected);
+        }
+    })
+    .map_err(err)?;
+    crate::macos::native_toggle_fullscreen(window).map_err(err)
 }
 
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
-    // In a fullscreen group the target already covers the screen, or does so before it is shown.
-    let simple = previous.selected != target && simple_fullscreen(&previous.selected);
-    let result = (|| {
-        #[cfg(target_os = "macos")]
-        if simple && !simple_fullscreen(target) {
-            set_simple_fullscreen(&to, true)?;
+    #[cfg(target_os = "macos")]
+    if let Some(anchor) = anchor_of(&previous.members) {
+        let result = select_in_space(app, &previous.members, target, &anchor);
+        if result.is_err() {
+            let _ = state.groups.lock().select(caller, &previous.selected);
         }
-        if !simple
-            && previous.selected != target
+        changed(app);
+        return result;
+    }
+    let result = (|| {
+        if previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
         {
             copy_frame(&from, &to)?;
@@ -278,10 +322,39 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     result
 }
 
+/// In a fullscreen group, `target` is shown over the anchor inside the anchor's Space. The anchor
+/// is never hidden there: its Space ends with it.
+#[cfg(target_os = "macos")]
+fn select_in_space(app: &AppHandle, members: &[String], target: &str, anchor: &str) -> IdeResult<()> {
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    let anchor_window = app.get_webview_window(anchor).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    // A member joins whichever Space is active when it is shown; make that the group's.
+    if !crate::macos::is_on_active_space(&anchor_window) {
+        anchor_window.set_focus().map_err(err)?;
+    }
+    if target != anchor {
+        crate::macos::join_space(&to, &anchor_window)?;
+        to.show().map_err(err)?;
+    }
+    to.set_focus().map_err(err)?;
+    for member in members.iter().filter(|member| *member != target && *member != anchor) {
+        if let Some(window) = app.get_webview_window(member) {
+            window.hide().map_err(err)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     state.groups.lock().join(anchor, new_window)?;
+    // A window already in native fullscreen keeps its Space and the new project joins it.
+    if !in_fullscreen(app, anchor) && app.get_webview_window(anchor).is_some_and(|w| w.is_fullscreen().unwrap_or(false))
+    {
+        crate::macos::set_anchor(anchor, true);
+    }
     select(app, anchor, new_window)
 }
 
@@ -297,9 +370,14 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     for label in &members {
         if let Some(window) = app.get_webview_window(label) {
             #[cfg(target_os = "macos")]
-            if label != caller && simple_fullscreen(label) {
-                set_simple_fullscreen(&window, false)?;
+            {
+                crate::macos::leave_space(&window)?;
+                crate::macos::set_anchor(label, false);
+                if window.is_fullscreen().unwrap_or(false) {
+                    leave_native_fullscreen(app, &window)?;
+                }
             }
+            #[cfg(not(target_os = "macos"))]
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
         }
     }
@@ -309,23 +387,20 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
 
 pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
+    #[cfg(target_os = "macos")]
+    let anchor = state.groups.lock().group(caller).and_then(|group| anchor_of(&group.members));
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
-        // The tab that stays keeps the fullscreen; the detached window opens beside it.
         #[cfg(target_os = "macos")]
-        let simple = simple_fullscreen(caller);
+        if let Some(anchor) = anchor {
+            let result = detach_from_space(app, caller, &next, &anchor);
+            changed(app);
+            return result;
+        }
         if let Some(window) = app.get_webview_window(&next) {
-            #[cfg(target_os = "macos")]
-            if simple && !simple_fullscreen(&next) {
-                set_simple_fullscreen(&window, true)?;
-            }
             window.show().map_err(|e| IdeError::internal(e.to_string()))?;
         }
         if let Some(window) = app.get_webview_window(caller) {
-            #[cfg(target_os = "macos")]
-            if simple {
-                set_simple_fullscreen(&window, false)?;
-            }
             if let Ok(position) = window.outer_position() {
                 let _ = window.set_position(tauri::PhysicalPosition::new(position.x + 32, position.y + 32));
             }
@@ -336,17 +411,57 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     Ok(())
 }
 
+/// A tab moved out of a fullscreen group gets a fullscreen Space of its own, as a window moved out
+/// of an AppKit tab group does; the tabs that stay keep theirs, or open a new one when the moved
+/// tab owned it. A window can't be moved to the desktop's Space.
+#[cfg(target_os = "macos")]
+fn detach_from_space(app: &AppHandle, caller: &str, next: &str, anchor: &str) -> IdeResult<()> {
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    let members = app.state::<WindowsState>().groups.lock().group(next).map(|g| g.members.clone());
+    let caller_window = app.get_webview_window(caller).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    let next_window = app.get_webview_window(next).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    if caller == anchor {
+        crate::macos::set_anchor(anchor, false);
+        crate::macos::leave_space(&next_window)?;
+        crate::macos::set_anchor(next, members.is_some());
+        next_window.show().map_err(err)?;
+        crate::macos::enter_fullscreen(&next_window);
+        return Ok(());
+    }
+    crate::macos::leave_space(&caller_window)?;
+    match members {
+        Some(members) => select_in_space(app, &members, next, anchor)?,
+        None => crate::macos::set_anchor(anchor, false),
+    }
+    caller_window.set_focus().map_err(err)?;
+    crate::macos::enter_fullscreen(&caller_window);
+    Ok(())
+}
+
 pub fn destroyed(app: &AppHandle, caller: &str) {
     let Some(state) = app.try_state::<WindowsState>() else { return };
     #[cfg(target_os = "macos")]
-    let simple = crate::macos::forget_simple_fullscreen(app, caller);
+    let was_anchor = crate::macos::forget_group_fullscreen(app, caller);
     let next = state.groups.lock().detach(caller);
     if !state.quitting() {
         if let Some(window) = next.and_then(|label| app.get_webview_window(&label)) {
             #[cfg(target_os = "macos")]
-            if simple && !simple_fullscreen(window.label()) {
-                let _ = set_simple_fullscreen(&window, true);
+            {
+                let grouped = state.groups.lock().group(window.label()).is_some();
+                if !grouped {
+                    crate::macos::set_anchor(window.label(), false);
+                }
+                if was_anchor {
+                    // The closed anchor's Space went with it; the tab that stays opens its own.
+                    let _ = crate::macos::leave_space(&window);
+                    crate::macos::set_anchor(window.label(), grouped);
+                    let _ = window.show();
+                    crate::macos::enter_fullscreen(&window);
+                } else {
+                    windows::focus(&window);
+                }
             }
+            #[cfg(not(target_os = "macos"))]
             windows::focus(&window);
         }
         let app = app.clone();
@@ -519,7 +634,7 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
             } else if path.is_dir() {
                 let window = match windows::find_project_window(app, path) {
                     Some(w) => Ok(w),
-                    None => windows::create_restored_window(app, path.clone()),
+                    None => windows::create_restored_window(app, path.clone(), group.projects.len() > 1),
                 };
                 match window {
                     Ok(w) => Some(w.label().to_owned()),
@@ -540,7 +655,23 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
         }
         if labels.len() > 1 {
             let selected = selected.unwrap_or_else(|| labels[0].clone());
+            #[cfg(target_os = "macos")]
+            let members = labels.clone();
             state.groups.lock().merge(labels, &selected)?;
+            // The first window opens with the state remembered for its label. The group reopens
+            // windowed, or in fullscreen in its own Space when that window is the selected one.
+            #[cfg(target_os = "macos")]
+            for label in &members {
+                if let Some(window) = app.get_webview_window(label)
+                    && window.is_fullscreen().unwrap_or(false)
+                {
+                    if *label == selected {
+                        crate::macos::set_anchor(label, true);
+                    } else {
+                        leave_native_fullscreen(app, &window)?;
+                    }
+                }
+            }
             select(app, &selected, &selected)?;
         }
     }
