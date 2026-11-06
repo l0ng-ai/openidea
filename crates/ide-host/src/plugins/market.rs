@@ -71,7 +71,8 @@ fn pinned(mut index: Index, official_keys: &[String]) -> Index {
 /// An index's icon as the UI may show it: sanitised again, as any index may
 /// have written it; without a light variant that passes, none.
 fn safe_icon(icon: PluginIcon) -> Option<PluginIcon> {
-    let clean = |svg: String| sanitize_svg(&svg).ok().filter(|s| s.len() <= MAX_PLUGIN_ICON);
+    // Before sanitising too: an index may hold megabytes of it.
+    let clean = |svg: String| (svg.len() <= MAX_PLUGIN_ICON).then(|| sanitize_svg(&svg).ok()).flatten();
     Some(PluginIcon { light: clean(icon.light)?, dark: icon.dark.and_then(clean) })
 }
 

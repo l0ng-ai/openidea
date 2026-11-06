@@ -380,7 +380,7 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     out.files = files;
     if let Some(icon) = d.icon.as_deref().filter(|i| i.ends_with(".svg")) {
         let path = std::path::PathBuf::from(icon);
-        let svg = super::icons::read_icon(pkg, &path)?;
+        let svg = super::icons::read_icon(pkg, &path, super::icons::MAX_SVG)?;
         out.assets.push((view_icon_asset(&d.id), svg));
         out.files.push(path);
     }
@@ -473,7 +473,7 @@ pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Stri
     let mut assets = Vec::new();
     for (path, dark) in [(Some(&d.icon), false), (d.icon_dark.as_ref(), true)] {
         let Some(path) = path else { continue };
-        let svg = super::icons::read_icon(pkg, path)?;
+        let svg = super::icons::read_icon(pkg, path, super::icons::MAX_SVG)?;
         assets.push((file_icon_asset(&d.id, dark), svg));
         files.push(path.clone());
     }

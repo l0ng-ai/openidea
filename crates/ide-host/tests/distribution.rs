@@ -522,10 +522,13 @@ fn marketplace_icons_are_sanitised_or_dropped() {
     let good =
         IndexEntry { icon: icon(r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#), ..entry.clone() };
     let hostile = IndexEntry { id: "acme.hostile".into(), icon: icon(r#"<svg onload="x()"><rect/></svg>"#), ..entry };
-    f.host.set_market_url(Some(write_index(&market, &key, vec![good, hostile], vec![], false)));
+    let padded = format!("<svg viewBox=\"0 0 16 16\"><!--{}--><rect/></svg>", " ".repeat(20 << 10));
+    let padded = IndexEntry { id: "acme.padded".into(), icon: icon(&padded), ..hostile.clone() };
+    f.host.set_market_url(Some(write_index(&market, &key, vec![good, hostile, padded], vec![], false)));
 
     let listed = f.host.refresh_market().unwrap();
     let by_id = |id: &str| listed.iter().find(|p| p.entry.id == id).unwrap_or_else(|| panic!("{id} not listed"));
     assert!(by_id("acme.hello").entry.icon.as_ref().unwrap().light.contains("<rect"));
     assert!(by_id("acme.hostile").entry.icon.is_none(), "an unsafe icon is dropped, the entry stays");
+    assert!(by_id("acme.padded").entry.icon.is_none(), "an icon over 16 KiB is dropped before it is sanitised");
 }

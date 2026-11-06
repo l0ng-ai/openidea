@@ -2656,9 +2656,11 @@ fn invalid_plugin_icons_refuse_the_package() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
     let big = format!("<svg>{}</svg>", "<path d=\"M0 0h1v1z\"/>".repeat(1000));
+    let padded = format!("<svg><!--{}--><rect/></svg>", " ".repeat(20 << 10));
     let cases = [
         ("scripted", "icon = \"icon.svg\"\n", "<svg><script>alert(1)</script></svg>".to_owned(), "icon.svg"),
         ("oversized", "icon = \"icon.svg\"\n", big, "16 KiB"),
+        ("padded", "icon = \"icon.svg\"\n", padded, "16 KiB"),
         ("missing", "icon = \"missing.svg\"\n", RECT.to_owned(), "missing.svg"),
     ];
     for (id, extra, svg, expected) in cases {
