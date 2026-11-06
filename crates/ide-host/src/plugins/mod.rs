@@ -16,6 +16,7 @@
 //! projects) and folders linked with `openidea-plugin link` (`links.json`).
 
 mod api;
+mod bundled;
 mod icon_extensions;
 mod icon_patterns;
 mod icon_settings;
@@ -38,6 +39,7 @@ pub mod views;
 pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub use bundled::bundled_ids;
 pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
@@ -84,6 +86,10 @@ struct PersistedState {
     /// Marketplace index URL (or folder path).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     market_url: Option<String>,
+    /// Plugins bundled with the app → the version of the app's package last
+    /// offered (installed, or kept back by a newer or rolled-back install).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    bundled: BTreeMap<String, String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -782,6 +788,12 @@ impl PluginHost {
     /// reference) with the user's `consent`, replacing an installed version
     /// with the same id atomically.
     pub fn install_from_dir(&self, src: &Path, consent: &Consent) -> IdeResult<PluginInfo> {
+        self.install(src, Some(consent))
+    }
+
+    /// [`install_from_dir`](Self::install_from_dir); without `consent`, a
+    /// package bundled with the app, granted as such ([`Ledger::grant_bundled`]).
+    fn install(&self, src: &Path, consent: Option<&Consent>) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let (pkg, set) = self.validate_package(src)?;
         let id = pkg.id().to_owned();
@@ -797,7 +809,7 @@ impl PluginHost {
         if let Some(problem) = self.signature_problem(src) {
             return Err(IdeError::invalid(format!("refusing {id}: {problem}")));
         }
-        if !consent.signer_change && self.signer_changed(&id, src) {
+        if consent.is_some_and(|c| !c.signer_change) && self.signer_changed(&id, src) {
             return Err(IdeError::invalid(format!(
                 "refusing {id}: it is signed by another key than the installed version; confirm the change of signer"
             )));
@@ -829,7 +841,14 @@ impl PluginHost {
         };
         // Consent covers what the install page showed.
         let request = request_for(&subject, &pkg.manifest, &hash, &set.capabilities);
-        self.record_consent(&request, consent);
+        match consent {
+            Some(consent) => self.record_consent(&request, consent),
+            None => {
+                let mut ledger = self.ledger.lock();
+                ledger.grant_bundled(&request);
+                self.save_ledger(&ledger);
+            }
+        }
         let dir = install::active_dir(&root).ok_or_else(|| IdeError::internal("the installed version is missing"))?;
         self.load_dir(&dir, PluginSource::Installed, None);
         if let Some(previous) = previous {
@@ -995,6 +1014,12 @@ impl PluginHost {
             return Err(IdeError::invalid(
                 "development plugins are removed by deleting them from .openidea/plugins or unlinking them",
             ));
+        }
+        if self.is_bundled(&plugin) {
+            return Err(IdeError::invalid(format!(
+                "{} is bundled with OpenIDEA: it can be disabled, not uninstalled",
+                plugin.manifest().name
+            )));
         }
         // Its secrets (kept outside its directory, in the OS keychain on the desktop) go with it.
         let secrets: Vec<String> = plugin
@@ -2175,6 +2200,7 @@ impl PluginHost {
         // The ledger before a plugin's `meta`, as everywhere (`refresh_pins` holds the
         // ledger and locks each plugin's): the other order deadlocks.
         let grant = self.ledger.lock().get(&p.subject()).cloned();
+        let bundled = self.is_bundled(p);
         let meta = p.meta.lock();
         let granted = |c: &Capability| grant.as_ref().is_some_and(|g| g.confirmed && g.has(c));
         let mut capabilities: Vec<CapabilityInfo> =
@@ -2195,6 +2221,7 @@ impl PluginHost {
             source: p.source,
             path: p.dir().to_path_buf().into(),
             enabled: !self.state.lock().disabled.contains(&m.id),
+            bundled,
             status: meta.status,
             error: meta.error.clone(),
             has_code: m.wasm.is_some(),

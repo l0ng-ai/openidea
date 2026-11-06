@@ -59,5 +59,6 @@
   "The HTTP configuration holds this run's token and stops working when OpenIDEA restarts. The stdio one starts OpenIDEA's executable, which relays to the running IDE.": "The HTTP configuration holds this run's token and stops working when OpenIDEA restarts. The stdio one starts OpenIDEA's executable, which relays to the running IDE.",
   "Copy HTTP Config": "Copy HTTP Config",
   "Copy Stdio Config": "Copy Stdio Config",
-  "Copied to the clipboard": "Copied to the clipboard"
+  "Copied to the clipboard": "Copied to the clipboard",
+  "Ships with OpenIDEA. It can be disabled, but not uninstalled.": "Ships with OpenIDEA. It can be disabled, but not uninstalled."
 }

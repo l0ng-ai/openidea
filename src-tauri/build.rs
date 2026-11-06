@@ -2,6 +2,10 @@ fn main() {
     let root =
         dunce::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).expect("worktree root");
     println!("cargo:rustc-env=OPENIDEA_WORKTREE_ROOT={}", root.display());
+    // Bundled with the app as `<resources>/plugins`; filled by `pnpm stage:bundled-plugins`
+    // before `tauri build`, and must exist for any build.
+    std::fs::create_dir_all(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bundled-plugins"))
+        .expect("src-tauri/bundled-plugins");
     // Windows (MSVC): link the Common-Controls v6 manifest into every binary of
     // this package, not only the app's resources, so test executables such as
     // `export_bindings` can load comctl32 and don't exit with

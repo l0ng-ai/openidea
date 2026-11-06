@@ -509,3 +509,140 @@ fn official_plugins_need_the_key_this_ide_was_built_with() {
     let dir = f.host.download_market_plugin("openidea.hello").unwrap();
     assert_eq!(f.host.preview_install(&dir).unwrap().publisher.as_deref(), Some(OFFICIAL_PUBLISHER));
 }
+
+// ---- bundled plugins --------------------------------------------------------------
+
+fn hello() -> PathBuf {
+    repo().join("crates/ide-plugin/tests/fixtures/hello")
+}
+
+const HELLO_NEEDS: &str = r#"required = ["editor.read", "editor.write"]"#;
+
+/// The app's resources, with `hello` at `version` (its manifest further changed by `edit`).
+fn app_with_hello(f: &Fixture, version: &str, edit: impl Fn(String) -> String) -> Vec<PathBuf> {
+    let resources = f.work.join(format!("app-{version}"));
+    variant(&hello(), &resources, "hello", |t| {
+        edit(t.replace("version = \"0.3.0\"", &format!("version = \"{version}\"")))
+    });
+    vec![resources]
+}
+
+fn bundled() -> Vec<String> {
+    vec!["hello".into()]
+}
+
+/// `hello`'s entry in `grants.json`.
+fn grant_of(f: &Fixture) -> serde_json::Value {
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(f.plugins_dir.join("grants.json")).unwrap()).unwrap();
+    let grants = file["grants"].as_array().unwrap();
+    grants.iter().find(|g| g[1]["pluginId"] == "hello").map(|g| g[1].clone()).unwrap()
+}
+
+#[test]
+fn bundled_plugins_install_enabled_and_granted_and_cannot_be_uninstalled() {
+    let f = fixture();
+    // The list may name a plugin this build has no package for: it is skipped.
+    let ids = vec!["hello".to_owned(), "missing".to_owned()];
+    f.host.sync_bundled(&ids, &app_with_hello(&f, "1.0.0", |t| t));
+    let info = f.host.info_of("hello").unwrap();
+    assert_eq!(
+        (info.version.as_str(), info.status, info.enabled, info.bundled),
+        ("1.0.0", PluginStatus::Inactive, true, true),
+        "{:?}",
+        info.error
+    );
+    assert!(info.capabilities.iter().all(|c| c.granted), "no install page");
+    assert_eq!(grant_of(&f)["bundled"], true);
+    assert!(f.host.info_of("missing").is_err());
+
+    let err = f.host.uninstall("hello").unwrap_err();
+    assert!(err.message.contains("can be disabled, not uninstalled"), "{}", err.message);
+
+    // The next start finds it installed.
+    let again = PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
+    again.load_all();
+    again.sync_bundled(&bundled(), &app_with_hello(&f, "1.0.0", |t| t));
+    let info = again.info_of("hello").unwrap();
+    assert_eq!((info.version.as_str(), info.previous_version, info.bundled), ("1.0.0", None, true));
+
+    // An app version without it in the list leaves an ordinary plugin behind.
+    again.sync_bundled(&[], &[]);
+    assert!(!again.info_of("hello").unwrap().bundled);
+    again.uninstall("hello").unwrap();
+}
+
+#[test]
+fn a_newer_bundled_version_replaces_the_installed_one_once_and_keeps_it_disabled() {
+    let f = fixture();
+    f.host.sync_bundled(&bundled(), &app_with_hello(&f, "1.0.0", |t| t));
+    f.host.set_enabled("hello", false).unwrap();
+
+    // The next app version brings 1.1.0, which also needs `storage`.
+    let needs_more = |t: String| t.replace(HELLO_NEEDS, r#"required = ["editor.read", "editor.write", "storage"]"#);
+    f.host.sync_bundled(&bundled(), &app_with_hello(&f, "1.1.0", needs_more));
+    let info = f.host.info_of("hello").unwrap();
+    assert_eq!(
+        (info.version.as_str(), info.previous_version.as_deref(), info.enabled, info.status),
+        ("1.1.0", Some("1.0.0"), false, PluginStatus::Disabled),
+        "the user's disabling survives"
+    );
+    f.host.set_enabled("hello", true).unwrap();
+    assert_eq!(f.host.info_of("hello").unwrap().status, PluginStatus::Inactive, "granted without asking");
+
+    // The user rolls the update back: the same app doesn't install it again.
+    f.host.roll_back_update("hello").unwrap();
+    f.host.sync_bundled(&bundled(), &app_with_hello(&f, "1.1.0", needs_more));
+    assert_eq!(f.host.info_of("hello").unwrap().version, "1.0.0");
+}
+
+#[test]
+fn a_newer_version_the_user_installed_stays_until_the_app_brings_a_newer_one() {
+    let f = fixture();
+    f.host.sync_bundled(&bundled(), &app_with_hello(&f, "1.0.0", |t| t));
+    let market = variant(&hello(), &f.work, "market", |t| t.replace("version = \"0.3.0\"", "version = \"2.0.0\""));
+    f.host.install_from_dir(&market, &Consent::all()).unwrap();
+
+    f.host.sync_bundled(&bundled(), &app_with_hello(&f, "1.5.0", |t| t));
+    let info = f.host.info_of("hello").unwrap();
+    assert_eq!((info.version.as_str(), info.bundled), ("2.0.0", true));
+
+    f.host.sync_bundled(&bundled(), &app_with_hello(&f, "2.1.0", |t| t));
+    assert_eq!(f.host.info_of("hello").unwrap().version, "2.1.0");
+}
+
+#[test]
+fn bundled_plugins_ask_for_programs_on_first_use() {
+    let f = fixture();
+    let cap = "process:openidea-test-no-such-tool";
+    let app =
+        app_with_hello(&f, "1.0.0", |t| t.replace(HELLO_NEEDS, &format!(r#"required = ["editor.read", "{cap}"]"#)));
+    f.host.sync_bundled(&bundled(), &app);
+    let info = f.host.info_of("hello").unwrap();
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    let granted = |info: &PluginInfo| -> Vec<String> {
+        info.capabilities.iter().filter(|c| c.granted).map(|c| c.id.clone()).collect()
+    };
+    assert_eq!(granted(&info), ["editor.read"]);
+
+    // Its first use asks, as for any program a plugin wants to start.
+    f.events.lock().clear();
+    let err = f.host.run_command("hello", "insert-date", None, inv()).unwrap_err();
+    assert!(err.message.contains("needs your permission"), "{}", err.message);
+    assert!(f.events.lock().iter().any(|e| matches!(
+        e,
+        PluginEvent::ConsentRequested { plugin_id, capabilities } if plugin_id == "hello" && capabilities[0].id == cap
+    )));
+    let info = f.host.grant("hello", &Consent::default()).unwrap();
+    assert_eq!(granted(&info).len(), 2);
+}
+
+#[test]
+fn a_bundled_package_that_does_not_install_is_skipped() {
+    let f = fixture();
+    let app = app_with_hello(&f, "1.0.0", |t| t);
+    // A debug build whose plugin wasn't built.
+    std::fs::remove_file(app[0].join("hello/dist/plugin.wasm")).unwrap();
+    f.host.sync_bundled(&bundled(), &app);
+    assert!(f.host.info_of("hello").is_err());
+}

@@ -6397,5 +6397,6 @@
   "The HTTP configuration holds this run's token and stops working when OpenIDEA restarts. The stdio one starts OpenIDEA's executable, which relays to the running IDE.": "HTTP 配置包含本次运行的令牌，OpenIDEA 重启后即失效。stdio 配置会启动 OpenIDEA 的可执行文件，由它转发到正在运行的 IDE。",
   "Copy HTTP Config": "复制 HTTP 配置",
   "Copy Stdio Config": "复制 Stdio 配置",
-  "Copied to the clipboard": "已复制到剪贴板"
+  "Copied to the clipboard": "已复制到剪贴板",
+  "Ships with OpenIDEA. It can be disabled, but not uninstalled.": "随 OpenIDEA 一起提供。可以禁用，但不能卸载。"
 }

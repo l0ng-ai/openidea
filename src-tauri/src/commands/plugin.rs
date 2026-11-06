@@ -76,6 +76,7 @@ fn schedule_remote_sync(app: &AppHandle) {
 /// Creates the host over `<app-data>/plugins` and loads installed plugins in
 /// the background (no Wasm is instantiated until an activation event).
 pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host::Host>) -> IdeResult<Arc<PluginHost>> {
+    let bundled = bundled_plugin_dirs(app);
     let projects = Arc::downgrade(project_host);
     let app = app.clone();
     let sink = move |client: Option<&str>, event: PluginEvent| {
@@ -123,6 +124,7 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     std::thread::Builder::new().name("plugin-load".into()).spawn(move || {
         let Some(host) = loader.upgrade() else { return };
         host.load_all();
+        host.sync_bundled(&ide_host::plugins::bundled_ids(), &bundled);
         drop(host);
         std::thread::sleep(STARTUP_FINISHED_DELAY);
         let Some(host) = loader.upgrade() else { return };
@@ -150,6 +152,16 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
         }
     })?;
     Ok(host)
+}
+
+/// Where the packages of the plugins bundled with the app are: the app's
+/// resources, or the repository's official plugins in debug builds.
+fn bundled_plugin_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    if cfg!(debug_assertions) {
+        vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/official")]
+    } else {
+        app.path().resource_dir().map(|d| vec![d.join("plugins")]).unwrap_or_default()
+    }
 }
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {

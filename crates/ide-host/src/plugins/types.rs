@@ -51,6 +51,8 @@ pub struct PluginInfo {
     pub homepage: Option<String>,
     pub change_notes: Option<String>,
     pub source: PluginSource,
+    /// Installed with the app (`plugins/bundled.json`): it can be disabled, not uninstalled.
+    pub bundled: bool,
     /// Package directory.
     pub path: ide_core::IpcPath,
     pub enabled: bool,

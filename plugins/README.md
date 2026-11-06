@@ -846,6 +846,8 @@ granted, and starts the approved program.
   nothing new installs with the grants the installed version has; the install
   page is shown only for new capabilities, an unsigned package or another
   signer (see _Distribution_).
+- **Bundled plugins** ship with the app (§8.2) and are listed under _Bundled_:
+  they can be disabled, not uninstalled.
 - **Linked plugins:** `openidea-plugin link <dir>` (§1). Listed with a _linked_
   tag; capabilities are granted per folder.
 - **Project plugins:** put (or symlink) the package in
@@ -956,6 +958,32 @@ It lists two kinds of plugins:
 Pull requests that add a plugin to this repository are for official plugins.
 A plugin that needs a new extension point brings the extension point here, as
 its own pull request, and the plugin to the registry.
+
+### 8.2 Bundled plugins
+
+Official plugins listed in [`bundled.json`](bundled.json) (`{ "plugins": ["openidea.<name>"] }`)
+ship with the app, like IntelliJ's bundled plugins. `pnpm tauri build` stages them
+(`pnpm stage:bundled-plugins`, its `beforeBuildCommand`) from `plugins/official/` into the
+app's resources (`<resources>/plugins/<id>/`); a listed plugin that is missing or not built
+fails the build — components are checked in, web pages need `plugins/build.sh` first. Debug
+builds use `plugins/official/` directly and skip, with a log line, a plugin that isn't built.
+
+At every start the IDE:
+
+- installs a bundled plugin that isn't installed, enabled, with its required capabilities
+  granted without the install page (`grants.json` marks the grant `bundled`). Its
+  `process:<program>` capabilities are the exception: they are asked for the first time the
+  plugin is used, and the program is resolved and pinned then, as for any plugin. Optional
+  capabilities stay off until allowed in Settings › Plugins;
+- replaces it when the app brings a newer version (semver), once: a newer version installed
+  from the marketplace stays, and so does a version the user rolled back to. Being disabled
+  survives updates, and the update gets the new version's required capabilities as above;
+- keeps a linked or project plugin with the same id in its place.
+
+Bundled plugins can't be uninstalled, only disabled. When a release drops an id from the
+list, the installed plugin stays as an ordinary one (enabled or not, with its grants and
+data), which the user may then uninstall: removing what someone may be using in an app
+update would be a surprise.
 
 ## 9. Testing the host
 
