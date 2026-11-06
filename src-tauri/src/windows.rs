@@ -276,6 +276,18 @@ pub fn settings_label(parent: &str) -> String {
     format!("{}-{parent}", AuxKind::Settings.name())
 }
 
+/// Windows being built to join a window group, which takes their frame from the group.
+#[cfg(target_os = "macos")]
+static JOINING_GROUP: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether the window-state plugin restores and tracks `label`'s geometry. A window joining a
+/// group takes the group's frame instead; restoring a fullscreen state its label kept from an
+/// earlier window would give it a fullscreen Space of its own.
+#[cfg(target_os = "macos")]
+pub fn keeps_window_state(label: &str) -> bool {
+    !JOINING_GROUP.lock().iter().any(|l| l == label)
+}
+
 /// The window state key: one geometry per auxiliary kind, else the label itself.
 pub fn state_key(label: &str) -> &str {
     auxiliary(label).map_or(label, |(kind, _)| kind.name())
@@ -612,7 +624,21 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
-    let window = build_project_window(app, config)?;
+    #[cfg(target_os = "macos")]
+    if tab_target.is_some() {
+        JOINING_GROUP.lock().push(label.clone());
+        // Selecting it in the group shows it; shown before, a window opened over a fullscreen
+        // group lands on the desktop and takes the screen there.
+        config.visible = false;
+    }
+    let window = build_project_window(app, config);
+    // Plugins hear of the window from the main thread's queue; forget it after them.
+    #[cfg(target_os = "macos")]
+    if tab_target.is_some() {
+        let joined = label.clone();
+        let _ = app.run_on_main_thread(move || JOINING_GROUP.lock().retain(|l| *l != joined));
+    }
+    let window = window?;
     #[cfg(target_os = "macos")]
     crate::macos::intercept_toggle_fullscreen(&window);
     #[cfg(target_os = "macos")]
