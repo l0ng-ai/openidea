@@ -16,7 +16,7 @@ import { applicationConfig, jvmModuleDir } from "./application";
 import { formatArgs } from "./configs";
 import { goGenerateConfig } from "./goGenerate";
 import { goTestParts } from "./goArguments";
-import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
+import { configScope, contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
@@ -615,8 +615,8 @@ const hasKotlinMain = (content?: string) => content === undefined || /^(?:suspen
  */
 function buildOwners(rel: string, configs: readonly RunConfig[], kinds: readonly string[]): RunConfig[] {
   return configs.filter((c) => {
-    if (!kinds.includes(c.kind)) return false;
-    const cwd = (c.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
+    if (!kinds.includes(c.kind) || c.id.startsWith("context:")) return false;
+    const cwd = configScope(c);
     return !cwd || rel.startsWith(cwd + "/");
   });
 }

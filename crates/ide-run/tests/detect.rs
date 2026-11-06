@@ -363,6 +363,48 @@ fn go_projects() {
 }
 
 #[test]
+fn nested_go_modules_keep_their_working_directories() {
+    let dir = project(&[
+        ("Cargo.toml", "[package]\nname = 'workspace'\n"),
+        ("fixtures/go-app/go.mod", "module example.com/openidea/notes\n"),
+        ("fixtures/go-app/cmd/server/main.go", "package main\nfunc main() {}\n"),
+        ("services/backend/api/go.mod", "module example.com/api\n"),
+        ("services/backend/api/main.go", "package main\nfunc main() {}\n"),
+        ("fixtures/go-app/nested/go.mod", "module ignored\n"),
+        ("vendor/ignored/go.mod", "module ignored\n"),
+        ("node_modules/ignored/go.mod", "module ignored\n"),
+        ("target/ignored/go.mod", "module ignored\n"),
+        ("build/ignored/go.mod", "module ignored\n"),
+        ("dist/ignored/go.mod", "module ignored\n"),
+        (".hidden/ignored/go.mod", "module ignored\n"),
+    ]);
+    let configs = detect(dir.path());
+    let go: Vec<_> = configs.iter().filter(|c| c.kind == "go").map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        go,
+        [
+            "go:run:server:fixtures/go-app",
+            "go:test:fixtures/go-app",
+            "go:run:services/backend/api",
+            "go:test:services/backend/api",
+        ]
+    );
+    let run = find(&configs, "go:run:server:fixtures/go-app");
+    assert_eq!(cmdline(run), "go run ./cmd/server");
+    assert_eq!(run.cwd.as_deref(), Some(Path::new("fixtures/go-app")));
+    let test = find(&configs, "go:test:services/backend/api");
+    assert_eq!(test.cwd.as_deref(), Some(Path::new("services/backend/api")));
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_go_discovery_does_not_follow_symlinks() {
+    let dir = project(&[("real/go.mod", "module real\n")]);
+    std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("alias")).unwrap();
+    assert_eq!(ids(&detect(dir.path())), ["go:test:real"]);
+}
+
+#[test]
 fn python_projects() {
     let dir = project(&[
         ("pyproject.toml", "[tool.pytest.ini_options]\naddopts = \"-q\"\n"),
