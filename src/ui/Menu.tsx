@@ -273,9 +273,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
               <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>
                 {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
               </span>
-              <span className={styles.label} title={r.label}>
-                {r.label}
-              </span>
+              <span className={styles.label}>{r.label}</span>
               {r.shortcut && <span className={styles.shortcut}>{r.shortcut}</span>}
               {hasSub && <Icon name="chevron-right" size={14} className={styles.subArrow} />}
             </button>
