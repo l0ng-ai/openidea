@@ -884,7 +884,11 @@ export const commands = {
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**  A window vetoed the quit (user cancelled its unsaved-changes prompt). */
 	appCancelQuit: () => __TAURI_INVOKE<void>("app_cancel_quit"),
-	/**  Sets the menu's labels / shortcut text (on locale or keymap change) and rebuilds it. */
+	/**
+	 *  Sets the menu's labels / shortcut text and rebuilds it when they changed.
+	 *  Focusing another project window re-pushes the same shared menu; an identical
+	 *  config must not call `set_menu`, which redraws the macOS menu bar.
+	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
 	/**  Rebuilds the menu (e.g. after the recent-projects list changed). */
 	menuRefresh: () => __TAURI_INVOKE<void>("menu_refresh"),

@@ -147,7 +147,8 @@ export function installMenuBridge(): () => void {
     push();
     pushEnablement(true);
   };
-  // The native menu bar is shared: a focused window re-pushes its own window-scoped labels.
+  // The menu bar is shared. A focused window re-pushes labels that can differ per window.
+  // An identical config does not replace the menu, so switching project tabs does not redraw it.
   window.addEventListener("focus", onFocus);
   const unsubs = [
     useI18n.subscribe((s, prev) => {
