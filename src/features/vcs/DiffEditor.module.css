@@ -240,15 +240,16 @@
   position: absolute;
   inset: 0;
 }
-/* The full colours of the change types (cm.ts), so bands and their midlines read as one shape. */
+/* The stripe shades of the change types (cm.ts): the divider is narrow, and the line fill
+   alone is too close to the background to read as IDEA's connector. */
 .host :global(.cm-diffBand-inserted) {
-  --band: var(--diff-inserted);
+  --band: var(--diff-inserted-stripe);
 }
 .host :global(.cm-diffBand-deleted) {
-  --band: var(--diff-deleted);
+  --band: var(--diff-deleted-stripe);
 }
 .host :global(.cm-diffBand-modified) {
-  --band: var(--diff-modified);
+  --band: var(--diff-modified-stripe);
 }
 .host :global(.cm-diffBand) {
   fill: var(--band);
@@ -256,7 +257,7 @@
 .host :global(.cm-diffBandLine) {
   fill: none;
   stroke: var(--band);
-  stroke-width: 1px;
+  stroke-width: 1.5px;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow) {
   position: absolute;
@@ -269,7 +270,7 @@
   border: 0;
   border-radius: var(--radius-small);
   background: none;
-  color: var(--fg-subtle);
+  color: var(--fg-secondary);
   cursor: pointer;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {

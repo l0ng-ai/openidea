@@ -294,6 +294,7 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.rollback": ["Ctrl+Alt+Z"],
   "vcs.addToVcs": ["Ctrl+Alt+A"],
   "vcs.showDiff": ["Ctrl+D"],
+  "vcs.showDiffInNewWindow": ["Ctrl+Alt+Shift+D"],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
   // After Next / Previous Change: these win the shared keys in a tool window.

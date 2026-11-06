@@ -16,6 +16,7 @@ import {
   activate as vcs,
   activateComparisonWindow,
   activateDiffViewer,
+  activateDiffWindow,
   activateSettingsPages as vcsPages,
 } from "./vcs";
 import { activate as terminal } from "./terminal";
@@ -119,7 +120,7 @@ export function activateFeatures(): () => void {
 }
 
 export { SettingsWindow } from "./settings";
-export { ComparisonWindow } from "./vcs";
+export { ComparisonWindow, DiffWindow } from "./vcs";
 export { DeploymentWindow } from "./deployment";
 
 /**
@@ -134,6 +135,20 @@ export function activateComparisonWindowFeatures(parent: string): () => void {
     ["editor", editor],
     ["vcs", vcs],
     ["comparison", () => activateComparisonWindow(parent, (project) => confirmLeave(undefined, project))],
+  ]);
+}
+
+/**
+ * The diff window of project window `parent`: one file's diff, with Git and its own documents but
+ * no workbench.
+ */
+export function activateDiffWindowFeatures(parent: string): () => void {
+  return activateAll("diff window", [
+    ["locale", appLocale],
+    ["settings", activateRuntimeSettings],
+    ["menu", activateMenuBridge],
+    ["vcs", vcs],
+    ["diff", () => activateDiffWindow(parent)],
   ]);
 }
 

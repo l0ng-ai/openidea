@@ -43,5 +43,11 @@
   "Where updates are downloaded from. If it can't be reached, the other source is tried.": "Where updates are downloaded from. If it can't be reached, the other source is tried.",
   "Automatic": "Automatic",
   "CNB (China mirror)": "CNB (China mirror)",
-  "Remote connection cancelled": "Remote connection cancelled"
+  "Remote connection cancelled": "Remote connection cancelled",
+  "Show Diff in New Window": "Show Diff in New Window",
+  "{project} - Commit: {file}": "{project} - Commit: {file}",
+  "Save the files edited in this diff before closing.": "Save the files edited in this diff before closing.",
+  "Could not close diff": "Could not close diff",
+  "Could not save diff": "Could not save diff",
+  "Cannot show diff in a new window": "Cannot show diff in a new window"
 }

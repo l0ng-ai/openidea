@@ -852,6 +852,11 @@ export const commands = {
 	 */
 	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
 	/**
+	 *  Opens a window showing `diff` next to this window ("Show Diff in New Window").
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenDiff: (diff: DiffLaunch_Deserialize, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_diff", { diff, background })),
+	/**
 	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
@@ -884,11 +889,13 @@ export const commands = {
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
 	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
-	positions?: FilePosition[],
+	positions: FilePosition[],
 	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
-	comparison?: ComparisonLaunch | null,
+	comparison: ComparisonLaunch | null,
+	/**  Diff windows: the diff to show (boxed: most launches have none). */
+	diff: DiffLaunch_Serialize | null,
 	/**  Deployment windows: the server and local selection to compare. */
-	deployment?: DeploymentLaunch | null,
+	deployment: DeploymentLaunch | null,
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -3045,6 +3052,58 @@ export type Diagnostic = {
 	server?: string | null,
 };
 
+/**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
+export type DiffLaunch = DiffLaunch_Serialize | DiffLaunch_Deserialize;
+
+/**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
+export type DiffLaunch_Deserialize = {
+	/**  Absolute path of the file (the right side's path). */
+	path: string,
+	left: DiffSide_Deserialize,
+	right: DiffSide_Deserialize,
+	/**  0-based line of the right side to reveal. */
+	line?: number | null,
+};
+
+/**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
+export type DiffLaunch_Serialize = {
+	/**  Absolute path of the file (the right side's path). */
+	path: string,
+	left: DiffSide_Serialize,
+	right: DiffSide_Serialize,
+	/**  0-based line of the right side to reveal. */
+	line?: number | null,
+};
+
+/**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
+export type DiffSide = DiffSide_Serialize | DiffSide_Deserialize;
+
+/**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
+export type DiffSide_Deserialize = 
+/**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+/**  The working file (unsaved editor buffer included). */
+({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+/**  Another file (Compare With…, Compare Files). */
+({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
+/**  Literal text: a side that does not exist. */
+({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+/**  A Local History revision. */
+({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+
+/**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
+export type DiffSide_Serialize = 
+/**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+/**  The working file (unsaved editor buffer included). */
+({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+/**  Another file (Compare With…, Compare Files). */
+({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
+/**  Literal text: a side that does not exist. */
+({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+/**  A Local History revision. */
+({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+
 export type DirectoryCompareEntry = {
 	path: string,
 	status: DirectoryCompareStatus,
@@ -4912,27 +4971,7 @@ export type LanguagesSettings = {
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
-export type Launch = {
-	/**  Project folder to open. */
-	project: IpcPath | null,
-	/**
-	 *  Files to open in the editor: in `project` once it is open, else in this
-	 *  window's project or (without one) in LightEdit.
-	 */
-	files: IpcPath[],
-	/**  Remote project to open (Remote Development). */
-	remote: RemoteLaunch | null,
-	/**  Settings windows: the page to show. */
-	settingsPage: string | null,
-	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
-	newProjects: boolean,
-	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
-	positions?: FilePosition[],
-	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
-	comparison?: ComparisonLaunch | null,
-	/**  Deployment windows: the server and local selection to compare. */
-	deployment?: DeploymentLaunch | null,
-};
+export type Launch = Launch_Serialize | Launch_Deserialize;
 
 export type LaunchConfig = {
 	name: string,
@@ -4953,6 +4992,56 @@ export type LaunchConfig = {
 	 *  (`dlv --headless`, `debugpy --listen`).
 	 */
 	extraJson: string | null,
+};
+
+/**  What a freshly opened window should do once its frontend is up. */
+export type Launch_Deserialize = {
+	/**  Project folder to open. */
+	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
+	/**  Remote project to open (Remote Development). */
+	remote: RemoteLaunch | null,
+	/**  Settings windows: the page to show. */
+	settingsPage: string | null,
+	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
+	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
+	/**  Diff windows: the diff to show (boxed: most launches have none). */
+	diff?: DiffLaunch_Deserialize | null,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment?: DeploymentLaunch | null,
+};
+
+/**  What a freshly opened window should do once its frontend is up. */
+export type Launch_Serialize = {
+	/**  Project folder to open. */
+	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
+	/**  Remote project to open (Remote Development). */
+	remote: RemoteLaunch | null,
+	/**  Settings windows: the page to show. */
+	settingsPage: string | null,
+	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
+	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison: ComparisonLaunch | null,
+	/**  Diff windows: the diff to show (boxed: most launches have none). */
+	diff: DiffLaunch_Serialize | null,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment: DeploymentLaunch | null,
 };
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */

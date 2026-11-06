@@ -8,11 +8,11 @@ import { getAllWindows, getCurrentWindow } from "@tauri-apps/api/window";
 import { TauriEvent } from "@tauri-apps/api/event";
 import { isTauri } from "./ipc";
 
-export type AuxKind = "settings" | "comparison" | "deployment";
+export type AuxKind = "settings" | "comparison" | "diff" | "deployment";
 
 /** Kinds with several windows per parent (`<kind>-<parent>-<n>`); the others have one (`<kind>-<parent>`). */
-const MULTIPLE: ReadonlySet<AuxKind> = new Set(["comparison"]);
-const KINDS: readonly AuxKind[] = ["settings", "comparison", "deployment"];
+const MULTIPLE: ReadonlySet<AuxKind> = new Set(["comparison", "diff"]);
+const KINDS: readonly AuxKind[] = ["settings", "comparison", "diff", "deployment"];
 
 /** An auxiliary window reports to its parent whether it closed, and which documents it released. */
 export const AUX_CLOSED = "openidea://auxiliary/closed";

@@ -269,6 +269,7 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
     },
     { kind: "separator" },
     { kind: "action", action: "vcs.showDiff", arg: first?.path },
+    { kind: "action", action: "vcs.showDiffInNewWindow", arg: first?.path },
     {
       label: "Jump to Source",
       icon: "external-link",

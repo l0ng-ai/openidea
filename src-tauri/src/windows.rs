@@ -6,9 +6,9 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Sync with Deployed) belong to a project window and share its project (see
+//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Diff, Sync with Deployed) belong to a project window and share its project (see
 //! [`AppState::project`]). Their labels name the kind and the parent
-//! (`settings-main`, `comparison-project-2-3`); their [`Launch`] says what to show.
+//! (`settings-main`, `comparison-project-2-3`, `diff-main-0`); their [`Launch`] says what to show.
 
 use crate::remote_dev::RemoteTarget;
 use crate::state::AppState;
@@ -33,6 +33,8 @@ const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
 const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
+const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -57,6 +59,9 @@ pub struct Launch {
     /// Comparison windows: the revisions to compare (boxed: most launches have none).
     #[serde(default)]
     pub comparison: Option<Box<ComparisonLaunch>>,
+    /// Diff windows: the diff to show (boxed: most launches have none).
+    #[serde(default)]
+    pub diff: Option<Box<DiffLaunch>>,
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
@@ -91,6 +96,48 @@ pub struct ComparisonLaunch {
     pub to: Option<ComparisonRevision>,
     pub scope: Option<ComparisonScope>,
     pub repo: Option<ide_core::IpcPath>,
+}
+
+/// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum DiffSide {
+    /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
+    Rev {
+        rev: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// The working file (unsaved editor buffer included).
+    Worktree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Another file (Compare With…, Compare Files).
+    File {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Literal text: a side that does not exist.
+    Text { text: String, label: String },
+    /// A Local History revision.
+    History { id: String, label: String },
+}
+
+/// The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLaunch {
+    /// Absolute path of the file (the right side's path).
+    pub path: String,
+    pub left: DiffSide,
+    pub right: DiffSide,
+    /// 0-based line of the right side to reveal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 /// A caret position for a file opened from the command line: 0-based line and column.
@@ -215,24 +262,26 @@ impl WindowsState {
 pub enum AuxKind {
     Settings,
     Comparison,
+    Diff,
     Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 3] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Deployment];
+    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
         match self {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
+            AuxKind::Diff => "diff",
             AuxKind::Deployment => "deployment",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        self == AuxKind::Comparison
+        matches!(self, AuxKind::Comparison | AuxKind::Diff)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -1190,6 +1239,28 @@ pub fn open_comparison_window(
     )
 }
 
+/// Opens a window showing one diff of the project ("Show Diff in New Window"), like IDEA's
+/// diff window next to the Commit tool window.
+pub fn open_diff_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    diff: DiffLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Diff,
+            title: "Diff",
+            size: DIFF_SIZE,
+            min_size: DIFF_MIN_SIZE,
+            launch: Launch { diff: Some(Box::new(diff)), ..Default::default() },
+            background,
+        },
+    )
+}
+
 /// Opens (or focuses and hands over to) the project window's Sync with Deployed window: local
 /// files next to their copies on a deployment server, like IDEA's.
 pub fn open_deployment_window(
@@ -1686,13 +1757,15 @@ mod tests {
         assert_eq!(settings_label("project-2"), "settings-project-2");
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
+        assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
+        assert_eq!(state_key("diff-main-3"), "diff");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 

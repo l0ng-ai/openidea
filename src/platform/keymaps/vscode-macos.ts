@@ -298,6 +298,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.rollback": [],
   "vcs.addToVcs": [],
   "vcs.showDiff": [],
+  "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Alt+F5"],
   "vcs.prevChange": ["Alt+Shift+F5"],
   "vcs.branches": [],
