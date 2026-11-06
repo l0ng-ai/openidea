@@ -60,7 +60,6 @@ import {
   unshelve,
 } from "./shelf";
 import { currentRepo, focusRepo, useVcs } from "./store";
-import { openExternalLog } from "./RevisionBrowser";
 
 const VCS = "vcsAvailable";
 const IN_GIT_LOG = "(vcsAvailable || projectOpen) && (activeToolWindow == git || vcsLogFocus)";
@@ -250,7 +249,7 @@ export function registerHistoryActions(): () => void {
       id: "vcs.log.openExternal",
       title: "Open External Git Log…",
       category: "Git Log",
-      run: openExternalLog,
+      run: async () => (await import("./RevisionBrowser")).openExternalLog(),
     },
     {
       id: "vcs.log.goToRef",

@@ -65,6 +65,47 @@ export interface EditorContribution {
   embedded?: boolean;
 }
 
+/**
+ * Editor extensions whose code loads with the first editor that wants them: `wants`
+ * decides synchronously, `load` resolves the real `extensions`. Until it has, the editor
+ * runs without them and reconfigures once loaded.
+ */
+export function lazyEditorExtension(
+  wants: (ctx: EditorDocContext) => boolean,
+  load: () => Promise<(ctx: EditorDocContext) => Extension>,
+): (ctx: EditorDocContext) => Extension {
+  let loaded: ((ctx: EditorDocContext) => Extension) | null = null;
+  let pending: Promise<(ctx: EditorDocContext) => Extension> | null = null;
+  const get = () =>
+    (pending ??= load().then(
+      (f) => (loaded = f),
+      (e: unknown) => {
+        pending = null;
+        throw e;
+      },
+    ));
+  return (ctx) => {
+    if (!wants(ctx)) return [];
+    if (loaded) return loaded(ctx);
+    const slot = new Compartment();
+    return [
+      slot.of([]),
+      ViewPlugin.define((view) => {
+        let live = true;
+        get().then(
+          (f) => live && view.dispatch({ effects: slot.reconfigure(f(ctx)) }),
+          (e: unknown) => console.error("could not load editor extensions", e),
+        );
+        return {
+          destroy: () => {
+            live = false;
+          },
+        };
+      }),
+    ];
+  };
+}
+
 export interface TextEditorHandle {
   view: EditorView;
   ctx: EditorDocContext;
