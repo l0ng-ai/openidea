@@ -19,7 +19,7 @@ import { guessOs } from "./platform/platformInfo";
 import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { installPointerFocus } from "./platform/pointerFocus";
-import { isTauri } from "./platform/ipc";
+import { call, commands, isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
 import { installWindowDrag } from "./workbench/window-drag";
@@ -36,7 +36,11 @@ installRepeatedDoubleClick();
 // second press like the release before it, which the shim would take for a reordered tap and
 // click twice.
 if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
-installWindowDrag();
+// A double click on the title bar fills the work area; the backend steps the frame once per
+// presented webview frame, because AppKit's own zoom hides the page until the resize ends.
+installWindowDrag({
+  toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
+});
 installPointerFocus();
 installErrorLogging();
 
