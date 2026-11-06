@@ -853,6 +853,20 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   });
   const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
+  /** Keys of every group containing an overridden attribute, so the blue marks the path to the root. */
+  const modifiedKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const attrId of Object.keys(mine ?? {})) {
+      const a = ATTRIBUTES.find((x) => x.id === attrId);
+      if (!a) continue;
+      let key = "";
+      for (const seg of attrSegs(a)) {
+        key += `/${seg}`;
+        keys.add(key);
+      }
+    }
+    return keys;
+  }, [mine]);
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const language = attr?.language;
   const inherited = useMemo(() => (attr ? resolvedAttribute(id, attr.id, customs) : {}), [id, attr, customs]);
@@ -1038,7 +1052,9 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
                 selected={new Set([selected])}
                 onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
                 renderNode={(n) => (
-                  <span className={`${styles.treeLabel} ${n.attr && mine?.[n.attr.id] ? styles.attrModified : ""}`}>
+                  <span
+                    className={`${styles.treeLabel} ${(n.attr ? mine?.[n.attr.id] : modifiedKeys.has(n.key)) ? styles.attrModified : ""}`}
+                  >
                     {n.label}
                   </span>
                 )}
