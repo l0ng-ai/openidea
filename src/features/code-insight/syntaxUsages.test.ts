@@ -14,6 +14,7 @@ const cmd = {
   syntaxLocals: vi.fn((): R<Locals> => ok({ status: "noIdentifier" })),
   syntaxIdentifiers: vi.fn((): R<unknown> => ok([])),
   syntaxIdentifiersInFiles: vi.fn((): R<unknown> => ok([])),
+  syntaxNodeAt: vi.fn((): R<unknown> => ok(null)),
   indexUsages: vi.fn((): R<unknown> => ok([])),
   fsReadText: vi.fn(() => ok("a\nb\nc")),
 };
