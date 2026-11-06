@@ -256,13 +256,45 @@ describe("multi-caret paste", () => {
     );
   });
 
-  it("pastes the whole text at every caret when the counts differ", () => {
+  it("drops the extra lines when there are more lines than carets (IDEA parity)", () => {
+    // IntelliJ's ClipboardTextPerCaretSplitter gives caret i line i and simply
+    // ignores the lines beyond the caret count: 2 carets + "x\ny\nz" → "x", "y".
     const v = view("a b", [
       [1, 1],
       [3, 3],
     ]);
     pasteEditorText(v, "x\ny\nz");
-    expect(v.state.doc.toString()).toBe("ax\ny\nz bx\ny\nz");
+    expect(v.state.doc.toString()).toBe("ax by");
+  });
+
+  it("pastes empty lines into the extra carets when there are more carets than lines", () => {
+    const v = view("a b c", [
+      [1, 1],
+      [3, 3],
+      [5, 5],
+    ]);
+    pasteEditorText(v, "x\ny");
+    expect(v.state.doc.toString()).toBe("ax by c");
+  });
+
+  it("repeats a single line at every caret", () => {
+    const v = view("a b", [
+      [1, 1],
+      [3, 3],
+    ]);
+    pasteEditorText(v, "xyz");
+    expect(v.state.doc.toString()).toBe("axyz bxyz");
+  });
+
+  it("treats a single copied line with a trailing newline as one line (IDEA parity)", () => {
+    // IntelliJ's splitter ignores the trailing newline of a one-line clipboard,
+    // so "x\n" at two carets repeats "x" instead of spreading "x" and "".
+    const v = view("a b", [
+      [1, 1],
+      [3, 3],
+    ]);
+    pasteEditorText(v, "x\n");
+    expect(v.state.doc.toString()).toBe("ax bx");
   });
 
   it("pastes the whole text at a single caret", () => {
