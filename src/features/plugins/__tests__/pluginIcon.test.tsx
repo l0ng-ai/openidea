@@ -14,7 +14,7 @@ describe("pluginIconName", () => {
 
   it("renders a plugin's icon, and a changed icon replaces it", () => {
     const name = pluginIconName("a.b", { light: svg('<rect width="16" height="16"/>'), dark: null });
-    expect(name).toBe("ext:plugin/a.b");
+    expect(name).toBe("ext:pluginIcon/a.b/icon");
     expect(markup(name)).toContain("<rect");
     pluginIconName("a.b", { light: svg('<circle cx="8" cy="8" r="8"/>'), dark: null });
     expect(markup(name)).toContain("<circle");
@@ -27,6 +27,14 @@ describe("pluginIconName", () => {
       dark: svg('<circle cx="8" cy="8" r="8"/>'),
     });
     expect(markup(name)).toContain("<circle");
+  });
+
+  it("keeps the icons of plugins whose ids differ by _dark apart", () => {
+    const plain = pluginIconName("g", { light: svg('<rect width="16" height="16"/>'), dark: null });
+    const other = pluginIconName("g_dark", { light: svg('<circle cx="8" cy="8" r="8"/>'), dark: null });
+    expect(markup(plain)).not.toContain("<circle");
+    pluginIconName("g", { light: svg('<rect width="8" height="8"/>'), dark: null });
+    expect(markup(other)).toContain("<circle");
   });
 
   it("drops a dark variant the plugin no longer has", () => {

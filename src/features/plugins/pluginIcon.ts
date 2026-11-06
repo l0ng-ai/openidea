@@ -1,13 +1,14 @@
 import type { PluginIcon } from "@/bindings";
 import { registerExternalIcons } from "@/ui/icons";
 
-// ponytail: never unregistered while listed; bounded by the number of plugins seen this session.
+// ponytail: entries stay for plugins no longer listed; bounded by the plugins seen this session.
 const registered = new Map<string, { icon: PluginIcon; unregister: () => void }>();
 
 /** The icon name of a plugin's own icon (registered on first use or when it changed), else the generic one. */
 export function pluginIconName(pluginId: string, icon: PluginIcon | null | undefined): string {
   if (!icon) return "plugin";
-  const name = `ext:plugin/${pluginId}`;
+  // Plugin ids have no `/`, so no id yields another plugin's name or its `_dark` variant.
+  const name = `ext:pluginIcon/${pluginId}/icon`;
   const known = registered.get(pluginId);
   if (known?.icon.light === icon.light && known.icon.dark === icon.dark) return name;
   known?.unregister();
