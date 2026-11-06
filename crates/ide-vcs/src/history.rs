@@ -948,13 +948,11 @@ pub(crate) fn decorations(repo: &gix::Repository) -> IdeResult<HashMap<ObjectId,
     let platform = repo.references().map_err(gx)?;
     for reference in platform.all().map_err(gx)? {
         let Ok(mut reference) = reference else { continue };
+        if reference.target().try_name().is_some() {
+            continue;
+        }
         let full = reference.name().as_bstr().to_owned();
-        let label = if let Some(n) = full.strip_prefix(b"refs/heads/") {
-            to_string(n.as_bstr())
-        } else if let Some(n) = full.strip_prefix(b"refs/remotes/") {
-            if n.ends_with(b"/HEAD") {
-                continue;
-            }
+        let label = if let Some(n) = full.strip_prefix(b"refs/heads/").or_else(|| full.strip_prefix(b"refs/remotes/")) {
             to_string(n.as_bstr())
         } else if let Some(n) = full.strip_prefix(b"refs/tags/") {
             format!("tag: {}", to_string(n.as_bstr()))
