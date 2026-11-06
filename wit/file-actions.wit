@@ -1,0 +1,65 @@
+package openidea:plugin@1.2.0;
+
+/// Quick fixes and refactorings that create, rename or delete files, next to
+/// the text edits `providers.code-actions` offers. Declare the `code-actions`
+/// provider kind in `[[contributes.providers]]`; the host calls
+/// `code-actions` here with the same budget and lists the results with the
+/// others.
+interface file-actions {
+    use types.{range, text-edit};
+
+    record document {
+        /// Absolute path.
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    record file-edit {
+        path: string,
+        edits: list<text-edit>,
+    }
+
+    variant file-operation {
+        /// Fails when the file exists, unless `overwrite`.
+        create(create-file),
+        rename(rename-file),
+        /// Deletes the file; undoing the action restores it.
+        delete(delete-file),
+    }
+
+    record create-file {
+        path: string,
+        text: string,
+        overwrite: bool,
+    }
+
+    record rename-file {
+        path: string,
+        new-path: string,
+    }
+
+    record delete-file {
+        path: string,
+    }
+
+    record file-action {
+        title: string,
+        /// `quickfix`, `refactor`, …
+        kind: option<string>,
+        preferred: bool,
+        /// Applied first, in order, as one workspace edit with `edits`: if
+        /// any operation or edit fails, nothing is applied, and one undo
+        /// reverses all of it. Paths stay inside the project root; a path
+        /// outside disables the action.
+        operations: list<file-operation>,
+        /// Applied after the operations; may target files they create.
+        edits: list<file-edit>,
+        /// Opened once the action is applied.
+        open: option<string>,
+    }
+
+    /// Actions for `selection`.
+    code-actions: func(doc: document, selection: range) -> list<file-action>;
+}

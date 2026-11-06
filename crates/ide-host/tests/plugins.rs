@@ -2648,6 +2648,22 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
     assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
 
+    // File operations come from the `file-actions` export, next to the providers' own.
+    let actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default());
+    let (_, action) = actions.into_iter().next().expect("offered");
+    let dir = f.project.clone();
+    assert_eq!(action.title, "Reorganise");
+    assert_eq!(
+        action.operations,
+        vec![
+            ide_plugin::FileOperation::Create { path: dir.join("created.txt"), text: "hello".into(), overwrite: false },
+            ide_plugin::FileOperation::Rename { from: dir.join("old.txt"), to: dir.join("renamed.txt") },
+            ide_plugin::FileOperation::Delete { path: dir.join("gone.txt") },
+        ]
+    );
+    assert_eq!(action.open, Some(dir.join("created.txt")));
+    assert!(f.host.provide_code_actions(&doc("rich"), ide_core::Range::default()).is_empty());
+
     // A kind this IDE doesn't know is refused, not a trap.
     let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
     assert!(err.message.contains("no event kind"), "{}", err.message);

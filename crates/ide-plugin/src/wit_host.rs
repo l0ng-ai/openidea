@@ -703,3 +703,10 @@ pub(crate) mod indexing_bindings {
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }
+
+pub(crate) mod file_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "file-actions-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}

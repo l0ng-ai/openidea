@@ -48,41 +48,12 @@ interface providers {
         edits: list<text-edit>,
     }
 
-    variant file-operation {
-        /// Fails when the file exists, unless `overwrite`.
-        create(create-file),
-        rename(rename-file),
-        /// Deletes the file; undoing the action restores it.
-        delete(delete-file),
-    }
-
-    record create-file {
-        path: string,
-        text: string,
-        overwrite: bool,
-    }
-
-    record rename-file {
-        path: string,
-        new-path: string,
-    }
-
-    record delete-file {
-        path: string,
-    }
-
     record code-action {
         title: string,
         /// `quickfix`, `refactor`, …
         kind: option<string>,
         preferred: bool,
         edits: list<file-edit>,
-        /// Applied before `edits`, as one workspace edit with them: if any
-        /// operation or edit fails, nothing is applied. Paths stay inside
-        /// the project root.
-        operations: list<file-operation>,
-        /// Opened once the action is applied.
-        open: option<string>,
         /// The plugin's own reference: with it and no `edits`, the edits are
         /// computed by `resolve-code-action` once the user picks the action.
         data: option<string>,

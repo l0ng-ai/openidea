@@ -39,6 +39,7 @@
 //! Build with `openidea-plugin build` (or `cargo build --release --target
 //! wasm32-wasip2`); see `plugins/README.md`.
 
+pub mod file_actions;
 pub mod host;
 pub mod indexing;
 #[cfg(not(target_arch = "wasm32"))]
@@ -126,6 +127,17 @@ pub mod indexing_bindings {
     });
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod file_actions_bindings {
+    wit_bindgen::generate!({
+        world: "file-actions-provider", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_file_actions_world",
+        default_bindings_module: "openidea_plugin::file_actions_bindings",
+        with: { "openidea:plugin/types@1.2.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
 /// The plugin API version this SDK targets.
 pub const API_VERSION: &str = "1.2";
 
@@ -196,6 +208,29 @@ macro_rules! register_plugin {
             $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
             $crate::__providers_exports!($plugin, __OpenideaComponent);
             $crate::__indexing_exports!($plugin, __OpenideaComponent);
+    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
+        };
+    };
+    ($plugin:ty, file_actions) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
+        #[cfg(target_arch = "wasm32")]
+        const _: () = {
+            struct __OpenideaComponent;
+            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
+            $crate::__file_actions_exports!($plugin, __OpenideaComponent);
+    $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
+        };
+    };
+    ($plugin:ty, providers, file_actions) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        const _: fn() -> $plugin = <$plugin as ::core::default::Default>::default;
+        #[cfg(target_arch = "wasm32")]
+        const _: () = {
+            struct __OpenideaComponent;
+            $crate::__plugin_exports!($plugin, __OpenideaComponent, $crate::bindings);
+            $crate::__providers_exports!($plugin, __OpenideaComponent);
+            $crate::__file_actions_exports!($plugin, __OpenideaComponent);
     $crate::bindings::__export_plugin_world!(__OpenideaComponent with_types_in $crate::bindings);
         };
     };
@@ -345,6 +380,22 @@ macro_rules! __views_exports {
         }
 
         $crate::views_bindings::__export_views_world!($component with_types_in $crate::views_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __file_actions_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::file_actions_bindings::exports::openidea::plugin::file_actions::Guest for $component {
+            fn code_actions(
+                doc: $crate::file_actions_bindings::exports::openidea::plugin::file_actions::Document,
+                selection: $crate::bindings::openidea::plugin::types::Range,
+            ) -> ::std::vec::Vec<$crate::file_actions_bindings::exports::openidea::plugin::file_actions::FileAction> {
+                $crate::__rt::file_actions::<$plugin>(doc, selection)
+            }
+        }
+        $crate::file_actions_bindings::__export_file_actions_world!($component with_types_in $crate::file_actions_bindings);
     };
 }
 
@@ -530,31 +581,7 @@ pub mod __rt {
                 .into_iter()
                 .map(|(path, edits)| w::FileEdit { path, edits: edits.into_iter().map(edit_out).collect() })
                 .collect(),
-            operations: a.operations.into_iter().map(operation_out).collect(),
-            open: a.open,
             data: a.data,
-        }
-    }
-
-    fn operation_out(op: p::FileOperation) -> w::FileOperation {
-        match op {
-            p::FileOperation::Create { path, text, overwrite } => {
-                w::FileOperation::Create(w::CreateFile { path, text, overwrite })
-            }
-            p::FileOperation::Rename { from, to } => {
-                w::FileOperation::Rename(w::RenameFile { path: from, new_path: to })
-            }
-            p::FileOperation::Delete { path } => w::FileOperation::Delete(w::DeleteFile { path }),
-        }
-    }
-
-    fn operation_in(op: w::FileOperation) -> p::FileOperation {
-        match op {
-            w::FileOperation::Create(c) => {
-                p::FileOperation::Create { path: c.path, text: c.text, overwrite: c.overwrite }
-            }
-            w::FileOperation::Rename(r) => p::FileOperation::Rename { from: r.path, to: r.new_path },
-            w::FileOperation::Delete(d) => p::FileOperation::Delete { path: d.path },
         }
     }
 
@@ -575,8 +602,6 @@ pub mod __rt {
                     (f.path, edits)
                 })
                 .collect(),
-            operations: a.operations.into_iter().map(operation_in).collect(),
-            open: a.open,
             data: a.data,
         }
     }
@@ -626,6 +651,43 @@ pub mod __rt {
             aliases: e.aliases.into_iter().map(|a| w::Alias { prefix: a.prefix, target: a.target }).collect(),
             markers: e.markers.into_iter().map(anchor).collect(),
         }
+    }
+
+    pub fn file_actions<T: Plugin + crate::file_actions::FileActions + Default>(
+        d: crate::file_actions_bindings::exports::openidea::plugin::file_actions::Document,
+        sel: b::types::Range,
+    ) -> Vec<crate::file_actions_bindings::exports::openidea::plugin::file_actions::FileAction> {
+        use crate::file_actions as f;
+        use crate::file_actions_bindings::exports::openidea::plugin::file_actions as w;
+        let doc = p::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        let actions = with::<T, _>(|x| x.file_actions(&doc, crate::host::__range_from(sel)));
+        actions
+            .into_iter()
+            .map(|a| w::FileAction {
+                title: a.title,
+                kind: a.kind,
+                preferred: a.preferred,
+                operations: a
+                    .operations
+                    .into_iter()
+                    .map(|op| match op {
+                        f::FileOperation::Create { path, text, overwrite } => {
+                            w::FileOperation::Create(w::CreateFile { path, text, overwrite })
+                        }
+                        f::FileOperation::Rename { from, to } => {
+                            w::FileOperation::Rename(w::RenameFile { path: from, new_path: to })
+                        }
+                        f::FileOperation::Delete { path } => w::FileOperation::Delete(w::DeleteFile { path }),
+                    })
+                    .collect(),
+                edits: a
+                    .edits
+                    .into_iter()
+                    .map(|(path, edits)| w::FileEdit { path, edits: edits.into_iter().map(edit_out).collect() })
+                    .collect(),
+                open: a.open,
+            })
+            .collect()
     }
 
     // ---- views ----

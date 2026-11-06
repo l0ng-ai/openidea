@@ -56,6 +56,12 @@ world plugin-indexing {
     export document-indexer;
 }
 
+/// A plugin with file-changing code actions (`file-actions`, next to `[[contributes.providers]]`).
+world plugin-file-actions {
+    include plugin;
+    export file-actions;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -75,4 +81,9 @@ world views-provider {
 /// Only the `document-indexer` export, generated next to `plugin` like `syntax`.
 world indexing {
     export document-indexer;
+}
+
+/// Only the `file-actions` export, generated next to `plugin` like `syntax`.
+world file-actions-provider {
+    export file-actions;
 }

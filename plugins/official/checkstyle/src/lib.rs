@@ -201,7 +201,7 @@ impl Providers for Checkstyle {
                     kind: Some("quickfix".into()),
                     preferred: true,
                     edits: vec![(doc.path.clone(), vec![edit])],
-                    ..Default::default()
+                    data: None,
                 });
             }
         }

@@ -7,6 +7,7 @@ wit_bindgen::generate!({
         world misbehave {
             include openidea:plugin/plugin-syntax@1.2.0;
             export openidea:plugin/providers@1.2.0;
+            export openidea:plugin/file-actions@1.2.0;
         }
     ",
     path: "../../../../../wit",
@@ -167,8 +168,6 @@ impl providers::Guest for Misbehave {
             kind: Some("quickfix".into()),
             preferred: false,
             edits: Vec::new(),
-            operations: Vec::new(),
-            open: None,
             data: Some("fix".into()),
         }]
     }
@@ -188,6 +187,39 @@ impl providers::Guest for Misbehave {
 
     fn line_markers(_doc: Document) -> Vec<LineMarker> {
         Vec::new()
+    }
+}
+
+/// `files`: one action that creates, renames and deletes files, then opens one.
+impl exports::openidea::plugin::file_actions::Guest for Misbehave {
+    fn code_actions(
+        doc: exports::openidea::plugin::file_actions::Document,
+        _selection: types::Range,
+    ) -> Vec<exports::openidea::plugin::file_actions::FileAction> {
+        use exports::openidea::plugin::file_actions::{CreateFile, DeleteFile, FileAction, FileOperation, RenameFile};
+        if doc.text != "files" {
+            return Vec::new();
+        }
+        let dir = doc.path.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
+        vec![FileAction {
+            title: "Reorganise".into(),
+            kind: Some("quickfix".into()),
+            preferred: false,
+            operations: vec![
+                FileOperation::Create(CreateFile {
+                    path: format!("{dir}/created.txt"),
+                    text: "hello".into(),
+                    overwrite: false,
+                }),
+                FileOperation::Rename(RenameFile {
+                    path: format!("{dir}/old.txt"),
+                    new_path: format!("{dir}/renamed.txt"),
+                }),
+                FileOperation::Delete(DeleteFile { path: format!("{dir}/gone.txt") }),
+            ],
+            edits: Vec::new(),
+            open: Some(format!("{dir}/created.txt")),
+        }]
     }
 }
 

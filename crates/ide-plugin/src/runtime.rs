@@ -13,7 +13,9 @@ use crate::types::{
 use crate::types::{
     FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
-use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
+use crate::wit_host::{
+    bindings, file_actions_bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings,
+};
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -29,6 +31,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
+use file_actions_bindings::exports::openidea::plugin::file_actions as wit_fa;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
@@ -488,6 +491,7 @@ struct Exports {
     syntax: Option<wit_syntax::Guest>,
     providers: Option<wit_prov::Guest>,
     indexer: Option<wit_index::Guest>,
+    file_actions: Option<wit_fa::Guest>,
     views: Option<wit_view::Guest>,
 }
 
@@ -565,6 +569,7 @@ impl Runtime {
         let plugin_indices = bindings::PluginIndices::new(&pre).map_err(api_hint)?;
         let syntax_indices = wit_syntax::GuestIndices::new(&pre).ok();
         let index_indices = wit_index::GuestIndices::new(&pre).ok();
+        let file_action_indices = wit_fa::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
@@ -581,13 +586,17 @@ impl Runtime {
             Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let file_actions = match file_action_indices {
+            Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         let views = match view_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer },
+            exports: Exports { plugin, syntax, providers, views, indexer, file_actions },
             limits: setup.limits,
             version: setup.version,
         })
@@ -769,9 +778,28 @@ impl Runtime {
         selection: ide_core::Range,
         timeout: Duration,
     ) -> Result<Vec<CodeAction>, CallError> {
-        let d = doc_to_wit(doc);
-        let actions = self.provider_call(timeout, |p, s| p.call_code_actions(s, &d, range_to_wit(selection)))?;
-        Ok(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(code_action_from_wit).collect())
+        let mut out = Vec::new();
+        if self.exports.providers.is_some() {
+            let d = doc_to_wit(doc);
+            let actions = self.provider_call(timeout, |p, s| p.call_code_actions(s, &d, range_to_wit(selection)))?;
+            out.extend(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(code_action_from_wit));
+        }
+        if self.exports.file_actions.is_some() {
+            let d = wit_fa::Document {
+                path: to_ipc(&doc.path),
+                language: doc.language.clone(),
+                version: doc.version,
+                text: doc.text.clone(),
+            };
+            let actions = self.call(Invocation::default(), timeout, |e, store| {
+                e.file_actions.as_ref().expect("checked").call_code_actions(store, &d, range_to_wit(selection))
+            })?;
+            out.extend(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(file_action_from_wit));
+        }
+        if out.is_empty() && self.exports.providers.is_none() {
+            return Err(CallError::missing_export("providers"));
+        }
+        Ok(out)
     }
 
     /// The edits of an action `provide_code_actions` returned with `data`.
@@ -1045,33 +1073,9 @@ fn code_action_from_wit(a: wit_prov::CodeAction) -> CodeAction {
             .into_iter()
             .map(|f| (std::path::PathBuf::from(f.path), f.edits.into_iter().map(edit_from_wit).collect()))
             .collect(),
-        operations: a.operations.into_iter().map(operation_from_wit).collect(),
-        open: a.open.map(std::path::PathBuf::from),
+        operations: Vec::new(),
+        open: None,
         data: a.data.map(|d| clip(d, 64 << 10)),
-    }
-}
-
-fn operation_from_wit(op: wit_prov::FileOperation) -> FileOperation {
-    match op {
-        wit_prov::FileOperation::Create(c) => {
-            FileOperation::Create { path: c.path.into(), text: c.text, overwrite: c.overwrite }
-        }
-        wit_prov::FileOperation::Rename(r) => FileOperation::Rename { from: r.path.into(), to: r.new_path.into() },
-        wit_prov::FileOperation::Delete(d) => FileOperation::Delete { path: d.path.into() },
-    }
-}
-
-fn operation_to_wit(op: &FileOperation) -> wit_prov::FileOperation {
-    match op {
-        FileOperation::Create { path, text, overwrite } => wit_prov::FileOperation::Create(wit_prov::CreateFile {
-            path: to_ipc(path),
-            text: text.clone(),
-            overwrite: *overwrite,
-        }),
-        FileOperation::Rename { from, to } => {
-            wit_prov::FileOperation::Rename(wit_prov::RenameFile { path: to_ipc(from), new_path: to_ipc(to) })
-        }
-        FileOperation::Delete { path } => wit_prov::FileOperation::Delete(wit_prov::DeleteFile { path: to_ipc(path) }),
     }
 }
 
@@ -1091,9 +1095,33 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
                     .collect(),
             })
             .collect(),
-        operations: a.operations.iter().map(operation_to_wit).collect(),
-        open: a.open.as_deref().map(to_ipc),
         data: a.data.clone(),
+    }
+}
+
+fn file_action_from_wit(a: wit_fa::FileAction) -> CodeAction {
+    CodeAction {
+        title: clip(a.title, MAX_TITLE),
+        kind: a.kind.map(|k| clip(k, 64)),
+        preferred: a.preferred,
+        edits: a
+            .edits
+            .into_iter()
+            .map(|f| (std::path::PathBuf::from(f.path), f.edits.into_iter().map(edit_from_wit).collect()))
+            .collect(),
+        operations: a.operations.into_iter().map(operation_from_wit).collect(),
+        open: a.open.map(std::path::PathBuf::from),
+        data: None,
+    }
+}
+
+fn operation_from_wit(op: wit_fa::FileOperation) -> FileOperation {
+    match op {
+        wit_fa::FileOperation::Create(c) => {
+            FileOperation::Create { path: c.path.into(), text: c.text, overwrite: c.overwrite }
+        }
+        wit_fa::FileOperation::Rename(r) => FileOperation::Rename { from: r.path.into(), to: r.new_path.into() },
+        wit_fa::FileOperation::Delete(d) => FileOperation::Delete { path: d.path.into() },
     }
 }
 
