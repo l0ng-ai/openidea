@@ -604,6 +604,7 @@ mod tests {
         "ERB",
         "JSP",
         "Astro",
+        "GoMod",
     ];
 
     fn reg() -> LanguageRegistry {
