@@ -39,6 +39,9 @@
 //! functions and by-reference parameters of other files aren't known yet,
 //! or in `.phpstorm.meta.php` files.
 //!
+//! Quick-fixes ([`super::fixes`]): "Initialize variable" for undefined and
+//! possibly undefined variables, "Remove unused variable" for unused ones.
+//!
 //! The ids follow PhpStorm's documented inspections ("Undefined variable",
 //! "Unused local variable"); the rules are our own.
 
@@ -53,7 +56,7 @@ use mago_syntax::cst::{
 };
 use mago_syntax::walker::Walker;
 
-use super::{Inspection, InspectionContext, Problems};
+use super::{Inspection, InspectionContext, Problems, fixes};
 use crate::engine::{EngineState, is_meta_path};
 use crate::navigate::hierarchy::Subtypes;
 use crate::summary::{ClassKind, Visibility};
@@ -75,20 +78,18 @@ impl Inspection for UndefinedVariable {
     }
 
     fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
+        let mut bodies = None;
         for found in cx.variables().iter() {
-            match found.kind {
-                Kind::Unused | Kind::UnusedParameter => {}
-                Kind::Undefined => {
-                    out.report(found.start, found.end, format!("Undefined variable '${}'", found.name));
-                }
-                Kind::MaybeUndefined => {
-                    out.report(
-                        found.start,
-                        found.end,
-                        format!("Variable '${}' might not have been defined", found.name),
-                    )
-                    .with_severity(Severity::Info);
-                }
+            let problem = match found.kind {
+                Kind::Unused | Kind::UnusedParameter => continue,
+                Kind::Undefined => out.report(found.start, found.end, format!("Undefined variable '${}'", found.name)),
+                Kind::MaybeUndefined => out
+                    .report(found.start, found.end, format!("Variable '${}' might not have been defined", found.name))
+                    .with_severity(Severity::Info),
+            };
+            let bodies = bodies.get_or_insert_with(|| fixes::bodies(cx.parsed));
+            if let Some(fix) = fixes::initialize_variable(cx, bodies, &found.name, found.start) {
+                problem.with_fix(fix);
             }
         }
     }
@@ -105,7 +106,11 @@ impl Inspection for UnusedVariable {
 
     fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
         for found in cx.variables().iter().filter(|found| found.kind == Kind::Unused) {
-            out.report(found.start, found.end, format!("Unused local variable '${}'", found.name)).unnecessary();
+            let problem =
+                out.report(found.start, found.end, format!("Unused local variable '${}'", found.name)).unnecessary();
+            if let Some(fix) = fixes::remove_unused_variable(cx, &found.name, found.start) {
+                problem.with_fix(fix);
+            }
         }
     }
 }

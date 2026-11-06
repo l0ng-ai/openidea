@@ -55,6 +55,9 @@
 //!   called on the same receiver text (`$o`) there, as version-compatible
 //!   code calls the old method when the new one is missing.
 //!
+//! A member missing from one project class gets the "Create method /
+//! property / constant" quick-fix ([`super::fixes::create_member`]).
+//!
 //! As with the undefined symbols, nothing is reported in dumb mode or in
 //! `.phpstorm.meta.php` files, and `@noinspection` is handled by the
 //! framework. The ids follow PhpStorm's documented inspections ("Undefined
@@ -67,12 +70,13 @@ use std::sync::Arc;
 use ide_core::Severity;
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
-    Access, AnonymousClass, Argument, ArrayElement, ArrowFunction, AssignmentOperator, BinaryOperator, Call, Class,
-    ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function, Interface,
-    Literal, Method, PartialApplication, Trait, Unset, Variable,
+    Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, AssignmentOperator, BinaryOperator,
+    Call, Class, ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function,
+    Interface, Literal, Method, PartialApplication, Trait, Unset, Variable,
 };
 use mago_syntax::walker::Walker;
 
+use super::fixes::{self, MemberKind, NewMember, NewParam};
 use super::{Inspection, InspectionContext, Problems};
 use crate::engine::{EngineState, is_meta_path};
 use crate::names::NameKind;
@@ -147,11 +151,16 @@ pub(crate) struct Found {
     start: u32,
     end: u32,
     message: String,
+    /// The member to create, when the receiver is one class.
+    fix: Option<NewMember>,
 }
 
 fn report(cx: &InspectionContext<'_>, kind: Kind, out: &mut Problems) {
     for found in cx.undefined_members().iter().filter(|found| found.kind == kind) {
-        out.report(found.start, found.end, found.message.clone());
+        let problem = out.report(found.start, found.end, found.message.clone());
+        if let Some(fix) = found.fix.as_ref().and_then(|member| fixes::create_member(cx, member)) {
+            problem.with_fix(fix);
+        }
     }
 }
 
@@ -207,11 +216,24 @@ pub(crate) fn find(cx: &InspectionContext<'_>) -> Vec<Found> {
                 Kind::Property => format!("property '${}'", found.name),
                 Kind::Constant => format!("class constant '{}'", found.name),
             };
+            let fix = found.target.map(|class| NewMember {
+                kind: match found.kind {
+                    Kind::Method => MemberKind::Method,
+                    Kind::Property => MemberKind::Property,
+                    Kind::Constant => MemberKind::Constant,
+                },
+                class,
+                name: found.name.clone(),
+                is_static: found.is_static,
+                private: found.private,
+                params: found.params,
+            });
             Found {
                 kind: found.kind,
                 start: found.start,
                 end: found.end,
                 message: format!("Undefined {what} in '{}'", found.receiver),
+                fix,
             }
         })
         .collect()
@@ -227,6 +249,12 @@ struct Candidate {
     end: u32,
     /// The classes looked in, `A|B`.
     receiver: String,
+    /// The class, when the receiver is one.
+    target: Option<String>,
+    /// Accessed from inside the target class.
+    private: bool,
+    /// A method call's arguments as parameters.
+    params: Vec<NewParam>,
 }
 
 /// A `method_exists`/`property_exists` check: members of `kind` named
@@ -444,7 +472,15 @@ impl<'a> Scan<'a, '_> {
     }
 
     /// Checks member `name` of `kind` on `receiver`, at `span`.
-    fn check(&mut self, kind: Kind, is_static: bool, receiver: &Type, name: &str, span: Span) {
+    fn check(
+        &mut self,
+        kind: Kind,
+        is_static: bool,
+        receiver: &Type,
+        name: &str,
+        span: Span,
+        args: Option<&'a ArgumentList<'a>>,
+    ) {
         let context = self.context();
         let Some(models) = self.models(receiver, &context) else { return };
         if self.answers(&models, kind, is_static, name) {
@@ -461,6 +497,22 @@ impl<'a> Scan<'a, '_> {
             }
         }
         let receiver = models.iter().map(|model| model.fqn()).collect::<Vec<_>>().join("|");
+        let target = match models.as_slice() {
+            [model] => Some(model.fqn().to_owned()),
+            _ => None,
+        };
+        let inside = self.frames.iter().rev().find_map(|frame| match frame {
+            Frame::Class(fqn) => Some(fqn.clone()),
+            _ => None,
+        });
+        let private =
+            matches!((&target, inside), (Some(target), Some(Some(inside))) if target.eq_ignore_ascii_case(&inside));
+        let params = match args {
+            Some(args) if kind == Kind::Method => {
+                fixes::new_params(args, |expr| self.types.type_of(expr, &self.frames))
+            }
+            _ => Vec::new(),
+        };
         self.candidates.push(Candidate {
             kind,
             is_static,
@@ -468,6 +520,9 @@ impl<'a> Scan<'a, '_> {
             start: span.start.offset,
             end: span.end.offset,
             receiver,
+            target,
+            private,
+            params,
         });
     }
 
@@ -490,6 +545,7 @@ impl<'a> Scan<'a, '_> {
         object: &'a Expression<'a>,
         selector: &ClassLikeMemberSelector<'_>,
         nullsafe: bool,
+        args: Option<&'a ArgumentList<'a>>,
     ) {
         let ClassLikeMemberSelector::Identifier(name) = selector else { return };
         if self.is_bound_this(object) || chain_depth(object) > MAX_CHAIN {
@@ -507,13 +563,20 @@ impl<'a> Scan<'a, '_> {
             return;
         }
         receiver = self.with_narrowed(receiver, &text, at);
-        self.check(kind, false, &receiver, &lossy(name.value), name.span);
+        self.check(kind, false, &receiver, &lossy(name.value), name.span, args);
     }
 
-    fn static_member(&mut self, kind: Kind, class: &'a Expression<'a>, name: &str, span: Span) {
+    fn static_member(
+        &mut self,
+        kind: Kind,
+        class: &'a Expression<'a>,
+        name: &str,
+        span: Span,
+        args: Option<&'a ArgumentList<'a>>,
+    ) {
         let receiver = self.types.class_ref(class, &self.frames);
         let receiver = self.with_narrowed(receiver, &self.source(class.span()), class.span().start.offset);
-        self.check(kind, true, &receiver, name, span);
+        self.check(kind, true, &receiver, name, span, args);
     }
 
     /// `receiver` widened by the `instanceof` / `is_a` checks of the
@@ -563,39 +626,47 @@ impl<'a> Scan<'a, '_> {
             return;
         }
         match expr {
-            Expression::Call(Call::Method(call)) => self.instance(Kind::Method, call.object, &call.method, false),
+            Expression::Call(Call::Method(call)) => {
+                self.instance(Kind::Method, call.object, &call.method, false, Some(&call.argument_list))
+            }
             Expression::Call(Call::NullSafeMethod(call)) => {
-                self.instance(Kind::Method, call.object, &call.method, true)
+                self.instance(Kind::Method, call.object, &call.method, true, Some(&call.argument_list))
             }
             Expression::PartialApplication(PartialApplication::Method(partial)) => {
-                self.instance(Kind::Method, partial.object, &partial.method, false)
+                self.instance(Kind::Method, partial.object, &partial.method, false, None)
             }
             Expression::Access(Access::Property(access)) => {
-                self.instance(Kind::Property, access.object, &access.property, false)
+                self.instance(Kind::Property, access.object, &access.property, false, None)
             }
             Expression::Access(Access::NullSafeProperty(access)) => {
-                self.instance(Kind::Property, access.object, &access.property, true)
+                self.instance(Kind::Property, access.object, &access.property, true, None)
             }
             Expression::Call(Call::StaticMethod(call)) => {
                 if let ClassLikeMemberSelector::Identifier(name) = &call.method {
-                    self.static_member(Kind::Method, call.class, &lossy(name.value), name.span);
+                    self.static_member(
+                        Kind::Method,
+                        call.class,
+                        &lossy(name.value),
+                        name.span,
+                        Some(&call.argument_list),
+                    );
                 }
             }
             Expression::PartialApplication(PartialApplication::StaticMethod(partial)) => {
                 if let ClassLikeMemberSelector::Identifier(name) = &partial.method {
-                    self.static_member(Kind::Method, partial.class, &lossy(name.value), name.span);
+                    self.static_member(Kind::Method, partial.class, &lossy(name.value), name.span, None);
                 }
             }
             Expression::Access(Access::StaticProperty(access)) => {
                 if let Variable::Direct(variable) = &access.property {
-                    self.static_member(Kind::Property, access.class, &lossy(variable.name), variable.span);
+                    self.static_member(Kind::Property, access.class, &lossy(variable.name), variable.span, None);
                 }
             }
             Expression::Access(Access::ClassConstant(access)) => {
                 if let ClassLikeConstantSelector::Identifier(name) = &access.constant
                     && !name.value.eq_ignore_ascii_case(b"class")
                 {
-                    self.static_member(Kind::Constant, access.class, &lossy(name.value), name.span);
+                    self.static_member(Kind::Constant, access.class, &lossy(name.value), name.span, None);
                 }
             }
             _ => {}

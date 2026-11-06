@@ -24,6 +24,10 @@
 //! dumb mode doesn't flood the editor; open documents are inspected again
 //! once indexing finishes. `@noinspection` is handled by the framework.
 //!
+//! An undefined class-like gets the "Create class" quick-fix
+//! ([`super::fixes::create_class`]); the import fixes come from the code
+//! actions.
+//!
 //! The ids and the guard behaviour follow PhpStorm's documented
 //! inspections ("Undefined class", "Undefined function", "Undefined
 //! constant"); the rest is our own.
@@ -38,9 +42,9 @@ use mago_syntax::cst::{
 };
 use mago_syntax::walker::Walker;
 
-use super::{Inspection, InspectionContext, Problems};
+use super::{Inspection, InspectionContext, Problems, fixes};
 use crate::engine::{EngineState, is_meta_path};
-use crate::names::{FileNames, NameKind, NameRole, ResolvedName, fqn_eq};
+use crate::names::{FileNames, NameKind, NameRole, Resolution, ResolvedName, fqn_eq};
 use crate::navigate::find_declaration;
 use crate::syntax::ParsedFile;
 
@@ -145,7 +149,13 @@ fn check(cx: &InspectionContext<'_>, kind: NameKind, out: &mut Problems) {
             NameKind::Function => "function",
             _ => "constant",
         };
-        out.report(name.start, name.end, format!("Undefined {what} '{}'", name.text));
+        let problem = out.report(name.start, name.end, format!("Undefined {what} '{}'", name.text));
+        if kind == NameKind::ClassLike
+            && let Resolution::Fqn(fqn) = &name.resolution
+            && let Some(fix) = fixes::create_class(cx, fqn, what)
+        {
+            problem.with_fix(fix);
+        }
     }
 }
 

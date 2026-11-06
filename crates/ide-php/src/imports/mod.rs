@@ -54,14 +54,17 @@ use crate::syntax::ParsedFile;
 pub const QUICKFIX: &str = "quickfix";
 /// The code action kind of Optimize Imports.
 pub const ORGANIZE_IMPORTS: &str = "source.organizeImports";
+/// The code action kind of the context actions on declarations (add a
+/// type, add or update the PHPDoc).
+pub const REWRITE: &str = "refactor.rewrite";
 /// The code action kinds the engine offers.
-pub const ACTION_KINDS: [&str; 2] = [QUICKFIX, ORGANIZE_IMPORTS];
+pub const ACTION_KINDS: [&str; 3] = [QUICKFIX, REWRITE, ORGANIZE_IMPORTS];
 
-/// One code action: an auto-import fix or Optimize Imports.
+/// One code action: a quick-fix, a context action or Optimize Imports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportAction {
     pub title: String,
-    /// [`QUICKFIX`] or [`ORGANIZE_IMPORTS`].
+    /// [`QUICKFIX`], [`REWRITE`] or [`ORGANIZE_IMPORTS`].
     pub kind: &'static str,
     pub preferred: bool,
     pub edit: WorkspaceEdit,
@@ -680,7 +683,7 @@ fn runs<'u>(text: &str, uses: &'u [UseStatement]) -> Vec<&'u [UseStatement]> {
 /// of its first line when only blanks precede it, through the end of its
 /// last line when only blanks follow, plus the blank lines after it when a
 /// blank line precedes it (so no double gap remains).
-fn removal(text: &str, start: u32, end: u32) -> (u32, u32) {
+pub(crate) fn removal(text: &str, start: u32, end: u32) -> (u32, u32) {
     let bytes = text.as_bytes();
     let mut from = start as usize;
     while from > 0 && matches!(bytes[from - 1], b' ' | b'\t') {

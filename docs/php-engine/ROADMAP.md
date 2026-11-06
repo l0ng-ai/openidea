@@ -355,7 +355,7 @@ The design:
 
   Tests: unit tests at several language levels.
 
-- [ ] Phase 4.9: Quick-fixes
+- [x] Phase 4.9: Quick-fixes
       Quick-fixes:
   - import a class or function
   - create a missing method, property or class (the class in the PSR-4 location)

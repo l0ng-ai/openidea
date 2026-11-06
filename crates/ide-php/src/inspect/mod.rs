@@ -31,7 +31,11 @@
 //! - [`PhpEngine::code_actions`] gives the quick-fixes of the problems at a
 //!   range (plus "Suppress for statement", which adds `@noinspection` to
 //!   the statement's docblock or puts one in front of it) along with the
-//!   import actions.
+//!   import actions and the context actions on a declaration's signature
+//!   ([`intentions`]: add a return or parameter type, add or update the
+//!   PHPDoc). The fixes the inspections attach (create a missing member or
+//!   class, initialize a variable, remove an unused variable or import) are
+//!   in [`fixes`].
 //!
 //! The model follows IntelliJ's public description of code inspections
 //! (`https://plugins.jetbrains.com/docs/intellij/code-inspections.html`):
@@ -39,6 +43,8 @@
 
 pub mod calls;
 pub mod control;
+pub(crate) mod fixes;
+pub(crate) mod intentions;
 pub mod level;
 pub mod members;
 pub(crate) mod runner;
@@ -56,7 +62,7 @@ use std::sync::{Arc, OnceLock};
 use ide_core::{CancellationToken, Diagnostic, DocId, Range, Severity, TextEdit, WorkspaceEdit};
 
 use crate::engine::PhpEngine;
-use crate::imports::{ImportAction, QUICKFIX, file_edit, wanted};
+use crate::imports::{ImportAction, QUICKFIX, REWRITE, file_edit, wanted};
 use crate::names::FileNames;
 use crate::summary::FileSummary;
 use crate::syntax::{DIAGNOSTIC_SOURCE, ParsedFile};
@@ -437,8 +443,9 @@ impl PhpEngine {
 
     /// The code actions of a range: the quick-fixes of the problems that
     /// touch it (each problem's own fixes, then "suppress"), then the import
-    /// actions. Filtered by `only` (code action kinds). `None` when the
-    /// engine doesn't hold the document.
+    /// actions, then the context actions on a declaration it touches.
+    /// Filtered by `only` (code action kinds). `None` when the engine
+    /// doesn't hold the document.
     pub fn code_actions(&self, doc: DocId, range: Range, only: &[String]) -> Option<Vec<ImportAction>> {
         let mut out = Vec::new();
         if wanted(only, QUICKFIX) {
@@ -464,6 +471,12 @@ impl PhpEngine {
             }
         }
         out.extend(self.import_actions(doc, range, only)?);
+        if wanted(only, REWRITE) {
+            let parsed = self.parsed_document(doc)?;
+            let path = self.document_path(doc)?;
+            let (start, end) = parsed.line_index().byte_range(range);
+            out.extend(intentions::intentions(self, &parsed, &path, start, end));
+        }
         Some(out)
     }
 

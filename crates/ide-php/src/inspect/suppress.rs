@@ -142,27 +142,7 @@ impl Suppressions {
 
 /// The edit adding `@noinspection id` to the docblock at `start..end`.
 fn add_to_docblock(text: &str, start: u32, end: u32, id: &str, newline: &str) -> (u32, u32, String) {
-    let comment = &text[start as usize..end as usize];
-    let line_start = text[..start as usize].rfind('\n').map_or(0, |i| i + 1);
-    let indent: String = text[line_start..start as usize].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-    if let Some(last_newline) = comment.rfind('\n') {
-        let closing = &comment[last_newline + 1..];
-        let before_close = closing.strip_suffix("*/").filter(|ws| ws.trim().is_empty());
-        if let Some(ws) = before_close {
-            let at = start + last_newline as u32 + 1;
-            return (at, at, format!("{ws}* {TAG} {id}{newline}"));
-        }
-        // `… text */` on the last line: the tag goes on a line of its own.
-        let at = end - 2;
-        return (at, at, format!("{newline}{indent} * {TAG} {id}{newline}{indent} "));
-    }
-    let inner = comment.trim_start_matches("/**").trim_end_matches("*/").trim();
-    let mut out = format!("/**{newline}");
-    if !inner.is_empty() {
-        out.push_str(&format!("{indent} * {inner}{newline}"));
-    }
-    out.push_str(&format!("{indent} * {TAG} {id}{newline}{indent} */"));
-    (start, end, out)
+    super::fixes::add_doc_lines(text, start, end, &[format!("{TAG} {id}")], newline)
 }
 
 /// The ids after every `@noinspection` of a comment.
