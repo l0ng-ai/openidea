@@ -4,6 +4,9 @@ use crate::repo::{gx, to_string};
 use crate::{Branch, BranchInfo, Repo, Stash};
 use ide_core::IdeResult;
 
+// Filter symbolic refs before shortening; `refname:short` also strips remote `/HEAD` suffixes.
+pub(crate) const DIRECT_BRANCH_FORMAT: &str = "--format=%(if)%(symref)%(then)%(else)%(refname:lstrip=2)%(end)";
+
 pub(crate) fn branch_info(r: &Repo) -> IdeResult<BranchInfo> {
     let repo = r.gix()?;
     let head_ref = repo.head_name().map_err(gx)?;

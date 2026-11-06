@@ -114,6 +114,37 @@ fn lazy_summaries_seek_and_index_survive_refresh_and_restart() {
 }
 
 #[test]
+fn containing_branches_exclude_symbolic_aliases_but_keep_direct_head_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    let tip = commit(dir, "a", "tip");
+    git(dir, &["branch", "topic/HEAD"]);
+    for remote in ["origin", "contributor-742", "issue-739", "issue-765"] {
+        let main = format!("refs/remotes/{remote}/main");
+        git(dir, &["update-ref", &main, &tip]);
+        git(dir, &["symbolic-ref", &format!("refs/remotes/{remote}/HEAD"), &main]);
+        git(dir, &["symbolic-ref", &format!("refs/remotes/{remote}/alias"), &main]);
+    }
+    git(dir, &["update-ref", "refs/remotes/origin/topic/HEAD", &tip]);
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let mut branches = repo.log_details(&tip).unwrap().containing_branches;
+    branches.sort();
+    assert_eq!(
+        branches,
+        [
+            "contributor-742/main",
+            "issue-739/main",
+            "issue-765/main",
+            "main",
+            "origin/main",
+            "origin/topic/HEAD",
+            "topic/HEAD"
+        ]
+    );
+}
+
+#[test]
 fn followed_history_carries_the_filename_at_each_revision() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
