@@ -507,8 +507,19 @@ export type FileUsages =
   /** The language server can't tell (none running, no document symbols…). */
   | { status: "unsupported"; reason: string };
 
-/** At most this many top-level symbols per file are searched. */
+/** At most this many symbols per file are searched. */
 const MAX_SYMBOLS = 60;
+
+/**
+ * The symbols a file declares at its top level. Packages and namespaces are shared
+ * with other files (IDEA searches a Java file's classes, not its package), so their
+ * members stand in for them.
+ */
+function declaredSymbols(items: readonly OutlineItem[]): OutlineItem[] {
+  return items.flatMap((it) =>
+    it.kind === "package" || it.kind === "namespace" ? declaredSymbols(it.children) : [it],
+  );
+}
 
 async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
   const open = editorsFor(path)[0];
@@ -522,7 +533,7 @@ async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promis
 }
 
 /**
- * References from outside `paths` to the top-level symbols the files declare.
+ * References from outside `paths` to the symbols the files declare ({@link declaredSymbols}).
  * Unsupported when no reference search could run for any of them.
  */
 export async function fileUsages(paths: readonly string[], signal?: AbortSignal): Promise<FileUsages> {
@@ -536,7 +547,7 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
     try {
       await withDoc(path, async (doc) => {
         const outline = await call(commands.docOutline(doc));
-        for (const item of outline.slice(0, MAX_SYMBOLS)) {
+        for (const item of declaredSymbols(outline).slice(0, MAX_SYMBOLS)) {
           if (signal?.aborted) return;
           let refs: Location[];
           try {
