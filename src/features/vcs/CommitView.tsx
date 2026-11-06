@@ -3,12 +3,12 @@
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { formatBinding, isMacHost } from "@/platform/keymap";
+import { formatBinding, isMacHost, macStroke, normalizeBinding, strokeOf } from "@/platform/keymap";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
-import { dirname } from "@/platform/project";
+import { basename, dirname } from "@/platform/project";
 import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
 import {
   Button,
@@ -246,6 +246,18 @@ export function deletableFiles(nodes: ChangeNode[]): string[] {
   return files.length && files.every(onDisk) ? files.map((f) => f.path) : [];
 }
 
+/**
+ * Copies the selected files' absolute paths (`absolute`) or just their names
+ * (`name`) to the clipboard, one per line: Ctrl+C / Ctrl+Shift+C of the changes
+ * tree and the context menu's Copy items (#1877).
+ */
+export function copyChangePaths(nodes: ChangeNode[], kind: "absolute" | "name") {
+  const text = filesOf(nodes)
+    .map((f) => (kind === "name" ? basename(f.path) : f.path))
+    .join("\n");
+  if (text) void navigator.clipboard?.writeText(text);
+}
+
 export function nodeMenu(
   nodes: ChangeNode[],
   repos: readonly string[],
@@ -348,7 +360,8 @@ export function nodeMenu(
     { kind: "action", action: "vcs.localHistory", arg: first?.path },
     { kind: "action", action: "vcs.annotate", arg: first?.path },
     { kind: "separator" },
-    { label: "Copy Path", icon: "copy", run: () => void navigator.clipboard?.writeText(paths.join("\n")) },
+    { label: "Copy Path", icon: "copy", run: () => copyChangePaths(nodes, "absolute") },
+    { label: "Copy File Name", icon: "copy", run: () => copyChangePaths(nodes, "name") },
   );
   return items;
 }
@@ -627,6 +640,15 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             if (n?.path) {
               e.preventDefault();
               void editorService().openFile(n.path, { focus: true });
+            }
+          } else {
+            // IDEA: Ctrl+C copies the file names, Ctrl+Shift+C the absolute paths (#1877).
+            const stroke = strokeOf(e.nativeEvent);
+            const copy = stroke && normalizeBinding(macStroke(stroke));
+            if (copy === "Meta+C" || copy === "Shift+Meta+C") {
+              e.preventDefault();
+              e.stopPropagation();
+              copyChangePaths(selectedNodes(), copy === "Meta+C" ? "name" : "absolute");
             }
           }
         }}
