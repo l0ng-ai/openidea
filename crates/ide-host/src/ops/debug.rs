@@ -72,6 +72,21 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         extra["__adapterJavaHome"] = serde_json::json!(runtime.home);
         config.extra_json = Some(extra.to_string());
     }
+    if config.adapter == "php-debug"
+        && config.request == "launch"
+        && let Some(php) = php_runtime_of(&config)
+    {
+        // Only a launch that starts PHP itself can be checked: a PHP Remote
+        // Debug launch makes php-debug listen instead (no program, no
+        // runtimeExecutable — the checked PHP may live elsewhere anyway).
+        let version = host.blocking(move || Ok(ide_sdk::php::xdebug_version(&php))).await?;
+        if version.is_none() {
+            return Err(ide_core::IdeError::unavailable(
+                "The PHP of this configuration loads no Xdebug extension, so breakpoints can't be hit. \
+                 Pick a PHP with Xdebug in Settings › Languages & Frameworks › PHP, or name one in the command.",
+            ));
+        }
+    }
     let root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
     let custom = |command: &str| {
         let path = ide_sdk::apply::tool_command(&root, &settings, command)?;
@@ -107,6 +122,19 @@ fn match_java_debug_encoding(mut config: LaunchConfig, windows: bool) -> LaunchC
         config.extra_json = Some(serde_json::Value::Object(extra).to_string());
     }
     config
+}
+
+/// The PHP a php-debug launch starts: `extra_json.runtimeExecutable`, or the
+/// `php` on `PATH` php-debug itself defaults to. `None` when the launch starts
+/// no PHP (PHP Remote Debug listens instead — no program, no runtime).
+fn php_runtime_of(config: &LaunchConfig) -> Option<PathBuf> {
+    config.program.as_ref()?;
+    let configured = config
+        .extra_json
+        .as_deref()
+        .and_then(|e| serde_json::from_str::<serde_json::Value>(e).ok())
+        .and_then(|v| v.get("runtimeExecutable")?.as_str().map(str::to_owned));
+    configured.map(PathBuf::from).or_else(|| Some(PathBuf::from("php")))
 }
 
 pub async fn debug_set_breakpoints(
@@ -536,5 +564,26 @@ mod tests {
             config.env.insert(key.into(), "-Dfile.encoding=GBK".into());
             assert_eq!(vm_args(&match_java_debug_encoding(config, true)), "-Dstdout.encoding=GBK");
         }
+    }
+
+    #[test]
+    fn php_runtime_names_the_configured_php_or_paths() {
+        // A launch that starts PHP: the configured one, else `php` on PATH.
+        let mut config = launch(
+            "php-debug",
+            "launch",
+            serde_json::json!({"port": 0, "runtimeArgs": ["-dxdebug.mode=debug"], "runtimeExecutable": "/opt/php8.3/bin/php"}),
+        );
+        config.program = Some("/app/artisan".into());
+        assert_eq!(php_runtime_of(&config), Some(PathBuf::from("/opt/php8.3/bin/php")));
+        config.extra_json = Some(serde_json::json!({"port": 0}).to_string());
+        assert_eq!(php_runtime_of(&config), Some(PathBuf::from("php")));
+        // PHP Remote Debug listens instead of starting PHP: nothing to check.
+        config.program = None;
+        config.extra_json = Some(serde_json::json!({"port": 9003, "pathMappings": {}}).to_string());
+        assert_eq!(php_runtime_of(&config), None);
+        config.program = None;
+        config.extra_json = Some(serde_json::json!({"port": 9003, "runtimeExecutable": "php"}).to_string());
+        assert_eq!(php_runtime_of(&config), None, "a listen-only launch starts no PHP");
     }
 }

@@ -182,6 +182,21 @@ pub fn include_paths(root: &Path, s: &Settings) -> Vec<String> {
 /// Settings › PHP, run from `root` with Xdebug off: in debug mode it would try to reach a
 /// debugger on every run. The selected PHP runs the script itself (and is first on `PATH`, as for
 /// PHPUnit), so a `php8.1` is not replaced by the `php` its `#!/usr/bin/env php` finds, and
+/// The Xdebug version `php` loads (e.g. `3.4.7`); `None` when the extension is
+/// not loaded or `php` can't be run. `XDEBUG_MODE=off` keeps Xdebug dormant
+/// (a php.ini `start_with_request` won't make it connect to a listening
+/// debugger) while it still reports its version.
+pub fn xdebug_version(php: &Path) -> Option<String> {
+    crate::exec::query_in(
+        php,
+        &["-r", "echo phpversion('xdebug') ?: '';"],
+        None,
+        &[("XDEBUG_MODE", "off")],
+        std::time::Duration::from_secs(4),
+    )
+    .filter(|v| !v.is_empty())
+}
+
 /// Windows needs no `phpstan.bat`, whose `cmd` limits the command line. `None` when the project
 /// has no PHPStan.
 pub fn phpstan_command(root: &Path, s: &Settings, files: &[PathBuf]) -> Option<Command> {
