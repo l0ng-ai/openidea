@@ -20,6 +20,7 @@
     "typecheck": "tsrs --noEmit && tsrs -p tsconfig.node.json --noEmit && tsrs -p perf --noEmit && tsrs -p scripts --noEmit && tsrs -p smoke --noEmit",
     "gen:bindings": "cargo test -p openidea --test export_bindings",
     "gen:windows-icons": "node scripts/gen-windows-icons.ts",
+    "stage:bundled-plugins": "node scripts/stage-bundled-plugins.ts",
     "gen:angular-grammar": "lezer-generator src/editor/core/cm/angular/angular.grammar --typeScript -o src/editor/core/cm/angular/parser.ts",
     "gen:jsp-grammar": "lezer-generator src/editor/core/cm/jsp/jsp.grammar --typeScript -o src/editor/core/cm/jsp/parser.ts",
     "gen:astro-grammar": "lezer-generator src/editor/core/cm/astro/astro.grammar --typeScript -o src/editor/core/cm/astro/parser.ts",

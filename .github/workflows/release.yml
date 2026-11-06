@@ -209,8 +209,10 @@ jobs:
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
 
   # The official plugins, signed, and the marketplace index released apps read
-  # (releases/latest/download/plugins-index.json). They are not in the
-  # installers: users install them from Settings › Plugins. Without the
+  # (releases/latest/download/plugins-index.json). Only those listed in
+  # plugins/bundled.json are in the installers (`tauri build` stages them,
+  # see its beforeBuildCommand); users install the others from Settings ›
+  # Plugins. Without the
   # signing key (secret PLUGIN_SIGNING_KEY: the file `openidea-plugin keygen`
   # writes) nothing is published and the release goes on. The index also lists
   # the community plugins of the registry (COMMUNITY_PLUGINS_INDEX; refreshed

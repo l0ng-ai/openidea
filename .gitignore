@@ -29,6 +29,8 @@ dist-ssr
 target/
 # Tauri generated schemas
 /src-tauri/gen/schemas
+# Bundled plugins staged for the app's resources (pnpm stage:bundled-plugins)
+/src-tauri/bundled-plugins/
 *.tsbuildinfo
 test-results/
 playwright-report/

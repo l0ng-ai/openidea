@@ -301,6 +301,7 @@ function samplePlugins(): PluginInfo[] {
     homepage: null,
     changeNotes: null,
     source: "installed" as const,
+    bundled: false,
     enabled: true,
     error: null,
     capabilities: [],
@@ -474,7 +475,7 @@ export function createMemoryPluginsBackend(
     activationEvent: async () => {},
     catalog: async () => catalog.map((c) => ({ ...c })),
     uninstall: async (id) => {
-      find(id);
+      if (find(id).bundled) throw new Error(`${id} is bundled with OpenIDEA: it can be disabled, not uninstalled`);
       plugins = plugins.filter((p) => p.id !== id);
       emit({ type: "commandsChanged" });
     },

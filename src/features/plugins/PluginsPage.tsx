@@ -408,11 +408,18 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             {plugin.source !== "installed" && (
               <Badge tone="warning">{plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}</Badge>
             )}
+            {plugin.bundled && (
+              <span title={tx("Ships with OpenIDEA. It can be disabled, but not uninstalled.")}>
+                <Badge tone="accent">
+                  <T>Bundled</T>
+                </Badge>
+              </span>
+            )}
             {plugin.source === "installed" &&
               (plugin.publisher ? (
                 <Badge tone="success">{tx`Signed by ${plugin.publisher}`}</Badge>
               ) : (
-                <Badge tone="neutral">{tx("Unsigned")}</Badge>
+                !plugin.bundled && <Badge tone="neutral">{tx("Unsigned")}</Badge>
               ))}
           </div>
         </div>
@@ -439,6 +446,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             </Button>
           )}
           {plugin.source === "installed" &&
+            !plugin.bundled &&
             (confirmUninstall ? (
               <>
                 <Button
@@ -555,7 +563,7 @@ async function editMarketUrl() {
 }
 
 function gearMenu(plugins: readonly PluginInfo[], updates: number, actions: GearActions): MenuItem[] {
-  const installed = plugins.filter((p) => p.source === "installed");
+  const installed = plugins.filter((p) => p.source === "installed" && !p.bundled);
   return [
     {
       label: updates > 0 ? tx`Update All Plugins (${updates})` : "Update All Plugins",
@@ -797,7 +805,8 @@ export function PluginsPage() {
   const selectedMarket = marketShown.find((m) => m.id === selectedMarketId) ?? null;
 
   const shown = useMemo(() => filterPlugins(plugins, query), [plugins, query]);
-  const downloaded = shown.filter((p) => p.source === "installed");
+  const downloaded = shown.filter((p) => p.source === "installed" && !p.bundled);
+  const bundled = shown.filter((p) => p.bundled);
   const dev = shown.filter((p) => p.source === "dev");
   const linked = shown.filter((p) => p.source === "linked");
   const selected = shown.find((p) => p.id === selectedId) ?? shown[0] ?? null;
@@ -876,6 +885,15 @@ export function PluginsPage() {
             <ul className={styles.list} aria-label={tx("Installed plugins")}>
               {downloaded.length > 0 && <ListHeader title="Downloaded" count={downloaded.length} />}
               {downloaded.map((p) => (
+                <InstalledRow
+                  key={p.id}
+                  plugin={p}
+                  selected={p.id === selected?.id}
+                  onSelect={() => setSelectedId(p.id)}
+                />
+              ))}
+              {bundled.length > 0 && <ListHeader title="Bundled" count={bundled.length} />}
+              {bundled.map((p) => (
                 <InstalledRow
                   key={p.id}
                   plugin={p}

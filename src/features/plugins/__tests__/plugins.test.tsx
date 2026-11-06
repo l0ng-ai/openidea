@@ -61,6 +61,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     homepage: null,
     changeNotes: null,
     source: "installed",
+    bundled: false,
     path: `/plugins/${partial.id}`,
     enabled: true,
     status: "active",
@@ -551,6 +552,34 @@ describe("PluginsPage", () => {
     expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
   });
 
+  it("lists bundled plugins in their own group, which can be disabled but not uninstalled", async () => {
+    setPluginsBackend(
+      createMemoryPluginsBackend([
+        plugin({ id: "agents", name: "Agents", bundled: true }),
+        plugin({ id: "hello", name: "Hello" }),
+      ]),
+    );
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    const list = await screen.findByRole("list", { name: "Installed plugins" });
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(2));
+    const text = list.textContent ?? "";
+    const order = ["Downloaded", "Hello", "Bundled", "Agents"].map((s) => text.indexOf(s));
+    expect(order).not.toContain(-1);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+
+    await user.click(within(list).getByText("Agents"));
+    const details = screen.getByLabelText("Agents details");
+    expect(within(details).getByText("Bundled")).toBeInTheDocument();
+    expect(within(details).queryByText("Unsigned")).not.toBeInTheDocument();
+    expect(within(details).queryByRole("button", { name: "Uninstall…" })).not.toBeInTheDocument();
+    await user.click(within(details).getByRole("button", { name: "Disable" }));
+    await waitFor(() => expect(within(details).getByRole("button", { name: "Enable" })).toBeInTheDocument());
+
+    await user.click(within(list).getByText("Hello"));
+    expect(screen.getByRole("button", { name: "Uninstall…" })).toBeInTheDocument();
+  });
+
   it("shows What's New from the change notes", async () => {
     const user = userEvent.setup();
     setPluginsBackend(
@@ -1030,15 +1059,20 @@ describe("catalog helpers", () => {
     expect(filterCatalog(sampleCatalog(), "harbor").map((c) => c.id)).toEqual(["theme-harbor-night"]);
   });
 
-  it("disables and re-enables all downloaded plugins, leaving dev plugins alone", async () => {
+  it("disables and re-enables all downloaded plugins, leaving dev and bundled plugins alone", async () => {
     setPluginsBackend(
-      createMemoryPluginsBackend([plugin({ id: "a" }), plugin({ id: "b" }), plugin({ id: "d", source: "dev" })]),
+      createMemoryPluginsBackend([
+        plugin({ id: "a" }),
+        plugin({ id: "b" }),
+        plugin({ id: "d", source: "dev" }),
+        plugin({ id: "e", bundled: true }),
+      ]),
     );
     await refreshPlugins();
     expect(await setAllInstalledEnabled(false)).toBe(2);
     const enabled = () => Object.fromEntries(usePlugins.getState().plugins.map((p) => [p.id, p.enabled]));
-    expect(enabled()).toEqual({ a: false, b: false, d: true });
+    expect(enabled()).toEqual({ a: false, b: false, d: true, e: true });
     expect(await setAllInstalledEnabled(true)).toBe(2);
-    expect(enabled()).toEqual({ a: true, b: true, d: true });
+    expect(enabled()).toEqual({ a: true, b: true, d: true, e: true });
   });
 });

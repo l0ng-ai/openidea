@@ -10,6 +10,8 @@
 //! - `process:<program>` grants record the program's absolute path and file
 //!   hash at grant time. Calls use that path, never a `PATH` lookup, and fail
 //!   when the file changed (re-confirmation needed).
+//! - Plugins bundled with the app are granted their required capabilities
+//!   without an install page; their `process:` ones are asked for on first use.
 
 use crate::capability::{Capability, Risk};
 use serde::{Deserialize, Serialize};
@@ -63,6 +65,9 @@ pub struct Grant {
     /// use instead of blocking the plugin from loading.
     #[serde(default)]
     pub ask_on_use: bool,
+    /// Granted by installing a plugin bundled with the app, not on an install page.
+    #[serde(default)]
+    pub bundled: bool,
 }
 
 impl Grant {
@@ -236,6 +241,22 @@ impl Ledger {
             }
         }
         grant.binaries.extend(binaries);
+    }
+
+    /// Grants a plugin bundled with the app its required capabilities, except
+    /// `process:` ones not granted yet: those are asked for on first use, when
+    /// their programs are resolved and pinned as on any confirmation.
+    pub fn grant_bundled(&mut self, req: &Request<'_>) {
+        let grant = self.grants.entry(req.subject.clone()).or_default();
+        grant.plugin_id = req.plugin_id.to_owned();
+        grant.version = req.version.to_owned();
+        grant.package_hash = req.package_hash.to_owned();
+        grant.confirmed = true;
+        grant.bundled = true;
+        for cap in req.required.iter().filter(|c| !matches!(c, Capability::Process(_))) {
+            grant.granted.insert(cap.to_string());
+        }
+        grant.ask_on_use = req.required.iter().any(|c| !grant.has(c));
     }
 
     /// Grants or revokes one capability (Settings › Plugins › permissions).
@@ -447,6 +468,28 @@ mod tests {
         let again = Ledger::load(tmp.path());
         assert!(!again.needs_migration());
         assert!(again.get(&r.subject).unwrap().has(&Capability::ProjectRead));
+    }
+
+    #[test]
+    fn bundled_plugins_load_without_asking_and_ask_for_programs_on_first_use() {
+        let mut l = Ledger::in_memory();
+        let r = req("1.0.0", "h1", &["project.read", "process:claude"], &["net:x.io"]);
+        l.grant_bundled(&r);
+        assert_eq!(
+            l.decide(&r),
+            Decision::Allowed { granted: caps(&["project.read"]), pending: caps(&["process:claude"]) }
+        );
+        let grant = l.get(&r.subject).unwrap();
+        assert!(grant.bundled && grant.confirmed && grant.declined.is_empty());
+
+        // The user allows the program on first use; a later bundled version keeps it.
+        l.confirm(&r, &[], BTreeMap::new());
+        let r2 = req("1.1.0", "h2", &["project.read", "process:claude", "storage"], &[]);
+        l.grant_bundled(&r2);
+        assert_eq!(
+            l.decide(&r2),
+            Decision::Allowed { granted: caps(&["project.read", "process:claude", "storage"]), pending: vec![] }
+        );
     }
 
     #[cfg(unix)]
