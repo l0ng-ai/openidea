@@ -9,7 +9,9 @@ import { call, commands } from "@/platform/ipc";
 import { Dialog, IconButton, Select, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, showError } from "@/workbench/messages";
+import { chooseTargetChangelist, moveToChangelist } from "./changelistsUi";
 import { useCommit } from "./commitStore";
+import { stripSlash } from "./model";
 import { openCommit } from "./commitUi";
 import { rememberSetting } from "./confirmations";
 import { confirmDialog, openDialog } from "./dialogs";
@@ -30,6 +32,7 @@ import {
   type RebaseRow,
 } from "./rebasePlan";
 import { currentRepo, refreshNow, useVcs } from "./store";
+import { notifications } from "@/workbench/contributions";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -61,12 +64,22 @@ export async function undoCommit(commit: Commit) {
     });
     if (!ok) return;
   }
+  // The undone changes go to a change list the user picks (a new one is named after the commit).
+  const target = await chooseTargetChangelist(commit.summary);
+  if (target === null) return;
+  const files = await call(commands.vcsCommitFiles(repo, commit.id)).catch(() => []);
   const undo = () => call(commands.vcsUndoCommit(repo, commit.id));
   const message = await runOp(tx`Undo commit ${short(commit.id)}`, undo, {
-    success: tx`Undid commit ${short(commit.id)} “${commit.summary}”; its changes are staged`,
+    success: tx`Undid commit ${short(commit.id)} “${commit.summary}”`,
   });
-  // IDEA offers the undone message for the next commit.
-  if (message !== undefined && !useCommit.getState().message.trim()) useCommit.setState({ message });
+  if (message === undefined) return;
+  const root = repo ?? useVcs.getState().root ?? "";
+  moveToChangelist(
+    files.flatMap((f) => [f.path, f.oldPath].filter((p): p is string => !!p).map((p) => `${stripSlash(root)}/${p}`)),
+    target,
+  );
+  // The undone commit's message becomes the next commit's.
+  useCommit.setState({ message });
 }
 
 // ---------------------------------------------------------------------------
@@ -116,8 +129,38 @@ async function rangeFrom(target: Commit, verb: string): Promise<(RebaseRange & {
   }
 }
 
-async function runRebase(base: string | null, entries: RebaseEntry[], done: string, repo: string | null) {
+async function headOf(repo: string | null): Promise<string | null> {
+  return (await call(commands.vcsBranchInfo(repo)).catch(() => null))?.headCommit ?? null;
+}
+
+/**
+ * The Undo link of a history rewrite's balloon (keyed `key`): back to `before` while HEAD
+ * is still `after`. Once undone, the balloon is replaced by one without the link.
+ */
+function undoLink(repo: string | null, before: string | null, after: string | null, undone: string, key: string) {
+  if (!before || !after || before === after) return [];
+  return [
+    {
+      label: "Undo",
+      run: () =>
+        void runOp(tx("Undo"), () => call(commands.vcsRestoreHead(repo, before, after))).then((done) => {
+          if (done === undefined) return;
+          notifications().notify({ group: "vcs", level: "info", key, title: undone });
+        }),
+    },
+  ];
+}
+
+/** Rewrites the branch with `entries`; a finished rewrite can be undone from its balloon. */
+async function runRebase(
+  base: string | null,
+  entries: RebaseEntry[],
+  done: string,
+  repo: string | null,
+  undone = tx("Rebase undone"),
+) {
   await saveAll();
+  const before = await headOf(repo);
   await runGitOperation(
     { op: "interactiveRebase", base, entries },
     {
@@ -125,6 +168,8 @@ async function runRebase(base: string | null, entries: RebaseEntry[], done: stri
       success: () => (inProgress() === "rebase" ? "Rebase stopped for editing; continue the rebase when done" : done),
       failure: tx("Rebase failed"),
       onError: conflictsInstead,
+      successActions: async () =>
+        inProgress() === "rebase" ? [] : undoLink(repo, before, await headOf(repo), undone, "vcs.operation"),
     },
     repo,
   );
@@ -136,12 +181,20 @@ export async function editCommitMessage(commit: Commit) {
   if (!range) return;
   const message = await promptMessage(`Edit Commit Message (${short(commit.id)})`, commit.message);
   if (message === null || message.trim() === commit.message.trim()) return;
-  await runRebase(
-    range.base,
-    singleCommitPlan(range, commit.id, "reword", message),
-    `Commit message of ${short(commit.id)} changed`,
-    range.repo,
+  // Written without a rebase: the index and the working tree (local changes) stay as they are.
+  const change = await runOp(tx`Edit commit message of ${short(commit.id)}`, () =>
+    call(commands.vcsReword(range.repo, commit.id, message)),
   );
+  if (!change) return;
+  await refreshNow();
+  const key = `vcs.reword:${change.after}`;
+  notifications().notify({
+    group: "vcs",
+    level: "info",
+    key,
+    title: tx`Commit message of ${short(commit.id)} changed`,
+    actions: undoLink(range.repo, change.before, change.after, tx("Commit message change undone"), key),
+  });
 }
 
 /** Drop Commit(s): removes commits from the current branch. */
@@ -163,7 +216,7 @@ export async function dropCommits(commits: Commit[]) {
     action: ids.has(c.id) ? ("drop" as const) : ("pick" as const),
     message: null,
   }));
-  await runRebase(range.base, plan, `Dropped ${commits.length} commits`, range.repo);
+  await runRebase(range.base, plan, `Dropped ${commits.length} commits`, range.repo, tx("Drop undone"));
 }
 
 async function dropCommit(commit: Commit) {
@@ -181,6 +234,7 @@ async function dropCommit(commit: Commit) {
     singleCommitPlan(range, commit.id, "drop"),
     `Dropped commit ${short(commit.id)}`,
     range.repo,
+    tx("Drop undone"),
   );
 }
 
@@ -225,7 +279,13 @@ export async function squashCommits(commits: Commit[]) {
     oldestFirst.map((c) => c.message.trim()).join("\n\n"),
   );
   if (message === null || !message.trim()) return;
-  await runRebase(range.base, squashPlan(range, ids, message), `Squashed ${commits.length} commits`, range.repo);
+  await runRebase(
+    range.base,
+    squashPlan(range, ids, message),
+    `Squashed ${commits.length} commits`,
+    range.repo,
+    tx("Squash undone"),
+  );
 }
 
 /**
@@ -233,8 +293,16 @@ export async function squashCommits(commits: Commit[]) {
  * for `target` in the commit interface; the next interactive rebase autosquashes it.
  */
 export function prepareFixup(target: Commit, kind: "fixup" | "squash") {
-  useCommit.setState({ message: `${kind}! ${target.summary}` });
+  useCommit.setState({ message: `${kind}! ${target.summary}`, fixupTarget: target });
   openCommit();
+}
+
+/** Commit and Rebase (after Fixup… / Squash Into…): autosquashes the new commit into `target`. */
+export async function rebaseAfterFixup(target: Commit) {
+  useCommit.setState({ fixupTarget: null });
+  const range = await rangeFrom(target, "rebase");
+  if (!range) return;
+  await runRebase(range.base, toEntries(initialRows(range.commits)), tx("Rebased"), range.repo);
 }
 
 /** Interactively Rebase from Here…: IDEA's rebase dialog for `target..HEAD`. */

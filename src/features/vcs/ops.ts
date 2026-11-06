@@ -331,6 +331,8 @@ export interface GitOperationOptions {
   failure: string;
   /** Called with the failure message; returning true suppresses the error balloon. */
   onError?: (message: string) => boolean | Promise<boolean>;
+  /** Links of the success balloon (e.g. Undo), worked out after the status refreshed. */
+  successActions?: () => Promise<{ label: string; run: () => void }[]>;
 }
 
 /**
@@ -378,7 +380,8 @@ export async function runGitOperation(
       success = success();
     }
     logConsole("info", success);
-    notifications().notify({ group: "vcs", level: "info", key: "vcs.operation", title: success });
+    const actions = opts.successActions ? await opts.successActions() : undefined;
+    notifications().notify({ group: "vcs", level: "info", key: "vcs.operation", title: success, actions });
     return true;
   } catch (e) {
     const cancelled = isCancelled(e);

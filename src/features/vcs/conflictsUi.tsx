@@ -28,7 +28,8 @@ export function openMergeEditor(path: string) {
   void editorService().openInput(mergeInput(stripSlash(path)), { focus: true });
 }
 
-async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
+/** Accept Yours / Accept Theirs for a whole conflicted file. */
+export async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
   const path = stripSlash(f.path);
   await runOp(
     side === "ours" ? tx`Accept yours for ${baseName(path)}` : tx`Accept theirs for ${baseName(path)}`,

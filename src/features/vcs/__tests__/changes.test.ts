@@ -197,14 +197,14 @@ describe("commit inclusion", () => {
     expect(initialCheck(status[5]!)).toBe("none");
   });
 
-  it("plans staging so the index holds exactly the checked changes", () => {
+  it("plans which changes the commit takes and which staged ones it leaves out", () => {
     const checks = new Map<string, CheckState>([
       ["/r/README.md", "none"],
       ["/r/notes.txt", "all"],
     ]);
     const plan = planCommit(status, checks);
     expect(plan.stage.sort()).toEqual(["/r/notes.txt", "/r/src/main/kotlin/App.kt"]);
-    expect(plan.unstage).toEqual(["/r/README.md"]);
+    expect(plan.exclude).toEqual(["/r/README.md"]);
     expect(plan.included.map((f) => f.relPath).sort()).toEqual([
       "notes.txt",
       "src/main/kotlin/App.kt",

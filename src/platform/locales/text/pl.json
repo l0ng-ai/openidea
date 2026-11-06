@@ -5967,7 +5967,7 @@
   "Create patch": "Utwórz łatkę (patch)",
   "Apply patch ({source})": "Zastosuj łatkę ({source})",
   "Undo commit {id}": "Cofnij zatwierdzenie {id}",
-  "Undid commit {id} “{summary}”; its changes are staged": "Cofnięto zatwierdzenie {id} “{summary}”; zmiany znajdują się w poczekalni (staged)",
+  "Undid commit {id} “{summary}”": "Cofnięto zatwierdzenie {id} “{summary}”",
   "Shelve changes “{trim}”": "Odłóż zmiany na półkę (shelve) “{trim}”",
   "Unshelve “{name}”": "Przywróć “{name}” z półki (unshelve)",
   "Delete shelved changes “{name}”": "Usuń odłożone zmiany z półki “{name}”",

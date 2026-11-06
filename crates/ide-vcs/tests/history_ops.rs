@@ -662,3 +662,45 @@ fn shelf_new_renames_keep_self_contained_sides_and_plain_imports_keep_scope() {
     shelf::delete_path(&shelf, "plain", Some("one.txt")).unwrap();
     assert_eq!(shelf::list(&shelf).unwrap().iter().find(|s| s.id == "plain").unwrap().files[0].path, "two.txt");
 }
+
+#[test]
+fn cherry_pick_skips_commits_already_applied() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "1\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "side"]);
+    fx.write("a.txt", "2\n");
+    let same = fx.commit_all("same change");
+    fx.write("b.txt", "b\n");
+    let other = fx.commit_all("other change");
+    fx.git(&["checkout", "-q", "main"]);
+    // main already has the first change.
+    fx.write("a.txt", "2\n");
+    fx.commit_all("same change, made on main");
+    let repo = fx.repo();
+    let cancel = CancellationToken::new();
+    let lines = std::sync::Mutex::new(Vec::new());
+    let out = |l: String| lines.lock().unwrap().push(l);
+
+    repo.cherry_pick_with(&[same.clone(), other], true, &cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None, "nothing left in progress");
+    assert_eq!(fx.git(&["log", "--format=%s", "-2"]), "other change\nsame change, made on main");
+    assert!(fx.git(&["log", "-1", "--format=%B"]).contains("(cherry picked from commit"));
+    assert!(lines.lock().unwrap().iter().any(|l| l.starts_with(&same[..8]) && l.contains("skipped")));
+}
+
+#[test]
+fn revert_of_a_commit_already_reverted_is_skipped() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "1\n");
+    fx.commit_all("one");
+    fx.write("a.txt", "2\n");
+    let two = fx.commit_all("two");
+    fx.write("a.txt", "1\n");
+    fx.commit_all("undo two by hand");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    repo.revert(&[two], &cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None);
+    assert_eq!(fx.git(&["rev-list", "--count", "HEAD"]), "3", "no empty revert commit");
+}
