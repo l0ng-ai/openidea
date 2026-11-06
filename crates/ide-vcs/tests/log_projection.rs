@@ -462,3 +462,153 @@ fn case_insensitive_text_folds_non_ascii() {
     assert_eq!(ids(LogQuery { text: Some("ärger привет".into()), ..Default::default() }), vec![hit.clone()]);
     assert!(ids(LogQuery { text: Some("ärger".into()), text_match_case: true, ..Default::default() }).is_empty());
 }
+
+/// File history (Show History of a file) as (subject, path at that revision), newest first.
+fn file_history(dir: &Path, path: &str) -> Vec<(String, String)> {
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let log = repo.log(&LogQuery { path: Some(path.into()), follow: true, ..Default::default() }).unwrap();
+    log.into_iter().map(|c| (c.summary, c.history_path.unwrap_or_default())).collect()
+}
+
+fn history_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    git(&dir, &["init", "-q"]);
+    (tmp, dir)
+}
+
+fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+    list.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+}
+
+#[test]
+fn file_history_goes_through_a_rename_on_a_merged_branch() {
+    let (_tmp, dir) = history_repo();
+    commit(&dir, "file.txt", "Created");
+    git(&dir, &["switch", "-qc", "feature"]);
+    git(&dir, &["mv", "file.txt", "renamed.txt"]);
+    git(&dir, &["commit", "-qm", "Renamed"]);
+    git(&dir, &["switch", "-q", "main"]);
+    commit(&dir, "other.txt", "Unrelated");
+    git(&dir, &["merge", "-q", "--no-ff", "-m", "Merged", "feature"]);
+    commit(&dir, "renamed.txt", "Modified");
+    let history = file_history(&dir, "renamed.txt");
+    assert_eq!(history, pairs(&[("Modified", "renamed.txt"), ("Renamed", "renamed.txt"), ("Created", "file.txt")]));
+}
+
+#[test]
+fn file_history_goes_through_a_rename_done_in_a_merge_commit() {
+    let (_tmp, dir) = history_repo();
+    commit(&dir, "file.txt", "Created");
+    git(&dir, &["switch", "-qc", "feature"]);
+    commit(&dir, "side.txt", "Side");
+    git(&dir, &["switch", "-q", "main"]);
+    git(&dir, &["merge", "-q", "--no-ff", "--no-commit", "feature"]);
+    git(&dir, &["mv", "file.txt", "renamed.txt"]);
+    git(&dir, &["commit", "-qm", "Merge with rename"]);
+    let history = file_history(&dir, "renamed.txt");
+    assert_eq!(history, pairs(&[("Merge with rename", "renamed.txt"), ("Created", "file.txt")]));
+}
+
+#[test]
+fn file_history_shows_merges_that_change_the_file_but_not_trivial_ones() {
+    let (_tmp, dir) = history_repo();
+    std::fs::write(dir.join("file.txt"), "one\ntwo\nthree\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "Created"]);
+    git(&dir, &["switch", "-qc", "feature"]);
+    std::fs::write(dir.join("file.txt"), "one\ntwo\nthree\nfeature\n").unwrap();
+    git(&dir, &["commit", "-qam", "Feature"]);
+    git(&dir, &["switch", "-q", "main"]);
+    commit(&dir, "other.txt", "Other");
+    git(&dir, &["merge", "-q", "--no-ff", "-m", "Trivial merge", "feature"]);
+    assert_eq!(
+        file_history(&dir, "file.txt").into_iter().map(|(s, _)| s).collect::<Vec<_>>(),
+        vec!["Feature", "Created"]
+    );
+
+    git(&dir, &["switch", "-qc", "second", "HEAD~1"]);
+    std::fs::write(dir.join("file.txt"), "zero\none\ntwo\nthree\n").unwrap();
+    git(&dir, &["commit", "-qam", "Second"]);
+    git(&dir, &["switch", "-q", "main"]);
+    git(&dir, &["merge", "-q", "--no-ff", "--no-commit", "second"]);
+    std::fs::write(dir.join("file.txt"), "zero\none\ntwo\nthree\nfeature\nresolved\n").unwrap();
+    git(&dir, &["commit", "-qam", "Non-trivial merge"]);
+    let subjects: Vec<String> = file_history(&dir, "file.txt").into_iter().map(|(s, _)| s).collect();
+    assert_eq!(subjects[0], "Non-trivial merge");
+    assert!(subjects.contains(&"Second".to_string()) && subjects.contains(&"Feature".to_string()));
+}
+
+#[test]
+fn file_history_through_a_monorepo_merge_keeps_each_side() {
+    let (_tmp, dir) = history_repo();
+    commit(&dir, "file1.txt", "Created file1");
+    git(&dir, &["switch", "-q", "--orphan", "repo2"]);
+    commit(&dir, "file2.txt", "Created file2");
+    git(&dir, &["switch", "-q", "main"]);
+    git(&dir, &["merge", "-q", "--no-commit", "--allow-unrelated-histories", "repo2"]);
+    std::fs::create_dir_all(dir.join("repo1")).unwrap();
+    std::fs::create_dir_all(dir.join("repo2")).unwrap();
+    git(&dir, &["mv", "file1.txt", "repo1/file1.txt"]);
+    git(&dir, &["mv", "file2.txt", "repo2/file2.txt"]);
+    git(&dir, &["commit", "-qm", "monorepo merge"]);
+    assert_eq!(
+        file_history(&dir, "repo1/file1.txt"),
+        pairs(&[("monorepo merge", "repo1/file1.txt"), ("Created file1", "file1.txt")])
+    );
+    assert_eq!(
+        file_history(&dir, "repo2/file2.txt"),
+        pairs(&[("monorepo merge", "repo2/file2.txt"), ("Created file2", "file2.txt")])
+    );
+}
+
+#[test]
+fn file_history_through_parallel_renames_names_the_path_of_each_revision() {
+    let (_tmp, dir) = history_repo();
+    std::fs::write(dir.join("file.txt"), "base\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "Created"]);
+    git(&dir, &["switch", "-qc", "other"]);
+    std::fs::write(dir.join("file.txt"), "base\nother\n").unwrap();
+    git(&dir, &["commit", "-qam", "Modified on other"]);
+    git(&dir, &["mv", "file.txt", "renamed.txt"]);
+    git(&dir, &["commit", "-qm", "Renamed on other"]);
+    git(&dir, &["switch", "-q", "main"]);
+    std::fs::write(dir.join("file.txt"), "main\nbase\n").unwrap();
+    git(&dir, &["commit", "-qam", "Modified on main"]);
+    git(&dir, &["mv", "file.txt", "renamed.txt"]);
+    git(&dir, &["commit", "-qm", "Renamed on main"]);
+    // Both sides changed the file: the merge stops for the resolution.
+    let _ = Command::new("git").current_dir(&dir).args(["merge", "-q", "--no-ff", "--no-commit", "other"]).output();
+    std::fs::write(dir.join("renamed.txt"), "main\nbase\nother\nmerged\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "Merged other"]);
+    let mut history = file_history(&dir, "renamed.txt");
+    history.sort();
+    assert_eq!(
+        history,
+        pairs(&[
+            ("Created", "file.txt"),
+            ("Merged other", "renamed.txt"),
+            ("Modified on main", "file.txt"),
+            ("Modified on other", "file.txt"),
+            ("Renamed on main", "renamed.txt"),
+            ("Renamed on other", "renamed.txt"),
+        ])
+    );
+}
+
+#[test]
+fn file_history_through_a_cyclic_rename() {
+    let (_tmp, dir) = history_repo();
+    commit(&dir, "a.txt", "Created a");
+    git(&dir, &["mv", "a.txt", "b.txt"]);
+    git(&dir, &["commit", "-qm", "a to b"]);
+    commit(&dir, "b.txt", "Modified b");
+    git(&dir, &["mv", "b.txt", "a.txt"]);
+    git(&dir, &["commit", "-qm", "b to a"]);
+    assert_eq!(
+        file_history(&dir, "a.txt"),
+        pairs(&[("b to a", "a.txt"), ("Modified b", "b.txt"), ("a to b", "b.txt"), ("Created a", "a.txt")])
+    );
+}

@@ -307,6 +307,17 @@ fn interactive_rebase_reorder_squash_fixup_reword_drop() {
 }
 
 #[test]
+fn interactive_rebase_reword_keeps_lines_starting_with_a_hash() {
+    let (fx, ids) = linear();
+    let (cancel, out) = quiet();
+    let message = "Subject\n\n#body starting with a hash";
+    fx.repo()
+        .interactive_rebase(Some(&ids[2]), &[entry(&ids[3], RebaseAction::Reword, Some(message))], &cancel, &out)
+        .unwrap();
+    assert_eq!(fx.git(&["log", "-1", "--format=%B"]), message);
+}
+
+#[test]
 fn interactive_rebase_squash_without_message_combines_messages() {
     let (fx, ids) = linear();
     let (cancel, out) = quiet();
@@ -405,6 +416,89 @@ fn interactive_rebase_conflict_stops_then_continues_with_reword() {
     }
     assert_eq!(repo.branch_info().unwrap().operation, None);
     assert_eq!(fx.subjects(), vec!["one", "two first", "base"]);
+}
+
+/// `main` and `feature` both change `c.txt`: rebasing feature onto main stops on it.
+fn rebase_stopped_on_a_conflict() -> (Fixture, Repo) {
+    let fx = Fixture::new();
+    fx.write("c.txt", "base\n");
+    fx.write("other.txt", "other\n");
+    fx.commit_all("base");
+    fx.git(&["switch", "-q", "-c", "feature"]);
+    fx.write("c.txt", "feature\n");
+    fx.commit_all("feature change");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("c.txt", "main\n");
+    fx.commit_all("main change");
+    fx.git(&["switch", "-q", "feature"]);
+    let repo = fx.repo();
+    assert!(repo.rebase("main").is_err());
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
+    (fx, repo)
+}
+
+#[test]
+fn edits_of_a_resolved_file_go_with_it_when_the_rebase_continues() {
+    let (fx, repo) = rebase_stopped_on_a_conflict();
+    fx.write("c.txt", "resolved\n");
+    repo.stage(&[fx.path("c.txt")]).unwrap();
+    fx.write("c.txt", "resolved\nmore\n");
+    let (cancel, out) = quiet();
+    repo.continue_operation(&cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None);
+    assert_eq!(fx.git(&["show", "HEAD:c.txt"]), "resolved\nmore");
+}
+
+#[test]
+fn unstaged_changes_of_other_files_stop_the_rebase_until_staged() {
+    let (fx, repo) = rebase_stopped_on_a_conflict();
+    fx.write("c.txt", "resolved\n");
+    repo.stage(&[fx.path("c.txt")]).unwrap();
+    fx.write("other.txt", "changed while stopped\n");
+    let (cancel, out) = quiet();
+    let err = repo.continue_operation(&cancel, &out).unwrap_err();
+    assert_eq!(err.message, UNSTAGED_CHANGES_PREVENT_REBASE);
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
+    repo.stage_and_continue(&cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None);
+    assert_eq!(fx.git(&["show", "HEAD:other.txt"]), "changed while stopped");
+}
+
+#[test]
+fn stage_and_retry_after_editing_a_commit() {
+    let (fx, ids) = linear();
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let plan = [entry(&ids[2], RebaseAction::Edit, None), entry(&ids[3], RebaseAction::Pick, None)];
+    repo.interactive_rebase(Some(&ids[1]), &plan, &cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
+    fx.write("f1.txt", "edited\n");
+    std::fs::remove_file(fx.path("f2.txt")).unwrap();
+    assert!(repo.continue_operation(&cancel, &out).is_err());
+    repo.stage_and_continue(&cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None);
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
+    assert!(!fx.exists("f2.txt"));
+}
+
+#[test]
+fn rebase_and_merge_onto_a_branch_named_like_a_tag_use_the_branch() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    fx.commit_all("base");
+    fx.git(&["tag", "main"]);
+    fx.write("m.txt", "m\n");
+    let tip = fx.commit_all("main moved on");
+    fx.git(&["switch", "-q", "-c", "feature", "HEAD~1"]);
+    fx.write("f.txt", "f\n");
+    fx.commit_all("feature");
+    let repo = fx.repo();
+    repo.rebase("refs/heads/main").unwrap();
+    assert_eq!(fx.git(&["rev-parse", "HEAD~1"]), tip);
+    fx.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    fx.git(&["switch", "-q", "-c", "other", "refs/heads/main~1"]);
+    repo.merge("refs/heads/main").unwrap();
+    assert_eq!(fx.head(), tip, "fast-forwarded to the branch, not the tag");
 }
 
 #[test]
@@ -522,6 +616,157 @@ fn update_merge_with_local_changes_to_the_same_file() {
     assert_eq!(fx.read("a.txt"), "uncommitted\none\nremote tail\n");
     assert_eq!(repo.branch_info().unwrap().behind, 0);
     assert_eq!(fx.git(&["rev-list", "--count", "--merges", "HEAD"]), "1");
+}
+
+#[test]
+fn update_with_rebase_keeps_a_file_added_then_deleted_added_to_the_index() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.push_from_other(&bare, "remote.txt", "r\n");
+    fx.write("local.txt", "l\n");
+    fx.commit_all("local");
+    fx.write("ad.txt", "x\n");
+    fx.git(&["add", "ad.txt"]);
+    std::fs::remove_file(fx.path("ad.txt")).unwrap();
+    let (cancel, out) = quiet();
+    fx.repo().pull(true, &cancel, &out).unwrap();
+    assert!(fx.exists("remote.txt"));
+    assert!(fx.git(&["status", "--porcelain", "--", "ad.txt"]).starts_with('A'), "still added");
+}
+
+#[test]
+fn reset_to_the_remote_branch_drops_local_commits_and_keeps_local_changes() {
+    let (fx, bare) = Fixture::with_origin();
+    for i in 0..3 {
+        fx.push_from_other(&bare, "bro.txt", &format!("bro {i}\n"));
+    }
+    fx.write("local1.txt", "1\n");
+    fx.commit_all("local commit");
+    fx.write("untracked.txt", "u\n");
+    fx.write("a.txt", "edited\n");
+    fx.git(&["add", "a.txt"]);
+    let (cancel, out) = quiet();
+    fx.repo().reset_to_upstream(&cancel, &out).unwrap();
+    assert_eq!(fx.head(), fx.git(&["rev-parse", "origin/main"]));
+    assert!(!fx.exists("local1.txt"), "files of local commits are gone");
+    assert!(fx.exists("untracked.txt"));
+    assert_eq!(fx.git(&["status", "--porcelain", "--", "a.txt"]), "M  a.txt", "staged changes stay staged");
+    assert_eq!(fx.git(&["stash", "list"]), "");
+}
+
+#[test]
+fn reset_to_the_remote_branch_without_new_remote_commits_drops_local_ones() {
+    let (fx, _bare) = Fixture::with_origin();
+    let before = fx.head();
+    fx.write("local1.txt", "1\n");
+    fx.commit_all("local commit");
+    let (cancel, out) = quiet();
+    fx.repo().reset_to_upstream(&cancel, &out).unwrap();
+    assert_eq!(fx.head(), before);
+}
+
+#[test]
+fn reset_to_the_remote_branch_leaves_conflicting_local_changes_to_resolve() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.push_from_other(&bare, "bro.txt", "bro\n");
+    fx.write("bro.txt", "local content\n");
+    fx.git(&["add", "bro.txt"]);
+    let (cancel, out) = quiet();
+    assert!(fx.repo().reset_to_upstream(&cancel, &out).is_err());
+    assert_eq!(fx.head(), fx.git(&["rev-parse", "origin/main"]));
+    assert!(fx.read("bro.txt").contains("<<<<<<<"), "the clash is left to resolve");
+    assert_eq!(fx.git(&["stash", "list"]).lines().count(), 1, "a copy stays in the stash");
+}
+
+#[test]
+fn reset_to_the_remote_branch_needs_a_tracked_branch_that_exists() {
+    let (fx, bare) = Fixture::with_origin();
+    let (cancel, out) = quiet();
+    fx.git(&["branch", "--unset-upstream"]);
+    let err = fx.repo().reset_to_upstream(&cancel, &out).unwrap_err();
+    assert!(err.message.contains("no tracked branch"), "{}", err.message);
+
+    fx.git(&["push", "-q", "-u", "origin", "main:feature"]);
+    fx.git(&["switch", "-q", "-c", "feature", "--track", "origin/feature"]);
+    git_in(&bare, &["branch", "-D", "feature"]);
+    fx.git(&["fetch", "-q", "--prune"]);
+    let err = fx.repo().reset_to_upstream(&cancel, &out).unwrap_err();
+    assert!(err.message.contains("no tracked branch"), "{}", err.message);
+}
+
+#[cfg(unix)]
+#[test]
+fn push_can_skip_a_failing_pre_push_hook() {
+    use std::os::unix::fs::PermissionsExt;
+    let (fx, _bare) = Fixture::with_origin();
+    let repo = fx.repo();
+    assert!(!repo.has_hook("pre-push").unwrap());
+    let hook = fx.path(".git/hooks/pre-push");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho refused >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(repo.has_hook("pre-push").unwrap());
+
+    fx.write("local.txt", "l\n");
+    fx.commit_all("local");
+    let (cancel, out) = quiet();
+    assert!(repo.push(false, false, &cancel, &out).is_err(), "the hook refuses the push");
+    let options = PushOptions { no_verify: true, ..Default::default() };
+    repo.push_with(options, &cancel, &out).unwrap();
+    assert_eq!(fx.head(), fx.git(&["rev-parse", "origin/main"]));
+}
+
+#[test]
+fn force_push_without_lease_overwrites_a_remote_that_moved() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.write("local.txt", "l\n");
+    fx.commit_all("local");
+    fx.push_from_other(&bare, "remote.txt", "r\n");
+    fx.git(&["fetch", "-q"]);
+    fx.push_from_other(&bare, "remote2.txt", "r\n");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let lease = PushOptions { force_with_lease: true, ..Default::default() };
+    let err = repo.push_with(lease, &cancel, &out).unwrap_err();
+    assert!(err.message.contains("stale info"), "{}", err.message);
+    repo.push_with(PushOptions { force: true, ..Default::default() }, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), fx.head());
+}
+
+#[test]
+fn push_to_another_branch_can_make_it_the_upstream() {
+    let (fx, _bare) = Fixture::with_origin();
+    fx.write("local.txt", "l\n");
+    fx.commit_all("local");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let to = |target, set_upstream| PushBranchOptions { target: Some(target), set_upstream, ..Default::default() };
+    repo.push_branch_to("main", to("feature", false), &cancel, &out).unwrap();
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "main@{u}"]), "origin/main", "upstream kept");
+    repo.push_branch_to("main", to("feature-1", true), &cancel, &out).unwrap();
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "main@{u}"]), "origin/feature-1");
+}
+
+#[test]
+fn tags_are_pushed_one_at_a_time_deleted_restored_and_deleted_on_the_remote() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.git(&["tag", "-a", "v1", "-m", "release one"]);
+    fx.git(&["tag", "v2"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    repo.push_tag("v1", "origin", &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["tag"]), "v1", "only the chosen tag goes");
+    repo.push_tag("v1", "origin", &cancel, &out).unwrap();
+
+    let deleted = repo.delete_tag("v1").unwrap();
+    assert_eq!(fx.git(&["tag"]), "v2");
+    repo.restore_tag(&deleted).unwrap();
+    assert_eq!(fx.git(&["cat-file", "-t", "v1"]), "tag", "annotated, as it was");
+    assert!(fx.git(&["tag", "-n1", "v1"]).contains("release one"));
+
+    repo.delete_tag("v1").unwrap();
+    repo.delete_remote_tag("v1", "origin", &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["tag"]), "");
+    assert!(repo.delete_tag("missing").is_err());
 }
 
 #[test]

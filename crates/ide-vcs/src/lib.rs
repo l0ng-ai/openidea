@@ -362,6 +362,27 @@ pub struct PushBranchOptions<'a> {
     pub remote: Option<&'a str>,
     /// `git push --force-with-lease`.
     pub force_with_lease: bool,
+    /// `git push --force` (Force push anyway after a rejected force-with-lease push).
+    pub force: bool,
+    /// Record the target as the branch's upstream even when it already has one.
+    pub set_upstream: bool,
+    /// Skip the pre-push hook (`--no-verify`).
+    pub no_verify: bool,
+}
+
+/// Options of [`Repo::push_with`]: the Push dialog's choices for the current branch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PushOptions {
+    /// `git push --force-with-lease`.
+    pub force_with_lease: bool,
+    /// `git push --force` (Force push anyway after a rejected force-with-lease push).
+    pub force: bool,
+    /// Push to the branch's remote under the same name and record it as upstream.
+    pub set_upstream: bool,
+    /// Push tags too.
+    pub tags: Option<PushTags>,
+    /// Skip the pre-push hook (`--no-verify`).
+    pub no_verify: bool,
 }
 
 /// What an interactive rebase does with one commit.
@@ -523,6 +544,15 @@ pub struct DeletedBranch {
     pub unmerged: bool,
 }
 
+/// A deleted tag, enough to restore it (Restore in the tag-deleted notification).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedTag {
+    pub name: String,
+    /// What the tag pointed at: its tag object (annotated tags) or commit.
+    pub target: String,
+}
+
 /// Who stands on each side of the conflicts of the operation in progress (merge editor
 /// titles, as IDEA labels them).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -594,6 +624,7 @@ mod manage;
 mod ops;
 mod patch;
 mod preserve;
+pub use ops::UNSTAGED_CHANGES_PREVENT_REBASE;
 mod refs;
 mod remotes;
 mod repo;
@@ -1169,8 +1200,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::push(self, force_with_lease, set_upstream, None, cancel, on_output)
+        self.push_with(PushOptions { force_with_lease, set_upstream, ..Default::default() }, cancel, on_output)
     }
     /// [`Repo::push`] that also pushes tags (Push dialog › Push tags).
     pub fn push_with_tags(
@@ -1181,8 +1211,22 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
+        self.push_with(PushOptions { force_with_lease, set_upstream, tags, ..Default::default() }, cancel, on_output)
+    }
+    /// Pushes the current branch with the Push dialog's options.
+    pub fn push_with(
+        &self,
+        options: PushOptions,
+        cancel: &CancellationToken,
+        on_output: &dyn Fn(String),
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::push(self, force_with_lease, set_upstream, tags, cancel, on_output)
+        write::push(self, options, cancel, on_output)
+    }
+    /// Whether the repository has an executable hook `name` (e.g. `pre-push`), wherever
+    /// `core.hooksPath` puts it: the Push dialog then offers to skip it.
+    pub fn has_hook(&self, name: &str) -> IdeResult<bool> {
+        write::has_hook(self, name)
     }
     /// Pushes a local branch, or its history up to `revision`, to its upstream (Git Log
     /// › Push…, Push All up to Here).
@@ -1216,6 +1260,12 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::push_branch(self, branch, options, cancel, on_output)
     }
+    /// Update Project › Reset to the Remote Branch: the current branch is moved to its
+    /// freshly fetched tracked branch; local commits are dropped, local changes kept.
+    pub fn reset_to_upstream(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::reset_to_upstream(self, cancel, on_output)
+    }
     /// Fast-forwards a local branch that is not checked out to its upstream (Branches ›
     /// Update). Fails when the branch has diverged.
     pub fn update_branch(&self, branch: &str, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
@@ -1228,7 +1278,12 @@ impl Repo {
     /// conflicts are unresolved.
     pub fn continue_operation(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        ops::continue_op(self, cancel, on_output)
+        ops::continue_op(self, false, cancel, on_output)
+    }
+    /// Stage and Retry: stages the changes of tracked files, then continues.
+    pub fn stage_and_continue(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        ops::continue_op(self, true, cancel, on_output)
     }
     pub fn abort_operation(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
@@ -1292,6 +1347,38 @@ impl Repo {
     pub fn create_tag(&self, name: &str, commit: &str, message: Option<&str>, force: bool) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         ops::create_tag(self, name, commit, message, force)
+    }
+    /// Deletes a local tag, returning what [`Repo::restore_tag`] needs to undo it.
+    pub fn delete_tag(&self, name: &str) -> IdeResult<DeletedTag> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        ops::delete_tag(self, name)
+    }
+    /// Recreates a deleted tag (annotated ones with their message).
+    pub fn restore_tag(&self, deleted: &DeletedTag) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        ops::restore_tag(self, deleted)
+    }
+    /// Pushes one tag to `remote` (Push Tag › Push to …).
+    pub fn push_tag(
+        &self,
+        tag: &str,
+        remote: &str,
+        cancel: &CancellationToken,
+        on_output: &dyn Fn(String),
+    ) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        ops::push_tag(self, tag, remote, false, cancel, on_output)
+    }
+    /// Deletes a tag on `remote` (Delete on Remote, after deleting it locally).
+    pub fn delete_remote_tag(
+        &self,
+        tag: &str,
+        remote: &str,
+        cancel: &CancellationToken,
+        on_output: &dyn Fn(String),
+    ) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        ops::push_tag(self, tag, remote, true, cancel, on_output)
     }
     pub fn tags(&self) -> IdeResult<Vec<String>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));

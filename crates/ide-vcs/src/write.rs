@@ -927,20 +927,16 @@ pub(crate) fn delete_remote_branch(
 
 pub(crate) fn push(
     r: &Repo,
-    force_with_lease: bool,
-    set_upstream: bool,
-    tags: Option<crate::PushTags>,
+    o: crate::PushOptions,
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<()> {
     let mut args: Vec<String> = vec!["push".into(), "--progress".into()];
-    if force_with_lease {
-        args.push("--force-with-lease".into());
-    }
-    if tags == Some(crate::PushTags::CurrentBranch) {
+    args.extend(force_args(o.force, o.force_with_lease, o.no_verify));
+    if o.tags == Some(crate::PushTags::CurrentBranch) {
         args.push("--follow-tags".into());
     }
-    if set_upstream {
+    if o.set_upstream {
         let repo = r.gix()?;
         let head =
             repo.head_name().map_err(gx)?.ok_or_else(|| IdeError::invalid("cannot set upstream: HEAD is detached"))?;
@@ -963,12 +959,47 @@ pub(crate) fn push(
     }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     cli::run_streaming(r.root(), &argv, cancel, on_output)?;
-    if tags == Some(crate::PushTags::All) {
+    if o.tags == Some(crate::PushTags::All) {
         // `git push --tags` alone pushes only tags, so it runs after the branch push.
         let remote = push_remote(r)?;
-        cli::run_streaming(r.root(), &["push", "--progress", &remote, "--tags"], cancel, on_output)?;
+        let mut args = vec!["push", "--progress"];
+        if o.no_verify {
+            args.push("--no-verify");
+        }
+        args.extend([remote.as_str(), "--tags"]);
+        cli::run_streaming(r.root(), &args, cancel, on_output)?;
     }
     Ok(())
+}
+
+/// `--force` / `--force-with-lease` and `--no-verify` of a push.
+fn force_args(force: bool, force_with_lease: bool, no_verify: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if force {
+        args.push("--force".into());
+    } else if force_with_lease {
+        args.push("--force-with-lease".into());
+    }
+    if no_verify {
+        args.push("--no-verify".into());
+    }
+    args
+}
+
+pub(crate) fn has_hook(r: &Repo, name: &str) -> IdeResult<bool> {
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return Err(IdeError::invalid(format!("invalid hook name '{name}'")));
+    }
+    let path = run(r.root(), &["rev-parse", "--git-path", &format!("hooks/{name}")], None)?.stdout_str();
+    let path = r.root().join(path.trim());
+    let Ok(meta) = std::fs::metadata(&path) else { return Ok(false) };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    Ok(meta.is_file())
 }
 
 /// Remote and branch name a local branch pulls from (`branch.<b>.remote` / `.merge`).
@@ -1001,10 +1032,18 @@ pub(crate) fn push_branch(
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<()> {
-    let PushBranchOptions { revision, target, remote: remote_override, force_with_lease } = opts;
+    let PushBranchOptions {
+        revision,
+        target,
+        remote: remote_override,
+        force_with_lease,
+        force,
+        set_upstream,
+        no_verify,
+    } = opts;
     check_local_branch(r, branch)?;
     let remote_override = remote_override.map(str::trim).filter(|s| !s.is_empty());
-    let (remote, mut name, set_upstream) = match (remote_override, branch_upstream(r, branch)) {
+    let (remote, mut name, untracked) = match (remote_override, branch_upstream(r, branch)) {
         // An explicit remote keeps the upstream's branch name but pushes elsewhere.
         (Some(remote), Some((_, name))) => (check_rev(remote)?.to_string(), name, false),
         (Some(remote), None) => (check_rev(remote)?.to_string(), branch.to_string(), revision.is_none()),
@@ -1025,10 +1064,8 @@ pub(crate) fn push_branch(
         None => format!("refs/heads/{branch}"),
     };
     let mut args: Vec<String> = vec!["push".into(), "--progress".into()];
-    if force_with_lease {
-        args.push("--force-with-lease".into());
-    }
-    if set_upstream {
+    args.extend(force_args(force, force_with_lease, no_verify));
+    if untracked || (set_upstream && revision.is_none()) {
         args.push("--set-upstream".into());
     }
     args.extend([remote, format!("{source}:refs/heads/{target}")]);
@@ -1048,6 +1085,27 @@ pub(crate) fn update_branch(
         branch_upstream(r, branch).ok_or_else(|| IdeError::invalid(format!("'{branch}' has no tracked branch")))?;
     let refspec = format!("refs/heads/{name}:refs/heads/{branch}");
     cli::run_streaming(r.root(), &["fetch", "--progress", &remote, &refspec], cancel, on_output)
+}
+
+/// Update Project › Reset to the Remote Branch: fetches the current branch's tracked
+/// branch and moves the branch to it, dropping local commits. Local changes are put
+/// aside and brought back (an error with the conflicts left in place when they clash).
+pub(crate) fn reset_to_upstream(r: &Repo, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
+    let head = run(r.root(), &["symbolic-ref", "-q", "--short", "HEAD"], None)
+        .map_err(|_| IdeError::invalid("cannot reset: HEAD is detached"))?
+        .stdout_str();
+    let head = head.trim();
+    let no_tracked =
+        || IdeError::invalid(format!("no tracked branch configured for branch {head} or the branch doesn't exist"));
+    let (remote, name) = branch_upstream(r, head).ok_or_else(no_tracked)?;
+    cli::run_streaming(r.root(), &["fetch", "--progress", &remote], cancel, on_output)?;
+    let tracked = format!("refs/remotes/{remote}/{name}");
+    if run(r.root(), &["rev-parse", "-q", "--verify", &format!("{tracked}^{{commit}}")], None).is_err() {
+        return Err(no_tracked());
+    }
+    crate::preserve::around(r, "Local changes saved before reset", || {
+        run(r.root(), &["reset", "-q", "--keep", &tracked], None).map(|_| ())
+    })
 }
 
 /// The remote the current branch pushes to (`origin`, or the only remote, by default).
