@@ -223,8 +223,16 @@
 .attrRow > :first-child {
   min-width: 110px;
 }
+/* Effect style select on its own row, right-aligned with the colour hex fields. */
+.effectSelect {
+  align-self: flex-end;
+  min-width: 0;
+  width: 150px;
+  margin-top: 8px;
+}
 .swatchInput {
-  width: 90px;
+  flex: 1 1 90px;
+  min-width: 90px;
 }
 .colorBox {
   position: relative;

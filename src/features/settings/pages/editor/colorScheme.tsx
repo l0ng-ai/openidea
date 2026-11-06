@@ -685,43 +685,46 @@ function AttributeEditor({
         />
       )}
       {attr.token && !attr.italicOnly && (
-        <div className={styles.attrRow}>
-          <Checkbox
-            checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
-            onChange={(b) =>
-              set({
-                effect: b
-                  ? inherited.effect && inherited.effect !== "none"
-                    ? inherited.effect
-                    : "underline"
-                  : inherited.effect && inherited.effect !== "none"
-                    ? "none"
-                    : undefined,
-                effectColor: b ? v.effectColor : undefined,
-              })
-            }
-            label="Effects"
-          />
-          {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
-            <>
-              <Select
-                value={(v.effect ?? inherited.effect)!}
-                options={[
-                  { value: "underline", label: "Underscored" },
-                  { value: "wave", label: "Underwaved" },
-                  { value: "strikeout", label: "Strikeout" },
-                ]}
-                onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
-                aria-label="Effect"
-              />
+        <>
+          <div className={styles.attrRow}>
+            <Checkbox
+              checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
+              onChange={(b) =>
+                set({
+                  effect: b
+                    ? inherited.effect && inherited.effect !== "none"
+                      ? inherited.effect
+                      : "underline"
+                    : inherited.effect && inherited.effect !== "none"
+                      ? "none"
+                      : undefined,
+                  effectColor: b ? v.effectColor : undefined,
+                })
+              }
+              label="Effects"
+            />
+            {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
               <ColorInput
                 value={v.effectColor ?? inherited.effectColor ?? "#808080"}
                 onChange={(c) => set({ effectColor: c ?? "#808080" })}
                 label="Effect color"
               />
-            </>
+            )}
+          </div>
+          {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
+            <Select
+              value={(v.effect ?? inherited.effect)!}
+              options={[
+                { value: "underline", label: "Underscored" },
+                { value: "wave", label: "Underwaved" },
+                { value: "strikeout", label: "Strikeout" },
+              ]}
+              onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
+              className={styles.effectSelect}
+              aria-label="Effect"
+            />
           )}
-        </div>
+        </>
       )}
       {!attr.italicOnly && (
         <div className={styles.inherited}>
