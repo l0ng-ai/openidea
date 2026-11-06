@@ -231,7 +231,10 @@ fn sync_member_frames(app: &AppHandle, selected: &str) {
         return;
     }
     let Some(from) = app.get_webview_window(selected) else { return };
-    if from.is_minimized().unwrap_or(false) || fullscreen_host(app, &group.members).is_some() {
+    if from.is_fullscreen().unwrap_or(false)
+        || from.is_minimized().unwrap_or(false)
+        || fullscreen_host(app, &group.members).is_some()
+    {
         return;
     }
     for member in group.members.iter().filter(|member| member.as_str() != selected) {
