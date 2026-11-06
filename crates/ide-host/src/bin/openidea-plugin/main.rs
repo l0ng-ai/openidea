@@ -22,7 +22,7 @@
 mod templates;
 
 use ide_extension::{Manifest, validate_plugin_id};
-use ide_host::plugins::{PluginHost, read_market_url, resolve_market_href};
+use ide_host::plugins::{PluginHost, plugin_icon, read_market_url, resolve_market_href};
 use ide_plugin::{Limits, PluginEngine};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -650,6 +650,7 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
                 capabilities: m.capabilities.all().map(|c| c.to_string()).collect(),
                 engine: package::engine_requirement(&m.engine, built_for.as_ref()),
                 categories: m.categories(),
+                icon: plugin_icon(&ide_extension::Package::new(m.clone(), scratch.clone()))?,
             })
         })();
         let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
@@ -821,11 +822,14 @@ mod tests {
         for (rel, content) in templates::render(templates::Template::Theme, &vars) {
             let path = src.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let content = content
-                .replace("version = \"0.1.0\"", &format!("version = \"{version}\""))
-                .replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = \"{engine}\""));
+            let content = content.replace("version = \"0.1.0\"", &format!("version = \"{version}\"")).replace(
+                "engines.openidea = \"^1.0\"",
+                &format!("engines.openidea = \"{engine}\"\nicon = \"icon.svg\""),
+            );
             std::fs::write(path, content).unwrap();
         }
+        std::fs::write(src.join("icon.svg"), r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#)
+            .unwrap();
         std::fs::create_dir_all(out).unwrap();
         let args = [src.to_str().unwrap(), "--key", key, "--publisher", publisher, "--out"]
             .into_iter()
@@ -921,6 +925,11 @@ mod tests {
         let listed: Vec<_> = index.plugins.iter().map(|e| (e.id.as_str(), e.publisher.as_str())).collect();
         assert_eq!(listed, [("alice.dawn", "alice"), ("openidea.night", "openidea")]);
         assert_eq!(index.plugins[1].categories, ["themes"], "implied by the theme");
+        assert!(
+            index.plugins[1].icon.as_ref().is_some_and(|i| i.light.contains("<rect")),
+            "{:?}",
+            index.plugins[1].icon
+        );
         assert_eq!(index.plugins[1].download, "openidea.night-0.1.0.oiplugin");
         assert!(Path::new(&index.plugins[0].download).is_absolute(), "{}", index.plugins[0].download);
 
@@ -928,6 +937,33 @@ mod tests {
         signed_theme(t, "carol.noon", "carol", &keys[2].0, &community);
         let err = cmd_index(&strings(&[community.to_str().unwrap()])).unwrap_err();
         assert!(err.contains("unknown publisher"), "{err}");
+    }
+
+    #[test]
+    fn the_index_carries_plugin_icons() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let key = t.join("acme.key");
+        std::fs::write(&key, PublisherKey::from_seed([6; 32]).seed_base64()).unwrap();
+        let src = t.join("src");
+        let vars = templates::Vars { id: "acme.iconic", name: "Iconic", sdk: None };
+        for (rel, content) in templates::render(templates::Template::Theme, &vars) {
+            let path = src.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        let manifest = std::fs::read_to_string(src.join("plugin.toml")).unwrap();
+        std::fs::write(src.join("plugin.toml"), format!("icon = \"icon.svg\"\n{manifest}")).unwrap();
+        std::fs::write(src.join("icon.svg"), r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#)
+            .unwrap();
+        let out = t.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let (src, key) = (src.to_string_lossy().into_owned(), key.to_string_lossy().into_owned());
+        let package = out.join("acme.iconic-0.1.0.oiplugin").to_string_lossy().into_owned();
+        cmd_pack(&strings(&[&src, "--key", &key, "--publisher", "acme", "--out", &package])).unwrap();
+        cmd_index(&strings(&[out.to_str().unwrap(), "--publisher", "acme", "--key", &key])).unwrap();
+        let index = Index::parse(&std::fs::read_to_string(out.join("index.json")).unwrap()).unwrap();
+        assert!(index.plugins[0].icon.as_ref().expect("icon").light.contains("<rect"));
     }
 
     /// `cargo test` of a new Rust plugin (its own tests against the mock host) with this SDK.

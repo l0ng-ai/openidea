@@ -348,6 +348,10 @@ pub struct IndexEntry {
     /// Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know.
     #[serde(default)]
     pub categories: Vec<String>,
+    /// The manifest's icon, sanitised by whoever wrote the index and again by
+    /// the IDE before showing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<PluginIcon>,
 }
 
 impl IndexEntry {
@@ -680,6 +684,7 @@ mod tests {
             capabilities: Vec::new(),
             engine: "^1.0".into(),
             categories: Vec::new(),
+            icon: None,
         }
     }
 

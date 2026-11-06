@@ -6,9 +6,10 @@
 //! Release builds pin the official publisher to the keys they were built
 //! with, so no index can sign `openidea.*` plugins with another key.
 
+use super::icons::{MAX_PLUGIN_ICON, sanitize_svg};
 use super::{PackageFile, PluginEvent, PluginHost, PluginSource, PluginStatus, PluginUpdate, install};
 use ide_core::{IdeError, IdeResult};
-use ide_extension::package::{self, Index, IndexEntry, PackageSignature, SIGNATURE_FILE};
+use ide_extension::package::{self, Index, IndexEntry, PackageSignature, PluginIcon, SIGNATURE_FILE};
 use ide_extension::{MANIFEST_FILE, Manifest};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,13 @@ pub(super) fn built_in_official_keys() -> Vec<String> {
 fn pinned(mut index: Index, official_keys: &[String]) -> Index {
     index.pin_publisher(OFFICIAL_PUBLISHER, "OpenIDEA", official_keys);
     index
+}
+
+/// An index's icon as the UI may show it: sanitised again, as any index may
+/// have written it; without a light variant that passes, none.
+fn safe_icon(icon: PluginIcon) -> Option<PluginIcon> {
+    let clean = |svg: String| sanitize_svg(&svg).ok().filter(|s| s.len() <= MAX_PLUGIN_ICON);
+    Some(PluginIcon { light: clean(icon.light)?, dark: icon.dark.and_then(clean) })
 }
 
 /// Reads `url`: `http(s)://…`, `file://…` or a local path.
@@ -242,7 +250,9 @@ impl PluginHost {
                     .get(&entry.id)
                     .filter(|p| p.source == PluginSource::Installed)
                     .map(|p| p.manifest().version.clone());
-                MarketPlugin { entry: entry.clone(), installed, compatible }
+                let mut entry = entry.clone();
+                entry.icon = entry.icon.and_then(safe_icon);
+                MarketPlugin { entry, installed, compatible }
             })
             .collect()
     }

@@ -1,7 +1,7 @@
 //! Versioned installs with automatic rollback, signed packages from
 //! a static marketplace index, and revocation.
 
-use ide_extension::package::{self, Index, IndexEntry, KeyEntry, Publisher, PublisherKey, Revocation};
+use ide_extension::package::{self, Index, IndexEntry, KeyEntry, PluginIcon, Publisher, PublisherKey, Revocation};
 use ide_host::plugins::*;
 use ide_plugin::{Invocation, Limits};
 use parking_lot::Mutex;
@@ -169,6 +169,7 @@ fn signed(
         capabilities: vec![],
         engine: "^1.0".into(),
         categories: vec!["tools".into()],
+        icon: None,
     };
     (out, entry)
 }
@@ -508,4 +509,23 @@ fn official_plugins_need_the_key_this_ide_was_built_with() {
     f.host.refresh_market().unwrap();
     let dir = f.host.download_market_plugin("openidea.hello").unwrap();
     assert_eq!(f.host.preview_install(&dir).unwrap().publisher.as_deref(), Some(OFFICIAL_PUBLISHER));
+}
+
+#[test]
+fn marketplace_icons_are_sanitised_or_dropped() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    let icon = |light: &str| Some(PluginIcon { light: light.into(), dark: None });
+    let good =
+        IndexEntry { icon: icon(r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#), ..entry.clone() };
+    let hostile = IndexEntry { id: "acme.hostile".into(), icon: icon(r#"<svg onload="x()"><rect/></svg>"#), ..entry };
+    f.host.set_market_url(Some(write_index(&market, &key, vec![good, hostile], vec![], false)));
+
+    let listed = f.host.refresh_market().unwrap();
+    let by_id = |id: &str| listed.iter().find(|p| p.entry.id == id).unwrap_or_else(|| panic!("{id} not listed"));
+    assert!(by_id("acme.hello").entry.icon.as_ref().unwrap().light.contains("<rect"));
+    assert!(by_id("acme.hostile").entry.icon.is_none(), "an unsafe icon is dropped, the entry stays");
 }
