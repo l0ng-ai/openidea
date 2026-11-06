@@ -1,8 +1,8 @@
 //! The file list on the OS clipboard: what Explorer copies when the user
 //! copies files, so the project view can paste them, and what the project view
 //! writes so Explorer can paste the files it copied (IDEA does both). The
-//! written list comes with the paths as text, so a paste into an editor
-//! inserts them instead of doing nothing.
+//! written list comes with the file names as text, so a paste into an editor
+//! inserts them instead of doing nothing (#1878).
 //!
 //! Windows keeps it as `CF_HDROP`: a `DROPFILES` header and a double-NUL
 //! terminated list of absolute paths, wide when `fWide` is set. The data is set
@@ -42,6 +42,21 @@ pub fn set_files(paths: &[PathBuf]) -> bool {
         return false;
     }
     imp::set_files(paths)
+}
+
+/// The text flavor written beside the file list: the files' names, one per
+/// line. An editor paste inserts names, not the absolute paths the file list
+/// keeps for Explorer (#1878; IDEA's text flavor is names too). A path with no
+/// file name (a root like `C:\`) keeps its whole path.
+#[cfg(any(windows, target_os = "macos", test))]
+fn names_text(paths: &[PathBuf], separator: &str) -> String {
+    paths
+        .iter()
+        .map(|p| {
+            p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 /// `DROPFILES` for `paths`, in the wide form so names outside the ANSI code
@@ -108,7 +123,7 @@ pub fn decode(bytes: &[u8]) -> Vec<PathBuf> {
 
 #[cfg(windows)]
 mod imp {
-    use super::{HEADER, decode, encode};
+    use super::{HEADER, decode, encode, names_text};
     use std::ffi::c_void;
     use std::path::PathBuf;
     use std::ptr;
@@ -220,9 +235,9 @@ mod imp {
         if bytes.len() <= HEADER {
             return false;
         }
-        // The paths as text, newline-separated, so pasting into an editor
-        // inserts them (IDEA writes the list and the text together).
-        let text = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\r\n");
+        // The file names as text: the file list keeps the absolute paths for
+        // Explorer, while an editor paste inserts the names (#1878).
+        let text = names_text(paths, "\r\n");
         // SAFETY: the blocks are allocated, filled, handed to the clipboard and
         // freed only on the paths where the clipboard did not take ownership.
         unsafe {
@@ -242,7 +257,7 @@ mod imp {
                 return false;
             }
             // Replacing the list also drops the text the user copied before;
-            // the paths' own text is set back with it.
+            // the file names are set back with it.
             if EmptyClipboard() == 0 {
                 CloseClipboard();
                 GlobalFree(memory);
@@ -277,6 +292,8 @@ mod imp {
     };
     use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
+
+    use super::names_text;
 
     /// `NSURL` as the one class to read, limited to file URLs: a web link the
     /// user copied is not a file to paste.
@@ -338,13 +355,11 @@ mod imp {
                 urls.iter().map(|url| ProtocolObject::from_ref(&**url)).collect();
             let board = NSPasteboard::generalPasteboard();
             // Replacing the list also drops the text the user copied before;
-            // the paths' own text is set back with it, so an editor paste
-            // inserts them (IDEA writes the list and the text together).
+            // the file names are set back as text, so an editor paste inserts
+            // names, not paths (#1878).
             board.clearContents();
             let written = board.writeObjects(&NSArray::from_slice(&writers));
-            let text = NSString::from_str(
-                &paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"),
-            );
+            let text = NSString::from_str(&names_text(paths, "\n"));
             board.setString_forType(&text, unsafe { NSPasteboardTypeString });
             written
         })
@@ -413,6 +428,13 @@ mod tests {
         let mut far = encode(&paths(&["C:/a"]));
         far[0] = 0xff; // pFiles past the end
         assert_eq!(decode(&far), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn the_text_flavor_is_the_file_names() {
+        assert_eq!(names_text(&paths(&["C:/work/project/a.txt", "C:/work/project/sub"]), "\r\n"), "a.txt\r\nsub");
+        // A root has no file name; its whole path is the text then.
+        assert_eq!(names_text(&paths(&["C:/"]), "\n"), "C:/");
     }
 
     #[test]
