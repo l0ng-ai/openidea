@@ -116,6 +116,26 @@ fn jdtls_vm_args() {
 }
 
 #[test]
+fn jdtls_honors_the_configured_maven_local_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("m2-repo");
+    let mut s = Settings::default();
+    s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(cfg.args, [format!("--jvm-arg=-Dmaven.repo.local={}", repo.to_string_lossy())]);
+    // A `-Dmaven.repo.local` the user put in their own jdtls VM options wins.
+    s.languages.java.jdtls_vm_args = "-Xmx2g -Dmaven.repo.local=/user/repo".into();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(cfg.args, ["--jvm-arg=-Xmx2g", "--jvm-arg=-Dmaven.repo.local=/user/repo"]);
+    // Unset: jdtls keeps m2e's own default (no arg at all).
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
+    assert!(cfg.args.iter().all(|a| !a.contains("maven.repo.local")));
+}
+
+#[test]
 fn rust_analyzer_check_command_and_toolchain() {
     if cfg!(windows) {
         return; // Unix paths and shells
