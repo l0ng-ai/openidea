@@ -341,6 +341,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_diff_revisions"
             | "vcs_diff_numstat"
             | "vcs_merge_base"
+            | "vcs_has_hook"
             | "vcs_shelves"
             | "vcs_shelf_patch"
             | "vcs_changelists_load"

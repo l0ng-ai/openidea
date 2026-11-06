@@ -3,9 +3,23 @@ import { useEffect, useMemo, useState } from "react";
 import type { BranchInfo, Commit, PushTags, RemoteOp } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { workflowSettings } from "@/platform/workflowSettings";
+import { workflowSettings, type UpdateMethod } from "@/platform/workflowSettings";
+import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, Input, List, Select, Spinner, SplitGroup, SplitHandle, SplitPanel, T, Tree } from "@/ui";
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  Input,
+  List,
+  Select,
+  Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  T,
+  Tree,
+} from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
@@ -34,12 +48,45 @@ async function updateProject(rebase: boolean) {
   await runRemote({ op: "pull", rebase }, detail, repos);
 }
 
+/** Writes a Version Control setting of the project, as the Settings page would. */
+async function saveVcsSetting(key: string, value: unknown) {
+  const scope = useProject.getState().project ? "project" : "global";
+  const settings = await call(commands.settingsSet(scope, key, JSON.stringify(value))).catch(() => null);
+  if (settings) useProject.setState({ settings });
+}
+
+/** Reset to the Remote Branch: after confirming, drops local commits and takes the tracked branch. */
+async function resetToRemoteBranch() {
+  const branch = useVcs.getState().branch;
+  if (branch?.head && branch.upstream) {
+    const local = branch.head;
+    const remote = branch.upstream;
+    const r = await ask({
+      title: "Reset to the Remote Branch",
+      body: tx`Do you want to reset local branch ${local} to ${remote}? Local commits will be dropped`,
+      icon: "warning",
+      buttons: [
+        { id: "ok", label: "OK", primary: true },
+        { id: "cancel", label: "Cancel" },
+      ],
+    });
+    if (r.button !== "ok") return;
+  }
+  await saveAll();
+  await runRemote({ op: "resetToUpstream" }, branch?.upstream ? `${branch.head} ← ${branch.upstream}` : undefined);
+}
+
 function UpdateDialog({ onClose }: { onClose: () => void }) {
   const branch = useVcs((s) => s.branch);
-  // Default from Settings › Version Control › Git › Update method.
+  const single = useVcs((s) => s.roots.length <= 1);
+  // Default from Settings › Version Control › Git › Update method; the choice is kept there.
   const [rebase, setRebase] = useState(() => workflowSettings().vcs.git.updateMethod === "rebase");
+  const [hide, setHide] = useState(false);
   const run = async () => {
     onClose();
+    const method = rebase ? "rebase" : "merge";
+    if (method !== workflowSettings().vcs.git.updateMethod) await saveVcsSetting("vcs.git.updateMethod", method);
+    if (hide) await saveVcsSetting("vcs.confirmation.showUpdateOptions", false);
     await updateProject(rebase);
   };
   return (
@@ -47,7 +94,22 @@ function UpdateDialog({ onClose }: { onClose: () => void }) {
       open
       title="Update Project"
       onClose={onClose}
-      width={420}
+      width={single ? 540 : 420}
+      footerStart={
+        <>
+          {single && (
+            <Button
+              onClick={() => {
+                onClose();
+                void resetToRemoteBranch();
+              }}
+            >
+              <T>Reset to the Remote Branch</T>
+            </Button>
+          )}
+          <Checkbox checked={hide} onChange={setHide} label="Don't show again" />
+        </>
+      }
       buttons={[
         { label: "OK", role: "default", autoFocus: true, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
@@ -122,6 +184,21 @@ export async function showPushDialog(target: PushTarget = {}) {
   openDialog((close) => (multi ? <MultiPushDialog onClose={close} /> : <PushDialog target={target} onClose={close} />));
 }
 
+/** Whether any of `roots` has a pre-push hook: the Push dialog then offers Run Git hooks. */
+function usePrePushHook(roots: ReadonlyArray<string | null>): boolean {
+  const [found, setFound] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void Promise.all(roots.map((r) => call(commands.vcsHasHook(r, "pre-push")).catch(() => false))).then(
+      (has) => alive && setFound(has.some(Boolean)),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [roots]);
+  return found;
+}
+
 /** A repository in the multi-repository Push dialog. */
 export interface RepoPush {
   root: string;
@@ -163,6 +240,8 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const [force, setForce] = useState(false);
   const [pushTags, setPushTags] = useState(false);
   const [tagsMode, setTagsMode] = useState<PushTags>("all");
+  const hasHook = usePrePushHook(roots);
+  const [runHooks, setRunHooks] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -201,6 +280,9 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const picked = (repos ?? []).filter((r) => checked.has(r.root));
   const push = async () => {
     onClose();
+    // Every picked repository is pushed even when another fails; the outcome is summed up.
+    const session: PushSession = { method: null };
+    const failed: string[] = [];
     for (const r of picked) {
       const upstream = r.branch.upstream;
       const ok = await pushWithAutoUpdate(
@@ -209,12 +291,23 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
           force_with_lease: force && !isProtectedBranch(targetOf(r)),
           set_upstream: !upstream,
           tags: pushTags ? tagsMode : null,
+          no_verify: hasHook && !runHooks,
         },
         `${repoName(r.root)}: ${r.branch.head} → ${upstream ?? "new remote branch"}`,
         r.root,
+        session,
       );
-      if (!ok) return;
+      if (!ok) failed.push(repoName(r.root));
     }
+    const notPushed = failed.join(", ");
+    if (failed.length && picked.length > 1)
+      notifications().notify({
+        group: "vcs",
+        level: "error",
+        key: "vcs.remote",
+        title: failed.length < picked.length ? "Push partially failed" : "Push failed",
+        body: tx`Not pushed: ${notPushed}. See the Git console for details.`,
+      });
   };
   const nodes: PushNode[] = (repos ?? []).map((repo) => ({
     key: repo.root,
@@ -237,6 +330,7 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       footerStart={
         <>
           <Checkbox checked={force} onChange={setForce} label="Force (with lease)" />
+          {hasHook && <Checkbox checked={runHooks} onChange={setRunHooks} label="Run Git hooks" />}
           <Checkbox checked={pushTags} onChange={setPushTags} label="Push tags:" />
           <Select<PushTags>
             value={tagsMode}
@@ -367,6 +461,9 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [setUpstream, setSetUpstream] = useState(!tracked);
   const [pushTags, setPushTags] = useState(false);
   const [tagsMode, setTagsMode] = useState<PushTags>("all");
+  const hookRoots = useMemo(() => [repo], [repo]);
+  const hasHook = usePrePushHook(hookRoots);
+  const [runHooks, setRunHooks] = useState(true);
   const upstream = trackedBranch ? (remote ? `${remote}/${trackedBranch}` : tracked) : tracked;
 
   useEffect(() => {
@@ -427,6 +524,8 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           force_with_lease: force && !protectedTarget,
           target: retarget ? edited : null,
           remote: remoteChanged ? remote : null,
+          set_upstream: setUpstream && !revision,
+          no_verify: hasHook && !runHooks,
         },
         `${revision ? `${head} up to ${revision.slice(0, 8)}` : head} → ${targetLabel}`,
         [repo],
@@ -439,6 +538,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         force_with_lease: force && !protectedTarget,
         set_upstream: setUpstream || !upstream,
         tags: pushTags ? tagsMode : null,
+        no_verify: hasHook && !runHooks,
       },
       upstream ? `${head} → ${upstream}` : `${head} → new remote branch`,
       repo,
@@ -494,14 +594,17 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
               label="Force (with lease)"
             />
           </span>
+          {hasHook && <Checkbox checked={runHooks} onChange={setRunHooks} label="Run Git hooks" />}
+          {!revision && (
+            <Checkbox
+              checked={setUpstream || !tracked}
+              disabled={!tracked}
+              onChange={setSetUpstream}
+              label="Set upstream"
+            />
+          )}
           {!explicit && !retarget && !remoteChanged && (
             <>
-              <Checkbox
-                checked={setUpstream || !upstream}
-                disabled={!upstream}
-                onChange={setSetUpstream}
-                label="Set upstream"
-              />
               <Checkbox checked={pushTags} onChange={setPushTags} label="Push tags:" />
               <Select<PushTags>
                 value={tagsMode}
@@ -652,40 +755,125 @@ export function isProtectedBranch(branch: string, patterns = workflowSettings().
     );
 }
 
-/** Rejected because the remote has commits we don't (non-fast-forward). */
+/**
+ * Rejected because the remote has commits we don't (non-fast-forward): an update helps.
+ * Not a tag that already exists there, nor a hook or the server refusing it.
+ */
 export function isPushRejected(message: string): boolean {
-  return /\[rejected\]|non-fast-forward|fetch first|updates were rejected/i.test(message);
+  return /\((?:non-fast-forward|fetch first)\)|tip of your current branch is behind|remote contains work that you do/i.test(
+    message,
+  );
 }
 
+/** A force-with-lease push refused because the remote moved since the last fetch. */
+export function isLeaseRejected(message: string): boolean {
+  return /\(stale info\)/i.test(message);
+}
+
+/** One Push of several repositories: the update method is asked for once. */
+interface PushSession {
+  method: UpdateMethod | null;
+}
+
+/** Pushes and updates again at most this many times while the push keeps being rejected. */
+const MAX_PUSH_ATTEMPTS = 10;
+
 /**
- * Pushes; when the push is rejected, either updates (pull with the configured
- * update method) and pushes again ("Auto-update if push of the current branch
- * was rejected") or offers to.
+ * Pushes the current branch; when the push is rejected because the remote has new
+ * commits, updates every repository with the method chosen in the Push Rejected
+ * dialog (or, with "update silently", the configured one) and pushes again, as long
+ * as it keeps being rejected. A rejected forced push offers neither.
  */
 export async function pushWithAutoUpdate(
   op: Extract<RemoteOp, { op: "push" }>,
   detail: string,
   repo: string | null = currentRepo(),
+  session: PushSession = { method: null },
 ): Promise<boolean> {
-  if (await runRemote(op, detail, [repo])) return true;
-  const error = lastRemoteFailure();
-  if (!error || op.force_with_lease || !isPushRejected(error)) return false;
-  const git = workflowSettings().vcs.git;
-  const updateAndPush = async () => {
-    await saveAll();
-    const pull = { op: "pull" as const, rebase: git.updateMethod === "rebase" };
-    if (!(await runRemote(pull, "updating after rejected push", [repo]))) return false;
-    return runRemote(op, detail, [repo]);
+  // A rejection that leads to an update is reported by the Push Rejected dialog instead.
+  const updatable = (message: string) => !op.force && !op.force_with_lease && isPushRejected(message);
+  const rejected = (message: string) => {
+    notifications().notify({ group: "vcs", level: "error", key: "vcs.remote", title: "Push rejected", body: message });
+    return false;
   };
-  if (git.autoUpdateOnPushRejected) return updateAndPush();
+  for (let attempt = 1; ; attempt++) {
+    if (await runRemote(op, detail, [repo], updatable)) return true;
+    const error = lastRemoteFailure();
+    if (!error) return false;
+    if (op.force_with_lease && isLeaseRejected(error)) {
+      offerForcePush(op, detail, repo);
+      return false;
+    }
+    if (!updatable(error)) return false;
+    if (attempt >= MAX_PUSH_ATTEMPTS) return rejected(error);
+    // Only the tracked branch is brought up to date: a new remote branch has nothing to update from.
+    const branch = await call(commands.vcsBranchInfo(repo)).catch(() => null);
+    if (!branch?.head || !branch.upstream) return rejected(error);
+    session.method ??= await chooseUpdateMethod(repo, branch.head);
+    if (!session.method) return rejected(error);
+    await saveAll();
+    const pull = { op: "pull" as const, rebase: session.method === "rebase" };
+    if (!(await runRemote(pull, tx("updating after rejected push"), allRepos()))) return false;
+  }
+}
+
+/** Unpushed merge commits, which a rebase would linearize (and may need resolving again). */
+async function hasOutgoingMerges(repo: string | null): Promise<boolean> {
+  const commits = await logOf("HEAD", 1000, "@{u}..HEAD", repo).catch(() => []);
+  return commits.some((c) => c.parents.length > 1);
+}
+
+/** The Push Rejected dialog: Merge or Rebase, optionally remembered as the silent update. */
+async function chooseUpdateMethod(repo: string | null, branch: string): Promise<UpdateMethod | null> {
+  const git = workflowSettings().vcs.git;
+  if (git.autoUpdateOnPushRejected) return git.updateMethod;
+  const merges = await hasOutgoingMerges(repo);
+  const name = repo && useVcs.getState().roots.length > 1 ? repoName(repo) : null;
+  const rejected = name
+    ? tx`Push of the current branch "${branch}" in repository "${name}" was rejected.`
+    : tx`Push of the current branch "${branch}" was rejected.`;
+  const why = merges
+    ? tx(
+        "Remote changes need to be merged before pushing.\n\nIn this case merge is highly recommended, because there are non-pushed merge commits. Rebasing them can lead to problems.",
+      )
+    : tx("Remote changes need to be merged before pushing.");
+  const rebaseFirst = !merges && git.updateMethod === "rebase";
+  const r = await ask({
+    title: "Push Rejected",
+    body: `${rejected}\n\n${why}`,
+    icon: "warning",
+    width: 520,
+    checkbox:
+      "Remember the update method and update silently in the future. Change this later in Settings | Version Control.",
+    buttons: [
+      { id: "merge", label: "Merge", primary: !rebaseFirst },
+      { id: "rebase", label: merges ? "Rebase Anyway" : "Rebase", primary: rebaseFirst },
+      { id: "cancel", label: "Cancel" },
+    ],
+  });
+  if (r.button !== "merge" && r.button !== "rebase") return null;
+  if (r.checked) await saveVcsSetting("vcs.git.autoUpdateOnPushRejected", true);
+  // A merge chosen only because of the merge commits doesn't replace a preferred rebase.
+  if (!merges && r.button !== git.updateMethod) await saveVcsSetting("vcs.git.updateMethod", r.button);
+  return r.button;
+}
+
+/** A rejected force-with-lease push: says why and offers a plain force push. */
+function offerForcePush(op: Extract<RemoteOp, { op: "push" }>, detail: string, repo: string | null) {
+  const branch = useVcs.getState().branch;
+  const source = branch?.head ?? "HEAD";
+  const target = branch?.upstream ?? tx("the remote");
   notifications().notify({
+    group: "vcs",
     level: "error",
     key: "vcs.remote",
     title: "Push rejected",
-    body: "The remote contains commits that are not in your branch. Update the branch, then push again.",
+    body: tx`Force-with-lease push ${source} to ${target} was rejected. Force-with-lease push prevents overriding remote changes that haven't been fetched to the local repository. Fetch recent changes to verify that they can be discarded safely and repeat the push operation.`,
     actions: [
-      { label: git.updateMethod === "rebase" ? "Rebase and Push" : "Merge and Push", run: () => void updateAndPush() },
+      {
+        label: "Force push anyway",
+        run: () => void runRemote({ ...op, force_with_lease: false, force: true }, detail, [repo]),
+      },
     ],
   });
-  return false;
 }
