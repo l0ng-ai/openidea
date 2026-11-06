@@ -10,7 +10,8 @@
 //!   and class constants; [`variables`]: undefined, possibly undefined and
 //!   unused local variables; [`calls`]: argument count, named arguments,
 //!   argument, return and property types, lenient or strict
-//!   ([`Inspections::builtin_with`])); [`PhpEngine::set_inspections`] replaces the
+//!   ([`Inspections::builtin_with`]); [`unused`]: unused imports, private
+//!   members and parameters); [`PhpEngine::set_inspections`] replaces the
 //!   set (tests, and the settings of phase 4.10).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
@@ -40,6 +41,7 @@ pub mod suppress;
 #[cfg(test)]
 mod tests;
 pub mod undefined;
+pub mod unused;
 pub mod variables;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -99,6 +101,11 @@ impl Inspections {
             Arc::new(calls::ArgumentType { mode }),
             Arc::new(calls::ReturnType { mode }),
             Arc::new(calls::PropertyType { mode }),
+            Arc::new(unused::UnusedImport),
+            Arc::new(unused::UnusedPrivateMethod),
+            Arc::new(unused::UnusedPrivateField),
+            Arc::new(unused::UnusedPrivateConstant),
+            Arc::new(unused::UnusedParameter),
         ])
     }
 
@@ -250,6 +257,7 @@ pub struct InspectionContext<'a> {
     members: OnceLock<Vec<members::Found>>,
     variables: OnceLock<Vec<variables::Found>>,
     calls: OnceLock<Vec<calls::Found>>,
+    unused: OnceLock<Vec<unused::Found>>,
 }
 
 impl<'a> InspectionContext<'a> {
@@ -264,6 +272,7 @@ impl<'a> InspectionContext<'a> {
             members: OnceLock::new(),
             variables: OnceLock::new(),
             calls: OnceLock::new(),
+            unused: OnceLock::new(),
         }
     }
 
@@ -293,6 +302,12 @@ impl<'a> InspectionContext<'a> {
     /// the call and type inspections).
     pub(crate) fn calls(&self) -> &[calls::Found] {
         self.calls.get_or_init(|| calls::find(self))
+    }
+
+    /// The file's unused private members (computed once for the three
+    /// private member inspections).
+    pub(crate) fn unused_members(&self) -> &[unused::Found] {
+        self.unused.get_or_init(|| unused::find(self))
     }
 
     pub fn resolver(&self) -> Resolver<'a> {

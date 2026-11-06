@@ -379,6 +379,11 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpParams",
             "PhpIncompatibleReturnType",
             "PhpFieldAssignmentTypeMismatch",
+            "PhpUnusedAlias",
+            "PhpUnusedPrivateMethod",
+            "PhpUnusedPrivateField",
+            "PhpUnusedPrivateConstant",
+            "PhpUnusedParameter",
         ]
     );
 }
@@ -399,9 +404,15 @@ fn tag_ids_and_matching() {
     assert!(!found.suppresses("D", at) && !found.suppresses("F", at));
 }
 
-/// The built-in inspections without the variable ones.
+/// The built-in inspections without the variable and unused code ones.
 fn without_variables() -> Inspections {
-    Inspections::new(Inspections::builtin().iter().filter(|i| !i.id().contains("Variable")).cloned().collect())
+    Inspections::new(
+        Inspections::builtin()
+            .iter()
+            .filter(|i| !i.id().contains("Variable") && !i.id().starts_with("PhpUnused"))
+            .cloned()
+            .collect(),
+    )
 }
 
 #[path = "undefined_tests.rs"]
@@ -415,3 +426,6 @@ mod variables_tests;
 
 #[path = "calls_tests.rs"]
 mod calls_tests;
+
+#[path = "unused_tests.rs"]
+mod unused_tests;

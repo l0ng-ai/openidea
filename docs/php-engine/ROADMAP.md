@@ -343,7 +343,7 @@ The design:
 
   Tests: unit tests, and a false-positive count on the corpora.
 
-- [ ] Phase 4.6: Unused code
+- [x] Phase 4.6: Unused code
       Inspections for unused imports, private methods, properties and constants, and unused parameters (excluding overrides and interface implementations). Tests: unit tests.
 
 - [ ] Phase 4.7: Control flow

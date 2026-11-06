@@ -511,12 +511,7 @@ pub(crate) fn organize(parsed: &ParsedFile, names: &FileNames) -> Vec<TextEdit> 
     let nl = newline(text);
     let program = parsed.program();
     let line_index = parsed.line_index();
-    let docs: Vec<(u32, String)> = program
-        .trivia
-        .iter()
-        .filter(|trivia| trivia.kind == TriviaKind::DocBlockComment)
-        .map(|trivia| (trivia.span.start.offset, lossy(trivia.value)))
-        .collect();
+    let docs = doc_comments(program);
     let mut edits = Vec::new();
     for region in regions(program, text.len() as u32) {
         if region.uses.is_empty() {
@@ -563,6 +558,107 @@ pub(crate) fn organize(parsed: &ParsedFile, names: &FileNames) -> Vec<TextEdit> 
         }
     }
     edits
+}
+
+/// An import that Optimize Imports would drop: no name refers to it, or an
+/// earlier import already brings the same name in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnusedImport {
+    /// The item's name (with its alias), bytes.
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) kind: NameKind,
+    pub(crate) fqn: String,
+    /// The bytes to delete to remove it: the whole statement with its line
+    /// when every item of it is unused, else the item and its comma.
+    pub(crate) remove: (u32, u32),
+}
+
+/// The imports of the file no name uses (the rule of [`organize`]).
+pub(crate) fn unused_imports(parsed: &ParsedFile, names: &FileNames) -> Vec<UnusedImport> {
+    let text = parsed.text();
+    let program = parsed.program();
+    let docs = doc_comments(program);
+    let mut out = Vec::new();
+    for region in regions(program, text.len() as u32) {
+        if region.uses.is_empty() {
+            continue;
+        }
+        let used = Usage::of(names, &docs, region.start, region.end);
+        let mut kept: Vec<Import> = Vec::new();
+        for statement in region.statements {
+            let Statement::Use(statement) = statement else { continue };
+            let items = use_items(statement);
+            let unused: Vec<bool> = items
+                .iter()
+                .map(|(import, _, _)| {
+                    let keep = used.uses(import) && !kept.iter().any(|k| k.same(import));
+                    if keep {
+                        kept.push(import.clone());
+                    }
+                    !keep
+                })
+                .collect();
+            let all = unused.iter().all(|&u| u);
+            let span = statement.span();
+            for (i, (import, start, end)) in items.iter().enumerate() {
+                if !unused[i] {
+                    continue;
+                }
+                let remove = if all {
+                    removal(text, span.start.offset, span.end.offset)
+                } else if let Some(next) = items.get(i + 1) {
+                    (*start, next.1)
+                } else {
+                    (items[i - 1].2, *end)
+                };
+                out.push(UnusedImport { start: *start, end: *end, kind: import.kind, fqn: import.fqn.clone(), remove });
+            }
+        }
+    }
+    out
+}
+
+/// Each import of a `use` statement with the bytes of its name and alias.
+fn use_items(statement: &Use<'_>) -> Vec<(Import, u32, u32)> {
+    let with_span = |import: Import, item: &UseItem<'_>| {
+        let end = item.alias.as_ref().map_or(item.name.span().end.offset, |alias| alias.identifier.span.end.offset);
+        (import, item.name.span().start.offset, end)
+    };
+    match &statement.items {
+        UseItems::Sequence(sequence) => {
+            sequence.items.iter().map(|item| with_span(import_of(NameKind::ClassLike, None, item), item)).collect()
+        }
+        UseItems::TypedSequence(sequence) => {
+            let kind = use_kind(&sequence.r#type);
+            sequence.items.iter().map(|item| with_span(import_of(kind, None, item), item)).collect()
+        }
+        UseItems::TypedList(list) => {
+            let kind = use_kind(&list.r#type);
+            let prefix = strip(list.namespace.value());
+            list.items.iter().map(|item| with_span(import_of(kind, Some(&prefix), item), item)).collect()
+        }
+        UseItems::MixedList(list) => {
+            let prefix = strip(list.namespace.value());
+            list.items
+                .iter()
+                .map(|maybe| {
+                    let kind = maybe.r#type.as_ref().map_or(NameKind::ClassLike, use_kind);
+                    with_span(import_of(kind, Some(&prefix), &maybe.item), &maybe.item)
+                })
+                .collect()
+        }
+    }
+}
+
+/// The docblocks of the file: start offset and text.
+fn doc_comments(program: &Program<'_>) -> Vec<(u32, String)> {
+    program
+        .trivia
+        .iter()
+        .filter(|trivia| trivia.kind == TriviaKind::DocBlockComment)
+        .map(|trivia| (trivia.span.start.offset, lossy(trivia.value)))
+        .collect()
 }
 
 /// The `use` statements split where something other than blank space

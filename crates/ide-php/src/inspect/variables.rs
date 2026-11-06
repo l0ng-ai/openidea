@@ -16,6 +16,16 @@
 //!   reference (`=&`, `&$x`, `use (&$x)`), declared `global` or `static`
 //!   (their value outlives the call), read by a nested arrow function or a
 //!   closure's `use`, or named in `compact('x')`.
+//! - Unused parameters ([`super::unused::UnusedParameter`],
+//!   `PhpUnusedParameter`) come from the same walk: a parameter of a
+//!   function or concrete method that its body never reads. Not reported:
+//!   closures and arrow functions (their signature is the caller's),
+//!   by-reference, promoted and `$_` parameters, magic methods other than
+//!   the constructor, methods with attributes, methods of traits,
+//!   interfaces and anonymous classes, and methods whose signature is a
+//!   contract: declared by a parent, interface or trait (or in a class
+//!   whose ancestors aren't all known), or overridden in a subtype. Bodies
+//!   calling `func_get_args`/`func_get_arg` are skipped too.
 //!
 //! Both are off for a function whose variables may appear where the flow
 //! can't see: `$$name`, `${expr}`, `extract`, `get_defined_vars`,
@@ -45,6 +55,8 @@ use mago_syntax::walker::Walker;
 
 use super::{Inspection, InspectionContext, Problems};
 use crate::engine::{EngineState, is_meta_path};
+use crate::navigate::hierarchy::Subtypes;
+use crate::summary::{ClassKind, Visibility};
 use crate::types::{Defined, ExprTypes, Flow, Frame};
 
 /// `PhpUndefinedVariable`.
@@ -65,6 +77,7 @@ impl Inspection for UndefinedVariable {
     fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
         for found in cx.variables().iter() {
             match found.kind {
+                Kind::Unused | Kind::UnusedParameter => {}
                 Kind::Undefined => {
                     out.report(found.start, found.end, format!("Undefined variable '${}'", found.name));
                 }
@@ -76,7 +89,6 @@ impl Inspection for UndefinedVariable {
                     )
                     .with_severity(Severity::Info);
                 }
-                Kind::Unused => {}
             }
         }
     }
@@ -103,16 +115,17 @@ pub(crate) enum Kind {
     Undefined,
     MaybeUndefined,
     Unused,
+    UnusedParameter,
 }
 
 /// A variable problem found in a file.
 #[derive(Clone, Debug)]
 pub(crate) struct Found {
-    kind: Kind,
+    pub(crate) kind: Kind,
     /// Without `$`.
-    name: String,
-    start: u32,
-    end: u32,
+    pub(crate) name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
 }
 
 /// Variables that always exist.
@@ -147,6 +160,7 @@ pub(crate) fn find(cx: &InspectionContext<'_>) -> Vec<Found> {
         scopes: Vec::new(),
         quiet: Vec::new(),
         found: Vec::new(),
+        subtypes: None,
     };
     ScanWalker.walk_program(cx.parsed.program(), &mut scan);
     if cx.is_cancelled() {
@@ -168,6 +182,9 @@ struct Scope {
     /// `compact()` with a name that isn't a literal.
     opaque: bool,
     params: HashSet<Vec<u8>>,
+    /// The parameters checked for use (none when the signature is a
+    /// contract or the scope a closure).
+    checked_params: Vec<Param>,
     /// Names read somewhere in the scope.
     reads: HashSet<Vec<u8>>,
     /// Names bound by reference, `global` or `static`.
@@ -187,7 +204,19 @@ struct Scan<'a, 'r> {
     /// Byte ranges where a missing variable is fine (`isset`, `??`, `@`).
     quiet: Vec<(u32, u32)>,
     found: Vec<Found>,
+    /// The subtype finder, made for the first method checked.
+    subtypes: Option<Subtypes>,
 }
+
+/// A parameter whose use is checked.
+struct Param {
+    name: Vec<u8>,
+    start: u32,
+    end: u32,
+}
+
+/// Functions that read the parameters without naming them.
+const READS_ARGUMENTS: &[&str] = &["func_get_args", "func_get_arg"];
 
 fn name_of<'a>(variable: &DirectVariable<'a>) -> &'a [u8] {
     variable.name.strip_prefix(b"$").unwrap_or(variable.name)
@@ -198,7 +227,7 @@ fn always_defined(name: &[u8]) -> bool {
 }
 
 impl<'a> Scan<'a, '_> {
-    fn enter(&mut self, frame: Frame<'a>, parameters: Option<&'a FunctionLikeParameterList<'a>>) {
+    fn enter(&mut self, frame: Frame<'a>, parameters: Option<&'a FunctionLikeParameterList<'a>>, check_params: bool) {
         let arrow = matches!(frame, Frame::Arrow(_));
         self.frames.push(frame);
         // An arrow function at the top level sees the top level's variables,
@@ -208,12 +237,27 @@ impl<'a> Scan<'a, '_> {
         let params = parameters
             .map(|list| list.parameters.iter().map(|p| name_of(&p.variable).to_vec()).collect())
             .unwrap_or_default();
+        let checked_params = match parameters {
+            Some(list) if check_params => list
+                .parameters
+                .iter()
+                .filter(|p| p.ampersand.is_none() && p.modifiers.is_empty() && p.hooks.is_none())
+                .map(|p| Param {
+                    name: name_of(&p.variable).to_vec(),
+                    start: p.variable.span.start.offset,
+                    end: p.variable.span.end.offset,
+                })
+                .filter(|p| p.name != b"_")
+                .collect(),
+            _ => Vec::new(),
+        };
         self.scopes.push(Scope {
             flow,
             arrow,
             off,
             opaque: false,
             params,
+            checked_params,
             reads: HashSet::new(),
             bound: HashSet::new(),
             targets: Vec::new(),
@@ -232,6 +276,17 @@ impl<'a> Scan<'a, '_> {
         }
         if scope.off || scope.opaque || scope.flow.is_dynamic() || self.cx.is_cancelled() {
             return;
+        }
+        for param in &scope.checked_params {
+            if scope.reads.contains(&param.name) || scope.bound.contains(&param.name) {
+                continue;
+            }
+            self.found.push(Found {
+                kind: Kind::UnusedParameter,
+                name: String::from_utf8_lossy(&param.name).into_owned(),
+                start: param.start,
+                end: param.end,
+            });
         }
         for (name, start, end) in scope.targets {
             if scope.reads.contains(&name)
@@ -315,7 +370,13 @@ impl<'a> Scan<'a, '_> {
             Expression::Call(Call::Function(call)) => {
                 let Expression::Identifier(identifier) = call.function else { return };
                 let name = String::from_utf8_lossy(identifier.value());
-                if name.trim_start_matches('\\').eq_ignore_ascii_case("compact") {
+                let bare = name.trim_start_matches('\\');
+                if READS_ARGUMENTS.iter().any(|f| bare.eq_ignore_ascii_case(f))
+                    && let Some(scope) = self.scopes.last_mut()
+                {
+                    scope.checked_params.clear();
+                }
+                if bare.eq_ignore_ascii_case("compact") {
                     for argument in call.argument_list.arguments.iter() {
                         self.compact(argument_value(argument));
                     }
@@ -457,11 +518,53 @@ impl<'a> Scan<'a, '_> {
                 self.bound(&variable.variable);
             }
         }
-        self.enter(Frame::Closure(closure), Some(&closure.parameter_list));
+        self.enter(Frame::Closure(closure), Some(&closure.parameter_list), false);
         for variable in &variables {
             if variable.ampersand.is_some() {
                 self.bound(&variable.variable);
             }
+        }
+    }
+}
+
+impl Scan<'_, '_> {
+    /// Whether the parameters of `method` (concrete, in the class being
+    /// walked) are checked for use: its signature isn't a contract.
+    fn method_params_checked(&mut self, method: &Method<'_>) -> bool {
+        let name = String::from_utf8_lossy(method.name.value).into_owned();
+        let constructor = name.eq_ignore_ascii_case("__construct");
+        if (name.starts_with("__") && !constructor) || !method.attribute_lists.is_empty() {
+            return false;
+        }
+        let Some(Frame::Class(Some(fqn))) = self.frames.last() else { return false };
+        let fqn = fqn.clone();
+        let Some(class) = self.summary.class_likes.iter().find(|c| c.fqn == fqn) else { return false };
+        if !matches!(class.kind, ClassKind::Class | ClassKind::Enum) {
+            return false;
+        }
+        let resolver = self.cx.resolver();
+        // Every ancestor must be known, and none may declare the method.
+        let direct =
+            class.extends.iter().chain(&class.implements).chain(class.trait_uses.iter().flat_map(|u| &u.traits));
+        for parent in direct {
+            match resolver.class_model(parent) {
+                Some(model) if model.method(&name).is_none() => {}
+                _ => return false,
+            }
+        }
+        // Overridden below: the subtypes' versions follow this signature.
+        let declared = class.methods.iter().find(|m| m.name_loc.start == method.name.span.start.offset);
+        let is_private = declared.is_some_and(|m| m.visibility == Visibility::Private);
+        let is_final =
+            declared.is_some_and(|m| m.is_final) || class.modifiers.is_final || class.kind == ClassKind::Enum;
+        if is_private || is_final || constructor {
+            return true;
+        }
+        let engine = self.cx.engine;
+        let subtypes = self.subtypes.get_or_insert_with(|| Subtypes::new(engine));
+        match subtypes.all(engine, &fqn, self.cx.cancel) {
+            Ok(found) => !found.iter().any(|s| s.class.methods.iter().any(|m| m.name.eq_ignore_ascii_case(&name))),
+            Err(_) => false,
         }
     }
 }
@@ -519,14 +622,15 @@ impl<'a, 'r> Walker<'a, 'a, Scan<'a, 'r>> for ScanWalker {
         cx.frames.pop();
     }
     fn walk_in_function(&self, node: &'a Function<'a>, cx: &mut Scan<'a, 'r>) {
-        cx.enter(Frame::Function(node), Some(&node.parameter_list));
+        cx.enter(Frame::Function(node), Some(&node.parameter_list), true);
     }
     fn walk_out_function(&self, _: &'a Function<'a>, cx: &mut Scan<'a, 'r>) {
         cx.leave();
     }
     fn walk_in_method(&self, node: &'a Method<'a>, cx: &mut Scan<'a, 'r>) {
         let parameters = matches!(node.body, MethodBody::Concrete(_)).then_some(&node.parameter_list);
-        cx.enter(Frame::Method(node), parameters);
+        let check = parameters.is_some() && cx.method_params_checked(node);
+        cx.enter(Frame::Method(node), parameters, check);
     }
     fn walk_out_method(&self, _: &'a Method<'a>, cx: &mut Scan<'a, 'r>) {
         cx.leave();
@@ -538,7 +642,7 @@ impl<'a, 'r> Walker<'a, 'a, Scan<'a, 'r>> for ScanWalker {
         cx.leave();
     }
     fn walk_in_arrow_function(&self, node: &'a ArrowFunction<'a>, cx: &mut Scan<'a, 'r>) {
-        cx.enter(Frame::Arrow(node), Some(&node.parameter_list));
+        cx.enter(Frame::Arrow(node), Some(&node.parameter_list), false);
     }
     fn walk_out_arrow_function(&self, _: &'a ArrowFunction<'a>, cx: &mut Scan<'a, 'r>) {
         cx.leave();
