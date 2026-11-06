@@ -218,21 +218,41 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// The directory of the Gradle build under `root`: the root itself, or a direct
-/// subfolder, holding a settings or build script.
+/// The first automatically discovered build, for callers operating on one build.
 pub fn build_dir(root: &Path) -> Option<PathBuf> {
+    build_dirs(root).into_iter().next()
+}
+
+fn build_dirs(root: &Path) -> Vec<PathBuf> {
     let has = |d: &Path| SETTINGS_FILES.iter().chain(BUILD_FILES).any(|f| d.join(f).is_file());
     if has(root) {
-        return Some(root.to_path_buf());
+        return vec![root.to_path_buf()];
     }
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && !e.file_name().to_string_lossy().starts_with('.'))
-        .map(|e| e.path())
-        .collect();
-    dirs.sort();
-    dirs.into_iter().find(|d| SETTINGS_FILES.iter().any(|f| d.join(f).is_file()))
+    let mut builds = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.')
+                || matches!(name.as_ref(), "node_modules" | "target" | "build" | "dist" | "vendor" | "src" | "out")
+            {
+                continue;
+            }
+            let path = entry.path();
+            if has(&path) {
+                builds.push(path);
+            } else if depth + 1 < 3 {
+                pending.push((path, depth + 1));
+            }
+        }
+    }
+    builds.sort();
+    builds
 }
 
 fn wrapper(dir: &Path) -> String {
@@ -495,7 +515,7 @@ pub fn linked_project_key(root: &Path, dir: &str) -> String {
 /// Linked build identities without reading their scripts (also used by index hot paths).
 pub(crate) fn linked_dirs(root: &Path, settings: &ide_core::settings::GradleSettings) -> Vec<String> {
     match &settings.linked_projects {
-        None => build_dir(root).map(|dir| rel(root, &dir)).into_iter().collect(),
+        None => build_dirs(root).iter().map(|dir| rel(root, dir)).collect(),
         Some(dirs) => {
             let mut out = Vec::new();
             for dir in dirs {
@@ -687,6 +707,55 @@ pub(crate) fn has_war_plugin(script: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn default_linkage_discovers_all_shallow_builds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for file in [
+            "Cargo.toml",
+            "package.json",
+            "fixtures/kotlin-gradle/settings.gradle.kts",
+            "fixtures/kotlin-gradle/build.gradle.kts",
+            "fixtures/kotlin-gradle/tools/settings.gradle",
+            "services/backend/api/settings.gradle",
+            "standalone/build.gradle",
+            "ignored/src/settings.gradle",
+            "ignored/out/build.gradle",
+            "node_modules/example/settings.gradle",
+            "target/example/build.gradle",
+            "build/example/settings.gradle",
+            "dist/example/build.gradle",
+            "vendor/example/settings.gradle",
+            ".hidden/settings.gradle",
+            "too/deep/to/find/settings.gradle",
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        let models = super::load_linked(root, &Default::default());
+        assert_eq!(
+            models.iter().map(|m| m.dir.as_str()).collect::<Vec<_>>(),
+            ["fixtures/kotlin-gradle", "services/backend/api", "standalone"]
+        );
+        std::fs::write(root.join("build.gradle.kts"), "").unwrap();
+        let models = super::load_linked(root, &Default::default());
+        assert_eq!(models.len(), 1);
+        assert!(models[0].dir.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_linkage_does_not_follow_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("real")).unwrap();
+        std::fs::write(root.join("real/build.gradle"), "").unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("alias")).unwrap();
+        let models = super::load_linked(root, &Default::default());
+        assert_eq!(models.iter().map(|m| m.dir.as_str()).collect::<Vec<_>>(), ["real"]);
+    }
+
+    #[test]
     fn a_path_from_the_ui_finds_the_saved_link() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("workspace");
@@ -718,7 +787,10 @@ mod tests {
             std::fs::create_dir(root.join(dir)).unwrap();
             std::fs::write(root.join(dir).join("settings.gradle"), format!("rootProject.name = '{dir}'")).unwrap();
         }
-        assert_eq!(super::load_linked(root, &Default::default())[0].dir, "a");
+        assert_eq!(
+            super::load_linked(root, &Default::default()).iter().map(|m| m.dir.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
         let mut settings = ide_core::settings::GradleSettings {
             linked_projects: Some(vec!["b".into(), "./b".into(), "a".into()]),
             ..Default::default()

@@ -47,8 +47,8 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         }
     }
     for g in &mut model.gradle {
-        g.env = ide_sdk::apply::gradle_env(root, settings, java_env(jdk.as_ref(), g.java_version));
         g.command = ide_sdk::apply::gradle_command(root, &root.join(&g.dir), settings).to_string_lossy().into_owned();
+        g.env = ide_sdk::apply::gradle_build_env(root, &root.join(&g.dir), &g.command, settings, g.java_version);
     }
     // A failed sync of a project no installed JDK can build says so first (with a Download JDK action).
     let missing = |release: Option<u32>| match jdk {

@@ -245,6 +245,102 @@ fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapp
         .unwrap_or_else(|| name.into())
 }
 
+fn gradle_run_jdk<'a>(
+    release: Option<u32>,
+    configured: Option<&'a crate::java::Jdk>,
+    installed: &'a [crate::java::Jdk],
+    gradle: Option<(u32, u32)>,
+) -> Option<&'a crate::java::Jdk> {
+    configured.or_else(|| {
+        let release = release?;
+        let gradle = gradle?;
+        let compatible: Vec<_> = installed.iter().filter(|jdk| gradle_supports_java(gradle, jdk.major)).collect();
+        compatible
+            .iter()
+            .copied()
+            .find(|jdk| jdk.major == release)
+            .or_else(|| compatible.iter().copied().filter(|jdk| jdk.major > release).min_by_key(|jdk| jdk.major))
+            .or_else(|| compatible.iter().copied().max_by_key(|jdk| jdk.major))
+    })
+}
+
+/// Default environment shared by Gradle model builds and Run configurations.
+pub fn gradle_build_env(
+    root: &Path,
+    build_dir: &Path,
+    command: &str,
+    settings: &Settings,
+    release: Option<u32>,
+) -> std::collections::BTreeMap<String, String> {
+    let configured = project_jdk(root, settings);
+    let installed = crate::java::installed_jdks();
+    let jdk = gradle_run_jdk(
+        release.or_else(|| crate::java::project_java_version(build_dir)),
+        configured.as_ref(),
+        &installed,
+        gradle_distribution_version(build_dir, command),
+    );
+    let env = jdk
+        .map(|jdk| std::collections::BTreeMap::from([("JAVA_HOME".into(), jdk.home.to_string_lossy().into_owned())]))
+        .unwrap_or_default();
+    gradle_env(root, settings, env)
+}
+
+fn gradle_supports_java(gradle: (u32, u32), java: u32) -> bool {
+    // https://docs.gradle.org/current/userguide/compatibility.html#java_runtime
+    let minimum = match java {
+        8 => (2, 0),
+        9 => (4, 3),
+        10 => (4, 7),
+        11 => (5, 0),
+        12 => (5, 4),
+        13 => (6, 0),
+        14 => (6, 3),
+        15 => (6, 7),
+        16 => (7, 0),
+        17 => (7, 3),
+        18 => (7, 5),
+        19 => (7, 6),
+        20 => (8, 3),
+        21 => (8, 5),
+        22 => (8, 8),
+        23 => (8, 10),
+        24 => (8, 14),
+        25 => (9, 1),
+        26 => (9, 4),
+        27 => (9, 8),
+        _ => return false,
+    };
+    gradle >= minimum && (java >= 17 || gradle < (9, 0))
+}
+
+fn gradle_distribution_version(build_dir: &Path, command: &str) -> Option<(u32, u32)> {
+    let version = |text: &str| {
+        let mut parts = text.split('.');
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    };
+    if Path::new(command).file_stem().is_some_and(|name| name == "gradlew") {
+        let properties = std::fs::read_to_string(build_dir.join("gradle/wrapper/gradle-wrapper.properties")).ok()?;
+        let url = properties.lines().find_map(|line| line.trim().strip_prefix("distributionUrl="))?;
+        return version(url.rsplit_once("gradle-")?.1.split('-').next()?);
+    }
+    let path = Path::new(command);
+    let path = if path.is_absolute() { path.to_path_buf() } else { crate::exec::which(command)? };
+    let path = dunce::canonicalize(path).ok()?;
+    let home = path.parent()?.parent()?;
+    for lib in [home.join("lib"), home.join("libexec/lib")] {
+        let Ok(entries) = std::fs::read_dir(lib) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if let Some(v) = name.strip_prefix("gradle-launcher-").and_then(|name| name.strip_suffix(".jar")) {
+                return version(v);
+            }
+        }
+    }
+    None
+}
+
 /// Gradle JVM overrides Project JDK; model callers supply the module's fallback environment.
 pub fn gradle_env(
     root: &Path,
@@ -1044,13 +1140,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if matches!(c.command.as_str(), "gradle" | "gradle.bat") {
                     c.command = resolve_gradle_command(root, &build_dir, s, false).to_string_lossy().into_owned();
                 }
-                let defaults = jdk
-                    .as_ref()
-                    .map(|j| {
-                        std::collections::BTreeMap::from([("JAVA_HOME".into(), j.home.to_string_lossy().into_owned())])
-                    })
-                    .unwrap_or_default();
-                for (key, value) in gradle_env(root, s, defaults) {
+                for (key, value) in gradle_build_env(root, &build_dir, &c.command, s, None) {
                     c.env.entry(key).or_insert(value);
                 }
             }
@@ -1299,6 +1389,67 @@ mod java_compiler_tests {
         );
         server_protocol_overrides(&mut cfg, &s);
         assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("user.prefs")));
+    }
+}
+
+#[cfg(test)]
+mod gradle_runtime_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn gradle_runs_use_the_builds_toolchain_without_overriding_user_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let installed =
+            [25, 21, 17, 11, 8].map(|major| crate::java::Jdk { major, home: temp.path().join(format!("jdk{major}")) });
+        for (name, script, expected) in [
+            ("kotlin", "kotlin { jvmToolchain(21) }", Some(21)),
+            ("java", "java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }", Some(17)),
+            ("unspecified", "plugins { id 'java' }", None),
+        ] {
+            let dir = temp.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("build.gradle.kts"), script).unwrap();
+            let picked = gradle_run_jdk(crate::java::project_java_version(&dir), None, &installed, Some((9, 0)));
+            assert_eq!(picked.map(|jdk| jdk.major), expected);
+            assert_eq!(gradle_run_jdk(expected, Some(&installed[0]), &installed, Some((9, 0))), Some(&installed[0]));
+            let mut settings = Settings::default();
+            settings.languages.java.gradle.jvm = "custom-gradle-jdk".into();
+            let env = gradle_env(temp.path(), &settings, BTreeMap::from([("JAVA_HOME".into(), "/fallback".into())]));
+            assert_eq!(env["JAVA_HOME"], temp.path().join("custom-gradle-jdk").to_string_lossy());
+        }
+        let dir = temp.path().join("kotlin");
+        for (gradle, target, expected) in
+            [((9, 0), 8, 17), ((8, 4), 21, 17), ((8, 5), 21, 21), ((7, 2), 21, 11), ((9, 0), 25, 21), ((9, 1), 25, 25)]
+        {
+            std::fs::write(dir.join("build.gradle.kts"), format!("kotlin {{ jvmToolchain({target}) }}")).unwrap();
+            assert_eq!(gradle_run_jdk(Some(target), None, &installed, Some(gradle)).unwrap().major, expected);
+        }
+        assert!(gradle_run_jdk(Some(21), None, &installed, None).is_none());
+    }
+
+    #[test]
+    fn reads_wrapper_and_local_gradle_versions_without_running_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        std::fs::write(
+            root.join("gradle/wrapper/gradle-wrapper.properties"),
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.4.0-bin.zip\n",
+        )
+        .unwrap();
+        for command in ["./gradlew", "gradlew.bat"] {
+            assert_eq!(gradle_distribution_version(root, command), Some((8, 4)));
+        }
+        for layout in ["lib", "libexec/lib"] {
+            let home = root.join(layout.replace('/', "-"));
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::create_dir_all(home.join(layout)).unwrap();
+            let command = home.join("bin/gradle");
+            std::fs::write(&command, "").unwrap();
+            std::fs::write(home.join(layout).join("gradle-launcher-9.0.0.jar"), "").unwrap();
+            assert_eq!(gradle_distribution_version(root, &command.to_string_lossy()), Some((9, 0)));
+        }
     }
 }
 
