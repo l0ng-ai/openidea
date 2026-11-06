@@ -52,6 +52,7 @@ use crate::meta::{CallTarget, MetaValue};
 use crate::names::{FileNames, NameKind, fqn_eq};
 use crate::navigate::symbol::{Decl, Member, MemberKind};
 use crate::navigate::{enclosing_class, rank, short_name};
+use crate::signature::Callee;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::ParsedFile;
 use crate::types::{ClassModel, Context, ExprTypes, Frame, PROBE_VARIABLE, Resolver, SignatureParam, Type};
@@ -955,34 +956,7 @@ impl<'e, 'r> Collector<'e, 'r> {
         if let Some(site) = &sites.argument {
             let frames = frames_at(site.call);
             let context = types.context(&frames);
-            let callee = match site.call {
-                Expression::Call(Call::Function(call)) => match call.function {
-                    Expression::Identifier(identifier) => {
-                        let name = String::from_utf8_lossy(identifier.value()).into_owned();
-                        let resolved =
-                            names.scope_at(identifier.span().start.offset).resolve(NameKind::Function, &name);
-                        let candidates: Vec<String> = resolved.resolution.candidates().map(str::to_owned).collect();
-                        let fqn = candidates
-                            .iter()
-                            .find(|fqn| self.resolver.declarations().function(fqn).is_some())
-                            .or(candidates.first())
-                            .cloned();
-                        fqn.map(Callee::Function)
-                    }
-                    _ => None,
-                },
-                Expression::Call(Call::Method(call)) => method_name(&call.method)
-                    .map(|name| Callee::Method { receiver: types.type_of(call.object, &frames), name }),
-                Expression::Call(Call::NullSafeMethod(call)) => method_name(&call.method)
-                    .map(|name| Callee::Method { receiver: types.type_of(call.object, &frames).without_null(), name }),
-                Expression::Call(Call::StaticMethod(call)) => method_name(&call.method)
-                    .map(|name| Callee::Method { receiver: types.class_ref(call.class, &frames), name }),
-                Expression::Instantiation(instantiation) => Some(Callee::Method {
-                    receiver: types.class_ref(instantiation.class, &frames),
-                    name: "__construct".to_owned(),
-                }),
-                _ => None,
-            };
+            let callee = crate::signature::callee(&types, &names, self.resolver, site.call, &frames);
             if let Some(callee) = callee {
                 self.argument_items(&callee, site, &context, in_string);
             }
@@ -997,22 +971,7 @@ impl<'e, 'r> Collector<'e, 'r> {
     }
 
     fn argument_items(&mut self, callee: &Callee, site: &ArgumentSite<'_>, context: &Context, in_string: bool) {
-        let params: Vec<SignatureParam> = match callee {
-            Callee::Function(fqn) => self
-                .resolver
-                .declarations()
-                .function(fqn)
-                .or_else(|| self.here.function(fqn).cloned())
-                .map(|function| {
-                    let doc = function.doc.as_deref();
-                    let templates: Vec<&str> = doc.iter().flat_map(|doc| doc.local_type_names()).collect();
-                    crate::types::resolve::declared_params(&function.params, doc, &templates)
-                })
-                .unwrap_or_default(),
-            Callee::Method { receiver, name } => {
-                self.resolver.method_params_on(receiver, name, context).unwrap_or_default()
-            }
-        };
+        let params: Vec<SignatureParam> = crate::signature::callee_params(self.resolver, self.here, callee, context);
         // Named arguments for the parameters not passed yet.
         if !in_string {
             for param in params.iter().skip(site.index) {
@@ -1347,20 +1306,6 @@ impl<'e, 'r> Collector<'e, 'r> {
         };
         let pos = self.pos(at as usize);
         TextEdit { range: Range::new(pos, pos), new_text: text }
-    }
-}
-
-enum Callee {
-    Function(String),
-    Method { receiver: Type, name: String },
-}
-
-fn method_name(selector: &mago_syntax::cst::ClassLikeMemberSelector<'_>) -> Option<String> {
-    match selector {
-        mago_syntax::cst::ClassLikeMemberSelector::Identifier(name) => {
-            Some(String::from_utf8_lossy(name.value).into_owned())
-        }
-        _ => None,
     }
 }
 

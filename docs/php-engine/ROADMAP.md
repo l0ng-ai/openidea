@@ -272,7 +272,7 @@ The design:
 
   Results are ranked by relevance, and documentation is resolved lazily (resolve support). Budget: p95 under 50 ms on the fixture. Tests: unit tests, and the Native `language_smoke` completion check.
 
-- [ ] Phase 2.11: Signature help and inlay hints
+- [x] Phase 2.11: Signature help and inlay hints
   - **Signature help:** for function, method and constructor calls, with the active parameter and named arguments.
   - **Inlay hints:** parameter names (skip the obvious ones, the way IDEA does) and types of variables and closure returns whose type isn't obvious, behind settings.
 

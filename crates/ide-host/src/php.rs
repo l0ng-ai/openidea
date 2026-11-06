@@ -14,8 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ide_core::settings::{PhpEngineKind, Settings};
-use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, SharedSink};
-use ide_lsp::types::{CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, WorkspaceSymbol};
+use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink};
+use ide_lsp::types::{
+    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, InlayHint, InlayKind, Markup, Signature,
+    SignatureHelp, WorkspaceSymbol,
+};
 
 use crate::language_service::Answer;
 use ide_php::complete::{Completion, CompletionData};
@@ -181,8 +184,10 @@ impl DocumentObserver for PhpObserver {
 /// runs (Settings › PHP › Engine is `Native`); otherwise requests go to
 /// Intelephense. The requests it answers natively are added feature by feature:
 /// so far document and workspace symbols, hover, goto definition and type
-/// definition (names, members, named arguments and variables), and
-/// completion with lazily resolved documentation.
+/// definition (names, members, named arguments and variables),
+/// completion with lazily resolved documentation, signature help and inlay
+/// hints (parameter names and types; Editor › Inlay Hints decides which
+/// kinds the editor shows).
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -249,6 +254,52 @@ impl crate::language_service::LanguageService for PhpService {
             range: Some(hover.range),
         });
         Some(Ok(hover))
+    }
+
+    fn signature_help(&self, doc: DocId, pos: Pos) -> Answer<Option<SignatureHelp>> {
+        let engine = self.0.engine()?;
+        if !engine.is_open(doc) {
+            return None;
+        }
+        let help = engine.signature_help(doc, pos).map(|help| SignatureHelp {
+            signatures: help
+                .signatures
+                .into_iter()
+                .map(|s| Signature {
+                    label: s.label,
+                    documentation: s.documentation.map(|value| Markup { kind: "markdown".into(), value }),
+                    parameters: s.parameters,
+                })
+                .collect(),
+            active_signature: 0,
+            active_parameter: help.active_parameter,
+        });
+        Some(Ok(help))
+    }
+
+    fn inlay_hints(&self, doc: DocId, range: Range) -> Answer<Vec<InlayHint>> {
+        use ide_php::signature::InlayHintKind;
+        let engine = self.0.engine()?;
+        if !engine.is_open(doc) {
+            return None;
+        }
+        let hints = engine.inlay_hints(doc, range)?;
+        let hints = hints
+            .into_iter()
+            .map(|hint| InlayHint {
+                position: hint.position,
+                label: hint.label,
+                kind: match hint.kind {
+                    InlayHintKind::Parameter => InlayKind::Parameter,
+                    InlayHintKind::Type => InlayKind::Type,
+                },
+                padding_left: hint.padding_left,
+                padding_right: hint.padding_right,
+                tooltip: hint.tooltip,
+                parts: Vec::new(),
+            })
+            .collect();
+        Some(Ok(hints))
     }
 
     fn goto(&self, doc: DocId, pos: Pos, kind: GotoKind) -> Answer<Vec<Location>> {

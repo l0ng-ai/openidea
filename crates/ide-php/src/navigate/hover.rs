@@ -21,6 +21,7 @@ use std::path::Path;
 use crate::engine::PhpEngine;
 use crate::names::NameKind;
 use crate::summary::{ClassKind, ClassLike, FileSummary, Param, Visibility};
+use crate::types::model::ModelMethod;
 use crate::types::{Resolver, SignatureParam, Type};
 
 use super::symbol::{Decl, Member, MemberKind, Subject, file_text};
@@ -253,7 +254,7 @@ fn param_text(param: &Param) -> String {
 
 /// A parameter with its resolved type, and its default from the
 /// declaration when there is one.
-fn signature_param_text(param: &SignatureParam, default: Option<&str>) -> String {
+pub(crate) fn signature_param_text(param: &SignatureParam, default: Option<&str>) -> String {
     let mut out = format!("{} ", param.ty);
     if param.by_ref {
         out.push('&');
@@ -272,6 +273,17 @@ fn signature_param_text(param: &SignatureParam, default: Option<&str>) -> String
         None => {}
     }
     out
+}
+
+/// The defaults of a method's parameters as written, by parameter name.
+pub(crate) fn method_defaults(method: &ModelMethod) -> Vec<(String, String)> {
+    match (method.declared(), method.magic()) {
+        (Some(declared), _) => {
+            declared.params.iter().filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect()
+        }
+        (None, Some(magic)) => magic.params.iter().filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn class_signature(class: &ClassLike) -> String {
@@ -422,15 +434,7 @@ impl PhpEngine {
                     code.push_str(" static");
                 }
                 let params = resolver.method_params_on(&member.receiver, name, &member.context).unwrap_or_default();
-                let defaults: Vec<(String, String)> = match (method.declared(), method.magic()) {
-                    (Some(declared), _) => {
-                        declared.params.iter().filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect()
-                    }
-                    (None, Some(magic)) => {
-                        magic.params.iter().filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect()
-                    }
-                    _ => Vec::new(),
-                };
+                let defaults = method_defaults(method);
                 let params: Vec<String> = params
                     .iter()
                     .map(|param| {
@@ -481,7 +485,7 @@ impl PhpEngine {
     }
 
     /// A member's docblock, or the one it inherits.
-    fn member_doc(
+    pub(crate) fn member_doc(
         &self,
         member: &Member,
         resolver: &Resolver<'_>,
@@ -571,7 +575,7 @@ impl PhpEngine {
     }
 
     /// The docblock in front of byte `start` of the file at `path`.
-    fn doc_text(&self, path: &Path, start: u32) -> Option<DocText> {
+    pub(crate) fn doc_text(&self, path: &Path, start: u32) -> Option<DocText> {
         let text = file_text(self, path)?;
         doc_comment_before(&text, start).map(DocText::parse)
     }

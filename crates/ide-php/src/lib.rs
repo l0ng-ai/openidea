@@ -41,6 +41,9 @@
 //!   ([`complete::Completions`]): members, variables, keywords, names with
 //!   auto-import, named arguments, expected values, enum cases and array
 //!   keys.
+//! - [`signature`]: signature help (the call around the caret, its active
+//!   parameter) and inlay hints (parameter names, variable and closure
+//!   return types).
 //! - [`navigate`]: document symbols, fuzzy workspace symbols and goto
 //!   definition of class-like, function and constant names.
 //! - [`types`]: the type model ([`types::Type`]): parsing from native hints
@@ -57,6 +60,7 @@ pub mod names;
 pub mod navigate;
 pub mod probe;
 pub mod project;
+pub mod signature;
 pub mod stubs;
 pub mod summary;
 pub mod syntax;

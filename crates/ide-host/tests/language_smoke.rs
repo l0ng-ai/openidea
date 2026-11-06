@@ -1071,8 +1071,8 @@ async fn php() {
 
 /// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
 /// server: the checks it answers so far, the Structure view, go to definition of class names (in a
-/// `new`, an `extends` and a `use` import), of members and of variables, hover, and completion
-/// (members, and a class name with auto-import). Not ignored: it
+/// `new`, an `extends` and a `use` import), of members and of variables, hover, completion
+/// (members, and a class name with auto-import), parameter info and inlay hints. Not ignored: it
 /// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
@@ -1146,6 +1146,15 @@ async fn php_native() {
     let (typed, offers) = PHP.completion;
     smoke.completion(typed, offers).await;
     smoke.auto_import(PHP.auto_import).await;
+    // Parameter info: the baseline's check, and the engine's parameter-name and type hints.
+    let (call, parameter) = PHP.signature;
+    smoke.signature(call, parameter).await;
+    let (doc, text) = smoke.doc("src/Library.php").await;
+    let whole = Range::new(Pos::new(0, 0), Pos::new(text.lines().count() as u32, 0));
+    let hints = ops::lsp::lsp_inlay_hints(&smoke.host, WINDOW, doc, whole).await.unwrap();
+    let labels: Vec<&str> = hints.iter().map(|h| h.label.as_str()).collect();
+    assert!(labels.contains(&"available:"), "a parameter name hint on withAvailability(false): {labels:?}");
+    assert!(labels.contains(&": Book"), "a type hint on $lent: {labels:?}");
     let servers = ops::lsp::lsp_servers(&smoke.host, WINDOW).unwrap_or_default();
     assert!(
         !servers.iter().any(|s| s.name.to_ascii_lowercase().contains("intelephense")),
