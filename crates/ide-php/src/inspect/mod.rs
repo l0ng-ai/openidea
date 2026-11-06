@@ -8,7 +8,9 @@
 //!   [`Inspections::builtin`] ([`undefined`]: undefined class-likes,
 //!   functions and constants; [`members`]: undefined methods, properties
 //!   and class constants; [`variables`]: undefined, possibly undefined and
-//!   unused local variables); [`PhpEngine::set_inspections`] replaces the
+//!   unused local variables; [`calls`]: argument count, named arguments,
+//!   argument, return and property types, lenient or strict
+//!   ([`Inspections::builtin_with`])); [`PhpEngine::set_inspections`] replaces the
 //!   set (tests, and the settings of phase 4.10).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
@@ -31,6 +33,7 @@
 //! (`https://plugins.jetbrains.com/docs/intellij/code-inspections.html`):
 //! a short name, a default level, a visitor and quick-fixes.
 
+pub mod calls;
 pub mod members;
 pub(crate) mod runner;
 pub mod suppress;
@@ -52,6 +55,7 @@ use crate::summary::FileSummary;
 use crate::syntax::{DIAGNOSTIC_SOURCE, ParsedFile};
 use crate::types::{Resolver, Type};
 
+pub use calls::TypeCheckMode;
 pub use suppress::Suppressions;
 
 /// One check over a file.
@@ -76,6 +80,11 @@ impl Inspections {
     /// The engine's own inspections (syntax errors are reported
     /// regardless).
     pub fn builtin() -> Self {
+        Self::builtin_with(TypeCheckMode::default())
+    }
+
+    /// The engine's own inspections, the call and type checks in `mode`.
+    pub fn builtin_with(mode: TypeCheckMode) -> Self {
         Self::new(vec![
             Arc::new(undefined::UndefinedClass),
             Arc::new(undefined::UndefinedFunction),
@@ -85,6 +94,11 @@ impl Inspections {
             Arc::new(members::UndefinedClassConstant),
             Arc::new(variables::UndefinedVariable),
             Arc::new(variables::UnusedVariable),
+            Arc::new(calls::ArgumentCount { mode }),
+            Arc::new(calls::NamedArgument { mode }),
+            Arc::new(calls::ArgumentType { mode }),
+            Arc::new(calls::ReturnType { mode }),
+            Arc::new(calls::PropertyType { mode }),
         ])
     }
 
@@ -235,6 +249,7 @@ pub struct InspectionContext<'a> {
     summary: OnceLock<FileSummary>,
     members: OnceLock<Vec<members::Found>>,
     variables: OnceLock<Vec<variables::Found>>,
+    calls: OnceLock<Vec<calls::Found>>,
 }
 
 impl<'a> InspectionContext<'a> {
@@ -248,6 +263,7 @@ impl<'a> InspectionContext<'a> {
             summary: OnceLock::new(),
             members: OnceLock::new(),
             variables: OnceLock::new(),
+            calls: OnceLock::new(),
         }
     }
 
@@ -271,6 +287,12 @@ impl<'a> InspectionContext<'a> {
     /// inspections).
     pub(crate) fn variables(&self) -> &[variables::Found] {
         self.variables.get_or_init(|| variables::find(self))
+    }
+
+    /// The file's call and type problems, certain or not (computed once for
+    /// the call and type inspections).
+    pub(crate) fn calls(&self) -> &[calls::Found] {
+        self.calls.get_or_init(|| calls::find(self))
     }
 
     pub fn resolver(&self) -> Resolver<'a> {

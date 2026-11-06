@@ -336,7 +336,7 @@ The design:
 - [x] Phase 4.4: Variables
       Inspections for undefined, possibly undefined and unused variables, from the flow graph. Handle `compact`/`extract`, `$$var` (which turns the check off), references, `global` and `static`. Tests: unit tests.
 
-- [ ] Phase 4.5: Calls and types
+- [x] Phase 4.5: Calls and types
   - Wrong argument count, unknown named argument, argument type mismatch, return type mismatch.
   - A property assignment that doesn't match its type.
   - The rules can be strict or lenient, the lenient default only reporting certain mismatches.

@@ -119,8 +119,15 @@ pub(crate) fn op_type(op: Op, left: Option<&Type>, right: Option<&Type>) -> Type
                 return Type::union([Type::Int, Type::Float]);
             };
             let numeric = |ty: &Type| is_int(ty) || is_float(ty);
-            if op == Op::Add && is_array(left) && is_array(right) {
+            // `array + x` is an array union (anything else but an array
+            // throws).
+            let all_arrays = |ty: &Type| ty.members().iter().all(is_array);
+            let may_be_array = |ty: &Type| *ty == Type::Mixed || ty.members().iter().any(is_array);
+            if op == Op::Add && (all_arrays(left) || all_arrays(right)) {
                 Type::array()
+            } else if op == Op::Add && (may_be_array(left) || may_be_array(right)) {
+                // Operands that may be arrays may make an array union.
+                Type::union([Type::Int, Type::Float, Type::array()])
             } else if is_int(left) && is_int(right) && op != Op::Exp {
                 Type::Int
             } else if numeric(left) && numeric(right) && (is_float(left) || is_float(right)) {

@@ -374,6 +374,11 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpUndefinedClassConstant",
             "PhpUndefinedVariable",
             "PhpUnusedLocalVariable",
+            "PhpMethodParametersCountMismatch",
+            "PhpUnknownNamedArgument",
+            "PhpParams",
+            "PhpIncompatibleReturnType",
+            "PhpFieldAssignmentTypeMismatch",
         ]
     );
 }
@@ -407,3 +412,6 @@ mod members_tests;
 
 #[path = "variables_tests.rs"]
 mod variables_tests;
+
+#[path = "calls_tests.rs"]
+mod calls_tests;
