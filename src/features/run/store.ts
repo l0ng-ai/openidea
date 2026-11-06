@@ -52,6 +52,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
@@ -197,7 +198,7 @@ export async function loadConfigs(): Promise<void> {
     return;
   }
   try {
-    const saved = await call(commands.runConfigs());
+    const [saved] = await Promise.all([call(commands.runConfigs()), loadRunTemplates()]);
     if (useProject.getState().project?.root !== root) return;
     // Temporary configs survive reloads (and restarts) until saved or evicted; a saved one wins.
     // They are kept without what settings derived: today's toolchains apply to them, as to the others.

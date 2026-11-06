@@ -64,7 +64,8 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 }
 
 /// The project interpreter: the configured one, else a project virtualenv
-/// (`.venv`, `venv`, …) in the project root, else the Python the project pins for mise / asdf.
+/// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
+/// root, else the Python the project pins for mise / asdf.
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     setting_path(root, &s.languages.python.interpreter)
         .or_else(|| project_venv_python(root))
