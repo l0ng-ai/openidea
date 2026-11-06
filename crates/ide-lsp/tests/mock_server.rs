@@ -1816,23 +1816,57 @@ async fn java_implementations_come_from_sources_first() {
     h.wait_status("jdtls", ServerStatus::Ready).await;
     let s = h.launcher.state("jdtls");
     let uri = uri_of(&path);
-    let at = move |line: u32| json!([{ "uri": uri, "range": {"start":{"line":line,"character":6},"end":{"line":line,"character":7}} }]);
+    let at = move |lines: &[u32]| {
+        lines
+            .iter()
+            .map(|&l| json!({ "uri": uri, "range": {"start":{"line":l,"character":6},"end":{"line":l,"character":7}} }))
+            .collect::<Value>()
+    };
     *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
-        // The sources have an implementation of line 0 only.
-        "workspace/executeCommand" => Some(if params["arguments"][1] == 0 { at(1) } else { json!([]) }),
-        "textDocument/implementation" => Some(at(3)),
+        // Line 0 is declared in the sources; line 2 in a dependency, which implements it on line 3.
+        "workspace/executeCommand" => Some(match params["arguments"][1].as_u64() {
+            Some(0) => json!({ "locations": at(&[1]), "complete": true }),
+            Some(2) => json!({ "locations": at(&[1]), "complete": false }),
+            _ => json!({ "locations": [], "complete": true }),
+        }),
+        "textDocument/implementation" => Some(at(&[3, 1])),
         _ => None,
     }));
+    let lines = |locs: &[ide_core::Location]| locs.iter().map(|l| l.range.start.line).collect::<Vec<_>>();
     let found = h.mgr.goto(doc, Pos::new(0, 10), GotoKind::Implementation).await.unwrap();
-    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![1]);
+    assert_eq!(lines(&found), vec![1]);
+    let markers = h.mgr.implementations(doc, &[Pos::new(0, 10)], Default::default()).await.unwrap();
+    assert_eq!(lines(&markers[0]), vec![1]);
     assert!(s.requested("textDocument/implementation").is_empty(), "no search through the dependencies");
     let asked = s.requested("workspace/executeCommand");
     assert_eq!(asked[0]["command"], "openidea.java.implementations");
     assert_eq!((asked[0]["arguments"][1].clone(), asked[0]["arguments"][2].clone()), (json!(0), json!(10)));
-    // None in the sources: the standard request, with the dependencies.
-    let found = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Implementation).await.unwrap();
-    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![3]);
+
+    // A dependency's type: those in the sources first, then the dependencies' too.
+    let partial = Mutex::new(Vec::new());
+    let found = h
+        .mgr
+        .goto_implementation(doc, Pos::new(2, 6), Default::default(), &|locs| partial.lock().push(lines(&locs)))
+        .await
+        .unwrap();
+    assert_eq!(*partial.lock(), vec![vec![1]]);
+    assert_eq!(lines(&found), vec![1, 3]);
     assert_eq!(s.requested("textDocument/implementation").len(), 1);
+    // Without a receiver for the first ones (gutter markers), just all of them.
+    let found = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Implementation).await.unwrap();
+    assert_eq!(lines(&found), vec![3, 1]);
+    assert_eq!(s.requested("textDocument/implementation").len(), 2);
+
+    // None in the sources: the standard request, with the dependencies.
+    let partial = Mutex::new(Vec::new());
+    let found = h
+        .mgr
+        .goto_implementation(doc, Pos::new(3, 6), Default::default(), &|locs| partial.lock().push(lines(&locs)))
+        .await
+        .unwrap();
+    assert!(partial.lock().is_empty());
+    assert_eq!(lines(&found), vec![3, 1]);
+    assert_eq!(s.requested("textDocument/implementation").len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2343,7 +2377,7 @@ async fn class_file_opening_routes_sources_and_binary_documents() {
     let source = sources.join("p/Outer.java");
     std::fs::write(&source, "package p; class Outer {} ").unwrap();
     s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
-    s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
+    s.respond("workspace/executeCommand", json!({ "org.eclipse.jdt.ls.core.sourcePaths": [sources] }));
     for class in ["Outer", "Outer$Nested", "Outer$1"] {
         let path = h.root.join(format!("target/classes/p/{class}.class"));
         let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
@@ -3360,7 +3394,7 @@ async fn gopls_interactive_command_validates_before_execution_and_applies_edits(
             let reply: Value = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(s.peer().request(
                     "workspace/applyEdit",
-                    json!({"edit": edit}),
+                    json!({ "edit": edit }),
                     None,
                 ))
             })
@@ -3643,6 +3677,54 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
     assert_eq!(result.len(), 1);
     assert_eq!(s.requested("workspace/executeCommand").len(), 1);
     assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_prewarm_starts_java_without_an_open_editor_and_waits_for_import() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration.warmup"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    h.mgr.prewarm_java_configuration();
+    h.mgr.prewarm_java_configuration();
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let config = h.root.join("application.yml");
+    h.mgr.did_open(DocId::next(), &config, &LanguageId::new("yaml"), 1, "app: {}\n");
+    s.peer().notify("language/status", json!({"type": "ServiceReady"})).unwrap();
+    eventually(|| {
+        s.requested("workspace/executeCommand").iter().any(|p| p["command"] == "openidea.java.configuration.warmup")
+    })
+    .await;
+    let requests = s.requested("workspace/executeCommand");
+    let warmup = requests.iter().find(|p| p["command"] == "openidea.java.configuration.warmup").unwrap();
+    assert_eq!(warmup["arguments"], json!(["start", [uri_of(&config)]]));
+    assert!(s.notified("textDocument/didOpen").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_prewarm_respects_trust_shutdown_and_non_java_roots() {
+    let mut fixtures = Vec::new();
+    for mode in ["untrusted", "closed", "non-java"] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        if mode != "non-java" {
+            std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+        }
+        if mode == "untrusted" {
+            h.mgr.set_execution_allowed(false);
+        }
+        h.mgr.prewarm_java_configuration();
+        if mode == "closed" {
+            h.mgr.shutdown_all().await;
+        }
+        fixtures.push(h);
+    }
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    for h in fixtures {
+        assert_eq!(h.launcher.state("jdtls").launches.load(Ordering::SeqCst), 0);
+    }
 }
 
 /// The configuration command indexes the whole project, so Go to Definition (and

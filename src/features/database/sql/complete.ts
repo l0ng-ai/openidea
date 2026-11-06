@@ -68,9 +68,12 @@ export function quoteIdent(name: string, driver: DbDriver): string {
   const plain =
     driver === "postgres"
       ? /^[a-z_][a-z0-9_$]*$/
-      : driver === "clickhouse"
-        ? /^[A-Za-z_][A-Za-z0-9_]*$/
-        : /^[A-Za-z_][A-Za-z0-9_$]*$/;
+      : // Oracle folds unquoted names to upper case; a lower-case name must stay quoted.
+        driver === "oracle"
+        ? /^[A-Z_][A-Z0-9_$]*$/
+        : driver === "clickhouse"
+          ? /^[A-Za-z_][A-Za-z0-9_]*$/
+          : /^[A-Za-z_][A-Za-z0-9_$]*$/;
   if (plain.test(name) && !isReserved(name)) return name;
   if (driver === "clickhouse") return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   const q = driver === "mysql" ? "`" : '"';

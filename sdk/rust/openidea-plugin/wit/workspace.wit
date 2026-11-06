@@ -1,4 +1,4 @@
-package openidea:plugin@1.1.0;
+package openidea:plugin@1.2.0;
 
 interface workspace {
     use types.{error};

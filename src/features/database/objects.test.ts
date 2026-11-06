@@ -182,3 +182,53 @@ describe("database object SQL", () => {
     ]);
   });
 });
+
+describe("oracle object SQL", () => {
+  const emp = [col("ID", "NUMBER", { primaryKey: true, nullable: false }), col("NAME", "VARCHAR2(40)")];
+  const d = emp.map(draftOf);
+
+  it("keeps unquoted names that the server folds to upper case", () => {
+    expect(ident("oracle", "EMPLOYEES")).toBe("EMPLOYEES");
+    expect(ident("oracle", "employees")).toBe('"employees"');
+    expect(reference("oracle", { kind: "table", schema: "HR", name: "EMPLOYEES" })).toBe("HR.EMPLOYEES");
+  });
+
+  it("generates Oracle DDL and DML", () => {
+    expect(truncateSql("oracle", "HR", "EMPLOYEES", { restartIdentity: true, cascade: true })).toBe(
+      "truncate table HR.EMPLOYEES;",
+    );
+    expect(scriptSql("oracle", "selectFirst", "HR", "EMPLOYEES", emp)).toContain("fetch first 10 rows only;");
+    expect(scriptSql("oracle", "selectFirst", "HR", "EMPLOYEES", emp)).not.toContain("limit");
+    expect(dropSql("oracle", { kind: "index", schema: "HR", name: "E_IDX" }, { ifExists: true, cascade: false })).toBe(
+      "drop index HR.E_IDX;",
+    );
+    expect(dropSql("oracle", { kind: "schema", schema: "", name: "APP" }, { ifExists: false, cascade: false })).toBe(
+      "drop user APP cascade;",
+    );
+    expect(renameSql("oracle", { kind: "view", schema: "HR", name: "V_EMP" }, "V_STAFF")).toBe(
+      "rename HR.V_EMP to V_STAFF;",
+    );
+    expect(createTableSql("oracle", "HR", "T", d)).toContain("primary key (ID)");
+  });
+
+  it("alters columns with MODIFY and parenthesised ADD", () => {
+    const p = emp.map(draftOf);
+    p[1] = { ...p[1]!, dataType: "VARCHAR2(80)", notNull: true, name: "FULL_NAME" };
+    p.push({
+      key: 99,
+      original: null,
+      name: "HIRED",
+      dataType: "DATE",
+      notNull: false,
+      default: "SYSDATE",
+      primaryKey: false,
+      dropped: false,
+    } satisfies ColumnDraft);
+    expect(alterTableSql("oracle", "HR", "EMPLOYEES", "EMPLOYEES", p)).toEqual([
+      "alter table HR.EMPLOYEES modify (NAME VARCHAR2(80) not null);",
+      "alter table HR.EMPLOYEES modify (NAME not null);",
+      "alter table HR.EMPLOYEES rename column NAME to FULL_NAME;",
+      "alter table HR.EMPLOYEES add (HIRED DATE default SYSDATE);",
+    ]);
+  });
+});

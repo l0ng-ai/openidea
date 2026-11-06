@@ -621,36 +621,43 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <fieldset className={styles.reformatGroup}>
-        <legend className={styles.reformatLegend}>
-          <T>Scope</T>
-        </legend>
-        <label className={styles.reformatOption}>
-          <input type="radio" name="reformat-scope" checked={!selectionOnly} onChange={() => setSelectionOnly(false)} />
-          <T>Whole file</T>
-        </label>
-        <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
-          <input
-            type="radio"
-            name="reformat-scope"
-            checked={selectionOnly}
-            disabled={!popup.hasSelection}
-            onChange={() => setSelectionOnly(true)}
+      <div className={styles.reformatBody}>
+        <fieldset className={styles.reformatGroup}>
+          <legend className={styles.reformatLegend}>
+            <T>Scope</T>
+          </legend>
+          <label className={styles.reformatOption}>
+            <input
+              type="radio"
+              name="reformat-scope"
+              checked={!selectionOnly}
+              onChange={() => setSelectionOnly(false)}
+            />
+            <T>Whole file</T>
+          </label>
+          <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
+            <input
+              type="radio"
+              name="reformat-scope"
+              checked={selectionOnly}
+              disabled={!popup.hasSelection}
+              onChange={() => setSelectionOnly(true)}
+            />
+            <T>Selected text</T>
+          </label>
+        </fieldset>
+        <fieldset className={styles.reformatGroup}>
+          <legend className={styles.reformatLegend}>
+            <T>Options</T>
+          </legend>
+          <Checkbox
+            checked={optimizeImports}
+            disabled={!popup.canOptimizeImports}
+            onChange={setOptimizeImports}
+            label="Optimize imports"
           />
-          <T>Selected text</T>
-        </label>
-      </fieldset>
-      <fieldset className={styles.reformatGroup}>
-        <legend className={styles.reformatLegend}>
-          <T>Options</T>
-        </legend>
-        <Checkbox
-          checked={optimizeImports}
-          disabled={!popup.canOptimizeImports}
-          onChange={setOptimizeImports}
-          label="Optimize imports"
-        />
-      </fieldset>
+        </fieldset>
+      </div>
     </Dialog>
   );
 }

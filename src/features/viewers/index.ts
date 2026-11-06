@@ -13,6 +13,8 @@ import {
   registerEditorKind,
   registerFileEditorProvider,
   registerTextEditorWrapper,
+  textEditorWrapperFor,
+  useTextEditorWrappers,
   type EditorInput,
 } from "@/workbench/contributions";
 import {
@@ -85,7 +87,10 @@ export function activate(): () => void {
     registerFileEditorProvider({
       id: "viewers.image",
       order: 10,
-      resolve: (path) => (isImagePath(path) ? imageInput(path) : null),
+      resolve: (path) =>
+        isImagePath(path) && !textEditorWrapperFor(useTextEditorWrappers.getState().wrappers, path)
+          ? imageInput(path)
+          : null,
     }),
     registerFileEditorProvider({
       id: "viewers.hex",

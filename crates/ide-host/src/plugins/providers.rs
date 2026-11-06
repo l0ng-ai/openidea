@@ -180,8 +180,12 @@ pub fn set_editor_providers(host: Option<&Arc<PluginHost>>) {
 
 /// The plugin host whose providers take part, when any declares `kind`.
 pub(crate) fn editor_providers(kind: ProviderKind) -> Option<Arc<PluginHost>> {
-    let host = EDITOR_PROVIDERS.read().as_ref()?.upgrade()?;
+    let host = editor_plugin_host()?;
     host.providers.any(kind).then_some(host)
+}
+
+pub(crate) fn editor_plugin_host() -> Option<Arc<PluginHost>> {
+    EDITOR_PROVIDERS.read().as_ref()?.upgrade()
 }
 
 impl PluginHost {

@@ -37,7 +37,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.1.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.2.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -176,6 +176,13 @@ The path is exact (no globs) and relative to the project root; in a workspace th
 key is true when any of its projects contains the path. It updates when
 files change. An IDE that doesn't know the key treats it as
 false: the plugin still installs and the key reads as false there.
+
+### Background associations
+
+`[[contributes.documentIndexers]]` declares file `extensions` and requires the optional
+`document-indexer` export. It publishes cross-file associations (definitions, references,
+aliases and gutter markers) in background batches, not on the editing path. See
+[Background document indexers](../docs/plugins/indexing.md).
 
 ### Activation
 
@@ -989,9 +996,10 @@ Checked automatically:
   released version `wit/` must match it exactly, so additions start with a
   version bump. Each snapshot passed this check against the one before, so
   one snapshot covers every release.
-- Releasing: when the `wit/` version changes, copy `wit/*.wit` over
-  `tests/api/released/` in the release commit. The release workflow refuses a
-  tag whose `wit/` version differs from the snapshot's.
+- Releasing: `pnpm release:prepare <version>` makes the release commit's
+  changes; when the `wit/` version changed, it copies `wit/*.wit` over
+  `tests/api/released/`. The release workflow refuses a tag whose `wit/`
+  version differs from the snapshot's.
 - `crates/ide-plugin/tests/api_compat.rs`: the versions agree, the SDK's copy
   matches, the version check (rules 4, 5); a simulated next-minor host (every
   import stubbed at the newer version, plus extra functions and an extra

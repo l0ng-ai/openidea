@@ -20,9 +20,11 @@ mod icon_extensions;
 mod icon_patterns;
 mod icon_settings;
 mod icons;
+pub mod index_ops;
 mod install;
 pub mod intellij;
 mod market;
+pub mod navigation;
 mod points;
 mod providers;
 pub mod remote;
@@ -41,8 +43,8 @@ pub use market::{
     read_url as read_market_url, resolve as resolve_market_href,
 };
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
-pub(crate) use providers::editor_providers as editor_providers_for;
 pub use providers::{ProviderKind, set_editor_providers};
+pub(crate) use providers::{editor_plugin_host, editor_providers as editor_providers_for};
 pub use theme::{ThemeDef, ThemeKind};
 pub use types::*;
 
@@ -308,6 +310,7 @@ pub struct PluginHost {
     run_detectors: Arc<run_detectors::RunDetectors>,
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
+    navigation: Mutex<navigation::NavigationIndex>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -396,6 +399,7 @@ impl PluginHost {
             languages,
             run_detectors,
             providers,
+            navigation: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -1881,6 +1885,7 @@ impl PluginHost {
             }
         }
         let Some(error) = actor.take_crash() else { return };
+        self.clear_plugin_navigation(plugin.id());
         if error.starts_with(CANCELLED) {
             // Cancelled on request: restart on next use, no backoff.
             let mut meta = plugin.meta.lock();
@@ -1952,6 +1957,7 @@ impl PluginHost {
     }
 
     fn stop(&self, plugin: &LoadedPlugin) {
+        self.clear_plugin_navigation(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(true);
         }
@@ -1961,6 +1967,7 @@ impl PluginHost {
     }
 
     fn set_failed(&self, plugin: &LoadedPlugin, error: String) {
+        self.clear_plugin_navigation(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
         let mut meta = plugin.meta.lock();
@@ -1969,6 +1976,7 @@ impl PluginHost {
     }
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
+        self.clear_plugin_navigation(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "disabled after failure: {error}");
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(false);

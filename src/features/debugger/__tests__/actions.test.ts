@@ -53,7 +53,7 @@ import { executeAction, getAction } from "@/platform/actions";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
 import type { DebugCapabilities } from "@/platform/ipc";
 import { registerDebugActions } from "../actions";
-import { breakpointsOf, loadBreakpoints } from "../breakpoints/store";
+import { breakpointsOf, loadBreakpoints, toggleBreakpoint } from "../breakpoints/store";
 import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from "../breakpoints/special";
 import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
@@ -251,6 +251,21 @@ describe("debugger actions (IDEA parity)", () => {
     await executeAction("debug.jumpToSource");
     await settle();
     expect(opened.at(-1)).toEqual({ path: "/p/app.py", focus: true });
+  });
+
+  it("puts no new breakpoint on a blank line", async () => {
+    for (const action of ["debug.toggleBreakpoint", "debug.toggleTemporaryBreakpoint"]) {
+      for (const line of [1, 2]) {
+        caret("/p/a.py", "python", "x = 1\n\n   \ny = 2", line);
+        await executeAction(action);
+      }
+      expect(breakpointsOf("/p/a.py"), action).toHaveLength(0);
+    }
+    // One placed before the line went blank can still be toggled off.
+    toggleBreakpoint("/p/a.py", 1);
+    caret("/p/a.py", "python", "x = 1\n\n   \ny = 2", 1);
+    await executeAction("debug.toggleBreakpoint");
+    expect(breakpointsOf("/p/a.py")).toHaveLength(0);
   });
 
   it("toggles temporary, method and field breakpoints at the caret", async () => {

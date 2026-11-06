@@ -200,7 +200,10 @@ async function smoke(language: string) {
   }
 
   // Tests, with the intentionally failing one switched on: one failure, located, the rest passed.
-  const { id, output } = await runToEnd(c.tests.failing(config(c.tests.config)));
+  // Switched on in the saved configuration, as reruns launch the configuration as it is saved now.
+  const failing = c.tests.failing(config(c.tests.config));
+  useRun.setState((s) => ({ configs: s.configs.map((x) => (x.id === failing.id ? failing : x)) }));
+  const { id, output } = await runToEnd(failing);
   const tests = runtime(id)!.tests!;
   const log = `\n--- output ---\n${output.slice(-80).join("\n")}`;
   expect(tests.counts(), log).toMatchObject({ passed: c.tests.passed, failed: 1 });

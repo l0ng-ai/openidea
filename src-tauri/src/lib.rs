@@ -10,6 +10,8 @@ mod dev;
 mod events;
 mod jump_list;
 #[cfg(any(target_os = "linux", test))]
+mod linux_webkit;
+#[cfg(any(target_os = "linux", test))]
 mod linux_window_state;
 mod logging;
 #[cfg(target_os = "macos")]
@@ -68,6 +70,8 @@ pub fn run() {
     // Before the first window: one taskbar identity for every launch path.
     jump_list::set_app_id(&context.config().identifier);
     logging::init(&context.config().identifier);
+    #[cfg(target_os = "linux")]
+    linux_webkit::configure();
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
@@ -196,7 +200,6 @@ pub fn run() {
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
             {
-                titlebar::forget(window);
                 macos::forget_fullscreen(window.label());
             }
             if windows::auxiliary_parent(window.label()).is_none() {

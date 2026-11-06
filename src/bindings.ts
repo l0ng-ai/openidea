@@ -410,6 +410,12 @@ export const commands = {
 	 */
 	lspImplementations: (request: RequestId, doc: DocId, positions: Pos[]) => typedError<Location[][], IdeError>(__TAURI_INVOKE("lsp_implementations", { request, doc, positions })),
 	/**
+	 *  Go to Implementation of the symbol at `pos`. Implementations found before a
+	 *  slower search for the rest arrive on `on_partial`; the result has them all.
+	 *  Cancel with `cancel_request(request)`.
+	 */
+	lspGotoImplementation: (request: RequestId, doc: DocId, pos: Pos, onPartial: Channel<Location[]>) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto_implementation", { request, doc, pos, onPartial })),
+	/**
 	 *  Contents of a read-only language-server document, including JDT library
 	 *  classes and disk class files. Cached per project.
 	 */
@@ -517,6 +523,10 @@ export const commands = {
 	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
 	/**  "Restore" of the branch-deleted notification. */
 	vcsRestoreBranch: (repo: string | null, deleted: DeletedBranch) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_branch", { repo, deleted })),
+	/**  Tag › Delete: the result is what "Restore" needs. */
+	vcsDeleteTag: (repo: string | null, name: string) => typedError<DeletedTag, IdeError>(__TAURI_INVOKE("vcs_delete_tag", { repo, name })),
+	/**  "Restore" of the tag-deleted notification. */
+	vcsRestoreTag: (repo: string | null, deleted: DeletedTag) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_tag", { repo, deleted })),
 	/**  New Branch: creates `name` at `start` (HEAD when absent), optionally checking it out. */
 	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout })),
 	/**
@@ -524,6 +534,13 @@ export const commands = {
 	 *  Returns the undone commit's message.
 	 */
 	vcsUndoCommit: (repo: string | null, commit: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_undo_commit", { repo, commit })),
+	/**
+	 *  Edit Commit Message: rewrites the commit and its descendants without touching the
+	 *  working tree.
+	 */
+	vcsReword: (repo: string | null, commit: string, message: string) => typedError<HeadChange, IdeError>(__TAURI_INVOKE("vcs_reword", { repo, commit, message })),
+	/**  Undo of a history rewrite (Edit Commit Message, Drop, Squash). */
+	vcsRestoreHead: (repo: string | null, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_head", { repo, before, after })),
 	vcsRenameBranch: (repo: string | null, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to })),
 	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
 	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
@@ -582,6 +599,8 @@ export const commands = {
 	 *  `paths` limits the diff to those repository-relative paths; empty diffs every file.
 	 */
 	vcsDiffNumstat: (repo: string | null, from: string, to: string, paths: string[]) => typedError<FileLineStats[], IdeError>(__TAURI_INVOKE("vcs_diff_numstat", { repo, from, to, paths })),
+	/**  Whether the repository has the executable Git hook `name` (Push dialog › Run Git hooks). */
+	vcsHasHook: (repo: string | null, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_hook", { repo, name })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
 	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
 	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
@@ -891,24 +910,24 @@ export const commands = {
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
 	appLogLocation: () => typedError<LogLocation, IdeError>(__TAURI_INVOKE("app_log_location")),
 	appBuildInfo: () => __TAURI_INVOKE<BuildInfo>("app_build_info"),
-	appCheckUpdate: () => typedError<UpdateCheck, IdeError>(__TAURI_INVOKE("app_check_update")),
+	appCheckUpdate: (source: UpdateSource) => typedError<UpdateCheck, IdeError>(__TAURI_INVOKE("app_check_update", { source })),
 	/**
 	 *  The background check made once per process when the first window starts;
 	 *  later calls (other windows) and debug builds get `None`. Failures are logged,
 	 *  not reported: the user didn't ask for this check.
 	 */
-	appStartupUpdateCheck: () => __TAURI_INVOKE<{
+	appStartupUpdateCheck: (source: UpdateSource) => __TAURI_INVOKE<{
 	version: string,
 	currentVersion: string,
 	notes: string | null,
 	date: string | null,
-} | null>("app_startup_update_check"),
+} | null>("app_startup_update_check", { source }),
 	/**
 	 *  Downloads and installs the available update, streaming progress to `on_progress`.
 	 *  Cancellable through `request` until the download completes; the UI then restarts
 	 *  with `app_restart`. One install runs at a time.
 	 */
-	appInstallUpdate: (request: RequestId, onProgress: Channel<UpdateProgress>) => typedError<null, IdeError>(__TAURI_INVOKE("app_install_update", { request, onProgress })),
+	appInstallUpdate: (source: UpdateSource, request: RequestId, onProgress: Channel<UpdateProgress>) => typedError<null, IdeError>(__TAURI_INVOKE("app_install_update", { source, request, onProgress })),
 	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
@@ -1037,6 +1056,14 @@ export const commands = {
 	pluginWebReadFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_web_read_file", { path })),
 	/**  Gutter markers of plugin `line-markers` providers for an open document. */
 	pluginLineMarkers: (doc: DocId) => typedError<LineMarkerInfo[], IdeError>(__TAURI_INVOKE("plugin_line_markers", { doc })),
+	pluginNavigationFiles: () => typedError<NavigationFiles, IdeError>(__TAURI_INVOKE("plugin_navigation_files")),
+	pluginNavigationInvalidate: (paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_invalidate", { paths })),
+	pluginNavigationIndex: (paths: string[], request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_index", { paths, request })),
+	pluginNavigationGoto: (doc: DocId, pos: Pos) => typedError<{
+	range: Range,
+	targets: Location[],
+} | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
+	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -2067,6 +2094,8 @@ export type CheckoutOptions = {
 export type CheckoutOutcome = { kind: "done" } | 
 /**  These local changes (repository-relative paths) would be overwritten. */
 { kind: "localChanges"; files: string[] } | 
+/**  These untracked files (repository-relative paths) would be overwritten. */
+{ kind: "untrackedFiles"; files: string[] } | 
 /**  Local branch `local` has commits that remote branch `remote` does not. */
 { kind: "localBranchAhead"; local: string; remote: string } | 
 /**
@@ -2211,6 +2240,10 @@ export type CommitOptions = {
 	 *  entries of the index change; afterwards their index entries match the new commit.
 	 */
 	partial?: PartialCommitFile[],
+	/**  Files committed with their working-tree content, staged or not. */
+	stage?: IpcPath[],
+	/**  Staged files left out of the commit; they stay staged afterwards. */
+	exclude?: IpcPath[],
 };
 
 /**  Version Control › Commit: commit checks and commit-message inspections. */
@@ -2630,7 +2663,9 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  MySQL and MariaDB. */
 "mysql" | 
 /**  Microsoft SQL Server. */
-"sqlServer" | "clickhouse";
+"sqlServer" | "clickhouse" | 
+/**  Oracle Database (via Oracle Instant Client). */
+"oracle";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -2689,6 +2724,8 @@ export type DbOptions = {
 	autoDisconnectSecs?: number | null,
 	/**  PostgreSQL: show only the configured database, its schemas right under the data source. */
 	singleDatabase?: boolean,
+	/**  Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path). */
+	instantClient?: string,
 };
 
 /**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
@@ -2901,6 +2938,13 @@ export type DeletedBranch = {
 	upstream: string | null,
 	/**  It was not fully merged: its own commits are now unreachable from any branch. */
 	unmerged: boolean,
+};
+
+/**  A deleted tag, enough to restore it (Restore in the tag-deleted notification). */
+export type DeletedTag = {
+	name: string,
+	/**  What the tag pointed at: its tag object (annotated tags) or commit. */
+	target: string,
 };
 
 export type DependencyUpdate = {
@@ -3622,6 +3666,13 @@ export type FileLineStats = {
 	removed: number,
 };
 
+/**  The resolved gutter markers of one file. */
+export type FileMarkers = {
+	path: string,
+	version: number | null,
+	markers: NavigationResult[],
+};
+
 export type FileMatch = {
 	path: IpcPath,
 	/**  Path relative to the project root, as displayed. */
@@ -3815,6 +3866,8 @@ export type GeneralSettings = {
 	powerSaveMode?: boolean,
 	/**  File › Rename Project… (project layer): the name shown for the project; empty = its folder name. */
 	projectName?: string,
+	/**  Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`. */
+	updateSource?: string,
 };
 
 /**  A repository of the signed-in account (owned, collaborator, or organization member). */
@@ -3884,9 +3937,11 @@ export type GitExecutableInfo = {
 
 export type GitOperation = 
 /**  Continue the merge / rebase / cherry-pick / revert in progress. */
-{ op: "continue" } | { op: "abort" } | { op: "skip" } | 
-/**  Commits oldest first. */
-{ op: "cherryPick"; commits: string[] } | 
+{ op: "continue" } | 
+/**  Stage and Retry: stage the changes of tracked files, then continue. */
+{ op: "stageAndContinue" } | { op: "abort" } | { op: "skip" } | 
+/**  Commits oldest first; `record_origin` adds "(cherry picked from commit …)". */
+{ op: "cherryPick"; commits: string[]; recordOrigin?: boolean } | 
 /**  Commits newest first. */
 { op: "revert"; commits: string[] } | { op: "reset"; commit: string; mode: ResetMode } | 
 /**  Rebases `base..HEAD` (`base: None` = from the root) following `entries`, oldest first. */
@@ -4035,6 +4090,12 @@ export type GradleTask = {
 	/**  Lower-case group (`build`, `build setup`, `other`). */
 	group: string,
 	description: string | null,
+};
+
+/**  HEAD before and after a history rewrite, for its Undo. */
+export type HeadChange = {
+	before: string,
+	after: string,
 };
 
 export type HierarchyChoice = {
@@ -5336,6 +5397,17 @@ export type MethodStat = {
 	total: number | null,
 };
 
+export type NavigationFiles = {
+	paths: IpcPath[],
+	indexing: boolean,
+	extensions: string[],
+};
+
+export type NavigationResult = {
+	range: Range,
+	targets: Location[],
+};
+
 export type NewAgentTask = {
 	/**  Validated by the host; defaults to the window project root. */
 	projectRoot?: IpcPath | null,
@@ -5582,6 +5654,8 @@ export type PluginEditor = {
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
 { type: "commandsChanged" } | 
+/**  Cached document associations were disposed (reload, disable or failure). */
+{ type: "documentIndexesChanged" } | 
 /**
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
@@ -6179,9 +6253,15 @@ export type RemoteLaunch = {
 	path: string,
 };
 
-export type RemoteOp = { op: "fetch" } | { op: "pull"; rebase: boolean } | { op: "push"; force_with_lease: boolean; set_upstream: boolean; 
+export type RemoteOp = { op: "fetch" } | { op: "pull"; rebase: boolean } | 
+/**  Update Project › Reset to the Remote Branch. */
+{ op: "resetToUpstream" } | { op: "push"; force_with_lease: boolean; set_upstream: boolean; 
 /**  Push dialog › Push tags. */
-tags?: PushTags | null } | 
+tags?: PushTags | null; 
+/**  Plain `--force` (Force push anyway). */
+force?: boolean; 
+/**  Push dialog › Run Git hooks unchecked (`--no-verify`). */
+no_verify?: boolean } | 
 /**  Deletes a remote branch; `branch` is the remote-tracking name (`origin/feature`). */
 { op: "deleteBranch"; branch: string } | 
 /**
@@ -6189,7 +6269,13 @@ tags?: PushTags | null } |
  *  remote branch `target`; `remote` overrides the upstream's remote (Push dialog's
  *  remote picker).
  */
-{ op: "pushBranch"; branch: string; revision: string | null; force_with_lease: boolean; target?: string | null; remote?: string | null } | 
+{ op: "pushBranch"; branch: string; revision: string | null; force_with_lease: boolean; target?: string | null; remote?: string | null; force?: boolean; 
+/**  Record the target as upstream (Push dialog › Set upstream). */
+set_upstream?: boolean; no_verify?: boolean } | 
+/**  Push Tag › Push to `remote`. */
+{ op: "pushTag"; tag: string; remote: string } | 
+/**  Deletes tag `tag` on `remote` (Delete on Remote). */
+{ op: "deleteRemoteTag"; tag: string; remote: string } | 
 /**  Fast-forwards local `branch` (not checked out) to its upstream. */
 { op: "updateBranch"; branch: string } | 
 /**  Pull dialog: `branches` of `remote` (none = the configured merge branch). */
@@ -6512,21 +6598,56 @@ export type RunSettings = {
 	terminationTimeoutMs?: number,
 };
 
-/**  Build, Execution, Deployment › Run Targets: run configurations on another machine. */
+/**
+ *  Build, Execution, Deployment › Run Targets: run configurations on another machine
+ *  or in a container.
+ */
 export type RunTarget = {
+	kind?: RunTargetKind,
 	id?: string,
 	name?: string,
-	/**  [`SshConfiguration::id`]. */
+	/**  [`SshConfiguration::id`] (SSH). */
 	sshConfig?: string,
-	/**  Remote folder the project is synchronised to and run from. */
+	/**  Remote folder the project is synchronised to and run from (SSH). */
 	projectRoot?: string,
-	/**  Upload changed project files before each run. */
+	/**  Upload changed project files before each run (SSH). */
 	syncBeforeRun?: boolean,
 	/**  Interpreters on the target; empty = the one on the remote `PATH`. */
 	python?: string,
 	node?: string,
 	java?: string,
+	/**
+	 *  Id of a Docker connection of the Services tool window (Docker, Compose);
+	 *  empty = the CLI's own daemon.
+	 */
+	dockerConnection?: string,
+	/**  Image to run (Docker). */
+	image?: string,
+	/**  Compose files, relative to the project; empty = the project's default one (Compose). */
+	composeFiles?: string[],
+	/**  Service to run (Compose). */
+	service?: string,
+	/**
+	 *  Where the project is in the container; empty = `/workspaces/<folder>` (Docker),
+	 *  the service's bind mount of the project (Compose).
+	 */
+	containerRoot?: string,
+	/**  Published ports, as `docker run --publish` takes them (`8000:8000`). */
+	ports?: string[],
+	/**  More options for `docker run` / `docker compose run`, shell-like quoted. */
+	runOptions?: string,
+	/**  Run as the image's user instead of the project folder's owner (Linux). */
+	imageUser?: boolean,
 };
+
+/**  Where a run target runs configurations. */
+export type RunTargetKind = 
+/**  Another machine over SSH, the project synchronised to its folder. */
+"ssh" | 
+/**  A new container of an image (`docker run --rm`), the project bind-mounted. */
+"docker" | 
+/**  A new container of a Compose service (`docker compose run --rm`). */
+"compose";
 
 export type RustSettings = {
 	/**  Directory holding `cargo` / `rustc`; empty = `PATH` / rustup default. */
@@ -6933,7 +7054,10 @@ export type SpellingSettings = {
 };
 
 export type SqlStatement = {
-	/**  UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded). */
+	/**
+	 *  UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded except
+	 *  after an Oracle PL/SQL block, whose `END;` needs it).
+	 */
 	from: number,
 	to: number,
 	text: string,
@@ -7475,6 +7599,13 @@ export type UpdateProgress =
 { type: "downloading"; downloaded: number | null; total: number | null } | 
 /**  Download done; the new version is being written over this one. */
 { type: "installing" };
+
+/**  Where updates are downloaded from (System Settings › Updates). */
+export type UpdateSource = 
+/**  The GitHub releases named in tauri.conf.json. */
+"github" | 
+/**  The CNB mirror of the same releases, for networks where GitHub is slow. */
+"cnb";
 
 export type Variable = {
 	name: string,

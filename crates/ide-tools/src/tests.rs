@@ -58,16 +58,20 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             fs::write(&legacy, b"old official agent").unwrap();
             fs::write(env.root.join("lombok").join(MANIFEST), r#"{"version":"1.18.48"}"#).unwrap();
+            let previous = env.root.join("lombok/bin/lombok-1.18.48-openidea.2.jar");
+            fs::write(&previous, b"previous bundled agent").unwrap();
             let tools = Tools::with_paths(env.root.clone(), OsString::new(), Platform { os, arch });
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.2"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.3"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.2.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.3.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
+            assert_ne!(path, previous, "new agent path must invalidate the JDT LS workspace");
+            assert_eq!(fs::read(&previous).unwrap(), b"previous bundled agent", "other windows may still use it");
         }
     }
 }

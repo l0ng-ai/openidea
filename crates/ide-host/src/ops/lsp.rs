@@ -204,6 +204,17 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
+    if kind == GotoKind::Definition
+        && let Some(plugins) = crate::plugins::editor_plugin_host()
+    {
+        let project = host.project(window)?;
+        let (path, version) = project.documents.identity(doc)?;
+        if let Some(found) = plugins.navigation_at(&project.root, &path, version, pos, Some(window), |p| {
+            project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
+        }) {
+            return Ok(found.targets);
+        }
+    }
     let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
     if kind != GotoKind::Definition {
         return result;
@@ -253,6 +264,28 @@ pub async fn lsp_implementations(
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
     let result = lsp.implementations(doc, &positions, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Go to Implementation of the symbol at `pos`. Implementations found before a slower
+/// search for the rest (Java: the project's, before the dependencies') arrive on
+/// `on_partial`; the result has them all. Cancel with `cancel_request(request)`.
+pub async fn lsp_goto_implementation(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    on_partial: super::Channel<Vec<Location>>,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = lsp
+        .goto_implementation(doc, pos, cancel, &|locs| {
+            let _ = on_partial.send(locs);
+        })
+        .await;
     host.end_request(request);
     result
 }
@@ -745,6 +778,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("lsp_implementations", |c| async move {
         lsp_implementations(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("positions")?).await
+    });
+    d.add("lsp_goto_implementation", |c| async move {
+        let on_partial = c.sender("onPartial")?;
+        lsp_goto_implementation(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, on_partial).await
     });
     d.add(
         "lsp_resolve_class_file",

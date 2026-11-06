@@ -696,3 +696,10 @@ impl views_bindings::openidea::plugin::view_types::Host for StoreData {}
 
 /// Largest message between a plugin and its view's frame.
 const MAX_VIEW_MESSAGE: usize = 1 << 20;
+
+pub(crate) mod indexing_bindings {
+    wasmtime::component::bindgen!({
+        world: "indexing", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}

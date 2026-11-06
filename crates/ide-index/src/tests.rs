@@ -632,3 +632,23 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     assert!(idx.wait_idle(WAIT));
     assert!(idx.find_files("", 100).is_empty());
 }
+
+#[test]
+fn plugin_inventory_respects_excludes_and_symbols_require_matching_text() {
+    let java = "package demo; interface UserMapper { void find(); }";
+    let f = Fixture::new(&[
+        ("src/UserMapper.java", java),
+        ("src/mapper.xml", "<mapper/>"),
+        ("target/Generated.java", "class Generated {}"),
+        ("other.txt", "ignored"),
+    ]);
+    let index = f.open();
+    let paths = index.files_with_extensions(&["java".into(), "xml".into()], 100);
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().all(|p| p.starts_with(f.root.join("src"))));
+    assert_eq!(index.files_with_extensions(&["java".into(), "xml".into()], 1).len(), 1);
+    let path = f.root.join("src/UserMapper.java");
+    let symbols = index.symbols_for_text(&path, java).unwrap();
+    assert!(symbols.iter().any(|s| s.name == "find"));
+    assert!(index.symbols_for_text(&path, &java.replace("find", "renamed")).is_none());
+}

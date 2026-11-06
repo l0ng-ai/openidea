@@ -2,6 +2,7 @@ package ai.openidea.implementations;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.OperationCanceledException;
@@ -13,39 +14,52 @@ import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.lsp4j.Location;
 
 /**
- * Implementations of the type or method at a position, looked up in the workspace's source
- * folders only. The standard request builds the type hierarchy over every dependency jar too,
- * which takes long in a project with many dependencies; the client falls back to it when the
- * sources have none.
+ * Implementations of the type or method at a position, looked up in the workspace's own code
+ * only (source folders and bridged Kotlin classes): {@code {locations, complete}}. The standard
+ * request builds the type hierarchy over every dependency jar too, which takes long in a project
+ * with many dependencies. {@code complete} when the type is declared in the sources, which no
+ * dependency extends; otherwise the client also asks the standard request for the dependencies'
+ * implementations.
  */
 public final class ImplementationsCommand implements IDelegateCommandHandler {
+    /** Classpath attribute of the Kotlin bridge's library entries (`java/kotlin-bridge`). */
+    private static final String KOTLIN_OUTPUT = "ai.openidea.kotlin";
+
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
+        List<Location> locations = new ArrayList<>();
+        boolean complete = find(arguments, locations, monitor);
+        return Map.of("locations", locations, "complete", complete);
+    }
+
+    /** Adds the implementations to {@code result}; whether they are all there are. */
+    private static boolean find(List<Object> arguments, List<Location> result, IProgressMonitor monitor) throws Exception {
         String uri = (String) arguments.get(0);
         int line = ((Number) arguments.get(1)).intValue();
         int column = ((Number) arguments.get(2)).intValue();
-        List<Location> result = new ArrayList<>();
         ITypeRoot root = JDTUtils.resolveTypeRoot(uri);
-        if (root == null) return result;
+        if (root == null) return false;
         var preferences = JavaLanguageServerPlugin.getPreferencesManager();
         IJavaElement element = JDTUtils.findElementAtSelection(root, line, column, preferences, monitor);
         IMethod method = null;
         IType type;
         if (element instanceof IMethod m) {
             int flags = m.getFlags();
-            if (m.isConstructor() || Flags.isStatic(flags) || Flags.isPrivate(flags) || Flags.isFinal(flags)) return result;
+            if (m.isConstructor() || Flags.isStatic(flags) || Flags.isPrivate(flags) || Flags.isFinal(flags)) return false;
             method = m;
             type = m.getDeclaringType();
         } else if (element instanceof IType t) {
             type = t;
         } else {
-            return result;
+            return false;
         }
-        if (type == null || type.getJavaProject() == null) return result;
+        if (type == null || type.getJavaProject() == null) return false;
         IRegion sources = JavaCore.newRegion();
         for (IJavaProject project : JavaCore.create(ResourcesPlugin.getWorkspace().getRoot()).getJavaProjects()) {
             for (IPackageFragmentRoot fragmentRoot : project.getPackageFragmentRoots()) {
-                if (fragmentRoot.getKind() == IPackageFragmentRoot.K_SOURCE) sources.add(fragmentRoot);
+                if (fragmentRoot.getKind() == IPackageFragmentRoot.K_SOURCE || isKotlinOutput(fragmentRoot)) {
+                    sources.add(fragmentRoot);
+                }
             }
         }
         ITypeHierarchy hierarchy = type.getJavaProject().newTypeHierarchy(type, sources, monitor);
@@ -62,6 +76,17 @@ public final class ImplementationsCommand implements IDelegateCommandHandler {
             Location location = found == null ? null : JDTUtils.toLocation(found);
             if (location != null) result.add(location);
         }
-        return result;
+        return !type.isBinary();
+    }
+
+    /** The project's compiled Kotlin classes, attached as a library by the Kotlin bridge. */
+    private static boolean isKotlinOutput(IPackageFragmentRoot root) throws JavaModelException {
+        if (root.getKind() != IPackageFragmentRoot.K_BINARY) return false;
+        IClasspathEntry entry = root.getRawClasspathEntry();
+        if (entry == null) return false;
+        for (IClasspathAttribute attribute : entry.getExtraAttributes()) {
+            if (KOTLIN_OUTPUT.equals(attribute.getName()) && "true".equals(attribute.getValue())) return true;
+        }
+        return false;
     }
 }
