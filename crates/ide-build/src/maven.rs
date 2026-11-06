@@ -1775,6 +1775,14 @@ fn range_of(text: &str, e: &Element) -> Range {
 mod tests {
     use super::*;
 
+    /// `parent_chain` returns paths normalized by `dunce::canonicalize`, so the
+    /// expected values compared against them must go through the same call: the
+    /// temp dirs sit behind symlinks on macOS (`/var` → `/private/var`) and under
+    /// an 8.3 short name on Windows, and raw paths would not match on those runners.
+    fn canon(path: &Path) -> PathBuf {
+        dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
     /// A plugin jar in `repo` whose descriptor declares `goals`.
     fn write_plugin_jar(repo: &Path, group: &str, artifact: &str, version: &str, goals: &[&str]) {
         let dir = repo.join(group.replace('.', "/")).join(artifact).join(version);
@@ -2534,7 +2542,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let goto = goto_declaration(&text, &path, at(&text, "${example.version}"), None).unwrap();
         assert_eq!(goto.kind, PomGotoKind::Property);
-        assert_eq!(goto.path, tmp.path().join("pom.xml"));
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")));
         let from = parent.find("<example.version>").unwrap();
         assert_eq!(goto.range.start, pos_at(&parent, from));
     }
@@ -2565,7 +2573,7 @@ mod tests {
         let path = tmp.path().join("app/pom.xml");
         let text = std::fs::read_to_string(&path).unwrap();
         let goto = goto_declaration(&text, &path, at(&text, "${example.version}"), None).unwrap();
-        assert_eq!(goto.path, path, "the child's own definition");
+        assert_eq!(goto.path, canon(&path), "the child's own definition");
         let from = text.find("<example.version>").unwrap();
         let to = text.find("</example.version>").unwrap() + "</example.version>".len();
         assert_eq!(goto.range, Range::new(pos_at(&text, from), pos_at(&text, to)));
@@ -2605,7 +2613,7 @@ mod tests {
         let goto = goto_declaration(&text, &path, at(&text, "<artifactId>example-lib"), None).unwrap();
         assert_eq!(goto.kind, PomGotoKind::ManagedDependency);
         assert_eq!(goto.label, "com.example:example-lib");
-        assert_eq!(goto.path, tmp.path().join("pom.xml"));
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")));
         let from = parent.find("<artifactId>example-lib</artifactId>").unwrap();
         let to = from + "<artifactId>example-lib</artifactId>".len();
         assert_eq!(goto.range, Range::new(pos_at(&parent, from), pos_at(&parent, to)));
@@ -2644,7 +2652,7 @@ mod tests {
         let goto = goto_declaration(&text, &path, at(&text, "<artifactId>maven-compiler-plugin"), None).unwrap();
         assert_eq!(goto.kind, PomGotoKind::ManagedPlugin);
         assert_eq!(goto.label, "org.apache.maven.plugins:maven-compiler-plugin");
-        assert_eq!(goto.path, tmp.path().join("pom.xml"));
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")));
     }
 
     #[test]
@@ -2676,7 +2684,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let goto = goto_declaration(&text, &path, at(&text, "${example.version}"), Some(repo)).unwrap();
         assert_eq!(goto.kind, PomGotoKind::Property);
-        assert_eq!(goto.path, parent_dir.join("parent-1.0.pom"));
+        assert_eq!(goto.path, canon(&parent_dir.join("parent-1.0.pom")));
         assert_eq!(goto.range.start, pos_at(&parent, parent.find("<example.version>").unwrap()));
     }
 
@@ -2698,7 +2706,7 @@ mod tests {
         let path = tmp.path().join("app/pom.xml");
         let text = std::fs::read_to_string(&path).unwrap();
         let goto = goto_declaration(&text, &path, at(&text, "${project.version}"), None).unwrap();
-        assert_eq!(goto.path, tmp.path().join("pom.xml"), "the child has no own <version>");
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")), "the child has no own <version>");
         assert_eq!(goto.range.start, pos_at(&parent, parent.find("<version>").unwrap()));
     }
 
