@@ -91,6 +91,23 @@ describe("Services selection → actions", () => {
     expect(screen.getByTestId("detail")).toHaveTextContent("one");
   });
 
+  it("Expand All and Collapse All reach lazy nodes and tell their provider", () => {
+    const expand = vi.fn();
+    const lazy: ServiceTreeItem[] = [{ key: "lazy", label: "lazy", icon: "run", expandable: true, children: [] }];
+    useServiceProviders.setState({
+      providers: new Map([["lazy", { id: "lazy", useRoots: () => lazy, expand: (i, open) => expand(i.key, open) }]]),
+    });
+    render(<ServicesTreeView />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
+    expect(useServicesTree.getState().expanded.has("lazy")).toBe(true);
+    expect(expand.mock.calls).toEqual([["lazy", true]]);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse All" }));
+    expect(expand.mock.calls).toEqual([
+      ["lazy", true],
+      ["lazy", false],
+    ]);
+  });
+
   it("Shift click selects a range; Stop skips disabled services", () => {
     const { row, selected, toolbar } = setup();
     fireEvent.mouseDown(row("one"));

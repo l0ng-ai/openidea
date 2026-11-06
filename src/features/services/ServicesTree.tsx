@@ -135,6 +135,16 @@ export function ServicesTreeView() {
     ...(selected && selectedKeys.size === 1 ? moveActions(selected.item) : []),
   ];
 
+  /** Expands / collapses many nodes at once, telling their providers what changed. */
+  const setExpanded = (next: Set<string>) => {
+    useServicesTree.setState({ expanded: next });
+    for (const key of new Set([...expanded, ...next])) {
+      const at = index.get(key);
+      if (!at || expanded.has(key) === next.has(key)) continue;
+      providers.find((p) => p.id === at.provider)?.expand?.(at.item, next.has(key));
+    }
+  };
+
   const Detail = owner?.detail;
   // A hidden tool window stays mounted: drop the pane so a log it follows stops.
   const shown = useToolWindowShown();
@@ -162,7 +172,7 @@ export function ServicesTreeView() {
           iconSize={16}
           title="Expand All"
           disabled={!roots.length}
-          onClick={() => useServicesTree.setState({ expanded: new Set(expandableKeys(roots)) })}
+          onClick={() => setExpanded(new Set(expandableKeys(roots)))}
         />
         <IconButton
           icon="collapse-all"
@@ -170,7 +180,7 @@ export function ServicesTreeView() {
           iconSize={16}
           title="Collapse All"
           disabled={!roots.length}
-          onClick={() => useServicesTree.setState({ expanded: new Set() })}
+          onClick={() => setExpanded(new Set())}
         />
         {actions.length > 0 && <span className={styles.sep} />}
         {actions.map((a) => (
