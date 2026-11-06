@@ -345,7 +345,8 @@ impl PluginApi {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| HostError::Failed(format!("{}: {e}", binary.display())))?;
-        let (tx, rx) = std::sync::mpsc::channel();
+        // Bounded: a program printing faster than the lines are sent waits on its pipe.
+        let (tx, rx) = std::sync::mpsc::sync_channel(1024);
         let read = |pipe: Box<dyn std::io::Read + Send>, stderr: bool| {
             let tx = tx.clone();
             std::thread::spawn(move || {
