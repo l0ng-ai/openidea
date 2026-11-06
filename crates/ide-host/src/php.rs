@@ -16,8 +16,8 @@ use std::sync::Arc;
 use ide_core::settings::{PhpEngineKind, Settings};
 use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink};
 use ide_lsp::types::{
-    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, InlayHint, InlayKind, Markup, SemanticTokens,
-    Signature, SignatureHelp, WorkspaceSymbol,
+    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, InlayHint, InlayKind, Markup, References,
+    SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -325,6 +325,26 @@ impl crate::language_service::LanguageService for PhpService {
             GotoKind::Implementation => return None,
         };
         Some(Ok(targets.into_iter().map(|t| Location::file(t.path, t.range)).collect()))
+    }
+
+    /// Find usages: every file of the engine's index is in scope, so
+    /// `project_wide` changes nothing. PHPDoc and string usages are listed
+    /// with the code ones.
+    fn references(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        include_declaration: bool,
+        _project_wide: bool,
+        cancel: &CancellationToken,
+    ) -> Answer<References> {
+        let engine = self.0.engine()?;
+        let usages = match engine.references(doc, pos, include_declaration, cancel)? {
+            Ok(usages) => usages,
+            Err(e) => return Some(Err(e)),
+        };
+        let locations = usages.into_iter().map(|usage| Location::file(usage.path, usage.range)).collect();
+        Some(Ok(References { locations, ..References::default() }))
     }
 }
 

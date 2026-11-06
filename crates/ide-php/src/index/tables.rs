@@ -23,10 +23,25 @@ pub(super) const NAMESPACES: MultiDef = MultimapTableDefinition::new("namespaces
 /// [`META_FILES_KEY`] → the files with `.phpstorm.meta.php` directives.
 pub(super) const META_FILES: MultiDef = MultimapTableDefinition::new("meta_files");
 
+/// lower-case word → the [`file_id`]s of the files containing it.
+pub(super) const WORDS: MultimapTableDefinition<&str, u64> = MultimapTableDefinition::new("words");
+/// [`file_id`] → path key.
+pub(super) const FILE_IDS: TableDefinition<u64, &str> = TableDefinition::new("file_ids");
+/// content hash → postcard list of the content's words (shared like the
+/// summaries, so a file's [`WORDS`] entries can be removed exactly).
+pub(super) const WORD_LISTS: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("word_lists");
+
 /// The only key of [`META_FILES`].
 pub const META_FILES_KEY: &str = "phpstorm_meta";
 
 const MULTIMAPS: [MultiDef; 5] = [FQNS, SHORT_NAMES, SUBCLASSES, NAMESPACES, META_FILES];
+
+/// The id a file's entries in [`WORDS`] use: the first 8 bytes of the blake3
+/// of its path key (smaller than the path in every entry).
+pub(super) fn file_id(key: &str) -> u64 {
+    let hash = blake3::hash(key.as_bytes());
+    u64::from_le_bytes(hash.as_bytes()[..8].try_into().expect("8 bytes"))
+}
 
 type Result<T> = std::result::Result<T, redb::Error>;
 
@@ -41,6 +56,9 @@ pub(super) fn clear(txn: &WriteTransaction) -> Result<()> {
     ok(txn.delete_table(FILES))?;
     ok(txn.delete_table(SUMMARIES))?;
     ok(txn.delete_table(REFS))?;
+    ok(txn.delete_table(FILE_IDS))?;
+    ok(txn.delete_table(WORD_LISTS))?;
+    ok(txn.delete_multimap_table(WORDS))?;
     for def in MULTIMAPS {
         ok(txn.delete_multimap_table(def))?;
     }
@@ -118,6 +136,9 @@ pub(super) struct Writer<'txn> {
     summaries: Table<'txn, [u8; 32], &'static [u8]>,
     refs: Table<'txn, [u8; 32], u32>,
     names: [MultimapTable<'txn, &'static str, &'static [u8]>; 5],
+    words: MultimapTable<'txn, &'static str, u64>,
+    file_ids: Table<'txn, u64, &'static str>,
+    word_lists: Table<'txn, [u8; 32], &'static [u8]>,
 }
 
 impl<'txn> Writer<'txn> {
@@ -126,6 +147,9 @@ impl<'txn> Writer<'txn> {
             files: txn.open_table(FILES)?,
             summaries: txn.open_table(SUMMARIES)?,
             refs: txn.open_table(REFS)?,
+            words: txn.open_multimap_table(WORDS)?,
+            file_ids: txn.open_table(FILE_IDS)?,
+            word_lists: txn.open_table(WORD_LISTS)?,
             names: [
                 txn.open_multimap_table(FQNS)?,
                 txn.open_multimap_table(SHORT_NAMES)?,
@@ -144,6 +168,10 @@ impl<'txn> Writer<'txn> {
         Ok(self.summaries.get(hash)?.and_then(|v| FileSummary::from_bytes(v.value()).ok()))
     }
 
+    fn word_list(&self, hash: [u8; 32]) -> Result<Vec<String>> {
+        Ok(self.word_lists.get(hash)?.and_then(|v| postcard::from_bytes(v.value()).ok()).unwrap_or_default())
+    }
+
     /// Stores a record whose content (hash) is unchanged.
     pub(super) fn put_record(&mut self, key: &str, record: &FileRecord) -> Result<()> {
         let bytes = postcard::to_allocvec(record).map_err(storage)?;
@@ -159,21 +187,35 @@ impl<'txn> Writer<'txn> {
         Ok(true)
     }
 
-    /// Indexes a file with new content. `summary` is `None` when the summary
-    /// of `record.hash` is already stored.
-    pub(super) fn set_file(&mut self, key: &str, record: FileRecord, summary: Option<&FileSummary>) -> Result<()> {
+    /// Indexes a file with new content. `parsed` (the summary and the words)
+    /// is `None` when those of `record.hash` are already stored.
+    pub(super) fn set_file(
+        &mut self,
+        key: &str,
+        record: FileRecord,
+        parsed: Option<(&FileSummary, &[String])>,
+    ) -> Result<()> {
         if let Some(previous) = self.record(key)? {
             self.unlink(key, previous.hash)?;
         }
-        let summary = match summary {
-            Some(summary) => {
+        let (summary, words) = match parsed {
+            Some((summary, words)) => {
                 if self.summaries.get(record.hash)?.is_none() {
                     self.summaries.insert(record.hash, summary.to_bytes().as_slice())?;
                 }
-                Some(summary.clone())
+                if self.word_lists.get(record.hash)?.is_none() {
+                    let bytes = postcard::to_allocvec(words).map_err(storage)?;
+                    self.word_lists.insert(record.hash, bytes.as_slice())?;
+                }
+                (Some(summary.clone()), words.to_vec())
             }
-            None => self.summary(record.hash)?,
+            None => (self.summary(record.hash)?, self.word_list(record.hash)?),
         };
+        let id = file_id(key);
+        self.file_ids.insert(id, key)?;
+        for word in &words {
+            self.words.insert(word.as_str(), id)?;
+        }
         let refs = self.refs.get(record.hash)?.map_or(0, |v| v.value());
         self.refs.insert(record.hash, refs + 1)?;
         if let Some(summary) = summary {
@@ -193,10 +235,16 @@ impl<'txn> Writer<'txn> {
                 self.names[entry.table].remove(entry.key.as_str(), value.as_slice())?;
             }
         }
+        let id = file_id(key);
+        for word in self.word_list(hash)? {
+            self.words.remove(word.as_str(), id)?;
+        }
+        self.file_ids.remove(id)?;
         let refs = self.refs.get(hash)?.map_or(0, |v| v.value());
         if refs <= 1 {
             self.refs.remove(hash)?;
             self.summaries.remove(hash)?;
+            self.word_lists.remove(hash)?;
         } else {
             self.refs.insert(hash, refs - 1)?;
         }
@@ -214,4 +262,17 @@ pub(super) fn table_sizes(db: &redb::Database) -> [u64; 2] {
     use redb::ReadableTableMetadata;
     let txn = db.begin_read().unwrap();
     [txn.open_table(SUMMARIES).unwrap().len().unwrap(), txn.open_table(REFS).unwrap().len().unwrap()]
+}
+
+/// The sizes of the word tables: words entries, file ids, word lists.
+#[cfg(test)]
+pub(super) fn word_table_sizes(db: &redb::Database) -> [u64; 3] {
+    use redb::ReadableDatabase;
+    use redb::ReadableTableMetadata;
+    let txn = db.begin_read().unwrap();
+    [
+        txn.open_multimap_table(WORDS).unwrap().len().unwrap(),
+        txn.open_table(FILE_IDS).unwrap().len().unwrap(),
+        txn.open_table(WORD_LISTS).unwrap().len().unwrap(),
+    ]
 }

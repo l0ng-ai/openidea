@@ -383,6 +383,16 @@ impl PhpEngine {
         self.shared.documents.lock().values().find(|d| d.path == path).cloned()
     }
 
+    /// Every open document.
+    pub fn open_documents(&self) -> Vec<OpenDocument> {
+        self.shared.documents.lock().values().cloned().collect()
+    }
+
+    /// The parse of an open document's current version.
+    pub(crate) fn parse_open(&self, document: &OpenDocument) -> Arc<ParsedFile> {
+        self.shared.parses.get_or_parse(document.doc, document.version, || document.text.clone())
+    }
+
     /// The path of an open document (normalized).
     pub fn document_path(&self, doc: DocId) -> Option<PathBuf> {
         self.shared.documents.lock().get(&doc).map(|d| d.path.clone())

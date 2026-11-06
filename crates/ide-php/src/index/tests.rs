@@ -344,3 +344,39 @@ fn meta_files_are_listed() {
     index.sync(&p.files(), &token()).unwrap();
     assert!(index.meta_files().unwrap().is_empty());
 }
+
+fn word_files(index: &PhpIndex, word: &str) -> Vec<String> {
+    let files = index.files_with_word(word).unwrap();
+    files.iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect()
+}
+
+#[test]
+fn the_word_index_follows_changes_and_removals() {
+    let p = Project::new(&[("Model.php", MODEL), ("helpers.php", HELPERS), ("Post.php", POST), ("Copy.php", POST)]);
+    let index = PhpIndex::open(&p.cache()).unwrap();
+    index.sync(&p.files(), &token()).unwrap();
+    // Any case, anywhere in the text; whole words only.
+    assert_eq!(word_files(&index, "MODEL"), ["Copy.php", "Model.php", "Post.php"]);
+    assert_eq!(word_files(&index, "app_debug"), ["helpers.php"]);
+    assert_eq!(word_files(&index, "models"), ["Copy.php", "Model.php", "Post.php"]);
+    assert!(word_files(&index, "mode").is_empty());
+
+    p.write("Post.php", "<?php\nnamespace App\\Blog;\n\nclass Article extends \\App\\Models\\User {}\n");
+    p.bump_mtime("Post.php", 60);
+    index.update(&[p.path("Post.php")], &[], &token()).unwrap();
+    assert_eq!(word_files(&index, "model"), ["Copy.php", "Model.php"]);
+    assert_eq!(word_files(&index, "article"), ["Post.php"]);
+
+    // Removing one of two identical files keeps the other's words.
+    index.update(&[], &[p.path("Copy.php"), p.path("helpers.php")], &token()).unwrap();
+    assert_eq!(word_files(&index, "model"), ["Model.php"]);
+    assert!(word_files(&index, "helper").is_empty());
+
+    // Restart: the words are persistent.
+    drop(index);
+    let index = PhpIndex::open(&p.cache()).unwrap();
+    assert_eq!(word_files(&index, "article"), ["Post.php"]);
+    index.sync(&[], &token()).unwrap();
+    assert!(word_files(&index, "article").is_empty());
+    assert_eq!(tables::word_table_sizes(&index.db), [0, 0, 0]);
+}

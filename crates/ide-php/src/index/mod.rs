@@ -19,6 +19,10 @@
 //!   child declarations and child namespaces.
 //! - **meta files**: [`META_FILES_KEY`] → a `PHPSTORM_META` namespace
 //!   [`Decl`] per file with `.phpstorm.meta.php` directives.
+//! - **words**: lower-case identifier ([`words`]) → the files containing it
+//!   anywhere (code, comments, strings), by a 64-bit id of the path; the
+//!   candidates of a find-usages search. Each content hash keeps its word
+//!   list, so a file's entries are removed exactly.
 //!
 //! The name tables are multimaps whose values carry the declaring file, so
 //! two files declaring the same name (polyfills, stubs) keep both entries,
@@ -41,6 +45,7 @@
 mod tables;
 #[cfg(test)]
 mod tests;
+pub(crate) mod words;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -59,9 +64,10 @@ use crate::summary::{ClassKind, FileSummary, SCHEMA_VERSION};
 use crate::syntax::ParsedFile;
 pub use tables::META_FILES_KEY;
 use tables::*;
+pub use words::words;
 
 /// Bump whenever the tables or their encodings change.
-pub const INDEX_SCHEMA: u32 = 2;
+pub const INDEX_SCHEMA: u32 = 3;
 
 /// The database file inside the cache directory.
 pub const FILE_NAME: &str = "php-index.redb";
@@ -287,8 +293,8 @@ impl PhpIndex {
                             w.set_file(key, record, None).map_err(internal)?;
                             stats.reused += 1;
                         }
-                        Scanned::Parsed(record, summary) => {
-                            w.set_file(key, record, Some(&summary)).map_err(internal)?;
+                        Scanned::Parsed(record, summary, words) => {
+                            w.set_file(key, record, Some((&summary, &words))).map_err(internal)?;
                             known.insert(record.hash);
                             stats.parsed += 1;
                         }
@@ -434,6 +440,26 @@ impl PhpIndex {
         Ok(out)
     }
 
+    /// The indexed files containing `word` (an identifier, compared
+    /// case-insensitively) anywhere in their text, sorted.
+    pub fn files_with_word(&self, word: &str) -> IdeResult<Vec<PathBuf>> {
+        let txn = self.db.begin_read().map_err(internal)?;
+        let words = match txn.open_multimap_table(WORDS) {
+            Ok(t) => t,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(internal(e)),
+        };
+        let ids = txn.open_table(FILE_IDS).map_err(internal)?;
+        let mut out = Vec::new();
+        for id in words.get(word.to_ascii_lowercase().as_str()).map_err(internal)? {
+            if let Some(key) = ids.get(id.map_err(internal)?.value()).map_err(internal)? {
+                out.push(key_path(key.value()));
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     /// The files with `.phpstorm.meta.php` directives, sorted.
     pub fn meta_files(&self) -> IdeResult<Vec<PathBuf>> {
         Ok(self.multimap(META_FILES, META_FILES_KEY)?.iter().map(Decl::path).collect())
@@ -469,7 +495,7 @@ enum Scanned {
     Rehashed(FileRecord),
     /// New content whose summary is already stored.
     Reused(FileRecord),
-    Parsed(FileRecord, FileSummary),
+    Parsed(FileRecord, Box<FileSummary>, Vec<String>),
 }
 
 fn scan(path: &Path, key: &str, previous: Option<&FileRecord>, known: &HashSet<[u8; 32]>) -> Scanned {
@@ -500,7 +526,7 @@ fn scan(path: &Path, key: &str, previous: Option<&FileRecord>, known: &HashSet<[
     }
     let text = String::from_utf8_lossy(&bytes);
     let parsed = ParsedFile::parse(key, text.as_ref());
-    Scanned::Parsed(record, FileSummary::extract(&parsed))
+    Scanned::Parsed(record, Box::new(FileSummary::extract(&parsed)), words(text.as_ref()))
 }
 
 fn open_file(cache_dir: &Path) -> Option<Database> {

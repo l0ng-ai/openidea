@@ -21,13 +21,17 @@
 //!   caret is on.
 //! - [`PhpEngine::hover`]: signature, type at the caret and PHPDoc as
 //!   Markdown, inherited docblocks included ([`hover`]).
+//! - [`PhpEngine::references`]: find usages through the word index, each
+//!   candidate resolved again ([`references`]).
 
 pub mod hover;
+pub mod references;
 pub(crate) mod symbol;
 #[cfg(test)]
 mod tests;
 
 pub use hover::HoverInfo;
+pub use references::{Usage, UsageKind};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

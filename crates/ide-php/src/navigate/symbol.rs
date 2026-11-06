@@ -267,12 +267,13 @@ pub(crate) fn file_text(engine: &PhpEngine, path: &Path) -> Option<String> {
     }
 }
 
-struct Lookup<'a, 'r> {
-    parsed: &'a ParsedFile,
-    names: &'a FileNames,
-    here: &'a FileSummary,
-    resolver: &'r Resolver<'r>,
-    types: &'r ExprTypes<'a, 'r>,
+/// Looks up what names, members and variables of one file refer to.
+pub(super) struct Lookup<'a, 'r> {
+    pub parsed: &'a ParsedFile,
+    pub names: &'a FileNames,
+    pub here: &'a FileSummary,
+    pub resolver: &'r Resolver<'r>,
+    pub types: &'r ExprTypes<'a, 'r>,
 }
 
 fn contains(span: Span, offset: u32) -> bool {
@@ -289,7 +290,7 @@ impl<'a> Lookup<'a, '_> {
     }
 
     /// A resolved class-like, function or constant name.
-    fn name(&self, name: &ResolvedName) -> Option<AtCaret> {
+    pub(super) fn name(&self, name: &ResolvedName) -> Option<AtCaret> {
         let class = enclosing_class(self.here, name.start);
         let context = class.map(|class| Context::in_class(&class.fqn)).unwrap_or_default();
         let fqn = match &name.resolution {
@@ -424,7 +425,7 @@ impl<'a> Lookup<'a, '_> {
     }
 
     /// A member selector, or a named argument, of the innermost expression.
-    fn expression(&self, expr: &'a Expression<'a>, frames: &[Frame<'a>], offset: u32) -> Option<AtCaret> {
+    pub(super) fn expression(&self, expr: &'a Expression<'a>, frames: &[Frame<'a>], offset: u32) -> Option<AtCaret> {
         let context = self.types.context(frames);
         let selector = |selector: &ClassLikeMemberSelector<'_>| match selector {
             ClassLikeMemberSelector::Identifier(name) if contains(name.span, offset) => {
@@ -585,7 +586,7 @@ impl<'a> Lookup<'a, '_> {
     }
 
     /// Where `$name` is declared in the scope `frames` end in.
-    fn variable_declaration(&self, name: &[u8], frames: &[Frame<'a>]) -> Option<Span> {
+    pub(super) fn variable_declaration(&self, name: &[u8], frames: &[Frame<'a>]) -> Option<Span> {
         let end = frames.iter().rposition(|frame| !matches!(frame, Frame::Class(_))).map_or(0, |i| i + 1);
         let scope = &frames[..end];
         let parameter = |list: &'a FunctionLikeParameterList<'a>| {

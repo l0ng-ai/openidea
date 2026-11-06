@@ -1132,6 +1132,15 @@ async fn php_native() {
     smoke
         .definition(at("src/Library.php", "return $lent;", "$lent"), at("src/Library.php", "$lent = $book", "$lent"))
         .await;
+    // Find usages: the baseline's function check, and a class used across files and in PHPDoc.
+    let (of, files) = PHP.references;
+    smoke.references(of, files).await;
+    smoke
+        .references(
+            at("src/Model/Book.php", "final class Book", "Book"),
+            &["bin/library.php", "src/Library.php", "src/Model/Book.php"],
+        )
+        .await;
     // Hover: the baseline's function check, a method with its resolved signature, a variable's type.
     let (over, shows) = PHP.hover;
     smoke.hover(over, shows).await;

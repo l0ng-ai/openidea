@@ -9,6 +9,8 @@ use crate::project::LayoutConfig;
 use crate::stubs::StubFilter;
 use crate::syntax::{LineIndex, ParsedFile};
 
+mod references;
+
 const WAIT: Duration = Duration::from_secs(60);
 const CARET: &str = "/*|*/";
 

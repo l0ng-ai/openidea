@@ -283,7 +283,7 @@ The design:
 
 ## Plan 3: References and navigation
 
-- [ ] Phase 3.1: Find usages
+- [x] Phase 3.1: Find usages
   - Add a word index (identifier → files) to the redb indexes.
   - References: look up candidate files, parse and resolve each candidate, and keep the true matches (including PHPDoc type references and string class names `'App\\Foo'`, marked separately).
   - Respect `includeDeclaration`.
