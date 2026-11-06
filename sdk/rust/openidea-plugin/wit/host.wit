@@ -1,4 +1,4 @@
-package openidea:plugin@1.1.0;
+package openidea:plugin@1.2.0;
 
 /// Writes to the IDE log, tagged with the plugin id.
 interface log {

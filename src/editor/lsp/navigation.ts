@@ -1,3 +1,9 @@
+import {
+  contributedNavigation,
+  navigationEpoch,
+  onNavigationProvidersChanged,
+  type NavigationMatch,
+} from "../navigationProviders";
 /**
  * Go to declaration / implementation / type declaration (⌘B, ⌥⌘B, ⇧⌘B,
  * ⌘-click with a link underline while ⌘ is held, and a plain middle-button
@@ -69,9 +75,18 @@ import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
-import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
+import { isNavigationGesture, onNavigationModifier, navigationModifierHeld } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
+import {
+  CONFIGURATION_NAVIGATION_MAX_AGE,
+  configurationNavigationRevision,
+  navigationWord,
+  hasConfigurationNavigation,
+  invalidateConfigurationNavigation,
+  isConfigurationDocument,
+  requestNavigation,
+} from "./configurationNavigation";
 
 const highlightsBackoff = featureBackoff();
 
@@ -151,7 +166,7 @@ function searchingTitle(name: string | null, count: number): string {
 }
 
 function nameAt(view: EditorView, offset: number): string | null {
-  const word = view.state.wordAt(offset);
+  const word = navigationWord(view, offset);
   return word ? view.state.sliceDoc(word.from, word.to) : null;
 }
 
@@ -251,6 +266,21 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
     if (own?.(view, offset)) return;
     if (showPhpConstructDocumentation(view, offset)) return;
+    const before = view.state.doc;
+    const plugin = await contributedNavigation(view, offset).catch(() => null);
+    if (view.state.doc !== before) return;
+    if (plugin) {
+      if (plugin.targets.length === 1) await navigateTo(plugin.targets[0]!);
+      else
+        openPopup({
+          kind: "list",
+          anchor: caretAnchor(view, offset),
+          title: tx`Choose Declaration`,
+          items: await locationItems(plugin.targets),
+          pin: pinToFind(view.state.sliceDoc(plugin.from, plugin.to), plugin.targets),
+        });
+      return;
+    }
   }
   const doc = docOf(view);
   if (!doc) return;
@@ -264,9 +294,7 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     const done = showPendingHint(view, tx`Finding navigation target…`);
     const stream = kind === "implementation" ? streamedImplementations(view, offset, done) : null;
     streamed = stream;
-    const request = stream
-      ? () => stream.request(doc.doc, pos)
-      : () => lspRequest(() => commands.lspGoto(doc.doc, pos, kind));
+    const request = stream ? () => stream.request(doc.doc, pos) : () => requestNavigation(view, offset, kind);
     try {
       locs = dedupeLocations(await gotoAfterEdits(view, request));
     } finally {
@@ -460,7 +488,7 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
   const links = knownLinks(view);
   const ref = (links && linkReference(view.state.doc, links, pos)) ?? textReference(view.state.doc, pos);
   if (ref) return { from: ref.from, to: ref.to, link: true };
-  const word = view.state.wordAt(pos);
+  const word = navigationWord(view, pos);
   return word && word.from < word.to ? { from: word.from, to: word.to, link: false } : null;
 }
 
@@ -468,13 +496,18 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
  * Whether ⌘-click at `offset` would navigate somewhere, with the declaration
  * info to show; null when there is no target (no underline then, as in IDEA).
  */
-async function probeNavigation(view: EditorView, offset: number): Promise<{ info: NavInfo | null } | null> {
+async function probeNavigation(
+  view: EditorView,
+  offset: number,
+): Promise<{ info: NavInfo | null; plugin?: NavigationMatch } | null> {
+  const plugin = await contributedNavigation(view, offset).catch(() => null);
+  if (plugin) return { info: null, plugin };
   const doc = docOf(view);
   let navigable = !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
   if (!navigable && doc) {
     const pos = offsetToPos(view.state.doc, offset);
     try {
-      navigable = (await lspRequest(() => commands.lspGoto(doc.doc, pos, "definition"))).length > 0;
+      navigable = (await requestNavigation(view, offset, "definition")).length > 0;
     } catch (e) {
       if (!isUnavailable(e)) throw e;
       navigable = !!(await gotoFallback(view, doc, pos))?.length;
@@ -490,10 +523,16 @@ const linkPlugin = ViewPlugin.fromClass(
   class {
     last: { x: number; y: number } | null = null;
     /** Probe results per word (`from:to`) for the current document. */
-    private probed = new Map<string, { info: NavInfo | null } | null>();
+    private probed = new Map<
+      string,
+      { result: { info: NavInfo | null; plugin?: NavigationMatch } | null; at: number }
+    >();
+    private revision = configurationNavigationRevision();
     private probedDoc: Text | null = null;
+    private providerEpoch = -1;
     private probing: string | null = null;
     private off: () => void;
+    private offProviders: () => void;
     private disposed = false;
     private hovered: string | null = null;
     private probeVersion = 0;
@@ -502,6 +541,15 @@ const linkPlugin = ViewPlugin.fromClass(
       // Window-wide, so ⌘/Ctrl over an unfocused editor underlines too; released anywhere clears it.
       const offModifier = onNavigationModifier((held) => {
         if (!held || this.last) this.show(held);
+      });
+      this.offProviders = onNavigationProvidersChanged(() => {
+        if (this.disposed) return;
+        this.probeVersion++;
+        clearTimeout(this.probeTimer);
+        this.probing = null;
+        this.probed.clear();
+        this.set(null);
+        if (this.last) this.show(navigationModifierHeld());
       });
       // IDEA's macOS "Force touch" shortcut: a force click navigates like ⌘-click
       // (the keyboard dispatcher keeps the system Look Up popover away).
@@ -518,6 +566,7 @@ const linkPlugin = ViewPlugin.fromClass(
     }
     destroy() {
       this.off();
+      this.offProviders();
       this.disposed = true;
       this.probeVersion++;
       clearTimeout(this.probeTimer);
@@ -560,14 +609,35 @@ const linkPlugin = ViewPlugin.fromClass(
         this.set({ from: target.from, to: target.to, info: null });
         return;
       }
-      if (this.probedDoc !== view.state.doc) {
+      if (
+        this.probedDoc !== view.state.doc ||
+        this.providerEpoch !== navigationEpoch() ||
+        this.revision !== configurationNavigationRevision()
+      ) {
+        this.providerEpoch = navigationEpoch();
+        this.revision = configurationNavigationRevision();
+        this.probeVersion++;
+        clearTimeout(this.probeTimer);
+        this.probing = null;
         this.probed.clear();
         this.probedDoc = view.state.doc;
       }
       const key = `${target.from}:${target.to}`;
-      if (this.probed.has(key)) {
-        const hit = this.probed.get(key);
-        this.set(hit ? { from: target.from, to: target.to, info: hit.info } : null);
+      const hit = this.probed.get(key);
+      // Configuration targets appear as the Java import progresses: they expire, and a
+      // remembered target must still be in the shared results. Other results last until an edit.
+      const config = isConfigurationDocument(view);
+      if (
+        hit &&
+        (!config || Date.now() - hit.at < (hit.result ? CONFIGURATION_NAVIGATION_MAX_AGE : 1000)) &&
+        (!hit.result || !config || hasConfigurationNavigation(view, target.from))
+      ) {
+        const found = hit.result;
+        this.set(
+          found
+            ? { from: found.plugin?.from ?? target.from, to: found.plugin?.to ?? target.to, info: found.info }
+            : null,
+        );
         return;
       }
       const current = view.state.field(linkField);
@@ -584,21 +654,35 @@ const linkPlugin = ViewPlugin.fromClass(
         }
       }, 3000);
       const docAt = view.state.doc;
+      const epochAt = navigationEpoch();
+      const revision = this.revision;
       void probeNavigation(view, target.from)
         .then((result) => {
-          if (this.disposed || view.state.doc !== docAt || this.probeVersion !== version) return;
+          if (
+            this.disposed ||
+            view.state.doc !== docAt ||
+            this.probeVersion !== version ||
+            epochAt !== navigationEpoch() ||
+            revision !== configurationNavigationRevision()
+          )
+            return;
           clearTimeout(this.probeTimer);
-          this.probed.set(key, result);
+          if (this.probed.size >= 128) this.probed.delete(this.probed.keys().next().value!);
+          this.probed.set(key, { result, at: Date.now() });
           if (this.probing !== key) return;
           this.probing = null;
+          if (!result) this.set(null);
           if (result) {
-            this.set({ from: target.from, to: target.to, info: null });
+            this.set({ from: result.plugin?.from ?? target.from, to: result.plugin?.to ?? target.to, info: null });
+            // Configuration navigation is a link gesture. Plain hover still
+            // shows schema/type documentation; do not cover the key with it here.
+            if (result.plugin || isConfigurationDocument(view)) return;
             // Documentation must never delay the link cursor or underline.
             void requestHover(view, target.from)
               .then((hover) => {
                 if (this.disposed || view.state.doc !== docAt || this.probeVersion !== version || !hover) return;
                 const info = declarationSummary(hover.contents);
-                this.probed.set(key, { info });
+                this.probed.set(key, { result: { info }, at: Date.now() });
                 this.set({ from: target.from, to: target.to, info });
               })
               .catch(() => {});
@@ -842,7 +926,10 @@ const highlightPlugin = ViewPlugin.fromClass(
 export function navigationExtension(): Extension {
   return [
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) editedAt.set(u.view, performance.now());
+      if (u.docChanged) {
+        editedAt.set(u.view, performance.now());
+        invalidateConfigurationNavigation();
+      }
     }),
     linkField,
     linkPlugin,

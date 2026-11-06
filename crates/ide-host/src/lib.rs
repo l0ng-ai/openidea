@@ -223,6 +223,10 @@ impl Host {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        if let Some(plugins) = plugins::editor_plugin_host() {
+            plugins.invalidate_client_navigation(&project.root, Some(window), None);
+            plugins.set_active_file(window, None);
+        }
         if !project.light {
             self.environment.project_closed();
         }

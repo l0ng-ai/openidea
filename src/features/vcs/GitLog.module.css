@@ -423,12 +423,6 @@
   word-break: break-word;
   line-height: 1.5;
 }
-.expandMessage {
-  display: block;
-  margin-block-start: 6px;
-  font-weight: normal;
-  font-size: var(--fs-small);
-}
 .fullMessage {
   margin-top: 6px;
   color: var(--fg);

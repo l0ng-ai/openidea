@@ -153,6 +153,8 @@ pub struct PluginUpdate {
 pub enum PluginEvent {
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
+    /// Cached document associations were disposed (reload, disable or failure).
+    DocumentIndexesChanged,
     /// The marketplace offers newer versions of installed plugins (announced
     /// once per set of versions).
     UpdatesAvailable { updates: Vec<PluginUpdate> },
