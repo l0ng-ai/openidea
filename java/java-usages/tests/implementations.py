@@ -24,7 +24,8 @@ config_source = next(home / name / 'config.ini' for name in config_names if (hom
 project = work / 'project'
 (project / 'src/zoo').mkdir(parents=True)
 (project / '.project').write_text('<projectDescription><name>zoo</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>')
-(project / '.classpath').write_text('<classpath><classpathentry kind="src" path="src"/><classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/><classpathentry kind="output" path="bin"/></classpath>')
+# `kotlin`: the project's compiled Kotlin classes, as the Kotlin bridge attaches them.
+(project / '.classpath').write_text('<classpath><classpathentry kind="src" path="src"/><classpathentry kind="lib" path="kotlin"><attributes><attribute name="ai.openidea.kotlin" value="true"/></attributes></classpathentry><classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/><classpathentry kind="output" path="bin"/></classpath>')
 sources = {
     'Repo.java': '''package zoo;
 
@@ -88,6 +89,10 @@ public class Use {
 for name, text in sources.items():
     (project / 'src/zoo' / name).write_text(text)
 uri = lambda name: (project / 'src/zoo' / name).as_uri()
+# Stands in for a Kotlin class of the project implementing the Java interface.
+(work / 'kotlin-src/zoo').mkdir(parents=True)
+(work / 'kotlin-src/zoo/Longs.java').write_text('package zoo;\n\npublic class Longs implements Repo<Long> {\n    public void save(Long item) {\n    }\n}\n')
+subprocess.run(['javac', '-implicit:none', '-sourcepath', str(project / 'src'), '-d', str(project / 'kotlin'), str(work / 'kotlin-src/zoo/Longs.java')], check=True)
 
 log = (work / 'stderr.log').open('w')
 proc = subprocess.Popen(['java', '-Declipse.application=org.eclipse.jdt.ls.core.id1', '-Dosgi.bundles.defaultStartLevel=4', '-Declipse.product=org.eclipse.jdt.ls.core.product', '-Xmx1G', '--add-modules=ALL-SYSTEM', '--add-opens', 'java.base/java.util=ALL-UNNAMED', '--add-opens', 'java.base/java.lang=ALL-UNNAMED', '-jar', str(next((home / 'plugins').glob('org.eclipse.equinox.launcher_*.jar'))), '-configuration', str(config), '-data', str(work / 'metadata')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
@@ -154,30 +159,31 @@ def implementations(file, needle):
     line, col = position(file, needle)
     found = command('openidea.java.implementations', uri(file), line, col)
     names = []
-    for loc in found:
+    for loc in found['locations']:
         name = pathlib.Path(urllib.parse.unquote(urllib.parse.urlparse(loc['uri']).path)).name
         names.append(f"{name}:{loc['range']['start']['line']}")
-    return sorted(names)
+    return sorted(names), found['complete']
 
 
 try:
-    init = request('initialize', {'processId': None, 'rootUri': project.as_uri(), 'workspaceFolders': [{'uri': project.as_uri(), 'name': 'zoo'}], 'capabilities': {}, 'initializationOptions': {'bundles': [str(bundle)], 'settings': {'java': {'import': {'gradle': {'enabled': False}, 'maven': {'enabled': False}}}}}})
+    init = request('initialize', {'processId': None, 'rootUri': project.as_uri(), 'workspaceFolders': [{'uri': project.as_uri(), 'name': 'zoo'}], 'capabilities': {}, 'initializationOptions': {'bundles': [str(bundle)], 'extendedClientCapabilities': {'classFileContentsSupport': True}, 'settings': {'java': {'import': {'gradle': {'enabled': False}, 'maven': {'enabled': False}}}}}})
     assert 'openidea.java.implementations' in init['capabilities']['executeCommandProvider']['commands']
     send({'jsonrpc': '2.0', 'method': 'initialized', 'params': {}})
     for name, text in sources.items():
         send({'jsonrpc': '2.0', 'method': 'textDocument/didOpen', 'params': {'textDocument': {'uri': uri(name), 'languageId': 'java', 'version': 1, 'text': text}}})
     request('java/buildWorkspace', True)
+    # (implementations in the sources, whether they are all there are)
     cases = {
-        # Classes, abstract ones too; not the sub-interface.
-        ('Repo.java', 'Repo<T>'): ['Base.java:2', 'Numbers.java:2', 'Words.java:2'],
+        # Classes, abstract ones too, and those of the bridged Kotlin output; not the sub-interface.
+        ('Repo.java', 'Repo<T>'): (['Base.java:2', 'Longs.java:0', 'Numbers.java:2', 'Words.java:2'], True),
         # Through the type arguments; not the abstract re-declaration.
-        ('Repo.java', 'save(T'): ['Numbers.java:3', 'Words.java:3'],
-        ('Use.java', 'save("x")'): ['Numbers.java:3', 'Words.java:3'],
-        ('Repo.java', 'name()'): ['Words.java:6'],
-        # A library type's implementations in the sources.
-        ('Use.java', 'Runnable task'): ['Task.java:2'],
-        ('Use.java', 'run();'): ['Task.java:3'],
-        ('Use.java', 'alone()'): [],
+        ('Repo.java', 'save(T'): (['Longs.java:0', 'Numbers.java:3', 'Words.java:3'], True),
+        ('Use.java', 'save("x")'): (['Longs.java:0', 'Numbers.java:3', 'Words.java:3'], True),
+        ('Repo.java', 'name()'): (['Words.java:6'], True),
+        # A library type's implementations in the sources; the library has more.
+        ('Use.java', 'Runnable task'): (['Task.java:2'], False),
+        ('Use.java', 'run();'): (['Task.java:3'], False),
+        ('Use.java', 'alone()'): ([], True),
     }
     failures = []
     for (file, needle), expected in cases.items():

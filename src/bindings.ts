@@ -410,6 +410,12 @@ export const commands = {
 	 */
 	lspImplementations: (request: RequestId, doc: DocId, positions: Pos[]) => typedError<Location[][], IdeError>(__TAURI_INVOKE("lsp_implementations", { request, doc, positions })),
 	/**
+	 *  Go to Implementation of the symbol at `pos`. Implementations found before a
+	 *  slower search for the rest arrive on `on_partial`; the result has them all.
+	 *  Cancel with `cancel_request(request)`.
+	 */
+	lspGotoImplementation: (request: RequestId, doc: DocId, pos: Pos, onPartial: Channel<Location[]>) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto_implementation", { request, doc, pos, onPartial })),
+	/**
 	 *  Contents of a read-only language-server document, including JDT library
 	 *  classes and disk class files. Cached per project.
 	 */
@@ -6516,21 +6522,56 @@ export type RunSettings = {
 	terminationTimeoutMs?: number,
 };
 
-/**  Build, Execution, Deployment › Run Targets: run configurations on another machine. */
+/**
+ *  Build, Execution, Deployment › Run Targets: run configurations on another machine
+ *  or in a container.
+ */
 export type RunTarget = {
+	kind?: RunTargetKind,
 	id?: string,
 	name?: string,
-	/**  [`SshConfiguration::id`]. */
+	/**  [`SshConfiguration::id`] (SSH). */
 	sshConfig?: string,
-	/**  Remote folder the project is synchronised to and run from. */
+	/**  Remote folder the project is synchronised to and run from (SSH). */
 	projectRoot?: string,
-	/**  Upload changed project files before each run. */
+	/**  Upload changed project files before each run (SSH). */
 	syncBeforeRun?: boolean,
 	/**  Interpreters on the target; empty = the one on the remote `PATH`. */
 	python?: string,
 	node?: string,
 	java?: string,
+	/**
+	 *  Id of a Docker connection of the Services tool window (Docker, Compose);
+	 *  empty = the CLI's own daemon.
+	 */
+	dockerConnection?: string,
+	/**  Image to run (Docker). */
+	image?: string,
+	/**  Compose files, relative to the project; empty = the project's default one (Compose). */
+	composeFiles?: string[],
+	/**  Service to run (Compose). */
+	service?: string,
+	/**
+	 *  Where the project is in the container; empty = `/workspaces/<folder>` (Docker),
+	 *  the service's bind mount of the project (Compose).
+	 */
+	containerRoot?: string,
+	/**  Published ports, as `docker run --publish` takes them (`8000:8000`). */
+	ports?: string[],
+	/**  More options for `docker run` / `docker compose run`, shell-like quoted. */
+	runOptions?: string,
+	/**  Run as the image's user instead of the project folder's owner (Linux). */
+	imageUser?: boolean,
 };
+
+/**  Where a run target runs configurations. */
+export type RunTargetKind = 
+/**  Another machine over SSH, the project synchronised to its folder. */
+"ssh" | 
+/**  A new container of an image (`docker run --rm`), the project bind-mounted. */
+"docker" | 
+/**  A new container of a Compose service (`docker compose run --rm`). */
+"compose";
 
 export type RustSettings = {
 	/**  Directory holding `cargo` / `rustc`; empty = `PATH` / rustup default. */

@@ -37,7 +37,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.1.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.2.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -151,6 +151,13 @@ themes can be applied, settings pages are there — **before** any plugin code
 is loaded. Menus, shortcuts and status bar items refer to the plugin's
 declared commands. A plugin shortcut never takes a keystroke the IDE (or the
 user) already uses; the user can rebind it in the keymap editor.
+
+A `when` clause (on commands and menus) can test whether the open project
+contains a file or folder: `when = "workspaceContains:.devcontainer/devcontainer.json"`.
+The path is exact (no globs) and relative to the project root; in a workspace the
+key is true when any of its projects contains the path. It updates when
+files change. An IDE that doesn't know the key treats it as
+false: the plugin still installs and the key reads as false there.
 
 ### Activation
 

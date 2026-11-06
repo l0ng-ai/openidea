@@ -30,6 +30,7 @@ import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { missingAdapter } from "./missingAdapter";
+import { startFailureMessage } from "./startFailure";
 
 export type SessionStatus = "starting" | "running" | "paused" | "terminated";
 
@@ -607,7 +608,7 @@ export async function startSession(
       group: "run",
       level: "error",
       title: `Cannot start debugger for ${launch.name}`,
-      body: e instanceof Error ? e.message : String(e),
+      body: startFailureMessage(e),
       key: "debug.start",
     });
     return null;

@@ -89,7 +89,7 @@ pub mod providers_bindings {
         export_macro_name: "__export_editor_providers_world",
         default_bindings_module: "openidea_plugin::providers_bindings",
         with: {
-            "openidea:plugin/types@1.1.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/types@1.2.0": crate::bindings::openidea::plugin::types,
         },
     });
 }
@@ -106,16 +106,16 @@ pub mod views_bindings {
         export_macro_name: "__export_views_world",
         default_bindings_module: "openidea_plugin::views_bindings",
         with: {
-            "openidea:plugin/types@1.1.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.1.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.1.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.1.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.2.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.2.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.2.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.2.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
 
 /// The plugin API version this SDK targets.
-pub const API_VERSION: &str = "1.1";
+pub const API_VERSION: &str = "1.2";
 
 /// A plugin. One instance lives as long as the plugin's Wasm instance (until
 /// it is disabled, crashes or is reclaimed when idle).

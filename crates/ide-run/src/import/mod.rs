@@ -241,7 +241,7 @@ pub(crate) fn config(name: &str, kind: &str, command: String, args: Vec<String>,
 
 /// Splits a command line into words: whitespace, `'…'` and `"…"` quoting, backslash escapes
 /// (like `parseArgs` in `src/platform/commandLine.ts`).
-pub(crate) fn split_args(line: &str) -> Vec<String> {
+pub fn split_args(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut has = false;

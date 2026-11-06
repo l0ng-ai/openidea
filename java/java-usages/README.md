@@ -57,7 +57,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.4.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.5.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -78,6 +78,11 @@ Version 1.3.0 adds the class-hierarchy refactoring commands; its reproducible SH
 Version 1.4.0 adds `openidea.java.implementations` (Go to Implementation in the workspace's
 source folders, before the standard request that also searches every dependency jar); its
 reproducible SHA-256 is `d7601493eda846811b4bb8bfe7f3d56e3234a45e663648210db3937cebc770a5`.
+Version 1.5.0 answers `{locations, complete}`: `complete` when the type is declared in the sources
+(no dependency implements it), otherwise the app also runs the standard request and adds the
+dependencies' implementations after the first ones. The search also covers the project's Kotlin
+classes attached by the Kotlin bridge; its reproducible SHA-256 is
+`7588748c2797f9da2beb209714a75c29b4e31b155f095329bfb7e399d807c20a`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
@@ -107,6 +112,7 @@ python3 java/java-usages/tests/verify.py /path/to/jdtls /path/to/lombok.jar
 python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
 OPENIDEA_USAGES_INDEX_STRESS=1 python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
 python3 java/java-usages/tests/hierarchy.py /path/to/jdtls
+python3 java/java-usages/tests/implementations.py /path/to/jdtls
 ```
 
 The harnesses select the JDT LS configuration for the current platform. The first

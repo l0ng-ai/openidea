@@ -1,5 +1,6 @@
 use super::Emit;
 use crate::Host;
+use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
 use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
 use std::time::Duration;
@@ -140,12 +141,33 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
-    // Settings › Run Targets: over SSH.
+    // Settings › Run Targets: over SSH, or in a container.
     if config.kind == "tomcat" && config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
         return Err(IdeError::invalid("Tomcat Local requires the local machine"));
     }
-    if config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
+    if let Some(id) = config.extras.target.as_deref().filter(|t| !t.is_empty()) {
         let settings = project.settings.effective();
+        let target = ide_remote::service::run_target(&settings, id)?;
+        if target.kind != RunTargetKind::Ssh {
+            // A local run of the docker CLI: the command is resolved in the container, and
+            // this machine's toolchains and `PYTHONPATH` don't apply.
+            let config = container::prepare(host, &project.root, target, config).await?;
+            let encoding = settings.console.encoding;
+            let options = StartOptions {
+                encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
+                python_paths: Vec::new(),
+                // A folder on this machine: not in the container.
+                ruby_reporter: None,
+            };
+            project.require_trust()?;
+            return host.processes.start(
+                &project.root,
+                &config,
+                &options,
+                project.sink.clone(),
+                Box::new(move |c| on_output(c)),
+            );
+        }
         let out = on_output.clone();
         return host
             .remote
@@ -271,4 +293,5 @@ pub fn list(host: &Host) -> Vec<RunInfo> {
 }
 
 mod commands;
+mod container;
 pub use commands::*;

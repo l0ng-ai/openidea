@@ -23,6 +23,42 @@ describe("run config → launch config", () => {
     expect(launchConfigFor(rc({}), "/p")).toBeNull();
   });
 
+  it("php-debug: the script runs on the PHP from Settings with Xdebug's debug mode, on a free port", () => {
+    const xdebug = ["-dxdebug.mode=debug", "-dxdebug.start_with_request=yes", "-dxdebug.client_port=${port}"];
+    // `artisan serve` with PHP at Default: the script is a file of the project.
+    const serve = launchConfigFor(
+      rc({ kind: "php", command: "php", args: ["artisan", "serve"], debugAdapter: "php-debug" }),
+      "/app",
+      "/opt/php@8.3/bin/php",
+    )!;
+    expect(serve).toMatchObject({ adapter: "php-debug", program: "/app/artisan", args: ["serve"], cwd: "/app" });
+    expect(extra(serve)).toEqual({ port: 0, runtimeArgs: xdebug, runtimeExecutable: "/opt/php@8.3/bin/php" });
+    // The PHP the command names wins, and its options stay with it.
+    const file = launchConfigFor(
+      rc({
+        kind: "php",
+        command: "/usr/bin/php8.4",
+        args: ["-dmemory_limit=1G", "src/a.php", "x"],
+        debugAdapter: "php-debug",
+      }),
+      "/app",
+      "/opt/php@8.3/bin/php",
+    )!;
+    expect(file).toMatchObject({ program: "/app/src/a.php", args: ["x"] });
+    expect(extra(file)).toEqual({
+      port: 0,
+      runtimeArgs: [...xdebug, "-dmemory_limit=1G"],
+      runtimeExecutable: "/usr/bin/php8.4",
+    });
+    // PHPUnit runs its script directly; without a PHP in Settings, php-debug uses the `php` on PATH.
+    const unit = launchConfigFor(
+      rc({ kind: "phpunit", command: "vendor/bin/phpunit", args: ["--filter", "testA"], debugAdapter: "php-debug" }),
+      "/app",
+    )!;
+    expect(unit).toMatchObject({ program: "/app/vendor/bin/phpunit", args: ["--filter", "testA"] });
+    expect(extra(unit)).toEqual({ port: 0, runtimeArgs: xdebug });
+  });
+
   it("cargo run builds the binary through codelldb's cargo integration", () => {
     const l = launchConfigFor(
       rc({

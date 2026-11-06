@@ -4,6 +4,7 @@ import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
 import { useDocMeta } from "./model/document";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
+import { registerTextEditorWrapper } from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { resolveMenuItems } from "@/ui";
@@ -318,5 +319,23 @@ describe("EditorController", () => {
     expect(items.find((i) => i.label === "Close Tabs to the Right")?.disabled).toBe(false);
     dispose();
     useProject.setState({ project: null, settings: null });
+  });
+
+  it("switches an open image tab to a text tab when a matching text editor wrapper registers", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/arch.diagram.svg": "<svg/>" }));
+    ctrl.start();
+    await ctrl.openInput({ kind: "image", key: "image:/p/arch.diagram.svg", path: "/p/arch.diagram.svg" });
+    expect(openFilePaths(useTabs.getState())).toEqual([]);
+    const offWrapper = registerTextEditorWrapper({
+      id: "plugin.acme.diagram.canvas",
+      matches: (p) => p.endsWith(".diagram.svg"),
+      component: () => null,
+    });
+    try {
+      expect(openFilePaths(useTabs.getState())).toEqual(["/p/arch.diagram.svg"]);
+      await vi.waitFor(() => expect(ctrl?.activeSlot?.model.path).toBe("/p/arch.diagram.svg"));
+    } finally {
+      offWrapper();
+    }
   });
 });
