@@ -1256,6 +1256,16 @@ impl PluginHost {
         self.shared.status_items()
     }
 
+    /// Plugin context keys in effect for window `client`: global keys overlaid with its own.
+    pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
+        self.shared.context_keys(client)
+    }
+
+    /// Forgets the context keys scoped to window `label`, which closed.
+    pub fn forget_client(&self, label: &str) {
+        self.shared.forget_client(label);
+    }
+
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
     pub fn cancel_task(&self, task_id: &str) -> bool {
         task_id.parse().is_ok_and(|id| self.shared.cancel_task(id))

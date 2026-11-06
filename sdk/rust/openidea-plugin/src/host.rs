@@ -73,6 +73,10 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_context(key: &str, value: Option<&str>) -> Result<(), Error> {
+        wit::ui::set_context(key, value).map_err(error)
+    }
+
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         wit::ui::copy_to_clipboard(text).map_err(error)
     }
@@ -543,6 +547,16 @@ pub fn set_status_item(id: &str, item: &StatusItem) {
 
 pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
+}
+
+/// Sets (`Some`: JSON text of a boolean, number or string) or removes (`None`) the
+/// plugin's context key for `when` clauses as `plugin.<id>.<key>`, in the window the
+/// current command or event came from (every window when there is none). A window's
+/// value takes precedence over the global one; global calls don't clear window keys.
+/// The key is 1-64 of `A-Za-z0-9_-`; the string at most 1024 bytes, the raw text at
+/// most 4096 bytes; at most 100 keys.
+pub fn set_context(key: &str, value: Option<&str>) -> Result<(), Error> {
+    imp::set_context(key, value)
 }
 
 /// Copies `text` to the system clipboard. Needs `clipboard`.

@@ -40,6 +40,11 @@ impl Plugin for Jobs {
                 let remotes = project.vcs_remotes()?;
                 Ok(Some(remotes.into_iter().map(|(n, u)| format!("{n}={u}")).collect::<Vec<_>>().join("\n")))
             }
+            "context" => {
+                let (key, value) = arg.unwrap_or_default().split_once('=').ok_or("expected key=value")?;
+                host::set_context(key, Some(value).filter(|v| !v.is_empty()))?;
+                Ok(None)
+            }
             "copy" => {
                 host::copy_to_clipboard(arg.unwrap_or_default())?;
                 Ok(None)

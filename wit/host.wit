@@ -23,6 +23,14 @@ interface ui {
     /// Shows or updates the plugin's status bar item `id` in every window.
     set-status-item: func(id: string, item: status-item);
     remove-status-item: func(id: string);
+    /// Sets (`some`) or removes (`none`) the plugin's context key `key` in the
+    /// window the current command or event came from (every window when there is
+    /// none), for `when` clauses as `plugin.<id>.<key>`. A window's value takes
+    /// precedence over the global one; global calls don't clear window keys.
+    /// `value` is JSON text of a boolean, number or string (the string at most 1024
+    /// bytes, the raw text at most 4096 bytes); `key` is 1-64 of `A-Za-z0-9_-`; at
+    /// most 100 keys.
+    set-context: func(key: string, value: option<string>) -> result<_, error>;
     /// Copies `text` to the system clipboard. Requires `clipboard`.
     copy-to-clipboard: func(text: string) -> result<_, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.

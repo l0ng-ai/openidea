@@ -1,7 +1,7 @@
 //! [`HostApi`] for one plugin's code: what its imports reach in the IDE.
 //! Capabilities were checked by the runtime before any of this runs.
 
-use super::{PluginEvent, PluginEventSink};
+use super::{PluginContextKey, PluginEvent, PluginEventSink};
 use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
@@ -22,6 +22,10 @@ const MAX_STORAGE: usize = 1 << 20;
 const MAX_KEY: usize = 256;
 /// Most status bar items per plugin.
 const MAX_STATUS_ITEMS: usize = 8;
+const MAX_CONTEXT_KEYS: usize = 100;
+
+/// (window or `None` for every window, plugin, key).
+type ContextKey = (Option<String>, String, String);
 
 /// What plugins see of the open projects; provided by the app
 /// ([`super::PluginHost::set_workspace`]), over [`crate::Host`] on the desktop.
@@ -156,6 +160,8 @@ pub(super) struct Shared {
     next_task: AtomicU64,
     /// (plugin, item id) → item, for windows opened later.
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
+    /// (scope, plugin, key) → JSON value.
+    contexts: Mutex<BTreeMap<ContextKey, String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
     /// plugin → files it shows problems for, withdrawn when it stops.
@@ -184,6 +190,7 @@ impl Shared {
             tasks: Mutex::default(),
             next_task: AtomicU64::new(1),
             status: Mutex::default(),
+            contexts: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
         })
@@ -226,6 +233,27 @@ impl Shared {
         self.status.lock().iter().map(|((p, id), item)| (p.clone(), id.clone(), item.clone())).collect()
     }
 
+    pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
+        let contexts = self.contexts.lock();
+        let mut keys: BTreeMap<(&str, &str), &str> = BTreeMap::new();
+        for ((_, plugin, key), value) in contexts.iter().filter(|((s, ..), _)| s.is_none()) {
+            keys.insert((plugin, key), value);
+        }
+        if let Some(client) = client {
+            for ((_, plugin, key), value) in contexts.iter().filter(|((s, ..), _)| s.as_deref() == Some(client)) {
+                keys.insert((plugin, key), value);
+            }
+        }
+        keys.into_iter()
+            .map(|((p, k), v)| PluginContextKey { plugin_id: p.to_owned(), key: k.to_owned(), value: v.to_owned() })
+            .collect()
+    }
+
+    /// Drops the context keys scoped to window `client` (it closed), without events.
+    pub fn forget_client(&self, client: &str) {
+        self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
+    }
+
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
@@ -239,6 +267,18 @@ impl Shared {
         };
         for id in removed {
             self.sink.emit(None, PluginEvent::StatusItemChanged { plugin_id: plugin.to_owned(), id, item: None });
+        }
+        let removed: Vec<(Option<String>, String)> = {
+            let mut contexts = self.contexts.lock();
+            let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
+            for key in &keys {
+                contexts.remove(key);
+            }
+            keys.into_iter().map(|(scope, _, key)| (scope, key)).collect()
+        };
+        for (scope, key) in removed {
+            self.sink
+                .emit(scope.as_deref(), PluginEvent::ContextChanged { plugin_id: plugin.to_owned(), key, value: None });
         }
         let tasks: Vec<u64> = self.tasks.lock().iter().filter(|(_, t)| t.plugin == plugin).map(|(id, _)| *id).collect();
         for id in tasks {
@@ -369,6 +409,34 @@ impl HostApi for PluginApi {
         self.shared
             .sink
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
+    }
+
+    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
+        let map_key = (client.map(str::to_owned), self.id().to_owned(), key.to_owned());
+        {
+            let mut contexts = self.shared.contexts.lock();
+            match &value {
+                Some(value) => {
+                    if contexts.get(&map_key) == Some(value) {
+                        return Ok(());
+                    }
+                    let count = contexts.keys().filter(|(_, p, _)| p == self.id()).count();
+                    if !contexts.contains_key(&map_key) && count >= MAX_CONTEXT_KEYS {
+                        return Err(HostError::Invalid(format!("more than {MAX_CONTEXT_KEYS} context keys")));
+                    }
+                    contexts.insert(map_key, value.clone());
+                }
+                None => {
+                    if contexts.remove(&map_key).is_none() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        self.shared
+            .sink
+            .emit(client, PluginEvent::ContextChanged { plugin_id: self.id().to_owned(), key: key.to_owned(), value });
+        Ok(())
     }
 
     fn projects(&self) -> Vec<PathBuf> {

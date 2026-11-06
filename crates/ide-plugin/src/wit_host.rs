@@ -244,6 +244,34 @@ impl ui::Host for StoreData {
         Ok(())
     }
 
+    fn set_context(&mut self, key: String, value: Option<String>) -> Fallible<()> {
+        let valid_key =
+            (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+        if !valid_key {
+            return Ok(Err(wit::Error::Invalid(format!("context key {key:?}: expected 1-64 of A-Za-z0-9_-"))));
+        }
+        let invalid_value = || {
+            Ok(Err(wit::Error::Invalid(
+                "context value: expected a JSON boolean, number or string of at most 1024 bytes".into(),
+            )))
+        };
+        let value = match value {
+            None => None,
+            Some(raw) if raw.len() > 4096 => return invalid_value(),
+            Some(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                Ok(parsed @ (serde_json::Value::Bool(_) | serde_json::Value::Number(_))) => {
+                    serde_json::to_string(&parsed).ok()
+                }
+                Ok(parsed @ serde_json::Value::String(_)) if parsed.as_str().is_some_and(|s| s.len() <= 1024) => {
+                    serde_json::to_string(&parsed).ok()
+                }
+                _ => return invalid_value(),
+            },
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_context(client.as_deref(), &key, value).map_err(to_wit))
+    }
+
     fn copy_to_clipboard(&mut self, text: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Clipboard) {
             return Ok(Err(e));

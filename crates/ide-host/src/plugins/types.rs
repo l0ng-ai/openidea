@@ -163,6 +163,10 @@ pub enum PluginEvent {
     /// A plugin's status bar item was set (`item`) or removed.
     #[serde(rename_all = "camelCase")]
     StatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },
+    /// A plugin's context key was set (`value`: JSON text) or removed, in the
+    /// emitted window (every window when the client is `None`).
+    #[serde(rename_all = "camelCase")]
+    ContextChanged { plugin_id: String, key: String, value: Option<String> },
     /// A plugin began a task: show it with the background tasks.
     #[serde(rename_all = "camelCase")]
     TaskStarted { plugin_id: String, task_id: String, title: String, cancellable: bool },
@@ -249,6 +253,15 @@ pub struct PluginStatusItem {
     pub plugin_id: String,
     pub id: String,
     pub item: StatusItem,
+}
+
+/// A plugin's context key for `when` clauses (`value` is JSON text).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginContextKey {
+    pub plugin_id: String,
+    pub key: String,
+    pub value: String,
 }
 
 /// A gutter marker from a plugin's `line-markers` provider.
