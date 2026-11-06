@@ -85,8 +85,13 @@ pub async fn web_goto(window: Window, state: State<'_, AppState>, doc: DocId, po
 
 #[tauri::command]
 #[specta::specta]
-pub async fn index_usages(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<Vec<Location>> {
-    ide_host::ops::nav::index_usages(&state.host, window.label(), name).await
+pub async fn index_usages(
+    window: Window,
+    state: State<'_, AppState>,
+    name: String,
+    css: bool,
+) -> IdeResult<Vec<Location>> {
+    ide_host::ops::nav::index_usages(&state.host, window.label(), name, css).await
 }
 
 #[tauri::command]

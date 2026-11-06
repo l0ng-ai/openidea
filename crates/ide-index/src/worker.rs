@@ -378,7 +378,7 @@ impl Shared {
             .syntax
             .script_occurrences(&lang, &text)
             .into_iter()
-            .map(|o| StoredOccurrence { name: o.name, range: o.range, qualified: o.qualified })
+            .map(|o| StoredOccurrence { name: o.name, range: o.range, qualified: o.qualified, css_class: o.css_class })
             .collect();
         // Vue SFCs and HTML documents: the script declarations are index
         // symbols too (⌘O finds components and their functions; the outline

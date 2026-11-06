@@ -225,13 +225,14 @@ impl ProjectIndex {
         self.shared.data.read().get(path).is_some()
     }
 
-    /// Files and ranges where `name` occurs (identifiers, component tags):
-    /// the find-usages fallback's answer, one table lookup.
-    pub fn usages_of(&self, name: &str) -> Vec<Location> {
+    /// Files and ranges where `name` occurs (identifiers, component tags, or
+    /// — with `css` — CSS class tokens): the find-usages fallback's answer,
+    /// one table lookup.
+    pub fn usages_of(&self, name: &str, css: bool) -> Vec<Location> {
         self.shared
             .data
             .read()
-            .occurrences_of(name)
+            .occurrences_of(name, css)
             .into_iter()
             .map(|(path, range, _qualified)| Location { path: path.into(), range, uri: None })
             .collect()
@@ -410,6 +411,7 @@ pub mod bench_support {
                         name: format!("{}{}{k}", WORDS[next(WORDS.len())], SUFFIX[next(SUFFIX.len())]),
                         range: Range::default(),
                         qualified: k % 4 == 0,
+                        css_class: false,
                     })
                     .collect();
                 let record = FileRecord { symbols, occurrences, ..Default::default() };
@@ -440,8 +442,8 @@ pub mod bench_support {
         }
 
         /// The inverted occurrence map's answer for `name` (find-usages).
-        pub fn usages_of(&self, name: &str) -> Vec<(PathBuf, Range, bool)> {
-            self.data.occurrences_of(name)
+        pub fn usages_of(&self, name: &str, css: bool) -> Vec<(PathBuf, Range, bool)> {
+            self.data.occurrences_of(name, css)
         }
     }
 }

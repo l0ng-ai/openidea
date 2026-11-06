@@ -56,6 +56,8 @@ pub(crate) struct StoredOccurrence {
     pub name: String,
     pub range: Range,
     pub qualified: bool,
+    /// A CSS class token (`class="card"`): indexed in its own namespace.
+    pub css_class: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,8 +91,9 @@ pub(crate) struct FileEntry {
     pub hash: [u8; 32],
     pub symbols: Box<[Sym]>,
     pub facts: Facts,
-    /// The file's own occurrences (names + ranges), for inverted-map removal.
-    pub occurrences: Box<[(Box<str>, Range, bool)]>,
+    /// The file's own occurrences (names + ranges + flags), for inverted-map
+    /// removal.
+    pub occurrences: Box<[(Box<str>, Range, bool, bool)]>,
     pub ignored: bool,
 }
 
@@ -124,7 +127,7 @@ impl FileEntry {
             occurrences: record
                 .occurrences
                 .into_iter()
-                .map(|o| (o.name.into_boxed_str(), o.range, o.qualified))
+                .map(|o| (o.name.into_boxed_str(), o.range, o.qualified, o.css_class))
                 .collect(),
             ignored: record.ignored,
         }
@@ -147,10 +150,11 @@ impl FileEntry {
             occurrences: self
                 .occurrences
                 .iter()
-                .map(|(name, range, qualified)| StoredOccurrence {
+                .map(|(name, range, qualified, css)| StoredOccurrence {
                     name: name.to_string(),
                     range: *range,
                     qualified: *qualified,
+                    css_class: *css,
                 })
                 .collect(),
             symbols: self
@@ -179,6 +183,7 @@ pub(crate) struct OccSlot {
     pub slot: u32,
     pub range: Range,
     pub qualified: bool,
+    pub css: bool,
 }
 
 #[derive(Default)]
@@ -189,6 +194,9 @@ pub(crate) struct IndexData {
     /// Entries reference files by their slot; removal re-filters each name's
     /// list from the entry's own occurrence list.
     occ_by_name: HashMap<Box<str>, Vec<OccSlot>>,
+    /// CSS class tokens (`class="card"`), namespaced away from identifiers:
+    /// `.card`'s usages must not mix with a JS identifier of the same name.
+    css_occ_by_name: HashMap<Box<str>, Vec<OccSlot>>,
     occ_total: u32,
     /// Every folder holding an indexed file at any depth, keyed by its `rel` with a
     /// trailing `/`: its absolute path and the number of files below it.
@@ -204,10 +212,11 @@ impl IndexData {
     }
 
     /// Files and ranges where `name` occurs (identifiers, component tags),
-    /// with the member-position flag for call-site filtering.
-    pub(crate) fn occurrences_of(&self, name: &str) -> Vec<(PathBuf, Range, bool)> {
-        self.occ_by_name
-            .get(name)
+    /// with the member-position flag for call-site filtering. `css` selects
+    /// the CSS-class namespace instead of identifiers.
+    pub(crate) fn occurrences_of(&self, name: &str, css: bool) -> Vec<(PathBuf, Range, bool)> {
+        let map = if css { &self.css_occ_by_name } else { &self.occ_by_name };
+        map.get(name)
             .map(|list| {
                 list.iter()
                     .filter_map(|o| {
@@ -219,22 +228,21 @@ impl IndexData {
     }
 
     fn occ_add(&mut self, slot: u32, entry: &FileEntry) {
-        for (name, range, qualified) in &entry.occurrences {
-            self.occ_by_name.entry(name.clone()).or_default().push(OccSlot {
-                slot,
-                range: *range,
-                qualified: *qualified,
-            });
+        for (name, range, qualified, css) in &entry.occurrences {
+            let list =
+                if *css { &mut self.css_occ_by_name } else { &mut self.occ_by_name }.entry(name.clone()).or_default();
+            list.push(OccSlot { slot, range: *range, qualified: *qualified, css: *css });
             self.occ_total += 1;
         }
     }
 
     fn occ_remove(&mut self, slot: u32, entry: &FileEntry) {
-        for (name, ..) in &entry.occurrences {
-            if let Some(list) = self.occ_by_name.get_mut(name.as_ref()) {
+        for (name, _, _, css) in &entry.occurrences {
+            let map = if *css { &mut self.css_occ_by_name } else { &mut self.occ_by_name };
+            if let Some(list) = map.get_mut(name.as_ref()) {
                 list.retain(|o| o.slot != slot);
                 if list.is_empty() {
-                    self.occ_by_name.remove(name.as_ref());
+                    map.remove(name.as_ref());
                 }
             }
         }
@@ -249,8 +257,11 @@ impl IndexData {
         let symbols = entry.symbols.len() as u32;
         // The entry's occurrences, staged so the move into `files` (which
         // borrows self mutably) and the map insert (also self) don't collide.
-        let mut occs_staging: Vec<(Box<str>, Range, bool)> =
-            entry.occurrences.iter().map(|(name, range, qualified)| (name.clone(), *range, *qualified)).collect();
+        let mut occs_staging: Vec<(Box<str>, Range, bool, bool)> = entry
+            .occurrences
+            .iter()
+            .map(|(name, range, qualified, css)| (name.clone(), *range, *qualified, *css))
+            .collect();
         if let Some(&slot) = self.by_path.get(&entry.path) {
             if let Some(old) = self.files[slot as usize].take() {
                 self.occ_remove(slot, &old);
@@ -283,11 +294,13 @@ impl IndexData {
         // The entry was moved into the slot above; take the data occ_add
         // needs before it, since both borrow `self`.
         let occs = std::mem::take(&mut occs_staging);
-        for (name, range, qualified) in &occs {
-            self.occ_by_name.entry(name.clone()).or_default().push(OccSlot {
+        for (name, range, qualified, css) in &occs {
+            let map = if *css { &mut self.css_occ_by_name } else { &mut self.occ_by_name };
+            map.entry(name.clone()).or_default().push(OccSlot {
                 slot,
                 range: *range,
                 qualified: *qualified,
+                css: *css,
             });
             self.occ_total += 1;
         }

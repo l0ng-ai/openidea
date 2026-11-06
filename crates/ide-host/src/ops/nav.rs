@@ -132,10 +132,10 @@ pub enum IndexNote {
 
 /// Where the project index sees `name` (identifiers, component tags):
 /// the find-usages fallback's answer, an inverted-index lookup.
-pub async fn index_usages(host: &Host, window: &str, name: String) -> IdeResult<Vec<Location>> {
+pub async fn index_usages(host: &Host, window: &str, name: String, css: bool) -> IdeResult<Vec<Location>> {
     let project = host.project(window)?;
     let index = project.index.clone();
-    blocking(move || Ok(index.usages_of(&name))).await
+    blocking(move || Ok(index.usages_of(&name, css))).await
 }
 
 /// The languages whose `<script>` regions carry module facts.
@@ -387,7 +387,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("index_goto", |c| async move {
         index_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("word")?).await
     });
-    d.add("index_usages", |c| async move { index_usages(&c.host, &c.window, c.arg("name")?).await });
+    d.add("index_usages", |c| async move { index_usages(&c.host, &c.window, c.arg("name")?, c.arg("css")?).await });
     d.add("fs_resolve_reference", |c| async move {
         fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
     });
