@@ -453,6 +453,23 @@ impl PhpEngine {
         indexed.or_else(|| self.open_declaration(fqn, &pick))
     }
 
+    /// Whether the bundled stubs declare `fqn` and the project doesn't.
+    pub(crate) fn only_stubs_declare(&self, kind: NameKind, fqn: &str) -> bool {
+        let stubs = self.stubs();
+        let in_stubs = match kind {
+            NameKind::ClassLike => stubs.class_like(fqn).is_some(),
+            NameKind::Function => stubs.function(fqn).is_some(),
+            NameKind::Constant => stubs.constant(fqn).is_some(),
+            NameKind::Namespace => false,
+        };
+        in_stubs
+            && self
+                .project_declaration(kind, fqn, |summary| {
+                    crate::navigate::find_declaration(summary, kind, fqn).map(|_| ())
+                })
+                .is_none()
+    }
+
     /// A declaration only an open buffer has (a new file, or one outside
     /// the indexed folders). Buffers that don't mention the short name are
     /// skipped without being summarised.

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use ide_core::settings::{PhpEngineKind, Settings};
 use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink};
 use ide_lsp::types::{
-    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, InlayHint, InlayKind, Markup, Signature,
-    SignatureHelp, WorkspaceSymbol,
+    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, InlayHint, InlayKind, Markup, SemanticTokens,
+    Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -185,9 +185,9 @@ impl DocumentObserver for PhpObserver {
 /// Intelephense. The requests it answers natively are added feature by feature:
 /// so far document and workspace symbols, hover, goto definition and type
 /// definition (names, members, named arguments and variables),
-/// completion with lazily resolved documentation, signature help and inlay
+/// completion with lazily resolved documentation, signature help, inlay
 /// hints (parameter names and types; Editor › Inlay Hints decides which
-/// kinds the editor shows).
+/// kinds the editor shows) and semantic tokens.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -300,6 +300,21 @@ impl crate::language_service::LanguageService for PhpService {
             })
             .collect();
         Some(Ok(hints))
+    }
+
+    fn semantic_tokens(&self, doc: DocId) -> Answer<Option<SemanticTokens>> {
+        use ide_php::semantic::{TOKEN_MODIFIERS, TOKEN_TYPES};
+        let engine = self.0.engine()?;
+        let tokens = engine.semantic_tokens(doc)?;
+        let mut data = Vec::with_capacity(tokens.len() * 5);
+        for token in tokens {
+            data.extend([token.start.line, token.start.col, token.len, token.ty.index(), token.modifiers]);
+        }
+        Some(Ok(Some(SemanticTokens {
+            data,
+            token_types: TOKEN_TYPES.iter().map(|t| t.to_string()).collect(),
+            token_modifiers: TOKEN_MODIFIERS.iter().map(|m| m.to_string()).collect(),
+        })))
     }
 
     fn goto(&self, doc: DocId, pos: Pos, kind: GotoKind) -> Answer<Vec<Location>> {

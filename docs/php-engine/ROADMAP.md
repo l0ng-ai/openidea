@@ -278,7 +278,7 @@ The design:
 
   Tests: unit tests and the Native `language_smoke` signature check.
 
-- [ ] Phase 2.12: Semantic tokens
+- [x] Phase 2.12: Semantic tokens
       Semantic tokens: classes, interfaces, enums, functions, methods, properties, constants, parameters and variables. Modifiers: static, readonly, deprecated, declaration. Use the legend the frontend already maps (`src/editor/lsp/semantic.ts`). Tests: a golden token list.
 
 ## Plan 3: References and navigation

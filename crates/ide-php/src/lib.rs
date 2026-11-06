@@ -41,6 +41,9 @@
 //!   ([`complete::Completions`]): members, variables, keywords, names with
 //!   auto-import, named arguments, expected values, enum cases and array
 //!   keys.
+//! - [`semantic`]: semantic tokens (classes, interfaces, enums, functions,
+//!   methods, properties, constants, enum cases, parameters and variables,
+//!   with declaration, static, readonly, deprecated and built-in modifiers).
 //! - [`signature`]: signature help (the call around the caret, its active
 //!   parameter) and inlay hints (parameter names, variable and closure
 //!   return types).
@@ -60,6 +63,7 @@ pub mod names;
 pub mod navigate;
 pub mod probe;
 pub mod project;
+pub mod semantic;
 pub mod signature;
 pub mod stubs;
 pub mod summary;
