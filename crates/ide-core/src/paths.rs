@@ -79,10 +79,18 @@ fn complete(base: &Path, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
     None
 }
 
-/// Lexically drops `.` components a `./x`-style alias target may carry, so
-/// resolved paths equal the index's own (no filesystem access).
+/// Lexically drops `.` components a `./x`-style join may carry, so resolved
+/// paths equal the index's own (no filesystem access, no symlink resolution —
+/// `dunce::simplified` alone does not strip `.` on unix).
 fn simplified(path: &Path) -> PathBuf {
-    PathBuf::from(dunce::simplified(path))
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
