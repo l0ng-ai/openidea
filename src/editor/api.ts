@@ -21,6 +21,7 @@ import {
   Annotation,
   Compartment,
   Facet,
+  type ChangeSpec,
   StateEffect,
   type EditorState,
   type Extension,
@@ -192,6 +193,13 @@ export const remoteChange = Annotation.define<boolean>();
 export const mirroredChange = Annotation.define<boolean>();
 
 /**
+ * A temporary change that must not reach the document model or the backend
+ * (an IME composition's preedit, which the feature removes again when the
+ * composition ends).
+ */
+export const transientChange = Annotation.define<boolean>();
+
+/**
  * Provided by editor/core per editor: resolves once the editor's local edits
  * reached the backend document. Language-server requests read the backend's
  * copy, so position-based requests that edit (format, rename) await it first.
@@ -230,8 +238,12 @@ export interface ScrollbarMark {
   to?: number;
   /** CSS colour, normally a token such as `var(--danger)`. */
   color: string;
-  /** `line` (default): 4px-wide bar on the lane; `thin`: 2px bar (search hits, occurrences). */
-  kind?: "line" | "thin";
+  /**
+   * `line` (default): 4px-wide bar on the lane; `thin`: 2px bar (search hits, occurrences);
+   * `full`: the lane's whole width, from the top of the first line to the top of the last (IDEA's
+   * diff and merge error stripe, so a one-line change is a min-height dash).
+   */
+  kind?: "line" | "thin" | "full";
   /** Shown on hover. */
   tooltip?: string;
   /** Higher wins when marks overlap. Default 0. */
@@ -516,6 +528,27 @@ export const codeLenses = Facet.define<readonly CodeLens[], readonly CodeLens[]>
 let openPathsProvider: (() => string[]) | null = null;
 
 /** Paths of every file open in an editor tab (all panes, visual order, unique). */
+/**
+ * 0-based source line at the top of a view that shows a file instead of its text
+ * editor (Markdown Preview only), per path. Structure's Autoscroll from Source
+ * follows it while set; the owning view clears it when it stops standing in.
+ */
+const useShownLines = create<Record<string, number>>(() => ({}));
+
+export function setShownLine(path: string, line: number | null) {
+  if ((useShownLines.getState()[path] ?? null) === line) return;
+  useShownLines.setState((s) => {
+    const next = { ...s };
+    if (line === null) delete next[path];
+    else next[path] = line;
+    return next;
+  }, true);
+}
+
+export function useShownLine(path: string | null): number | null {
+  return useShownLines((s) => (path ? (s[path] ?? null) : null));
+}
+
 export function openEditorPaths(): string[] {
   return openPathsProvider?.() ?? [];
 }
@@ -557,12 +590,34 @@ export function isLibraryPath(path: string): boolean {
  */
 export interface DocumentAttachment {
   path: string;
+  /** The backend document (for document-scoped commands). */
+  doc: number;
   /** Current document text; build the view's state from it. */
   text(): string;
+  /** The document's language mode name (backend-assigned, as the editor tabs use). */
+  uiMode(): string | null;
   readOnly: boolean;
   /** Add to the view (one view at a time). */
   extension: Extension;
-  save(): Promise<void>;
+  save(options?: { exact?: boolean }): Promise<void>;
+  /** Resolves once local edits have reached the backend. */
+  synced(): Promise<void>;
+  /** Unsaved changes. */
+  dirty(): boolean;
+  /**
+   * Undo / redo of the document's history: the text editor tab's when one
+   * shows the file (backend edits are recorded there), else this view's.
+   * Returns whether anything changed.
+   */
+  undo(): boolean;
+  redo(): boolean;
+  /**
+   * Applies a change made by this view's owner as one edit of the document's
+   * history (where `undo` works): the text editor tab's when one shows the
+   * file, so Undo there reverts it too; else this view's. The view receives
+   * it like any other change of the document, before this returns.
+   */
+  edit(changes: ChangeSpec, userEvent?: string): void;
   /** Detach; the document closes when nothing else shows it. */
   release(): void;
 }

@@ -162,6 +162,19 @@ pub async fn debug_pause(host: &Host, _window: &str, session: DebugSessionId, th
     host.debugger.pause(session, thread_id).await
 }
 
+/// Types `text` into the session's program (a `runInTerminal` program).
+pub async fn debug_send_input(host: &Host, _window: &str, session: DebugSessionId, text: String) -> IdeResult<()> {
+    host.debugger.send_input(session, &text)
+}
+
+pub async fn debug_hot_reload(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.hot_reload(session).await
+}
+
+pub async fn debug_hot_restart(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.hot_restart(session).await
+}
+
 pub async fn debug_step(
     host: &Host,
     _window: &str,
@@ -186,6 +199,19 @@ pub async fn debug_run_to(
 
 pub async fn debug_stop(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
     host.debugger.stop(session).await
+}
+
+/// The adapter's completions for an expression being typed in the frame `frame_id`.
+pub async fn debug_completions(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    frame_id: Option<i64>,
+    text: String,
+    line: u32,
+    column: u32,
+) -> IdeResult<Vec<ide_dap::DebugCompletion>> {
+    host.debugger.completions(session, frame_id, text, line, column).await
 }
 
 /// Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`.
@@ -360,6 +386,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "debug_pause",
         |c| async move { debug_pause(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?).await },
     );
+    d.add("debug_send_input", |c| async move {
+        debug_send_input(&c.host, &c.window, c.arg("session")?, c.arg("text")?).await
+    });
     d.add("debug_step", |c| async move {
         debug_step(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?, c.arg("kind")?).await
     });
@@ -376,6 +405,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_stop", |c| async move { debug_stop(&c.host, &c.window, c.arg("session")?).await });
+    d.add("debug_completions", |c| async move {
+        debug_completions(
+            &c.host,
+            &c.window,
+            c.arg("session")?,
+            c.arg("frameId")?,
+            c.arg("text")?,
+            c.arg("line")?,
+            c.arg("column")?,
+        )
+        .await
+    });
     d.add("debug_evaluate_in", |c| async move {
         debug_evaluate_in(
             &c.host,

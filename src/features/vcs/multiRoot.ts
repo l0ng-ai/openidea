@@ -1,14 +1,28 @@
 /** Repository identity for log rows and shared repository queries. */
 import type { Branch, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
+import type { GraphCommit } from "./graph";
 
-export type RepoCommit = Commit & { repo?: string | null; user?: string | null; remoteNames?: string[] };
+export type RepoCommit = Commit & {
+  repo?: string | null;
+  user?: string | null;
+  userName?: string | null;
+  remoteNames?: string[];
+  readOnly?: boolean;
+};
 export const commitRepo = (c: Commit | undefined): string | null | undefined => (c as RepoCommit | undefined)?.repo;
 export const commitKey = (c: Pick<RepoCommit, "id" | "repo">): string => (c.repo ? `${c.repo}\0${c.id}` : c.id);
-export const graphCommit = (c: Commit): Commit => ({
+export const graphCommit = (c: Commit): Commit & GraphCommit => ({
   ...c,
   id: commitKey(c),
-  parents: c.parents.map((id) => commitKey({ ...c, id })),
+  parents: [...(c.graphParents ?? c.parents), ...(c.graphBoundaryParents ?? [])].map((id) => commitKey({ ...c, id })),
+  dashed: c.graphDashed ?? c.dashed,
+  edgeTypes: [
+    ...(c.graphParents ?? c.parents).map((_, i) =>
+      (c.graphDashed ?? c.dashed)?.[i] ? ("filtered" as const) : ("normal" as const),
+    ),
+    ...(c.graphBoundaryParents ?? []).map(() => "shallow" as const),
+  ],
 });
 
 /** Merge ordered streams without breaking any repository's topological order. */

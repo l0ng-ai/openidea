@@ -23,6 +23,42 @@ describe("run config → launch config", () => {
     expect(launchConfigFor(rc({}), "/p")).toBeNull();
   });
 
+  it("php-debug: the script runs on the PHP from Settings with Xdebug's debug mode, on a free port", () => {
+    const xdebug = ["-dxdebug.mode=debug", "-dxdebug.start_with_request=yes", "-dxdebug.client_port=${port}"];
+    // `artisan serve` with PHP at Default: the script is a file of the project.
+    const serve = launchConfigFor(
+      rc({ kind: "php", command: "php", args: ["artisan", "serve"], debugAdapter: "php-debug" }),
+      "/app",
+      "/opt/php@8.3/bin/php",
+    )!;
+    expect(serve).toMatchObject({ adapter: "php-debug", program: "/app/artisan", args: ["serve"], cwd: "/app" });
+    expect(extra(serve)).toEqual({ port: 0, runtimeArgs: xdebug, runtimeExecutable: "/opt/php@8.3/bin/php" });
+    // The PHP the command names wins, and its options stay with it.
+    const file = launchConfigFor(
+      rc({
+        kind: "php",
+        command: "/usr/bin/php8.4",
+        args: ["-dmemory_limit=1G", "src/a.php", "x"],
+        debugAdapter: "php-debug",
+      }),
+      "/app",
+      "/opt/php@8.3/bin/php",
+    )!;
+    expect(file).toMatchObject({ program: "/app/src/a.php", args: ["x"] });
+    expect(extra(file)).toEqual({
+      port: 0,
+      runtimeArgs: [...xdebug, "-dmemory_limit=1G"],
+      runtimeExecutable: "/usr/bin/php8.4",
+    });
+    // PHPUnit runs its script directly; without a PHP in Settings, php-debug uses the `php` on PATH.
+    const unit = launchConfigFor(
+      rc({ kind: "phpunit", command: "vendor/bin/phpunit", args: ["--filter", "testA"], debugAdapter: "php-debug" }),
+      "/app",
+    )!;
+    expect(unit).toMatchObject({ program: "/app/vendor/bin/phpunit", args: ["--filter", "testA"] });
+    expect(extra(unit)).toEqual({ port: 0, runtimeArgs: xdebug });
+  });
+
   it("cargo run builds the binary through codelldb's cargo integration", () => {
     const l = launchConfigFor(
       rc({
@@ -77,6 +113,27 @@ describe("run config → launch config", () => {
 
     const globalPytest = launchConfigFor(rc({ kind: "pytest", command: "pytest", debugAdapter: "debugpy" }), "/p")!;
     expect(extra(globalPytest).python).toBe("python3");
+  });
+
+  it("debugpy: uv / poetry run the debuggee in the project's environment", () => {
+    const debug = (command: string, args: string[]) =>
+      launchConfigFor(rc({ kind: "python", command, args, debugAdapter: "debugpy" }), "/p")!;
+
+    const script = debug("uv", ["run", "python", "main.py", "-v"]);
+    expect(script.program).toBe("/p/main.py");
+    expect(script.args).toEqual(["-v"]);
+    expect(extra(script)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python3" });
+    expect(extra(script).module).toBeUndefined();
+
+    const mod = debug("poetry", ["run", "python3", "-m", "app"]);
+    expect(extra(mod)).toMatchObject({ module: "app", python: ["poetry", "run", "python3"] });
+
+    const tool = debug("uv", ["run", "pytest", "-x"]);
+    expect(extra(tool)).toMatchObject({ module: "pytest", python: ["uv", "run", "python"] });
+    expect(tool.args).toEqual(["-x"]);
+
+    const django = debug("pdm", ["run", "python", "manage.py", "runserver"]);
+    expect(extra(django)).toMatchObject({ django: true, python: ["pdm", "run", "python"] });
   });
 
   it("js-debug: npm scripts run through the package manager, node scripts directly", () => {

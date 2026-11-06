@@ -2,18 +2,49 @@
 use super::*;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::time::SystemTime;
+
+/// `(byte length, mtime, blake3 hex)`; the hash is recorded for files inside the project only.
+type Stamp = (u64, SystemTime, Option<String>);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchFingerprint {
     version: u32,
     parameters: String,
-    files: BTreeMap<PathBuf, Option<(u64, SystemTime)>>,
+    /// Per input: a [`Stamp`] for regular files, `None` for
+    /// directories and inputs that cannot be resolved. The content hash catches external
+    /// edits that preserve both length and mtime (timestamp-preserving tools, coarse
+    /// timestamp granularity), which `(length, mtime)` alone would miss. Only files inside
+    /// the project are hashed; toolchain inputs such as the JDK's `lib/modules` keep the stamp.
+    files: BTreeMap<PathBuf, Option<Stamp>>,
+}
+
+/// `blake3` hex of a file's bytes, streamed in chunks so memory stays bounded. An
+/// unreadable file records a sentinel so one permission problem does not drop the whole
+/// fingerprint (that would just force a normal rebuild).
+fn content_hash(path: &Path) -> IdeResult<String> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok("missing".into()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn scan(
+    root: &Path,
     path: &Path,
-    files: &mut BTreeMap<PathBuf, Option<(u64, SystemTime)>>,
+    files: &mut BTreeMap<PathBuf, Option<Stamp>>,
     ancestors: &mut HashSet<PathBuf>,
     cancel: &CancellationToken,
 ) -> IdeResult<()> {
@@ -36,11 +67,12 @@ fn scan(
         // Directory mtimes change on irrelevant JDT writes. File paths detect additions/deletions.
         files.insert(path.to_path_buf(), None);
         for entry in fs::read_dir(path)? {
-            scan(&entry?.path(), files, ancestors, cancel)?;
+            scan(root, &entry?.path(), files, ancestors, cancel)?;
         }
         ancestors.remove(&canonical);
     } else if meta.is_file() {
-        files.insert(path.to_path_buf(), Some((meta.len(), meta.modified()?)));
+        let hash = if path.starts_with(root) { Some(content_hash(path)?) } else { None };
+        files.insert(path.to_path_buf(), Some((meta.len(), meta.modified()?, hash)));
     } else {
         return Err(IdeError::internal("unsupported launch input file"));
     }
@@ -145,11 +177,11 @@ pub fn launch_fingerprint(
             .map_err(|e| IdeError::internal(e.to_string()))?;
     let mut files = BTreeMap::new();
     for path in inputs {
-        scan(&path, &mut files, &mut HashSet::new(), cancel)?;
+        scan(root, &path, &mut files, &mut HashSet::new(), cancel)?;
     }
     // Store project inputs relative to the project, including each file's relative path.
     let files = files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect();
-    Ok(Some(LaunchFingerprint { version: 1, parameters, files }))
+    Ok(Some(LaunchFingerprint { version: 2, parameters, files }))
 }
 
 #[cfg(test)]
@@ -229,6 +261,25 @@ mod tests {
             fs::remove_file(root.join(rel)).unwrap();
             assert_ne!(touched, fingerprint(root, &model), "deleted {rel}");
         }
+    }
+
+    /// An external tool that keeps the byte length and the mtime (timestamp-preserving
+    /// writes, coarse-granularity filesystems) still changes the content: the fingerprint
+    /// must differ via the content hash, not via `(length, mtime)`.
+    #[test]
+    fn external_edit_preserving_length_and_mtime_still_invalidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let source = root.join("lib/src/main/kotlin/Channel.kt");
+        let before = fingerprint(root, &model);
+        assert!(before.is_some());
+        let mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        // Same 5-byte length, different content.
+        write(root, "lib/src/main/kotlin/Channel.kt", "valve");
+        fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
+        let after = fingerprint(root, &model);
+        assert_ne!(before, after, "a same-length, same-mtime content change must invalidate the fingerprint");
     }
 
     #[test]

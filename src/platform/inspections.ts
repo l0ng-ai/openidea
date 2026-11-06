@@ -8,6 +8,7 @@
  * at either level (`ide:<key>` / `project:<key>`).
  * Mirrors `ide-core::inspection_settings`.
  */
+import { create } from "zustand";
 import type { Diagnostic, Severity } from "@/bindings";
 import { useProject } from "./project";
 
@@ -215,15 +216,29 @@ export interface BuiltinInspection {
   description: string;
   /** Highlighting level when the profile sets none (else as reported). */
   defaultLevel?: InspectionLevel;
+  /** `false`: off until a profile turns it on. */
+  defaultEnabled?: boolean;
+  /** Each diagnostic code is an inspection of its own (`<id>:<code>`), as a language server's are. */
+  byCode?: boolean;
   options?: readonly InspectionOptionSpec[];
 }
+
+/** Turned on, the Java language server's compiler reports it (`ide-sdk` `SERIAL_VERSION_INSPECTION`). */
+export const JAVA_SERIAL_VERSION_INSPECTION = "java:missing-serial-version";
 
 /** Producer key of the Typo inspection's diagnostics. */
 export const SPELLING_PRODUCER = "spelling";
 export const SPELLING_INSPECTION = "builtin:spelling";
 
+/** Syntax errors of the built-in parser, for files no language server checks. */
+export const SYNTAX_ERRORS_PRODUCER = "syntax";
+
 export const DEPENDENCY_PRODUCER = "dependency-versions";
 export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
+
+/** Conflict markers left in a file by a merge, rebase, cherry-pick or stash that stopped on conflicts. */
+export const CONFLICT_MARKERS_PRODUCER = "merge-conflict-markers";
+export const CONFLICT_MARKERS_INSPECTION = "builtin:merge-conflict-markers";
 
 /** IDEA's Typo options: which parts of source files are checked (plain text always is). */
 export const SPELLING_OPTIONS = {
@@ -235,12 +250,30 @@ export const SPELLING_OPTIONS = {
 /** Checks the IDE runs itself (not a language server). */
 export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
   {
+    id: CONFLICT_MARKERS_INSPECTION,
+    producer: CONFLICT_MARKERS_PRODUCER,
+    name: "Unresolved merge conflict markers",
+    group: "Version control",
+    description:
+      "Reports the <<<<<<<, ======= and >>>>>>> lines a merge leaves in a file, whatever its language and whether or not a language server is installed.",
+    defaultLevel: "error",
+  },
+  {
     id: DEPENDENCY_INSPECTION,
     producer: DEPENDENCY_PRODUCER,
     name: "Newer dependency version available",
     group: "Cargo",
     description: "Reports newer crate versions that Cargo.toml requirements do not already allow.",
     defaultLevel: "weakWarning",
+  },
+  {
+    id: "builtin:syntax",
+    producer: SYNTAX_ERRORS_PRODUCER,
+    name: "Syntax errors",
+    group: "General",
+    description:
+      "Reports code the built-in parser cannot read, in files no language server checks (none is configured for the language, or it is not installed, stopped or crashed). A running language server reports syntax errors itself.",
+    defaultLevel: "error",
   },
   {
     id: "builtin:file-references",
@@ -256,6 +289,26 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     name: "Build problems",
     group: "General",
     description: "Compiler errors and warnings of the last Build Project, shown at their source positions.",
+  },
+  {
+    id: JAVA_SERIAL_VERSION_INSPECTION,
+    producer: "jdt-serial-version",
+    name: "Serializable class without 'serialVersionUID'",
+    group: "Java",
+    description:
+      "Reports classes that implement Serializable but declare no serialVersionUID field. Alt+Enter on the class name adds a default or a generated ID. The Java language server checks it, and restarts when this is changed.",
+    defaultLevel: "warning",
+    defaultEnabled: false,
+  },
+  {
+    id: "builtin:phpstan",
+    producer: "phpstan",
+    name: "PHPStan",
+    group: "PHP",
+    description:
+      "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root, or the configuration file chosen in Settings › Languages & Frameworks › PHP. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.",
+    defaultLevel: "warning",
+    byCode: true,
   },
   {
     id: "builtin:sql",
@@ -284,6 +337,11 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
 const BUILTIN_BY_PRODUCER = new Map(BUILTIN_INSPECTIONS.map((b) => [b.producer, b]));
 const BUILTIN_BY_ID = new Map(BUILTIN_INSPECTIONS.map((b) => [b.id, b]));
 
+/** Whether inspection `id` is on when a profile doesn't say. */
+export function enabledByDefault(id: string): boolean {
+  return BUILTIN_BY_ID.get(id)?.defaultEnabled ?? true;
+}
+
 /** Option `key` of inspection `id` under `profile` (its default when unset). */
 export function inspectionOption(profile: ProfileOverrides, id: string, key: string): boolean {
   const value = profile[id]?.options?.[key];
@@ -300,9 +358,10 @@ export interface InspectionRef {
 export function diagnosticInspection(producer: string, d: Pick<Diagnostic, "code">): InspectionRef | null {
   if (!producer) return null;
   const builtin = BUILTIN_BY_PRODUCER.get(producer);
-  if (builtin) return { id: builtin.id, name: builtin.name };
+  if (builtin && !(builtin.byCode && d.code)) return { id: builtin.id, name: builtin.name };
   const base = producerInspectionId(producer);
-  return d.code ? { id: codeInspectionId(base, d.code), name: `${producer} ${d.code}` } : { id: base, name: producer };
+  const name = builtin?.name ?? producer;
+  return d.code ? { id: codeInspectionId(base, d.code), name: `${name} ${d.code}` } : { id: base, name };
 }
 
 /** Inspection id of everything a producer reports. */
@@ -337,7 +396,7 @@ export function applyProfile<D extends Diagnostic>(
 ): readonly D[] {
   const base = producerInspectionId(producer);
   const own = profile[base];
-  if (own?.enabled === false) return [];
+  if (!(own?.enabled ?? enabledByDefault(base))) return [];
   const fallback = BUILTIN_BY_PRODUCER.get(producer)?.defaultLevel;
   let changed = false;
   const out: D[] = [];
@@ -458,6 +517,12 @@ function loadSeen(): Map<string, SeenCode> {
   }
   return seen;
 }
+
+/**
+ * Names of the producers that aren't language servers, for Settings ›
+ * Inspections: plugins (`plugin:<id>`) by their names.
+ */
+export const useProducerNames = create<{ names: ReadonlyMap<string, string> }>(() => ({ names: new Map() }));
 
 /** Records the codes of a producer's diagnostics (persisted, shared with the Settings window). */
 export function noteDiagnosticCodes(producer: string, items: readonly Diagnostic[]) {

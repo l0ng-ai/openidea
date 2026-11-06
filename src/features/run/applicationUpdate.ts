@@ -11,9 +11,9 @@ import {
   type DebugServiceSession,
 } from "@/workbench/contributions";
 import { showContextMenu } from "@/ui";
-import { buildTomcatArtifact } from "./tomcat";
+import { buildTomcatArtifact, syncTomcatOutputs } from "./tomcat";
 import { runUpdateBuild } from "./buildUpdate";
-import { startRun, stopSession, useRun, waitForExit, type RunSession } from "./store";
+import { rerunConfig, startRun, stopSession, useRun, waitForExit, type RunSession } from "./store";
 import { isUpdatable, updateAllowed, type UpdateMode } from "./updatePolicies";
 
 export type UpdateSession = Pick<RunSession, "id" | "config"> & { debug?: DebugServiceSession };
@@ -72,22 +72,25 @@ export async function updateApplication(session: UpdateSession, mode: string): P
     const debugging =
       !!session.debug || useDebugRunSessions.getState().sessions.some((s) => s.configId === session.config.id);
     if (mode === "restart") {
+      const config = rerunConfig(session);
       if (session.debug) {
         await session.debug.stop();
-        await executeAction("run.debugConfig", session.config);
+        await executeAction("run.debugConfig", config);
       } else if (debugging) {
         await stopSession(session.id);
         await waitForExit([session.id]);
-        await executeAction("run.debugConfig", session.config);
-      } else await startRun(session.config, session.id);
+        await executeAction("run.debugConfig", config);
+      } else await startRun(config, session.id);
       return;
     }
     await maybeEditorService()?.saveAll();
     if (session.config.kind === "spring-boot") {
       await updateSpringBoot(session.config, mode, debugging);
     } else {
-      await buildTomcatArtifact(session.config);
-      await call(commands.runTomcatUpdate(session.config, mode));
+      if (mode === "redeploy" || !(await syncTomcatOutputs(session.config, mode === "resources"))) {
+        await buildTomcatArtifact(session.config);
+        await call(commands.runTomcatUpdate(session.config, mode));
+      }
       if (mode === "classes" && debugging) {
         const swapped =
           getAction("debug.reloadChangedClasses") &&

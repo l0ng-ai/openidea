@@ -1,15 +1,21 @@
 /**
- * Build, Execution, Deployment › Run Targets: SSH hosts run configurations can
- * run on (`RunConfig.target`). Consumed by `ide-run` and the run feature.
+ * Build, Execution, Deployment › Run Targets: SSH hosts and Docker / Compose
+ * containers run configurations can run on (`RunConfig.target`). Consumed by
+ * `ide-run`, `ide-remote` and the run feature.
  */
 import { useCallback, useEffect, useId, useState } from "react";
 import clsx from "clsx";
-import { call, commands, isTauri, type RemoteEntry } from "@/platform/ipc";
+import { call, commands, isTauri, type DockerConnection, type RemoteEntry } from "@/platform/ipc";
 import { useTx, tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { DEFAULT_RUN_TARGET, newRemoteId, type RunTargetValid } from "@/platform/remoteSettings";
-import { Button, Checkbox, Dialog, Icon, IconButton, Input, T } from "@/ui";
-import { Row, Section } from "../components/Form";
+import {
+  DEFAULT_RUN_TARGET,
+  newRemoteId,
+  type RunTargetKindValid,
+  type RunTargetValid,
+} from "@/platform/remoteSettings";
+import { Button, Checkbox, Dialog, Icon, IconButton, Input, T, type SelectOption } from "@/ui";
+import { Row, Section, Select } from "../components/Form";
 import { useSetting } from "../components/context";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
 import { BUILD_GROUP } from "./execution";
@@ -252,6 +258,161 @@ function ProjectFolderField({ target, onChange }: { target: RunTargetValid; onCh
   );
 }
 
+/** Settings typed as lists of words (`8000:8000 5678:5678`, `a.yaml; b.yaml`). */
+export const splitList = (text: string): string[] =>
+  text
+    .split(/[\s,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+function ListField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  value: readonly string[];
+  onChange: (v: string[]) => void;
+  placeholder?: string;
+  hint?: string;
+}) {
+  const id = useId();
+  // Edited as text; the list is stored once the field loses focus.
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <Row label={label} htmlFor={id} className={styles.alignedRow} hint={hint}>
+      <Input
+        id={id}
+        mono
+        className={styles.wide}
+        value={draft ?? value.join(" ")}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== null) onChange(splitList(draft));
+          setDraft(null);
+        }}
+      />
+    </Row>
+  );
+}
+
+/** The Services tool window's Docker connections (app-wide `docker.json`). */
+function useDockerConnections(): DockerConnection[] {
+  const [connections, setConnections] = useState<DockerConnection[]>([]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    call(commands.dockerSettings()).then(
+      (s) => live && setConnections(s.connections ?? []),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return connections;
+}
+
+function DockerConnectionSelect({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  const connections = useDockerConnections();
+  const options: SelectOption[] = [
+    { value: "", label: tx("Docker CLI default") },
+    ...connections.map((c) => ({ value: c.id, label: c.name })),
+  ];
+  if (value && connections.length && !connections.some((c) => c.id === value))
+    options.push({ value, label: tx`${value} (missing)` });
+  return <Select value={value} options={options} onChange={onChange} aria-label="Docker connection" />;
+}
+
+const KIND_OPTIONS: SelectOption[] = [
+  { value: "ssh", label: "SSH" },
+  { value: "docker", label: "Docker" },
+  { value: "compose", label: "Docker Compose" },
+];
+
+/** Image or service of a container target, for the list. */
+function containerSummary(t: RunTargetValid): string {
+  if (t.kind === "docker") return t.image;
+  if (t.kind === "compose") return t.service ? `compose:${t.service}` : "compose";
+  return "";
+}
+
+function ContainerFields({ target, update }: { target: RunTargetValid; update: (p: Partial<RunTargetValid>) => void }) {
+  const projectName = useProject((s) => s.project?.name ?? "project");
+  const compose = target.kind === "compose";
+  return (
+    <>
+      <Row
+        label="Docker connection"
+        className={styles.alignedRow}
+        hint="Only daemons on this machine can mount the project."
+      >
+        <DockerConnectionSelect
+          value={target.dockerConnection}
+          onChange={(dockerConnection) => update({ dockerConnection })}
+        />
+      </Row>
+      {compose ? (
+        <>
+          <ListField
+            label="Compose files"
+            value={target.composeFiles}
+            onChange={(composeFiles) => update({ composeFiles })}
+            placeholder="compose.yaml"
+            hint="Relative to the project; empty uses the project's default file."
+          />
+          <TextField label="Service" value={target.service} onChange={(service) => update({ service })} />
+        </>
+      ) : (
+        <TextField
+          label="Image"
+          value={target.image}
+          onChange={(image) => update({ image })}
+          placeholder="python:3.12"
+        />
+      )}
+      <Row
+        label="Container folder"
+        className={styles.alignedRow}
+        hint={
+          compose
+            ? "Empty: where the service mounts the project."
+            : "The project is mounted here; paths and the working directory are mapped into it."
+        }
+      >
+        <Input
+          mono
+          aria-label="Container folder"
+          className={styles.wide}
+          value={target.containerRoot}
+          placeholder={compose ? "" : `/workspaces/${projectName}`}
+          onChange={(e) => update({ containerRoot: e.target.value })}
+        />
+      </Row>
+      <ListField
+        label="Published ports"
+        value={target.ports}
+        onChange={(ports) => update({ ports })}
+        placeholder="8000:8000"
+      />
+      <TextField
+        label="Run options"
+        value={target.runOptions}
+        onChange={(runOptions) => update({ runOptions })}
+        placeholder="--network host"
+      />
+      <Checkbox
+        checked={target.imageUser}
+        onChange={(imageUser) => update({ imageUser })}
+        label="Run as the image's user, not the project folder's owner (Linux)"
+      />
+    </>
+  );
+}
+
 function RunTargetsEditor() {
   const [raw, setTargets] = useSetting<RunTargetValid[] | undefined>("runTargets");
   const targets = raw ?? [];
@@ -331,7 +492,9 @@ function RunTargetsEditor() {
               onMouseDown={() => setSelected(t.id)}
             >
               <span>{t.name || t.id}</span>
-              <span className={styles.toolGroup}>{t.sshConfig ? sshName(t.sshConfig) : ""}</span>
+              <span className={styles.toolGroup}>
+                {t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
+              </span>
             </div>
           ))}
         </div>
@@ -339,15 +502,29 @@ function RunTargetsEditor() {
       {current && (
         <Section title="Target Settings">
           <TextField label="Name" value={current.name} onChange={(name) => update({ name })} />
-          <Row label="SSH configuration" className={styles.alignedRow}>
-            <SshConfigSelect value={current.sshConfig} onChange={(sshConfig) => update({ sshConfig })} />
+          <Row label="Type" className={styles.alignedRow}>
+            <Select
+              value={current.kind}
+              options={KIND_OPTIONS}
+              onChange={(kind) => update({ kind: kind as RunTargetKindValid })}
+              aria-label="Type"
+            />
           </Row>
-          <ProjectFolderField target={current} onChange={(projectRoot) => update({ projectRoot })} />
-          <Checkbox
-            checked={current.syncBeforeRun}
-            onChange={(syncBeforeRun) => update({ syncBeforeRun })}
-            label="Upload changed project files before each run"
-          />
+          {current.kind === "ssh" ? (
+            <>
+              <Row label="SSH configuration" className={styles.alignedRow}>
+                <SshConfigSelect value={current.sshConfig} onChange={(sshConfig) => update({ sshConfig })} />
+              </Row>
+              <ProjectFolderField target={current} onChange={(projectRoot) => update({ projectRoot })} />
+              <Checkbox
+                checked={current.syncBeforeRun}
+                onChange={(syncBeforeRun) => update({ syncBeforeRun })}
+                label="Upload changed project files before each run"
+              />
+            </>
+          ) : (
+            <ContainerFields target={current} update={update} />
+          )}
           <TextField
             label="Python interpreter"
             value={current.python}
@@ -373,6 +550,11 @@ function RunTargetsEditor() {
           {
             "Choose a target under “Run on” in a run configuration. Interpreters left empty are looked up on the target's PATH. SSH configurations are managed in Tools › SSH Configurations."
           }
+        </T>{" "}
+        <T>
+          {
+            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine."
+          }
         </T>
       </div>
     </div>
@@ -386,7 +568,7 @@ export const RUN_TARGET_PAGES: PageSpec[] = [
     group: BUILD_GROUP,
     order: 364,
     projectScope: true,
-    keywords: ["ssh", "remote", "target", "run on", "interpreter", "upload", "sync"],
+    keywords: ["ssh", "remote", "target", "run on", "interpreter", "upload", "sync", "docker", "compose", "container"],
     sections: [
       {
         options: [
@@ -400,6 +582,13 @@ export const RUN_TARGET_PAGES: PageSpec[] = [
               "Python interpreter",
               "Node.js interpreter",
               "Java executable",
+              "Docker connection",
+              "Image",
+              "Compose files",
+              "Service",
+              "Container folder",
+              "Published ports",
+              "Run options",
             ],
             component: RunTargetsEditor,
           },

@@ -170,6 +170,8 @@ export const intellijMacos: Record<string, string[]> = {
   "refactor.inline": ["Meta+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Meta+Delete"],
+  "refactor.pullMembersUp": [],
+  "refactor.pushMembersDown": [],
 
   // File / editor tabs
   "file.save": ["Meta+S"],
@@ -296,6 +298,7 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.showMessageHistory": ["Ctrl+M"],
   "vcs.update": ["Meta+T"],
   "vcs.rollback": ["Meta+Alt+Z"],
+  "vcs.addToVcs": ["Meta+Alt+A"],
   "vcs.showDiff": ["Meta+D"],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
@@ -346,8 +349,13 @@ export const intellijMacos: Record<string, string[]> = {
   "markdown.previewOnly": [],
   // HTTP Client / Database console: run the request or statement at the caret.
   "http.runRequest": ["Meta+Enter"],
+  "graphql.runQuery": ["Meta+Enter"],
   "http.runAll": [],
   "db.execute": ["Meta+Enter"],
+  // Table editor with pending changes (after `vcs.rollback`, so ⌥⌘Z reverts the table's edits there).
+  "db.goToColumn": ["Meta+F12"],
+  "db.submitChanges": ["Meta+Enter"],
+  "db.revertChanges": ["Meta+Alt+Z"],
   "db.showToolWindow": [],
   "agents.newTask": ["Meta+Shift+I"],
   "agents.showToolWindow": [],

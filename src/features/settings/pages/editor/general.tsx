@@ -597,6 +597,12 @@ const GUTTER = editorPage({
               keywords: ["super method", "overrides", "implements"],
               component: () => <GutterGroup id="supers" label="Implementing and overriding methods" />,
             },
+            {
+              t: "custom",
+              label: "Color preview",
+              keywords: ["color", "swatch", "colour"],
+              component: () => <GutterGroup id="colors" label="Color preview" />,
+            },
           ],
         },
       ],
@@ -671,7 +677,10 @@ const SMART_KEYS = editorPage({
     },
     {
       title: "Enter",
-      items: [{ t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" }],
+      items: [
+        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
+        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
+      ],
     },
     {
       title: "Backspace",

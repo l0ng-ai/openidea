@@ -6,6 +6,11 @@ block-comment = ["/*", "*/"]
 indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "Kotlin"
 tree-sitter = "kotlin"
+scratch-template = '''
+fun main() {
+    $END$
+}
+'''
 
 [[language-servers]]
 name = "kotlin-lsp"
@@ -27,4 +32,4 @@ install-hint = "brew install kotlin-language-server (https://github.com/fwcd/kot
 [debugger]
 adapter = "kotlin-debug-adapter"
 command = "kotlin-debug-adapter"
-install-hint = "Install https://github.com/fwcd/kotlin-debug-adapter and put `kotlin-debug-adapter` on PATH"
+install-hint = "Install Kotlin Debug Adapter in Settings › Languages & Frameworks › Language Servers"

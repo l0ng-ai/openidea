@@ -3,9 +3,11 @@ import { act, render, screen } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { IdeError } from "@/bindings";
-import { registerAction } from "@/platform/actions";
+import { getAction, registerAction } from "@/platform/actions";
+import { commands, IpcError } from "@/platform/ipc";
+import { useEditorRegistry } from "@/editor/api";
+import { registerLspActions } from "./actions";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { IpcError } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
 import { Balloons } from "@/workbench/Notifications";
@@ -42,9 +44,9 @@ afterEach(() => {
   _resetI18nForTests();
 });
 
-describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
+describe.each(["prettier", "oxfmt", "ruff"])("%s formatter errors", (name) => {
   const tool = { type: "tool", tool: name, missing: false } as const;
-  const display = name === "prettier" ? "Prettier" : name;
+  const display = name === "prettier" ? "Prettier" : name === "ruff" ? "Ruff" : name;
   it("uses structured missing-tool information to request the shared install prompt", async () => {
     const prompt = vi.fn();
     const dispose = registerAction({
@@ -55,9 +57,9 @@ describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
     try {
       failWith({ kind: "notFound", message: "unrelated diagnostic", data: { ...tool, missing: true } });
       await formatDocument(viewFor());
-      expect(prompt).toHaveBeenCalledWith({ name, sticky: true });
+      expect(prompt).toHaveBeenCalledWith({ name, sticky: true, formatter: true });
       await formatDocument(viewFor(), { explicit: false, onSave: true });
-      expect(prompt).toHaveBeenLastCalledWith({ name, sticky: false });
+      expect(prompt).toHaveBeenLastCalledWith({ name, sticky: false, formatter: true });
       expect(useNotifications.getState().items).toHaveLength(0);
     } finally {
       dispose();
@@ -121,5 +123,30 @@ describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
     request.mockRejectedValue(new IpcError({ kind: "cancelled", message: "cancelled", data: tool }));
     await formatDocument(view);
     expect(useNotifications.getState().items).toHaveLength(0);
+  });
+});
+
+describe("Reformat with an external formatter", () => {
+  it.each([
+    ["code.reformatWithPrettier", "prettier"],
+    ["code.reformatWithOxfmt", "oxfmt"],
+    ["code.reformatWithRuff", "ruff"],
+  ])("%s asks the backend for %s whatever the settings select", async (id, tool) => {
+    vi.spyOn(lsp, "lspRequest").mockImplementation(async (request) => {
+      await request();
+      return [] as never;
+    });
+    const lspFormat = vi.spyOn(commands, "lspFormat").mockResolvedValue({ status: "ok", data: [] });
+    const view = viewFor("/project/app.ts");
+    const previous = useEditorRegistry.getState().active;
+    const dispose = registerLspActions();
+    try {
+      useEditorRegistry.setState({ active: { view, ctx: view.state.facet(lsp.lspDoc)! } as never });
+      await getAction(id)!.run({ ctx: {} } as never);
+      await vi.waitFor(() => expect(lspFormat).toHaveBeenCalledWith(1, null, expect.objectContaining({ tool })));
+    } finally {
+      dispose();
+      useEditorRegistry.setState({ active: previous });
+    }
   });
 });

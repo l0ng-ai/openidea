@@ -1,7 +1,9 @@
 //! Session settings (model, mode, thinking effort…), slash commands and context use, as
 //! the agent reports them over ACP.
 
-use crate::model::{AgentCommand, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentUsage};
+use crate::model::{
+    AgentCommand, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit, AgentUsage,
+};
 use serde_json::{Value, json};
 
 /// Cursor exposes execution modes over ACP, but leaves approval policy to its client.
@@ -150,7 +152,27 @@ pub(crate) fn commands_of(update: &Value) -> Vec<AgentCommand> {
 /// `usage_update`: `{ used, size }`.
 pub(crate) fn usage_of(update: &Value) -> Option<AgentUsage> {
     let tokens = |key: &str| update.get(key)?.as_f64().map(|n| n.clamp(0.0, f64::from(u32::MAX)) as u32);
-    Some(AgentUsage { used: tokens("used")?, size: tokens("size").filter(|s| *s > 0)? })
+    let cost = update.get("cost").and_then(|c| {
+        Some(Box::new(AgentCost {
+            amount: c.get("amount")?.as_f64().filter(|a| a.is_finite() && *a >= 0.0)?,
+            currency: c.get("currency")?.as_str().filter(|c| !c.is_empty())?.to_owned(),
+        }))
+    });
+    Some(AgentUsage { used: tokens("used")?, size: tokens("size").filter(|s| *s > 0)?, cost })
+}
+
+/// The usage-limit windows a [`crate::LIMITS_UPDATE`] carries; malformed entries are skipped.
+pub(crate) fn limits_of(update: &Value) -> Vec<AgentLimit> {
+    let limits = update.get("limits").and_then(Value::as_array).into_iter().flatten();
+    limits
+        .filter_map(|l| {
+            Some(AgentLimit {
+                window: l.get("window")?.as_str().filter(|w| !w.is_empty())?.to_owned(),
+                used_percent: l.get("usedPercent")?.as_f64().filter(|p| p.is_finite())?.clamp(0.0, 100.0),
+                resets_ms: l.get("resetsMs").and_then(Value::as_f64),
+            })
+        })
+        .collect()
 }
 
 fn legacy(

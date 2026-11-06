@@ -12,10 +12,18 @@ something to show.
 | `python-app/`    | Python 3.10+, pytest                                            | `python -m tasks.cli` (from `src/`) | `pytest`             | `OPENIDEA_FAIL=1 pytest`                  | unused imports in `models.py`                            |
 | `go-app/`        | Go 1.22+                                                        | `go run ./cmd/server`               | `go test ./...`      | `OPENIDEA_FAIL=1 go test ./...`           | unused `fmt.Sprintf` result in `internal/store/store.go` |
 | `kotlin-gradle/` | JDK 21, Gradle 8 (no wrapper)                                   | `gradle run`                        | `gradle test`        | `gradle test -PopenideaFail`              | unused variable in `App.kt`                              |
+| `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`             | `mvn test`           | `mvn test -DopenideaFail=true`            | unused variable in `App.java`                            |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 `fixtures/eslint.config.js` keeps them out of the IDE's own lint run.
+
+The language smoke test (`crates/ide-host/tests/language_smoke.rs`) runs completion,
+navigation, diagnostics, quick fixes, formatting and rename on these projects with real
+language servers, `smoke/run.test.ts` runs each project's run and test configurations
+(the intentionally failing test included, then Rerun Failed Tests), and `smoke/debug.test.ts`
+debugs its entry point from the "Set a breakpoint here" line: when you change a fixture, run
+them for that language.
 
 ## Setup
 

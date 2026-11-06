@@ -14,8 +14,10 @@ args = ["language-server", "--protocol=lsp"]
 root-markers = ["pubspec.yaml", "analysis_options.yaml"]
 install-hint = "Install the Dart SDK (https://dart.dev/get-dart) or Flutter"
 
+# `dart` here; a project that depends on the Flutter SDK is switched to
+# `flutter debug_adapter` at session start (see `ide-dap`'s `start_with`).
 [debugger]
 adapter = "dart"
 command = "dart"
 args = ["debug_adapter"]
-install-hint = "Install the Dart SDK (https://dart.dev/get-dart); use `flutter debug_adapter` for Flutter apps"
+install-hint = "Install the Dart SDK (https://dart.dev/get-dart) or Flutter"

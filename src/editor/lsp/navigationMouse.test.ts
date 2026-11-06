@@ -1,3 +1,4 @@
+import { registerNavigationProvider } from "../navigationProviders";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -10,8 +11,17 @@ import { registerAction } from "@/platform/actions";
 const lspGoto = vi.hoisted(() => vi.fn<typeof commands.lspGoto>());
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
-  return { ...real, isTauri: () => true, commands: { ...real.commands, lspGoto } };
+  // Go to Implementation streams (`lspGotoImplementation`); here it answers all at once.
+  const lspGotoImplementation: typeof commands.lspGotoImplementation = (_request, doc, pos) =>
+    lspGoto(doc, pos, "implementation");
+  return { ...real, isTauri: () => true, commands: { ...real.commands, lspGoto, lspGotoImplementation } };
 });
+vi.mock("@tauri-apps/api/core", async (orig) => ({
+  ...(await orig<object>()),
+  Channel: class {
+    onmessage = () => {};
+  },
+}));
 
 const { gotoTargets, navigationExtension } = await import("./navigation");
 const { lspDoc } = await import("./lsp");
@@ -70,6 +80,23 @@ function click(init: MouseEventInit) {
 }
 
 describe("mouse navigation", () => {
+  it("uses plugin navigation for clicks without asking the language server", async () => {
+    const off = registerNavigationProvider(async () => ({
+      from: 0,
+      to: 13,
+      targets: [{ path: "/p/Mapper.xml", range: { start: { line: 2, col: 4 }, end: { line: 2, col: 8 } } }],
+    }));
+    try {
+      click({ metaKey: true });
+      await vi.waitFor(() =>
+        expect(openFile).toHaveBeenCalledWith("/p/Mapper.xml", { selection: { line: 2, col: 4 }, focus: true }),
+      );
+      expect(lspGoto).not.toHaveBeenCalled();
+    } finally {
+      off();
+    }
+  });
+
   it("opens the implementation of the symbol clicked with Option+Command", async () => {
     const event = click({ metaKey: true, altKey: true });
     await vi.waitFor(() =>
@@ -169,4 +196,33 @@ describe("mouse navigation", () => {
       remove();
     }
   });
+});
+
+describe("force click (macOS trackpad)", () => {
+  function force(type: string, init: MouseEventInit = {}) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+    view.contentDOM.dispatchEvent(event);
+    return event;
+  }
+
+  it("keeps the system Look Up popover away", () => {
+    expect(force("webkitmouseforcewillbegin").defaultPrevented).toBe(true);
+  });
+
+  it("goes to the declaration under the pointer, like ⌘-click", async () => {
+    const event = force("webkitmouseforcedown");
+    await vi.waitFor(() => expect(openFile).toHaveBeenCalledOnce());
+    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 9 }, "definition");
+    expect(view.state.selection.main.head).toBe(9);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it.each([{ metaKey: true }, { altKey: true }, { ctrlKey: true }, { shiftKey: true }])(
+    "leaves a modified force click to the click gesture: %o",
+    async (mods) => {
+      force("webkitmouseforcedown", mods);
+      await Promise.resolve();
+      expect(lspGoto).not.toHaveBeenCalled();
+    },
+  );
 });

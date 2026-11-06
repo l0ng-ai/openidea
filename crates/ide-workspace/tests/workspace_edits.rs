@@ -9,6 +9,95 @@ fn documents() -> Documents {
     Documents::new(Arc::new(NullSink), Box::new(|_, _| LanguageId::plain_text()))
 }
 
+fn meta(path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".meta");
+    name.into()
+}
+
+fn unity_project() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("Assets")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("ProjectSettings")).unwrap();
+    std::fs::write(tmp.path().join("ProjectSettings/ProjectVersion.txt"), "m_EditorVersion: 2022.3.40f1\n").unwrap();
+    tmp
+}
+
+#[test]
+fn unity_rename_chain_and_delete_share_metadata_undo() {
+    let tmp = unity_project();
+    let original = tmp.path().join("Assets/Player.cs");
+    let renamed = tmp.path().join("Assets/Hero.cs");
+    std::fs::write(&original, "old").unwrap();
+    std::fs::write(meta(&original), "guid: unchanged").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit {
+        files: vec![
+            FileEdit::Rename { from: original.clone().into(), to: renamed.clone().into() },
+            FileEdit::Delete { path: renamed.clone().into(), recursive: false },
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    for path in [&original, &renamed, &meta(&original), &meta(&renamed)] {
+        assert!(!path.exists(), "{} should be removed", path.display());
+    }
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(std::fs::read_to_string(&original).unwrap(), "old");
+    assert_eq!(std::fs::read_to_string(meta(&original)).unwrap(), "guid: unchanged");
+    assert!(!renamed.exists() && !meta(&renamed).exists());
+}
+
+#[test]
+fn unity_metadata_conflict_keeps_earlier_edits_unchanged() {
+    let tmp = unity_project();
+    let original = tmp.path().join("Assets/Player.cs");
+    let renamed = tmp.path().join("Assets/Hero.cs");
+    std::fs::write(&original, "old").unwrap();
+    std::fs::write(meta(&original), "guid: original").unwrap();
+    std::fs::write(meta(&renamed), "guid: orphan").unwrap();
+    assert!(
+        documents()
+            .apply_workspace_edit(&WorkspaceEdit {
+                files: vec![
+                    edit(&original, "new"),
+                    FileEdit::Rename { from: original.clone().into(), to: renamed.clone().into() }
+                ],
+                ..Default::default()
+            })
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&original).unwrap(), "old");
+    assert_eq!(std::fs::read_to_string(meta(&original)).unwrap(), "guid: original");
+    assert_eq!(std::fs::read_to_string(meta(&renamed)).unwrap(), "guid: orphan");
+}
+
+#[test]
+fn unity_folder_rename_then_child_rename_preserves_metadata() {
+    let tmp = unity_project();
+    let folder = tmp.path().join("Assets/Before");
+    let moved = tmp.path().join("Assets/After");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(meta(&folder), "folder guid").unwrap();
+    std::fs::write(folder.join("Player.cs"), "old").unwrap();
+    std::fs::write(meta(&folder.join("Player.cs")), "script guid").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit {
+        files: vec![
+            FileEdit::Rename { from: folder.clone().into(), to: moved.clone().into() },
+            FileEdit::Rename { from: moved.join("Player.cs").into(), to: moved.join("Hero.cs").into() },
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(meta(&moved)).unwrap(), "folder guid");
+    assert_eq!(std::fs::read_to_string(meta(&moved.join("Hero.cs"))).unwrap(), "script guid");
+    assert!(!meta(&moved.join("Player.cs")).exists());
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(std::fs::read_to_string(meta(&folder.join("Player.cs"))).unwrap(), "script guid");
+    assert!(!moved.exists() && !meta(&moved).exists());
+}
+
 fn edit(path: &Path, text: &str) -> FileEdit {
     FileEdit::Edit {
         path: path.to_owned().into(),
@@ -112,6 +201,37 @@ fn matching_document_version_is_applied() {
 }
 
 #[test]
+fn versioned_edit_of_a_closed_file_is_guarded_by_its_preconditions() {
+    // gopls versions every file of a rename, including ones the editor never opened.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("closed.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let docs = documents();
+    let versioned = || {
+        let mut operation = edit(&path, "new");
+        if let FileEdit::Edit { version, .. } = &mut operation {
+            *version = Some(0);
+        }
+        WorkspaceEdit { files: vec![operation], ..Default::default() }
+    };
+    // Without a snapshot of what the server saw, a version for a closed file can't be trusted.
+    assert_eq!(docs.apply_workspace_edit(&versioned()).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+
+    let mut changed = versioned();
+    docs.prepare_workspace_edit(&mut changed).unwrap();
+    std::fs::write(&path, "own\n").unwrap();
+    assert_eq!(docs.apply_workspace_edit(&changed).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "own\n");
+
+    std::fs::write(&path, "old\n").unwrap();
+    let mut prepared = versioned();
+    docs.prepare_workspace_edit(&mut prepared).unwrap();
+    docs.apply_workspace_edit(&prepared).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+}
+
+#[test]
 fn unversioned_preview_rejects_changed_disk_and_dirty_buffers() {
     let tmp = tempfile::tempdir().unwrap();
     for open in [false, true] {
@@ -141,6 +261,38 @@ fn unversioned_preview_rejects_changed_disk_and_dirty_buffers() {
         } else {
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "own\n");
         }
+    }
+}
+
+#[test]
+fn saving_between_preview_and_apply_keeps_the_edit_valid() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A new scratch (empty on disk) and an edited file, saved after the edit was computed.
+    for (name, disk, typed) in [("scratch.c", "", "int\n"), ("a.txt", "old\n", "own")] {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, disk).unwrap();
+        let docs = documents();
+        let info = docs.open(&path).unwrap();
+        let replace = if disk.is_empty() { 0 } else { 3 };
+        docs.edit(
+            info.id,
+            info.version,
+            ChangeSet { changes: vec![TextChange { from: 0, to: replace, insert: typed.into() }] },
+        )
+        .unwrap();
+        let mut change = WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() };
+        docs.prepare_workspace_edit(&mut change).unwrap();
+        docs.save(info.id).unwrap();
+        docs.apply_workspace_edit(&change).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(docs.snapshot(info.id).unwrap().text.starts_with("new"), "{name}");
+        // A real change after the preview still invalidates it.
+        let mut change = WorkspaceEdit { files: vec![edit(&path, "xyz")], ..Default::default() };
+        docs.prepare_workspace_edit(&mut change).unwrap();
+        let version = docs.snapshot(info.id).unwrap().version;
+        docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "!".into() }] })
+            .unwrap();
+        docs.save(info.id).unwrap();
+        assert!(docs.apply_workspace_edit(&change).is_err(), "{name}");
     }
 }
 

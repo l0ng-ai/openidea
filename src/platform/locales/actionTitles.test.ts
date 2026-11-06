@@ -4,7 +4,7 @@ import ts from "typescript";
 import { expect, it } from "vitest";
 import zh from "./text/zh.json";
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
+const root = fileURLToPath(new URL("../../../", import.meta.url)).replaceAll("\\", "/");
 const config = ts.readConfigFile(`${root}tsconfig.json`, ts.sys.readFile);
 const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
 const program = ts.createProgram(parsed.fileNames, parsed.options);
@@ -40,7 +40,10 @@ function actionTitles(): Map<string, string> {
     for (const title of literals(node)) titles.set(title, `${source.fileName.slice(root.length)}:${line}`);
   };
   for (const source of program.getSourceFiles()) {
-    if (!source.fileName.startsWith(`${root}src/`) || /\.test\.tsx?$|\/__tests__\/|\/test\//.test(source.fileName))
+    if (
+      !source.fileName.startsWith(`${root}src/`) ||
+      /\.test\.tsx?$|\/__tests__\/|\/test\//.test(source.fileName.slice(root.length))
+    )
       continue;
     const visit = (node: ts.Node) => {
       if (
@@ -74,7 +77,7 @@ function actionTitles(): Map<string, string> {
 
 const titles = actionTitles();
 /** Product names shown as they are in every language. */
-const PROPER_NAMES = new Set(["Vim"]);
+const PROPER_NAMES = new Set(["GraphQL", "Vim"]);
 
 it("has a Chinese entry for every literal action title, including action factory arguments", () => {
   // Ensure the helper-argument regression cannot disappear through a scanner change.

@@ -29,7 +29,16 @@ import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { startRun, useRun, type RunSession } from "./store";
+import {
+  configRemoved,
+  loadConfigs,
+  persistTemporary,
+  rerunConfig,
+  startRun,
+  stopSession,
+  useRun,
+  type RunSession,
+} from "./store";
 import {
   currentServiceSession,
   currentServiceSessions,
@@ -138,6 +147,65 @@ export function recordRun(configId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Project removal: a workspace member's data leaves with it
+
+/** Whether `path` is inside the directory `root` (a removed member, not a sibling with a shared prefix). */
+function insideRoot(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+/**
+ * Drops a removed workspace member's data from Services: stops and forgets its
+ * sessions (a finished one still groups the tree), removes its temporary
+ * configurations, reloads (the backend no longer lists the member) and clears
+ * the added types and remembered runs that would otherwise render empty groups.
+ */
+export async function cleanupRemovedProject(removedRoot: string): Promise<void> {
+  const { configs, sessions, temporary } = useRun.getState();
+  const ofRemoved = (c: RunConfig) => !!c.cwd && insideRoot(c.cwd, removedRoot);
+  const removedIds = new Set(configs.filter(ofRemoved).map((c) => c.id));
+
+  const removedSessions = sessions.filter((s) => removedIds.has(s.config.id));
+  for (const s of removedSessions) if (busy(s)) await stopSession(s.id);
+  if (removedSessions.length) {
+    const ids = new Set(removedSessions.map((s) => s.id));
+    useRun.setState((s) => ({ sessions: s.sessions.filter((x) => !ids.has(x.id)) }));
+  }
+
+  if (temporary.some((id) => removedIds.has(id))) {
+    const temporaryLeft = temporary.filter((id) => !removedIds.has(id));
+    useRun.setState({
+      configs: useRun.getState().configs.filter((c) => !removedIds.has(c.id)),
+      temporary: temporaryLeft,
+    });
+    persistTemporary();
+  }
+
+  // The kinds the member had configurations of; after the reload those that are
+  // left without any (and without a session) are removed from the added types.
+  const kinds = new Set(configs.filter(ofRemoved).map((c) => c.kind));
+  await loadConfigs();
+
+  const { configs: fresh, sessions: liveSessions } = useRun.getState();
+  const liveKinds = new Set([...fresh.map((c) => c.kind), ...liveSessions.map((s) => s.config.kind)]);
+  for (const kind of kinds) if (!liveKinds.has(kind)) removeType(kind);
+
+  const root = useProject.getState().project?.root ?? null;
+  if (root) {
+    const freshIds = new Set(fresh.map((c) => c.id));
+    const ids = ranIds(root).filter((id) => freshIds.has(id));
+    if (ids.length !== ranIds(root).length) {
+      useRanConfigs.setState({ root, ids });
+      try {
+        localStorage.setItem(RAN_KEY + root, JSON.stringify(ids));
+      } catch {
+        /* storage unavailable */
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tree
 
 const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
@@ -171,6 +239,7 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
 /**
  * Groups by configuration type: added types list all their configurations, other
  * types only those that ran. A default type (Spring Boot) without configurations is hidden.
+ * A configuration deleted since it ran (`removed`) stays only while its run is live.
  */
 export function runServiceItems(
   configs: readonly RunConfig[],
@@ -179,11 +248,13 @@ export function runServiceItems(
   ran: readonly string[] = [],
   order: ServiceOrder = {},
   debug: readonly DebugServiceSession[] = [],
+  removed: (id: string) => boolean = () => false,
 ): ServiceTreeItem[] {
   const executions = serviceSessions(sessions, debug);
   const latest = currentServiceSessions(executions);
   const kinds = [...added];
-  for (const s of executions) if (!kinds.includes(s.config.kind)) kinds.push(s.config.kind);
+  const shown = (s: ServiceSession) => liveServiceSession(s) || !removed(s.config.id);
+  for (const s of executions) if (shown(s) && !kinds.includes(s.config.kind)) kinds.push(s.config.kind);
   for (const id of ran) {
     const kind = configs.find((c) => c.id === id)?.kind;
     if (kind && !kinds.includes(kind)) kinds.push(kind);
@@ -193,7 +264,7 @@ export function runServiceItems(
       ? configs.filter((c) => c.kind === kind)
       : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
     for (const s of latest.values())
-      if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
+      if (s.config.kind === kind && shown(s) && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
     if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
     const children = orderServices(entries, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
@@ -239,7 +310,15 @@ function useRoots(): ServiceTreeItem[] {
   }, [root, typesRoot, ranRoot]);
   return useMemo(
     () =>
-      runServiceItems(configs, sessions, typesRoot === root ? types : [], ranRoot === root ? ran : [], order, debug),
+      runServiceItems(
+        configs,
+        sessions,
+        typesRoot === root ? types : [],
+        ranRoot === root ? ran : [],
+        order,
+        debug,
+        configRemoved,
+      ),
     [configs, sessions, types, typesRoot, ran, ranRoot, root, order, debug],
   );
 }
@@ -276,7 +355,7 @@ function run(r: Resolved) {
   if (debug) debug.rerun?.();
   else if (r.session?.run) {
     const s = r.session.run;
-    void startRun(s.config, s.id, s.baseConfig, { show: false });
+    void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
   } else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
 }
 
@@ -387,6 +466,7 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         key={execution.run!.id}
         session={execution.run!}
         onRerun={d ? d.rerun : undefined}
+        onDebug={d ? d.rerun : undefined}
         onStop={d ? () => void stopServiceSessions([execution]) : undefined}
       />
     );

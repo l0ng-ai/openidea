@@ -488,7 +488,7 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
     <Popup open anchor={popup.anchor} onClose={closePopup} aria-label="Definition" className={styles.defPopup}>
       <div className={styles.defFrame} tabIndex={-1} data-autofocus onKeyDown={onKeyDown}>
         <div className={styles.defHeader}>
-          <Icon name={fileIconName(basename(location.path))} size={14} />
+          <Icon name={fileIconName(basename(location.path), location.path)} size={14} />
           {many ? (
             <Select
               variant="ghost"
@@ -579,7 +579,7 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
         <ul className={styles.previewList} aria-label={tx("Changes")}>
           {summary.entries.map((e) => (
             <li key={e.path} className={styles.previewRow}>
-              <Icon name={fileIconName(basename(e.path))} size={14} className={styles.itemIcon} />
+              <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
               <span className={styles.previewName}>{basename(e.path)}</span>
               <span className={styles.previewPath}>{relativePath(root, e.path)}</span>
               <span className={styles.spacer} />
@@ -621,36 +621,43 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <fieldset className={styles.reformatGroup}>
-        <legend className={styles.reformatLegend}>
-          <T>Scope</T>
-        </legend>
-        <label className={styles.reformatOption}>
-          <input type="radio" name="reformat-scope" checked={!selectionOnly} onChange={() => setSelectionOnly(false)} />
-          <T>Whole file</T>
-        </label>
-        <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
-          <input
-            type="radio"
-            name="reformat-scope"
-            checked={selectionOnly}
-            disabled={!popup.hasSelection}
-            onChange={() => setSelectionOnly(true)}
+      <div className={styles.reformatBody}>
+        <fieldset className={styles.reformatGroup}>
+          <legend className={styles.reformatLegend}>
+            <T>Scope</T>
+          </legend>
+          <label className={styles.reformatOption}>
+            <input
+              type="radio"
+              name="reformat-scope"
+              checked={!selectionOnly}
+              onChange={() => setSelectionOnly(false)}
+            />
+            <T>Whole file</T>
+          </label>
+          <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
+            <input
+              type="radio"
+              name="reformat-scope"
+              checked={selectionOnly}
+              disabled={!popup.hasSelection}
+              onChange={() => setSelectionOnly(true)}
+            />
+            <T>Selected text</T>
+          </label>
+        </fieldset>
+        <fieldset className={styles.reformatGroup}>
+          <legend className={styles.reformatLegend}>
+            <T>Options</T>
+          </legend>
+          <Checkbox
+            checked={optimizeImports}
+            disabled={!popup.canOptimizeImports}
+            onChange={setOptimizeImports}
+            label="Optimize imports"
           />
-          <T>Selected text</T>
-        </label>
-      </fieldset>
-      <fieldset className={styles.reformatGroup}>
-        <legend className={styles.reformatLegend}>
-          <T>Options</T>
-        </legend>
-        <Checkbox
-          checked={optimizeImports}
-          disabled={!popup.canOptimizeImports}
-          onChange={setOptimizeImports}
-          label="Optimize imports"
-        />
-      </fieldset>
+        </fieldset>
+      </div>
     </Dialog>
   );
 }

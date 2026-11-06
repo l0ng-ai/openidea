@@ -1,5 +1,5 @@
-//! Settings of remote work: SSH configurations, SFTP deployment and SSH run
-//! targets. The fields hang off `Settings` in `settings.rs`.
+//! Settings of remote work: SSH configurations, SFTP deployment and run
+//! targets (SSH, Docker, Compose). The fields hang off `Settings` in `settings.rs`.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -132,7 +132,7 @@ pub struct DeploymentServer {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DeploymentMapping {
-    /// Project-relative folder; empty = the project root.
+    /// Project-relative folder, or absolute inside the project; empty = the project root.
     pub local: String,
     /// Remote folder, relative to the server root (a leading `/` is the root too).
     pub deployment: String,
@@ -140,22 +140,55 @@ pub struct DeploymentMapping {
     pub web: String,
 }
 
-/// Build, Execution, Deployment › Run Targets: run configurations on another machine.
+/// Where a run target runs configurations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RunTargetKind {
+    /// Another machine over SSH, the project synchronised to its folder.
+    #[default]
+    Ssh,
+    /// A new container of an image (`docker run --rm`), the project bind-mounted.
+    Docker,
+    /// A new container of a Compose service (`docker compose run --rm`).
+    Compose,
+}
+
+/// Build, Execution, Deployment › Run Targets: run configurations on another machine
+/// or in a container.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RunTarget {
+    pub kind: RunTargetKind,
     pub id: String,
     pub name: String,
-    /// [`SshConfiguration::id`].
+    /// [`SshConfiguration::id`] (SSH).
     pub ssh_config: String,
-    /// Remote folder the project is synchronised to and run from.
+    /// Remote folder the project is synchronised to and run from (SSH).
     pub project_root: String,
-    /// Upload changed project files before each run.
+    /// Upload changed project files before each run (SSH).
     pub sync_before_run: bool,
     /// Interpreters on the target; empty = the one on the remote `PATH`.
     pub python: String,
     pub node: String,
     pub java: String,
+    /// Id of a Docker connection of the Services tool window (Docker, Compose);
+    /// empty = the CLI's own daemon.
+    pub docker_connection: String,
+    /// Image to run (Docker).
+    pub image: String,
+    /// Compose files, relative to the project; empty = the project's default one (Compose).
+    pub compose_files: Vec<String>,
+    /// Service to run (Compose).
+    pub service: String,
+    /// Where the project is in the container; empty = `/workspaces/<folder>` (Docker),
+    /// the service's bind mount of the project (Compose).
+    pub container_root: String,
+    /// Published ports, as `docker run --publish` takes them (`8000:8000`).
+    pub ports: Vec<String>,
+    /// More options for `docker run` / `docker compose run`, shell-like quoted.
+    pub run_options: String,
+    /// Run as the image's user instead of the project folder's owner (Linux).
+    pub image_user: bool,
 }
 
 #[cfg(test)]
@@ -175,5 +208,25 @@ mod deployment_tests {
                 server
             );
         }
+    }
+
+    #[test]
+    fn run_target_kind_defaults_to_ssh_and_round_trips() {
+        let legacy: RunTarget =
+            serde_json::from_str(r#"{"id":"t","name":"Build box","sshConfig":"ssh","projectRoot":"/srv"}"#).unwrap();
+        assert_eq!((legacy.kind, legacy.ssh_config.as_str()), (RunTargetKind::Ssh, "ssh"));
+        let docker = RunTarget {
+            kind: RunTargetKind::Compose,
+            docker_connection: "local".into(),
+            compose_files: vec!["compose.dev.yaml".into()],
+            service: "web".into(),
+            ports: vec!["8000:8000".into()],
+            image_user: true,
+            ..legacy
+        };
+        let json = serde_json::to_value(&docker).unwrap();
+        assert_eq!(json["kind"], "compose");
+        assert_eq!(json["composeFiles"], serde_json::json!(["compose.dev.yaml"]));
+        assert_eq!(serde_json::from_value::<RunTarget>(json).unwrap(), docker);
     }
 }

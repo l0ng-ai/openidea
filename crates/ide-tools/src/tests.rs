@@ -37,6 +37,12 @@ impl Env {
         fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         archive::make_executable(&p).unwrap();
     }
+
+    #[cfg(windows)]
+    fn script(&self, dir: &Path, name: &str, body: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join(format!("{name}.cmd")), format!("@echo off\r\n{body}\r\n")).unwrap();
+    }
 }
 
 fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
@@ -52,16 +58,20 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             fs::write(&legacy, b"old official agent").unwrap();
             fs::write(env.root.join("lombok").join(MANIFEST), r#"{"version":"1.18.48"}"#).unwrap();
+            let previous = env.root.join("lombok/bin/lombok-1.18.48-openidea.2.jar");
+            fs::write(&previous, b"previous bundled agent").unwrap();
             let tools = Tools::with_paths(env.root.clone(), OsString::new(), Platform { os, arch });
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.1"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.3"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.1.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.3.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
+            assert_ne!(path, previous, "new agent path must invalidate the JDT LS workspace");
+            assert_eq!(fs::read(&previous).unwrap(), b"previous bundled agent", "other windows may still use it");
         }
     }
 }
@@ -71,7 +81,7 @@ fn bundled_lombok_is_available_offline_and_repairs_missing_or_corrupt_files() {
     let env = Env::new();
     let data = env.root.parent().unwrap();
     let agent = managed_bundle(data, "lombok").unwrap();
-    let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+    let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
     assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
     for contents in [None, Some(b"incomplete jar".as_slice())] {
         if let Some(contents) = contents {
@@ -93,7 +103,7 @@ fn concurrent_windows_get_the_same_complete_bundled_lombok() {
         let windows: Vec<_> = (0..8).map(|_| scope.spawn(|| managed_bundle(data, "lombok").unwrap())).collect();
         let paths: Vec<_> = windows.into_iter().map(|window| window.join().unwrap()).collect();
         assert!(paths.iter().all(|path| path == &paths[0]));
-        let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+        let checksum = include_str!("../../../java/lombok/SHA256SUMS").split_whitespace().next().unwrap();
         assert_eq!(sources::sha256_file(&paths[0]).unwrap(), checksum);
     });
 }
@@ -130,6 +140,11 @@ fn everything_missing_on_an_empty_system() {
     assert_eq!(ty.command, "ty");
     assert_eq!(ty.install_method.as_deref(), Some("pip (virtualenv)"));
     assert!(ty.languages.iter().any(|language| language == "Python"));
+    let pyrefly = find(&list, "pyrefly");
+    assert_eq!(pyrefly.status, ToolStatus::Missing);
+    assert_eq!(pyrefly.command, "pyrefly");
+    assert_eq!(pyrefly.install_method.as_deref(), Some("pip (virtualenv)"));
+    assert!(pyrefly.languages.iter().any(|language| language == "Python"));
     let angular = find(&list, "angular-language-server");
     assert_eq!(angular.command, "ngserver");
     assert_eq!(angular.install_method.as_deref(), Some("npm"));
@@ -150,7 +165,7 @@ fn everything_missing_on_an_empty_system() {
 fn interchangeable_servers_list_their_alternatives() {
     let env = Env::new();
     let list = env.tools().list(&langs());
-    let python = ["basedpyright", "pyright", "ty"];
+    let python = ["basedpyright", "pyright", "ty", "pyrefly"];
     for name in python {
         assert_eq!(find(&list, name).alternatives, python);
     }
@@ -159,6 +174,21 @@ fn interchangeable_servers_list_their_alternatives() {
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
     assert!(find(&list, "ruff").alternatives.is_empty());
     assert!(find(&list, "rust-analyzer").alternatives.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn python_servers_name_uv_when_it_makes_the_virtualenv() {
+    let env = Env::new();
+    env.script(&env.sys, "uv", "exit 0");
+    let list = env.tools().list(&langs());
+    for name in ["basedpyright", "ty", "ruff"] {
+        let tool = find(&list, name);
+        assert_eq!(tool.install_method.as_deref(), Some("uv (virtualenv)"), "{name}");
+        assert!(tool.can_install, "{name}: uv alone is enough");
+    }
+    // debugpy's private copy is always made by `python -m pip`.
+    assert_eq!(find(&list, "debugpy").install_method.as_deref(), Some("pip (private copy)"));
 }
 
 #[cfg(unix)]
@@ -566,6 +596,51 @@ printf '#!/bin/sh\necho "$GEM_HOME"\n' > "$bin/solargraph"; /bin/chmod +x "$bin/
 
 #[cfg(unix)]
 #[test]
+fn ruby_lsp_installs_into_the_project_ruby_not_a_private_gem_home() {
+    let env = Env::new();
+    let project = env._tmp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let marker = env._tmp.path().join("installed");
+    // Homebrew's Ruby: the gem bindir is not on the search path; only the Ruby knows it.
+    let bindir = env._tmp.path().join("gems/bin");
+    fs::create_dir_all(&bindir).unwrap();
+    env.script(&env.sys, "ruby", &format!("echo '{}'", bindir.display()));
+    // `gem list --exact ruby-lsp` knows the gem once `gem install ruby-lsp` ran, in the cwd it was given.
+    env.script(
+        &env.sys,
+        "gem",
+        &format!(
+            r#"case "$1" in
+install) echo "$PWD $@" > '{m}'; printf '#!/bin/sh\n' > '{b}/ruby-lsp'; /bin/chmod +x '{b}/ruby-lsp' ;;
+list) [ -f '{m}' ] && echo "ruby-lsp (0.26.11)" ;;
+uninstall) /bin/rm -f '{m}' ;;
+esac"#,
+            m = marker.display(),
+            b = bindir.display()
+        ),
+    );
+    let tools = env.tools().with_work_dir(Some(project.clone()));
+    assert_eq!(find(&tools.list(&langs()), "ruby-lsp").status, ToolStatus::Missing);
+    let info = tools.install("ruby-lsp", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::OnPath);
+    assert_eq!(info.version.as_deref(), Some("0.26.11"));
+    // Found in the Ruby's own bindir, not reported as the `gem` command.
+    assert_eq!(info.path.as_deref(), Some(bindir.join("ruby-lsp").as_path()));
+    // Run in the project (so a version manager picks its Ruby), into the Ruby's own gem home.
+    let log = fs::read_to_string(&marker).unwrap();
+    assert!(log.starts_with(&*project.canonicalize().unwrap().to_string_lossy()), "{log}");
+    assert!(log.contains("install --no-document ruby-lsp") && !log.contains("--install-dir"), "{log}");
+    // No private gem home, no wrapper directory on the search path.
+    assert!(!env.root.join("ruby-lsp").exists());
+    // Uninstalling removes the gem, and an older managed copy.
+    fs::create_dir_all(env.root.join("ruby-lsp/gems")).unwrap();
+    let info = tools.uninstall("ruby-lsp", &langs()).unwrap();
+    assert_eq!(info.status, ToolStatus::Missing);
+    assert!(!env.root.join("ruby-lsp").exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn dotnet_tool_install_into_tool_path() {
     let env = Env::new();
     env.script(
@@ -678,4 +753,46 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     }
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();
     assert!(!env.root.join("rust-analyzer").exists());
+}
+
+/// Windows has `python.exe` and `py`, not `python3.exe`; the `WindowsApps` aliases only count
+/// when the Store's Python behind them runs.
+#[test]
+fn windows_python_skips_store_aliases_that_do_not_run() {
+    let env = Env::new();
+    let aliases = env.sys.parent().unwrap().join("Microsoft").join("WindowsApps");
+    env.script(&aliases, "python", "exit 9009");
+    env.script(&aliases, "python3", "exit 9009");
+    env.script(&env.sys, "py", "echo Python 3.12.0");
+    let windows = Platform { os: Os::Windows, arch: platform::Arch::X64 };
+    let found = || {
+        let dirs = std::env::join_paths([aliases.clone(), env.sys.clone()]).unwrap();
+        Tools::with_paths(env.root.clone(), dirs, windows).python().map(|python| {
+            let dir = python.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+            format!("{dir}/{}", python.file_stem().unwrap().to_string_lossy())
+        })
+    };
+    assert_eq!(found().as_deref(), Some("sysbin/py"));
+    fs::remove_file(env.sys.join(if cfg!(windows) { "py.cmd" } else { "py" })).unwrap();
+    assert_eq!(found(), None, "only broken aliases are available");
+    env.script(&env.sys, "python3", "echo Python 3.12.0");
+    assert_eq!(found().as_deref(), Some("sysbin/python3"), "python3 is the final fallback");
+    env.script(&env.sys, "python", "echo Python 3.12.0");
+    assert_eq!(found().as_deref(), Some("sysbin/python"), "a broken alias must not hide a later interpreter");
+    env.script(&aliases, "python", "echo Python 3.13.0");
+    assert_eq!(found().as_deref(), Some("WindowsApps/python"), "the Store's Python runs");
+}
+
+#[cfg(unix)]
+#[test]
+fn python_probes_run_in_an_empty_private_directory() {
+    let env = Env::new();
+    // A stand-in interpreter that reports where it was started.
+    env.script(&env.sys, "python3", "pwd; ls -A");
+    let tools = env.tools();
+    let python = tools.python().unwrap();
+    let out = tools.python_command(&python).output().unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let dir = env.root.join(".python-cwd");
+    assert_eq!(out.trim(), dir.canonicalize().unwrap().to_string_lossy());
 }

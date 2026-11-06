@@ -147,6 +147,25 @@ describe("missing language server prompt", () => {
     off();
   });
 
+  it("offers Ruff formatting even when another Python server is installed", async () => {
+    const installed = sampleTools().find((t) => t.name === "basedpyright")!;
+    backend.tools.push({
+      ...installed,
+      name: "ruff",
+      displayName: "Ruff",
+      command: "ruff",
+      installMethod: "uv (virtualenv)",
+      languages: ["Python"],
+      alternatives: [],
+    });
+    await promptInstall("ruff", true, new Set(), true);
+    expect(notes.at(-1)).toMatchObject({
+      title: "Ruff is not installed",
+      body: "Reformat Code needs Ruff. Install it via uv (virtualenv)?",
+      key: missingKey("ruff"),
+    });
+  });
+
   it("stays silent when an installed alternative serves the same languages", async () => {
     const off = installMissingServerPrompts();
     // typescript-language-server (on PATH) covers vtsls' languages.
@@ -155,6 +174,53 @@ describe("missing language server prompt", () => {
       await new Promise((r) => setTimeout(r, 20));
     });
     expect(notes).toHaveLength(0);
+    off();
+  });
+
+  it("offers only the first missing server of interchangeable ones", async () => {
+    const off = installMissingServerPrompts();
+    // basedpyright is missing, so its fallbacks start and turn out missing too; gopls isn't one of them.
+    ["basedpyright", "pyright", "ty", "pyrefly", "gopls"].forEach((name, i) =>
+      emitLocalIdeEvent({ type: "languageServer", server: 10 + i, name, status: "missing", message: null }),
+    );
+    await waitFor(() => expect(notes).toHaveLength(2));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(notes.map((n) => n.key)).toEqual([missingKey("basedpyright"), missingKey("gopls")]);
+    off();
+  });
+
+  it("offers a fallback when the servers before it can't be installed", async () => {
+    setToolsBackend(
+      new MemoryToolsBackend(
+        sampleTools().map((t) => (t.name === "basedpyright" ? { ...t, canInstall: false } : t)),
+        1,
+      ),
+    );
+    const off = installMissingServerPrompts();
+    for (const [i, name] of ["basedpyright", "pyright", "ty"].entries()) {
+      emitLocalIdeEvent({ type: "languageServer", server: 20 + i, name, status: "missing", message: null });
+    }
+    await waitFor(() => expect(notes).toHaveLength(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(notes.map((n) => n.key)).toEqual([missingKey("pyright")]);
+    off();
+  });
+
+  it("offers the first server that reports missing when earlier ones are off from the start", async () => {
+    const off = installMissingServerPrompts();
+    // basedpyright turned off in settings never starts, so never reports.
+    for (const [i, name] of ["pyright", "ty"].entries()) {
+      emitLocalIdeEvent({ type: "languageServer", server: 40 + i, name, status: "missing", message: null });
+    }
+    await waitFor(() => expect(notes).toHaveLength(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(notes.map((n) => n.key)).toEqual([missingKey("pyright")]);
     off();
   });
 

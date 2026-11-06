@@ -481,6 +481,24 @@ describe("custom editor document lifetime", () => {
     expect(findTab(useTabs.getState(), input().key)).toBeNull();
   });
 
+  it("autosaves when the application is deactivated while focus is in a frame", async () => {
+    ctrl.stop();
+    let deactivated = () => {};
+    ctrl = new EditorController({
+      ...createMemoryBackend(),
+      onApplicationDeactivated: (handler) => {
+        deactivated = handler;
+        return () => {};
+      },
+    });
+    ctrl.start();
+    const doc = await open();
+    useProject.setState({ settings: { files: { autoSave: true } } as never });
+    // Focus inside a plugin's frame: the window's own blur has already fired, before the edit.
+    deactivated();
+    await vi.waitFor(() => expect(doc.saved).toBe("edited"));
+  });
+
   it("does not prompt or blur-autosave a document until execution has drained", async () => {
     const doc = await open();
     useProject.setState({ settings: { files: { autoSave: true } } as never });
@@ -629,6 +647,30 @@ describe("custom editor document lifetime", () => {
     expect(a.saved).toBe("original");
     expect(a.text).toBe("edited");
     expect(b.saved).toBe("edited");
+  });
+
+  it("releases an authorized decision to leave when the project never changed", async () => {
+    const doc = await open();
+    const session = await ctrl.prepareClose();
+    session.commit();
+    expect(doc.frozen).toBe(true);
+    // The window stayed with its project: files open again, and it can be left again.
+    await open("b");
+    expect(findTab(useTabs.getState(), input("b").key)).not.toBeNull();
+    expect(doc.frozen).toBe(false);
+    const again = await ctrl.prepareClose();
+    expect(() => session.commit()).toThrow();
+    again.cancel();
+  });
+
+  it("keeps an authorized decision while the project it leaves for is opening", async () => {
+    await open();
+    const session = await ctrl.prepareClose();
+    session.commit();
+    useProject.setState({ opening: true });
+    await expect(open("b")).rejects.toThrow("The project is closing");
+    await expect(ctrl.prepareClose()).rejects.toThrow("already pending");
+    useProject.setState({ opening: false });
   });
 
   it("rejects authorization from a cancelled project close session", async () => {

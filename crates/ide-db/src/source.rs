@@ -1,6 +1,7 @@
-//! Data sources: per-project connection settings in `.openidea/data-sources.toml`.
-//! Passwords never go there: saved ones live in [`crate::secrets`], the others
-//! only in memory for the session.
+//! Data sources: per-project connection settings in `.openidea/data-sources.toml`, and
+//! global ones (IDEA's Make Global: listed in every project) in `data-sources.toml` of the
+//! app data directory. Passwords never go there: saved ones live in [`crate::secrets`],
+//! the others only in memory for the session.
 
 use ide_core::{IdeError, IdeResult, IpcPath, project_dir};
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,9 @@ pub enum DbDriver {
     Mysql,
     /// Microsoft SQL Server.
     SqlServer,
+    Clickhouse,
+    /// Oracle Database (via Oracle Instant Client).
+    Oracle,
 }
 
 impl DbDriver {
@@ -27,6 +31,8 @@ impl DbDriver {
             DbDriver::Postgres => Some(5432),
             DbDriver::Mysql => Some(3306),
             DbDriver::SqlServer => Some(1433),
+            DbDriver::Clickhouse => Some(8123),
+            DbDriver::Oracle => Some(1521),
         }
     }
 }
@@ -82,6 +88,8 @@ pub struct DbOptions {
     pub auto_disconnect_secs: Option<u32>,
     /// PostgreSQL: show only the configured database, its schemas right under the data source.
     pub single_database: bool,
+    /// Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path).
+    pub instant_client: String,
 }
 
 /// Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`.
@@ -179,6 +187,9 @@ pub struct DataSource {
     pub options: DbOptions,
     pub introspection: DbIntrospection,
     pub properties: Vec<DbProperty>,
+    /// Stored app-wide and listed in every project. Implied by the file it is read from,
+    /// so not written to it.
+    pub global: bool,
 }
 
 impl Default for DataSource {
@@ -207,6 +218,7 @@ impl Default for DataSource {
             options: DbOptions::default(),
             introspection: DbIntrospection::default(),
             properties: Vec::new(),
+            global: false,
         }
     }
 }
@@ -253,6 +265,8 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
         "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" => Some(DbDriver::Mysql),
         "sqlserver" | "mssql" | "mssqlserver" => Some(DbDriver::SqlServer),
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
+        "clickhouse" | "http" | "https" => Some(DbDriver::Clickhouse),
+        "oracle" | "oracledb" => Some(DbDriver::Oracle),
         _ => None,
     }
 }
@@ -260,11 +274,17 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
 /// Parses `scheme://[user[:password]@]host[:port][/database][?k=v&…]`, `jdbc:` forms
 /// included, and `sqlite:path`.
 pub fn parse_url(raw: &str) -> IdeResult<ParsedUrl> {
-    let bad = || IdeError::invalid(format!("not a database URL: {raw}"));
+    let bad = || IdeError::invalid("invalid database URL");
     let url = raw.trim();
     let url = url.strip_prefix("jdbc:").or_else(|| url.strip_prefix("JDBC:")).unwrap_or(url);
     let (scheme, rest) = url.split_once(':').ok_or_else(bad)?;
     let driver = scheme_driver(scheme).ok_or_else(bad)?;
+    // JDBC thin URLs: `jdbc:oracle:thin:@//host:port/service` (after the `jdbc:` prefix).
+    let rest = if driver == DbDriver::Oracle {
+        rest.strip_prefix("thin:@").or_else(|| rest.strip_prefix("thin:/@")).unwrap_or(rest)
+    } else {
+        rest
+    };
     if driver == DbDriver::Sqlite {
         let file = rest.strip_prefix("//").unwrap_or(rest);
         let file = file.split('?').next().unwrap_or_default();
@@ -367,6 +387,15 @@ impl DataSource {
         }
         properties.append(&mut s.properties);
         s.properties = properties;
+        if s.driver == DbDriver::Clickhouse {
+            let raw_url = self.url.trim().to_ascii_lowercase();
+            let url = raw_url.strip_prefix("jdbc:").unwrap_or(&raw_url);
+            if url.starts_with("https://") {
+                s.ssl = DbSslMode::VerifyFull;
+            } else if url.starts_with("http://") {
+                s.ssl = DbSslMode::Disable;
+            }
+        }
         Ok(s)
     }
 
@@ -385,9 +414,32 @@ struct SourcesFile {
     sources: Vec<DataSource>,
 }
 
+/// The project's data sources.
 pub fn load(root: &Path) -> IdeResult<Vec<DataSource>> {
-    let path = project_dir::path(root, FILE);
-    let text = match std::fs::read_to_string(&path) {
+    read(&project_dir::path(root, FILE))
+}
+
+/// Saves the project's data sources.
+pub fn save(root: &Path, sources: &[DataSource]) -> IdeResult<()> {
+    write(&project_dir::path(root, FILE), sources)
+}
+
+/// The global data sources stored in `dir` (the app data directory).
+pub fn load_global(dir: &Path) -> IdeResult<Vec<DataSource>> {
+    let mut sources = read(&dir.join(FILE))?;
+    for s in &mut sources {
+        s.global = true;
+    }
+    Ok(sources)
+}
+
+/// Saves the global data sources in `dir`.
+pub fn save_global(dir: &Path, sources: &[DataSource]) -> IdeResult<()> {
+    write(&dir.join(FILE), sources)
+}
+
+fn read(path: &Path) -> IdeResult<Vec<DataSource>> {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
@@ -396,19 +448,23 @@ pub fn load(root: &Path) -> IdeResult<Vec<DataSource>> {
     Ok(file.sources)
 }
 
-pub fn save(root: &Path, sources: &[DataSource]) -> IdeResult<()> {
+fn write(path: &Path, sources: &[DataSource]) -> IdeResult<()> {
     for s in sources {
         if s.id.is_empty() || s.name.trim().is_empty() {
             return Err(IdeError::invalid("every data source needs an id and a name"));
         }
     }
-    let path = project_dir::path(root, FILE);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let text = toml::to_string_pretty(&SourcesFile { sources: sources.to_vec() })
-        .map_err(|e| IdeError::internal(e.to_string()))?;
-    std::fs::write(path, text)?;
+    let internal = |e: &dyn std::fmt::Display| IdeError::internal(e.to_string());
+    let mut value = toml::Value::try_from(SourcesFile { sources: sources.to_vec() }).map_err(|e| internal(&e))?;
+    if let Some(list) = value.get_mut("data-source").and_then(toml::Value::as_array_mut) {
+        for table in list.iter_mut().filter_map(toml::Value::as_table_mut) {
+            table.remove("global");
+        }
+    }
+    std::fs::write(path, toml::to_string_pretty(&value).map_err(|e| internal(&e))?)?;
     Ok(())
 }
 
@@ -496,7 +552,11 @@ mod tests {
         assert_eq!(parse_url("jdbc:redshift://r:5439/dev").unwrap().driver, Some(DbDriver::Postgres));
         assert_eq!(parse_url("tidb://h:4000").unwrap().driver, Some(DbDriver::Mysql));
         assert_eq!(parse_url("sqlite:/tmp/a.db").unwrap().file.as_deref(), Some("/tmp/a.db"));
-        assert!(parse_url("oracle://x").is_err());
+        let u = parse_url("oracle://scott:tiger@db.local:1521/ORCLPDB1").unwrap();
+        assert_eq!(u.driver, Some(DbDriver::Oracle));
+        assert_eq!((u.host.as_str(), u.port, u.database.as_str()), ("db.local", Some(1521), "ORCLPDB1"));
+        assert_eq!((u.user.as_str(), u.password.as_deref()), ("scott", Some("tiger")));
+        assert_eq!(parse_url("oracledb://hr@db.local/hrdb").unwrap().driver, Some(DbDriver::Oracle));
         assert!(parse_url("postgres://h:99999/db").is_err());
     }
 
@@ -518,5 +578,32 @@ mod tests {
         assert_eq!(s.url_password().as_deref(), Some("pw"));
         assert!(DataSource { url: "mysql://h/db".into(), ..s.clone() }.resolved().is_err());
         assert_eq!(DataSource { url_only: false, ..s }.resolved().unwrap().host, "localhost");
+    }
+
+    #[test]
+    fn clickhouse_urls_resolve_http_https_and_credentials() {
+        assert_eq!(DbDriver::Clickhouse.default_port(), Some(8123));
+        let source = DataSource {
+            driver: DbDriver::Clickhouse,
+            url_only: true,
+            url: "https://reader:s%40cret@db.example:8443/analytics?max_execution_time=30".into(),
+            ..Default::default()
+        };
+        let resolved = source.resolved().unwrap();
+        assert_eq!(resolved.host, "db.example");
+        assert_eq!(resolved.port, Some(8443));
+        assert_eq!(resolved.database, "analytics");
+        assert_eq!(resolved.user, "reader");
+        assert_eq!(resolved.ssl, DbSslMode::VerifyFull);
+        assert_eq!(source.url_password().as_deref(), Some("s@cret"));
+        assert_eq!(resolved.properties[0].name, "max_execution_time");
+        let http = DataSource { url: "http://localhost/default".into(), ..source.clone() }.resolved().unwrap();
+        assert_eq!(http.ssl, DbSslMode::Disable);
+        let jdbc = DataSource { url: "jdbc:clickhouse://localhost/analytics".into(), ..source.clone() };
+        assert_eq!(jdbc.resolved().unwrap().database, "analytics");
+        let secure = DataSource { url: "https://db.example/default?sslmode=disable".into(), ..source };
+        assert_eq!(secure.resolved().unwrap().ssl, DbSslMode::VerifyFull);
+        let error = parse_url("clickhouse://reader:secret@db.example:invalid/default").unwrap_err();
+        assert!(!error.message.contains("secret"));
     }
 }

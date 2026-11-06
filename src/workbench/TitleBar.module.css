@@ -52,15 +52,13 @@
   gap: 6px;
 }
 .widget:hover,
-.widget[aria-expanded="true"],
-.tool:hover {
+.widget[aria-expanded="true"] {
   background: var(--bg-toolbar-hover);
 }
 .widgetText {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
 }
 .chevron {
   flex: none;
@@ -115,9 +113,6 @@
   border-radius: var(--radius-popup);
   background: transparent;
   color: var(--fg-secondary);
-}
-.mainMenuButton:hover {
-  background: var(--bg-toolbar-hover);
 }
 .mainMenuButton:focus-visible,
 .menuTitle:focus-visible,

@@ -29,7 +29,8 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
 
 import type { DebugCapabilities, DebugSessionId } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
-import { hotSwapMessage, onHotCodeReplace, reloadChangedClasses } from "../hotswap";
+import { _resetI18nForTests, setLocale } from "@/platform/i18n";
+import { hotSwapMenuItems, hotSwapMessage, onHotCodeReplace, reloadChangedClasses } from "../hotswap";
 import { publishContext, useDebug, type DebugSession } from "../state";
 
 function session(id: number, hotCodeReplace: boolean): DebugSession {
@@ -79,6 +80,13 @@ describe("HotSwap", () => {
     expect(getContext().debugCanHotSwap).toBe(false);
   });
 
+  it("offers the reload in the editor menu of a Java file while a session can reload classes", () => {
+    expect(hotSwapMenuItems(["/p/app/src/A.java"])).toEqual([{ kind: "action", action: "debug.reloadChangedClasses" }]);
+    expect(hotSwapMenuItems(["/p/app/pom.xml"])).toEqual([]);
+    useDebug.setState({ sessions: { 2: session(2, false) }, active: 2 });
+    expect(hotSwapMenuItems(["/p/app/src/A.java"])).toEqual([]);
+  });
+
   it("builds, reloads in Java sessions and reports the count", async () => {
     await reloadChangedClasses();
     expect(ipc.javaBuildWorkspace).toHaveBeenCalledWith("/p/app");
@@ -107,7 +115,17 @@ describe("HotSwap", () => {
   it("words results like IDEA", () => {
     expect(hotSwapMessage(0, []).title).toBe("Loaded classes are up to date. Nothing to reload.");
     expect(hotSwapMessage(1, []).title).toBe("1 class reloaded");
+    expect(hotSwapMessage(3, []).title).toBe("3 classes reloaded");
     expect(hotSwapMessage(3, ["boom"])).toMatchObject({ level: "error", body: "boom" });
+  });
+
+  it("translates the reload count with the sentence", async () => {
+    await setLocale("zh");
+    try {
+      expect(hotSwapMessage(3, []).title).toBe("已重新加载 3 个类");
+    } finally {
+      _resetI18nForTests();
+    }
   });
 
   it("offers a reload when java-debug reports a finished build", () => {

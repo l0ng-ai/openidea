@@ -10,6 +10,7 @@
 //! | JS / TS (vitest, jest scripts) | the runner's `--coverage` | lcov |
 //! | Node.js scripts | `c8` | lcov |
 //! | Python (pytest, scripts) | coverage.py (`coverage run`, then `coverage lcov`) | lcov |
+//! | Ruby (rspec, minitest, rake, scripts) | SimpleCov (`coverage/.resultset.json`) | SimpleCov resultset |
 //! | Go (`go test`) | `-coverprofile` | Go cover profile |
 //! | Maven / Gradle tests | JaCoCo (plugin goals / an init script) | JaCoCo XML |
 //!
@@ -20,6 +21,7 @@ mod import;
 mod jacoco;
 mod lcov;
 mod plan;
+mod simplecov;
 
 pub use import::import;
 pub use plan::prepare;
@@ -83,6 +85,8 @@ pub enum CoverageReportSpec {
     Lcov { runner: String, path: IpcPath, base: IpcPath },
     /// `go test -coverprofile`; import paths under `module` map to `module_dir`.
     GoProfile { path: IpcPath, module: String, module_dir: IpcPath },
+    /// SimpleCov's `.resultset.json`; relative paths resolve against `base`.
+    SimpleCov { path: IpcPath, base: IpcPath },
     /// Every JaCoCo XML report (Maven `target/site/jacoco`, Gradle `build/reports/jacoco`) under `dir`.
     Jacoco { dir: IpcPath },
     /// The tool's raw data is exported to lcov by `argv` first (coverage.py: `… -m coverage lcov -o <lcov>`).
@@ -184,6 +188,10 @@ pub fn collect(spec: &CoverageReportSpec) -> IdeResult<CoverageSuite> {
         CoverageReportSpec::Lcov { runner, path, base } => {
             let text = read_report(path)?;
             Ok(lcov::parse(&text, base).finish(runner))
+        }
+        CoverageReportSpec::SimpleCov { path, base } => {
+            let text = read_report(path)?;
+            Ok(simplecov::parse(&text, base)?.finish("SimpleCov"))
         }
         CoverageReportSpec::GoProfile { path, module, module_dir } => {
             let text = read_report(path)?;

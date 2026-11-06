@@ -3,6 +3,7 @@ import type { RunSession } from "./store";
 const mocks = vi.hoisted(() => ({
   action: vi.fn(async () => true),
   build: vi.fn(async () => {}),
+  sync: vi.fn(async () => false),
   update: vi.fn(async () => ({ status: "ok", data: null })),
   start: vi.fn(async () => {}),
   stop: vi.fn(async () => {}),
@@ -47,8 +48,9 @@ vi.mock("@/platform/javaLaunch", async (original) => ({
   resolveJavaModule: async () => "app",
 }));
 vi.mock("./buildUpdate", () => ({ runUpdateBuild: mocks.runBuild }));
-vi.mock("./tomcat", () => ({ buildTomcatArtifact: mocks.build }));
+vi.mock("./tomcat", () => ({ buildTomcatArtifact: mocks.build, syncTomcatOutputs: mocks.sync }));
 vi.mock("./store", () => ({
+  rerunConfig: (s: Pick<RunSession, "config">) => mocks.state.configs.find((c) => c.id === s.config.id) ?? s.config,
   startRun: mocks.start,
   stopSession: mocks.stop,
   waitForExit: mocks.wait,
@@ -66,6 +68,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.debug = true;
   mocks.action.mockResolvedValue(true);
+  mocks.sync.mockResolvedValue(false);
   mocks.state.configs = [];
   mocks.state.sessions = [];
   mocks.state.activeSession = null;
@@ -80,6 +83,17 @@ describe("Tomcat application updates", () => {
     expect(mocks.build.mock.invocationCallOrder[0]).toBeLessThan(mocks.update.mock.invocationCallOrder[0]!);
     expect(mocks.update.mock.invocationCallOrder[0]).toBeLessThan(mocks.action.mock.invocationCallOrder[0]!);
   });
+  it("copies the compiled outputs into the deployment without rebuilding the WAR when it can", async () => {
+    mocks.sync.mockResolvedValue(true);
+    await updateTomcat(session, "classes");
+    expect(mocks.sync).toHaveBeenCalledWith(session.config, false);
+    expect(mocks.build).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.action).toHaveBeenCalledWith("debug.reloadChangedClasses", { configId: "tomcat:one" });
+    await updateTomcat(session, "redeploy");
+    expect(mocks.build).toHaveBeenCalledWith(session.config);
+    expect(mocks.update).toHaveBeenCalledWith(session.config, "redeploy");
+  });
   it("does not replace classes when updating only resources", async () => {
     await updateTomcat(session, "resources");
     expect(mocks.update).toHaveBeenCalledWith(session.config, "resources");
@@ -91,6 +105,16 @@ describe("Tomcat application updates", () => {
     expect(mocks.wait).toHaveBeenCalledWith(["run1"]);
     expect(mocks.wait.mock.invocationCallOrder[0]).toBeLessThan(mocks.action.mock.invocationCallOrder[0]!);
     expect(mocks.action).toHaveBeenCalledWith("run.debugConfig", session.config);
+  });
+  it("restarts with the configuration as edited since the server started", async () => {
+    const edited = { ...session.config, name: "Tomcat (edited)" };
+    mocks.state.configs = [edited];
+    try {
+      await updateTomcat(session, "restart");
+      expect(mocks.action).toHaveBeenCalledWith("run.debugConfig", edited);
+    } finally {
+      mocks.state.configs = [];
+    }
   });
   it("redeploys when the debugger cannot perform HotSwap", async () => {
     mocks.action.mockResolvedValue(false);

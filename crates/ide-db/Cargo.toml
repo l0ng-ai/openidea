@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 ide-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 specta.workspace = true
 toml.workspace = true
 tokio.workspace = true
@@ -17,11 +17,17 @@ parking_lot.workspace = true
 futures.workspace = true
 sqlx.workspace = true
 tiberius.workspace = true
+oracle.workspace = true
 bb8.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 dirs.workspace = true
 ide-ssh.workspace = true
+ide-http.workspace = true
+reqwest = { workspace = true, features = ["query"] }
+rustls.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile.workspace = true
+ide-ssh = { workspace = true, features = ["testing"] }

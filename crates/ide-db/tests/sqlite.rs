@@ -1,7 +1,9 @@
 //! Introspection, queries and table edits against a real SQLite file.
 
 use ide_core::{CancellationToken, IdeResult};
-use ide_db::{CellValue, DataSource, DbDriver, DbManager, DbOptions, DbProperty, DbRowEdit, DbTableKind, SortKey};
+use ide_db::{
+    CellValue, DataSource, DbDriver, DbManager, DbOptions, DbProperty, DbRowEdit, DbTableKind, QueryResult, SortKey,
+};
 
 async fn setup() -> (tempfile::TempDir, DbManager) {
     let tmp = tempfile::tempdir().unwrap();
@@ -124,6 +126,28 @@ async fn queries_with_limits_nulls_and_blobs() -> IdeResult<()> {
 }
 
 #[tokio::test]
+async fn a_later_page_returns_only_its_rows() -> IdeResult<()> {
+    let (_tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    let sql = "SELECT id FROM users ORDER BY id";
+    let ids = |r: &QueryResult| r.rows.iter().map(|row| row[0].clone().unwrap()).collect::<Vec<_>>();
+
+    let second = db.execute_from("s1", sql, 1, 1, &c).await?;
+    assert_eq!(ids(&second), vec!["2"]);
+    assert!(second.has_more);
+    assert_eq!(second.columns.len(), 1);
+
+    let last = db.execute_from("s1", sql, 2, 5, &c).await?;
+    assert_eq!(ids(&last), vec!["3"]);
+    assert!(!last.has_more);
+
+    let past = db.execute_from("s1", sql, 9, 5, &c).await?;
+    assert!(past.rows.is_empty() && !past.has_more);
+    assert_eq!(past.columns.len(), 1, "columns of a page past the end come from the prepared statement");
+    Ok(())
+}
+
+#[tokio::test]
 async fn pages_sorts_filters_and_edits_in_a_transaction() -> IdeResult<()> {
     let (_tmp, db) = setup().await;
     let c = CancellationToken::new();
@@ -197,7 +221,7 @@ async fn count(db: &DbManager) -> String {
 async fn manual_commit_keeps_a_transaction_until_commit_or_rollback() -> IdeResult<()> {
     let (_tmp, db) = setup().await;
     let c = CancellationToken::new();
-    db.set_manual_commit("s1", true).await;
+    db.set_manual_commit("s1", true).await.unwrap();
     db.execute("s1", "INSERT INTO users (name) VALUES ('dee')", 1, &c).await?;
     // The session sees its own change.
     assert_eq!(count(&db).await, "4");
@@ -208,10 +232,10 @@ async fn manual_commit_keeps_a_transaction_until_commit_or_rollback() -> IdeResu
     db.finish_transaction("s1", true).await?;
     // Leaving manual mode rolls back what is still open.
     db.execute("s1", "DELETE FROM users", 1, &c).await?;
-    db.set_manual_commit("s1", false).await;
+    db.set_manual_commit("s1", false).await.unwrap();
     assert_eq!(count(&db).await, "4");
     // Disconnecting with an open transaction does not hang.
-    db.set_manual_commit("s1", true).await;
+    db.set_manual_commit("s1", true).await.unwrap();
     db.execute("s1", "DELETE FROM users", 1, &c).await?;
     db.disconnect("s1").await;
     assert_eq!(count(&db).await, "4");

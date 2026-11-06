@@ -9,6 +9,7 @@
 import { splitCommandLine } from "@/platform/commandLine";
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { registerRunConfigType, type RunConfigTypeContribution } from "@/workbench/contributions";
+import { hostOs } from "@/platform/remote";
 import { imageTag, targetTitle, type DockerTarget } from "./compose";
 import { connections, endpointOf, loadSettings, useServices } from "./store";
 import { tx } from "@/platform/i18n";
@@ -19,7 +20,7 @@ export const DOCKER_COMPOSE = "docker-compose";
 
 const GROUP = "Docker";
 const on = (v: string | undefined) => v === "true";
-const isWindows = () => typeof navigator !== "undefined" && /win/i.test(navigator.platform);
+const isWindows = () => hostOs() === "windows";
 
 /** One word for the platform shell the run executes the line with (`/bin/sh -c` or `cmd /C`). */
 export function shellQuote(word: string, windows = isWindows()): string {
@@ -115,8 +116,21 @@ export const dockerfileType: RunConfigTypeContribution = {
   ownsWorkingDirectory: true,
   fields: [
     connectionField,
-    { key: "dockerfile", label: "Dockerfile", mono: true, required: true, placeholder: "Relative to the project root" },
-    { key: "context", label: "Context folder", mono: true, placeholder: "The Dockerfile's folder" },
+    {
+      key: "dockerfile",
+      label: "Dockerfile",
+      mono: true,
+      required: true,
+      browse: "file",
+      placeholder: "Relative to the project root",
+    },
+    {
+      key: "context",
+      label: "Context folder",
+      mono: true,
+      browse: "directory",
+      placeholder: "The Dockerfile's folder",
+    },
     { key: "tag", label: "Image tag", mono: true, placeholder: "Derived from the context folder" },
     { key: "target", label: "Build stage", mono: true, placeholder: "The last stage" },
     { key: "buildArgs", label: "Build args", mono: true, placeholder: "KEY=value; OTHER=value" },

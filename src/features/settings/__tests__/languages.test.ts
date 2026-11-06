@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LANGUAGES,
+  PHP_LANGUAGE_LEVELS,
   folderRole,
   markFolder,
   normalizeFolder,
@@ -21,7 +22,12 @@ describe("languages settings", () => {
       node: { packageManager: "pip" },
       rust: { checkCommand: "clippy", checkOnSave: false },
       typescript: { version: "" },
-      java: { jdtlsVmArgs: " -Xmx2g ", jdk: 21, jdtlsJdk: " /opt/jdk-25 ", maven: { home: " /opt/maven " } },
+      java: {
+        jdtlsVmArgs: " -Xmx2g ",
+        jdk: 21,
+        jdtlsJdk: " /opt/jdk-25 ",
+        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd " },
+      },
     });
     expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
     expect(v.node.packageManager).toBe("");
@@ -31,8 +37,55 @@ describe("languages settings", () => {
     expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(v.java.jdk).toBe("");
     expect(v.java.jdtlsJdk).toBe("/opt/jdk-25");
-    expect(v.java.maven).toEqual({ home: "/opt/maven", userSettings: "", localRepository: "", unlinkedProjects: [] });
+    expect(v.java.maven).toEqual({
+      home: "/opt/maven",
+      userSettings: "",
+      localRepository: "",
+      unlinkedProjects: [],
+      linkedProjects: [],
+      daemon: false,
+      mvndHome: "/opt/mvnd",
+    });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
+  });
+
+  it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
+    expect(validateSettings({}).languages.ruby.interpreter).toBe("");
+    expect(validateLanguages({ ruby: { interpreter: 42 } }).ruby.interpreter).toBe("");
+    const settings = validateSettings({ languages: { ruby: { interpreter: " /opt/ruby/bin/ruby " } } });
+    expect(settings.languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+    expect(validateSettings(settings).languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+  });
+
+  it("defaults the PHP language level to Auto and keeps only known levels", () => {
+    expect(validateSettings({}).languages.php).toEqual({
+      interpreter: "",
+      languageLevel: "",
+      includePaths: [],
+      stubs: [],
+      phpstanConfig: "",
+    });
+    expect(validateLanguages({ php: { phpstanConfig: " build/phpstan.neon " } }).php.phpstanConfig).toBe(
+      "build/phpstan.neon",
+    );
+    expect(validateLanguages({ php: { phpstanConfig: 3 } }).php.phpstanConfig).toBe("");
+    const lists = validateLanguages({ php: { includePaths: [" ../platform ", "", 3, "../platform"], stubs: "redis" } });
+    expect(lists.php.includePaths).toEqual(["../platform"]);
+    expect(lists.php.stubs).toEqual([]);
+    expect(validateLanguages({ php: { languageLevel: "7.4" } }).php.languageLevel).toBe("7.4");
+    for (const level of ["7.4.3", "9.0", 8.1, null]) {
+      expect(validateLanguages({ php: { languageLevel: level } }).php.languageLevel).toBe("");
+    }
+    expect(PHP_LANGUAGE_LEVELS[0]).toBe("");
+    expect(PHP_LANGUAGE_LEVELS).toContain("5.6");
+    // Newest first after Auto (#1557).
+    expect(PHP_LANGUAGE_LEVELS[1]).toBe("8.5");
+    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("5.6");
+  });
+
+  it("finds the PHP page by its language level", () => {
+    const php = LANGUAGE_PAGES.find((p) => p.id === "languages.php")!;
+    expect(php.keywords).toContain("language level");
   });
 
   it("keeps Prettier opt-in on save and normalizes its enabled languages", () => {
@@ -41,8 +94,67 @@ describe("languages settings", () => {
       validateLanguages({
         prettier: { path: " ./bin/prettier ", languages: ["markdown", 4, "markdown"], prefer: true, runOnSave: true },
       }).prettier,
-    ).toEqual({ path: "./bin/prettier", languages: ["markdown"], prefer: true, runOnSave: true });
+    ).toEqual({
+      path: "./bin/prettier",
+      configurationDirectory: "",
+      languages: ["markdown"],
+      prefer: true,
+      runOnSave: true,
+    });
     expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
+  });
+
+  it("gives oxfmt the same opt-in settings as Prettier, kept apart from them", () => {
+    expect(validateLanguages({}).oxfmt).toEqual(DEFAULT_LANGUAGES.prettier);
+    const v = validateLanguages({
+      prettier: { runOnSave: true },
+      oxfmt: { path: " ./bin/oxfmt ", languages: ["typescript", null, "typescript"], prefer: true },
+    });
+    expect(v.oxfmt).toEqual({
+      path: "./bin/oxfmt",
+      configurationDirectory: "",
+      languages: ["typescript"],
+      prefer: true,
+      runOnSave: false,
+    });
+    expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
+  });
+
+  it("enables Ruff for Python by default and keeps its settings separate", () => {
+    expect(validateLanguages({}).ruff).toMatchObject({
+      path: "",
+      configurationDirectory: "",
+      languages: ["python"],
+      prefer: false,
+      runOnSave: false,
+    });
+    const v = validateLanguages({
+      ruff: {
+        path: " ./bin/ruff ",
+        configurationDirectory: " ./config/ruff ",
+        languages: ["python", null, "python", "pyi"],
+        prefer: true,
+        runOnSave: true,
+      },
+    });
+    expect(v.ruff).toEqual({
+      path: "./bin/ruff",
+      configurationDirectory: "./config/ruff",
+      languages: ["python", "pyi"],
+      prefer: true,
+      runOnSave: true,
+    });
+    expect(v.prettier).toEqual(DEFAULT_LANGUAGES.prettier);
+  });
+
+  it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
+    expect(validateLanguages({}).markdown).toEqual({ previewFontSize: null });
+    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown).toEqual({ previewFontSize: 72 });
+    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown).toEqual({ previewFontSize: null });
+  });
+
+  it("keeps the Markdown page global, like IDEA's application-level setting", () => {
+    expect(LANGUAGE_PAGES.find((p) => p.id === "languages.markdown")).not.toHaveProperty("projectScope");
   });
 
   it("marks folders with one role each", () => {
@@ -66,9 +178,14 @@ describe("language pages", () => {
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
       "Java",
+      "Markdown",
       "Node.js",
       "Python Interpreter",
+      "PHP",
       "Prettier",
+      "oxfmt",
+      "Ruff",
+      "Ruby",
       "Rust",
       "TypeScript",
     ]);

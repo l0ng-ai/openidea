@@ -6,9 +6,9 @@ use ide_core::error::ErrorKind;
 use ide_core::output_encoding::decode_tool_output;
 use ide_core::process::{kill_tree, own_group};
 use ide_core::{CancellationToken, IdeError, IdeResult};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -144,18 +144,143 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+const MAX_GITHUB_TOKEN: usize = 4096;
+
+fn valid_github_token(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty() && value.len() <= MAX_GITHUB_TOKEN && value.bytes().all(|b| b.is_ascii_graphic()))
+        .then(|| value.to_owned())
+}
+
+fn environment_github_token(read: impl Fn(&str) -> Option<String>) -> Option<String> {
+    ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|key| read(key).and_then(valid_github_token))
+}
+
+/// Ask gh for the active github.com account on each request, so switching or
+/// logging out takes effect without persisting a second copy of the credential.
+fn read_gh_token(gh: &Path, cancel: &CancellationToken, timeout: Duration) -> IdeResult<Option<String>> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut cmd = Command::new(gh);
+    own_group(ide_core::process::prepare(&mut cmd));
+    cmd.args(["auth", "token", "--hostname", "github.com"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let Ok(mut child) = cmd.spawn() else { return Ok(None) };
+    let stdout = child.stdout.take().expect("piped");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.take((MAX_GITHUB_TOKEN + 2) as u64).read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    let started = Instant::now();
+    let mut status = None;
+    let mut output = None;
+    let bytes = loop {
+        if cancel.is_cancelled() || started.elapsed() >= timeout {
+            kill_tree(&mut child);
+            return if cancel.is_cancelled() { Err(IdeError::cancelled()) } else { Ok(None) };
+        }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(value) => status = value,
+                Err(_) => {
+                    kill_tree(&mut child);
+                    return Ok(None);
+                }
+            }
+        }
+        if let Some(status) = status {
+            if !status.success() {
+                kill_tree(&mut child);
+                return Ok(None);
+            }
+            if let Some(bytes) = output.take() {
+                break bytes;
+            }
+        }
+        match rx.recv_timeout(Duration::from_millis(15)) {
+            Ok(bytes) => output = Some(bytes),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(Duration::from_millis(15)),
+        }
+    };
+    if bytes.len() > MAX_GITHUB_TOKEN + 1 {
+        return Ok(None);
+    }
+    Ok(String::from_utf8(bytes).ok().and_then(valid_github_token))
+}
+
+fn send_auth(child: &mut Child, token: Option<&str>) -> IdeResult<()> {
+    if let Some(token) = token {
+        let result = child
+            .stdin
+            .take()
+            .expect("authenticated request has piped stdin")
+            .write_all(format!("Authorization: Bearer {token}\n").as_bytes());
+        if let Err(error) = result {
+            kill_tree(child);
+            return Err(IdeError::unavailable(format!("cannot pass download credentials to curl: {error}")));
+        }
+    }
+    Ok(())
+}
+
+fn redact_auth(message: &str, token: Option<&str>) -> String {
+    match token {
+        Some(token) => message.replace(token, "[redacted]"),
+        None => message.to_owned(),
+    }
+}
+
+/// Whether `curl` checks certificate revocation with Schannel and takes
+/// `--ssl-revoke-best-effort` (7.70+). Schannel fails the whole download with
+/// CRYPT_E_REVOCATION_OFFLINE when the CRL/OCSP servers are unreachable (corporate
+/// proxies, firewalls); best effort skips only that check, and still rejects
+/// certificates that are actually revoked.
+fn revoke_best_effort(curl: &Path) -> bool {
+    static CHECKED: parking_lot::Mutex<Vec<(std::path::PathBuf, bool)>> = parking_lot::Mutex::new(Vec::new());
+    if let Some((_, ok)) = CHECKED.lock().iter().find(|(path, _)| path == curl) {
+        return *ok;
+    }
+    let mut cmd = Command::new(curl);
+    cmd.arg("--version");
+    let ok = run_quiet(cmd, Duration::from_secs(5))
+        .is_some_and(|(success, out)| success && curl_takes_revoke_best_effort(&out));
+    CHECKED.lock().push((curl.to_path_buf(), ok));
+    ok
+}
+
+/// Reads `curl --version`: `curl 8.9.1 (Windows) libcurl/8.9.1 Schannel …`.
+fn curl_takes_revoke_best_effort(version: &str) -> bool {
+    let Some(first) = version.lines().find(|l| l.starts_with("curl ")) else { return false };
+    let mut parts = first.split_whitespace().nth(1).unwrap_or("").split('.').map(|n| n.parse::<u32>().ok());
+    let (Some(Some(major)), Some(Some(minor))) = (parts.next(), parts.next()) else { return false };
+    (major, minor) >= (7, 70) && first.split_whitespace().any(|w| w.eq_ignore_ascii_case("schannel"))
+}
+
 /// HTTP via the system `curl` (shipped with macOS, Windows 10+ and every
 /// mainstream Linux), so the IDE carries no TLS stack of its own.
 pub struct Http {
     curl: std::path::PathBuf,
+    gh: Option<std::path::PathBuf>,
+    explicit_github_token: Option<String>,
     https_only: bool,
+    revoke_best_effort: bool,
 }
 
 impl Http {
     pub fn new(search_path: &std::ffi::OsStr) -> IdeResult<Self> {
         let curl = which::which_in("curl", Some(search_path), ".")
             .map_err(|_| IdeError::unavailable("`curl` is required to download tools"))?;
-        Ok(Self { curl, https_only: false })
+        let gh = which::which_in("gh", Some(search_path), ".").ok();
+        let explicit_github_token = environment_github_token(|key| std::env::var(key).ok());
+        let revoke_best_effort = cfg!(windows) && revoke_best_effort(&curl);
+        Ok(Self { curl, gh, explicit_github_token, https_only: false, revoke_best_effort })
     }
 
     /// Refuses every protocol but HTTPS, redirects included.
@@ -164,8 +289,28 @@ impl Http {
         self
     }
 
-    fn base(&self, url: &str) -> Command {
+    fn base(&self, url: &str, cancel: &CancellationToken) -> IdeResult<(Command, Option<String>)> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let github = url.starts_with("https://api.github.com/");
+        let token = if github {
+            match &self.explicit_github_token {
+                Some(token) => Some(token.clone()),
+                None => match &self.gh {
+                    Some(gh) => read_gh_token(gh, cancel, Duration::from_secs(5))?,
+                    None => None,
+                },
+            }
+        } else {
+            None
+        };
         let mut cmd = Command::new(&self.curl);
+        // A user curlrc must not enable verbose token logging or forwarding
+        // Authorization across origins on authenticated API requests.
+        if token.is_some() {
+            cmd.arg("-q");
+        }
         own_group(ide_core::process::prepare(&mut cmd));
         cmd.args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "-A", "openidea"]);
         // System Settings › HTTP Proxy (a manual proxy comes in through `prepare`'s environment).
@@ -173,13 +318,17 @@ impl Http {
         if self.https_only {
             cmd.args(["--proto", "=https", "--proto-redir", "=https"]);
         }
-        if url.starts_with("https://api.github.com/")
-            && let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
-            && !token.is_empty()
-        {
-            cmd.arg("-H").arg(format!("Authorization: Bearer {token}"));
+        if self.revoke_best_effort {
+            cmd.arg("--ssl-revoke-best-effort");
         }
-        cmd
+        cmd.stdin(Stdio::null());
+        if token.is_some() {
+            // Keep credentials out of process arguments, inherited environment,
+            // and files. curl strips Authorization on cross-origin redirects.
+            cmd.args(["--header", "@-", "--proto-redir", "=https"]);
+            cmd.env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN").stdin(Stdio::piped());
+        }
+        Ok((cmd, token))
     }
 
     /// GETs `url` as text.
@@ -204,15 +353,16 @@ impl Http {
         empty_on_404: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<String> {
-        let mut cmd = self.base(url);
+        let (mut cmd, token) = self.base(url, cancel)?;
         if empty_on_404 {
             cmd.args(["--write-out", "\n%{http_code}"]);
         }
         if let Some(max) = max_bytes {
             cmd.arg("--max-filesize").arg(max.to_string());
         }
-        cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.arg(url).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
+        send_auth(&mut child, token.as_deref())?;
         let stdout = child.stdout.take().expect("piped");
         let mut stderr = child.stderr.take().expect("piped");
         // Past the limit the pipe closes, which stops curl.
@@ -249,7 +399,10 @@ impl Http {
             let mut err = Vec::new();
             let _ = stderr.read_to_end(&mut err);
             let err = decode_tool_output(&err);
-            return Err(IdeError::new(ErrorKind::Io, format!("GET {url} failed: {}", err.trim())));
+            return Err(IdeError::new(
+                ErrorKind::Io,
+                format!("GET {url} failed: {}", redact_auth(err.trim(), token.as_deref())),
+            ));
         }
         String::from_utf8(body).map_err(|_| IdeError::new(ErrorKind::Protocol, format!("{url}: response is not UTF-8")))
     }
@@ -263,9 +416,10 @@ impl Http {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let mut cmd = self.base(url);
-        cmd.arg("-o").arg(dest).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        let (mut cmd, token) = self.base(url, cancel)?;
+        cmd.arg("-o").arg(dest).arg(url).stdout(Stdio::null()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
+        send_auth(&mut child, token.as_deref())?;
         let mut stderr = child.stderr.take().expect("piped");
         let err_t = std::thread::spawn(move || {
             let mut s = Vec::new();
@@ -296,7 +450,10 @@ impl Http {
         if !status.success() {
             return Err(IdeError::new(
                 ErrorKind::Io,
-                format!("download of {url} failed: {}", err_t.join().unwrap_or_default().trim()),
+                format!(
+                    "download of {url} failed: {}",
+                    redact_auth(err_t.join().unwrap_or_default().trim(), token.as_deref())
+                ),
             ));
         }
         let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
@@ -438,13 +595,34 @@ mod tests {
         assert!(lines.contains(&"one".to_string()) && lines.contains(&"two".to_string()), "{lines:?}");
     }
 
+    #[test]
+    fn revoke_best_effort_needs_schannel_curl_7_70() {
+        let schannel = "curl 8.9.1 (Windows) libcurl/8.9.1 Schannel zlib/1.3 WinIDN\nRelease-Date: 2024-07-31\n";
+        assert!(curl_takes_revoke_best_effort(schannel));
+        assert!(curl_takes_revoke_best_effort("curl 7.70.0 (x86_64-pc-win32) libcurl/7.70.0 Schannel\n"));
+        // Windows 10 1803 shipped 7.55, which rejects the unknown option.
+        assert!(!curl_takes_revoke_best_effort("curl 7.55.1 (Windows) libcurl/7.55.1 WinSSL\n"));
+        // OpenSSL never checks revocation this way; Schannel in parentheses is not the active backend.
+        assert!(!curl_takes_revoke_best_effort(
+            "curl 8.10.1 (x86_64-w64-mingw32) libcurl/8.10.1 OpenSSL/3.2.3 (Schannel)\n"
+        ));
+        assert!(!curl_takes_revoke_best_effort("WARNING: this libcurl is Debug-enabled\n"));
+        assert!(curl_takes_revoke_best_effort(&format!("WARNING: this libcurl is Debug-enabled\n\n{schannel}")));
+    }
+
     #[cfg(unix)]
     #[test]
     fn absent_build_is_empty_but_http_failures_are_not() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let curl = tmp.path().join("curl");
-        let http = Http { curl: curl.clone(), https_only: false };
+        let http = Http {
+            curl: curl.clone(),
+            gh: None,
+            explicit_github_token: None,
+            https_only: false,
+            revoke_best_effort: false,
+        };
         for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
         {
             std::fs::write(&curl, format!("#!/bin/sh\nprintf 'payload\\n{code:03}'\nexit {exit}\n")).unwrap();
@@ -547,5 +725,202 @@ mod input_tests {
             run_input(&mut Command::new("does-not-exist"), "", Duration::from_secs(2), &cancel).unwrap_err().kind,
             ErrorKind::Cancelled
         );
+    }
+}
+
+#[cfg(test)]
+mod github_auth_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_tokens_keep_precedence_and_reject_header_injection() {
+        let read = |key: &str| Some(if key == "GITHUB_TOKEN" { "first" } else { "second" }.to_owned());
+        assert_eq!(environment_github_token(read).as_deref(), Some("first"));
+        assert_eq!(
+            environment_github_token(|key| Some(if key == "GITHUB_TOKEN" { "" } else { "second" }.into())).as_deref(),
+            Some("second")
+        );
+        for bad in ["", "two words", "token\r\nX-Injected: yes", "token\0"] {
+            assert!(valid_github_token(bad.into()).is_none());
+        }
+        assert!(valid_github_token("a".repeat(MAX_GITHUB_TOKEN + 1)).is_none());
+        assert_eq!(valid_github_token("gho_example\n".into()).as_deref(), Some("gho_example"));
+    }
+
+    #[cfg(unix)]
+    mod unix {
+        use super::*;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::PathBuf;
+
+        fn quote(path: &Path) -> String {
+            format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+        }
+        struct Fixture {
+            dir: tempfile::TempDir,
+            http: Http,
+        }
+        impl Fixture {
+            fn new() -> Self {
+                let dir = tempfile::tempdir().unwrap();
+                let curl = dir.path().join("curl");
+                let gh = dir.path().join("gh");
+                let fixture = Self {
+                    dir,
+                    http: Http {
+                        curl,
+                        gh: Some(gh),
+                        explicit_github_token: None,
+                        https_only: false,
+                        revoke_best_effort: false,
+                    },
+                };
+                fixture.script(
+                    "gh",
+                    &format!(
+                        "printf '%s\\n' \"$@\" >> {}\n/bin/cat {}",
+                        quote(&fixture.path("gh-args")),
+                        quote(&fixture.path("token"))
+                    ),
+                );
+                fs::write(fixture.path("token"), "gho_fake_first\n").unwrap();
+                fixture.curl("printf '{\"ok\":true}'");
+                fixture
+            }
+            fn path(&self, name: &str) -> PathBuf {
+                self.dir.path().join(name)
+            }
+            fn script(&self, name: &str, body: &str) {
+                let path = self.path(name);
+                fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            fn curl(&self, body: &str) {
+                self.script(
+                    "curl",
+                    &format!(
+                        "printf '%s\\n' \"$@\" > {}\n/bin/cat > {}\n{body}",
+                        quote(&self.path("curl-args")),
+                        quote(&self.path("headers"))
+                    ),
+                );
+            }
+            fn get(&self, url: &str) -> IdeResult<String> {
+                self.http.get_text(url, &CancellationToken::new())
+            }
+        }
+        const API: &str = "https://api.github.com/repos/example/project/releases/latest";
+
+        #[test]
+        fn active_gh_account_is_read_per_request_and_token_is_not_an_argument() {
+            let f = Fixture::new();
+            assert_eq!(f.get(API).unwrap(), "{\"ok\":true}");
+            assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "Authorization: Bearer gho_fake_first\n");
+            let args = fs::read_to_string(f.path("curl-args")).unwrap();
+            assert!(!args.contains("gho_fake"));
+            assert!(args.starts_with("-q\n"));
+            assert!(args.contains("--header\n@-\n--proto-redir\n=https\n"));
+            assert!(!args.contains("--location-trusted"));
+            assert_eq!(fs::read_to_string(f.path("gh-args")).unwrap(), "auth\ntoken\n--hostname\ngithub.com\n");
+            fs::write(f.path("token"), "gho_fake_second\n").unwrap();
+            f.get(API).unwrap();
+            assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "Authorization: Bearer gho_fake_second\n");
+        }
+
+        #[test]
+        fn explicit_token_avoids_gh_and_non_github_urls_receive_no_credentials() {
+            let mut f = Fixture::new();
+            f.http.explicit_github_token = Some("explicit_fake".into());
+            f.get(API).unwrap();
+            assert!(!f.path("gh-args").exists());
+            assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "Authorization: Bearer explicit_fake\n");
+            f.http.explicit_github_token = None;
+            for url in [
+                "https://example.com/file",
+                "http://api.github.com/repos/x",
+                "https://api.github.com.evil.example/file",
+                "https://api.github.com@evil.example/file",
+                "https://github.com/example/project/releases/download/v1/file",
+            ] {
+                f.get(url).unwrap();
+                assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "");
+                assert!(!f.path("gh-args").exists());
+            }
+        }
+
+        #[test]
+        fn missing_logged_out_or_malformed_gh_falls_back_to_anonymous() {
+            let mut f = Fixture::new();
+            for body in ["exit 1", "printf 'fake\\nX-Injected: yes\\n'", "printf ''", "printf 'fake'; exit 1"] {
+                f.script("gh", body);
+                f.get(API).unwrap();
+                assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "");
+            }
+            f.http.gh = None;
+            f.get(API).unwrap();
+            assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "");
+        }
+
+        #[test]
+        fn download_auth_and_errors_do_not_expose_the_token() {
+            let f = Fixture::new();
+            let dest = f.path("download");
+            f.curl(&format!("printf downloaded > {}", quote(&dest)));
+            f.http.download(API, &dest, None, &CancellationToken::new(), &|_| {}).unwrap();
+            assert_eq!(fs::read_to_string(&dest).unwrap(), "downloaded");
+            assert!(fs::read_to_string(f.path("headers")).unwrap().contains("gho_fake_first"));
+            f.curl(&format!("/bin/cat {} >&2; exit 22", quote(&f.path("headers"))));
+            let error = f.get(API).unwrap_err().to_string();
+            assert!(error.contains("[redacted]"));
+            assert!(!error.contains("gho_fake_first"));
+            let error = f.http.download(API, &dest, None, &CancellationToken::new(), &|_| {}).unwrap_err().to_string();
+            assert!(!error.contains("gho_fake_first"));
+        }
+
+        #[test]
+        fn credential_lookup_is_bounded_and_cancellable_even_with_inherited_stdout() {
+            let f = Fixture::new();
+            // The parent exits but a child keeps stdout open: joining a reader
+            // without checking the deadline would hang here.
+            f.script("gh", "/bin/sleep 5 &\nexit 0");
+            let started = Instant::now();
+            assert!(
+                read_gh_token(f.http.gh.as_ref().unwrap(), &CancellationToken::new(), Duration::from_millis(60))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(started.elapsed() < Duration::from_secs(3));
+            f.script("gh", "/bin/sleep 5");
+            let cancel = CancellationToken::new();
+            let trigger = cancel.clone();
+            let thread = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                trigger.cancel();
+            });
+            assert_eq!(f.http.get_text(API, &cancel).unwrap_err().kind, ErrorKind::Cancelled);
+            thread.join().unwrap();
+            assert!(!f.path("curl-args").exists());
+        }
+
+        #[test]
+        #[ignore = "requires an active gh github.com login and network access"]
+        fn live_github_release_uses_authenticated_quota() {
+            let http = Http::new(&std::env::var_os("PATH").unwrap()).unwrap();
+            assert!(http.gh.is_some());
+            let cancel = CancellationToken::new();
+            let body = http.get_text_limited("https://api.github.com/rate_limit", Some(64 * 1024), &cancel).unwrap();
+            let response: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(response["resources"]["core"]["limit"].as_u64().unwrap() > 60);
+            let body = http
+                .get_text_limited(
+                    "https://api.github.com/repos/redhat-developer/vscode-xml/releases/latest",
+                    Some(1024 * 1024),
+                    &cancel,
+                )
+                .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(response["tag_name"].is_string());
+        }
     }
 }

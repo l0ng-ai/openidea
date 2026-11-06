@@ -1,5 +1,6 @@
 id = "python"
 name = "Python"
+formatter = { tool = "ruff", parser = "python", range = true }
 extensions = ["py", "pyi", "pyw"]
 filenames = ["SConstruct", "SConscript"]
 first-line = "^#!.*\\bpython[0-9.]*\\b"
@@ -39,6 +40,14 @@ command = "ty"
 args = ["server"]
 root-markers = ["ty.toml", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
 install-hint = "uv tool install ty (or: pip install ty)"
+
+[[language-servers]]
+name = "pyrefly"
+fallback = true
+command = "pyrefly"
+args = ["lsp"]
+root-markers = ["pyrefly.toml", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
+install-hint = "uv tool install pyrefly (or: pip install pyrefly)"
 
 # Lint, format, organize imports and fix all next to the type checker, in
 # projects configured for Ruff (formatting is Ruff's alone: basedpyright has none).

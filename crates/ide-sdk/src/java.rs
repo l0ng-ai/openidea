@@ -38,10 +38,7 @@ pub fn jdk_at(home: &Path) -> Option<Jdk> {
     if !home.join("bin").join(crate::exe("java")).is_file() {
         return None;
     }
-    Some(Jdk {
-        major: parse_release(&release)?,
-        home: dunce::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()),
-    })
+    Some(Jdk { major: parse_release(&release)?, home: crate::launch_path(home).unwrap_or_else(|_| home.to_path_buf()) })
 }
 
 fn children(dir: &Path) -> Vec<PathBuf> {
@@ -90,7 +87,7 @@ fn scan() -> Vec<Jdk> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     if let Some(java) = std::env::split_paths(&path).map(|d| d.join(crate::exe("java"))).find(|j| j.is_file()) {
         // Through symlinks (`/usr/bin/java`, Homebrew, SDKMAN `current`) to `<home>/bin/java`.
-        if let Some(home) = dunce::canonicalize(java).ok().and_then(|j| j.parent()?.parent().map(Path::to_path_buf)) {
+        if let Some(home) = crate::launch_path(&java).ok().and_then(|j| j.parent()?.parent().map(Path::to_path_buf)) {
             homes.push(home);
         }
     }
@@ -372,7 +369,6 @@ pub fn configure_jdtls(
     if cfg.name != "jdtls" {
         return;
     }
-    crate::apply::configure_java_compiler(cfg, data_dir);
     // A Lombok agent from the user's JVM arguments wins.
     let own_agent = crate::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
     let agent = own_agent.as_deref().or(lombok);
@@ -884,7 +880,7 @@ mod tests {
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
         let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
         assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
-        let patched = Path::new("/managed/lombok-1.18.48-openidea.1.jar");
+        let patched = Path::new("/managed/lombok-1.18.48-openidea.3.jar");
         let mut fixed = jdtls();
         configure_jdtls(
             &mut fixed,
@@ -898,6 +894,23 @@ mod tests {
             Some(patched),
         );
         assert_ne!(data(&cfg), data(&fixed), "the patch must rebuild classes compiled with the official agent");
+        let mut previous = jdtls();
+        configure_jdtls(
+            &mut previous,
+            Path::new("/p"),
+            Path::new("/data"),
+            &[],
+            None,
+            None,
+            JDTLS_MIN_JAVA,
+            &[],
+            Some(Path::new("/managed/lombok-1.18.48-openidea.2.jar")),
+        );
+        assert_ne!(
+            data(&previous),
+            data(&fixed),
+            "the new patch must rebuild classes compiled with the previous bundle"
+        );
         let before = cfg.clone();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], Some(jar));
         assert_eq!(cfg, before, "idempotent");
@@ -1131,7 +1144,7 @@ mod tests {
 /// The same jar supplies the JDT command and the private Maven output redirector.
 pub fn kotlin_bridge_bundle(data_dir: &Path) -> Option<PathBuf> {
     let extension = data_dir.join("kotlin-bridge-1.0.0.jar");
-    let bytes = include_bytes!("../../../plugins/kotlin-bridge/openidea-kotlin-bridge.jar");
+    let bytes = include_bytes!("../../../java/kotlin-bridge/openidea-kotlin-bridge.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         return Some(extension);
     }
@@ -1173,8 +1186,8 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.2.2.jar");
-    let bytes = include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar");
+    let extension = data_dir.join("java-usages-1.6.0.jar");
+    let bytes = include_bytes!("../../../java/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         clean_usages_bundles(data_dir, &extension);
         return Some(extension);
@@ -1259,10 +1272,7 @@ mod usages_bundle_tests {
     fn installs_the_exact_bundle_and_reuses_it() {
         let dir = tempfile::tempdir().unwrap();
         let jar = super::usages_bundle(dir.path()).unwrap();
-        assert_eq!(
-            std::fs::read(&jar).unwrap(),
-            include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar")
-        );
+        assert_eq!(std::fs::read(&jar).unwrap(), include_bytes!("../../../java/java-usages/openidea-java-usages.jar"));
         assert_eq!(super::usages_bundle(dir.path()), Some(jar));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }

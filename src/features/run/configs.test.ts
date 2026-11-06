@@ -15,7 +15,7 @@ import {
 } from "./configs";
 import { contextConfig, fileRole } from "./context";
 import { envFromRows } from "./EnvDialog";
-import { defaultSelection } from "./store";
+import { configRemoved, defaultSelection, rerunConfig, useRun, type RunSession } from "./store";
 
 const cfg = (over: Partial<RunConfig> & { id: string }): RunConfig => ({
   name: over.id,
@@ -152,6 +152,8 @@ describe("context configuration", () => {
     cfg({ id: "pytest", kind: "pytest", command: "uv", args: ["run", "pytest"], isTest: true }),
     cfg({ id: "python:module:app", kind: "python", command: ".venv/bin/python", args: ["-m", "app"] }),
     cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true }),
+    cfg({ id: "rspec", kind: "rspec", command: "bundle", args: ["exec", "rspec"], isTest: true }),
+    cfg({ id: "rake:test", kind: "rake", command: "bundle", args: ["exec", "rake", "test"], isTest: true }),
   ];
 
   it("classifies files", () => {
@@ -163,6 +165,9 @@ describe("context configuration", () => {
     expect(fileRole("polls/tests.py")).toBe("script");
     expect(fileRole("src/test/kotlin/OrderControllerTest.kt")).toBe("test");
     expect(fileRole("tests/integration.rs")).toBe("test");
+    expect(fileRole("spec/models/user_spec.rb")).toBe("test");
+    expect(fileRole("test/user_test.rb")).toBe("test");
+    expect(fileRole("lib/tasks/gen.rb")).toBe("script");
     expect(fileRole("src/main.rs")).toBe("main");
     expect(fileRole("cmd/main.go", "package main\nfunc main() {}")).toBe("main");
     expect(fileRole("tools/gen.py")).toBe("script");
@@ -182,6 +187,20 @@ describe("context configuration", () => {
     });
     expect(c.id).toBe("context:npm:web:test:web/src/cart.test.ts");
     expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "--", "src/a.spec.js"]);
+  });
+
+  it("narrows rspec and rake test runs to the file", () => {
+    expect(contextConfig("spec/models/user_spec.rb", configs)!.args).toEqual([
+      "exec",
+      "rspec",
+      "spec/models/user_spec.rb",
+    ]);
+    expect(contextConfig("test/user_test.rb", configs)!.args).toEqual([
+      "exec",
+      "rake",
+      "test",
+      "TEST=test/user_test.rb",
+    ]);
   });
 
   it("narrows go, cargo, pytest and gradle runs", () => {
@@ -235,6 +254,37 @@ describe("context configuration", () => {
     });
     expect(contextConfig("scripts/build.bat", configs, undefined, false)).toBeNull();
     expect(contextConfig("docs/readme.md", configs)).toBeNull();
+  });
+
+  it("runs a module that imports relatively as a module of its package", () => {
+    const cli = "from .models import Priority, TaskList\n\n\ndef main():\n    pass\n";
+    expect(contextConfig("src/tasks/cli.py", configs, cli)).toMatchObject({
+      kind: "python",
+      command: "../.venv/bin/python",
+      args: ["-m", "tasks.cli"],
+      cwd: "src",
+      debugAdapter: "debugpy",
+    });
+    expect(contextConfig("app/api/routes.py", [], "from . import models\n")).toMatchObject({
+      command: "python3",
+      args: ["-m", "app.api.routes"],
+      cwd: null,
+    });
+    expect(contextConfig("src/app/__main__.py", [], "from .cli import main\n")).toMatchObject({
+      args: ["-m", "app"],
+      cwd: "src",
+    });
+    // Inside a nested Python project: from its folder (the venv command stays relative to the root).
+    const nested = [cfg({ id: "pytest", kind: "pytest", command: "backend/.venv/bin/pytest", cwd: "backend" })];
+    expect(contextConfig("backend/app/jobs.py", nested, "from .db import session\n")).toMatchObject({
+      command: "../backend/.venv/bin/python",
+      args: ["-m", "app.jobs"],
+      cwd: "backend",
+    });
+    // Absolute imports, a top-level file, a folder that can't be a package: as a script.
+    expect(contextConfig("src/tasks/cli.py", configs, "import os\n")!.args).toEqual(["src/tasks/cli.py"]);
+    expect(contextConfig("tool.py", [], "from .x import y\n")!.args).toEqual(["tool.py"]);
+    expect(contextConfig("my-scripts/run.py", [], "from .x import y\n")!.args).toEqual(["my-scripts/run.py"]);
   });
 
   it("runs pytest for a test file even without a detected pytest config", () => {
@@ -292,5 +342,40 @@ describe("context configuration", () => {
     const plain = [cfg({ id: "python:module:app", kind: "python", command: "python3", args: ["-m", "app"] })];
     expect(contextConfig("tools/gen.py", plain)).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
     expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+  });
+});
+
+describe("rerunning a session after its configuration changed (#1497)", () => {
+  const session = (config: RunConfig, baseConfig?: RunConfig): RunSession => ({
+    id: "s",
+    config,
+    baseConfig,
+    runId: null,
+    status: "finished",
+    exitCode: 0,
+    startedAt: 1,
+    endedAt: 2,
+    stdinClosed: true,
+  });
+
+  it("launches the configuration as saved now, or the one it ran with once deleted", () => {
+    const ran = cfg({ id: "app", command: "python", args: ["init.py"] });
+    const edited = { ...ran, args: ["main.py"] };
+    useRun.setState({ configs: [edited] });
+    expect(rerunConfig(session(ran))).toBe(edited);
+    expect(configRemoved("app")).toBe(false);
+    useRun.setState({ configs: [] });
+    expect(rerunConfig(session(ran))).toBe(ran);
+    expect(configRemoved("app")).toBe(true);
+    // A run that was never a listed configuration isn't "removed".
+    expect(configRemoved("build:task")).toBe(false);
+  });
+
+  it("keeps the tests of a derived run (Rerun Failed Tests)", () => {
+    const base = cfg({ id: "tests", isTest: true });
+    const derived = { ...base, args: ["-k", "failing"] };
+    useRun.setState({ configs: [base] });
+    expect(rerunConfig(session(derived, base))).toBe(derived);
+    useRun.setState({ configs: [] });
   });
 });

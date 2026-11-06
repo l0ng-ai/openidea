@@ -106,6 +106,8 @@ pub enum Pool {
     Postgres(PgPool),
     Mysql(MySqlPool),
     SqlServer(Bb8Pool<MssqlConnectionManager>),
+    Clickhouse(crate::clickhouse::ClickhousePool),
+    Oracle(crate::oracle::OraclePool),
 }
 
 /// Runs `$body` with `$p` bound to the concrete pool of each driver.
@@ -115,7 +117,7 @@ macro_rules! with_pool {
             Pool::Sqlite($p) => $body,
             Pool::Postgres($p) => $body,
             Pool::Mysql($p) => $body,
-            Pool::SqlServer(_) => unreachable!(),
+            Pool::SqlServer(_) | Pool::Clickhouse(_) | Pool::Oracle(_) => unreachable!(),
         }
     };
 }
@@ -261,7 +263,7 @@ fn tiberius_cell(cell: &tiberius::ColumnData<'_>, ty: tiberius::ColumnType) -> O
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(2 + bytes.len() * 2);
     s.push_str("0x");
     for b in bytes {
@@ -336,10 +338,13 @@ fn result_columns<R: Row>(row: &R) -> Vec<ResultColumn> {
         .collect()
 }
 
-/// Streams the results of `$sql` on executor `$exec`, keeping at most `$max` rows
-/// with their cells read as `$mode`.
+/// Streams the results of `$sql` on executor `$exec`, reading past the first `$skip`
+/// rows without decoding them, then keeping at most `$max` rows with their cells read as `$mode`.
 macro_rules! fetch {
-    ($exec:expr, $sql:expr, $max:expr, $mode:expr) => {{
+    ($exec:expr, $sql:expr, $max:expr, $mode:expr) => {
+        fetch!($exec, $sql, 0usize, $max, $mode)
+    };
+    ($exec:expr, $sql:expr, $skip:expr, $max:expr, $mode:expr) => {{
         use futures::StreamExt;
         let mut stream = sqlx::raw_sql(sqlx::AssertSqlSafe($sql.to_owned())).fetch_many($exec);
         let mut columns: Vec<ResultColumn> = Vec::new();
@@ -348,6 +353,7 @@ macro_rules! fetch {
         let mut has_more = false;
         let mut failure = None;
         let mut first: Option<Instant> = None;
+        let mut to_skip: usize = $skip;
         while let Some(item) = stream.next().await {
             first.get_or_insert_with(Instant::now);
             match item {
@@ -355,6 +361,10 @@ macro_rules! fetch {
                 Ok(sqlx::Either::Right(row)) => {
                     if columns.is_empty() {
                         columns = result_columns(&row);
+                    }
+                    if to_skip > 0 {
+                        to_skip -= 1;
+                        continue;
                     }
                     if rows.len() >= $max {
                         has_more = true;
@@ -377,7 +387,7 @@ macro_rules! fetch {
 }
 
 /// Columns, rows, rows affected, more rows beyond the limit, time of the first answer.
-type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, Option<Instant>);
+pub(crate) type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, Option<Instant>);
 
 async fn mssql_command(conn: &mut MssqlClient, sql: &str) -> IdeResult<()> {
     // Transaction control must be a batch: sp_executesql rejects a changed transaction count.
@@ -385,7 +395,8 @@ async fn mssql_command(conn: &mut MssqlClient, sql: &str) -> IdeResult<()> {
     Ok(())
 }
 
-async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, max: usize) -> IdeResult<Fetched> {
+/// Like [`fetch!`] for SQL Server: the first `skip` rows are read past without decoding.
+async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, skip: usize, max: usize) -> IdeResult<Fetched> {
     let mut stream = conn.simple_query(sql).await.map_err(mssql_err)?;
     let first = Some(Instant::now());
     let columns = stream
@@ -398,8 +409,13 @@ async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, max: usize) -> IdeResult
         .collect();
     let mut rows = Vec::new();
     let mut has_more = false;
+    let mut to_skip = skip;
     while let Some(item) = stream.next().await {
         if let tiberius::QueryItem::Row(row) = item.map_err(mssql_err)? {
+            if to_skip > 0 {
+                to_skip -= 1;
+                continue;
+            }
             if rows.len() >= max {
                 has_more = true;
                 break;
@@ -488,6 +504,18 @@ impl Setup {
                 }
             }
             DbDriver::Mysql if source.read_only => s.statements.push("SET SESSION TRANSACTION READ ONLY".into()),
+            DbDriver::Oracle => {
+                let schema = o.default_schema.trim();
+                if !schema.is_empty() {
+                    if !is_identifier(schema) {
+                        return Err(IdeError::invalid(format!("invalid schema name: {schema}")));
+                    }
+                    s.statements.push(format!("ALTER SESSION SET CURRENT_SCHEMA = {schema}"));
+                }
+                if !o.time_zone.trim().is_empty() {
+                    s.statements.push(format!("ALTER SESSION SET TIME_ZONE = {}", mysql_value(o.time_zone.trim())));
+                }
+            }
             _ => {}
         }
         for p in &source.properties {
@@ -503,14 +531,23 @@ impl Setup {
                 value.parse::<u64>().map_err(|_| IdeError::invalid(format!("{what} must be a whole number: {value}")))
             };
             match (source.driver, name.to_ascii_lowercase().as_str()) {
+                (DbDriver::Clickhouse, "statement_cache_capacity") => {
+                    return Err(IdeError::invalid("ClickHouse HTTP does not support statement caching"));
+                }
                 (_, "statement_cache_capacity") => s.statement_cache = Some(number(&name)? as usize),
                 (_, "connect_timeout") => s.connect_timeout = Some(Duration::from_secs(number(&name)?)),
                 (DbDriver::Postgres, "application_name") => s.application_name = Some(value.to_owned()),
                 (DbDriver::Mysql, "charset") => s.charset = Some(value.to_owned()),
                 (DbDriver::Mysql, "collation") => s.collation = Some(value.to_owned()),
                 (DbDriver::Mysql, _) => s.statements.push(format!("SET SESSION {name} = {}", mysql_value(value))),
+                (DbDriver::Oracle, _) => {
+                    s.statements.push(format!("ALTER SESSION SET {name} = {}", mysql_value(value)))
+                }
                 _ => s.params.push((name, value.to_owned())),
             }
+        }
+        if source.driver == DbDriver::Clickhouse && !o.time_zone.trim().is_empty() {
+            s.params.push(("session_timezone".into(), o.time_zone.trim().into()));
         }
         let script = o.startup_script.trim();
         if !script.is_empty() {
@@ -527,6 +564,16 @@ impl Pool {
             Pool::Postgres(_) => DbDriver::Postgres,
             Pool::Mysql(_) => DbDriver::Mysql,
             Pool::SqlServer(_) => DbDriver::SqlServer,
+            Pool::Clickhouse(_) => DbDriver::Clickhouse,
+            Pool::Oracle(_) => DbDriver::Oracle,
+        }
+    }
+
+    /// The keep-alive ping (Oracle needs a FROM clause).
+    pub fn ping_sql(&self) -> &'static str {
+        match self {
+            Pool::Oracle(_) => "SELECT 1 FROM DUAL",
+            _ => "SELECT 1",
         }
     }
 
@@ -534,6 +581,12 @@ impl Pool {
     pub async fn connect(source: &DataSource, password: Option<&str>, root: Option<&Path>) -> IdeResult<Self> {
         const MAX: u32 = 4;
         let setup = Setup::of(source)?;
+        if source.driver == DbDriver::Clickhouse {
+            return crate::clickhouse::ClickhousePool::connect(source, password, setup).await.map(Pool::Clickhouse);
+        }
+        if source.driver == DbDriver::Oracle {
+            return crate::oracle::OraclePool::connect(source, password, &setup).await.map(Pool::Oracle);
+        }
         let timeout = setup.connect_timeout.unwrap_or(Duration::from_secs(30));
         let init = Arc::new(setup.statements);
         // Runs the session statements (startup script…) on every new connection.
@@ -695,12 +748,15 @@ impl Pool {
                 conn.query("SELECT 1", &[]).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
                 Ok(Pool::SqlServer(pool))
             }
+            DbDriver::Clickhouse => unreachable!(),
+            DbDriver::Oracle => unreachable!(),
         }
     }
 
     pub async fn close(&self) {
         match self {
-            Pool::SqlServer(_) => {}
+            Pool::SqlServer(_) | Pool::Oracle(_) => {}
+            Pool::Clickhouse(p) => p.close(),
             _ => with_pool!(self, p => p.close().await),
         }
     }
@@ -708,16 +764,26 @@ impl Pool {
     pub fn is_closed(&self) -> bool {
         match self {
             Pool::SqlServer(_) => false,
+            Pool::Oracle(p) => p.is_closed(),
+            Pool::Clickhouse(p) => p.is_closed(),
             _ => with_pool!(self, p => p.is_closed()),
         }
     }
 
     /// Runs `sql` (no row limit beyond `max`), for introspection: cells are text (see [`Cells::Text`]).
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
+        if let Pool::Clickhouse(p) = self {
+            return Ok(p.execute(sql, max, &CancellationToken::new()).await?.rows);
+        }
+        if let Pool::Oracle(p) = self {
+            let mut conn = p.get().await?;
+            let fetched = crate::oracle::run(&mut conn, sql, 0, max, Cells::Text, &CancellationToken::new()).await?;
+            return Ok(fetched.1);
+        }
         let fetched: IdeResult<Fetched> = match self {
             Pool::SqlServer(p) => {
                 let mut conn = p.get_owned().await.map_err(mssql_pool_err)?;
-                mssql_fetch(&mut conn, sql, max).await
+                mssql_fetch(&mut conn, sql, 0, max).await
             }
             _ => with_pool!(self, p => fetch!(p, sql, max, Cells::Text)),
         };
@@ -727,8 +793,23 @@ impl Pool {
     /// Runs one statement and keeps at most `max_rows` rows. Cancelling stops
     /// the statement on the server (PostgreSQL, MySQL) and drops the connection.
     pub async fn execute(&self, sql: &str, max_rows: usize, cancel: &CancellationToken) -> IdeResult<QueryResult> {
+        self.execute_from(sql, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping them
+    /// (a later page of a result: only that page is decoded and returned).
+    pub async fn execute_from(
+        &self,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        if let Pool::Clickhouse(p) = self {
+            return p.execute_from(sql, skip, max_rows, cancel).await;
+        }
         let mut conn = Held::acquire(self).await?;
-        let r = conn.execute(self, sql, max_rows, cancel).await;
+        let r = conn.execute_from(self, sql, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             conn.discard().await;
             return Err(IdeError::cancelled());
@@ -740,6 +821,7 @@ impl Pool {
     /// row when flagged (table editor submits).
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
         match self {
+            Pool::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
             Pool::SqlServer(p) => {
                 let mut conn = p.get_owned().await.map_err(mssql_pool_err)?;
                 let result = async {
@@ -761,6 +843,15 @@ impl Pool {
                 if result.is_err() && mssql_command(&mut conn, "IF @@TRANCOUNT > 0 ROLLBACK TRAN").await.is_err() {
                     // A failed rollback must never return an open transaction to the pool.
                     conn.0.take();
+                }
+                result
+            }
+            Pool::Oracle(p) => {
+                let mut conn = p.get().await?;
+                let result = crate::oracle::transaction(&mut conn, statements).await;
+                if result.is_err() {
+                    // An open transaction must never return to the pool with the connection.
+                    conn.discard_inner();
                 }
                 result
             }
@@ -790,6 +881,8 @@ pub enum Held {
     Postgres(PoolConnection<Postgres>),
     Mysql(PoolConnection<MySql>),
     SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
+    Clickhouse(crate::clickhouse::ClickhousePool),
+    Oracle(crate::oracle::OracleConnection),
 }
 
 impl Held {
@@ -799,6 +892,13 @@ impl Held {
             Pool::Postgres(p) => Held::Postgres(p.acquire().await.map_err(db_err)?),
             Pool::Mysql(p) => Held::Mysql(p.acquire().await.map_err(db_err)?),
             Pool::SqlServer(p) => Held::SqlServer(Box::new(p.get_owned().await.map_err(mssql_pool_err)?)),
+            Pool::Clickhouse(p) => {
+                if p.is_closed() {
+                    return Err(IdeError::new(ErrorKind::Io, "ClickHouse connection is closed"));
+                }
+                Held::Clickhouse(p.clone())
+            }
+            Pool::Oracle(p) => Held::Oracle(p.get().await?),
         })
     }
 
@@ -806,13 +906,21 @@ impl Held {
     pub async fn command(&mut self, sql: &str) -> IdeResult<()> {
         match self {
             Held::SqlServer(c) => mssql_command(c, sql).await,
+            Held::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Held::Oracle(c) => {
+                let sql = sql.trim();
+                if sql.is_empty() {
+                    return Ok(()); // Oracle transactions open implicitly.
+                }
+                crate::oracle::run(c, sql, 0, 0, Cells::Text, &CancellationToken::new()).await.map(drop)
+            }
             other => {
                 let sql = sqlx::AssertSqlSafe(sql.to_owned());
                 match other {
                     Held::Sqlite(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
                     Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
                     Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
-                    Held::SqlServer(_) => unreachable!(),
+                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) => unreachable!(),
                 }
                 .map_err(db_err)
             }
@@ -833,6 +941,8 @@ impl Held {
             Held::SqlServer(mut c) => {
                 c.0.take();
             }
+            Held::Clickhouse(_) => {}
+            Held::Oracle(mut c) => c.discard_inner(),
         }
     }
 
@@ -845,6 +955,22 @@ impl Held {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        self.execute_from(pool, sql, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping them
+    /// (see [`Pool::execute_from`]).
+    pub async fn execute_from(
+        &mut self,
+        pool: &Pool,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        if let Held::Clickhouse(c) = self {
+            return c.execute_from(sql, skip, max_rows, cancel).await;
+        }
         let started = Instant::now();
         // `$id`: the query naming the server process, `$kill`: how another connection stops it.
         macro_rules! run {
@@ -854,7 +980,7 @@ impl Held {
                     None => None,
                 };
                 let r = tokio::select! {
-                    r = async { fetch!(&mut **$conn, sql, max_rows, Cells::Display) } => r,
+                    r = async { fetch!(&mut **$conn, sql, skip, max_rows, Cells::Display) } => r,
                     () = cancel.cancelled() => Err(IdeError::cancelled()),
                 };
                 if cancel.is_cancelled() {
@@ -883,10 +1009,12 @@ impl Held {
             Held::SqlServer(c) => {
                 // Tiberius has no attention/cancel API; stop reading and discard the connection.
                 tokio::select! {
-                    r = mssql_fetch(c, sql, max_rows) => r?,
+                    r = mssql_fetch(c, sql, skip, max_rows) => r?,
                     () = cancel.cancelled() => return Err(IdeError::cancelled()),
                 }
             }
+            Held::Oracle(c) => crate::oracle::run(c, sql, skip, max_rows, Cells::Display, cancel).await?,
+            Held::Clickhouse(_) => unreachable!(),
         };
         let (columns, rows, affected, has_more, first) = fetched;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -907,7 +1035,8 @@ pub fn begin_statement(driver: DbDriver) -> &'static str {
     match driver {
         DbDriver::Mysql => "START TRANSACTION",
         DbDriver::SqlServer => "BEGIN TRAN",
-        DbDriver::Sqlite | DbDriver::Postgres => "BEGIN",
+        DbDriver::Oracle => "", // opens implicitly with autocommit off
+        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse => "BEGIN",
     }
 }
 

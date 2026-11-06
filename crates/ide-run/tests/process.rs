@@ -480,6 +480,36 @@ fn python_scripts_import_sibling_packages_and_preserve_env_file_paths() {
 }
 
 #[test]
+fn ruby_test_runs_load_the_reporter_and_other_runs_do_not() {
+    let reporter = std::env::temp_dir().join("ruby reporter");
+    let run = |kind: &str, is_test: bool| {
+        let h = harness();
+        let mut config =
+            cfg("ruby-env", "/bin/sh", &["-c", r#"echo "lib=$RUBYLIB opt=$RUBYOPT report=$OPENIDEA_TEST_REPORT""#]);
+        config.kind = kind.into();
+        config.is_test = is_test;
+        let options = StartOptions { ruby_reporter: Some(reporter.clone()), ..Default::default() };
+        let chunks: Chunks = Arc::default();
+        let sink = chunks.clone();
+        let info =
+            h.pm.start(h.root.path(), &config, &options, h.sink.clone(), Box::new(move |c| sink.lock().push(c)))
+                .unwrap();
+        assert_eq!(wait_exit(&h, info.id, Duration::from_secs(10)), Some(0));
+        text(&chunks, stdout)
+    };
+    for kind in ["ruby", "rake"] {
+        let out = run(kind, true);
+        // The directory has a space: it is on RUBYLIB and only the bare feature name is in RUBYOPT.
+        assert!(out.contains(&format!("lib={}", reporter.display())), "{out}");
+        assert!(out.contains("-ropenidea_test_hook") && !out.contains(&format!("-r{}", reporter.display())), "{out}");
+        assert!(out.contains("report=1"), "{out}");
+    }
+    for (kind, is_test) in [("ruby", false), ("rspec", true), ("pytest", true)] {
+        assert!(run(kind, is_test).contains("report=\n"), "{kind} {is_test}");
+    }
+}
+
+#[test]
 fn revoking_one_project_stops_only_its_runs() {
     let h = harness();
     let other = tempfile::tempdir().unwrap();

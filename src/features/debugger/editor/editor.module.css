@@ -25,10 +25,20 @@
   background: var(--danger);
 }
 
-/* Disabled / muted: hollow circle. */
+/* Disabled: hollow circle. */
 .disabled::before {
   background: transparent;
   border: 1.5px solid var(--danger);
+}
+
+/* Mute Breakpoints (expui breakpointMuted). */
+.muted::before {
+  border-radius: 0;
+  background: url("../../../ui/expui/breakpoints/breakpointMuted.svg") center / contain no-repeat;
+}
+
+:global(:root[data-theme^="dark"]) .muted::before {
+  background-image: url("../../../ui/expui/breakpoints/breakpointMuted_dark.svg");
 }
 
 /* Not bound by the adapter. */
@@ -116,11 +126,11 @@
 
 /* Beat the caret row (`.cm-activeLine`), as IDEA does; the suspended line wins over a breakpoint. */
 :global(.cm-editor) :global(.cm-line).bpLine {
-  background: var(--bg-breakpoint-line);
+  --openidea-line-bg: var(--bg-breakpoint-line);
 }
 
 :global(.cm-editor) :global(.cm-line).execLine {
-  background: var(--bg-debug-line);
+  --openidea-line-bg: var(--bg-debug-line);
 }
 
 .inlineValue {

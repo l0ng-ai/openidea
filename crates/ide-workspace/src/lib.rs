@@ -7,6 +7,7 @@ pub mod documents;
 pub mod editorconfig;
 pub mod file_defaults;
 pub mod file_moves;
+pub mod file_ops;
 pub mod file_refs;
 pub mod history;
 pub mod memory;
@@ -15,6 +16,7 @@ pub mod recent;
 pub mod roots;
 pub mod settings;
 pub mod text_refs;
+pub mod unity;
 pub mod window_groups;
 pub mod workspace;
 
@@ -23,7 +25,7 @@ pub use editorconfig::{EditorConfig, EditorConfigProps};
 pub use file_defaults::FileDefaults;
 pub use file_moves::{FileMove, FileMoves, UndoOutcome};
 pub use history::{DirectoryHistory, HistoryEntry, HistoryKind, LocalHistory, Retention};
-pub use recent::{RecentProject, RecentProjects};
+pub use recent::{RecentProject, RecentProjectGroup, RecentProjects};
 pub use roots::{ProjectRoots, RootKind, SourceFolder};
 pub use settings::{SettingsScope, SettingsStore};
 

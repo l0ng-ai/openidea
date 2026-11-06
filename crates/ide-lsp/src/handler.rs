@@ -59,7 +59,7 @@ impl ClientHandler {
                         .get("title")
                         .and_then(Value::as_str)
                         .filter(|t| !t.is_empty())
-                        .map(str::to_owned)
+                        .map(ide_core::task::display_title)
                         .unwrap_or_else(|| self.server.name.clone());
                     let task = TaskId::next();
                     let cancel = (cancellable == Some(true)).then(|| self.cancel_handle(task, &params["token"]));
@@ -111,6 +111,10 @@ impl ClientHandler {
     }
 
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
+        // Problems come only from servers used for `diagnostics`.
+        if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
+            return;
+        }
         let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
@@ -126,19 +130,18 @@ impl ClientHandler {
         {
             return;
         }
-        let conv = mgr.conv(self.encoding());
-        let items = params
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(|d| convert::diagnostic(&conv, &path, d, &self.server.name))
-            .collect();
-        self.server.set_diagnostics(path.clone(), params.diagnostics);
-        mgr.sink().emit(IdeEvent::Diagnostics { path: path.into(), source: self.server.name.clone(), items });
+        let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
+        mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
     }
 
     fn show_message(&self, mgr: &LspManager, params: &Value) {
         let text = params.get("message").and_then(Value::as_str).unwrap_or_default().to_owned();
+        // rust-analyzer built from source reports its own slow main-loop turns as errors, meant for
+        // its developers (`poke_rust_analyzer_developer`); nothing for the user to act on.
+        if text.starts_with("overly long loop turn") {
+            tracing::warn!("[{}] {text}", self.server.name);
+            return;
+        }
         let level = match params.get("type").and_then(Value::as_u64) {
             Some(1) => NotifyLevel::Error,
             Some(2) => NotifyLevel::Warning,
@@ -202,18 +205,32 @@ impl ClientHandler {
         Ok(reply)
     }
 
-    fn registration(&self, params: &Value, register: bool) {
-        let Some(run) = self.server.running_gen(self.generation) else { return };
+    fn registration(&self, mgr: &LspManager, params: &Value, register: bool) {
+        let Some(run) = self.server.initialized_gen(self.generation) else { return };
         let key = if register { "registrations" } else { "unregisterations" };
         let list = params.get(key).or_else(|| params.get("unregistrations")).and_then(Value::as_array);
         let mut caps = run.caps.write();
+        let mut watchers_changed = false;
         for reg in list.into_iter().flatten() {
             let Some(method) = reg.get("method").and_then(Value::as_str) else { continue };
-            if register {
+            if method == "workspace/didChangeWatchedFiles" {
+                let id = reg.get("id").and_then(Value::as_str).unwrap_or_default();
+                let mut watchers = run.watchers.write();
+                if register {
+                    watchers.register(id, reg.get("registerOptions"));
+                } else {
+                    watchers.unregister(id);
+                }
+                watchers_changed = true;
+            } else if register {
                 caps.register(method, reg.get("registerOptions"));
             } else {
                 caps.unregister(method);
             }
+        }
+        drop(caps);
+        if watchers_changed {
+            mgr.file_watch_roots_changed();
         }
     }
 }
@@ -223,11 +240,20 @@ impl Handler for ClientHandler {
         let Some(mgr) = self.mgr.upgrade() else { return };
         match method {
             "$/progress" => self.progress(&mgr, params),
+            "experimental/serverStatus" => {
+                if let Some(quiescent) = params.get("quiescent").and_then(Value::as_bool) {
+                    self.server.set_loading(mgr.sink(), !quiescent);
+                }
+            }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 match params.get("type").and_then(Value::as_u64) {
+                    Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
+                        tracing::warn!("[{}] {text}", self.server.name);
+                        mgr.report_import_failure(self.server.root.clone(), text.to_owned());
+                    }
                     Some(1) => tracing::warn!("[{}] {text}", self.server.name),
                     Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
                     _ => tracing::debug!("[{}] {text}", self.server.name),
@@ -236,6 +262,9 @@ impl Handler for ClientHandler {
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
                 mgr.java_import_ready(self.server.clone(), self.generation);
+            }
+            "language/status" if self.server.name == "jdtls" && params["type"] == "ProjectStatus" => {
+                mgr.java_projects_updated(self.server.clone(), self.generation);
             }
             // The Angular server's project loading, shown like `$/progress`; one
             // task while several projects load.
@@ -267,11 +296,11 @@ impl Handler for ClientHandler {
             "workspace/configuration" => Ok(self.configuration(&params)),
             "workspace/workspaceFolders" => Ok(mgr.workspace_folders(&self.server)),
             "client/registerCapability" => {
-                self.registration(&params, true);
+                self.registration(&mgr, &params, true);
                 Ok(Value::Null)
             }
             "client/unregisterCapability" => {
-                self.registration(&params, false);
+                self.registration(&mgr, &params, false);
                 Ok(Value::Null)
             }
             "workspace/applyEdit" => self.apply_edit(&mgr, params),
@@ -284,8 +313,21 @@ impl Handler for ClientHandler {
                 mgr.sink().emit(IdeEvent::LspRefresh { server: self.server.id, kind });
                 Ok(Value::Null)
             }
-            "workspace/diagnostic/refresh" | "workspace/inlineValue/refresh" => Ok(Value::Null),
+            "workspace/diagnostic/refresh" => {
+                mgr.refresh_pulled_diagnostics(&self.server);
+                Ok(Value::Null)
+            }
+            "workspace/inlineValue/refresh" => Ok(Value::Null),
             other => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {other}"))),
+        }
+    }
+
+    fn after_response(&self, method: &str) {
+        if method == "workspace/configuration"
+            && self.server.config.resync_on_configuration
+            && let Some(mgr) = self.mgr.upgrade()
+        {
+            mgr.resync_documents(&self.server, self.generation);
         }
     }
 }

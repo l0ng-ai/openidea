@@ -1,0 +1,52 @@
+id = "hello"
+name = "Hello"
+version = "0.3.0"
+description = "Sample plugin: inserts today's date, counts words in the active file and shows a tool window with a tree."
+authors = ["OpenIDEA contributors"]
+change-notes = """
+0.3.0 — a Greetings tool window (tree view), an editor context menu entry, a shortcut and a status bar item.
+0.2.0 — plugin API 0.2: edits are versioned, one undo step for every cursor.
+0.1.0 — first release: Insert Date and Word Count of Active File commands.
+"""
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+# Loaded the first time one of its commands runs.
+activation = ["on-command:*", "on-view:greetings"]
+
+[capabilities]
+required = ["editor.read", "editor.write"]
+
+# Static declarations make the commands visible before the plugin activates;
+# a command must be declared here to exist.
+[[contributes.commands]]
+id = "insert-date"
+title = "Hello: Insert Date"
+category = "Hello"
+
+[[contributes.commands]]
+id = "word-count"
+title = "Hello: Word Count of Active File"
+category = "Hello"
+
+# Declarative UI: shown without loading the plugin's code.
+[[contributes.menus]]
+menu = "editor.context"
+command = "word-count"
+
+[[contributes.keymaps]]
+command = "insert-date"
+key = "Ctrl+Alt+D"
+mac = "Meta+Alt+D"
+
+[[contributes.statusBar]]
+id = "hello"
+text = "Hello"
+tooltip = "Word count of the active file"
+command = "word-count"
+
+# A tool window whose tree the plugin renders (view-provider).
+[[contributes.views]]
+id = "greetings"
+title = "Greetings"
+icon = "plugin"
+location = "right"

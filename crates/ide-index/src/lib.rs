@@ -8,6 +8,7 @@ use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -62,6 +63,14 @@ pub struct IndexStatus {
     pub indexing: bool,
     pub files: u32,
     pub symbols: u32,
+}
+
+/// How many indexed files share an extension (lower case, without the dot).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionCount {
+    pub extension: String,
+    pub files: u32,
 }
 
 pub struct ProjectIndex {
@@ -159,12 +168,97 @@ impl ProjectIndex {
         }
     }
 
+    /// The extensions of the indexed files, most common first: the project's file
+    /// types, for suggestions such as Find in Files' file masks. Dotfiles
+    /// (`.gitignore`) have no extension.
+    pub fn file_extensions(&self) -> Vec<ExtensionCount> {
+        let d = self.shared.data.read();
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for file in d.files.iter().flatten() {
+            let name = &file.rel[file.name_start as usize..];
+            if let Some((stem, extension)) = name.rsplit_once('.')
+                && !stem.is_empty()
+                && !extension.is_empty()
+            {
+                *counts.entry(extension.to_ascii_lowercase()).or_default() += 1;
+            }
+        }
+        let mut out: Vec<ExtensionCount> =
+            counts.into_iter().map(|(extension, files)| ExtensionCount { extension, files }).collect();
+        out.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| a.extension.cmp(&b.extension)));
+        out
+    }
+
+    /// Reuse indexed syntax tags only for the exact text snapshot. Unsaved or
+    /// not-yet-indexed contents fall back to the caller's parser.
+    pub fn symbols_for_text(&self, path: &Path, text: &str) -> Option<Vec<ide_language::SymbolTag>> {
+        let hash = blake3::hash(text.as_bytes());
+        let data = self.shared.data.read();
+        let file = data.get(path)?;
+        if &file.hash != hash.as_bytes() {
+            return None;
+        }
+        Some(
+            file.symbols
+                .iter()
+                .map(|s| ide_language::SymbolTag {
+                    name: s.name.to_string(),
+                    kind: s.kind,
+                    container: s.container.as_ref().map(ToString::to_string),
+                    range: s.range,
+                })
+                .collect(),
+        )
+    }
+
+    /// Bounded file inventory for background plugin indexers; honors the same
+    /// project/exclude scope as search and never walks the filesystem.
+    pub fn files_with_extensions(&self, extensions: &[String], limit: usize) -> Vec<PathBuf> {
+        self.shared
+            .data
+            .read()
+            .files
+            .iter()
+            .flatten()
+            .filter(|f| f.path.extension().and_then(|e| e.to_str()).is_some_and(|e| extensions.iter().any(|x| x == e)))
+            .take(limit)
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
     /// Fuzzy file search. IDEA-like ranking: file-name matches beat directory
     /// matches; `/` in the query matches path segments; recently opened files boost.
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
         matching::find_files(&d, &matching::Recents { paths: &recent }, query, limit)
+    }
+
+    /// Up to `limit` indexed files below `dir` (VCS-ignored ones left out) whose path relative to
+    /// `dir` satisfies `matches`: a file list without walking the disk. `None` while nothing is
+    /// indexed yet (first scan without a cache).
+    pub fn files_matching(&self, dir: &Path, matches: impl Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
+        let d = self.shared.data.read();
+        if d.file_count == 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for file in d.files.iter().flatten().filter(|f| !f.ignored) {
+            if out.len() >= limit {
+                break;
+            }
+            if let Ok(rel) = file.path.strip_prefix(dir)
+                && matches(rel)
+            {
+                out.push(file.path.clone());
+            }
+        }
+        Some(out)
+    }
+
+    /// Fuzzy search for folders that hold indexed files; `rel_path` ends in `/`.
+    pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
+        matching::find_dirs(&self.shared.data.read(), query, limit)
     }
 
     /// Fuzzy symbol search; CamelHump aware (`OCo` → `OrderController`).
@@ -364,6 +458,10 @@ pub mod bench_support {
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
             matching::find_files(&self.data, &matching::Recents { paths: &self.recent }, query, limit)
+        }
+
+        pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
+            matching::find_dirs(&self.data, query, limit)
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {

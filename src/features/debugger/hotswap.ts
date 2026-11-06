@@ -9,6 +9,7 @@ import { call, commands, isTauri, type DebugEvent, type DebugSessionId } from "@
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { isLive, useDebug, type DebugSession } from "./state";
 import { tx } from "@/platform/i18n";
+import type { MenuItem } from "@/ui/Menu";
 
 const KEY = "debug.hotswap";
 /** `BUILD_COMPLETE` events of our own build are not worth a prompt. */
@@ -18,9 +19,14 @@ export function hotSwapSessions(): DebugSession[] {
   return Object.values(useDebug.getState().sessions).filter((s) => isLive(s) && !!s.caps?.hotCodeReplace);
 }
 
-function plural(n: number, word: string) {
-  return `${n} ${word}${n === 1 ? "" : "es"}`;
+/** Editor menu: Reload Changed Classes on a Java file while a debug session can reload classes. */
+export function hotSwapMenuItems(paths: readonly string[]): MenuItem[] {
+  const java = paths.length === 1 && /\.java$/i.test(paths[0]!);
+  return java && hotSwapSessions().length ? [{ kind: "action", action: "debug.reloadChangedClasses" }] : [];
 }
+
+/** "3 classes", translated per count (the sentence around it is translated on its own). */
+const classesText = (n: number) => (n === 1 ? tx`${n} class` : tx`${n} classes`);
 
 /** Message for the reload result (IDEA wording). */
 export function hotSwapMessage(
@@ -29,7 +35,7 @@ export function hotSwapMessage(
 ): { level: "info" | "error"; title: string; body?: string } {
   if (errors.length) return { level: "error", title: "Hot Swap failed", body: errors.join("\n") };
   if (changed === 0) return { level: "info", title: "Loaded classes are up to date. Nothing to reload." };
-  return { level: "info", title: tx`${plural(changed, "class")} reloaded` };
+  return { level: "info", title: tx`${classesText(changed)} reloaded` };
 }
 
 /** Compiles (unless `build` is false) and reloads changed classes into every Java debug session. */

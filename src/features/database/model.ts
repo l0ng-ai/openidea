@@ -332,9 +332,11 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
     const file = sqlite[1]!.replace(/^\/([A-Za-z]:)/, "$1");
     return { source: { driver: "sqlite", file, name: fileSourceName(file) }, password: null };
   }
+  // JDBC thin URLs: `jdbc:oracle:thin:@//host:port/service`.
+  const thin = /^(?:oracle|oracledb):thin:@(.+)$/i.exec(url);
   const m =
     /^([a-z][a-z0-9]*):\/\/(?:([^:@/]*)(?::([^@/]*))?@)?([^:/?,]+|\[[^\]]+\])(?::(\d+))?(?:,[^/?]*)?(?:\/([^?]*))?(?:\?(.*))?$/i.exec(
-      url,
+      thin ? `oracle://${thin[1]!.replace(/^\/+/, "")}` : url,
     );
   const vendor = m ? vendorOfScheme(m[1]!) : undefined;
   if (!m || !vendor || vendor.driver === "sqlite") return null;
@@ -390,6 +392,10 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
     }
   }
   source.user = user;
+  if (vendor.driver === "clickhouse") {
+    if (m[1]!.toLowerCase() === "https") source.ssl = "verifyFull";
+    else if (m[1]!.toLowerCase() === "http") source.ssl = "disable";
+  }
   if (properties.length) source.properties = properties;
   return { source, password };
 }

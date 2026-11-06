@@ -4,7 +4,7 @@ import { useEditorRegistry } from "@/editor/api";
 import { evaluateWhen } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { activateWorkbench } from "./activate";
-import { registerStatusItem, registerTitleItem, registerToolWindow } from "./contributions";
+import { registerStatusItem, registerTitleItem, registerToolWindow, useStandaloneEditor } from "./contributions";
 import { EmptyEditor } from "./EditorArea";
 import { chooseProjectWindow } from "./projectWindow";
 import { Workbench } from "./Workbench";
@@ -36,6 +36,7 @@ describe("LightEdit window", () => {
     );
   });
   afterEach(() => {
+    useStandaloneEditor.setState({ title: null });
     disposers.splice(0).forEach((d) => d());
     useProject.setState({ project: null, lightEdit: false });
     useEditorRegistry.setState({ active: null });
@@ -50,6 +51,16 @@ describe("LightEdit window", () => {
     const items = [...document.querySelectorAll("[data-status-item]")].map((el) => el.getAttribute("data-status-item"));
     expect(items).toEqual(["editor.caret"]);
     expect(screen.queryByText("Welcome to OpenIDEA")).toBeNull();
+  });
+
+  it("keeps a standalone log visible without a project or LightEdit session", () => {
+    useProject.setState({ lightEdit: false });
+    useStandaloneEditor.setState({ title: "External Git Log" });
+    render(<Workbench />);
+    expect(screen.getByText("External Git Log")).toBeInTheDocument();
+    expect(document.querySelector("[data-editor-area]")).not.toBeNull();
+    expect(screen.queryByText("Welcome to OpenIDEA")).toBeNull();
+    expect(document.querySelector("[data-stripe-side]")).toBeNull();
   });
 
   it("hints only at opening files in an empty editor", () => {

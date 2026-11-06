@@ -97,12 +97,13 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
     const ok = await confirmDialog({ title: "Revert", message: question, okLabel: "Revert" });
     if (!ok) return;
     await runOp(
-      "Revert from Local History",
+      tx("Revert from Local History"),
       async () => {
         for (const e of targets) await call(commands.historyRestore(e.path, e.id));
       },
       {
-        success: targets.length === 1 ? `${baseName(targets[0]!.path)} reverted` : `${targets.length} files reverted`,
+        success:
+          targets.length === 1 ? tx`${baseName(targets[0]!.path)} reverted` : tx`${targets.length} files reverted`,
         refresh: true,
       },
     );

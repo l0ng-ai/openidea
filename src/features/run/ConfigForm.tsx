@@ -4,10 +4,12 @@
  * Before launch list.
  */
 import { parseJavaArgs } from "@/platform/javaLaunch";
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
-import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
+import { isTauri, type BeforeLaunchTask, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { relativePath, useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import {
   Button,
@@ -48,7 +50,7 @@ import styles from "./Run.module.css";
 
 /**
  * Debug adapters with a real launch template (`debugger/launch.ts`, `debugger/java.ts`),
- * verified against small programs. Others (dart, php-debug, …) only got
+ * verified against small programs. Others (dart, …) only got
  * generic launch arguments and are left out until they have one; a configuration that
  * already names one keeps it.
  */
@@ -61,6 +63,7 @@ const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "delve", label: "Delve (Go)" },
   { id: "codelldb", label: "CodeLLDB (Rust, C, C++)" },
   { id: "lldb-dap", label: "lldb-dap (C, C++, Swift)" },
+  { id: "php-debug", label: "php-debug (PHP)" },
 ];
 
 /** Options "Modify options" adds to the form: value fields (shown once added) and flags (chips). */
@@ -169,6 +172,47 @@ export interface ConfigFormProps {
   modifyRequest: number;
 }
 
+/** Picks files or a directory in the local file dialog, opened at `from`; empty when cancelled. */
+async function choosePaths(opts: { directory?: boolean; multiple?: boolean; from: string | null }): Promise<string[]> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    directory: !!opts.directory,
+    multiple: !!opts.multiple,
+    defaultPath: opts.from ?? undefined,
+  });
+  return picked === null ? [] : Array.isArray(picked) ? picked : [picked];
+}
+
+/** `path` relative to the project root when inside it; the root itself is "". */
+function projectRelative(root: string | null, path: string): string {
+  if (!root) return path;
+  return path === root ? "" : relativePath(root, path);
+}
+
+/** Browse button next to a path field; local windows only (the dialog shows this machine's files). */
+function BrowseButton({
+  directory,
+  title,
+  from,
+  onPick,
+}: {
+  directory?: boolean;
+  title: string;
+  from: string | null;
+  onPick: (path: string) => void;
+}) {
+  if (!isTauri() || isRemoteWindow()) return null;
+  return (
+    <IconButton
+      icon="folder-open"
+      size="small"
+      iconSize={14}
+      title={title}
+      onClick={() => void choosePaths({ directory, from }).then(([path]) => path !== undefined && onPick(path))}
+    />
+  );
+}
+
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
@@ -176,6 +220,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const toolWindows = useContributions((s) => s.toolWindows);
   const tx = useTx();
   const txTemplate = useTxTemplate();
+  const root = useProject((s) => s.project?.root ?? null);
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
   const [envText, setEnvText] = useState<string | null>(null);
@@ -447,13 +492,21 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         <>
           {!type?.ownsWorkingDirectory && (
             <Field label="Working directory" error={errors.cwd}>
-              <Input
-                mono
-                aria-label="Working directory"
-                value={config.cwd ?? ""}
-                placeholder="Project root"
-                onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
-              />
+              <div className={styles.inputWithButton}>
+                <Input
+                  mono
+                  aria-label="Working directory"
+                  value={config.cwd ?? ""}
+                  placeholder="Project root"
+                  onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
+                />
+                <BrowseButton
+                  directory
+                  title="Browse…"
+                  from={root}
+                  onPick={(path) => update({ cwd: projectRelative(root, path) || null })}
+                />
+              </div>
             </Field>
           )}
           <Field
@@ -480,6 +533,21 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 title="Edit Environment Variables"
                 onClick={() => setEnvOpen(true)}
               />
+              {isTauri() && !isRemoteWindow() && (
+                <IconButton
+                  icon="folder-open"
+                  size="small"
+                  iconSize={14}
+                  title="Browse for .env Files"
+                  onClick={() =>
+                    void choosePaths({ multiple: true, from: root }).then((picked) => {
+                      const current = config.envFiles ?? [];
+                      const added = picked.map((p) => projectRelative(root, p)).filter((f) => !current.includes(f));
+                      if (added.length) update({ envFiles: [...current, ...added] });
+                    })
+                  }
+                />
+              )}
             </div>
             {config.includeSystemEnv === false && (
               <span className={styles.chooserMuted}>
@@ -509,13 +577,20 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
           )}
           {isShown("stdinFile") && (
             <Field label="Redirect input from">
-              <Input
-                mono
-                aria-label="Redirect input from"
-                value={config.stdinFile ?? ""}
-                placeholder="File relative to the project root"
-                onChange={(e) => update({ stdinFile: e.target.value || null })}
-              />
+              <div className={styles.inputWithButton}>
+                <Input
+                  mono
+                  aria-label="Redirect input from"
+                  value={config.stdinFile ?? ""}
+                  placeholder="File relative to the project root"
+                  onChange={(e) => update({ stdinFile: e.target.value || null })}
+                />
+                <BrowseButton
+                  title="Browse…"
+                  from={root}
+                  onPick={(path) => update({ stdinFile: projectRelative(root, path) || null })}
+                />
+              </div>
             </Field>
           )}
           {isShown("outputFile") && (
@@ -653,10 +728,22 @@ function TypeField({
   onChange: (value: string) => void;
 }) {
   const tx = useTx();
+  const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
+  const [loaded, setLoaded] = useState<ReadonlyArray<{ value: string; label: string; detail?: string }>>([]);
+  useEffect(() => {
+    let live = true;
+    void field
+      .loadOptions?.()
+      .then((options) => live && setLoaded(options))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [field]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
-    const options = [...(field.options ?? [])];
+    const options = [...(field.options ?? []), ...loaded];
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
     return (
       <Select
@@ -682,17 +769,33 @@ function TypeField({
       />
     );
   const suggestions = field.suggestions?.(all, params) ?? [];
+  const input = (
+    <Input
+      mono={field.mono}
+      aria-label={field.label}
+      value={value}
+      invalid={invalid}
+      placeholder={field.placeholder}
+      list={suggestions.length ? listId : undefined}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+  const browse = typeof field.browse === "function" ? field.browse(params) : field.browse;
   return (
     <>
-      <Input
-        mono={field.mono}
-        aria-label={field.label}
-        value={value}
-        invalid={invalid}
-        placeholder={field.placeholder}
-        list={suggestions.length ? listId : undefined}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      {browse ? (
+        <div className={styles.inputWithButton}>
+          {input}
+          <BrowseButton
+            directory={browse === "directory"}
+            title="Browse…"
+            from={/^(\/|[A-Za-z]:[\\/])/.test(value) ? value : root}
+            onPick={onChange}
+          />
+        </div>
+      ) : (
+        input
+      )}
       {suggestions.length > 0 && (
         <datalist id={listId}>
           {suggestions.map((s) => (

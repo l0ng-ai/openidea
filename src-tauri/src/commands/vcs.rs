@@ -50,6 +50,21 @@ pub async fn vcs_file_at(
     ide_host::ops::vcs::vcs_file_at(&state.host, window.label(), path, rev).await
 }
 
+/// History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
+/// editor text. Cancellable with `cancel_request(request)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+) -> IdeResult<BlockHistory> {
+    ide_host::ops::vcs::vcs_block_history(&state.host, window.label(), request, path, text, lines).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_blame(
@@ -71,6 +86,81 @@ pub async fn vcs_log(
     query: LogQuery,
 ) -> IdeResult<Vec<Commit>> {
     ide_host::ops::vcs::vcs_log(&state.host, window.label(), repo, query).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_refs(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    ide_host::ops::vcs::vcs_log_refs(&state.host, window.label(), repo).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_users(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::vcs::vcs_log_users(&state.host, window.label(), repo).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_open_external_log(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<ide_core::IpcPath> {
+    ide_host::ops::vcs::vcs_open_external_log(&state.host, window.label(), path).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_details(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revision: String,
+) -> IdeResult<LogDetails> {
+    ide_host::ops::vcs::vcs_log_details(&state.host, window.label(), repo, revision).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_log_details_batch(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revisions: Vec<String>,
+    request: RequestId,
+) -> IdeResult<Vec<LogDetails>> {
+    ide_host::ops::vcs::vcs_log_details_batch(&state.host, window.label(), repo, revisions, request).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_revision_children(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revision: String,
+    directory: String,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::vcs::vcs_revision_children(&state.host, window.label(), repo, revision, directory).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_revision_files(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    revision: String,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::vcs::vcs_revision_files(&state.host, window.label(), repo, revision).await
 }
 
 #[tauri::command]
@@ -121,7 +211,7 @@ pub async fn vcs_add_to_ignore(
     state: State<'_, AppState>,
     paths: Vec<PathBuf>,
     destination: IgnoreDestination,
-) -> IdeResult<Vec<String>> {
+) -> IdeResult<Vec<ide_core::IpcPath>> {
     ide_host::ops::vcs::vcs_add_to_ignore(&state.host, window.label(), paths, destination).await
 }
 
@@ -355,9 +445,10 @@ pub async fn vcs_clone(
     request: RequestId,
     url: String,
     dest: PathBuf,
+    depth: Option<u32>,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_clone(&state.host, "", request, url, dest, crate::commands::sender(on_output)).await
+    ide_host::ops::vcs::vcs_clone(&state.host, "", request, url, dest, depth, crate::commands::sender(on_output)).await
 }
 
 /// `git init` in `dir` (File › New Project… "Create Git repository").
@@ -371,8 +462,8 @@ pub async fn vcs_init(state: State<'_, AppState>, dir: PathBuf) -> IdeResult<()>
 /// executable when `path` is empty.
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_git_version(state: State<'_, AppState>, path: String) -> IdeResult<GitExecutableInfo> {
-    ide_host::ops::vcs::vcs_git_version(&state.host, "", path).await
+pub async fn vcs_git_version(window: Window, state: State<'_, AppState>, path: String) -> IdeResult<GitExecutableInfo> {
+    ide_host::ops::vcs::vcs_git_version(&state.host, window.label(), path).await
 }
 
 /// The auto-detected git executable (shown as the field's placeholder).
@@ -540,6 +631,21 @@ pub async fn vcs_diff_revisions(
     ide_host::ops::vcs::vcs_diff_revisions(&state.host, window.label(), repo, from, to).await
 }
 
+/// Added and deleted lines between two revisions (Git Log › lines added and deleted).
+/// `paths` limits the diff to those repository-relative paths; empty diffs every file.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_diff_numstat(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    from: String,
+    to: String,
+    paths: Vec<String>,
+) -> IdeResult<Vec<FileLineStats>> {
+    ide_host::ops::vcs::vcs_diff_numstat(&state.host, window.label(), repo, from, to, paths).await
+}
+
 /// The best common ancestor of `a` and `b` (`git merge-base`), if any.
 #[tauri::command]
 #[specta::specta]
@@ -656,8 +762,13 @@ pub fn vcs_changelists_save(window: Window, state: State<'_, AppState>, changeli
 /// Create Patch › Save to file.
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_write_patch(state: State<'_, AppState>, path: PathBuf, patch: String) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_write_patch(&state.host, "", path, patch).await
+pub async fn vcs_write_patch(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    patch: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_write_patch(&state.host, window.label(), path, patch).await
 }
 
 #[tauri::command]

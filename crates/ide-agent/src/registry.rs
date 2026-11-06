@@ -76,6 +76,8 @@ pub struct RegistryAgent {
     pub installed: Option<String>,
     /// Whether [`Self::version`] is newer than the installed one.
     pub update: bool,
+    /// An install of it is running (it goes on after the Settings page that started it closes).
+    pub installing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
@@ -332,6 +334,7 @@ fn visible(
                 distribution,
                 no_checksum,
                 installed,
+                installing: false,
             })
         })
         .collect();
@@ -826,15 +829,7 @@ mod tests {
         let mut providers: Vec<AgentProvider> = provider::load(Some(&p.agents_dir))
             .into_iter()
             .filter(|s| s.id == "amp-acp")
-            .map(|s| AgentProvider {
-                id: s.id,
-                name: s.name,
-                command: s.command,
-                installed: false,
-                config: vec![],
-                commands: vec![],
-                source: s.source,
-            })
+            .map(|s| provider::describe(&s))
             .collect();
         mark_updates(&p, &mut providers);
         assert_eq!(
@@ -1001,15 +996,7 @@ mod tests {
         assert_eq!(spec.login_hint, "Run `copilot` in a terminal and sign in.");
         assert_eq!(spec.source, AgentSource::Registry { version: "1.0.104".into(), update: None });
 
-        let mut providers = vec![AgentProvider {
-            id: spec.id,
-            name: spec.name,
-            command: spec.command,
-            installed: true,
-            config: vec![],
-            commands: vec![],
-            source: spec.source,
-        }];
+        let mut providers = vec![provider::describe(&spec)];
         mark_updates(&p, &mut providers);
         assert_eq!(
             providers[0].source,

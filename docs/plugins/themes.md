@@ -17,7 +17,8 @@ my-theme/
    └─ my-theme.scheme.json        # editor colours, optional (IntelliJ: .icls)
 ```
 
-The quickest way to start is to copy [`templates/theme-plugin`](../../templates/theme-plugin).
+The quickest way to start is `openidea-plugin new --template theme`, or a copy of
+[`plugins/official/harbor-night`](../../plugins/official/harbor-night).
 It contains *Harbor Night*, a complete example dark theme that sets every
 themeable token. The rest of this page covers the file format, the token
 reference, porting themes from IntelliJ IDEA and VS Code, and testing.
@@ -106,11 +107,13 @@ built-in theme returns.
 
 There is no build step. The package *is* the folder.
 
-1. Copy `templates/theme-plugin` and rename `id`, `name` and the theme files.
+1. Run `openidea-plugin new --template theme` (or copy
+   `plugins/official/harbor-night`) and rename `id`, `name` and the theme files.
 2. Edit the colours. Keep `kind` truthful (`light` for light backgrounds).
 3. **Install:** *Settings › Plugins › ⚙ › Install Plugin from Disk…* (or the
-   *Install Plugin from Disk…* action) and pick the package's `plugin.toml`, or
-   a `.zip` of the folder. The manifest and the files it references are copied to
+   *Install Plugin from Disk…* action) and pick the package folder, or
+   *Install Plugin from Package File…* and pick its `plugin.toml` or a `.zip` of
+   the folder. The manifest and the files it references are copied to
    `<app-data>/plugins/<id>/`.
 4. **Apply:** in *Settings › Plugins*, select the plugin and press *Apply* next
    to the theme. *Use Default Theme* switches back.
@@ -127,11 +130,32 @@ install it from disk.
 Only port themes whose licence allows redistribution, keep their licence file,
 and credit the original authors in `authors` and `description`.
 
-### From IntelliJ IDEA (automatic)
+### From JetBrains IDEs (automatic)
+
+To use a theme you already have in a JetBrains IDE, open **Settings › Plugins**, gear
+menu:
+
+- **Import Theme from JetBrains IDE…** lists the theme plugins installed in the
+  JetBrains IDEs (and Android Studio) on this computer, one row per plugin of
+  each IDE, the plugins of the themes the IDEs use first. It reads the settings
+  folder of each IDE's newest version: `~/Library/Application Support/JetBrains`
+  (macOS), `%APPDATA%\JetBrains` (Windows), `~/.config/JetBrains` and
+  `~/.local/share/JetBrains` (Linux).
+- **Import IntelliJ Theme from File…** takes a theme plugin downloaded from the
+  JetBrains Marketplace (`.jar`, or a `.zip` with the plugin's `lib/*.jar`) or a
+  `.theme.json` (its `editorScheme` file is read from the same folder).
+
+The whole plugin becomes one OpenIDEA theme plugin, `intellij.<plugin id>`, with
+each of its themes and their editor schemes; it is installed through the usual
+install page, and the theme in use stays as it is: choose one of its themes in
+**Settings › Appearance › Theme**. Importing the plugin again replaces it. Both are actions too (`plugins.importIntellijTheme`,
+`plugins.importInstalledIntellijTheme`). The conversion is the one described
+below.
 
 `scripts/theme/import-intellij-theme.ts` converts an IntelliJ `.theme.json`,
-and optionally its `.icls` editor scheme, into a ready-to-install plugin. It
-has no dependencies beyond Node 22.
+and optionally its `.icls` editor scheme, into a plugin folder you can edit
+before installing it — the way to port a theme for publishing. It has no
+dependencies beyond Node 22.
 
 ```sh
 pnpm theme:import-intellij path/to/MyTheme.theme.json path/to/MyTheme.icls --out ~/my-theme --author "Original Author"
@@ -169,14 +193,16 @@ ship no `.icls` at all keep the built-in syntax colours.
 | `--danger`, `--warning` | `Component.errorFocusColor`, `Component.warningFocusColor` |
 | `--bg-tooltip`, `--fg-tooltip`, `--border-tooltip` | `ToolTip.background`, `.foreground`, `.borderColor` |
 | `--bg-button`, `--border-button` | `Button.startBackground`, `Button.startBorderColor` |
-| `--bg-tab-selected`, `--border-tab-selected` | `EditorTabs.underlinedTabBackground`, `EditorTabs.underlineColor` |
+| `--bg-tab-selected` | `EditorTabs.underlinedTabBackground` |
+| `--border-tab-selected` | `EditorTabs.underlinedBorderColor` (Islands), `EditorTabs.underlineColor` |
+| `--fg-completion-match` | `CompletionPopup.matchForeground` |
 | `--bg-toolbar-hover`, `--bg-toolbar-pressed` | `ActionButton.hoverBackground`, `ActionButton.pressedBackground` |
 | `--bg-stripe-hover`, `--bg-stripe-selected` | `ToolWindow.Button.hoverBackground`, `.selectedBackground` |
 | `--scrollbar-thumb`, `--scrollbar-thumb-hover` | `ScrollBar.Mac.thumbColor`, `ScrollBar.Mac.hoverThumbColor` |
 | `--bg-toggle-*` | `ToggleButton.onBackground`, `.offBackground`, `.buttonColor` |
 | `--bg-feedback-*`, `--border-feedback-*` | `Banner.infoBackground`, `Banner.errorBorderColor`, … |
 
-The full table is `UI_KEYS` in [`scripts/theme/intellij.ts`](../../scripts/theme/intellij.ts).
+The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../../src/features/plugins/intellijTheme.ts).
 
 #### `.icls` → editor scheme
 
@@ -186,6 +212,7 @@ The full table is `UI_KEYS` in [`scripts/theme/intellij.ts`](../../scripts/theme
 | `--caret`, `--bg-current-line` | colour `CARET_COLOR`, `CARET_ROW_COLOR` |
 | `--bg-editor-selection` | colour `SELECTION_BACKGROUND` |
 | `--fg-line-number`, `--fg-line-number-current` | colour `LINE_NUMBERS_COLOR`, `LINE_NUMBER_ON_CARET_ROW_COLOR` |
+| `--bg-editor-gutter` | colour `EDITOR_GUTTER_BACKGROUND`, else the editor background (as the new UI paints it; `GUTTER_BACKGROUND` is the classic UI's) |
 | `--border-indent-guide`, `--border-right-margin`, `--fg-whitespace` | colour `INDENT_GUIDE`, `RIGHT_MARGIN_COLOR`, `WHITESPACES` |
 | `--vcs-*`, `--gutter-*` | colour `FILESTATUS_*`, `MODIFIED_LINES_COLOR`, `ADDED_LINES_COLOR`, `DELETED_LINES_COLOR` |
 | `--syn-keyword`, `--syn-string`, `--syn-number` | `DEFAULT_KEYWORD`, `DEFAULT_STRING`, `DEFAULT_NUMBER` |
@@ -203,7 +230,9 @@ The full table is `UI_KEYS` in [`scripts/theme/intellij.ts`](../../scripts/theme
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined` | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME` |
 | `--ansi-*` | `CONSOLE_*_OUTPUT` (`CONSOLE_DARKGRAY_OUTPUT` is bright black, `CONSOLE_GRAY_OUTPUT` white) |
 
-The full tables are `ICLS_COLORS` and `ICLS_ATTRIBUTES` in the same file.
+The full tables are `ICLS_COLORS` and `ICLS_ATTRIBUTES` in the same file. An
+attribute written as `<value />` has no colours of its own and shows as plain
+text (`TEXT`'s foreground), as in IntelliJ, not with the parent scheme's colour.
 
 ### From VS Code (by hand)
 
@@ -295,7 +324,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-223 themeable tokens: 117 in the UI theme file, 106 in the editor colour scheme file.
+242 themeable tokens: 121 in the UI theme file, 121 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -378,6 +407,10 @@ a token.
 | `--diff-modified` | `#385570` | `#c2d8f2` |
 | `--diff-inserted` | `#294436` | `#bee6be` |
 | `--diff-deleted` | `#484a4a` | `#d6d6d6` |
+| `--diff-modified-stripe` | `#43698d` | `#b6d2f2` |
+| `--diff-inserted-stripe` | `#447152` | `#aadeaa` |
+| `--diff-deleted-stripe` | `#656e76` | `#c8c8c8` |
+| `--diff-conflict-stripe` | `#8f5247` | `#ffc8bd` |
 
 ### Syntax (editor scheme)
 
@@ -397,9 +430,24 @@ a token.
 | `--syn-number` | `#2aacb8` | `#1750eb` |
 | `--syn-punct` | `#bcbec4` | `#080808` |
 | `--syn-variable` | `#bcbec4` | `#080808` |
+| `--syn-global` | `var(--syn-variable)` | `var(--syn-variable)` |
 | `--syn-param` | `#bcbec4` | `#080808` |
 | `--syn-property` | `#c77dbb` | `#871094` |
 | `--syn-constant` | `#c77dbb` | `#871094` |
+| `--syn-python-local-variable` | `var(--syn-variable)` | `var(--syn-variable)` |
+| `--syn-python-global-variable` | `var(--syn-global)` | `var(--syn-global)` |
+| `--syn-python-instance-attribute` | `var(--syn-variable)` | `var(--syn-variable)` |
+| `--syn-python-class-attribute` | `var(--syn-property)` | `var(--syn-property)` |
+| `--syn-python-constant` | `var(--syn-constant)` | `var(--syn-constant)` |
+| `--syn-python-property` | `var(--syn-property)` | `var(--syn-property)` |
+| `--syn-python-type-parameter` | `var(--syn-type)` | `var(--syn-type)` |
+| `--syn-python-builtin` | `var(--syn-builtin)` | `var(--syn-builtin)` |
+| `--syn-python-predefined-definition` | `var(--syn-predefined)` | `var(--syn-predefined)` |
+| `--syn-python-predefined-usage` | `var(--syn-predefined)` | `var(--syn-predefined)` |
+| `--syn-python-fstring` | `#a5c261` | `var(--syn-string)` |
+| `--syn-python-bytes` | `#a5c261` | `var(--syn-string)` |
+| `--syn-php-variable` | `var(--syn-property)` | `var(--syn-property)` |
+| `--syn-php-function-call` | `var(--syn-function)` | `var(--syn-function)` |
 | `--syn-builtin` | `#8888c6` | `#000080` |
 | `--syn-self` | `#94558d` | `#94558d` |
 | `--syn-keyword-arg` | `#aa4926` | `#660099` |

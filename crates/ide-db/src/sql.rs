@@ -7,6 +7,7 @@ use specta::Type;
 
 pub fn quote_ident(driver: DbDriver, name: &str) -> String {
     match driver {
+        DbDriver::Clickhouse => format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`")),
         DbDriver::Mysql => format!("`{}`", name.replace('`', "``")),
         DbDriver::SqlServer => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
@@ -15,7 +16,7 @@ pub fn quote_ident(driver: DbDriver, name: &str) -> String {
 
 pub fn quote_literal(driver: DbDriver, value: &str) -> String {
     let mut s = value.replace('\'', "''");
-    if driver == DbDriver::Mysql {
+    if matches!(driver, DbDriver::Mysql | DbDriver::Clickhouse) {
         s = s.replace('\\', "\\\\");
     }
     format!("'{s}'")
@@ -45,15 +46,42 @@ pub fn databases(templates: bool) -> &'static str {
 /// Databases of managed services that their users cannot use (hidden unless connected to).
 pub const INTERNAL_DATABASES: &[&str] = &["rdsadmin", "azure_maintenance", "azure_sys", "cloudsqladmin"];
 
+/// Oracle system accounts hidden unless `show_system` (see the Schemas tab).
+pub const ORACLE_SYSTEM_SCHEMAS: &[&str] = &[
+    "CTXSYS",
+    "DBSFWUSER",
+    "DVSYS",
+    "GSMADMIN_INTERNAL",
+    "LBACSYS",
+    "MDDATA",
+    "MDSYS",
+    "OLAPSYS",
+    "OUTLN",
+    "SYS",
+    "SYSTEM",
+    "XDB",
+    "XS$NULL",
+];
+
 pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
     match driver {
         DbDriver::Sqlite => "SELECT name FROM pragma_database_list WHERE name <> 'temp' ORDER BY seq",
+        DbDriver::Clickhouse if system => "SELECT name FROM system.databases ORDER BY name",
+        DbDriver::Clickhouse => {
+            "SELECT name FROM system.databases WHERE lower(name) NOT IN ('system', 'information_schema') ORDER BY name"
+        }
         DbDriver::Postgres if system => {
             "SELECT schema_name FROM information_schema.schemata \
              WHERE schema_name NOT LIKE 'pg\\_toast%' AND schema_name NOT LIKE 'pg\\_temp%' ORDER BY 1"
         }
         DbDriver::Mysql if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
         DbDriver::SqlServer if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
+        DbDriver::Oracle if system => "SELECT username FROM all_users ORDER BY username",
+        DbDriver::Oracle => {
+            "SELECT username FROM all_users WHERE username NOT IN \
+             ('CTXSYS', 'DBSFWUSER', 'DVSYS', 'GSMADMIN_INTERNAL', 'LBACSYS', 'MDDATA', 'MDSYS', 'OLAPSYS', \
+             'OUTLN', 'SYS', 'SYSTEM', 'XDB', 'XS$NULL') ORDER BY username"
+        }
         DbDriver::Postgres => {
             "SELECT schema_name FROM information_schema.schemata \
              WHERE schema_name NOT IN ('pg_catalog', 'information_schema') \
@@ -73,10 +101,22 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
 /// Rows: `name, kind` where kind is `table`, `view` or `materialized view`.
 pub fn tables(driver: DbDriver, schema: &str) -> String {
     match driver {
+        DbDriver::Clickhouse => format!(
+            "SELECT name, CASE engine WHEN 'View' THEN 'view' WHEN 'MaterializedView' THEN 'materialized view' \
+             WHEN 'WindowView' THEN 'view' ELSE 'table' END FROM system.tables \
+             WHERE database = {} AND is_temporary = 0 ORDER BY name",
+            quote_literal(driver, schema)
+        ),
         DbDriver::Sqlite => format!(
             "SELECT name, type FROM {}.sqlite_master WHERE type IN ('table', 'view') \
              AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
             quote_ident(driver, schema)
+        ),
+        DbDriver::Oracle => format!(
+            "SELECT table_name, 'table' FROM all_tables WHERE owner = {} \
+             UNION ALL SELECT view_name, 'view' FROM all_views WHERE owner = {} ORDER BY 1",
+            quote_literal(driver, schema),
+            quote_literal(driver, schema)
         ),
         DbDriver::Postgres => format!(
             "SELECT c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END \
@@ -101,6 +141,12 @@ pub fn tables(driver: DbDriver, schema: &str) -> String {
 pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => format!(
+            "SELECT name, type, CASE WHEN startsWith(type, 'Nullable(') \
+             OR startsWith(type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, \
+             if(default_kind = '', NULL, default_expression), is_in_primary_key \
+             FROM system.columns WHERE database = {s} AND table = {t} ORDER BY position"
+        ),
         DbDriver::Sqlite => format!(
             "SELECT name, type, CASE WHEN \"notnull\" = 0 THEN 'YES' ELSE 'NO' END, dflt_value, \
              CASE WHEN pk > 0 THEN 1 ELSE 0 END FROM pragma_table_info({t}, {s}) ORDER BY cid"
@@ -131,6 +177,17 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
              FROM information_schema.columns c WHERE c.table_schema = {s} AND c.table_name = {t} \
              ORDER BY c.ordinal_position"
         ),
+        DbDriver::Oracle => format!(
+            "SELECT c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), c.data_default, \
+             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END \
+             FROM all_tab_columns c \
+             LEFT JOIN (SELECT kc.column_name FROM all_constraints con \
+               JOIN all_cons_columns kc ON kc.owner = con.owner AND kc.table_name = con.table_name \
+               AND kc.constraint_name = con.constraint_name \
+               WHERE con.constraint_type = 'P' AND con.owner = {s} AND con.table_name = {t}) k \
+             ON k.column_name = c.column_name \
+             WHERE c.owner = {s} AND c.table_name = {t} ORDER BY c.column_id"
+        ),
     }
 }
 
@@ -138,6 +195,12 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
 pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => format!(
+            "SELECT * FROM (SELECT 'PRIMARY KEY' AS index_name, 0 AS is_unique, primary_key AS expression \
+             FROM system.tables WHERE database = {s} AND name = {t} AND primary_key != '' \
+             UNION ALL SELECT name, 0, expr FROM system.data_skipping_indices \
+             WHERE database = {s} AND table = {t}) ORDER BY index_name"
+        ),
         DbDriver::Sqlite => format!(
             "SELECT il.name, il.\"unique\", ii.name FROM pragma_index_list({t}, {s}) il \
              JOIN pragma_index_info(il.name, {s}) ii ORDER BY il.name, ii.seqno"
@@ -162,6 +225,12 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
              WHERE OBJECT_SCHEMA_NAME(i.object_id) = {s} AND OBJECT_NAME(i.object_id) = {t} AND i.name IS NOT NULL \
              ORDER BY i.name, ic.key_ordinal"
         ),
+        DbDriver::Oracle => format!(
+            "SELECT i.index_name, CASE WHEN i.uniqueness = 'UNIQUE' THEN 1 ELSE 0 END, ic.column_name \
+             FROM all_indexes i JOIN all_ind_columns ic \
+             ON ic.index_owner = i.owner AND ic.index_name = i.index_name \
+             WHERE i.owner = {s} AND i.table_name = {t} ORDER BY i.index_name, ic.column_position"
+        ),
     }
 }
 
@@ -169,6 +238,15 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
 /// for SQL completion, grouped by table in column order.
 pub fn completion_columns(driver: DbDriver) -> &'static str {
     match driver {
+        DbDriver::Clickhouse => {
+            "SELECT c.database, c.table, CASE t.engine WHEN 'View' THEN 'view' \
+             WHEN 'MaterializedView' THEN 'materialized view' WHEN 'WindowView' THEN 'view' ELSE 'table' END, \
+             c.name, c.type, CASE WHEN startsWith(c.type, 'Nullable(') \
+             OR startsWith(c.type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, c.is_in_primary_key, 1 \
+             FROM system.columns c JOIN system.tables t ON t.database = c.database AND t.name = c.table \
+             WHERE lower(c.database) NOT IN ('system', 'information_schema') AND t.is_temporary = 0 \
+             ORDER BY c.database, c.table, c.position LIMIT 50000"
+        }
         DbDriver::Sqlite => {
             "SELECT 'main', m.name, m.type, p.name, p.type, CASE WHEN p.\"notnull\" = 0 THEN 'YES' ELSE 'NO' END, \
              CASE WHEN p.pk > 0 THEN 1 ELSE 0 END, \
@@ -213,6 +291,21 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              WHERE c.table_schema NOT IN ('sys', 'information_schema') \
              ORDER BY c.table_schema, c.table_name, c.ordinal_position"
         }
+        DbDriver::Oracle => {
+            "SELECT c.owner, c.table_name, CASE WHEN v.view_name IS NOT NULL THEN 'view' ELSE 'table' END, \
+             c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), \
+             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END, \
+             CASE WHEN c.data_default IS NOT NULL THEN 1 ELSE 0 END \
+             FROM all_tab_columns c \
+             LEFT JOIN all_views v ON v.owner = c.owner AND v.view_name = c.table_name \
+             LEFT JOIN (SELECT con.owner, con.table_name, kc.column_name FROM all_constraints con \
+               JOIN all_cons_columns kc ON kc.owner = con.owner AND kc.table_name = con.table_name \
+               AND kc.constraint_name = con.constraint_name WHERE con.constraint_type = 'P') k \
+             ON k.owner = c.owner AND k.table_name = c.table_name AND k.column_name = c.column_name \
+             WHERE c.owner NOT IN ('CTXSYS', 'DBSFWUSER', 'DVSYS', 'GSMADMIN_INTERNAL', 'LBACSYS', 'MDDATA', \
+             'MDSYS', 'OLAPSYS', 'OUTLN', 'SYS', 'SYSTEM', 'XDB', 'XS$NULL') \
+             ORDER BY c.owner, c.table_name, c.column_id FETCH FIRST 50000 ROWS ONLY"
+        }
     }
 }
 
@@ -221,6 +314,7 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
 /// when the key references the primary key implicitly.
 pub fn foreign_keys(driver: DbDriver) -> &'static str {
     match driver {
+        DbDriver::Clickhouse => "SELECT '', '', '', '', '', '', '' WHERE 0",
         DbDriver::Sqlite => {
             "SELECT 'main', m.name, f.id, f.\"from\", 'main', f.\"table\", f.\"to\" \
              FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f \
@@ -251,6 +345,19 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
              AND table_schema NOT IN ('sys', 'information_schema') \
              ORDER BY table_schema, table_name, constraint_name, ordinal_position"
         }
+        DbDriver::Oracle => {
+            "SELECT con.owner, con.table_name, con.constraint_name, col.column_name, \
+             rcon.owner, rcon.table_name, rcol.column_name \
+             FROM all_constraints con \
+             JOIN all_cons_columns col ON col.owner = con.owner AND col.table_name = con.table_name \
+             AND col.constraint_name = con.constraint_name \
+             JOIN all_constraints rcon ON rcon.owner = con.r_owner AND rcon.constraint_name = con.r_constraint_name \
+             JOIN all_cons_columns rcol ON rcol.owner = rcon.owner AND rcol.table_name = rcon.table_name \
+             AND rcol.constraint_name = rcon.constraint_name \
+             WHERE con.constraint_type = 'R' AND con.owner NOT IN ('CTXSYS', 'DBSFWUSER', 'DVSYS', \
+             'GSMADMIN_INTERNAL', 'LBACSYS', 'MDDATA', 'MDSYS', 'OLAPSYS', 'OUTLN', 'SYS', 'SYSTEM', 'XDB', 'XS$NULL') \
+             ORDER BY 1, 2, 3, col.position FETCH FIRST 20000 ROWS ONLY"
+        }
     }
 }
 
@@ -258,6 +365,7 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
 pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => foreign_keys(driver).to_owned(),
         DbDriver::Sqlite => format!(
             "SELECT {s}, {t}, f.id, f.\"from\", {s}, f.\"table\", f.\"to\"              FROM pragma_foreign_key_list({t}, {s}) f ORDER BY f.id, f.seq"
         ),
@@ -270,16 +378,21 @@ pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String
         DbDriver::SqlServer => format!(
             "SELECT table_schema, table_name, constraint_name, column_name,              referenced_table_schema, referenced_table_name, referenced_column_name              FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL              AND table_schema = {s} AND table_name = {t} ORDER BY constraint_name, ordinal_position"
         ),
+        DbDriver::Oracle => format!(
+            "SELECT con.owner, con.table_name, con.constraint_name, col.column_name,              rcon.owner, rcon.table_name, rcol.column_name              FROM all_constraints con              JOIN all_cons_columns col ON col.owner = con.owner AND col.table_name = con.table_name              AND col.constraint_name = con.constraint_name              JOIN all_constraints rcon ON rcon.owner = con.r_owner AND rcon.constraint_name = con.r_constraint_name              JOIN all_cons_columns rcol ON rcol.owner = rcon.owner AND rcol.table_name = rcon.table_name              AND rcol.constraint_name = rcon.constraint_name              WHERE con.constraint_type = 'R' AND con.owner = {s} AND con.table_name = {t}              ORDER BY con.constraint_name, col.position"
+        ),
     }
 }
 
 /// The schema unqualified names resolve to (`None`: always `main`).
 pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
     match driver {
+        DbDriver::Clickhouse => Some("SELECT currentDatabase()"),
         DbDriver::Sqlite => None,
         DbDriver::Postgres => Some("SELECT current_schema()"),
         DbDriver::Mysql => Some("SELECT DATABASE()"),
         DbDriver::SqlServer => Some("SELECT DB_NAME()"),
+        DbDriver::Oracle => Some("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL"),
     }
 }
 
@@ -324,6 +437,8 @@ pub fn table_page(
             sql.push_str(" ORDER BY (SELECT 1)");
         }
         sql.push_str(&format!(" OFFSET {offset} ROWS FETCH NEXT {} ROWS ONLY", limit + 1));
+    } else if driver == DbDriver::Oracle {
+        sql.push_str(&format!(" OFFSET {offset} ROWS FETCH FIRST {} ROWS ONLY", limit + 1));
     } else {
         sql.push_str(&format!(" LIMIT {} OFFSET {offset}", limit + 1));
     }
@@ -362,6 +477,9 @@ fn where_key(driver: DbDriver, key: &[CellValue]) -> String {
 /// The DML statement for `edit`. Values are written as quoted literals, which
 /// every supported database coerces to the column type.
 pub fn edit_statement(driver: DbDriver, schema: &str, table: &str, edit: &DbRowEdit) -> Result<String, String> {
+    if driver == DbDriver::Clickhouse {
+        return Err("ClickHouse table editing is unsupported: primary keys do not uniquely identify rows and edits require transactions".into());
+    }
     let target = qualified(driver, schema, table);
     match edit {
         DbRowEdit::Update { key, values } => {
@@ -383,6 +501,8 @@ pub fn edit_statement(driver: DbDriver, schema: &str, table: &str, edit: &DbRowE
             if values.is_empty() {
                 return Ok(match driver {
                     DbDriver::Mysql => format!("INSERT INTO {target} () VALUES ()"),
+                    // Oracle has no DEFAULT VALUES; without columns there is nothing to insert.
+                    DbDriver::Oracle => return Err("Oracle needs at least one column value to insert".into()),
                     _ => format!("INSERT INTO {target} DEFAULT VALUES"),
                 });
             }
@@ -450,6 +570,7 @@ pub fn postgres_ddl_indexes(oid: u32) -> String {
 pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Clickhouse => "SELECT '', '', '' WHERE 0".to_owned(),
         DbDriver::Sqlite => format!(
             "SELECT name, sql FROM {}.sqlite_master WHERE type = 'trigger' AND tbl_name = {t} ORDER BY name",
             quote_ident(driver, schema)
@@ -469,6 +590,12 @@ pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
         DbDriver::SqlServer => format!(
             "SELECT t.name, lower(te.type_desc), '' FROM sys.triggers t \
              WHERE OBJECT_SCHEMA_NAME(t.parent_id) = {s} AND OBJECT_NAME(t.parent_id) = {t} ORDER BY 1"
+        ),
+        DbDriver::Oracle => format!(
+            "SELECT trigger_name, CASE WHEN trigger_type LIKE 'BEFORE%' THEN 'before' \
+             WHEN trigger_type LIKE 'INSTEAD%' THEN 'instead of' ELSE 'after' END, \
+             lower(replace(triggering_event, ' OR ', ',')) \
+             FROM all_triggers WHERE owner = {s} AND table_name = {t} ORDER BY 1"
         ),
     }
 }
@@ -492,7 +619,7 @@ pub fn sqlite_trigger_event(sql: &str) -> (String, String) {
 pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
     let s = quote_literal(driver, schema);
     match driver {
-        DbDriver::Sqlite => None,
+        DbDriver::Sqlite | DbDriver::Clickhouse => None,
         // Functions of extensions are left out, as in IDEA.
         DbDriver::Postgres => Some(format!(
             "SELECT p.proname, CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END, \
@@ -512,17 +639,28 @@ pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
             "SELECT r.routine_name, lower(r.routine_type), '', r.data_type \
              FROM information_schema.routines r WHERE r.routine_schema = {s} ORDER BY 1"
         )),
+        DbDriver::Oracle => Some(format!(
+            "SELECT object_name, CASE object_type WHEN 'PROCEDURE' THEN 'procedure' ELSE 'function' END, '', NULL \
+             FROM all_objects WHERE owner = {s} AND object_type IN ('PROCEDURE', 'FUNCTION') \
+             AND object_name NOT LIKE 'BIN$%' ORDER BY 1"
+        )),
     }
 }
 
-/// Rows: `name, data type` of a schema's sequences (PostgreSQL).
+/// Rows: `name, data type` of a schema's sequences (PostgreSQL, Oracle).
 pub fn sequences(driver: DbDriver, schema: &str) -> Option<String> {
-    (driver == DbDriver::Postgres).then(|| {
-        format!(
+    match driver {
+        DbDriver::Postgres => Some(format!(
             "SELECT sequence_name, data_type FROM information_schema.sequences WHERE sequence_schema = {} ORDER BY 1",
             quote_literal(driver, schema)
-        )
-    })
+        )),
+        // Every sequence is numeric; ALL_SEQUENCES has no data_type column before 18c.
+        DbDriver::Oracle => Some(format!(
+            "SELECT sequence_name, 'NUMBER' FROM all_sequences WHERE sequence_owner = {} ORDER BY 1",
+            quote_literal(driver, schema)
+        )),
+        _ => None,
+    }
 }
 
 /// The statement reading the definition of a routine (a row per overload), trigger
@@ -567,6 +705,26 @@ pub fn object_ddl(driver: DbDriver, schema: &str, kind: crate::DbObjectKind, nam
         (DbDriver::Mysql, K::Function) => (format!("SHOW CREATE FUNCTION {target}"), 2),
         (DbDriver::Mysql, K::Procedure) => (format!("SHOW CREATE PROCEDURE {target}"), 2),
         (DbDriver::Mysql, K::Trigger) => (format!("SHOW CREATE TRIGGER {target}"), 2),
+        (DbDriver::Oracle, K::Function | K::Procedure | K::Trigger) => (
+            format!(
+                "SELECT DBMS_METADATA.GET_DDL('{}', {n}, {s}) FROM DUAL",
+                match kind {
+                    K::Function => "FUNCTION",
+                    K::Procedure => "PROCEDURE",
+                    _ => "TRIGGER",
+                }
+            ),
+            0,
+        ),
+        (DbDriver::Oracle, K::Sequence) => (
+            format!(
+                "SELECT 'create sequence ' || {n} || E'\\n    increment by ' || increment_by || \
+                 E'\\n    minvalue ' || min_value || E'\\n    maxvalue ' || max_value || \
+                 E'\\n    start with ' || last_number || CASE WHEN cycle_flag = 'Y' THEN E'\\n    cycle' ELSE '' END \
+                 FROM all_sequences WHERE sequence_owner = {s} AND sequence_name = {n}"
+            ),
+            0,
+        ),
         _ => return None,
     })
 }
@@ -623,6 +781,71 @@ mod tests {
         assert_eq!(quote_ident(DbDriver::Mysql, "a`b"), "`a``b`");
         assert_eq!(quote_literal(DbDriver::Sqlite, "it's \\"), "'it''s \\'");
         assert_eq!(quote_literal(DbDriver::Mysql, "it's \\"), "'it''s \\\\'");
+    }
+
+    #[test]
+    fn clickhouse_escapes_backslashes_and_delimiters() {
+        let driver = DbDriver::Clickhouse;
+        assert_eq!(quote_literal(driver, r"path\O'Brien"), r"'path\\O''Brien'");
+        assert_eq!(quote_literal(driver, r"\' OR 1 = 1 --"), r"'\\'' OR 1 = 1 --'");
+        assert_eq!(quote_ident(driver, r"a\`b"), r"`a\\\`b`");
+        assert_eq!(qualified(driver, "data base", "event`log"), r"`data base`.`event\`log`");
+    }
+
+    #[test]
+    fn clickhouse_metadata_preserves_types_defaults_and_nonunique_keys() {
+        let driver = DbDriver::Clickhouse;
+        assert_eq!(schemas(driver, true), "SELECT name FROM system.databases ORDER BY name");
+        assert!(schemas(driver, false).contains("lower(name) NOT IN ('system', 'information_schema')"));
+        assert_eq!(current_schema(driver), Some("SELECT currentDatabase()"));
+        let relations = tables(driver, "event's\\db");
+        assert!(relations.contains("WHEN 'MaterializedView' THEN 'materialized view'"));
+        assert!(relations.contains(r"WHERE database = 'event''s\\db' AND is_temporary = 0"));
+        let fields = columns(driver, "default", "events");
+        assert!(fields.starts_with("SELECT name, type, CASE WHEN startsWith(type, 'Nullable(')"));
+        assert!(fields.contains("startsWith(type, 'LowCardinality(Nullable(')"));
+        assert!(fields.contains("if(default_kind = '', NULL, default_expression), is_in_primary_key"));
+        assert!(fields.ends_with("WHERE database = 'default' AND table = 'events' ORDER BY position"));
+        let keys = indexes(driver, "default", "events");
+        assert!(keys.contains("'PRIMARY KEY' AS index_name, 0 AS is_unique, primary_key AS expression"));
+        assert!(keys.contains("SELECT name, 0, expr FROM system.data_skipping_indices"));
+        let completion = completion_columns(driver);
+        assert!(completion.contains("c.is_in_primary_key, 1"));
+        assert!(completion.contains("ORDER BY c.database, c.table, c.position LIMIT 50000"));
+    }
+
+    #[test]
+    fn clickhouse_has_no_foreign_key_trigger_or_schema_routine_catalogs() {
+        let driver = DbDriver::Clickhouse;
+        assert_eq!(foreign_keys(driver), "SELECT '', '', '', '', '', '', '' WHERE 0");
+        assert_eq!(table_foreign_keys(driver, "default", "events"), foreign_keys(driver));
+        assert_eq!(triggers(driver, "default", "events"), "SELECT '', '', '' WHERE 0");
+        assert!(routines(driver, "default").is_none());
+        assert!(sequences(driver, "default").is_none());
+        assert!(object_ddl(driver, "default", crate::DbObjectKind::Trigger, "t").is_none());
+    }
+
+    #[test]
+    fn clickhouse_pages_quote_keys_and_fetch_one_extra_row() {
+        let sort = [SortKey { column: "event`id".into(), descending: true }];
+        assert_eq!(
+            table_page(DbDriver::Clickhouse, "default", "events", Some("WHERE id > 3"), &sort, 50, 25),
+            r"SELECT * FROM `default`.`events` WHERE id > 3 ORDER BY `event\`id` DESC LIMIT 26 OFFSET 50"
+        );
+    }
+
+    #[test]
+    fn clickhouse_keys_never_enable_transactional_table_edits() {
+        let key = vec![cv("id", Some("1"))];
+        for edit in [
+            DbRowEdit::Update { key: key.clone(), values: vec![cv("name", Some("new"))] },
+            DbRowEdit::Delete { key },
+            DbRowEdit::Insert { values: vec![cv("name", Some("new"))] },
+            DbRowEdit::Insert { values: vec![] },
+        ] {
+            let error = edit_statement(DbDriver::Clickhouse, "default", "events", &edit).unwrap_err();
+            assert!(error.contains("primary keys do not uniquely identify rows"));
+        }
     }
 
     #[test]
@@ -686,6 +909,64 @@ mod tests {
         assert!(foreign_keys(DbDriver::SqlServer).contains("referenced_table_name IS NOT NULL"));
         assert!(table_foreign_keys(DbDriver::SqlServer, "dbo", "t").contains("table_schema = 'dbo'"));
         assert!(completion_columns(DbDriver::SqlServer).contains("information_schema.columns"));
+    }
+
+    #[test]
+    fn oracle_quoting_pages_and_current_schema() {
+        assert_eq!(quote_ident(DbDriver::Oracle, "a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_literal(DbDriver::Oracle, "it's"), "'it''s'");
+        assert_eq!(qualified(DbDriver::Oracle, "hr", "employees"), "\"hr\".\"employees\"");
+        assert_eq!(current_schema(DbDriver::Oracle), Some("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL"));
+        assert_eq!(crate::conn::begin_statement(DbDriver::Oracle), "");
+        let sort = [SortKey { column: "id".into(), descending: true }];
+        assert_eq!(
+            table_page(DbDriver::Oracle, "hr", "employees", Some("WHERE id > 3"), &sort, 50, 25),
+            "SELECT * FROM \"hr\".\"employees\" WHERE id > 3 ORDER BY \"id\" DESC OFFSET 50 ROWS FETCH FIRST 26 ROWS ONLY"
+        );
+        assert_eq!(
+            table_page(DbDriver::Oracle, "", "t", None, &[], 0, 10),
+            "SELECT * FROM \"t\" OFFSET 0 ROWS FETCH FIRST 11 ROWS ONLY"
+        );
+    }
+
+    #[test]
+    fn oracle_introspection_queries() {
+        assert_eq!(DbDriver::Oracle.default_port(), Some(1521));
+        assert!(schemas(DbDriver::Oracle, true).contains("all_users"));
+        assert!(schemas(DbDriver::Oracle, false).contains("'MDSYS'"));
+        assert!(tables(DbDriver::Oracle, "hr").contains("all_tables"));
+        assert!(tables(DbDriver::Oracle, "hr").contains("all_views"));
+        let cols = columns(DbDriver::Oracle, "hr", "employees");
+        assert!(cols.contains("all_tab_columns"));
+        assert!(cols.contains("DECODE(c.nullable, 'Y', 'YES', 'NO')"));
+        assert!(cols.contains("constraint_type = 'P'"));
+        assert!(indexes(DbDriver::Oracle, "hr", "t").contains("all_indexes"));
+        assert!(foreign_keys(DbDriver::Oracle).contains("constraint_type = 'R'"));
+        assert!(table_foreign_keys(DbDriver::Oracle, "hr", "t").contains("all_cons_columns"));
+        assert!(completion_columns(DbDriver::Oracle).contains("all_tab_columns"));
+        assert!(triggers(DbDriver::Oracle, "hr", "t").contains("all_triggers"));
+        assert!(routines(DbDriver::Oracle, "hr").unwrap().contains("all_objects"));
+        assert!(sequences(DbDriver::Oracle, "hr").unwrap().contains("all_sequences"));
+    }
+
+    #[test]
+    fn oracle_edits_and_object_ddl() {
+        let key = vec![cv("id", Some("1"))];
+        assert_eq!(
+            edit_statement(
+                DbDriver::Oracle,
+                "hr",
+                "t",
+                &DbRowEdit::Update { key: key.clone(), values: vec![cv("n", Some("x"))] }
+            )
+            .unwrap(),
+            "UPDATE \"hr\".\"t\" SET \"n\" = 'x' WHERE \"id\" = '1'"
+        );
+        assert!(edit_statement(DbDriver::Oracle, "hr", "t", &DbRowEdit::Insert { values: vec![] }).is_err());
+        use crate::DbObjectKind as K;
+        let (q, col) = object_ddl(DbDriver::Oracle, "hr", K::Procedure, "p").unwrap();
+        assert!(q.contains("DBMS_METADATA.GET_DDL('PROCEDURE'") && col == 0);
+        assert!(object_ddl(DbDriver::Oracle, "hr", K::Sequence, "q").unwrap().0.contains("all_sequences"));
     }
 
     #[test]

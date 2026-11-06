@@ -4,7 +4,7 @@ use ide_core::CancellationToken;
 use ide_core::tool_path::search_path;
 use ide_jsonrpc::{Handler, Peer};
 use ide_language::LanguageServerConfig;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -96,8 +96,13 @@ impl Launcher for ProcessLauncher {
         cancel: &CancellationToken,
     ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
         let search = server_search_path(config);
-        let binary = ide_core::tool_path::find_command(&config.command, &search, root)
-            .and_then(|b| resolve_rustup_proxy(&config.command, b));
+        let binary = match &config.pinned {
+            // A plugin's server: the approved program, unchanged since.
+            Some(pin) => Some(pin.verify().map_err(LaunchError::Failed)?.to_path_buf()),
+            None => ide_core::tool_path::find_command(&config.command, &search, root)
+                .and_then(|b| resolve_rustup_proxy(&config.command, b))
+                .and_then(|b| reject_dead_shim(b, &search, root)),
+        };
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
         env.extend(config.env.iter().filter(|(k, _)| *k != "PATH").map(|(k, v)| (k.clone(), v.clone())));
         if let Some(addr) = &config.connect {
@@ -120,6 +125,9 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
+        if let Some(pin) = &config.pinned {
+            return pin.path.is_file();
+        }
         ide_core::tool_path::find_command(&config.command, &server_search_path(config), root).is_some()
     }
 }
@@ -127,6 +135,60 @@ impl Launcher for ProcessLauncher {
 /// A configured `PATH` (e.g. a selected toolchain prepended) also resolves the binary.
 fn server_search_path(config: &LanguageServerConfig) -> OsString {
     config.env.get("PATH").map(OsString::from).unwrap_or_else(search_path)
+}
+
+/// What a version manager's shim says when the active version has no such tool.
+const DEAD_SHIM_MESSAGES: &[&str] =
+    &["no version is set for", "no preset version", "command not found", "exists in these", "is not installed"];
+
+/// `~/.local/share/mise/shims/ruby-lsp` exists for every version of the runtime that ever
+/// had the tool, but exits with an error when the version active in `root` lacks it. A
+/// server that dies like that on every start is missing (an install hint), not crashing.
+/// Anything but a clear "not installed" answer from the shim counts as working.
+fn reject_dead_shim(binary: PathBuf, search: &OsStr, root: &Path) -> Option<PathBuf> {
+    if !binary.parent().is_some_and(|d| d.file_name().is_some_and(|n| n == "shims")) {
+        return Some(binary);
+    }
+    let Ok(mut child) = ide_core::process::prepare(&mut std::process::Command::new(&binary))
+        .arg("--version")
+        .current_dir(root)
+        .env("PATH", search)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    else {
+        return Some(binary);
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            // Slow or unwaitable: let the real start decide.
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(binary);
+            }
+        }
+    };
+    if status.success() {
+        return Some(binary);
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+    }
+    let stderr = stderr.to_lowercase();
+    if DEAD_SHIM_MESSAGES.iter().any(|m| stderr.contains(m)) {
+        tracing::info!("{} is a version-manager shim without the tool: {}", binary.display(), stderr.trim());
+        None
+    } else {
+        Some(binary)
+    }
 }
 
 /// `~/.cargo/bin/<tool>` is usually a rustup proxy that fails when the active
@@ -210,6 +272,34 @@ mod tests {
         assert_eq!(find_root(&tmp, Path::new("/elsewhere/x.rs"), &markers), None);
         assert_eq!(find_root(&tmp.join("crates"), &tmp.join("crates/b.rs"), &markers), Some(tmp.join("crates")));
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shims_without_the_tool_are_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = tmp.path().join("mise/shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = shims.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let search = OsString::from("/usr/bin:/bin");
+        let dead = script("ruby-lsp", "echo 'mise ERROR No version is set for shim: ruby-lsp' >&2; exit 1");
+        assert_eq!(reject_dead_shim(dead, &search, tmp.path()), None);
+        let works = script("good", "echo 1.0");
+        assert_eq!(reject_dead_shim(works.clone(), &search, tmp.path()), Some(works));
+        // A tool with no `--version` that fails for its own reasons still starts.
+        let odd = script("odd", "echo 'usage: odd' >&2; exit 2");
+        assert_eq!(reject_dead_shim(odd.clone(), &search, tmp.path()), Some(odd));
+        // Only shims are probed.
+        let plain = tmp.path().join("ruby-lsp");
+        std::fs::write(&plain, "#!/bin/sh\necho 'No version is set for' >&2; exit 1\n").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(reject_dead_shim(plain.clone(), &search, tmp.path()), Some(plain));
     }
 
     #[test]

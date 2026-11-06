@@ -111,6 +111,10 @@
   border-radius: var(--radius-small);
 }
 /* Push dialogs: the list fills the body so a resizable window shows more rows. */
+.pushDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
 .pushTreeWrap {
   flex: 1;
   min-height: 220px;
@@ -125,26 +129,62 @@
   flex-direction: column;
   padding: 0 14px 14px;
 }
-.cloneDirRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.cloneDirInput {
+/* Push dialog: commits above their changed files, split by a draggable divider; the pair fills the body. */
+.pushSplit {
   flex: 1;
-  min-width: 0;
+  min-height: min(540px, 60vh);
 }
-.cloneProgress {
+/* The panel's own `height: 100%` doesn't resolve against a flex-basis height in WebKit: stretch instead. */
+.pushSplit .pushSplitPanel {
+  height: auto;
+  align-self: stretch;
+}
+.pushSplitPanel > .pushListWrap {
+  min-height: 0;
+  padding-bottom: 8px;
+}
+/* Push dialogs: the outgoing commits' changed files below the commits, the diff beside them. */
+.pushChanges {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-top: 4px;
-  min-width: 0;
+  min-height: 0;
+  padding-top: 8px;
 }
-.cloneProgress > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.pushChanges .comparison {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  padding: 0 14px 14px;
+}
+.pushChangesTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0 14px 6px;
+  color: var(--fg-subtle);
+}
+.pushGrouping {
+  margin-left: auto;
+}
+.pushCommitDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 96px;
+  margin: 0 14px 8px;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.pushCommitMessage {
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .todoList {
   margin: 8px 0 0;
@@ -282,7 +322,77 @@
 .manageRowSelected:hover {
   background: var(--bg-list-selected);
 }
+/* A fixed slot, so the names line up whether or not a row is marked. */
+.worktreeMark {
+  display: flex;
+  flex: none;
+  width: 14px;
+  margin-right: -4px;
+}
+/* The branch keeps its width; the path is what gets cut short. */
+.worktreeName {
+  flex: none;
+  max-width: 40%;
+}
 
+.comparisonDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+.comparisonDialog .comparison {
+  flex: 1 1 auto;
+}
+.comparisonWindow {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-dialog, var(--bg-elev));
+  color: var(--fg);
+}
+/* Linux: frameless X11 windows have no shadow, so mark the edge in CSS (like the Settings window). */
+.comparisonWindowEdge {
+  position: relative;
+}
+.comparisonWindowEdge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--border-window);
+}
+.comparisonWindowLoading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-muted);
+}
+.comparisonWindowBody {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.comparisonWindowBody[hidden] {
+  display: none;
+}
+.comparisonWindowBody > .comparisonWindow {
+  flex: 1;
+}
+.comparisonWindowBody > .comparison {
+  flex: 1 1 auto;
+}
+.comparisonWindowFooter {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: 12px;
+  padding: 12px 16px;
+}
 .comparison {
   display: flex;
   height: min(520px, 65vh);

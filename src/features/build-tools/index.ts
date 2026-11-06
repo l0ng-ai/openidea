@@ -3,7 +3,7 @@
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
-import { onEditorEvent } from "@/editor/api";
+import { onEditorEvent, registerEditorContribution } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
@@ -14,15 +14,20 @@ import {
   registerOverlay,
   registerRunAnythingProvider,
   registerToolWindow,
+  toolWindowService,
 } from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
 import { ExecutePopupHost } from "./ExecutePopup";
 import { buildToolsRunAnything } from "./runAnything";
-import { expandableKeys, gradleChildren, gradleRoots, mavenChildren, mavenRoots } from "./model";
+import { versionCatalogExtension } from "./versionCatalog";
+import { expandableKeys, gradleChildren, gradleRoots, mavenChildren, mavenRoots, gradleProjectKey } from "./model";
 import {
   ANALYZER_KIND,
   addProjects,
+  linkGradleProjects,
+  unlinkGradleProjects,
+  requestSync,
   unlinkProjects,
   cancelSync,
   loadModel,
@@ -32,6 +37,7 @@ import {
   openAnalyzer,
   resetBuild,
   setExpanded,
+  setCurrentProject,
   syncTool,
   toggleGradleOffline,
   toggleMavenOffline,
@@ -43,7 +49,8 @@ export const MAVEN_WHEN = "projectOpen && build.maven";
 export const GRADLE_WHEN = "projectOpen && build.gradle";
 
 /** Build files whose creation / change / removal re-reads the model. */
-const BUILD_FILE = /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/;
+const BUILD_FILE =
+  /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|gradle\.properties|gradle-wrapper\.properties|[^/]+\.versions\.toml)$/;
 
 function expandAll(tool: BuildTool) {
   const { model, configs } = useBuild.getState();
@@ -53,7 +60,7 @@ function expandAll(tool: BuildTool) {
       tool,
       expandableKeys(mavenRoots(m), (n) => mavenChildren(n, m, configs)),
     );
-  } else if (tool === "gradle" && model?.gradle) {
+  } else if (tool === "gradle" && model?.gradle?.length) {
     const g = model.gradle;
     setExpanded(
       tool,
@@ -79,15 +86,37 @@ function analyzerPom(arg: unknown): string | null {
   return current.maven ?? null;
 }
 
+/** The analyzer module of a Gradle project from an action argument: `{ gradlePath }`, or `{ path }` of its build script. */
+function analyzerGradle(arg: unknown): string | null {
+  const { model, root } = useBuild.getState();
+  const a = (arg ?? {}) as { buildDir?: unknown; gradlePath?: unknown; path?: unknown };
+  for (const build of model?.gradle ?? []) {
+    const project = build.projects.find((p) => {
+      if (typeof a.gradlePath === "string")
+        return p.path === a.gradlePath && (a.buildDir === undefined || a.buildDir === build.dir);
+      const file = p.buildFile;
+      return (
+        typeof a.path === "string" &&
+        root &&
+        file &&
+        (/^(?:[A-Za-z]:[\\/]|\/)/.test(file) ? file : `${root}/${file}`) === a.path
+      );
+    });
+    if (project) return gradleProjectKey(build, project);
+  }
+  return null;
+}
+
 const synced = new Set<string>();
 
 /** Registers / unregisters the tool windows to match the model; first sync of a never-synced build. */
 function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, () => void>>) {
-  const has: Record<BuildTool, boolean> = { maven: !!model?.maven, gradle: !!model?.gradle };
+  const has: Record<BuildTool, boolean> = { maven: !!model?.maven, gradle: !!model?.gradle?.length };
   setContext("build.maven", has.maven);
   setContext("build.gradle", has.gradle);
   for (const tool of ["maven", "gradle"] as const) {
-    if (has[tool] && !registered[tool]) {
+    const visible = has[tool] || (tool === "gradle" && model !== null && !!registered.gradle);
+    if (visible && !registered[tool]) {
       registered[tool] =
         tool === "maven"
           ? registerToolWindow({
@@ -106,25 +135,40 @@ function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, (
               order: 11,
               component: GradleView,
             });
-    } else if (!has[tool] && registered[tool]) {
+    } else if (!visible && registered[tool]) {
       registered[tool]!();
       delete registered[tool];
     }
   }
-  // IDEA imports a build when the project is first opened.
+  // Import each independent build once; linking another build must not be hidden by the first sync.
   const root = useBuild.getState().root;
-  for (const tool of ["maven", "gradle"] as const) {
-    const info = tool === "maven" ? model?.maven : model?.gradle;
-    const key = `${tool}:${root}`;
-    if (info && (tool !== "maven" || model?.maven?.projects.length) && info.syncedAt == null && !synced.has(key)) {
+  const mavenKey = `maven:${root}`;
+  if (model?.maven?.projects.length && model.maven.syncedAt == null && !synced.has(mavenKey)) {
+    synced.add(mavenKey);
+    requestSync("maven");
+  }
+  for (const build of model?.gradle ?? []) {
+    const key = JSON.stringify([root, build.dir]);
+    if (build.syncedAt == null && !synced.has(key)) {
       synced.add(key);
-      void syncTool(tool);
+      requestSync("gradle", build.dir);
     }
   }
 }
 
 export function activate(): () => void {
   const registered: Partial<Record<BuildTool, () => void>> = {};
+  const showGradle = () => {
+    registered.gradle ??= registerToolWindow({
+      id: "gradle",
+      title: "Gradle",
+      icon: "toolwindow-gradle",
+      anchor: "right",
+      order: 11,
+      component: GradleView,
+    });
+    toolWindowService().show("gradle", true);
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const scheduleLoad = () => {
     clearTimeout(timer);
@@ -132,6 +176,7 @@ export function activate(): () => void {
   };
   const disposers: Array<() => void> = [
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
+    registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,
@@ -139,6 +184,19 @@ export function activate(): () => void {
       title: () => "Dependency Analyzer",
       icon: () => "build-dependencies",
       restorable: true,
+    }),
+    // A Gradle build script in the editor, its tab and the project view: that project's dependencies.
+    registerMenuGroup({
+      id: "gradle.analyzeDependencies",
+      menus: ["editor", "editorTab", "projectView"],
+      order: 30,
+      items: (_menu, { paths, dirs }) => {
+        const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
+        if (!path || !/\/build\.gradle(\.kts)?$/.test(path) || !analyzerGradle({ path })) return [];
+        return [
+          { kind: "action", action: "gradle.analyzeDependencies", arg: { path }, label: "Analyze Dependencies…" },
+        ];
+      },
     }),
     // pom.xml in the editor, its tab and the project view: Analyze Dependencies of that module.
     registerMenuGroup({
@@ -159,6 +217,7 @@ export function activate(): () => void {
     }),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
+      synced.clear();
       resetBuild();
       if (s.project) void loadModel();
     }),
@@ -179,6 +238,30 @@ export function activate(): () => void {
       if (e.key === "languages" || e.key.startsWith("languages.java")) scheduleLoad();
     }),
     registerActions([
+      {
+        id: "gradle.linkProjects",
+        title: "Link Gradle Projects",
+        category: "Gradle",
+        icon: "plus",
+        when: "projectOpen && !workspaceOpen",
+        run: async () => {
+          showGradle();
+          await linkGradleProjects();
+        },
+      },
+      {
+        id: "gradle.unlinkProjects",
+        title: "Unlink Gradle Project",
+        category: "Gradle",
+        hidden: true,
+        when: `${GRADLE_WHEN} && !workspaceOpen`,
+        run: async ({ arg }) => {
+          const dir = (arg as { buildDir?: unknown } | undefined)?.buildDir;
+          const root = useBuild.getState().root;
+          if (await unlinkGradleProjects(typeof dir === "string" ? dir : null))
+            synced.delete(JSON.stringify([root, dir]));
+        },
+      },
       {
         id: "maven.addProjects",
         title: "Add Maven Projects",
@@ -291,7 +374,21 @@ export function activate(): () => void {
         icon: "refresh",
         when: GRADLE_WHEN,
         keywords: ["gradle", "sync", "refresh"],
-        run: () => syncTool("gradle"),
+        run: ({ arg }) => {
+          const dir = (arg as { buildDir?: unknown } | undefined)?.buildDir;
+          requestSync("gradle", typeof dir === "string" ? dir : null);
+        },
+      },
+      {
+        id: "gradle.analyzeDependencies",
+        title: "Analyze Dependencies…",
+        description:
+          "Shows a Gradle project's resolved dependencies per configuration, version conflicts and where each library comes from",
+        category: "Gradle",
+        icon: "build-dependencies",
+        when: GRADLE_WHEN,
+        keywords: ["gradle", "dependency", "dependencies", "conflict", "tree", "configuration", "analyzer"],
+        run: ({ arg }) => openAnalyzer(analyzerGradle(arg)),
       },
       {
         id: "gradle.cancelReload",
@@ -309,7 +406,11 @@ export function activate(): () => void {
         icon: "run-anything",
         when: GRADLE_WHEN,
         keywords: ["gradle", "task", "run anything"],
-        run: () => openExecute("gradle"),
+        run: ({ arg }) => {
+          const key = (arg as { projectKey?: unknown } | undefined)?.projectKey;
+          if (typeof key === "string") setCurrentProject("gradle", key);
+          openExecute("gradle");
+        },
       },
       {
         id: "gradle.toggleOffline",
@@ -349,6 +450,7 @@ export function activate(): () => void {
     for (const d of Object.values(registered)) d?.();
     setContext("build.maven", false);
     setContext("build.gradle", false);
+    synced.clear();
     resetBuild();
   };
 }

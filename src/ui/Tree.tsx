@@ -33,6 +33,9 @@ import { T } from "./T";
 import { tx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { useTreeDirectoryContext } from "./treeDirectoryContext";
+import { useIconRowHeight } from "./iconAppearance";
+
+const DEFAULT_ROW_HEIGHT = 24;
 export type { TreeReorder } from "./treeReorder";
 
 export interface TreeRowState {
@@ -223,7 +226,7 @@ export function Tree<T>(props: TreeProps<T>) {
     onContextMenu,
     speedSearch = true,
     speedSearchMode = "highlight",
-    rowHeight = 24,
+    rowHeight: fixedRowHeight,
     indent = 20,
     className,
     rowClassName,
@@ -299,6 +302,8 @@ export function Tree<T>(props: TreeProps<T>) {
   const indexOfKey = useMemo(() => new Map(rows.map((r, i) => [r.key, i])), [rows]);
   const leadIndex = lead != null ? (indexOfKey.get(lead) ?? -1) : -1;
 
+  const themedRowHeight = useIconRowHeight();
+  const rowHeight = fixedRowHeight ?? themedRowHeight ?? DEFAULT_ROW_HEIGHT;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -306,6 +311,7 @@ export function Tree<T>(props: TreeProps<T>) {
     overscan: 12,
     getItemKey: (i) => rows[i]!.key,
   });
+  useEffect(() => virtualizer.measure(), [virtualizer, rowHeight]);
 
   // Keep the keyboard lead in view when the lead changes — not when its index
   // shifts because expanding or collapsing elsewhere inserted rows above it:
@@ -620,6 +626,10 @@ export function Tree<T>(props: TreeProps<T>) {
               );
             }
             const isSelected = selected.has(row.key);
+            const prevRow = rows[v.index - 1];
+            const nextRow = rows[v.index + 1];
+            const joinPrev = isSelected && !!prevRow && !prevRow.loading && selected.has(prevRow.key);
+            const joinNext = isSelected && !!nextRow && !nextRow.loading && selected.has(nextRow.key);
             const isLead = v.index === leadIndex;
             const matches = matchMap.get(row.key) ?? null;
             const state: TreeRowState = {
@@ -649,6 +659,8 @@ export function Tree<T>(props: TreeProps<T>) {
                   props.horizontalScroll && styles.wideRow,
                   rowClassName?.(row.node),
                   isSelected && styles.selected,
+                  joinPrev && styles.joinPrev,
+                  joinNext && styles.joinNext,
                   isLead && styles.lead,
                   reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}

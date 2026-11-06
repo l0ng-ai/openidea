@@ -113,7 +113,16 @@ describe("service reordering integration", () => {
     const target = within(tree()).getByText("Gateway").closest('[role="treeitem"]')!;
     Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
     const pointer = (el: Element | Window, type: string, y: number) =>
-      fireEvent(el, new MouseEvent(type, { bubbles: true, button: 0, clientX: 70, clientY: y }));
+      fireEvent(
+        el,
+        new MouseEvent(type, {
+          bubbles: true,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          clientX: 70,
+          clientY: y,
+        }),
+      );
     pointer(source, "pointerdown", 60);
     pointer(window, "pointermove", 26);
     expect(document.querySelector('[aria-hidden="true"][role="treeitem"]')).not.toBeNull();
@@ -129,7 +138,17 @@ describe("service reordering integration", () => {
     render(<ServicesTreeView />);
     select("Portal");
     fireEvent.click(screen.getByRole("button", { name: "Move Up" }));
-    act(() => useRemote.setState({ session: { root: "/services", sshConfig: "host", host: "host", commands: [] } }));
+    act(() =>
+      useRemote.setState({
+        session: {
+          root: "/services",
+          target: { kind: "ssh", config: "host" },
+          host: "host",
+          os: "linux",
+          commands: [],
+        },
+      }),
+    );
     expect(names()).toEqual(["Spring Boot", "Gateway", "Portal", "npm", "Web", "Worker", "Docker"]);
     act(() => useRemote.setState({ session: null }));
     expect(names()).toEqual(["Spring Boot", "Portal", "Gateway", "npm", "Web", "Worker", "Docker"]);

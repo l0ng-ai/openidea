@@ -22,6 +22,9 @@ export const vscodeMacos: Record<string, string[]> = {
   "navigate.implementation": ["Meta+F12"],
   "navigate.typeDeclaration": [],
   "navigate.fileStructure": ["Meta+Shift+O"],
+  "db.goToColumn": ["Meta+Shift+O"],
+  "db.submitChanges": ["Meta+Enter"],
+  "db.revertChanges": ["Meta+Alt+Z"],
   "navigate.relatedSymbol": [],
   "navigate.nextError": ["F8"],
   "navigate.prevError": ["Shift+F8"],
@@ -172,6 +175,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "refactor.inline": [],
   "refactor.move": [],
   "refactor.safeDelete": [],
+  "refactor.pullMembersUp": [],
+  "refactor.pushMembersDown": [],
 
   // File / editor tabs
   "file.save": ["Meta+S"],
@@ -291,6 +296,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.showMessageHistory": [],
   "vcs.update": [],
   "vcs.rollback": [],
+  "vcs.addToVcs": [],
   "vcs.showDiff": [],
   "vcs.nextChange": ["Alt+F5"],
   "vcs.prevChange": ["Alt+Shift+F5"],
@@ -339,6 +345,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "diff.jumpToSource": [],
   // HTTP Client / Database console: run the request or statement at the caret.
   "http.runRequest": ["Meta+Enter"],
+  "graphql.runQuery": ["Meta+Enter"],
   "http.runAll": [],
   "db.execute": ["Meta+Enter"],
   "db.showToolWindow": [],

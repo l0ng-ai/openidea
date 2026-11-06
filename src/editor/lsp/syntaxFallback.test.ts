@@ -83,15 +83,12 @@ const local = (over: Partial<Extract<Locals, { status: "local" }>["symbol"]> = {
 });
 
 const views: EditorView[] = [];
-function editor(doc: string, language = "typescript", anchor = 0) {
+function editor(doc: string, language = "typescript", anchor = 0, path = "/p/a.ts") {
   const view = new EditorView({
     state: EditorState.create({
       doc,
       selection: { anchor },
-      extensions: [
-        lspDoc.of({ doc: 7, path: "/p/a.ts", language, uiMode: null, readOnly: false }),
-        navigationExtension(),
-      ],
+      extensions: [lspDoc.of({ doc: 7, path, language, uiMode: null, readOnly: false }), navigationExtension()],
     }),
     parent: document.body,
   });
@@ -303,6 +300,29 @@ describe("navigation wiring", () => {
     await gotoTargets(view, "definition");
     expect(cmd.syntaxLocals).not.toHaveBeenCalled();
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
+  });
+
+  it("says why when the server only checks the file's syntax", async () => {
+    const { setFileDiagnostics } = await import("./diagnostics");
+    setFileDiagnostics("/p/a.ts", "jdtls", [
+      {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+        severity: "warning",
+        message: "a.ts is not on the classpath of project app, only syntax errors are reported",
+        source: "Java",
+        code: "32",
+      },
+    ]);
+    try {
+      cmd.lspGoto.mockReturnValueOnce(ok([]));
+      const view = editor("const x = 1;\nx;", "typescript", 13);
+      await gotoTargets(view, "definition");
+      expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe(
+        "Cannot find declaration to go to. This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.",
+      );
+    } finally {
+      setFileDiagnostics("/p/a.ts", "jdtls", []);
+    }
   });
 
   it("falls back to the local definition when the server is not ready", async () => {
@@ -721,4 +741,17 @@ describe("modifier-hover navigation recovery", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("bar");
   });
+});
+
+describe("same-document fragment navigation", () => {
+  it.each(["definition", "declaration"] as const)(
+    "follows Markdown HTML anchors through %s without a server",
+    async (kind) => {
+      const source = '[artist::order](#Artist-order)\n\n<a id="Artist-order"></a>';
+      const view = editor(source, "markdown", source.indexOf("#Artist"), "/p/notes.md");
+      await gotoTargets(view, kind);
+      expect(view.state.selection.main.head).toBe(source.indexOf("id="));
+      expect(openFile).not.toHaveBeenCalled();
+    },
+  );
 });

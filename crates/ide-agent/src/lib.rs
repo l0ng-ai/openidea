@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -44,15 +44,22 @@ const REPLAY_GRACE: Duration = Duration::from_millis(300);
 /// can trail its `session/prompt` response by this much.
 const TURN_GRACE: Duration = Duration::from_millis(100);
 const STDERR_LINES: usize = 20;
+/// An agent idle this long after its turn is stopped when it can reload its session
+/// (`session/load`): the next message starts it again where it left off.
+const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
 /// Updates of a session's state rather than its conversation.
 const SESSION_STATE: [&str; 5] =
     ["session_info_update", "config_option_update", "current_mode_update", "available_commands_update", "usage_update"];
 /// A native agent's own update: it is about to retry a failed API request (see [`AgentRetry`]).
 pub(crate) const RETRY_UPDATE: &str = "openidea_retry";
+/// A native agent's own update: the usage limits of its account (see [`AgentLimit`]).
+pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long deleting a task waits for its agent to exit before removing the worktree.
+const EXIT_WAIT: Duration = Duration::from_secs(5);
 
 /// The agent tasks of one project.
 pub struct AgentManager {
@@ -90,6 +97,8 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
+    idle_release_ms: AtomicU64,
 }
 
 /// What an agent offered in its last session, for the New Task page.
@@ -205,6 +214,8 @@ struct Live {
     capabilities: AgentCapabilities,
     /// `promptCapabilities.embeddedContext`: referenced files are sent with their text.
     embedded: bool,
+    /// `session/load`: the process can be stopped between turns and the session reloaded.
+    resumable: bool,
 }
 
 struct Task {
@@ -226,6 +237,8 @@ struct Task {
     cancel_pending: AtomicBool,
     /// The agent reported something for the current turn.
     turn_started: AtomicBool,
+    /// Turns sent so far: an idle release scheduled before the latest one is void.
+    turns: AtomicU64,
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
@@ -236,6 +249,11 @@ struct Task {
 }
 
 impl AgentManager {
+    #[cfg(test)]
+    fn set_idle_release(&self, delay: Duration) {
+        self.shared.idle_release_ms.store(delay.as_millis() as u64, Ordering::Relaxed);
+    }
+
     /// Loads the project's saved tasks. Spawned work runs on `runtime`.
     pub fn new(paths: AgentPaths, runtime: tokio::runtime::Handle) -> Self {
         let connector: Connector = Arc::new(|spec, cwd, client, on_stderr| match spec.driver {
@@ -260,6 +278,7 @@ impl AgentManager {
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
+            idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
         });
         let mut tasks = HashMap::new();
         for file in std::fs::read_dir(&shared.paths.store_dir).into_iter().flatten().flatten() {
@@ -301,17 +320,11 @@ impl AgentManager {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
         let list = specs
             .iter()
-            .map(|p| AgentProvider {
-                id: p.id.clone(),
-                name: p.name.clone(),
-                command: std::iter::once(p.command.as_str())
-                    .chain(p.args.iter().map(String::as_str))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                installed: provider::installed(&p.command),
-                config: self.shared.known_config(&p.id),
-                commands: self.shared.known_commands(&p.id),
-                source: p.source.clone(),
+            .map(|p| {
+                let mut info = provider::describe(p);
+                info.config = self.shared.known_config(&p.id);
+                info.commands = self.shared.known_commands(&p.id);
+                info
             })
             .collect();
         let mut prev = self.shared.providers.write();
@@ -323,6 +336,23 @@ impl AgentManager {
         });
         *prev = specs;
         list
+    }
+
+    /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
+    /// the built-in's) through its agent file, or returns it to auto-detection with `None`.
+    pub fn set_builtin_command(&self, id: &str, command: Option<String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_command(&dir, id, command.as_deref())
+    }
+
+    /// Sets the environment variables built-in `id` starts with; empty clears them.
+    pub fn set_builtin_env(&self, id: &str, env: std::collections::BTreeMap<String, String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_env(&dir, id, env)
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
@@ -811,7 +841,7 @@ impl AgentManager {
     /// Forgets the task; with `remove_worktree` also deletes its worktree (the branch stays).
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> IdeResult<()> {
         let task = self.task(id)?;
-        task.kill();
+        let live = task.kill();
         let (isolation, cwd, root) = {
             let s = task.state.lock();
             (
@@ -823,7 +853,13 @@ impl AgentManager {
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
         if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            blocking(move || worktree::remove(&root, &cwd)).await?;
+            // On Windows the agent's processes lock the folder (their working directory,
+            // open files) until they have exited.
+            if let Some(peer) = live {
+                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
+            }
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
@@ -882,6 +918,7 @@ impl Task {
             send_now: AtomicBool::new(false),
             cancel_pending: AtomicBool::new(false),
             turn_started: AtomicBool::new(false),
+            turns: AtomicU64::new(0),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
             flush_scheduled: AtomicBool::new(false),
@@ -1024,10 +1061,40 @@ impl Task {
             }
             match (next, result) {
                 (Some(queued), _) => prompt = queued.prompt,
-                (None, Ok(_)) => return self.set_status(AgentStatus::Ready, None),
+                (None, Ok(_)) => {
+                    self.set_status(AgentStatus::Ready, None);
+                    return self.release_when_idle();
+                }
                 (None, Err(failure)) => return self.fail(failure),
             }
         }
+    }
+
+    /// Stops the agent's process once the task has stayed idle for [`IDLE_RELEASE`], so
+    /// finished tasks don't keep an agent (and what it started) running. Only an agent that
+    /// reloads its session: the next message starts it again with the conversation intact.
+    fn release_when_idle(self: &Arc<Self>) {
+        let turn = self.turns.load(Ordering::Acquire);
+        let delay = Duration::from_millis(self.shared.idle_release_ms.load(Ordering::Relaxed));
+        let task = Arc::downgrade(self);
+        self.shared.runtime.spawn(async move {
+            tokio::time::sleep(delay).await;
+            let Some(task) = task.upgrade() else { return };
+            if task.turns.load(Ordering::Acquire) != turn
+                || task.state.lock().busy
+                || !task.permissions.lock().is_empty()
+            {
+                return;
+            }
+            let live = {
+                let mut live = task.live.lock();
+                if live.as_ref().is_some_and(|l| l.resumable && !l.peer.is_closed()) { live.take() } else { None }
+            };
+            if let Some(live) = live {
+                tracing::debug!("agent task {}: idle, stopping the agent until the next message", task.id);
+                live.peer.kill();
+            }
+        });
     }
 
     /// Ends a turn that failed: nothing it started stays open.
@@ -1090,6 +1157,7 @@ impl Task {
 
     /// Sends one prompt, starting the agent first if needed; returns the stop reason.
     async fn turn(self: &Arc<Self>, prompt: &AgentPrompt) -> Result<String, Failure> {
+        self.turns.fetch_add(1, Ordering::AcqRel);
         self.turn_started.store(false, Ordering::Release);
         self.state.lock().task.resets_ms = None;
         let attachments = prompt
@@ -1286,7 +1354,7 @@ impl Task {
         }
         self.persist();
         self.emit_task();
-        let live = Live { peer, session: session_id, capabilities, embedded };
+        let live = Live { peer, session: session_id, capabilities, embedded, resumable: can_load };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }
@@ -1365,6 +1433,13 @@ impl Task {
         if kind == RETRY_UPDATE {
             if !self.replaying.load(Ordering::Acquire) {
                 self.set_retry(retry_of(update, now_ms()));
+            }
+            return;
+        }
+        if kind == LIMITS_UPDATE {
+            if !self.replaying.load(Ordering::Acquire) {
+                let provider = self.state.lock().task.provider.clone();
+                self.shared.emit(AgentEvent::Limits { provider, limits: config::limits_of(update) });
             }
             return;
         }
@@ -1537,11 +1612,12 @@ impl Task {
         }
     }
 
-    fn kill(&self) {
+    /// Stops the agent; returns its connection, to wait for its process to exit.
+    fn kill(&self) -> Option<acp::Conn> {
         self.cancel_permissions();
-        if let Some(live) = self.live.lock().take() {
-            live.peer.kill();
-        }
+        let live = self.live.lock().take()?;
+        live.peer.kill();
+        Some(live.peer)
     }
 }
 

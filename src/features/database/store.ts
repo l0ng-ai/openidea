@@ -39,6 +39,8 @@ import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
 import { bindParams, findParams } from "./sql/params";
+import { isReadOnlyQuery } from "./sql/readOnly";
+import { pageFetch } from "./resultView";
 import { tx } from "@/platform/i18n";
 
 export const DB_TOOL_WINDOW = "database";
@@ -58,6 +60,11 @@ export interface ResultTab {
   plan?: DbPlanNode[];
   /** Being re-run. */
   busy?: boolean;
+  /** Zero-based page of the result shown in `outcome` (IDEA's paging re-runs the query). */
+  page?: number;
+  pageSize?: number;
+  /** Rows of the whole query, once counted. */
+  total?: number | null;
 }
 
 /** One line of the consoles' Output log (IDEA's Database Console output). */
@@ -353,7 +360,11 @@ const lastUsed = new Map<string, number>();
 
 /** Options › Transaction control: a manual data source's consoles start in manual commit. */
 function applyConnectDefaults(id: string) {
-  if (sourceById(id)?.options?.transaction === "manual" && !useDatabase.getState().manualCommit.has(id))
+  if (
+    sourceById(id)?.driver !== "clickhouse" &&
+    sourceById(id)?.options?.transaction === "manual" &&
+    !useDatabase.getState().manualCommit.has(id)
+  )
     void setManualCommit(id, true).catch(() => {});
 }
 
@@ -639,12 +650,19 @@ function promptOf(id: string): string {
   return useDatabase.getState().completion[id]?.defaultSchema || sourceById(id)?.name || id;
 }
 
-/** Runs `statements` on `id`, logging to Output; errors stop the batch (backend). */
-async function run(id: string, statements: SqlStatement[], request: RequestId): Promise<DbStatementOutcome[]> {
+/**
+ * Runs `statements` on `id`, logging to Output; errors stop the batch (backend).
+ * Results keep `maxRows` rows after the first `skip`, which the backend reads past.
+ */
+async function run(
+  id: string,
+  statements: SqlStatement[],
+  request: RequestId,
+  maxRows = useDatabase.getState().maxRows,
+  skip = 0,
+): Promise<DbStatementOutcome[]> {
   const wasConnected = useDatabase.getState().connected.has(id);
-  const outcomes = await withConnection(id, () =>
-    call(commands.dbExecute(request, id, statements, useDatabase.getState().maxRows)),
-  );
+  const outcomes = await withConnection(id, () => call(commands.dbExecute(request, id, statements, skip, maxRows)));
   if (!wasConnected) log("info", "Connected");
   for (const o of outcomes) {
     log("statement", o.statement.text, `${promptOf(id)}>`);
@@ -787,12 +805,13 @@ export async function executeConsole(
   const request = nextRequestId();
   useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
   try {
-    const outcomes = await run(id, statements, request);
+    const pageSize = useDatabase.getState().maxRows;
+    const outcomes = await run(id, statements, request, pageSize);
     const tabs: ResultTab[] = outcomes
       .filter((o) => o.result?.columns.length)
       .map((outcome) => {
         const n = nextTab++;
-        return { id: n, title: tx`Result ${n}`, path, sourceId: id, outcome };
+        return { id: n, title: tx`Result ${n}`, path, sourceId: id, outcome, page: 0, pageSize };
       });
     const failed = outcomes.some((o) => o.error);
     useDatabase.setState((s) => ({
@@ -908,25 +927,87 @@ export async function openObjectDdl(id: string, schema: string, kind: DbObjectKi
 export async function rerunResult(tabId: number): Promise<void> {
   const tab = useDatabase.getState().results.find((r) => r.id === tabId);
   if (!tab || tab.busy) return;
-  const patch = (p: Partial<ResultTab>) =>
-    useDatabase.setState((s) => ({ results: s.results.map((r) => (r.id === tabId ? { ...r, ...p } : r)) }));
-  patch({ busy: true });
   if (tab.plan) {
+    patchResult(tabId, { busy: true });
     try {
-      patch({ plan: await explain(tab.sourceId, tab.outcome.statement), busy: false });
+      patchResult(tabId, { plan: await explain(tab.sourceId, tab.outcome.statement), busy: false });
     } catch (e) {
-      patch({ busy: false });
+      patchResult(tabId, { busy: false });
       if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`);
     }
     return;
   }
+  await loadResultPage(tabId, tab.page ?? 0, tab.pageSize ?? useDatabase.getState().maxRows, true);
+}
+
+/** Whether result tab `tab` can show other pages: running its query again only reads. */
+export function pageable(tab: ResultTab): boolean {
+  return !tab.plan && isReadOnlyQuery(tab.outcome.statement.text, sourceById(tab.sourceId)?.driver ?? "sqlite");
+}
+
+function patchResult(tabId: number, p: Partial<ResultTab>) {
+  useDatabase.setState((s) => ({ results: s.results.map((r) => (r.id === tabId ? { ...r, ...p } : r)) }));
+}
+
+/**
+ * Shows page `page` of `pageSize` rows of result tab `tabId`: its query runs
+ * again and the backend returns only that page (IDEA's result paging).
+ * `rerun` also forgets the counted total.
+ */
+export async function loadResultPage(tabId: number, page: number, pageSize: number, rerun = false): Promise<void> {
+  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  if (!tab || tab.busy || tab.plan) return;
+  if (page > 0 && !pageable(tab)) return;
+  patchResult(tabId, { busy: true });
+  const { maxRows, skip } = pageFetch(page, pageSize);
   try {
-    const [outcome] = await run(tab.sourceId, [tab.outcome.statement], nextRequestId());
-    patch(outcome?.result ? { outcome, busy: false } : { busy: false });
+    const [outcome] = await run(tab.sourceId, [tab.outcome.statement], nextRequestId(), maxRows, skip);
+    const r = outcome?.result;
+    if (r) {
+      const sizeChanged = pageSize !== tab.pageSize;
+      patchResult(tabId, {
+        outcome,
+        page,
+        pageSize,
+        busy: false,
+        ...(rerun || sizeChanged ? { total: null } : {}),
+      });
+    } else patchResult(tabId, { busy: false });
     if (outcome?.error) useDatabase.setState({ activeResult: OUTPUT_TAB });
   } catch (e) {
-    patch({ busy: false });
+    patchResult(tabId, { busy: false });
     if (!isCancelled(e)) log("error", message(e));
+  }
+}
+
+/** `SELECT COUNT(*)` over a query, for queries that can be a subquery. */
+function countQuery(text: string): string | null {
+  if (!/^\s*(\(|select\b|with\b|values\b|table\b)/i.test(text)) return null;
+  // `)` on its own line: a trailing line comment (`… from t -- note`) would swallow it.
+  return `select count(*) from (\n${text.trim()}\n) q`;
+}
+
+/** Whether the rows of result tab `tab` can be counted. */
+export function countable(tab: ResultTab): boolean {
+  return pageable(tab) && countQuery(tab.outcome.statement.text) !== null;
+}
+
+/** Counts the rows of result tab `tabId`'s whole query (the pager's "of 501+"). */
+export async function countResult(tabId: number): Promise<number | null> {
+  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  if (!tab || tab.busy || !countable(tab)) return null;
+  const text = countQuery(tab.outcome.statement.text)!;
+  patchResult(tabId, { busy: true });
+  try {
+    const [outcome] = await run(tab.sourceId, [{ from: 0, to: text.length, text }], nextRequestId(), 1);
+    const total = Number(outcome?.result?.rows[0]?.[0]);
+    const known = outcome?.error || !Number.isFinite(total) ? null : total;
+    patchResult(tabId, { busy: false, ...(known === null ? {} : { total: known }) });
+    return known;
+  } catch (e) {
+    patchResult(tabId, { busy: false });
+    if (!isCancelled(e)) log("error", message(e));
+    return null;
   }
 }
 
@@ -944,6 +1025,7 @@ function setPending(id: string, pending: boolean) {
 
 /** Commits or rolls back the open transaction of a manual-commit data source. */
 export async function finishTransaction(id: string, commit: boolean): Promise<boolean> {
+  if (sourceById(id)?.driver === "clickhouse") return false;
   try {
     await call(commands.dbFinishTransaction(id, commit));
     log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
@@ -975,6 +1057,7 @@ async function askEndTransaction(source: DataSource): Promise<boolean | null> {
  * whether to commit or roll them back.
  */
 export async function setManualCommit(id: string, manual: boolean): Promise<void> {
+  if (sourceById(id)?.driver === "clickhouse" && manual) return;
   const st = useDatabase.getState();
   if (manual === st.manualCommit.has(id)) return;
   if (!manual && st.pendingTx.has(id)) {

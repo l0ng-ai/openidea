@@ -1,0 +1,96 @@
+package openidea:plugin@1.2.0;
+
+/// Problems in files, shown in the editor and the Problems view.
+interface diagnostics {
+    use types.{error, range, location};
+
+    enum severity {
+        error,
+        warning,
+        info,
+        hint,
+    }
+
+    /// Another place that explains a diagnostic (the earlier declaration, say).
+    record related-information {
+        location: location,
+        message: string,
+    }
+
+    record diagnostic {
+        range: range,
+        severity: severity,
+        message: string,
+        /// Rule or check id (`LineLength`).
+        code: option<string>,
+        /// The tool that found it, when not the plugin itself (`checkstyle`).
+        source: option<string>,
+        /// `unnecessary` (shown faded) and `deprecated` (struck through); unknown ones are ignored.
+        tags: list<string>,
+        related: list<related-information>,
+    }
+
+    /// Replaces the plugin's diagnostics for the file at `path` (absolute, in
+    /// an open project); an empty list clears them. Requires `project.read`.
+    publish: func(path: string, diagnostics: list<diagnostic>) -> result<_, error>;
+}
+
+/// HTTP(S) to the hosts granted with `net:<host>`.
+interface net {
+    use types.{error};
+
+    record header {
+        name: string,
+        value: string,
+    }
+
+    record request {
+        method: string,
+        /// `https://…`; plain `http://` only to `localhost` / `127.0.0.1`.
+        url: string,
+        /// `{{secret:<name>}}` in a value is replaced by the plugin's secret
+        /// `name` on the way out (requires `secrets`); the plugin never sees it.
+        headers: list<header>,
+        body: option<list<u8>>,
+        /// Default 30 s; the call's own budget applies too.
+        timeout-ms: option<u32>,
+    }
+
+    record response {
+        status: u16,
+        headers: list<header>,
+        /// At most 8 MiB.
+        body: list<u8>,
+    }
+
+    /// Fails with `denied` for a host the plugin may not reach, `cancelled`
+    /// when a newer request replaced the call or the user cancelled.
+    fetch: func(req: request) -> result<response, error>;
+}
+
+/// Secrets the user stored for the plugin (Settings › Plugins, kept in the
+/// OS keychain). Plugins only use them through `{{secret:<name>}}` in
+/// `net` requests. Requires `secrets`.
+interface secrets {
+    is-set: func(name: string) -> bool;
+}
+
+/// One-off runs of programs granted with `process:<program>` (the file the
+/// user approved, checked before every run).
+interface process {
+    use types.{error};
+    use workspace.{project};
+
+    record output {
+        /// `none` when killed by a signal.
+        status: option<s32>,
+        /// At most 4 MiB each (the rest is dropped).
+        stdout: string,
+        stderr: string,
+    }
+
+    /// Runs `program` with `args` in `cwd`'s root (else the plugin's data
+    /// directory) and waits; cancelled with the task or call. Call it inside
+    /// a task for anything slow.
+    run: func(program: string, args: list<string>, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
+}

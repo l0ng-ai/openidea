@@ -98,6 +98,16 @@ describe("tool window semantics", () => {
     expect(isToolWindowVisible("project")).toBe(true);
   });
 
+  it("restores the maximized side through the shared Hide All toggle", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    const before = useToolWindowLayout.getState();
+    hideAllToolWindows();
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    hideAllToolWindows();
+    expect(useToolWindowLayout.getState()).toMatchObject({ visible: before.visible, maximized: "bottom" });
+  });
+
   it("resizes the active window by moving its inner edge", () => {
     showToolWindow("terminal");
     setFocusedToolWindow("terminal");

@@ -115,3 +115,21 @@
 .center {
   text-align: center;
 }
+
+.iconPacks {
+  display: grid;
+  grid-template-columns: repeat(var(--icon-pack-columns, 1), minmax(0, 1fr));
+  gap: 6px 24px;
+  padding: 2px 0;
+}
+
+.iconLabel {
+  padding: 2px 0;
+}
+
+.iconHint {
+  padding: 0 0 2px 20px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
