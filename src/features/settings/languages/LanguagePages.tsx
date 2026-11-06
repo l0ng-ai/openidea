@@ -456,6 +456,8 @@ export function GradlePage() {
 
 export function MavenPage() {
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
+  const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const id = useId();
   return (
     <div className={styles.page}>
       <Section>
@@ -485,6 +487,23 @@ export function MavenPage() {
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
         />
+        <Row
+          label="Thread count"
+          htmlFor={id}
+          hint="Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+        >
+          <span className={styles.pathRow}>
+            <Input
+              id={id}
+              mono
+              className={styles.pathInput}
+              value={threads}
+              placeholder="4, 2C"
+              onChange={(e) => setThreads(e.target.value.trim())}
+              aria-label="Thread count"
+            />
+          </span>
+        </Row>
         <Toggle
           label="Use Maven Daemon (mvnd)"
           checked={daemon}

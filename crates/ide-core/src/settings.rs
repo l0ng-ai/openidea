@@ -916,6 +916,24 @@ pub struct MavenSettings {
     /// Maven Daemon home (or its `mvnd` executable); empty = `$MVND_HOME`, else
     /// `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
     pub mvnd_home: String,
+    /// Thread count of Maven builds (`-T`): a number of threads (`4`) or a core
+    /// multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
+    pub threads: String,
+}
+
+impl MavenSettings {
+    /// The `-T` value when it is one Maven accepts: a thread count (`4`) or a
+    /// core multiplier with an optional decimal fraction (`1C`, `2.5C`).
+    /// Anything else is dropped: a bad `-T` would make every Maven run fail.
+    pub fn thread_count(&self) -> Option<&str> {
+        let value = self.threads.trim();
+        let number = value.strip_suffix('C').unwrap_or(value);
+        let mut decimal = number.split('.');
+        let well_formed = number.parse::<f64>().is_ok_and(|n| n > 0.0)
+            && decimal.clone().count() <= 2
+            && decimal.all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+        well_formed.then_some(value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -1156,6 +1174,41 @@ mod maven_linkage_tests {
         let settings = MavenSettings { daemon: true, mvnd_home: "/opt/mvnd".into(), ..old };
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains("\"daemon\":true") && encoded.contains("mvndHome"));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
+
+    #[test]
+    fn thread_count_takes_counts_and_core_multipliers_only() {
+        let threads = |t: &str| {
+            let m = MavenSettings { threads: t.into(), ..Default::default() };
+            m.thread_count().map(str::to_owned)
+        };
+        // Empty = Maven's default (one thread per module).
+        assert_eq!(threads("").as_deref(), None);
+        assert_eq!(threads("   ").as_deref(), None);
+        // A thread count, and a core multiplier whose fraction may be decimal.
+        assert_eq!(threads("4").as_deref(), Some("4"));
+        assert_eq!(threads(" 2 ").as_deref(), Some("2"));
+        assert_eq!(threads("1C").as_deref(), Some("1C"));
+        assert_eq!(threads("2.0C").as_deref(), Some("2.0C"));
+        assert_eq!(threads("0.5C").as_deref(), Some("0.5C"));
+        // Everything else a `-T` would make every Maven run reject is dropped.
+        assert_eq!(threads("abc").as_deref(), None);
+        assert_eq!(threads("4x").as_deref(), None);
+        assert_eq!(threads("0").as_deref(), None);
+        assert_eq!(threads("-4").as_deref(), None);
+        assert_eq!(threads("1e3").as_deref(), None);
+        assert_eq!(threads("2..5C").as_deref(), None);
+    }
+
+    #[test]
+    fn thread_count_round_trips_and_defaults_to_empty() {
+        // Old settings files predate the thread count; `serde(default)` keeps them loadable.
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(old.threads.is_empty() && old.thread_count().is_none());
+        let settings = MavenSettings { threads: "2C".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains("\"threads\":\"2C\""));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 }
