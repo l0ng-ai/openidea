@@ -100,7 +100,7 @@ interface ExecutionPoint {
   top: boolean;
   values: Record<string, string>;
   /** Full variables behind `values`, for the click-to-show popup. */
-  variables: Record<string, Variable>;
+  variables?: Record<string, Variable>;
 }
 
 export const useExecutionPoint = create<ExecutionPoint>(() => ({

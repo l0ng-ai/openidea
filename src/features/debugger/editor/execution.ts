@@ -93,12 +93,26 @@ function currentExec(path: string): Exec | null {
 }
 
 /** `name: value` pairs for identifiers on `text` that are known locals. */
-export function inlineValuesFor(text: string, variables: Record<string, Variable>): InlinePart[] | null {
+export function inlineValuesFor(
+  text: string,
+  values: Record<string, string | Variable>,
+  variables?: Record<string, Variable>,
+): InlinePart[] | null {
   const parts: InlinePart[] = [];
   for (const id of identifiersIn(text)) {
-    if (!Object.hasOwn(variables, id)) continue;
-    const variable = variables[id];
-    if (variable === undefined) continue;
+    if (!Object.hasOwn(values, id)) continue;
+    const raw = values[id];
+    if (raw === undefined) continue;
+    const variable =
+      typeof raw === "string"
+        ? (variables?.[id] ?? {
+            name: id,
+            value: raw,
+            typeName: null,
+            variablesReference: 0,
+            evaluateName: id,
+          })
+        : raw;
     parts.push({
       name: id,
       text: `${id}: ${inlineValue(variable.value, 40)}`,
@@ -185,8 +199,8 @@ export function executionPoint(ctx: EditorDocContext): Extension {
       build(): DecorationSet {
         const exec = this.view.state.field(execField);
         if (!workflowSettings().debugger.inlineValues) return Decoration.none;
-        const { variables } = useExecutionPoint.getState();
-        if (!exec || !Object.keys(variables).length) return Decoration.none;
+        const { values, variables } = useExecutionPoint.getState();
+        if (!exec || !Object.keys(values).length) return Decoration.none;
         const doc = this.view.state.doc;
         const first = Math.max(0, exec.line - INLINE_SPAN);
         const widgets = [];
@@ -195,7 +209,7 @@ export function executionPoint(ctx: EditorDocContext): Extension {
           const endLine = Math.min(doc.lineAt(to).number - 1, exec.line);
           for (let l = startLine; l <= endLine; l++) {
             const line = doc.line(l + 1);
-            const parts = inlineValuesFor(line.text, variables);
+            const parts = inlineValuesFor(line.text, values, variables);
             if (parts) widgets.push(Decoration.widget({ widget: new InlineValues(parts), side: 1 }).range(line.to));
           }
         }

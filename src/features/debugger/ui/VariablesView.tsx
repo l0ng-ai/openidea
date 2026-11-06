@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import clsx from "clsx";
 import { call, commands, type DebugSessionId, type Variable } from "@/platform/ipc";
 import { Dialog, Icon, Tree, acquirePopup, showContextMenu, type MenuItem, type TreeHandle } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { formatMessage, tx } from "@/platform/i18n";
 import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
 import { addFieldWatchpoint } from "../breakpoints/special";
@@ -365,7 +365,7 @@ function ValueDialog({ node, onClose }: { node: VarNode; onClose: () => void }) 
       minHeight={260}
       maxHeight={560}
       resizable="both"
-      aria-label={`Value of ${node.name}`}
+      aria-label={formatMessage(tx("Value of {label}"), { label: node.name })}
     >
       <div className={styles.valuePopupContent}>
         <pre className={styles.valuePopupValue}>{node.value}</pre>
