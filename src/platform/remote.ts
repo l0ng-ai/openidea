@@ -154,7 +154,10 @@ export const useRemoteProgress = create<{ progress: RemoteProgress | null; locat
   location: null,
 }));
 
-/** Opens `path` of `target` (an SSH host or a WSL distribution) in this window. */
+/**
+ * Opens `path` of `target` (an SSH host or a WSL distribution) in this window. A dev container's
+ * project folder is the one in the container: `path` is then only a label.
+ */
 export async function connectRemote(target: RemoteTarget, path: string) {
   useProject.setState({ opening: true });
   const location = remoteLocation(target, path);
@@ -214,19 +217,30 @@ export async function disconnectRemote() {
 }
 
 // ---------------------------------------------------------------------------
-// Remote project locations: `ssh://<configuration id>/<absolute path>` or
-// `wsl://<distribution>/<absolute path>`, what the session and the recent projects
-// remember for a remote window.
+// Remote project locations: `ssh://<configuration id>/<absolute path>`,
+// `wsl://<distribution>/<absolute path>` or `devcontainer://<local folder>/<path in the container>`,
+// what the session and the recent projects remember for a remote window.
 
-const SCHEMES = { ssh: "ssh://", wsl: "wsl://" } as const;
+const SCHEMES = { ssh: "ssh://", wsl: "wsl://", devContainer: "devcontainer://" } as const;
 
-/** The SSH configuration id or the WSL distribution name. */
+/** The SSH configuration id, the WSL distribution name or the dev container's local folder. */
 export function targetName(target: RemoteTarget): string {
-  return target.kind === "ssh" ? target.config : target.distro;
+  switch (target.kind) {
+    case "ssh":
+      return target.config;
+    case "wsl":
+      return target.distro;
+    case "devContainer":
+      return target.folder;
+  }
 }
 
 export function sameTarget(a: RemoteTarget, b: RemoteTarget): boolean {
-  return a.kind === b.kind && targetName(a) === targetName(b);
+  return (
+    a.kind === b.kind &&
+    targetName(a) === targetName(b) &&
+    (a.kind !== "devContainer" || b.kind !== "devContainer" || a.config === b.config)
+  );
 }
 
 export function remoteLocation(target: RemoteTarget, path: string): string {
@@ -240,7 +254,13 @@ export function parseRemoteLocation(location: string): { target: RemoteTarget; p
   const slash = rest.indexOf("/");
   if (slash <= 0) return null;
   const name = decodeURIComponent(rest.slice(0, slash));
-  const target: RemoteTarget = kind === "ssh" ? { kind, config: name } : { kind, distro: name };
+  const target: RemoteTarget =
+    kind === "ssh"
+      ? { kind, config: name }
+      : kind === "wsl"
+        ? { kind, distro: name }
+        : // The default configuration: a location doesn't carry another one.
+          { kind, folder: name, config: "" };
   return { target, path: rest.slice(slash) };
 }
 
