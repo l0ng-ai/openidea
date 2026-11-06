@@ -1935,6 +1935,69 @@ fn official_csv_editor_edits_the_shared_document() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
 }
 
+#[test]
+fn view_item_menus_name_a_declared_view() {
+    /// The menu is new in API 1.2.
+    fn api_1_2(m: &str) -> String {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.2\"")
+    }
+    fn with_menu(extra: &str) -> impl Fn(&str) -> String + '_ {
+        move |m: &str| format!("{}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n", api_1_2(m))
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+
+    let second_view =
+        "[[contributes.views]]\nid = \"more\"\ntitle = \"More\"\nicon = \"plugin\"\nlocation = \"right\"\n";
+    let ok = hello_variant(tmp.path(), |m| {
+        let on_greetings =
+            with_menu("menu = \"viewItem.context\"\nview = \"greetings\"\nwhen = \"viewItemKind == English\"")(m);
+        let on_more = with_menu("menu = \"viewItem.context\"\nview = \"more\"")("");
+        format!("{on_greetings}\n{second_view}\n{on_more}")
+    });
+    assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
+    let item = f.host.ui_items("menus").into_iter().find(|i| i.decl["menu"] == "viewItem.context").unwrap();
+    assert_eq!(
+        (item.key.as_str(), item.decl["view"].as_str()),
+        ("viewItem.context/greetings/word-count", Some("greetings"))
+    );
+    let keys: Vec<String> = f.host.ui_items("menus").into_iter().map(|i| i.key).collect();
+    for view in ["greetings", "more"] {
+        assert!(keys.contains(&format!("viewItem.context/{view}/word-count")), "{keys:?}");
+    }
+    f.host.uninstall("hello").unwrap();
+
+    for (extra, message) in [
+        ("menu = \"viewItem.context\"", "needs `view`"),
+        ("menu = \"viewItem.context\"\nview = \"nope\"", "view \"nope\" is not declared"),
+        ("menu = \"projectView.context\"\nview = \"greetings\"", "`view` is only for viewItem.context"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let err = f.host.install_from_dir(&hello_variant(dir.path(), with_menu(extra)), &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{extra}: {}", err.message);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let web_view = "[[contributes.views]]\nid = \"page\"\ntitle = \"Page\"\nicon = \"plugin\"\nlocation = \"right\"\nweb = \"web/index.html\"\n";
+    let pkg = hello_variant(dir.path(), |m| {
+        let on_page = with_menu("menu = \"viewItem.context\"\nview = \"page\"")("");
+        format!("{}\n{web_view}\n{on_page}", api_1_2(m))
+    });
+    std::fs::create_dir_all(pkg.join("web")).unwrap();
+    std::fs::write(pkg.join("web/index.html"), "<p>hi</p>").unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("is a web view"), "{}", err.message);
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = hello_variant(dir.path(), |m| {
+        format!(
+            "{m}\n[[contributes.menus]]\nmenu = \"viewItem.context\"\nview = \"greetings\"\ncommand = \"word-count\"\n"
+        )
+    });
+    let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
+}
+
 /// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.

@@ -146,7 +146,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
 | `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
 | `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?`                                | no            |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`), `view?`, `command`, `when?`   | no            |
 | `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
 | `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
 | `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
@@ -154,6 +154,25 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
 | `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
 | `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
+
+A `viewItem.context` menu needs `view`, the id of one of the plugin's own
+views. It adds the commands to the right-click menu of the items in that
+view's `tree` or `list`, and each command gets the item's key as its argument.
+`when` clauses can use `viewItem` (the key) and `viewItemKind` (the key up to
+its first `:`, so `pod` for `pod:default/nginx`; the whole key when it has no
+`:`). Only the menu's `when` sees them, not the command's own `when`; a command
+whose `when` is false shows greyed out. Other menus refuse `view`, a web view
+has no item menu, and no menu opens when no declaration matches the item.
+The menu is new in API 1.2, so a plugin using it declares
+`engines.openidea = "^1.2"`. For example:
+
+```toml
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "pods"
+command = "kube.logs"
+when = "viewItemKind == pod"
+```
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
