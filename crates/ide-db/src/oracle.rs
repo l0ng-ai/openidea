@@ -135,7 +135,7 @@ fn message_error(msg: &str) -> oracle::Error {
     oracle::Error::new(oracle::ErrorKind::InvalidArgument, msg.to_owned())
 }
 
-/// Wrong password: ORA-01017; unreachable server: ORA-12xxx / ORA-31xx.
+/// Wrong or missing password: ORA-01017 / ORA-01005; unreachable server: ORA-12xxx / ORA-31xx.
 pub(crate) fn oracle_err(e: oracle::Error) -> IdeError {
     let Some(db) = e.db_error() else {
         return IdeError::new(ErrorKind::InvalidInput, e.to_string());
@@ -150,7 +150,7 @@ pub(crate) fn oracle_err(e: oracle::Error) -> IdeError {
     let code = db.code();
     let full = format!("[ORA-{code:05}] {msg}");
     match code {
-        1017 | 28000 | 28001 => IdeError::new(ErrorKind::PermissionDenied, full),
+        1005 | 1017 | 28000 | 28001 => IdeError::new(ErrorKind::PermissionDenied, full),
         12150..=12199 | 12537 | 12540 | 12541 | 12543 | 12545 | 3113 | 3114 => IdeError::new(ErrorKind::Io, full),
         _ => IdeError::new(ErrorKind::InvalidInput, full),
     }
@@ -412,7 +412,13 @@ fn statements(
 /// Reads one statement; `skip` rows are fetched and dropped (result pagination).
 fn statement(conn: &mut oracle::Connection, sql: &str, skip: usize, max: usize, mode: Cells) -> IdeResult<Fetched> {
     let started = Instant::now();
-    let mut stmt = conn.statement(sql).fetch_array_size((max as u32).clamp(1, 1000) + 1).build().map_err(oracle_err)?;
+    // LOB locators let `cell` read only the shown prefix (the default fetches whole LOBs).
+    let mut stmt = conn
+        .statement(sql)
+        .fetch_array_size((max as u32).clamp(1, 1000) + 1)
+        .lob_locator()
+        .build()
+        .map_err(oracle_err)?;
     match stmt.statement_type() {
         oracle::StatementType::Select => {
             let rows = stmt.query(&[]).map_err(oracle_err)?;
@@ -594,6 +600,11 @@ mod tests {
             },
             ..Default::default()
         };
+        // A missing or wrong password asks for one (the UI prompts on PermissionDenied).
+        for wrong in [None, Some("wrong")] {
+            let Err(err) = crate::conn::Pool::connect(&source, wrong, None).await else { panic!("bad password") };
+            assert_eq!(err.kind, ErrorKind::PermissionDenied, "{}", err.message);
+        }
         let pool = crate::conn::Pool::connect(&source, Some(password), None).await.expect("connect");
         let rows = pool.rows("SELECT 1 FROM DUAL", 1).await.expect("query through the pool");
         assert_eq!(rows.first().and_then(|r| r.first().cloned().flatten()).as_deref(), Some("1"));
@@ -620,5 +631,9 @@ mod tests {
         let rows = pool.rows("select openidea_k.f from dual", 1).await.expect("call the package");
         assert_eq!(rows.first().and_then(|r| r.first().cloned().flatten()).as_deref(), Some("8"));
         pool.rows("drop package openidea_k; drop procedure openidea_p", 0).await.expect("clean up");
+
+        // LOB cells are read through locators.
+        let rows = pool.rows("select to_clob('abc'), to_blob(hextoraw('0A0B')) from dual", 1).await.expect("LOBs");
+        assert_eq!(rows.first().cloned(), Some(vec![Some("abc".into()), Some("0x0A0B".into())]));
     }
 }

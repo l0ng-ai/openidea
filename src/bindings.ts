@@ -6978,7 +6978,10 @@ export type SpellingSettings = {
 };
 
 export type SqlStatement = {
-	/**  UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded). */
+	/**
+	 *  UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded except
+	 *  after an Oracle PL/SQL block, whose `END;` needs it).
+	 */
 	from: number,
 	to: number,
 	text: string,
