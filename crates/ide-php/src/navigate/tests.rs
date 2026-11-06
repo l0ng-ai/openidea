@@ -11,6 +11,7 @@ use crate::syntax::{LineIndex, ParsedFile};
 
 mod hierarchy;
 mod references;
+mod rename;
 
 const WAIT: Duration = Duration::from_secs(60);
 const CARET: &str = "/*|*/";

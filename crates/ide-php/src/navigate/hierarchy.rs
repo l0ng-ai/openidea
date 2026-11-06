@@ -75,20 +75,20 @@ enum Callable {
 }
 
 /// A direct subtype found by [`Subtypes::direct`].
-struct Subtype {
-    path: PathBuf,
-    class: ClassLike,
+pub(super) struct Subtype {
+    pub(super) path: PathBuf,
+    pub(super) class: ClassLike,
 }
 
 /// Direct subtypes from the index and the open buffers (which override the
 /// index for their files).
-struct Subtypes {
+pub(super) struct Subtypes {
     open: Vec<(PathBuf, FileSummary)>,
     open_keys: HashSet<String>,
 }
 
 impl Subtypes {
-    fn new(engine: &PhpEngine) -> Self {
+    pub(super) fn new(engine: &PhpEngine) -> Self {
         let open: Vec<(PathBuf, FileSummary)> = engine
             .open_documents()
             .iter()
@@ -137,7 +137,7 @@ impl Subtypes {
     }
 
     /// Every subtype of `fqn`, directly or not, nearest first.
-    fn all(&self, engine: &PhpEngine, fqn: &str, cancel: &CancellationToken) -> IdeResult<Vec<Subtype>> {
+    pub(super) fn all(&self, engine: &PhpEngine, fqn: &str, cancel: &CancellationToken) -> IdeResult<Vec<Subtype>> {
         let mut seen: HashSet<String> = HashSet::from([fqn.trim_start_matches('\\').to_ascii_lowercase()]);
         let mut queue = vec![fqn.to_owned()];
         let mut out = Vec::new();

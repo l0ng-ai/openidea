@@ -17,7 +17,7 @@ use ide_core::settings::{PhpEngineKind, Settings};
 use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink};
 use ide_lsp::types::{
     CallHierarchy, CompletionItem, CompletionKind, CompletionList, GotoKind, HierarchyDirection, HierarchyItem, Hover,
-    InlayHint, InlayKind, Markup, References, SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
+    InlayHint, InlayKind, Markup, References, Renamed, SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -188,8 +188,8 @@ impl DocumentObserver for PhpObserver {
 /// completion with lazily resolved documentation, signature help, inlay
 /// hints (parameter names and types; Editor › Inlay Hints decides which
 /// kinds the editor shows), semantic tokens, find usages, goto
-/// implementation (also for the gutter markers), and the type and call
-/// hierarchies.
+/// implementation (also for the gutter markers), the type and call
+/// hierarchies, and rename.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -383,6 +383,18 @@ impl crate::language_service::LanguageService for PhpService {
         };
         let locations = usages.into_iter().map(|usage| Location::file(usage.path, usage.range)).collect();
         Some(Ok(References { locations, ..References::default() }))
+    }
+
+    fn prepare_rename(&self, doc: DocId, pos: Pos) -> Answer<Option<Range>> {
+        let engine = self.0.engine()?;
+        Some(Ok(engine.prepare_rename(doc, pos)?))
+    }
+
+    /// The edit renames a class's file too when it is named after the class.
+    fn rename(&self, doc: DocId, pos: Pos, new_name: &str, cancel: &CancellationToken) -> Answer<Renamed> {
+        let engine = self.0.engine()?;
+        let edit = engine.rename(doc, pos, new_name, cancel)?;
+        Some(edit.map(|edit| Renamed { edit, incomplete: None }))
     }
 }
 

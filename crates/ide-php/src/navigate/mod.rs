@@ -27,10 +27,14 @@
 //!   [`PhpEngine::call_hierarchy`]: subtypes and implementing methods
 //!   through the subclass index, supertypes, callers and callees
 //!   ([`hierarchy`]).
+//! - [`PhpEngine::prepare_rename`] and [`PhpEngine::rename`]: the usages,
+//!   widened to member hierarchies and promoted parameters, as a
+//!   `WorkspaceEdit` that also renames a class's file ([`rename`]).
 
 pub mod hierarchy;
 pub mod hover;
 pub mod references;
+pub mod rename;
 pub(crate) mod symbol;
 #[cfg(test)]
 mod tests;

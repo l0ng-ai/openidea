@@ -1072,7 +1072,7 @@ async fn php() {
 /// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
 /// server: the checks it answers so far, the Structure view, go to definition of class names (in a
 /// `new`, an `extends` and a `use` import), of members and of variables, hover, completion
-/// (members, and a class name with auto-import), parameter info and inlay hints. Not ignored: it
+/// (members, and a class name with auto-import), parameter info, inlay hints and rename. Not ignored: it
 /// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
@@ -1164,6 +1164,22 @@ async fn php_native() {
     let labels: Vec<&str> = hints.iter().map(|h| h.label.as_str()).collect();
     assert!(labels.contains(&"available:"), "a parameter name hint on withAvailability(false): {labels:?}");
     assert!(labels.contains(&": Book"), "a type hint on $lent: {labels:?}");
+    // Rename (last: it edits the fixture): a function from a usage in another file, and a class
+    // whose file is renamed with it.
+    smoke
+        .rename(
+            at("src/Library.php", "return format_price($cents);", "format_price"),
+            "format_amount",
+            &["src/Library.php", "src/Reports/ShelfReport.php", "src/functions.php"],
+        )
+        .await;
+    let (doc, pos) = smoke.locate(at("src/Model/Book.php", "final class Book", "Book")).await;
+    let renamed = ops::lsp::lsp_rename(&smoke.host, WINDOW, RequestId(6), doc, pos, "Volume".into()).await.unwrap();
+    let moved = renamed.edit.files.iter().any(|f| {
+        matches!(f, ide_core::FileEdit::Rename { from, to }
+            if from.0.ends_with("src/Model/Book.php") && to.0.ends_with("src/Model/Volume.php"))
+    });
+    assert!(moved, "Book.php is renamed with its class: {:?}", renamed.edit);
     let servers = ops::lsp::lsp_servers(&smoke.host, WINDOW).unwrap_or_default();
     assert!(
         !servers.iter().any(|s| s.name.to_ascii_lowercase().contains("intelephense")),

@@ -133,7 +133,7 @@ impl PhpEngine {
         Some(self.find_usages(&sought, &path, &here, include_declaration, cancel))
     }
 
-    fn sought(&self, subject: Subject, path: &Path, here: &FileSummary) -> Vec<Sought> {
+    pub(super) fn sought(&self, subject: Subject, path: &Path, here: &FileSummary) -> Vec<Sought> {
         let file = path_key(path);
         let mut out = Vec::new();
         match subject {

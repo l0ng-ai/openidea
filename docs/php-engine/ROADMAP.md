@@ -298,7 +298,7 @@ The design:
 
   Tests: unit tests.
 
-- [ ] Phase 3.3: Rename
+- [x] Phase 3.3: Rename
   - Prepare rename and rename for variables, parameters (including named-argument call sites), properties (including promoted ones), methods across the hierarchy, classes, functions and constants.
   - Update PHPDoc and `use` statements.
   - Return a `WorkspaceEdit`.
