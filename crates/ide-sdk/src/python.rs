@@ -26,6 +26,8 @@ pub enum VenvTool {
     Uv,
     /// `poetry env use <base>` in the project, then `poetry env info --path`.
     Poetry,
+    /// `conda create -p <location> -y` (conda must be on PATH).
+    Conda,
 }
 
 /// Creates a virtualenv at `location` with `tool` and returns its interpreter.
@@ -83,6 +85,7 @@ pub(crate) fn create_venv_with(
                 .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
         }
         VenvTool::Poetry => create_poetry_env(base, location, &which, cancel, on_line),
+        VenvTool::Conda => create_conda_env(base, location, &which, cancel, on_line),
     }
 }
 
@@ -115,6 +118,42 @@ fn create_poetry_env(
         .ok_or_else(|| IdeError::internal("poetry created no environment".to_owned()))?;
     let python = home.join(bin_dir()).join(exe("python"));
     crate::discover::python_sdk(&python, "venv", Some(project))
+        .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
+}
+
+/// `conda create -p <location> -y` builds an environment at the requested prefix.
+/// `base` pins the Python version (`python=<major.minor>`) when it reports one, so the
+/// created env matches the interpreter the user picked rather than conda's default.
+fn create_conda_env(
+    base: &Path,
+    location: &Path,
+    which: &dyn Fn(&str) -> Option<PathBuf>,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<Sdk> {
+    if location.join("conda-meta").is_dir() {
+        return Err(IdeError::new(
+            ide_core::error::ErrorKind::AlreadyExists,
+            format!("{} already contains a conda environment", location.display()),
+        ));
+    }
+    let conda = which("conda")
+        .ok_or_else(|| IdeError::unavailable("conda is not installed (install it from https://docs.conda.io)"))?;
+    if let Some(parent) = location.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut args = vec!["create".to_owned(), "-p".to_owned(), location.to_string_lossy().into_owned(), "-y".to_owned()];
+    if let Some(version) = query_in(base, &["--version"], None, &[], Duration::from_secs(15))
+        .and_then(|v| v.strip_prefix("Python ").map(str::to_owned))
+    {
+        let short = version.split('.').take(2).collect::<Vec<_>>().join(".");
+        if !short.is_empty() {
+            args.push(format!("python={short}"));
+        }
+    }
+    stream(&conda, &args, None, &[], cancel, on_line)?;
+    let python = location.join(bin_dir()).join(exe("python"));
+    crate::discover::python_sdk(&python, "conda", location.parent().and_then(Path::parent))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }
 

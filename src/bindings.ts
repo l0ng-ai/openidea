@@ -7785,7 +7785,9 @@ export type VenvTool =
 /**  `uv venv <location> --python <base>` (uv must be on PATH). */
 "uv" | 
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
-"poetry";
+"poetry" | 
+/**  `conda create -p <location> -y` (conda must be on PATH). */
+"conda";
 
 /**  What a view or custom editor shows. */
 export type View = {

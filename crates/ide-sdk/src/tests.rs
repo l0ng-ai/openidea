@@ -749,6 +749,16 @@ fn env_tools_are_reported_missing_before_they_run() {
     )
     .unwrap_err();
     assert!(poetry.message.contains("Poetry is not installed"), "{}", poetry.message);
+    let conda = crate::python::create_venv_with(
+        crate::python::VenvTool::Conda,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(conda.message.contains("conda is not installed"), "{}", conda.message);
     // An existing environment is refused before any tool runs.
     std::fs::create_dir_all(&location).unwrap();
     std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
@@ -762,6 +772,28 @@ fn env_tools_are_reported_missing_before_they_run() {
     )
     .unwrap_err();
     assert!(again.message.contains("already contains a virtual environment"), "{}", again.message);
+}
+
+#[test]
+fn an_existing_conda_environment_is_not_recreated() {
+    // `conda-meta/` marks a conda prefix: refuse before `conda create` would fail obscurely.
+    let dir = tempfile::tempdir().unwrap();
+    let location = dir.path().join("envs").join("ds");
+    let base = dir.path().join("python");
+    std::fs::create_dir_all(location.join("conda-meta")).unwrap();
+    fn none(_: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+    let err = crate::python::create_venv_with(
+        crate::python::VenvTool::Conda,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(err.message.contains("already contains a conda environment"), "{}", err.message);
 }
 
 #[test]
