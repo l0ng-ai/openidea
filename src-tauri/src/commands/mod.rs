@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod analysis;
+pub mod android;
 pub mod app;
 pub mod build;
 pub mod bytes;
@@ -45,8 +46,10 @@ pub mod tools;
 pub mod vcs;
 pub mod web;
 pub mod window;
+pub mod window_drag;
 pub mod window_group;
 pub mod workspace;
+pub mod wsl;
 
 use tauri_specta::collect_commands;
 
@@ -62,8 +65,12 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        android::android_devices,
+        android::android_logcat,
         app::recent_projects,
         app::remove_recent_project,
+        app::recent_project_groups,
+        app::set_recent_project_groups,
         app::open_project,
         app::project_trust_status,
         app::project_trust_list,
@@ -186,8 +193,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         caches::caches_schedule_invalidation,
         caches::app_restart,
         nav::index_status,
+        nav::index_file_extensions,
         nav::spring_route_sources,
         nav::find_files,
+        nav::find_dirs,
         nav::find_symbols,
         nav::mark_recent,
         nav::recent_files,
@@ -210,6 +219,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_signature_help,
         lsp::lsp_goto,
         lsp::lsp_implementations,
+        lsp::lsp_goto_implementation,
         lsp::lsp_virtual_document,
         lsp::lsp_resolve_class_file,
         lsp::lsp_references,
@@ -221,6 +231,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_apply_code_action,
         lsp::lsp_prepare_rename,
         lsp::lsp_rename,
+        lsp::lsp_hierarchy_members,
+        lsp::lsp_hierarchy_refactor,
         lsp::lsp_format,
         lsp::lsp_inlay_hints,
         lsp::lsp_semantic_tokens,
@@ -244,7 +256,15 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_line_hunks,
         vcs::vcs_file_at,
         vcs::vcs_blame,
+        vcs::vcs_block_history,
         vcs::vcs_log,
+        vcs::vcs_log_refs,
+        vcs::vcs_log_users,
+        vcs::vcs_open_external_log,
+        vcs::vcs_log_details,
+        vcs::vcs_log_details_batch,
+        vcs::vcs_revision_children,
+        vcs::vcs_revision_files,
         vcs::vcs_commit_files,
         vcs::vcs_commits_changes,
         vcs::vcs_branches,
@@ -290,6 +310,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_compare_scope,
         vcs::vcs_compare_paths,
         vcs::vcs_diff_revisions,
+        vcs::vcs_diff_numstat,
         vcs::vcs_merge_base,
         vcs::vcs_create_patch,
         vcs::vcs_patch_preview,
@@ -330,6 +351,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_close_stdin,
         run::run_resize,
         run::run_gradle_jvm_args_script,
+        run::run_gradle_init_script,
         run::run_tomcat_home,
         run::run_tomcat_artifacts,
         run::run_tomcat_build,
@@ -339,6 +361,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_tomcat_update,
         run::run_test_reports,
         build::build_model,
+        build::gradle_link_projects,
+        build::gradle_unlink_projects,
         build::build_sync,
         build::gradle_dependencies,
         build::gradle_published_catalog,
@@ -358,6 +382,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_completions,
         debug::debug_resume,
         debug::debug_pause,
+        debug::debug_send_input,
+        debug::debug_hot_reload,
+        debug::debug_hot_restart,
         debug::debug_step,
         debug::debug_run_to,
         debug::debug_stop,
@@ -373,6 +400,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download,
         sdk::sdk_detect,
         sdk::sdk_python_effective,
+        sdk::sdk_php_effective,
+        sdk::sdk_php_language_level,
+        sdk::sdk_php_composer_install,
         sdk::sdk_project_libraries,
         sdk::sdk_locate_tools,
         sdk::sdk_python_create_venv,
@@ -389,6 +419,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_cycle,
         window::window_toggle_fullscreen,
         window::window_set_titlebar_height,
+        window_drag::window_start_drag,
         window::window_take_launch,
         window::window_close_context,
         window::window_open_projects,
@@ -450,11 +481,19 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_web_save_file,
         plugin::plugin_web_read_file,
         plugin::plugin_line_markers,
+        plugin::plugin_navigation_files,
+        plugin::plugin_navigation_invalidate,
+        plugin::plugin_navigation_index,
+        plugin::plugin_navigation_goto,
+        plugin::plugin_navigation_markers,
         plugin::plugin_market,
         plugin::plugin_market_url,
         plugin::plugin_set_market_url,
         plugin::plugin_market_download,
         plugin::plugin_unpack_package,
+        plugin::plugin_read_intellij_theme,
+        plugin::plugin_installed_intellij_themes,
+        plugin::plugin_stage_package,
         plugin::plugin_roll_back,
         plugin::plugin_secrets,
         plugin::plugin_set_secret,
@@ -506,6 +545,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_set_ssh_secret,
         db::db_trust_ssh_host,
         ssh::ssh_test,
+        wsl::wsl_distros,
+        wsl::wsl_resolve,
         ssh::ssh_set_secret,
         ssh::ssh_needs_secret,
         ssh::ssh_trust_host,

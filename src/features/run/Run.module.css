@@ -102,7 +102,7 @@
   background: var(--bg-app);
   -webkit-user-select: text;
   user-select: text;
-  cursor: text;
+  cursor: default;
   outline: none;
   contain: strict;
 }
@@ -110,6 +110,7 @@
   position: relative;
   width: 100%;
   min-width: max-content;
+  cursor: text;
 }
 .wrap .consoleInner {
   min-width: 0;
@@ -777,35 +778,6 @@
   margin-left: 1px;
   vertical-align: text-bottom;
   background: transparent;
-}
-
-/* Find bar (⌘F) */
-.find {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
-}
-.findField {
-  flex: 0 1 360px;
-  min-width: 160px;
-}
-.findCount {
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
-  color: var(--fg-subtle);
-  padding: 0 6px;
-  white-space: nowrap;
-  min-width: 56px;
-}
-.findCountNone {
-  color: var(--danger);
-}
-.findSpacer {
-  flex: 1;
 }
 
 .console:focus .inputCaret {

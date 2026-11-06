@@ -17,6 +17,7 @@ vi.mock("@/workbench/contributions", async (orig) => {
 const { LspPopups, DocumentationWindow } = await import("./Popups");
 const { closePopup, openPopup, useLspPopup } = await import("./popupStore");
 const { useDocWindow, pushHistory, stepHistory, hoverCandidates } = await import("./docs");
+import popupStyles from "./Popups.module.css";
 
 const loc = (path: string, line: number): Location => ({
   path,
@@ -221,5 +222,25 @@ describe("quick definition popup", () => {
     expect(frame().textContent).toContain("run(): void;");
     fireEvent.keyDown(frame(), { key: "F4" });
     expect(openFile).toHaveBeenCalledWith("/p/b.ts", { selection: { line: 5, col: 4 }, focus: true });
+  });
+});
+
+describe("reformat dialog", () => {
+  it("wraps its content in the padded body", () => {
+    const onRun = vi.fn();
+    openPopup({
+      kind: "reformat",
+      title: "Reformat File",
+      hasSelection: false,
+      canOptimizeImports: true,
+      initial: { selectionOnly: false, optimizeImports: false },
+      onRun,
+    });
+    render(<LspPopups />);
+    const body = screen.getByRole("dialog", { name: "Reformat File" }).querySelector("[data-dialog-body]")!;
+    expect(body.firstElementChild).toHaveClass(popupStyles.reformatBody!);
+    expect(body.firstElementChild!.querySelectorAll("fieldset")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(onRun).toHaveBeenCalledWith({ selectionOnly: false, optimizeImports: false });
   });
 });

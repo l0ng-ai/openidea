@@ -171,6 +171,8 @@ export const intellijWindows: Record<string, string[]> = {
   "refactor.inline": ["Ctrl+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Alt+Delete"],
+  "refactor.pullMembersUp": [],
+  "refactor.pushMembersDown": [],
 
   // File / editor tabs
   "file.save": ["Ctrl+S"],
@@ -348,6 +350,10 @@ export const intellijWindows: Record<string, string[]> = {
   "graphql.runQuery": ["Ctrl+Enter"],
   "http.runAll": [],
   "db.execute": ["Ctrl+Enter"],
+  // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).
+  "db.goToColumn": ["Ctrl+F12"],
+  "db.submitChanges": ["Ctrl+Enter"],
+  "db.revertChanges": ["Ctrl+Alt+Z"],
   "db.showToolWindow": [],
   "agents.newTask": ["Ctrl+Alt+Shift+I"],
   "agents.showToolWindow": [],

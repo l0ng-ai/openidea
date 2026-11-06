@@ -11,8 +11,9 @@ use crate::types::{
 use crate::types::{
     FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
-use crate::wit_host::{bindings, providers_bindings, syntax_bindings, views_bindings};
+use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
 use ide_core::CancellationToken;
+use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
 use std::path::Path;
@@ -26,13 +27,14 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
+use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.0";
+pub const API_VERSION: &str = "1.2";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -45,6 +47,14 @@ pub const CANCELLED: &str = "was cancelled";
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
     fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
+    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
+        let _ = (client, text);
+        Ok(())
+    }
+    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
+        let _ = (client, url);
+        Ok(())
+    }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
     /// Roots of the open projects.
@@ -66,6 +76,10 @@ pub trait HostApi: Send + Sync {
     fn storage_set(&self, key: &str, value: Option<String>) -> Result<(), HostError>;
     fn storage_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError>;
+    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
+        let _ = root;
+        Ok(Vec::new())
+    }
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
     /// Subscribes to (or unsubscribes from) a kind of workbench event.
     /// Project files matching `glob` (root-relative), at most `limit`.
@@ -105,6 +119,7 @@ pub trait HostApi: Send + Sync {
         args: Vec<String>,
         cwd: Option<&Path>,
     ) -> Result<(), HostError>;
+    fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError>;
     /// A setting of the plugin as JSON (project over global over the schema default).
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String>;
 }
@@ -198,8 +213,10 @@ impl PluginEngine {
     /// Rejects a component this host can't run, with a message that says what
     /// to do: one importing interfaces outside the plugin API and WASI, or one
     /// built for a plugin API this host doesn't implement (another major, or a
-    /// newer minor). Returns the API version the component was built for
-    /// (`None`: it uses no plugin interface).
+    /// newer minor), or one that doesn't link: an import the host lacks or
+    /// declares with another type (same API version, different WIT), or a
+    /// missing plugin export. Returns the API version the component was built
+    /// for (`None`: it uses no plugin interface).
     pub fn check_component(&self, component: &Component) -> Result<Option<semver::Version>, String> {
         let ty = component.component_type();
         let imports: Vec<String> = ty.imports(&self.engine).map(|(name, _)| name.to_owned()).collect();
@@ -216,8 +233,18 @@ impl PluginEngine {
         if let Some(v) = &built_for {
             check_api(v, &host_api())?;
         }
+        let pre = self.linker.instantiate_pre(component).map_err(|e| link_error(&format!("{e:#}")))?;
+        bindings::PluginIndices::new(&pre).map_err(|e| link_error(&format!("{e:#}")))?;
         Ok(built_for)
     }
+}
+
+/// Explains a component that doesn't link against this host's plugin API.
+fn link_error(detail: &str) -> String {
+    format!(
+        "the component doesn't match the plugin API of this IDE ({API_VERSION}): {detail}. \
+         If it was built for a newer OpenIDEA, update OpenIDEA; otherwise rebuild it with the {API_VERSION} SDK"
+    )
 }
 
 /// Interface names of the plugin API start with this (`openidea:plugin/log@1.0.0`).
@@ -458,6 +485,7 @@ struct Exports {
     plugin: bindings::Plugin,
     syntax: Option<wit_syntax::Guest>,
     providers: Option<wit_prov::Guest>,
+    indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
 }
 
@@ -467,7 +495,6 @@ const MAX_SYNTAX_ITEMS: usize = 200_000;
 const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
-    use crate::types::ActionSource as S;
     match e {
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
@@ -477,14 +504,7 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,
             title: a.title,
-            source: match a.source {
-                S::Keyboard => wit_events::ActionSource::Keyboard,
-                S::Menu => wit_events::ActionSource::Menu,
-                S::Toolbar => wit_events::ActionSource::Toolbar,
-                S::ContextMenu => wit_events::ActionSource::ContextMenu,
-                S::Search => wit_events::ActionSource::Search,
-                S::Other => wit_events::ActionSource::Other,
-            },
+            source: a.source.name().to_owned(),
             shortcut: a.shortcut,
         }),
     }
@@ -537,15 +557,12 @@ impl Runtime {
         arm(&mut store, &setup.limits, setup.limits.timeout).map_err(|e| e.to_string())?;
         let api_hint = |e: wasmtime::Error| {
             let msg = describe_trap(&e, &setup.limits);
-            if msg.contains("openidea:plugin/") {
-                format!("{msg} (the component was built for a different plugin API; this IDE runs API {API_VERSION})")
-            } else {
-                msg
-            }
+            if msg.contains("openidea:plugin/") { link_error(&msg) } else { msg }
         };
         let pre = engine.linker.instantiate_pre(component).map_err(api_hint)?;
         let plugin_indices = bindings::PluginIndices::new(&pre).map_err(api_hint)?;
         let syntax_indices = wit_syntax::GuestIndices::new(&pre).ok();
+        let index_indices = wit_index::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
@@ -558,13 +575,17 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let indexer = match index_indices {
+            Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         let views = match view_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views },
+            exports: Exports { plugin, syntax, providers, views, indexer },
             limits: setup.limits,
             version: setup.version,
         })
@@ -637,6 +658,47 @@ impl Runtime {
         self.call(Invocation::default(), timeout, |exports, store| f(exports.syntax.as_ref().expect("checked"), store))
     }
 
+    pub fn index_document(
+        &mut self,
+        path: &str,
+        text: &str,
+        symbols: &[crate::indexing::IndexSymbol],
+        invocation: Invocation,
+    ) -> Result<crate::indexing::Edges, CallError> {
+        if self.exports.indexer.is_none() {
+            return Err(CallError::missing_export("document-indexer"));
+        }
+        let doc = wit_index::Document {
+            path: path.into(),
+            text: text.into(),
+            symbols: symbols
+                .iter()
+                .map(|s| wit_index::Symbol {
+                    name: s.name.clone(),
+                    kind: s.kind.clone(),
+                    container: s.container.clone(),
+                    range: range_to_wit(s.range),
+                })
+                .collect(),
+        };
+        let edges = self.call(invocation, self.limits.timeout, |e, store| {
+            e.indexer.as_ref().expect("checked").call_index(store, &doc)
+        })?;
+        fn anchor(a: wit_index::Anchor) -> crate::indexing::Anchor {
+            crate::indexing::Anchor { key: a.key, range: range_from_wit(a.range) }
+        }
+        Ok(crate::indexing::Edges {
+            definitions: edges.definitions.into_iter().map(anchor).collect(),
+            references: edges.references.into_iter().map(anchor).collect(),
+            aliases: edges
+                .aliases
+                .into_iter()
+                .map(|a| crate::indexing::Alias { prefix: a.prefix, target: a.target })
+                .collect(),
+            markers: edges.markers.into_iter().map(anchor).collect(),
+        })
+    }
+
     /// The component exports `providers`.
     pub fn has_providers(&self) -> bool {
         self.exports.providers.is_some()
@@ -670,9 +732,17 @@ impl Runtime {
                 detail: i.detail.map(|d| clip(d, MAX_TITLE)),
                 kind: i.kind.map(|k| clip(k, 32)),
                 insert_text: clip(i.insert_text, 64 << 10),
+                snippet: i.snippet,
                 replace: i.replace.map(range_from_wit),
                 sort_text: i.sort_text.map(|t| clip(t, 64)),
+                filter_text: i.filter_text.map(|t| clip(t, MAX_TITLE)),
                 documentation: i.documentation.map(|d| clip(d, 16 << 10)),
+                additional_edits: i
+                    .additional_edits
+                    .into_iter()
+                    .take(MAX_ADDITIONAL_EDITS)
+                    .map(edit_from_wit)
+                    .collect(),
             })
             .collect())
     }
@@ -699,27 +769,20 @@ impl Runtime {
     ) -> Result<Vec<CodeAction>, CallError> {
         let d = doc_to_wit(doc);
         let actions = self.provider_call(timeout, |p, s| p.call_code_actions(s, &d, range_to_wit(selection)))?;
-        Ok(actions
-            .into_iter()
-            .take(MAX_PROVIDER_ITEMS)
-            .map(|a| CodeAction {
-                title: clip(a.title, MAX_TITLE),
-                kind: a.kind.map(|k| clip(k, 64)),
-                preferred: a.preferred,
-                edits: a
-                    .edits
-                    .into_iter()
-                    .map(|f| {
-                        let edits = f
-                            .edits
-                            .into_iter()
-                            .map(|e| ide_core::TextEdit { range: range_from_wit(e.range), new_text: e.text })
-                            .collect();
-                        (std::path::PathBuf::from(f.path), edits)
-                    })
-                    .collect(),
-            })
-            .collect())
+        Ok(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(code_action_from_wit).collect())
+    }
+
+    /// The edits of an action `provide_code_actions` returned with `data`.
+    pub fn resolve_code_action(
+        &mut self,
+        doc: &ProviderDocument,
+        action: &CodeAction,
+        timeout: Duration,
+    ) -> Result<CodeAction, CallError> {
+        let d = doc_to_wit(doc);
+        let a = code_action_to_wit(action);
+        let resolved = self.provider_call(timeout, |p, s| p.call_resolve_code_action(s, &d, &a))?;
+        resolved.map(code_action_from_wit).map_err(|e| CallError::Guest(e.into()))
     }
 
     pub fn provide_definition(
@@ -921,12 +984,7 @@ fn location_from_wit(l: wit_types::Location) -> Location {
 }
 
 fn doc_to_wit(d: &ProviderDocument) -> wit_prov::Document {
-    wit_prov::Document {
-        path: d.path.to_string_lossy().into_owned(),
-        language: d.language.clone(),
-        version: d.version,
-        text: d.text.clone(),
-    }
+    wit_prov::Document { path: to_ipc(&d.path), language: d.language.clone(), version: d.version, text: d.text.clone() }
 }
 
 /// Resets the budgets for the next call: fuel, deadline, cancellation.
@@ -968,6 +1026,47 @@ const MAX_VIEW_ITEMS: usize = 20_000;
 const MAX_CELL: usize = 64 << 10;
 const MAX_HTML: usize = 4 << 20;
 
+/// Most additional edits of a completion item.
+const MAX_ADDITIONAL_EDITS: usize = 100;
+
+fn edit_from_wit(e: wit_types::TextEdit) -> ide_core::TextEdit {
+    ide_core::TextEdit { range: range_from_wit(e.range), new_text: e.text }
+}
+
+fn code_action_from_wit(a: wit_prov::CodeAction) -> CodeAction {
+    CodeAction {
+        title: clip(a.title, MAX_TITLE),
+        kind: a.kind.map(|k| clip(k, 64)),
+        preferred: a.preferred,
+        edits: a
+            .edits
+            .into_iter()
+            .map(|f| (std::path::PathBuf::from(f.path), f.edits.into_iter().map(edit_from_wit).collect()))
+            .collect(),
+        data: a.data.map(|d| clip(d, 64 << 10)),
+    }
+}
+
+fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
+    wit_prov::CodeAction {
+        title: a.title.clone(),
+        kind: a.kind.clone(),
+        preferred: a.preferred,
+        edits: a
+            .edits
+            .iter()
+            .map(|(path, edits)| wit_prov::FileEdit {
+                path: to_ipc(path),
+                edits: edits
+                    .iter()
+                    .map(|e| wit_types::TextEdit { range: range_to_wit(e.range), text: e.new_text.clone() })
+                    .collect(),
+            })
+            .collect(),
+        data: a.data.clone(),
+    }
+}
+
 fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
     s.map(|s| clip(s, max))
 }
@@ -975,6 +1074,9 @@ fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
 fn view_from_wit(v: wit_vt::View) -> View {
     let body = match v.body {
         wit_vt::Body::Message(m) => ViewBody::Message(clip(m, 16 << 10)),
+        wit_vt::Body::Other(e) => {
+            ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64)))
+        }
         wit_vt::Body::Tree(items) => ViewBody::Tree(
             items
                 .into_iter()
@@ -1006,10 +1108,8 @@ fn view_from_wit(v: wit_vt::View) -> View {
             fields
                 .into_iter()
                 .take(MAX_VIEW_ITEMS)
-                .map(|f| ViewField {
-                    key: clip(f.key, 128),
-                    label: clip(f.label, MAX_TITLE),
-                    value: match f.value {
+                .filter_map(|f| {
+                    let value = match f.value {
                         wit_vt::FieldValue::Text(t) => FieldValue::Text(clip(t, MAX_CELL)),
                         wit_vt::FieldValue::Multiline(t) => FieldValue::Multiline(clip(t, 1 << 20)),
                         wit_vt::FieldValue::Checkbox(b) => FieldValue::Checkbox(b),
@@ -1017,7 +1117,10 @@ fn view_from_wit(v: wit_vt::View) -> View {
                             options: options.into_iter().take(1000).map(|o| clip(o, MAX_TITLE)).collect(),
                             selected: clip(selected, MAX_TITLE),
                         },
-                    },
+                        // A field type of a newer API: left out.
+                        wit_vt::FieldValue::Other(_) => return None,
+                    };
+                    Some(ViewField { key: clip(f.key, 128), label: clip(f.label, MAX_TITLE), value })
                 })
                 .collect(),
         ),
@@ -1065,5 +1168,49 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
         ViewEvent::InsertRow { before } => W::InsertRow(before),
         ViewEvent::DeleteRows { rows } => W::DeleteRows(rows),
         ViewEvent::Message { text } => W::Message(text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn provider_and_resolved_action_paths_match_ipc_events() {
+        for (path, expected) in [
+            (r"C:\project\Example.java", "C:/project/Example.java"),
+            (r"\\?\C:\project\Example.java", "C:/project/Example.java"),
+            (r"\\server\share\Example.java", "//server/share/Example.java"),
+        ] {
+            let doc = ProviderDocument { path: path.into(), ..Default::default() };
+            assert_eq!(doc_to_wit(&doc).path, expected);
+            let action = CodeAction {
+                title: "Fix".into(),
+                kind: None,
+                preferred: false,
+                edits: vec![(path.into(), Vec::new())],
+                data: None,
+            };
+            assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
+        }
+    }
+
+    fn ext(kind: &str) -> wit_types::Extension {
+        wit_types::Extension { kind: kind.into(), data: "{}".into() }
+    }
+
+    #[test]
+    fn bodies_and_fields_of_a_newer_api_degrade() {
+        let view = |body| wit_vt::View { toolbar: Vec::new(), body, status: None };
+        let shown = view_from_wit(view(wit_vt::Body::Other(ext("markdown"))));
+        assert_eq!(shown.body, ViewBody::Message("This view needs a newer version of OpenIDEA (markdown).".into()));
+        let field = |key: &str, value| wit_vt::Field { key: key.into(), label: key.into(), value };
+        let form = view_from_wit(view(wit_vt::Body::Form(vec![
+            field("color", wit_vt::FieldValue::Other(ext("color"))),
+            field("name", wit_vt::FieldValue::Text("n".into())),
+        ])));
+        let ViewBody::Form(fields) = form.body else { panic!("a form") };
+        assert_eq!(fields.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), ["name"], "unknown fields are left out");
     }
 }

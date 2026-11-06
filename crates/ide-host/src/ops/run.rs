@@ -1,5 +1,6 @@
 use super::Emit;
 use crate::Host;
+use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
 use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
 use std::time::Duration;
@@ -140,12 +141,33 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
-    // Settings › Run Targets: over SSH.
+    // Settings › Run Targets: over SSH, or in a container.
     if config.kind == "tomcat" && config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
         return Err(IdeError::invalid("Tomcat Local requires the local machine"));
     }
-    if config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
+    if let Some(id) = config.extras.target.as_deref().filter(|t| !t.is_empty()) {
         let settings = project.settings.effective();
+        let target = ide_remote::service::run_target(&settings, id)?;
+        if target.kind != RunTargetKind::Ssh {
+            // A local run of the docker CLI: the command is resolved in the container, and
+            // this machine's toolchains and `PYTHONPATH` don't apply.
+            let config = container::prepare(host, &project.root, target, config).await?;
+            let encoding = settings.console.encoding;
+            let options = StartOptions {
+                encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
+                python_paths: Vec::new(),
+                // A folder on this machine: not in the container.
+                ruby_reporter: None,
+            };
+            project.require_trust()?;
+            return host.processes.start(
+                &project.root,
+                &config,
+                &options,
+                project.sink.clone(),
+                Box::new(move |c| on_output(c)),
+            );
+        }
         let out = on_output.clone();
         return host
             .remote
@@ -155,6 +177,9 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let (root, settings) = settings_for(host, &project, &config)?;
     let root = &root;
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
+    // Maven re-applies too: a config listed before a settings change (daemon toggle,
+    // Maven home) keeps the launcher that was current then; re-resolving at launch is
+    // what makes the setting take effect without reopening the project.
     let mut config = config;
     if config.kind == "maven" {
         ide_sdk::apply::prepare_maven_run(&mut config, root, &settings);
@@ -195,6 +220,7 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
         python_paths: if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) },
+        ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;
     let mut sink = project.sink.clone();
@@ -209,6 +235,21 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         });
     }
     host.processes.start(&project.root, &config, &options, sink, Box::new(move |c| on_output(c)))
+}
+
+/// The Ruby test reporter's directory, installed on demand, for runs that take it.
+fn ruby_reporter_dir(host: &Host, config: &RunConfig) -> Option<std::path::PathBuf> {
+    if !ide_run::ruby_reporter::applies(config) {
+        return None;
+    }
+    let dir = host.local_data_dir.join("ruby-reporter");
+    match ide_run::ruby_reporter::install(&dir) {
+        Ok(()) => Some(dir),
+        Err(e) => {
+            tracing::warn!("cannot install the Ruby test reporter in {}: {e}", dir.display());
+            None
+        }
+    }
 }
 
 /// Stops a run (interrupt, then kill after Settings › Run's termination timeout).
@@ -252,4 +293,5 @@ pub fn list(host: &Host) -> Vec<RunInfo> {
 }
 
 mod commands;
+mod container;
 pub use commands::*;

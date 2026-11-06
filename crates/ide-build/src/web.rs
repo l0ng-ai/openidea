@@ -26,12 +26,12 @@ pub fn artifacts(root: &Path, model: &BuildModel) -> Vec<WebArtifact> {
             });
         }
     }
-    if let Some(gradle) = &model.gradle {
+    for gradle in &model.gradle {
         for p in &gradle.projects {
             let script = p.build_file.as_ref().and_then(|f| fs::read_to_string(root.join(f)).ok()).unwrap_or_default();
             if p.tasks.iter().any(|t| t.name == "war") || crate::gradle::has_war_plugin(&script) {
                 out.push(WebArtifact {
-                    id: format!("gradle:{}", p.path),
+                    id: gradle_artifact_id(gradle, &p.path),
                     name: p.name.clone(),
                     module: p.dir.clone(),
                     tool: "gradle".into(),
@@ -40,6 +40,14 @@ pub fn artifacts(root: &Path, model: &BuildModel) -> Vec<WebArtifact> {
         }
     }
     out
+}
+
+fn gradle_artifact_id(build: &crate::GradleModel, path: &str) -> String {
+    if build.dir.is_empty() {
+        format!("gradle:{path}")
+    } else {
+        format!("gradle:{}", serde_json::to_string(&(&build.dir, path)).unwrap())
+    }
 }
 
 pub struct WebBuild {
@@ -150,9 +158,14 @@ pub fn build(root: &Path, model: &BuildModel, id: &str, cache: &Path) -> IdeResu
             maven_project: Some((probe, output)),
         });
     }
-    if let Some(path) = id.strip_prefix("gradle:") {
-        let g = model.gradle.as_ref().ok_or_else(|| IdeError::invalid("Choose a Gradle WAR module"))?;
-        if !artifacts(root, model).iter().any(|a| a.id == id) {
+    if let Some(legacy_path) = id.strip_prefix("gradle:") {
+        let identity = serde_json::from_str::<(String, String)>(legacy_path).ok();
+        let (g, path) = match &identity {
+            Some((dir, path)) => (model.gradle.iter().find(|g| g.dir == *dir), path.as_str()),
+            None => (model.gradle.first(), legacy_path),
+        };
+        let g = g.ok_or_else(|| IdeError::invalid("Choose a Gradle WAR module"))?;
+        if !artifacts(root, model).iter().any(|a| a.id == gradle_artifact_id(g, path)) {
             return Err(IdeError::invalid("Choose a Gradle WAR module"));
         }
         let script = cache.join("war.init.gradle");
@@ -186,6 +199,28 @@ pub fn build(root: &Path, model: &BuildModel, id: &str, cache: &Path) -> IdeResu
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn independent_war_modules_have_distinct_ids_and_build_in_their_own_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for dir in ["a", "b"] {
+            std::fs::create_dir(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("build.gradle"), "plugins { id 'war' }").unwrap();
+        }
+        let settings = ide_core::settings::GradleSettings {
+            linked_projects: Some(vec!["a".into(), "b".into()]),
+            ..Default::default()
+        };
+        let model = crate::load_linked(root, &root.join("cache"), None, &Default::default(), &settings);
+        let artifacts = super::artifacts(root, &model);
+        assert_eq!(artifacts.len(), 2);
+        assert_ne!(artifacts[0].id, artifacts[1].id);
+        for (artifact, dir) in artifacts.iter().zip(["a", "b"]) {
+            let plan = super::build(root, &model, &artifact.id, &root.join(format!("cache/{dir}"))).unwrap();
+            assert_eq!(plan.cwd, dir);
+        }
+        assert_eq!(super::build(root, &model, "gradle::", &root.join("legacy")).unwrap().cwd, "a");
+    }
     use super::*;
     #[test]
     fn maven_war_modules_use_resolved_artifact_file() {

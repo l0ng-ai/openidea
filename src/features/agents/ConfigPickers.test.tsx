@@ -78,6 +78,63 @@ it("shows Cursor approvals separately from its execution mode and sends the choi
   expect(onChange).toHaveBeenCalledWith("openidea.cursor.approval", "bypass");
 });
 
+it("shows Allow All as a switch and sends on/off values", () => {
+  const onChange = vi.fn();
+  render(
+    <ConfigPickers
+      config={[
+        {
+          id: "allow_all",
+          name: "Allow All",
+          category: "permissions",
+          description: null,
+          current: "off",
+          via: "option",
+          values: [value("on", "On"), value("off", "Off")],
+        },
+      ]}
+      onChange={onChange}
+    />,
+  );
+  fireEvent.click(screen.getByRole("switch", { name: "Allow All" }));
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("allow_all", "on");
+});
+
+it("shows Allow All inside the mode popup when both options exist", () => {
+  const onChange = vi.fn();
+  render(
+    <ConfigPickers
+      config={[
+        {
+          id: "mode",
+          name: "Mode",
+          category: "mode",
+          description: null,
+          current: "agent",
+          via: "option",
+          values: [value("agent", "Agent"), value("plan", "Plan"), value("autopilot", "Autopilot")],
+        },
+        {
+          id: "allow_all",
+          name: "Allow All",
+          category: "permissions",
+          description: null,
+          current: "off",
+          via: "option",
+          values: [value("on", "On"), value("off", "Off")],
+        },
+      ]}
+      onChange={onChange}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Mode" }));
+  fireEvent.click(screen.getByRole("option", { name: "Plan" }));
+  expect(onChange).toHaveBeenNthCalledWith(1, "mode", "plan");
+  fireEvent.click(screen.getByRole("button", { name: "Mode" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Allow All" }));
+  expect(onChange).toHaveBeenNthCalledWith(2, "allow_all", "on");
+});
+
 it("sends the complete nested model id through ConfigPickers", () => {
   const onChange = vi.fn();
   render(<ConfigPickers config={[config([value("9router/cmc/Beam")])]} onChange={onChange} />);
@@ -109,4 +166,81 @@ it("edits secondary settings from the compact popup and restores focus when dism
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("dialog", { name: "Agent settings" })).not.toBeInTheDocument();
   expect(trigger).toHaveFocus();
+});
+
+describe("model and effort button", () => {
+  const copilotConfig = (effortLevels: string[] | null = ["low", "medium", "high", "xhigh"]): AgentConfigOption[] => [
+    {
+      id: "model",
+      name: "Model",
+      category: "model",
+      description: null,
+      current: "claude-sonnet-5.5",
+      via: "option",
+      values: [value("claude-sonnet-5.5", "Claude Sonnet 5.5", "1x"), value("gpt-6-sol", "GPT-6 Sol", "1x")],
+    },
+    ...(effortLevels
+      ? [
+          {
+            id: "reasoning_effort",
+            name: "Reasoning Effort",
+            category: "thought_level",
+            description: null,
+            current: "medium",
+            via: "option" as const,
+            values: effortLevels.map((lvl) => value(lvl, lvl === "xhigh" ? "XHigh" : lvl)),
+          },
+        ]
+      : []),
+    {
+      id: "mode",
+      name: "Mode",
+      category: "mode",
+      description: null,
+      current: "https://agentclientprotocol.com/protocol/session-modes#agent",
+      via: "option",
+      values: [
+        value("https://agentclientprotocol.com/protocol/session-modes#agent", "Agent"),
+        value("https://agentclientprotocol.com/protocol/session-modes#plan", "Plan"),
+      ],
+    },
+    {
+      id: "allow_all",
+      name: "Allow All",
+      category: "permissions",
+      description: null,
+      current: "on",
+      via: "option",
+      values: [value("on", "On"), value("off", "Off")],
+    },
+  ];
+
+  it("shows the model with the agent's effort name and the mode with Allow All", () => {
+    render(<ConfigPickers config={copilotConfig()} onChange={vi.fn()} />);
+    const model = screen.getByRole("button", { name: "Model" });
+    expect(model).toHaveTextContent("Claude Sonnet 5.5medium");
+    expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("AgentAllow All");
+    expect(screen.queryByRole("button", { name: "Reasoning Effort" })).not.toBeInTheDocument();
+  });
+
+  it("steps through the advertised effort levels and picks a model from the popup", () => {
+    const onChange = vi.fn();
+    render(<ConfigPickers config={copilotConfig()} values={{ reasoning_effort: "high" }} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model & effort settings" });
+    const slider = within(dialog).getByRole("slider", { name: "Reasoning Effort" });
+    expect(slider).toHaveAttribute("max", "3");
+    expect(slider).toHaveValue("2");
+    expect(slider).toHaveAttribute("aria-valuetext", "high");
+    fireEvent.change(slider, { target: { value: "3" } });
+    expect(onChange).toHaveBeenLastCalledWith("reasoning_effort", "xhigh");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: /GPT-6 Sol/ }));
+    expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
+  });
+
+  it("keeps a plain model picker when the agent has no effort option", () => {
+    render(<ConfigPickers config={copilotConfig(null)} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "listbox");
+  });
 });

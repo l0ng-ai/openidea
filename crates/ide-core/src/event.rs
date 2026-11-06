@@ -229,6 +229,9 @@ pub enum DebugEvent {
         thread_id: i64,
         started: bool,
     },
+    /// The program runs in a terminal the IDE gave it (`runInTerminal`): what is typed for it
+    /// in the debug console reaches its input.
+    ProgramInput,
     BreakpointsChanged {
         path: crate::IpcPath,
     },

@@ -180,8 +180,12 @@ pub fn set_editor_providers(host: Option<&Arc<PluginHost>>) {
 
 /// The plugin host whose providers take part, when any declares `kind`.
 pub(crate) fn editor_providers(kind: ProviderKind) -> Option<Arc<PluginHost>> {
-    let host = EDITOR_PROVIDERS.read().as_ref()?.upgrade()?;
+    let host = editor_plugin_host()?;
     host.providers.any(kind).then_some(host)
+}
+
+pub(crate) fn editor_plugin_host() -> Option<Arc<PluginHost>> {
+    EDITOR_PROVIDERS.read().as_ref()?.upgrade()
 }
 
 impl PluginHost {
@@ -290,6 +294,21 @@ impl PluginHost {
         .into_iter()
         .flat_map(|(p, actions)| actions.into_iter().map(move |a| (p.id().to_owned(), a)))
         .collect()
+    }
+
+    /// The edits of an action `plugin_id` returned with `data`, now that the
+    /// user picked it: a call with the command budget, not the edit path's.
+    pub fn resolve_code_action(
+        &self,
+        plugin_id: &str,
+        doc: &ProviderDocument,
+        action: CodeAction,
+    ) -> ide_core::IdeResult<CodeAction> {
+        let d = Arc::new(doc.clone());
+        let timeout = self.limits.timeout;
+        self.code_call(plugin_id, ide_plugin::Invocation::default(), "resolving the code action", move |rt, _| {
+            rt.resolve_code_action(&d, &action, timeout)
+        })
     }
 
     pub fn provide_definition(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<Location> {

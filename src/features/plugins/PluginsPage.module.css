@@ -369,18 +369,68 @@
   padding: 4px 8px;
 }
 
-.marketBar {
-  display: flex;
-  gap: 4px;
-  align-items: center;
+.categorySelect {
+  width: 100%;
 }
 
-.marketBar > :first-child {
-  flex: 1;
-  min-width: 0;
+.detailsNotice {
+  margin: 0 0 12px;
 }
 
 .marketOverview {
   padding: 12px 16px;
   overflow: auto;
+}
+
+/* Import Theme from IntelliJ IDE */
+.intellijThemes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+}
+.intellijThemes > p {
+  margin: 0;
+}
+/* As tall as its rows (the list sizes them), scrolling past seven. */
+.intellijThemesList {
+  max-height: 316px;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.intellijThemesStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--fg-muted);
+}
+.intellijPlugin {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+.intellijPluginHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.intellijPluginThemes {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.intellijPluginIde {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }

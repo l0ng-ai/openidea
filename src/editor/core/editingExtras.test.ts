@@ -1,8 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { cyclicExpandWord, expandCandidates, prefixStart } from "./wordCompletion";
-import { pythonModulePath, qualifiedReference, rustImplType, rustModulePath } from "./copyReference";
+import type { OutlineItem } from "@/platform/ipc";
+import {
+  copyReferenceToClipboard,
+  pythonModulePath,
+  qualifiedReference,
+  referenceOffset,
+  rustImplType,
+  rustModulePath,
+} from "./copyReference";
+import { declarationChain } from "./view/outline";
 
 describe("cyclic expand word", () => {
   const text = "alphaOne x alphaTwo y al| alphaThree alphaOne";
@@ -50,6 +59,39 @@ describe("cyclic expand word", () => {
 describe("copy reference", () => {
   const base = { root: "/p", line: 4 };
 
+  it("starts the clipboard write before asynchronous symbol resolution completes", async () => {
+    let finish!: (value: string) => void;
+    const reference = new Promise<string>((resolve) => {
+      finish = resolve;
+    });
+    let content: Promise<Blob> | undefined;
+    class Item {
+      constructor(data: Record<string, Promise<Blob>>) {
+        content = data["text/plain"];
+      }
+    }
+    let writes = 0;
+    const write = () => {
+      writes++;
+      return Promise.resolve();
+    };
+    const result = copyReferenceToClipboard(
+      reference,
+      { write } as unknown as Clipboard,
+      Item as unknown as typeof ClipboardItem,
+    );
+    expect(writes).toBe(1);
+    finish("coordination_layer.db.key_scope.load_scoped");
+    expect(await (await content!).text()).toBe("coordination_layer.db.key_scope.load_scoped");
+    await result;
+  });
+
+  it("writes the resolved text where ClipboardItem is unavailable", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    await copyReferenceToClipboard(Promise.resolve("pkg.mod.f"), { writeText } as unknown as Clipboard, null);
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("pkg.mod.f");
+  });
+
   it("qualifies Java members with the package", () => {
     const text = "package com.acme.util;\n\nclass Strings {}";
     expect(
@@ -82,6 +124,9 @@ describe("copy reference", () => {
 
   it("uses dotted module paths for Python and package names for Go", () => {
     expect(pythonModulePath("/p/src/pkg/mod.py", "/p")).toBe("pkg.mod");
+    expect(pythonModulePath("/p/services/live/src/coordination_layer/db/key_scope.py", "/p")).toBe(
+      "coordination_layer.db.key_scope",
+    );
     expect(pythonModulePath("/p/pkg/__init__.py", "/p")).toBe("pkg");
     expect(
       qualifiedReference({ ...base, language: "python", path: "/p/pkg/mod.py", text: "", chain: ["C", "m"] }),
@@ -92,6 +137,10 @@ describe("copy reference", () => {
   });
 
   it("falls back to path:line", () => {
+    expect(qualifiedReference({ ...base, language: "python", path: "/p/a.py", text: "", chain: [] })).toBe("a.py:5");
+    expect(qualifiedReference({ ...base, language: "rust", path: "/p/src/a.rs", text: "", chain: [] })).toBe(
+      "src/a.rs:5",
+    );
     expect(qualifiedReference({ ...base, language: "java", path: "/p/src/A.java", text: "", chain: [] })).toBe(
       "src/A.java:5",
     );
@@ -101,5 +150,40 @@ describe("copy reference", () => {
     expect(
       qualifiedReference({ ...base, root: null, language: "markdown", path: "/x/a.md", text: "", chain: [] }),
     ).toBe("/x/a.md:5");
+    expect(qualifiedReference({ ...base, language: "python", path: "/p/pkg/mod.py", text: "", chain: [] })).toBe(
+      "pkg/mod.py:5",
+    );
+    expect(qualifiedReference({ ...base, language: "rust", path: "/p/src/a.rs", text: "", chain: [] })).toBe(
+      "src/a.rs:5",
+    );
+  });
+
+  it("names a symbol only with the caret on its name, like IDEA", () => {
+    const item = (name: string, range: number[], sel: number[], children: OutlineItem[] = []): OutlineItem => ({
+      name,
+      detail: null,
+      kind: "class",
+      range: { start: { line: range[0]!, col: range[1]! }, end: { line: range[2]!, col: range[3]! } },
+      selection_range: { start: { line: sel[0]!, col: sel[1]! }, end: { line: sel[2]!, col: sel[3]! } },
+      children,
+    });
+    // class Book {        line 0, name at cols 6-10
+    //   void sum() {      line 1, name at cols 7-10
+    //     total += 1;     line 2
+    const outline = [item("Book", [0, 0, 4, 1], [0, 6, 0, 10], [item("sum", [1, 2, 3, 3], [1, 7, 1, 10])])];
+    const names = (line: number, col: number) => declarationChain(outline, line, col).map((i) => i.name);
+    expect(names(1, 8)).toEqual(["Book", "sum"]);
+    expect(names(1, 10)).toEqual(["Book", "sum"]);
+    expect(names(0, 6)).toEqual(["Book"]);
+    expect(names(2, 6)).toEqual([]);
+    expect(names(1, 2)).toEqual([]);
+    expect(names(5, 0)).toEqual([]);
+  });
+
+  it("only resolves a selected identifier or an identifier under the caret", () => {
+    expect(referenceOffset("  load_scoped(x)", 2, 13)).toBe(2);
+    expect(referenceOffset("  load_scoped(x)", 5, 5)).toBe(5);
+    expect(referenceOffset("  load_scoped(x)", 0, 0)).toBeNull();
+    expect(referenceOffset("  load_scoped(x)", 2, 16)).toBeNull();
   });
 });

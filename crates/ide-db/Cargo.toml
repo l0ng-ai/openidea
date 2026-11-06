@@ -17,6 +17,7 @@ parking_lot.workspace = true
 futures.workspace = true
 sqlx.workspace = true
 tiberius.workspace = true
+oracle.workspace = true
 bb8.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 dirs.workspace = true
@@ -29,3 +30,4 @@ uuid.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile.workspace = true
+ide-ssh = { workspace = true, features = ["testing"] }

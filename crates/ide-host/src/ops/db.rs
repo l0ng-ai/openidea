@@ -123,13 +123,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
         statements(&c.host, &c.window, &id, &text, from, to)
     });
     d.add("db_execute", |c| async move {
-        let (request, id, statements, max_rows) = (
+        let (request, id, statements, skip, max_rows) = (
             c.arg::<RequestId>("request")?,
             c.arg::<String>("id")?,
             c.arg::<Vec<SqlStatement>>("statements")?,
+            c.arg::<Option<u32>>("skip")?.unwrap_or(0),
             c.arg::<u32>("maxRows")?,
         );
-        execute(&c.host, &c.window, request, &id, statements, max_rows).await
+        execute(&c.host, &c.window, request, &id, statements, skip, max_rows).await
     });
     d.add("db_table_page", |c| async move {
         let (request, id, schema, table) = (
@@ -325,20 +326,22 @@ pub fn statements(host: &Host, window: &str, id: &str, text: &str, from: u32, to
 }
 
 /// Runs `statements` in order on data source `id`, stopping at the first
-/// error. Cancel with `cancel_request(request)`.
+/// error. Each result reads past its first `skip` rows (a later page) and keeps
+/// `max_rows`. Cancel with `cancel_request(request)`.
 pub async fn execute(
     host: &Host,
     window: &str,
     request: RequestId,
     id: &str,
     statements: Vec<SqlStatement>,
+    skip: u32,
     max_rows: u32,
 ) -> IdeResult<Vec<StatementOutcome>> {
     let db = host.project(window)?.db.clone();
     let cancel = host.begin_request(request);
     let mut out = Vec::new();
     for statement in statements {
-        match db.execute(id, &statement.text, max_rows.max(1) as usize, &cancel).await {
+        match db.execute_from(id, &statement.text, skip as usize, max_rows.max(1) as usize, &cancel).await {
             Ok(result) => out.push(StatementOutcome { statement, result: Some(result), error: None }),
             Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled => {
                 host.end_request(request);

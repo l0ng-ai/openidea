@@ -29,9 +29,11 @@ import {
   scriptLanguage,
   type ContextInput,
   type Produced,
+  hasRelativeImports,
 } from "./producers";
 import { runWithExecutor } from "./executors";
 import { goModulePath, loadGoModules } from "./goModules";
+import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
 import { toolEnv } from "./runtimes";
 import { adoptTemporary, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
@@ -48,7 +50,8 @@ async function ensureConfigs() {
 export function projectContentRoots(): string[] {
   const own = validateProjectStructure(useProject.getState().settings?.projectStructure).contentRoots;
   // The build model keeps the folders of modules outside the project absolute.
-  const gradle = (useBuildModel.getState().model?.gradle?.projects ?? [])
+  const gradle = (useBuildModel.getState().model?.gradle ?? [])
+    .flatMap((g) => g.projects)
     .map((p) => p.dir)
     .filter((d) => isAbsolute(d));
   return [...new Set([...own, ...gradle])];
@@ -88,13 +91,20 @@ export async function produceResolved(input: ContextInput, dir = false): Promise
   const configs = useRun.getState().configs;
   if (dir || /\.go$/.test(input.path)) await loadGoModules(input.root, configs);
   if (dir) return produceDirectory({ ...input, goModule: goModulePath });
-  const fresh = { ...input, configs, goModule: goModulePath };
+  if (/\.py$/.test(input.path) && hasRelativeImports(input.content)) await loadPythonPackages(input.path);
+  const fresh = { ...input, configs, goModule: goModulePath, pythonPackage: isPythonPackage };
   const named = produceContext(fresh, OPTIMISTIC);
   if (!named) return null;
   // Project configurations (tests, cargo, gradle…) need no runtime lookup.
   if (named.config && !named.config.id.startsWith("context:file:")) return named;
   const lang = scriptLanguage(input.path, input.content);
-  const env = await toolEnv(neededTools(fresh), input.path, fresh.root, lang === "python" || lang === "shebang");
+  const env = await toolEnv(
+    neededTools(fresh),
+    input.path,
+    fresh.root,
+    lang === "python" || lang === "shebang",
+    lang === "php" || lang === "shebang",
+  );
   return produceContext(fresh, env);
 }
 

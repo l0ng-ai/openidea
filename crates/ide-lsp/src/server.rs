@@ -27,6 +27,8 @@ pub struct Running {
     pub generation: u64,
     pub peer: Peer,
     pub caps: Arc<RwLock<ServerCaps>>,
+    /// `workspace/didChangeWatchedFiles` registrations.
+    pub watchers: Arc<RwLock<crate::file_watch::FileWatchers>>,
 }
 
 pub enum Conn {
@@ -82,6 +84,9 @@ pub struct Server {
     pub resolved_binary: RwLock<Option<PathBuf>>,
     languages: Mutex<Vec<LanguageId>>,
     state: Mutex<State>,
+    /// The instance being initialized, from `initialized` until ready: registrations
+    /// sent right after `initialized` must not be lost.
+    initializing: Mutex<Option<Running>>,
     /// Fired when the instance being started is abandoned (stop / restart while starting).
     start_cancel: Mutex<CancellationToken>,
     phase: watch::Sender<Phase>,
@@ -92,13 +97,24 @@ pub struct Server {
     started: Mutex<Option<Instant>>,
     stderr: Mutex<VecDeque<String>>,
     pub progress: Mutex<HashMap<String, Progress>>,
+    /// What the editor shows per path: the pushed and the pulled diagnostics together.
     diagnostics: Mutex<HashMap<PathBuf, Vec<lsp::Diagnostic>>>,
+    /// `publishDiagnostics` per path.
+    pushed: Mutex<HashMap<PathBuf, Vec<lsp::Diagnostic>>>,
+    /// `textDocument/diagnostic` reports per path, and the latest pull asked for each.
+    pulled: Mutex<HashMap<PathBuf, Pulled>>,
+    pulls: Mutex<HashMap<PathBuf, u64>>,
     /// When diagnostics were last published per path (empty lists included).
     published: Mutex<HashMap<PathBuf, Instant>>,
     /// Woken on every `publishDiagnostics` (Inspect Code waits on it).
     pub published_notify: Notify,
     /// Woken when the last `$/progress` task ends.
     idle_notify: Notify,
+    /// `experimental/serverStatus` (rust-analyzer): `None` until the server sends
+    /// one, then whether it is still loading the project.
+    loading: Mutex<Option<bool>>,
+    /// Woken whenever a `$/progress` task ends or the server's loading state changes.
+    phase_notify: Notify,
     transient: Mutex<HashMap<PathBuf, Transient>>,
     pub java_build_lock: Arc<tokio::sync::Mutex<()>>,
     pub java_autobuild_suspended: std::sync::atomic::AtomicBool,
@@ -118,6 +134,7 @@ impl Server {
             resolved_binary: RwLock::new(None),
             languages: Mutex::new(vec![language]),
             state: Mutex::new(State { generation: 0, conn: Conn::Idle }),
+            initializing: Mutex::new(None),
             start_cancel: Mutex::new(CancellationToken::new()),
             phase: watch::channel(Phase::Down).0,
             status: Mutex::new((ServerStatus::Stopped, None)),
@@ -126,9 +143,14 @@ impl Server {
             stderr: Mutex::new(VecDeque::new()),
             progress: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
+            pushed: Mutex::new(HashMap::new()),
+            pulled: Mutex::new(HashMap::new()),
+            pulls: Mutex::new(HashMap::new()),
             published: Mutex::new(HashMap::new()),
             published_notify: Notify::new(),
             idle_notify: Notify::new(),
+            loading: Mutex::new(None),
+            phase_notify: Notify::new(),
             transient: Mutex::new(HashMap::new()),
             java_build_lock: Arc::new(tokio::sync::Mutex::new(())),
             java_autobuild_suspended: std::sync::atomic::AtomicBool::new(false),
@@ -210,6 +232,8 @@ impl Server {
             return false;
         }
         st.conn = Conn::Ready(run);
+        drop(st);
+        self.set_initializing(None);
         true
     }
 
@@ -232,6 +256,20 @@ impl Server {
             Conn::Ready(r) => Some(r.clone()),
             _ => None,
         }
+    }
+
+    /// The instance told `initialized`, ready or not.
+    pub fn instance(&self) -> Option<Running> {
+        self.running().or_else(|| self.initializing.lock().clone())
+    }
+
+    /// Generation `generation` once it was told `initialized`, ready or not.
+    pub fn initialized_gen(&self, generation: u64) -> Option<Running> {
+        self.instance().filter(|r| r.generation == generation)
+    }
+
+    pub fn set_initializing(&self, run: Option<Running>) {
+        *self.initializing.lock() = run;
     }
 
     /// The running instance if it is still generation `generation`.
@@ -358,20 +396,46 @@ impl Server {
         if self.running().is_none() {
             return;
         }
-        let busy = !self.progress.lock().is_empty();
+        let busy = self.is_busy();
         self.set_status(sink, if busy { ServerStatus::Busy } else { ServerStatus::Ready }, None);
     }
 
     /// Whether the server reports work in progress (indexing, analysis).
     pub fn is_busy(&self) -> bool {
-        !self.progress.lock().is_empty()
+        !self.progress.lock().is_empty() || *self.loading.lock() == Some(true)
+    }
+
+    /// Whether the server says it is still loading the project, so an empty
+    /// answer may not be final. Only `serverStatus` tells: `$/progress` also
+    /// covers background work (indexing, builds) during which answers are final.
+    pub fn is_loading(&self) -> bool {
+        *self.loading.lock() == Some(true)
+    }
+
+    /// Records `experimental/serverStatus`: `quiescent` false while the project loads.
+    pub fn set_loading(&self, sink: &SharedSink, loading: bool) {
+        if self.loading.lock().replace(loading) == Some(loading) {
+            return;
+        }
+        self.refresh_busy_status(sink);
+        self.phase_ended();
     }
 
     /// Called after a `$/progress` task ended.
     pub fn progress_ended(&self) {
+        self.phase_ended();
+    }
+
+    fn phase_ended(&self) {
+        self.phase_notify.notify_waiters();
         if !self.is_busy() {
             self.idle_notify.notify_waiters();
         }
+    }
+
+    /// Woken when the next loading phase ends.
+    pub fn phase_notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.phase_notify.notified()
     }
 
     /// Waits until no `$/progress` task is active; false on timeout or cancellation.
@@ -468,20 +532,75 @@ impl Server {
     }
 
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
+        *self.loading.lock() = None;
         self.progress.lock().drain().map(|(_, p)| (p.task, p.title)).collect()
     }
 
-    pub fn set_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) {
+    /// Records the diagnostics the server pushed for `path`; returns what the file now shows.
+    pub fn set_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
+        set_or_remove(&mut self.pushed.lock(), path.clone(), items);
+        self.combine(path)
+    }
+
+    /// Records a pulled report for `path` (`None` items: unchanged since `result_id`'s
+    /// predecessor); returns what the file now shows.
+    pub fn set_pulled(
+        &self,
+        path: PathBuf,
+        result_id: Option<String>,
+        items: Option<Vec<lsp::Diagnostic>>,
+    ) -> Vec<lsp::Diagnostic> {
+        {
+            let mut pulled = self.pulled.lock();
+            let entry = pulled.entry(path.clone()).or_default();
+            entry.result_id = result_id;
+            if let Some(items) = items {
+                entry.items = items;
+            }
+        }
+        self.combine(path)
+    }
+
+    /// Forgets the pulled report of a closed file; `None` when there was none.
+    pub fn clear_pulled(&self, path: &Path) -> Option<Vec<lsp::Diagnostic>> {
+        self.pulls.lock().remove(path);
+        self.pulled.lock().remove(path)?;
+        Some(self.combine(path.to_owned()))
+    }
+
+    /// The `resultId` of the last report pulled for `path`.
+    pub fn pulled_result_id(&self, path: &Path) -> Option<String> {
+        self.pulled.lock().get(path).and_then(|p| p.result_id.clone())
+    }
+
+    /// Starts a pull for `path`, superseding earlier ones; see [`Server::is_latest_pull`].
+    pub fn next_pull(&self, path: &Path) -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.pulls.lock().insert(path.to_owned(), id);
+        id
+    }
+
+    pub fn is_latest_pull(&self, path: &Path, id: u64) -> bool {
+        self.pulls.lock().get(path) == Some(&id)
+    }
+
+    fn combine(&self, path: PathBuf) -> Vec<lsp::Diagnostic> {
+        let mut items = self.pushed.lock().get(&path).cloned().unwrap_or_default();
+        if let Some(pulled) = self.pulled.lock().get(&path) {
+            for d in &pulled.items {
+                if !items.contains(d) {
+                    items.push(d.clone());
+                }
+            }
+        }
         {
             let mut d = self.diagnostics.lock();
             self.published.lock().insert(path.clone(), Instant::now());
-            if items.is_empty() {
-                d.remove(&path);
-            } else {
-                d.insert(path, items);
-            }
+            set_or_remove(&mut d, path, items.clone());
         }
         self.published_notify.notify_waiters();
+        items
     }
 
     /// When diagnostics for `path` were last published by this server.
@@ -506,7 +625,25 @@ impl Server {
 
     pub fn take_diagnostic_paths(&self) -> Vec<PathBuf> {
         self.published.lock().clear();
+        self.pushed.lock().clear();
+        self.pulled.lock().clear();
+        self.pulls.lock().clear();
         self.diagnostics.lock().drain().map(|(p, _)| p).collect()
+    }
+}
+
+/// A file's last `textDocument/diagnostic` report.
+#[derive(Default)]
+struct Pulled {
+    result_id: Option<String>,
+    items: Vec<lsp::Diagnostic>,
+}
+
+fn set_or_remove(map: &mut HashMap<PathBuf, Vec<lsp::Diagnostic>>, path: PathBuf, items: Vec<lsp::Diagnostic>) {
+    if items.is_empty() {
+        map.remove(&path);
+    } else {
+        map.insert(path, items);
     }
 }
 

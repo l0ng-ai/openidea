@@ -6,8 +6,10 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
   baseTheme,
+  isBuiltinTheme,
   isThemeChoiceId,
   parsePluginThemeRef,
+  previewPluginTheme,
   themeChoices,
   themeKind,
   useContributedThemes,
@@ -181,7 +183,7 @@ export function rememberStartupTheme(root: HTMLElement = document.documentElemen
  * for the next window's start-up.
  */
 export function syncWindowBackground() {
-  rememberStartupTheme();
+  if (!previewing) rememberStartupTheme();
   if (!isTauri()) return;
   const color = windowBackgroundColor();
   if (!color) return;
@@ -216,7 +218,12 @@ export function currentThemeChoice(): ThemeChoiceId {
     : resolveThemeChoice(useProject.getState().settings?.appearance as AppearanceLike | undefined, prefersLight());
 }
 
+/** A previewed theme is not the next start-up's (`rememberStartupTheme`). */
+let previewing = false;
+
 export async function setTheme(next: ThemeSetting) {
+  // A theme chosen while previewed is the next start-up's.
+  previewing = false;
   useThemeOverride.setState({ theme: next });
   if (!isTauri()) return;
   try {
@@ -229,6 +236,25 @@ export async function setTheme(next: ThemeSetting) {
   } catch {
     /* keep the session override */
   }
+}
+
+/**
+ * Shows `id` in this window without selecting it (Quick Switch's instant
+ * theme switch); `null` shows the selected theme again. Nothing is saved and
+ * other windows keep theirs.
+ */
+export function previewTheme(id: ThemeChoiceId | null) {
+  previewing = id !== null;
+  if (id === null) {
+    previewPluginTheme("selected");
+    applyThemeAttributes(currentThemeId());
+  } else if (isBuiltinTheme(id)) {
+    previewPluginTheme(null);
+    applyThemeAttributes(id);
+  } else {
+    previewPluginTheme(id);
+  }
+  syncWindowBackground();
 }
 
 export async function toggleTheme() {
@@ -244,14 +270,30 @@ export function originDetail(t: { label: string; origin?: string }): string | un
  * Options for a theme picker: built-in themes, then plugins' (with the plugin
  * named beside them). A selected plugin theme whose plugin is off stays listed.
  */
+/** The themes for a picker: each plugin's under a heading with its name (`choices` in `themeGroups` order). */
 export function themeSelectOptions(choices: readonly ThemeChoice[], selected?: string): SelectOption<ThemeChoiceId>[] {
-  const options: SelectOption<ThemeChoiceId>[] = choices.map((c) => ({
-    value: c.id,
-    label: c.label,
-    detail: originDetail(c),
-  }));
+  const options: SelectOption<ThemeChoiceId>[] = [];
+  let group: string | undefined;
+  for (const c of choices) {
+    const pluginId = parsePluginThemeRef(c.id)?.pluginId;
+    if (pluginId && pluginId !== group)
+      options.push({ value: `plugin:${pluginId}`, label: c.origin ?? pluginId, section: true });
+    group = pluginId;
+    // Under its plugin's heading a theme needs no origin.
+    options.push({ value: c.id, label: c.label });
+  }
   const missing = parsePluginThemeRef(selected);
-  if (missing && !options.some((o) => o.value === selected))
-    options.push({ value: selected as ThemeChoiceId, label: missing.themeId, detail: "Plugin not enabled" });
+  if (missing && !options.some((o) => o.value === selected)) {
+    // Under its own plugin's heading, not the last one listed.
+    const option = { value: selected as ThemeChoiceId, label: missing.themeId, detail: "Plugin not enabled" };
+    const heading = options.findIndex((o) => o.section && o.value === `plugin:${missing.pluginId}`);
+    if (heading < 0)
+      options.push({ value: `plugin:${missing.pluginId}`, label: missing.pluginId, section: true }, option);
+    else {
+      let end = heading + 1;
+      while (end < options.length && !options[end]!.section) end++;
+      options.splice(end, 0, option);
+    }
+  }
   return options;
 }

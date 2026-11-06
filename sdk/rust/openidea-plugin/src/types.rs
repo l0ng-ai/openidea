@@ -143,7 +143,9 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// Kinds of workbench events; later SDKs add more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum EventKind {
     FileOpened,
     FileSaved,
@@ -154,15 +156,44 @@ pub enum EventKind {
     Scheduled,
 }
 
-/// How the user started an action.
+impl EventKind {
+    /// The name the IDE knows it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FileOpened => "file-opened",
+            Self::FileSaved => "file-saved",
+            Self::EditorFocused => "editor-focused",
+            Self::ActionPerformed => "action-performed",
+            Self::VcsChanged => "vcs-changed",
+            Self::Scheduled => "scheduled",
+        }
+    }
+}
+
+/// How the user started an action; later IDEs may report more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ActionSource {
     Keyboard,
     Menu,
     Toolbar,
     ContextMenu,
     Search,
+    /// Anything else, including sources this SDK doesn't know.
     Other,
+}
+
+impl ActionSource {
+    pub fn parse(name: &str) -> Self {
+        match name {
+            "keyboard" => Self::Keyboard,
+            "menu" => Self::Menu,
+            "toolbar" => Self::Toolbar,
+            "context-menu" => Self::ContextMenu,
+            "search" => Self::Search,
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,6 +208,7 @@ pub struct ActionPerformed {
 
 /// A workbench event (see [`crate::host::subscribe`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     FileOpened(String),
     FileSaved(String),
@@ -186,6 +218,11 @@ pub enum Event {
     VcsChanged(String),
     /// The `on-schedule` period elapsed.
     Scheduled,
+    /// A kind this SDK doesn't know: its name and JSON data.
+    Other {
+        kind: String,
+        data: String,
+    },
 }
 
 /// The repository containing a project.
@@ -227,6 +264,41 @@ pub struct Diagnostic {
     pub message: String,
     /// Rule or check id.
     pub code: Option<String>,
+    /// The tool that found it, when not the plugin itself.
+    pub source: Option<String>,
+    /// Code that does nothing (shown faded).
+    pub unnecessary: bool,
+    /// Use of something deprecated (struck through).
+    pub deprecated: bool,
+    /// Other places that explain it.
+    pub related: Vec<RelatedInformation>,
+}
+
+impl Diagnostic {
+    pub fn new(range: Range, severity: Severity, message: impl Into<String>) -> Self {
+        Self {
+            range,
+            severity,
+            message: message.into(),
+            code: None,
+            source: None,
+            unnecessary: false,
+            deprecated: false,
+            related: Vec::new(),
+        }
+    }
+
+    pub fn code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+}
+
+/// Another place that explains a diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelatedInformation {
+    pub location: Location,
+    pub message: String,
 }
 
 /// An HTTP request (see [`crate::host::fetch`]).
@@ -275,4 +347,18 @@ pub struct ProcessOutput {
     pub status: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_the_ide_uses() {
+        assert_eq!(EventKind::ActionPerformed.name(), "action-performed");
+        assert_eq!(ActionSource::parse("context-menu"), ActionSource::ContextMenu);
+        assert_eq!(ActionSource::parse("pen"), ActionSource::Other, "a source of a newer IDE");
+        let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
+        assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
+    }
 }

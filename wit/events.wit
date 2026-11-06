@@ -1,37 +1,16 @@
-package openidea:plugin@1.0.0;
+package openidea:plugin@1.2.0;
 
 /// Workbench events, delivered in batches to `event-handler.handle`.
 interface events {
-    use types.{error};
-
-    enum event-kind {
-        file-opened,
-        file-saved,
-        /// The focused editor changed.
-        editor-focused,
-        /// An IDE action ran. Requires `events.input`.
-        action-performed,
-        /// A repository's state changed (commit, checkout, fetch, …).
-        vcs-changed,
-        /// The plugin's `on-schedule` period elapsed.
-        scheduled,
-    }
-
-    /// How the user started an action.
-    enum action-source {
-        keyboard,
-        menu,
-        toolbar,
-        context-menu,
-        search,
-        other,
-    }
+    use types.{error, extension};
 
     record action-performed {
         /// Action id (`editor.duplicate-line`).
         action: string,
         title: string,
-        source: action-source,
+        /// How the user started it: `keyboard`, `menu`, `toolbar`,
+        /// `context-menu`, `search` or `other` (more may be added).
+        source: string,
         /// Its keyboard shortcut, when it has one (`Ctrl+D`).
         shortcut: option<string>,
     }
@@ -43,14 +22,21 @@ interface events {
         action-performed(action-performed),
         vcs-changed(string),
         scheduled,
+        /// A kind added after 1.0 (subscribed to by its name).
+        other(extension),
     }
 
     /// Delivers `kind` events from now on, for the rest of the session (also
     /// across idle reclaim: an event activates the plugin again). Declare
     /// `activation = ["on-event:<kind>"]` to get them before first use.
+    /// Kinds: `file-opened`, `file-saved`, `editor-focused` (the focused editor
+    /// changed), `vcs-changed` (a repository's state changed: commit,
+    /// checkout, fetch…), `action-performed` (an IDE action ran) and
+    /// `scheduled` (the `on-schedule` period elapsed); later IDEs add more,
+    /// and an IDE that doesn't know one fails with `invalid`.
     /// Requires `events` (`events.input` for `action-performed`).
-    subscribe: func(kind: event-kind) -> result<_, error>;
-    unsubscribe: func(kind: event-kind);
+    subscribe: func(kind: string) -> result<_, error>;
+    unsubscribe: func(kind: string);
 }
 
 /// Long-running work with a progress indicator. While a task is open, the

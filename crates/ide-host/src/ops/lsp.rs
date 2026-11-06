@@ -76,8 +76,16 @@ async fn plugin_call<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
     tokio::task::spawn_blocking(f).await.ok()
 }
 
-/// Items from plugins carry no server (resolve and commands don't apply).
+/// Items from plugins carry no server: commands don't apply, and a code
+/// action is resolved by the plugin named in its `data` ([`PluginActionRef`]).
 const PLUGIN_SERVER: ServerId = ServerId(0);
+
+/// `data` of a plugin's code action whose edits it computes when picked.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PluginActionRef {
+    plugin: String,
+    data: String,
+}
 
 /// A plugin's `completion-item.kind` (wit/providers.wit lists them).
 fn plugin_completion_kind(kind: &str) -> Option<CompletionKind> {
@@ -120,14 +128,14 @@ fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
         kind,
         documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),
         sort_text: item.sort_text,
-        filter_text: None,
+        filter_text: item.filter_text,
         preselect: false,
         deprecated: false,
         insert_text: item.insert_text,
-        is_snippet: false,
+        is_snippet: item.snippet,
         replace_range: item.replace,
         replace_range_tab: None,
-        additional_edits: Vec::new(),
+        additional_edits: item.additional_edits,
         commit_characters: Vec::new(),
         command: None,
         data: None,
@@ -196,6 +204,17 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
+    if kind == GotoKind::Definition
+        && let Some(plugins) = crate::plugins::editor_plugin_host()
+    {
+        let project = host.project(window)?;
+        let (path, version) = project.documents.identity(doc)?;
+        if let Some(found) = plugins.navigation_at(&project.root, &path, version, pos, Some(window), |p| {
+            project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
+        }) {
+            return Ok(found.targets);
+        }
+    }
     let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
     if kind != GotoKind::Definition {
         return result;
@@ -249,9 +268,34 @@ pub async fn lsp_implementations(
     result
 }
 
+/// Go to Implementation of the symbol at `pos`. Implementations found before a slower
+/// search for the rest (Java: the project's, before the dependencies') arrive on
+/// `on_partial`; the result has them all. Cancel with `cancel_request(request)`.
+pub async fn lsp_goto_implementation(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    on_partial: super::Channel<Vec<Location>>,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = lsp
+        .goto_implementation(doc, pos, cancel, &|locs| {
+            let _ = on_partial.send(locs);
+        })
+        .await;
+    host.end_request(request);
+    result
+}
+
 /// Contents of a read-only language-server document, including JDT library
 /// classes and disk class files. Cached per project.
 pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> IdeResult<VirtualDocument> {
+    if uri.starts_with("git-revision:") {
+        return crate::ops::vcs::revision_virtual_document(host, window, &uri).await;
+    }
     host.project(window)?.lsp.virtual_document(&uri).await
 }
 
@@ -314,7 +358,7 @@ pub async fn lsp_code_actions(
     };
     let plugin_actions: Vec<CodeAction> = plugin_actions
         .into_iter()
-        .map(|(_, a)| plugin_code_action(a))
+        .map(|(plugin, a)| plugin_code_action(&plugin, a))
         .filter(|a| {
             only.is_empty()
                 || a.kind.as_ref().is_some_and(|k| only.iter().any(|o| k == o || k.starts_with(&format!("{o}."))))
@@ -330,22 +374,51 @@ pub async fn lsp_code_actions(
     prepare_actions(project, doc, version, actions).await
 }
 
-fn plugin_code_action(a: ide_plugin::CodeAction) -> CodeAction {
-    let files = a
+fn plugin_code_action(plugin: &str, a: ide_plugin::CodeAction) -> CodeAction {
+    // With `data` and no edits, the plugin computes them when the action is picked.
+    let lazy = a.edits.is_empty() && a.data.is_some();
+    let files: Vec<_> = a
         .edits
         .into_iter()
         .map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None })
         .collect();
+    let data = a
+        .data
+        .filter(|_| lazy)
+        .and_then(|data| serde_json::to_value(PluginActionRef { plugin: plugin.to_owned(), data }).ok());
     CodeAction {
         title: a.title,
         kind: a.kind,
         is_preferred: a.preferred,
         disabled_reason: None,
-        edit: Some(WorkspaceEdit { files, preconditions: Vec::new() }),
+        edit: (!lazy).then(|| WorkspaceEdit { files, preconditions: Vec::new() }),
         command: None,
-        data: None,
+        data,
         server: PLUGIN_SERVER,
     }
+}
+
+/// A code action resolved by whoever offered it: its language server, or
+/// the plugin its `data` names.
+async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeAction) -> IdeResult<CodeAction> {
+    if action.server != PLUGIN_SERVER {
+        return host.project(window)?.lsp.resolve_code_action(doc, action).await;
+    }
+    let Some(r) = action.data.clone().and_then(|d| serde_json::from_value::<PluginActionRef>(d).ok()) else {
+        return Ok(action);
+    };
+    let (plugins, d) = plugin_providers(host, window, doc, ProviderKind::CodeActions)
+        .ok_or_else(|| ide_core::IdeError::unavailable("the plugin that offered this action is gone"))?;
+    let pending = ide_plugin::CodeAction {
+        title: action.title.clone(),
+        kind: action.kind.clone(),
+        preferred: action.is_preferred,
+        edits: Vec::new(),
+        data: Some(r.data),
+    };
+    let plugin = r.plugin.clone();
+    let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending)).await?;
+    Ok(plugin_code_action(&r.plugin, ide_plugin::CodeAction { data: None, ..resolved }))
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -381,7 +454,7 @@ pub async fn lsp_resolve_code_action(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let action = project.lsp.resolve_code_action(doc, action).await?;
+    let action = resolve_action(host, window, doc, action).await?;
     Ok(prepare_actions(project, doc, version, vec![action]).await?.remove(0))
 }
 
@@ -391,7 +464,7 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
     let action = if action.edit.is_none() && action.command.is_none() {
         let documents = project.documents.clone();
         let version = blocking(move || documents.version(doc)).await?;
-        let action = project.lsp.resolve_code_action(doc, action).await?;
+        let action = resolve_action(host, window, doc, action).await?;
         prepare_actions(project.clone(), doc, version, vec![action]).await?.remove(0)
     } else {
         action
@@ -401,10 +474,28 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
         let edit = edit.clone();
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
-    if let Some(command) = action.command {
+    if let Some(command) = action.command
+        && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
+    {
         project.lsp.execute_command(doc, command).await?;
     }
     Ok(())
+}
+
+/// A command after a code action's edit that no server provides: what other editors'
+/// extensions do once the edit is applied (vtsls' `_typescript.didOrganizeImports`). The edit
+/// is the action; there is nothing to run.
+async fn is_client_follow_up(
+    project: &crate::project::Project,
+    doc: DocId,
+    server: Option<ide_core::ServerId>,
+    command: &Command,
+) -> bool {
+    let provided = project.lsp.provides_command(doc, server, &command.command).await;
+    if !provided {
+        tracing::debug!("skipping `{}` after the code action's edit: no server provides it", command.command);
+    }
+    !provided
 }
 
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
@@ -412,6 +503,56 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
+/// The class at `pos` and the members a class-hierarchy refactoring can move.
+pub async fn lsp_hierarchy_members(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+) -> IdeResult<HierarchyMembers> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.hierarchy_members(doc, pos, kind, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Checks a class-hierarchy refactoring and computes its edit without applying it.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_hierarchy_refactor(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+    target: Option<String>,
+    choices: Vec<HierarchyChoice>,
+) -> IdeResult<HierarchyRefactored> {
+    let project = host.project(window)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.hierarchy_refactor(doc, pos, kind, target, choices, cancel).await;
+    host.end_request(request);
+    let mut refactored = result?;
+    blocking(move || {
+        if project.documents.version(doc)? != version {
+            return Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing the refactoring; request it again",
+            ));
+        }
+        if let Some(edit) = &mut refactored.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(refactored)
+    })
+    .await
+}
+
 pub async fn lsp_rename(
     host: &Host,
     window: &str,
@@ -589,6 +730,7 @@ pub async fn lsp_execute_code_action(
         if cancel.is_cancelled() {
             return Err(ide_core::IdeError::cancelled());
         }
+        let edited = action.edit.is_some();
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
@@ -596,6 +738,9 @@ pub async fn lsp_execute_code_action(
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
         }
         match action.command {
+            Some(command) if edited && is_client_follow_up(&project, doc, Some(action.server), &command).await => {
+                Ok(Vec::new())
+            }
             Some(command) => project
                 .lsp
                 .execute_action_command(doc, action.server, command, answers, cancel)
@@ -633,6 +778,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("lsp_implementations", |c| async move {
         lsp_implementations(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("positions")?).await
+    });
+    d.add("lsp_goto_implementation", |c| async move {
+        let on_partial = c.sender("onPartial")?;
+        lsp_goto_implementation(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, on_partial).await
     });
     d.add(
         "lsp_resolve_class_file",
@@ -675,6 +824,22 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("lsp_rename", |c| async move {
         lsp_rename(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("newName")?).await
+    });
+    d.add("lsp_hierarchy_members", |c| async move {
+        lsp_hierarchy_members(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("kind")?).await
+    });
+    d.add("lsp_hierarchy_refactor", |c| async move {
+        lsp_hierarchy_refactor(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("kind")?,
+            c.arg("target")?,
+            c.arg("choices")?,
+        )
+        .await
     });
     d.add("lsp_format", |c| async move {
         lsp_format(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("options")?).await
@@ -734,6 +899,25 @@ pub(crate) fn register(d: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_action_with_data_and_no_edits_is_resolved_by_its_plugin() {
+        let action = |edits: Vec<(std::path::PathBuf, Vec<TextEdit>)>, data: Option<&str>| ide_plugin::CodeAction {
+            title: "Fix".into(),
+            kind: None,
+            preferred: false,
+            edits,
+            data: data.map(str::to_owned),
+        };
+        let lazy = plugin_code_action("acme.x", action(Vec::new(), Some("ref")));
+        assert!(lazy.edit.is_none());
+        let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
+        assert_eq!((r.plugin.as_str(), r.data.as_str()), ("acme.x", "ref"));
+        // With edits, `data` is the plugin's business: applied as is.
+        let edit = TextEdit { range: Range::default(), new_text: "x".into() };
+        let eager = plugin_code_action("acme.x", action(vec![("/a".into(), vec![edit])], Some("ref")));
+        assert!(eager.edit.is_some() && eager.data.is_none());
+    }
 
     #[test]
     fn every_completion_kind_the_plugin_api_documents_is_understood() {

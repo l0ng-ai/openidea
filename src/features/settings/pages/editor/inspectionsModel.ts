@@ -8,6 +8,7 @@ import {
   INSPECTION_LEVELS,
   codeInspectionId,
   customProfileId,
+  enabledByDefault,
   newProfileKey,
   overridesOf,
   producerInspectionId,
@@ -59,16 +60,20 @@ function serverNode(
       : languages
         ? tx`Problems the ${server} language server reports in ${languages} files. Severity "As reported" keeps the level the server assigns; a code below can override it.`
         : tx`Problems the ${server} language server reports. Severity "As reported" keeps the level the server assigns; a code below can override it.`,
-    children: [...codes]
-      .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))
-      .map((c) => ({
-        key: `${group}/${codeInspectionId(id, c.code)}`,
-        id: codeInspectionId(id, c.code),
-        name: c.code,
-        description: codeDescription(plugin ?? server, c),
-        children: [],
-      })),
+    children: codeNodes(group, id, plugin ?? server, codes),
   };
+}
+
+function codeNodes(group: string, id: string, owner: string, codes: readonly SeenCode[]): InspectionNode[] {
+  return [...codes]
+    .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))
+    .map((c) => ({
+      key: `${group}/${codeInspectionId(id, c.code)}`,
+      id: codeInspectionId(id, c.code),
+      name: c.code,
+      description: codeDescription(owner, c),
+      children: [],
+    }));
 }
 
 /**
@@ -97,6 +102,9 @@ export function buildInspectionTree(
       const m = /^lsp:(plugin:[^:]+|[^:]+)(?::(.+))?$/.exec(id);
       if (m?.[2]) addCode({ producer: m[1]!, code: m[2], source: "", sample: "" });
       else if (m && !codes.has(m[1]!)) codes.set(m[1]!, new Map());
+      const builtin = BUILTIN_INSPECTIONS.find((b) => b.byCode && id.startsWith(`${b.id}:`));
+      if (builtin)
+        addCode({ producer: builtin.producer, code: id.slice(builtin.id.length + 1), source: "", sample: "" });
     }
   }
   const servedBy = new Map<string, string[]>();
@@ -124,7 +132,7 @@ export function buildInspectionTree(
       id: b.id,
       name: b.name,
       description: b.description,
-      children: [],
+      children: b.byCode ? codeNodes(b.group, b.id, b.name, [...(codes.get(b.producer)?.values() ?? [])]) : [],
     });
   }
   for (const [producer, list] of codes) {
@@ -159,7 +167,7 @@ export function inspectionIds(node: InspectionNode): string[] {
   return [...(node.id ? [node.id] : []), ...node.children.flatMap(inspectionIds)];
 }
 
-export const isEnabled = (o: ProfileOverrides, id: string) => o[id]?.enabled !== false;
+export const isEnabled = (o: ProfileOverrides, id: string) => o[id]?.enabled ?? enabledByDefault(id);
 
 export type CheckState = "on" | "off" | "mixed";
 
@@ -181,9 +189,12 @@ function withOverride(o: ProfileOverrides, id: string, patch: Partial<Inspection
   return next;
 }
 
-/** Turns a node and all its descendants on or off (on is the default, so it removes the override). */
+/** Turns a node and all its descendants on or off; an inspection back at its default drops the override. */
 export function setEnabled(o: ProfileOverrides, node: InspectionNode, enabled: boolean): ProfileOverrides {
-  return inspectionIds(node).reduce((acc, id) => withOverride(acc, id, { enabled: enabled ? undefined : false }), o);
+  return inspectionIds(node).reduce(
+    (acc, id) => withOverride(acc, id, { enabled: enabled === enabledByDefault(id) ? undefined : enabled }),
+    o,
+  );
 }
 
 /** `undefined` restores the default ("As reported"). */

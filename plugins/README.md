@@ -11,9 +11,10 @@ editors, and contribute menus, shortcuts, settings, themes, file icon themes
 and languages. Plugins that only contribute data (themes, icons, languages,
 menus, settings) need no code at all.
 
-> **Preview.** The plugin system ships as a preview: until it is declared
-> stable the API (`openidea:plugin@1.0`) may still change, and the official
-> plugins are versioned `0.x`. See _Evolving the plugin API_ below.
+> **Preview.** The plugin system ships as a preview and the official plugins
+> are versioned `0.x`. Released API versions only grow: a plugin built for
+> `openidea:plugin@1.0` keeps loading in later 1.x IDEs. See _Evolving the
+> plugin API_ below.
 
 ```
 plugins/
@@ -36,7 +37,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.0.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.2.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -44,7 +45,8 @@ The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.0.0`, world
 The `openidea-plugin` tool scaffolds, builds, checks and links plugins:
 
 ```sh
-cargo install --path crates/ide-host --bin openidea-plugin   # or: cargo run -p ide-host --bin openidea-plugin -- …
+cargo install --locked --git https://github.com/l0ng-ai/openidea ide-host --bin openidea-plugin
+# in a checkout of this repository: cargo install --path crates/ide-host --bin openidea-plugin
 
 openidea-plugin new my-plugin                          # Rust command plugin (SDK)
 openidea-plugin new my-theme --template theme          # also: icon-theme, language
@@ -54,12 +56,24 @@ openidea-plugin build                                  # → dist/plugin.wasm, t
 openidea-plugin link                                   # load this folder in the IDE
 ```
 
+Each release also attaches the tool for Linux x64
+(`openidea-plugin-linux-x86_64.gz`). A plugin is a project of its own: keep it
+in its own repository, and list it in the community marketplace when it is
+ready (§8.1).
+
+A Rust plugin made by `new` depends on the SDK of the tool's release, from
+this repository's tag (`openidea-plugin = { git = "…", tag = "vX.Y.Z" }`);
+change the tag to build against a later API. Inside a checkout of this
+repository, or with `--sdk <path to sdk/rust/openidea-plugin>`, it depends on
+that SDK by path instead.
+
 `build` runs `cargo build --release --target wasm32-wasip2` (installing the
 target through rustup if needed), copies the component to the manifest's
 `wasm` path and runs `check`. `check` validates the package exactly as
 _Install Plugin from Disk…_ would — manifest, every contribution, the SVG
 sanitiser, the component — and that the component imports nothing but the
-plugin API and WASI. It prints what the user will be asked to grant.
+plugin API and WASI and links against the IDE's: every function it imports
+exists with the same signature, and it exports the plugin world. It prints what the user will be asked to grant.
 
 `link` adds the folder to `links.json` in the IDE's plugins directory
 (`$OPENIDEA_PLUGINS_DIR`, default `<app-data>/ai.l0ng.openidea/plugins`). Linked
@@ -79,6 +93,7 @@ authors = ["You <you@example.com>"]
 homepage = "https://example.com"  # optional
 license = "MIT"                   # optional
 change-notes = "1.2.0 — …"        # shown under What's New
+categories = ["tools"]            # marketplace categories, see below
 engines.openidea = "^1.0"         # the plugin API this package needs
 wasm = "dist/plugin.wasm"         # omit for data-only plugins
 activation = ["on-language:markdown"]   # optional, see below
@@ -94,6 +109,13 @@ category = "Word Tools"           # group in Search Everywhere / Keymap
 when = "editorFocus"              # optional: same expressions as built-in actions
 ```
 
+`categories` (up to 3) file the plugin in the marketplace: `languages`,
+`themes`, `icon-themes`, `linters` (linters and formatters), `vcs`, `ai`,
+`frameworks`, `tools`, `other`. Without them, a plugin contributing themes,
+icon themes or languages is filed under those, any other under `other`.
+Categories an IDE doesn't know, and any after the first three it knows, are
+ignored (`check` warns about both).
+
 All paths are relative to the package directory and may not leave it. A
 manifest is validated as a whole: if one contribution is invalid, nothing is
 installed or loaded. Contribution types the IDE does not know (a newer API) are
@@ -105,23 +127,23 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                        | Code needed   |
-| --------------- | -------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                              | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                    | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                      | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                          | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                           | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                    | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?` | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                  | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                        | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                         | no            |
-| `views`         | `id`, `title`, `icon?`, `location` (`left`, `right`, `bottom`), `web?` (see _Web views_)           | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`        | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use           | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu     | no            |
+| Point           | Declaration                                                                                                                       | Code needed   |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                               | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                             | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                   | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                     | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?`                                | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name, or an SVG of the package), `location` (`left`, `right`, `bottom`), `web?` (see _Web views_) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
@@ -129,6 +151,20 @@ themes can be applied, settings pages are there — **before** any plugin code
 is loaded. Menus, shortcuts and status bar items refer to the plugin's
 declared commands. A plugin shortcut never takes a keystroke the IDE (or the
 user) already uses; the user can rebind it in the keymap editor.
+
+A `when` clause (on commands and menus) can test whether the open project
+contains a file or folder: `when = "workspaceContains:.devcontainer/devcontainer.json"`.
+The path is exact (no globs) and relative to the project root; in a workspace the
+key is true when any of its projects contains the path. It updates when
+files change. An IDE that doesn't know the key treats it as
+false: the plugin still installs and the key reads as false there.
+
+### Background associations
+
+`[[contributes.documentIndexers]]` declares file `extensions` and requires the optional
+`document-indexer` export. It publishes cross-file associations (definitions, references,
+aliases and gutter markers) in background batches, not on the editing path. See
+[Background document indexers](../docs/plugins/indexing.md).
 
 ### Activation
 
@@ -163,7 +199,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics` |
 | `editor.read`       | low    | `TextEditor::document`, `selections`                                                |
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                           |
-| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes)                     |
+| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`      |
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only)                                        |
 | `storage`           | low    | `host::storage` (1 MiB per plugin)                                                  |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                        |
@@ -171,7 +207,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                      |
 | `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                        |
 | `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                       |
-| `clipboard`         | medium | the clipboard API in the plugin's web views (keyboard copy / paste work without it) |
+| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views           |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -204,7 +240,7 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-openidea-plugin = { path = "…/sdk/rust/openidea-plugin" }
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", tag = "vX.Y.Z" }   # or { path = "…/sdk/rust/openidea-plugin" }
 
 [profile.release]
 opt-level = "s"
@@ -279,12 +315,14 @@ then run `openidea-plugin check`.
 | `TextEditor::apply_edits(version, edits)`                                | `editor.text-editor.apply-edits` | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                      |
 | `Project::root()`, `read_file(path)`                                     | `workspace.project`              | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win.                                                                                       |
 | `host::projects()`                                                       | `workspace.projects`             | Every open project (for scheduled work without a window).                                                                                                                                                            |
-| `Project::vcs_status()`, `vcs_fetch()`                                   | `vcs`                            | Fetch runs git, so only in trusted projects; call it inside a task.                                                                                                                                                  |
+| `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                  | `vcs`                            | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                      |
 | `host::subscribe(kind)`                                                  | `events.subscribe`               | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                                                                                  |
 | `host::begin_task(title, cancellable)` → `Task`                          | `tasks.begin`                    | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                               |
 | `host::storage::{get, set, delete, keys}`                                | `storage`                        | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                             |
 | `host::set_status_item(id, item)`, `remove_status_item`                  | `ui`                             | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                 |
 | `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
+| `host::copy_to_clipboard(text)`                                          | `ui.copy-to-clipboard`           | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                            |
+| `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
@@ -293,6 +331,7 @@ then run `openidea-plugin check`.
 | `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
 | `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
+| `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
 
 `run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`
@@ -313,6 +352,11 @@ Events are batched: a running plugin gets them within a fraction of a second,
 an idle one collects them for 2 s before it is woken, so frequent events
 (Key Promoter's actions) don't keep it alive.
 
+Kinds are names (`subscribe` takes a string), so later IDEs add kinds without
+a new API: an IDE refuses a kind it doesn't know with `invalid`, and a kind
+newer than the plugin's SDK arrives as `Event::Other { kind, data }` (JSON).
+The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
+
 ### Providers
 
 Declare what the plugin provides in the editor; only plugins whose
@@ -330,7 +374,14 @@ Then `register_plugin!(MyPlugin, providers)` and implement
 the document (path, language, version, text). Results join the language
 servers' (completion lists, ⌥⏎ quick fixes, ⌘B, gutter icons; a code action
 carries edits for any files, applied as one change). A completion item's
-`kind` (`CompletionKind` in the SDK, a string in the WIT) picks its icon.
+`kind` (`CompletionKind` in the SDK, a string in the WIT) picks its icon; it
+can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
+of its label, and bring `additional_edits` elsewhere in the document (an
+import). A code action can leave `edits` empty and set `data`: its edits are
+then computed by `resolve_code_action` when the user picks it, under the
+command budget instead of the 50 ms. Problems (`publish_diagnostics`) can name
+the tool that found them (`source`) and be `unnecessary` (faded) or
+`deprecated` (struck through).
 Editor providers run under the edit-path budget: 50 ms, after which the
 result is dropped, and an interruption at 500 ms. Every plugin providing a
 kind is asked at the same time, so each has the whole budget.
@@ -385,6 +436,9 @@ collapse of items, form fields, table cells, inserted and deleted rows, and
 `html` messages. A tree is a flat list whose items name their `parent`; an
 `expandable` item gets its children when it is expanded. A table gets only
 the rows it shows (`viewport`): report `total_rows` and return those.
+Bodies, field types and view events added by later APIs travel as `Other {
+kind, data }`: an IDE that doesn't know a body says it needs updating, and
+leaves out a field type it doesn't know.
 
 Showing a view activates the plugin (`on-view:<id>`). `views` become tool
 windows; a `customEditors` file (`priority = "default"`) opens in the
@@ -728,7 +782,9 @@ granted, and starts the approved program.
 - **Install:** Settings › Plugins › _Install Plugin from Disk…_ (a package
   folder) or _Install Plugin from Package File…_ (a `.oiplugin`, a `.zip` with
   the package at its root or in its only folder, or a folder's `plugin.toml`;
-  a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused). The install
+  a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused; IntelliJ
+  theme plugins are imported instead: _Import IntelliJ Theme from File…_ and _Import Theme
+  from JetBrains IDE…_, see [`docs/plugins/themes.md`](../docs/plugins/themes.md)). The install
   page lists every capability and whether the package is signed by a publisher
   the marketplace trusts; nothing is copied until you accept.
 - **Versions:** installed plugins live in `<app-data>/plugins/<id>/<version>/`
@@ -737,13 +793,30 @@ granted, and starts the approved program.
   the version it replaced automatically (you're told why); _Roll Back to …_
   in the plugin's details does it by hand. Data (`storage`) is per plugin, not
   per version.
+- **Updates:** when the daily marketplace check finds newer versions of
+  installed plugins, the IDE says so once, with _Update All_ (also in the gear
+  menu and as the _Update All Plugins_ action). An update that asks for
+  nothing new installs with the grants the installed version has; the install
+  page is shown only for new capabilities, an unsigned package or another
+  signer (see _Distribution_).
 - **Linked plugins:** `openidea-plugin link <dir>` (§1). Listed with a _linked_
   tag; capabilities are granted per folder.
 - **Project plugins:** put (or symlink) the package in
   `<project>/.openidea/plugins/<name>/`. They load only in trusted projects and
   only after you approve their capabilities.
+- **Where:** installing, removing, enabling, granting and reloading plugins
+  work on the welcome screen and in trusted projects. A project opened in
+  restricted mode can browse the marketplace and show a package's install
+  page, but not change which plugin code runs.
 - Commands appear in Search Everywhere › Actions under their category, and can
   be bound in Settings › Keymap like any other action.
+- **Troubleshooting:** `openidea-plugin check` says why a package would be
+  refused. Settings › Plugins shows each plugin's state, why it failed if it
+  did, and its call stats (§3, _Sandbox and limits_). `host::log` lines go to
+  the IDE log (Help › _Show Log in Finder_ / _Explorer_ / _Files_) tagged with
+  the plugin id; debug and trace lines are written when the IDE is started
+  with `RUST_LOG=info,ide_plugin=trace`. `eprintln!` output is logged as
+  well, and a panic's message is shown with the crash.
 
 ## 8. Distribution
 
@@ -756,6 +829,9 @@ files).
 openidea-plugin keygen acme.key                     # once; keep the file secret
 openidea-plugin pack plugins/acme-tools --key acme.key --publisher acme
 openidea-plugin index market/ --publisher acme --name "ACME" --key acme.key
+openidea-plugin check acme.tools-1.0.0.oiplugin      # a package as installing would check it
+openidea-plugin merge market/index.json https://example.com/index.json --keep acme
+openidea-plugin endorse <new public key> --key acme.key --publisher acme   # when rotating keys
 ```
 
 A **marketplace** is static: an `index.json` and the packages next to it, on
@@ -771,8 +847,68 @@ and the publisher's key, then shows the install page.
 - **Revocation:** the index can revoke plugin versions (or all versions) and
   publisher keys. The IDE reads the index daily; revoked plugins are disabled
   with the reason and the user is notified — also after a restart, before
-  their code could run. A publisher rotates keys by adding the new one; older
-  keys stay valid until revoked.
+  their code could run.
+- **Key rotation:** a publisher rotates keys by registering the new one with
+  `index --key new.key --previous-key old.key`: the old key endorses the new
+  one, and older keys stay valid until revoked (`endorse` prints the
+  endorsement for an index someone else writes, such as the registry's). An installed plugin updates
+  silently only to a package signed with the key it was installed with, or
+  one that key endorsed (directly or through endorsed keys; endorsements by
+  revoked keys don't count). Another signer — an unendorsed key, or an
+  unsigned package replacing a signed one — is shown on the install page and
+  needs the user's confirmation.
+- **Official key:** release builds carry the official publisher's public key
+  (`OPENIDEA_OFFICIAL_PLUGIN_KEYS`, derived from the release's signing key).
+  `openidea.*` plugins must be signed with it, or with a key it endorsed,
+  whatever keys an index lists for `openidea`.
+- **Format:** fields are only ever added to the index (an IDE ignores those it
+  doesn't know), and `format` stays `1` unless older IDEs can't read the
+  change. An IDE reading a newer format still applies its revocations and
+  `moved`, lists no plugins, and asks the user to update.
+- **Moving:** an index with `"moved": "<url>"` sends the IDE to the index at
+  that URL (relative or absolute; https stays https), so a marketplace can
+  change hosts while released IDEs keep the address they were built with.
+
+**Versions.** Each index entry records the plugin API it needs (`engine`: the
+manifest's `engines.openidea`, narrowed to the API its component was built
+for; an entry without one is offered to no IDE), and a plugin may be listed in
+several versions. Settings › Plugins
+offers the newest version this IDE can load; when there is none, it shows the
+plugin as incompatible and says which API it needs. Entries also carry the
+plugin's categories, which Settings › Plugins › Available filters by. Indexing keeps, of each
+plugin, the newest version per API requirement, so users of an older IDE keep
+the last version built for them.
+
+`index` with a key registers the publisher and lists the folder's packages
+as its plugins (their earlier versions stay as above; plugins no longer in the
+folder go), keeping the other publishers'; `--download-base` makes downloads
+absolute, so a version stays where it was first published. Without a key, it
+lists every package in the folder, each checked against the publishers the
+index already has. `merge` takes the
+publishers, plugins and revocations of another index (downloads made absolute)
+in place of every publisher but `--keep`; `check` also takes a `.oiplugin`.
+
+### 8.1 Official and community plugins
+
+The IDE's default marketplace is `plugins-index.json` of the latest release.
+It lists two kinds of plugins:
+
+- **Official** (`plugins/official/`, ids `openidea.*`): maintained in this
+  repository, built and signed by its release workflow, and kept working as
+  the API changes. New official plugins are proposed in an issue first; they
+  cover general needs or show how to use part of the API.
+- **Community** (their authors' ids and keys): developed in their authors'
+  repositories and listed through the registry,
+  [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins).
+  An author registers a publisher (an id prefix, its public key and the GitHub
+  accounts that may change it) and adds each plugin version by pull request;
+  the registry checks the package (digest, signature, `openidea-plugin check`)
+  and publishes its index, which `plugins-index.yml` merges into the release's
+  within the hour. Its README has the rules.
+
+Pull requests that add a plugin to this repository are for official plugins.
+A plugin that needs a new extension point brings the extension point here, as
+its own pull request, and the plugin to the registry.
 
 ## 9. Testing the host
 
@@ -798,8 +934,8 @@ the API itself follows _Evolving the plugin API_ below.
 
 ## 10. Evolving the plugin API
 
-While the plugin system is a preview the API may still change freely. Once it
-is declared stable wasmtime decides what stays compatible: it resolves interface names
+Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36 and 1.1.0
+with 0.1.37. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -811,7 +947,10 @@ only grows:
    Extend with new types and new functions (or interfaces). `types.error` is
    used everywhere and is no exception; new situations use `failed(string)`
    or `invalid(string)`. Sets that keep growing (completion, token, symbol and
-   fold kinds, icons) are strings for this reason.
+   fold kinds, icons, event kinds, action sources, diagnostic tags) are
+   strings for this reason, and variants that grow (`event`, view `body`,
+   `view-event`, `field-value`) have an `other(extension)` case, a kind and
+   JSON data, that carries later cases to older plugins and IDEs.
 2. **Host interfaces (imports) may gain functions and interfaces**: older
    components don't import them.
 3. **Plugin interfaces (exports) never gain functions** once released: the
@@ -821,15 +960,28 @@ only grows:
    its `openidea:plugin/*` imports and exports, `PluginEngine::check_component`).
    Installing and `openidea-plugin check` refuse another major or a newer
    minor with a message that says to update the IDE or rebuild with the SDK.
+   They also link the component, so one that imports a function this host
+   lacks under the same version (built from unreleased WIT) is refused too.
 5. **One version number**: the `wit/` package version, `ENGINE_VERSION` and
    `API_VERSION` agree, and the SDK's `wit/` copy is identical to `wit/`.
+6. **1.x calls are synchronous and pass documents whole.** Host calls block
+   the plugin's instance, and providers get the document's text with each
+   call. WASI 0.3 async components come with 2.0, behind an adapter in the
+   host that keeps 1.x plugins running; incremental document sync, if
+   needed, is a new interface.
 
 Checked automatically:
 
-- SDK `tests/api_frozen.rs`: `tests/api/<version>/` holds the WIT of each
+- SDK `tests/api_frozen.rs`: `tests/api/released/` holds the WIT of the latest
   released version; every interface, type, function and world import or
-  export in it must still exist unchanged in `wit/` (rules 1–3). Copy `wit/`
-  there when releasing; there is no snapshot before the first release.
+  export in it must still exist unchanged in `wit/` (rules 1–3). Under the
+  released version `wit/` must match it exactly, so additions start with a
+  version bump. Each snapshot passed this check against the one before, so
+  one snapshot covers every release.
+- Releasing: `pnpm release:prepare <version>` makes the release commit's
+  changes; when the `wit/` version changed, it copies `wit/*.wit` over
+  `tests/api/released/`. The release workflow refuses a tag whose `wit/`
+  version differs from the snapshot's.
 - `crates/ide-plugin/tests/api_compat.rs`: the versions agree, the SDK's copy
   matches, the version check (rules 4, 5); a simulated next-minor host (every
   import stubbed at the newer version, plus extra functions and an extra

@@ -601,7 +601,7 @@ impl Default for FileSettings {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LanguagesSettings {
     pub python: PythonSettings,
@@ -612,9 +612,32 @@ pub struct LanguagesSettings {
     pub typescript: TypeScriptSettings,
     pub prettier: ExternalFormatterSettings,
     pub oxfmt: ExternalFormatterSettings,
+    pub ruff: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
+}
+
+impl Default for LanguagesSettings {
+    fn default() -> Self {
+        Self {
+            python: PythonSettings::default(),
+            node: NodeSettings::default(),
+            php: PhpSettings::default(),
+            rust: RustSettings::default(),
+            go: GoSettings::default(),
+            typescript: TypeScriptSettings::default(),
+            prettier: ExternalFormatterSettings::default(),
+            oxfmt: ExternalFormatterSettings::default(),
+            ruff: ExternalFormatterSettings {
+                languages: vec!["python".into()],
+                ..ExternalFormatterSettings::default()
+            },
+            java: JavaSettings::default(),
+            ruby: RubySettings::default(),
+            markdown: MarkdownSettings::default(),
+        }
+    }
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
@@ -630,6 +653,7 @@ impl LanguagesSettings {
         match tool {
             ExternalFormatter::Prettier => &self.prettier,
             ExternalFormatter::Oxfmt => &self.oxfmt,
+            ExternalFormatter::Ruff => &self.ruff,
         }
     }
 }
@@ -640,6 +664,7 @@ impl LanguagesSettings {
 pub enum ExternalFormatter {
     Prettier,
     Oxfmt,
+    Ruff,
 }
 
 impl ExternalFormatter {
@@ -648,16 +673,19 @@ impl ExternalFormatter {
         match self {
             Self::Prettier => "prettier",
             Self::Oxfmt => "oxfmt",
+            Self::Ruff => "ruff",
         }
     }
 }
 
-/// An external formatter (Prettier, oxfmt) and the languages it formats.
+/// An external formatter (Prettier, oxfmt, Ruff) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalFormatterSettings {
-    /// Empty path: project node_modules, managed installation, then PATH.
+    /// Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH.
     pub path: String,
+    /// Ruff only: directory containing its configuration, or a configuration file.
+    pub configuration_directory: String,
     pub languages: Vec<String>,
     /// Prefer this formatter even when a language server offers formatting.
     pub prefer: bool,
@@ -668,6 +696,7 @@ impl Default for ExternalFormatterSettings {
     fn default() -> Self {
         Self {
             path: String::new(),
+            configuration_directory: String::new(),
             languages: [
                 "markdown",
                 "yaml",
@@ -713,6 +742,19 @@ impl Default for PythonSettings {
 pub struct PhpSettings {
     /// `php` CLI executable; empty = the one on `PATH`.
     pub interpreter: String,
+    /// PHP version the language server checks the code against (`7.4`); empty = from
+    /// `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
+    pub language_level: String,
+    /// Folders outside the project whose code the language server indexes too (a platform a
+    /// module extends); absolute, `~/`, or relative to the project.
+    pub include_paths: Vec<String>,
+    /// Intelephense stub sets loaded on top of its defaults and the `ext-*` entries of
+    /// `composer.json` (`wordpress`).
+    pub stubs: Vec<String>,
+    /// PHPStan configuration file for checking saved files; empty = the `phpstan.neon`,
+    /// `phpstan.neon.dist` or `phpstan.dist.neon` PHPStan finds in the project root. Absolute,
+    /// `~/`, or relative to the project.
+    pub phpstan_config: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -819,6 +861,8 @@ pub struct JavaSettings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GradleSettings {
+    /// Linked build directories; absent preserves automatic discovery, empty unlinks all builds.
+    pub linked_projects: Option<Vec<String>>,
     /// Empty = Project JDK; otherwise a JDK home.
     pub jvm: String,
     pub distribution: GradleDistribution,
@@ -855,12 +899,20 @@ pub enum GradleDistribution {
 pub struct MavenSettings {
     /// Project-relative root POMs removed from the Maven project model.
     pub unlinked_projects: Vec<String>,
+    /// Project-relative POMs outside the root reactor added as independent top-level projects.
+    pub linked_projects: Vec<String>,
     /// Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`.
     pub home: String,
     /// User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`.
     pub user_settings: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
+    /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
+    /// its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
+    pub daemon: bool,
+    /// Maven Daemon home (or its `mvnd` executable); empty = `$MVND_HOME`, else
+    /// `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
+    pub mvnd_home: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -1092,11 +1144,32 @@ mod maven_linkage_tests {
         assert!(encoded.contains("unlinkedProjects"));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
+
+    #[test]
+    fn daemon_settings_round_trip() {
+        // Old settings files predate the daemon fields; `serde(default)` keeps them loadable.
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(!old.daemon && old.mvnd_home.is_empty());
+        let settings = MavenSettings { daemon: true, mvnd_home: "/opt/mvnd".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains("\"daemon\":true") && encoded.contains("mvndHome"));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
 }
 
 #[cfg(test)]
 mod gradle_settings_tests {
     use super::*;
+
+    #[test]
+    fn absent_and_explicitly_empty_gradle_links_remain_distinct() {
+        let automatic: GradleSettings = serde_json::from_str("{}").unwrap();
+        let unlinked: GradleSettings = serde_json::from_str(r#"{"linkedProjects":[]}"#).unwrap();
+        assert_eq!(automatic.linked_projects, None);
+        assert_eq!(unlinked.linked_projects, Some(vec![]));
+        let restored: GradleSettings = serde_json::from_str(&serde_json::to_string(&unlinked).unwrap()).unwrap();
+        assert_eq!(restored.linked_projects, Some(vec![]));
+    }
 
     #[test]
     fn defaults_and_round_trip() {
@@ -1110,6 +1183,7 @@ mod gradle_settings_tests {
                 home: "/gradle".into(),
                 user_home: "/cache/gradle".into(),
                 run_using: GradleRunUsing::Ide,
+                linked_projects: Some(vec!["backend".into(), "../shared".into()]),
             };
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);

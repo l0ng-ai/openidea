@@ -64,7 +64,7 @@ fn ids(commits: &[Commit]) -> Vec<String> {
 }
 
 fn parents_of(commits: &[Commit], id: &str) -> Vec<String> {
-    commits.iter().find(|c| c.id == id).unwrap().parents.clone()
+    commits.iter().find(|c| c.id == id).unwrap().graph_parents.clone().unwrap()
 }
 
 #[test]
@@ -73,6 +73,14 @@ fn date_order_follows_commit_time_and_reports_it() {
     let out = log(&h, LogQuery { order: LogOrder::Date, ..Default::default() });
     assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.c2.clone(), h.s1.clone(), h.c1.clone()]);
     assert_eq!(out[0].commit_time_ms, 5_000_000.0);
+}
+
+#[test]
+fn incoming_order_groups_the_merged_branch_before_the_main_parent() {
+    let h = history();
+    let out = log(&h, LogQuery { order: LogOrder::Standard, ..Default::default() });
+    assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.s1.clone(), h.c2.clone(), h.c1.clone()]);
+    assert_eq!(out[1].parents, vec![h.c2.clone(), h.s1.clone()]);
 }
 
 #[test]
@@ -90,6 +98,7 @@ fn first_parent_skips_merged_branches() {
     let out = log(&h, LogQuery { first_parent: true, ..Default::default() });
     assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.c2.clone(), h.c1.clone()]);
     assert_eq!(parents_of(&out, &h.m), vec![h.c2.clone()]);
+    assert_eq!(out.iter().find(|c| c.id == h.m).unwrap().parents, vec![h.c2.clone(), h.s1.clone()]);
 }
 
 #[test]
@@ -201,19 +210,26 @@ fn a_user_filter_links_shown_commits_past_hidden_ones() {
     let log = repo.log(&LogQuery { author: Some("me@".into()), ..Default::default() }).unwrap();
     let links: Vec<(&str, Vec<&str>, Vec<bool>)> = log
         .iter()
-        .map(|c| (c.summary.as_str(), c.parents.iter().map(String::as_str).collect(), c.dashed.clone()))
+        .map(|c| {
+            (
+                c.summary.as_str(),
+                c.graph_parents.as_ref().unwrap().iter().map(String::as_str).collect(),
+                if c.graph_dashed.iter().any(|d| *d) { c.graph_dashed.clone() } else { Vec::new() },
+            )
+        })
         .collect();
     assert_eq!(
         links,
         [("m3", vec![m2.as_str()], vec![]), ("m2", vec![m1.as_str()], vec![true]), ("m1", vec![], vec![]),],
         "m2's parent o1 is hidden: m2 links to m1, dashed"
     );
-    assert!(!log.iter().any(|c| c.parents.contains(&o1)));
+    assert!(!log.iter().any(|c| c.graph_parents.as_ref().unwrap().contains(&o1)));
+    assert_eq!(log[1].parents, vec![o1]);
 
     // A page ends at m2: walking on still links it to m1.
     let page = repo.log(&LogQuery { author: Some("me@".into()), limit: 2, ..Default::default() }).unwrap();
     assert_eq!(page.len(), 2);
-    assert_eq!(page[1].parents, std::slice::from_ref(&m1));
+    assert_eq!(page[1].graph_parents.as_deref().unwrap(), std::slice::from_ref(&m1));
     let next = repo.log(&LogQuery { author: Some("me@".into()), skip: 2, limit: 2, ..Default::default() }).unwrap();
     assert_eq!(next.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), std::slice::from_ref(&m1));
     let _ = m3;

@@ -369,7 +369,6 @@ pub fn configure_jdtls(
     if cfg.name != "jdtls" {
         return;
     }
-    crate::apply::configure_java_compiler(cfg, data_dir);
     // A Lombok agent from the user's JVM arguments wins.
     let own_agent = crate::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
     let agent = own_agent.as_deref().or(lombok);
@@ -1145,7 +1144,7 @@ mod tests {
 /// The same jar supplies the JDT command and the private Maven output redirector.
 pub fn kotlin_bridge_bundle(data_dir: &Path) -> Option<PathBuf> {
     let extension = data_dir.join("kotlin-bridge-1.0.0.jar");
-    let bytes = include_bytes!("../../../plugins/kotlin-bridge/openidea-kotlin-bridge.jar");
+    let bytes = include_bytes!("../../../java/kotlin-bridge/openidea-kotlin-bridge.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         return Some(extension);
     }
@@ -1187,8 +1186,8 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.2.1.jar");
-    let bytes = include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar");
+    let extension = data_dir.join("java-usages-1.5.0.jar");
+    let bytes = include_bytes!("../../../java/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         clean_usages_bundles(data_dir, &extension);
         return Some(extension);
@@ -1273,10 +1272,7 @@ mod usages_bundle_tests {
     fn installs_the_exact_bundle_and_reuses_it() {
         let dir = tempfile::tempdir().unwrap();
         let jar = super::usages_bundle(dir.path()).unwrap();
-        assert_eq!(
-            std::fs::read(&jar).unwrap(),
-            include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar")
-        );
+        assert_eq!(std::fs::read(&jar).unwrap(), include_bytes!("../../../java/java-usages/openidea-java-usages.jar"));
         assert_eq!(super::usages_bundle(dir.path()), Some(jar));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }

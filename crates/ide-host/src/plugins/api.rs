@@ -2,6 +2,7 @@
 //! Capabilities were checked by the runtime before any of this runs.
 
 use super::{PluginEvent, PluginEventSink};
+use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
@@ -29,6 +30,11 @@ pub trait PluginWorkspace: Send + Sync {
     fn projects(&self) -> Vec<PathBuf>;
     /// Unsaved text of the open document at `path`.
     fn buffer_text(&self, path: &Path) -> Option<String>;
+    /// Up to `limit` files of the project index below `root` whose root-relative path satisfies
+    /// `matches`; `None` when no index covers `root` yet (the caller walks the disk instead).
+    fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
+        None
+    }
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
     /// Applies `edits` to the open document at `path` if it is still at
@@ -305,8 +311,9 @@ impl PluginApi {
         // allowed, and installing it later approves nothing by itself.
         let pin = self.shared.pins.read().get(&(self.id().to_owned(), cap.clone())).cloned().ok_or_else(|| {
             HostError::Failed(format!(
-                "{cap}: `{program}` was not found when this permission was allowed; \
-                 install it, then allow {cap} again in Settings › Plugins"
+                "{cap}: `{program}` was not found on PATH when this permission was allowed. \
+                 Restarting doesn't approve a program installed later: once `{program}` is on PATH, \
+                 clear {cap} in Settings › Plugins and select it again"
             ))
         })?;
         pin.verify().map(Path::to_path_buf).map_err(|e| HostError::Denied(format!("{cap}: {e}")))
@@ -322,6 +329,18 @@ impl HostApi for PluginApi {
         self.shared
             .sink
             .emit(client, PluginEvent::Notification { plugin_id: self.id().to_owned(), level, title, body });
+    }
+
+    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
+        let client = from_window(client, "copy to the clipboard")?;
+        self.shared.sink.emit(Some(client), PluginEvent::CopyToClipboard { plugin_id: self.id().to_owned(), text });
+        Ok(())
+    }
+
+    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
+        let client = from_window(client, "open a URL")?;
+        self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
     }
 
     fn status_item(&self, id: &str, item: Option<StatusItem>) {
@@ -407,7 +426,7 @@ impl HostApi for PluginApi {
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
-            root: repo.root().to_string_lossy().into_owned(),
+            root: to_ipc(repo.root()),
             branch: info.head,
             commit: info.head_commit,
             upstream: info.upstream,
@@ -416,6 +435,12 @@ impl HostApi for PluginApi {
             operation: info.operation,
             changed_files: u32::try_from(changed).unwrap_or(u32::MAX),
         }))
+    }
+
+    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
+        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(Vec::new()) };
+        let remotes = repo.remotes().map_err(failed)?;
+        Ok(remotes.into_iter().map(|r| (r.name, without_credentials(&r.url))).collect())
     }
 
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError> {
@@ -439,6 +464,19 @@ impl HostApi for PluginApi {
             .build()
             .map_err(|e| HostError::Invalid(format!("{glob:?}: {e}")))?
             .compile_matcher();
+        // Hidden files and folders are left out, as in the walk below.
+        let visible = |rel: &Path| !rel.iter().any(|c| c.to_str().is_some_and(|c| c.starts_with('.')));
+        // The project index already lists the files: walking a large tree on every call can take
+        // longer than an editor provider's deadline (the plugin is then stopped as crashed).
+        if let Some(files) = self
+            .shared
+            .workspace()
+            .and_then(|w| w.indexed_files(root, &|rel| visible(rel) && matcher.is_match(rel), limit))
+        {
+            let mut out: Vec<String> = files.iter().map(|p| to_ipc(p)).collect();
+            out.sort();
+            return Ok(out);
+        }
         let mut out = Vec::new();
         for (n, entry) in ignore::WalkBuilder::new(root).hidden(true).build().flatten().enumerate() {
             if n >= MAX_WALK || out.len() >= limit {
@@ -449,7 +487,7 @@ impl HostApi for PluginApi {
             }
             let Ok(rel) = entry.path().strip_prefix(root) else { continue };
             if matcher.is_match(rel) {
-                out.push(entry.path().to_string_lossy().into_owned());
+                out.push(to_ipc(entry.path()));
             }
         }
         out.sort();
@@ -667,6 +705,17 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
+    fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError> {
+        let event = PluginEvent::OpenLocation {
+            plugin_id: self.id().to_owned(),
+            path: path.to_path_buf().into(),
+            line,
+            column,
+        };
+        self.shared.sink.emit(client, event);
+        Ok(())
+    }
+
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String> {
         let schema: Vec<super::ui_points::SettingSchema> = self
             .shared
@@ -705,6 +754,12 @@ impl PluginWorkspace for HostWorkspace {
 
     fn buffer_text(&self, path: &Path) -> Option<String> {
         HostWorkspace::projects(self).iter().find_map(|p| p.documents.text_of(path))
+    }
+
+    fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
+        // The index of the project rooted at `root` (a workspace member's files are in its own).
+        let project = HostWorkspace::projects(self).into_iter().find(|p| p.root == root)?;
+        project.index.files_matching(root, matches, limit)
     }
 
     fn document(&self, path: &Path) -> Option<(u64, String)> {
@@ -778,6 +833,73 @@ mod tests {
     }
 
     #[test]
+    fn repository_and_search_paths_match_ipc_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).arg(tmp.path()).status().unwrap().success());
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let file = root.join("src/Example.java");
+        std::fs::write(&file, "class Example {}\n").unwrap();
+        let api = api(&root, Arc::default());
+        assert_eq!(api.find_files(&root, "**/*.java", 8).unwrap(), [to_ipc(&file)]);
+        assert_eq!(api.vcs_status(&root).unwrap().unwrap().root, to_ipc(&root));
+    }
+
+    /// A project index that lists `files` (root-relative), whatever is on disk.
+    struct Indexed(PathBuf, Vec<&'static str>);
+    impl PluginWorkspace for Indexed {
+        fn projects(&self) -> Vec<PathBuf> {
+            vec![self.0.clone()]
+        }
+        fn buffer_text(&self, _: &Path) -> Option<String> {
+            None
+        }
+        fn document(&self, _: &Path) -> Option<(u64, String)> {
+            None
+        }
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+            Err(HostError::Stale)
+        }
+        fn trusted(&self, _: &Path) -> bool {
+            true
+        }
+        fn project_of(&self, _: &str) -> Option<PathBuf> {
+            None
+        }
+        fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
+            (root == self.0).then(|| {
+                self.1.iter().map(Path::new).filter(|rel| matches(rel)).take(limit).map(|rel| root.join(rel)).collect()
+            })
+        }
+    }
+
+    #[test]
+    fn find_files_uses_the_project_index_when_there_is_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let api = api(&root, Arc::default());
+        *api.shared.workspace.write() = Some(Arc::new(Indexed(
+            root.clone(),
+            vec!["src/b/UserMapper.xml", "src/a/OrderMapper.xml", ".idea/workspace.xml", "pom.xml"],
+        )));
+        // Listed by the index, not walked: none of these exist on disk.
+        assert_eq!(
+            api.find_files(&root, "**/*Mapper.xml", 10).unwrap(),
+            [to_ipc(&root.join("src/a/OrderMapper.xml")), to_ipc(&root.join("src/b/UserMapper.xml"))]
+        );
+        assert_eq!(api.find_files(&root, "**/*.xml", 10).unwrap().len(), 3, "hidden folders are left out");
+        assert_eq!(api.find_files(&root, "**/*.xml", 1).unwrap().len(), 1);
+        // Another root: no index covers it, so the disk is walked.
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("a.xml"), "").unwrap();
+        assert_eq!(api.find_files(&other, "*.xml", 10).unwrap(), [to_ipc(&other.join("a.xml"))]);
+    }
+
+    #[test]
     fn programs_run_only_as_approved() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("lint");
@@ -788,7 +910,8 @@ mod tests {
         // Allowed while the program was missing: say how to fix it rather than "not granted".
         let err = api.approved_program("lint").unwrap_err().to_string();
         assert!(
-            err.contains("was not found when this permission was allowed") && err.contains("allow process:lint again"),
+            err.contains("was not found on PATH when this permission was allowed")
+                && err.contains("clear process:lint in Settings › Plugins and select it again"),
             "{err}"
         );
 
@@ -799,5 +922,44 @@ mod tests {
         assert!(
             matches!(api.approved_program("lint"), Err(HostError::Denied(e)) if e.contains("changed since it was approved"))
         );
+    }
+}
+
+/// The window a user action invoked the plugin from: browser tabs and clipboard writes
+/// follow what the user did, never background work (which would reach every window).
+fn from_window<'a>(client: Option<&'a str>, what: &str) -> Result<&'a str, HostError> {
+    client.ok_or_else(|| HostError::Invalid(format!("can only {what} from a command the user invoked")))
+}
+
+/// `url` without the `user:password@` a remote may carry (`https://user:token@host/…`):
+/// `vcs.read` must not hand out credentials. scp-style `git@host:path` has no password.
+fn without_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_owned() };
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+        None => url.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn remote_urls_lose_their_credentials() {
+        for (url, expected) in [
+            ("https://user:ghp_token@github.com/o/r.git", "https://github.com/o/r.git"),
+            ("https://token@gitlab.com/o/r", "https://gitlab.com/o/r"),
+            ("ssh://git@host:2222/o/r.git", "ssh://host:2222/o/r.git"),
+            ("https://github.com/o/r.git", "https://github.com/o/r.git"),
+            ("https://github.com/o/r@v1", "https://github.com/o/r@v1"),
+            ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+            ("/srv/git/r.git", "/srv/git/r.git"),
+        ] {
+            assert_eq!(without_credentials(url), expected, "{url}");
+        }
+        assert!(matches!(from_window(None, "open a URL"), Err(HostError::Invalid(_))));
+        assert_eq!(from_window(Some("main"), "open a URL").unwrap(), "main");
     }
 }

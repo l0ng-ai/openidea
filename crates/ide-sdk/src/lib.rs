@@ -18,6 +18,7 @@ pub mod locate;
 pub mod lombok;
 pub mod maven_profiles;
 mod npm;
+pub mod php;
 pub mod pinned;
 pub mod python;
 pub mod ruby;
@@ -27,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 
-pub use discover::{detect, jdk_sdk};
+pub use discover::{detect, jdk_sdk, python_interpreter_sdk};
 
 /// What [`detect`] looks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

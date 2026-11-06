@@ -139,11 +139,22 @@
 
 /* commit table */
 .listWrap {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+.speedSearch {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 1;
+  padding: 4px 8px;
+  background: var(--bg-popup);
+  border: 1px solid var(--border);
+  color: var(--fg);
 }
 .list {
   flex: 1;
@@ -164,6 +175,39 @@
   white-space: nowrap;
   cursor: default;
   font-size: var(--fs-ui);
+}
+.columnHeader {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-app);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-subtle);
+}
+.columnHeader:hover {
+  background: var(--bg-app);
+}
+.columnCell {
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.columnHeading {
+  position: relative;
+  padding-inline-end: 6px;
+  cursor: grab;
+}
+.columnResize {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.columnResize:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 /* View Options › Highlight › Current Branch: commits reachable from HEAD are tinted. */
 .currentBranch {
@@ -333,6 +377,21 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
 }
+.lineStats {
+  display: inline-flex;
+  gap: 6px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.fileRow .lineStats {
+  margin-left: auto;
+}
+.lineAdded {
+  color: var(--vcs-added);
+}
+.lineRemoved {
+  color: var(--vcs-deleted);
+}
 .messageBox {
   height: 100%;
   overflow: auto;
@@ -341,6 +400,21 @@
   -webkit-user-select: text;
   user-select: text;
   font-size: var(--fs-ui);
+}
+.commitTooltip {
+  width: min(520px, calc(100vw - 32px));
+  max-height: 60vh;
+  overflow: auto;
+  padding: 12px;
+  white-space: normal;
+  user-select: text;
+}
+.revisionSource {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .subjectLine {
   color: var(--fg-strong);
@@ -414,7 +488,7 @@
   font-size: var(--fs-small);
   line-height: 18px;
   -webkit-user-select: text;
-  cursor: text;
+  cursor: default;
   -webkit-user-select: text;
   user-select: text;
 }
@@ -422,6 +496,7 @@
   white-space: pre-wrap;
   word-break: break-all;
   color: var(--fg-secondary);
+  cursor: text;
 }
 .line-cmd {
   color: var(--fg-emphasis);

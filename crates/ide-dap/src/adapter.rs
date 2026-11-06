@@ -64,21 +64,27 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "codelldb",
             &["--port", PORT_PLACEHOLDER],
             "tcp",
-            "Install the CodeLLDB adapter (https://github.com/vadimcn/codelldb/releases) and put `codelldb` on PATH",
+            "Install CodeLLDB in Settings › Languages & Frameworks › Language Servers",
         ),
         "kotlin-debug-adapter" => cfg(
             "kotlin-debug-adapter",
             &[],
             "stdio",
-            "Install the Kotlin Debug Adapter from Settings > Language Servers",
+            "Install Kotlin Debug Adapter in Settings › Languages & Frameworks › Language Servers",
         ),
-        "debugpy" => cfg("python3", &["-m", "debugpy.adapter"], "stdio", "pip install debugpy"),
+        // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
+        "debugpy" => cfg(
+            if cfg!(windows) { "python" } else { "python3" },
+            &["-m", "debugpy.adapter"],
+            "stdio",
+            "pip install debugpy",
+        ),
         "js-debug" => cfg(
             "js-debug-adapter",
             // Without a host it listens on `localhost`, which may resolve to ::1 only.
             &[PORT_PLACEHOLDER, "127.0.0.1"],
             "tcp",
-            "Install vscode-js-debug's DAP server (js-debug-dap-*.tar.gz from https://github.com/microsoft/vscode-js-debug/releases) as `js-debug-adapter`",
+            "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers",
         ),
         "delve" => cfg(
             "dlv",
@@ -90,7 +96,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "netcoredbg",
             &["--interpreter=vscode"],
             "stdio",
-            "Install Samsung netcoredbg (https://github.com/Samsung/netcoredbg/releases)",
+            "Install netcoredbg (.NET debugger) in Settings › Languages & Frameworks › Language Servers",
         ),
         "lldb-dap" => {
             cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
@@ -662,7 +668,7 @@ mod tests {
         assert!(find_binary("definitely-not-a-real-binary-openidea", &spec.cwd).is_none());
         let err = missing(&spec);
         assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
-        assert!(err.message.contains("netcoredbg/releases"));
+        assert!(err.message.contains("Settings › Languages & Frameworks › Language Servers"));
     }
 
     #[tokio::test]

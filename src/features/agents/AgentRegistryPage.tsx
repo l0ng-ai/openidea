@@ -1,9 +1,10 @@
 /**
  * Settings › Tools › Agents: the launch command of built-in agents (Claude Code…), and
  * agents of the ACP Registry this machine can run, with Install / Update / Remove.
- * Installs run in the background with progress; leaving the page cancels one.
+ * Installs run in the background with progress, and keep running after the page closes
+ * (as a background task of the project windows); the page then shows them as installing.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { AgentRegistry, RegistryAgent, RequestId } from "@/bindings";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -28,12 +29,25 @@ import styles from "./AgentRegistry.module.css";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** How often the page checks on installs it did not start. */
+const BACKGROUND_POLL_MS = 1500;
+
 interface Job {
   id: string;
-  request: RequestId;
   fraction: number | null;
   message: string;
 }
+
+interface PageJob extends Job {
+  request: RequestId;
+}
+
+/** An install started before the page opened; its progress shows in the background tasks. */
+const backgroundJob = (agent: RegistryAgent): Job => ({
+  id: agent.id,
+  fraction: null,
+  message: tx`Installing ${agent.name} in the background…`,
+});
 
 export function AgentRegistryPage({
   onChanged,
@@ -72,7 +86,7 @@ function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChan
   const [registry, setRegistry] = useState<AgentRegistry | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [job, setJob] = useState<Job | null>(null);
+  const [job, setJob] = useState<PageJob | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -89,20 +103,45 @@ function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChan
     };
   }, [backend]);
 
+  // Installs started before the page opened: follow them until they end.
+  const background = registry?.agents.some((a) => a.installing) ?? false;
+  useEffect(() => {
+    if (!background) return;
+    let live = true;
+    let request: RequestId | null = null;
+    const timer = setInterval(() => {
+      if (request != null) return;
+      const r = (request = nextRequestId());
+      backend
+        .list(r)
+        .then((next) => {
+          if (!live) return;
+          setRegistry(next);
+          if (!next.agents.some((a) => a.installing)) onChanged?.();
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (request === r) request = null;
+        });
+    }, BACKGROUND_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      if (request != null) backend.cancel(request);
+    };
+  }, [backend, background, onChanged]);
+
   const agents = useMemo(
     () => sortAgents((registry?.agents ?? []).filter((a) => matchesQuery(a, query))),
     [registry, query],
   );
-  const busy = job != null || removing != null;
+  const busy = job != null || removing != null || background;
 
   const setError = (id: string, error: string | null) =>
     setErrors((all) => {
       const { [id]: _, ...rest } = all;
       return error ? { ...rest, [id]: error } : rest;
     });
-
-  // The install in progress, for leaving the page.
-  const running = useRef<RequestId | null>(null);
 
   const install = async (agent: RegistryAgent) => {
     if (
@@ -116,7 +155,6 @@ function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChan
     )
       return;
     const request = nextRequestId();
-    running.current = request;
     setError(agent.id, null);
     setJob({ id: agent.id, request, fraction: null, message: tx`Installing ${agent.name} ${agent.version}…` });
     backend
@@ -134,10 +172,7 @@ function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChan
         onChanged?.();
       })
       .catch((e: unknown) => !isCancelled(e) && setError(agent.id, errorText(e)))
-      .finally(() => {
-        if (running.current === request) running.current = null;
-        setJob(null);
-      });
+      .finally(() => setJob(null));
   };
 
   const remove = (agent: RegistryAgent) => {
@@ -152,14 +187,6 @@ function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChan
       .catch((e: unknown) => setError(agent.id, errorText(e)))
       .finally(() => setRemoving(null));
   };
-
-  // Leaving the page stops an install.
-  useEffect(
-    () => () => {
-      if (running.current != null) backend.cancel(running.current);
-    },
-    [backend],
-  );
 
   return (
     <div className={styles.body}>
@@ -202,13 +229,13 @@ function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChan
               <AgentRow
                 key={agent.id}
                 agent={agent}
-                job={job?.id === agent.id ? job : null}
+                job={job?.id === agent.id ? job : agent.installing ? backgroundJob(agent) : null}
                 removing={removing === agent.id}
                 disabled={busy}
                 error={errors[agent.id] ?? null}
                 onInstall={() => void install(agent)}
                 onRemove={() => remove(agent)}
-                onCancel={() => job && backend.cancel(job.request)}
+                onCancel={job?.id === agent.id ? () => backend.cancel(job.request) : undefined}
               />
             ))}
           </ul>
@@ -235,7 +262,8 @@ function AgentRow({
   error: string | null;
   onInstall: () => void;
   onRemove: () => void;
-  onCancel: () => void;
+  /** Absent for an install this page did not start (stop it from the background tasks). */
+  onCancel?: () => void;
 }) {
   const actions = rowActions(agent);
   const titleId = `agent-${agent.id}`;
@@ -274,9 +302,11 @@ function AgentRow({
       </div>
       <div className={styles.actions}>
         {job ? (
-          <Button size="small" onClick={onCancel}>
-            Cancel
-          </Button>
+          onCancel && (
+            <Button size="small" onClick={onCancel}>
+              Cancel
+            </Button>
+          )
         ) : (
           <>
             {actions.install && (

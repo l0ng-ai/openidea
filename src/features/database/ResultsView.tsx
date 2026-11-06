@@ -7,16 +7,22 @@ import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { DbPlanNode } from "@/platform/ipc";
-import { EmptyState, Icon, IconButton, Spinner, Tabs, Tree, showContextMenu, T } from "@/ui";
+import { shortcutLabel } from "@/platform/keymap";
+import { EmptyState, Icon, IconButton, Select, Spinner, Tabs, Tree, showContextMenu, T } from "@/ui";
 import { ChartView } from "./ChartView";
 import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
+import { pageWindow } from "./resultView";
 import { analyze } from "./sql/analyze";
 import {
   OUTPUT_TAB,
   clearOutput,
   closeResult,
+  countResult,
+  countable,
+  loadResultPage,
   outcomeSummary,
+  pageable,
   rerunResult,
   sourceById,
   targetLabel,
@@ -72,9 +78,88 @@ function queryTable(text: string, data: Pick<ExportData, "driver">): string {
   return a.refs.find((r) => r.depth === 0 && r.kind === "table")?.name ?? "MY_TABLE";
 }
 
+const PAGE_SIZES = [10, 100, 500, 1000];
+
+/** IDEA's pager at the bottom of a result: |< < 1-500 of 501+ > >| and the page size; paging runs the query again. */
+function Pager({ tab }: { tab: ResultTab }) {
+  const r = tab.outcome.result!;
+  const page = tab.page ?? 0;
+  const pageSize = tab.pageSize ?? Math.max(r.rows.length, 1);
+  const state = { page, pageSize, rows: r.rows.length, hasMore: r.hasMore, total: tab.total ?? null };
+  const w = pageWindow(state);
+  const canPage = pageable(tab) && !tab.busy;
+  const go = (p: number, size = pageSize) => void loadResultPage(tab.id, p, size);
+  const goLast = async () => {
+    let lastPage = w.lastPage;
+    if (lastPage === null) {
+      const total = await countResult(tab.id);
+      if (total === null) return;
+      lastPage = pageWindow({ ...state, total }).lastPage;
+    }
+    if (lastPage !== null && lastPage !== page) go(lastPage);
+  };
+  const { first, last } = w;
+  const total = w.total === null ? `${w.last + 1}+` : String(w.total);
+  const sizes = PAGE_SIZES.includes(pageSize) ? PAGE_SIZES : [...PAGE_SIZES, pageSize].sort((a, b) => a - b);
+  return (
+    <div
+      className={styles.resultPager}
+      role="toolbar"
+      aria-label={tx("Result pages")}
+      title={outcomeSummary(tab.outcome)}
+    >
+      <IconButton
+        icon="page-first"
+        title="First Page"
+        size="small"
+        disabled={!canPage || page === 0}
+        onClick={() => go(0)}
+      />
+      <IconButton
+        icon="chevron-left"
+        title="Previous Page"
+        size="small"
+        disabled={!canPage || page === 0}
+        onClick={() => go(page - 1)}
+      />
+      <button
+        type="button"
+        className={clsx(styles.resultPagerRange, styles.resultPagerCount)}
+        disabled={w.total !== null || !canPage || !countable(tab)}
+        title={w.total === null ? tx("Count rows") : undefined}
+        onClick={() => void countResult(tab.id)}
+      >
+        {tx`${first}-${last} of ${total}`}
+      </button>
+      <IconButton
+        icon="chevron-right"
+        title="Next Page"
+        size="small"
+        disabled={!canPage || !r.hasMore}
+        onClick={() => go(page + 1)}
+      />
+      <IconButton
+        icon="page-last"
+        title="Last Page"
+        size="small"
+        disabled={!canPage || (!r.hasMore && w.total !== null) || (w.total === null && !countable(tab))}
+        onClick={() => void goLast()}
+      />
+      <Select
+        aria-label="Page size"
+        value={String(pageSize)}
+        options={sizes.map((v) => ({ value: String(v), label: String(v) }))}
+        onChange={(v) => go(0, Number(v))}
+        disabled={!canPage}
+      />
+    </div>
+  );
+}
+
 function Result({ tab }: { tab: ResultTab }) {
   const [view, setView] = useState<"table" | "chart">("table");
   const [panel, setPanel] = useState<DataPanel | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [extractor, setExtractor] = useState<ExportFormat>("csv");
   const r = tab.outcome.result;
   const columns = useMemo(() => (r ? r.columns.map((c) => ({ name: c.name, type: c.typeName })) : []), [r]);
@@ -94,6 +179,15 @@ function Result({ tab }: { tab: ResultTab }) {
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
         <IconButton icon="refresh" title="Rerun Query" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
+        {view === "table" && (
+          <IconButton
+            icon="search"
+            title="Search"
+            shortcut={shortcutLabel("find.inFile")}
+            aria-pressed={searchOpen}
+            onClick={() => setSearchOpen(!searchOpen)}
+          />
+        )}
         {tab.busy && <Spinner size={12} />}
         <span className={styles.spacer} />
         <span className={styles.resultSource} title={tab.outcome.statement.text}>
@@ -121,12 +215,12 @@ function Result({ tab }: { tab: ResultTab }) {
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            searchOpen={searchOpen}
+            onSearchOpenChange={setSearchOpen}
+            firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
             aria-label={tab.title}
           />
-          <div className={styles.rowPill} role="status" title={outcomeSummary(tab.outcome)}>
-            {r.rows.length === 1 ? tx`${r.rows.length} row` : tx`${r.rows.length} rows`}
-            {r.hasMore ? ` ${tx("(limit reached)")}` : ""}
-          </div>
+          <Pager tab={tab} />
         </div>
       )}
     </div>

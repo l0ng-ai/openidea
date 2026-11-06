@@ -26,15 +26,18 @@ import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import {
   addWatch,
+  closeSessionTab,
   evaluate,
   selectFrame,
   selectSession,
   selectThread,
   revealFrame,
+  rootOf,
   sessionSupports,
   useDebug,
   type DebugSession,
 } from "../state";
+import { remoteWaitingNote } from "../remote";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -120,6 +123,7 @@ export function DebugTabs() {
     text: s.name,
     icon: "debug",
     italic: s.status === "terminated",
+    closable: true,
     tooltip: statusText(s),
   }));
   return (
@@ -130,6 +134,7 @@ export function DebugTabs() {
       items={items}
       activeId={active != null ? String(active) : null}
       onSelect={(id) => selectSession(+id)}
+      onClose={(id) => void closeSessionTab(+id)}
       panelIdPrefix="openidea-debug"
     />
   );
@@ -197,6 +202,13 @@ export function DebugToolWindow() {
         <ToolButton action="debug.stepInto" icon="step-into" />
         <ToolButton action="debug.stepOut" icon="step-out" />
         <span className={styles.sep} aria-hidden />
+        {rootOf(active).adapter === "dart" && (
+          <>
+            <ToolButton action="debug.hotReload" icon="hot-reload" />
+            <ToolButton action="debug.hotRestart" icon="refresh" />
+            <span className={styles.sep} aria-hidden />
+          </>
+        )}
         <IconButton
           icon="view-breakpoints"
           action="debug.viewBreakpoints"
@@ -293,7 +305,11 @@ function FramesPane({ session }: { session: DebugSession }) {
         onBlur={() => blurDebugView("frames")}
       >
         {!paused && (
-          <div className={styles.note}>{session.status === "terminated" ? tx("Finished") : tx("Running…")}</div>
+          <div className={styles.note}>
+            {session.status === "terminated"
+              ? tx("Finished")
+              : (remoteWaitingNote(rootOf(session).runConfig) ?? tx("Running…"))}
+          </div>
         )}
         {items.map((item) =>
           item.kind === "hidden" ? (

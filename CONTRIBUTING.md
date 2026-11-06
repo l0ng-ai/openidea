@@ -16,8 +16,7 @@ Project layout, coding rules, commands and checks are in [AGENTS.md](AGENTS.md).
 
 ## Pull requests
 
-- One issue per PR, linked with `Closes #123`. Feature PRs need a `planned` issue.
-  Docs, CI and pure refactors may skip the issue.
+- One problem per PR. If it resolves an issue, link it with `Closes #123`.
 - Reproduce the problem first, or write a test that fails before the fix.
 - Fix the cause, and check whether the same cause breaks anything nearby.
 - Keep the diff focused. Unrelated refactors go in their own PR.
@@ -26,10 +25,15 @@ Project layout, coding rules, commands and checks are in [AGENTS.md](AGENTS.md).
 - Fill in the template. Keep the description short and in plain words. If it
   doesn't fit in a few sentences, the PR is probably too big.
 - **How it was verified** is required: the commands you ran and their results,
-  and what else the change could affect. UI changes need before/after screenshots;
-  multi-step interactions need a recording.
+  and what else the change could affect. Changes to what users see need before/after
+  screenshots; multi-step interactions need a recording. UI that goes away with a removed
+  feature, copy-only and non-visual changes don't; say what you checked instead.
 - If a change needs a product decision you can't make, ask in the issue and stop
   rather than guessing.
 
-A check on each PR adds `needs-info` when the issue link or the verification
-section is missing, and removes it once they're filled in.
+Plugins: pull requests here add or change official plugins (`plugins/official/`)
+and the plugin API. Community plugins live in their authors' repositories and
+are listed through [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins);
+see [`plugins/README.md`](plugins/README.md) § 8.1.
+
+A check on each PR adds `needs-info` when the verification section is missing, and removes it once it's filled in.

@@ -5,7 +5,7 @@ import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, Input, List, Select, Spinner, T, Tree } from "@/ui";
+import { Checkbox, Dialog, Input, List, Select, Spinner, SplitGroup, SplitHandle, SplitPanel, T, Tree } from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
@@ -149,6 +149,9 @@ interface PushNode {
   children?: PushNode[];
 }
 
+// A long outgoing list scrolls inside the dialog instead of growing it to the screen (IDEA: 800×450 centre panel).
+const PUSH_DIALOG_MAX_HEIGHT = 720;
+
 function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const roots = useVcs((s) => s.roots);
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
@@ -228,6 +231,8 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       title="Push Commits"
       onClose={onClose}
       width={repos?.some((r) => r.commits.length) ? 860 : 620}
+      maxHeight={PUSH_DIALOG_MAX_HEIGHT}
+      className={styles.pushDialog}
       resizable="both"
       footerStart={
         <>
@@ -335,6 +340,11 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [commits, setCommits] = useState<Commit[] | null>(null);
   // The commit whose changes are shown; -1: all outgoing commits.
   const [shownCommit, setShownCommit] = useState(-1);
+  const [pushSplit, setPushSplit] = useState(loadPushSplit);
+  const keepPushSplit = (layout: Record<string, number>) => {
+    setPushSplit(layout);
+    savePushSplit(layout);
+  };
   const shownCommits = useMemo(
     () => (commits && shownCommit >= 0 && commits[shownCommit] ? [commits[shownCommit]] : (commits ?? [])),
     [commits, shownCommit],
@@ -435,12 +445,44 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
     );
   };
 
+  const commitList = (
+    <div className={styles.pushListWrap}>
+      {error ? (
+        <div className={styles.error}>{error}</div>
+      ) : !commits ? (
+        <div className={styles.empty}>
+          <Spinner size={14} />
+        </div>
+      ) : (
+        <List
+          items={commits}
+          getKey={(c) => c.id}
+          activeIndex={shownCommit}
+          onActiveChange={setShownCommit}
+          rowHeight={22}
+          aria-label="Outgoing commits"
+          className={styles.boxList}
+          empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}
+          renderItem={(c) => (
+            <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
+              <span className={styles.commitHash}>{c.shortId}</span>
+              <span className={styles.commitSubject}>{c.summary}</span>
+              <span className={styles.commitMeta}>{c.author}</span>
+              <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
+            </span>
+          )}
+        />
+      )}
+    </div>
+  );
   return (
     <Dialog
       open
       title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
       onClose={onClose}
       width={commits?.length ? 860 : 620}
+      maxHeight={PUSH_DIALOG_MAX_HEIGHT}
+      className={styles.pushDialog}
       resizable="both"
       footerStart={
         <>
@@ -513,42 +555,54 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         )}
         {retarget && <span className={styles.hint}> {tx("New")}</span>}
       </div>
-      <div className={styles.pushListWrap}>
-        {error ? (
-          <div className={styles.error}>{error}</div>
-        ) : !commits ? (
-          <div className={styles.empty}>
-            <Spinner size={14} />
-          </div>
-        ) : (
-          <List
-            items={commits}
-            getKey={(c) => c.id}
-            activeIndex={shownCommit}
-            onActiveChange={setShownCommit}
-            rowHeight={22}
-            aria-label="Outgoing commits"
-            className={styles.boxList}
-            empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}
-            renderItem={(c) => (
-              <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
-                <span className={styles.commitHash}>{c.shortId}</span>
-                <span className={styles.commitSubject}>{c.summary}</span>
-                <span className={styles.commitMeta}>{c.author}</span>
-                <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
-              </span>
-            )}
-          />
-        )}
-      </div>
-      <PushChanges
-        key={pushChangesKey(repo, shownCommits)}
-        repo={repo}
-        commits={shownCommits}
-        onShowAll={shownCommit >= 0 && (commits?.length ?? 0) > 1 ? () => setShownCommit(-1) : undefined}
-      />
+      {commits?.length && !error ? (
+        <SplitGroup
+          orientation="vertical"
+          id="vcs-push-split"
+          className={styles.pushSplit}
+          defaultLayout={pushSplit}
+          onLayoutChanged={keepPushSplit}
+        >
+          <SplitPanel id="commits" minSize="72px" defaultSize="35%" className={styles.pushSplitPanel}>
+            {commitList}
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel id="changes" minSize="160px" className={styles.pushSplitPanel}>
+            <PushChanges
+              key={pushChangesKey(repo, shownCommits)}
+              repo={repo}
+              commits={shownCommits}
+              onShowAll={shownCommit >= 0 && commits.length > 1 ? () => setShownCommit(-1) : undefined}
+            />
+          </SplitPanel>
+        </SplitGroup>
+      ) : (
+        commitList
+      )}
     </Dialog>
   );
+}
+
+const PUSH_SPLIT_KEY = "openidea.vcs.pushSplit";
+
+/** Heights of the Push dialog's commits and changed files, as the splitter left them. */
+function loadPushSplit(): Record<string, number> | undefined {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(PUSH_SPLIT_KEY) ?? "null");
+    return v && typeof v === "object" && Object.values(v).every((n) => typeof n === "number")
+      ? (v as Record<string, number>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function savePushSplit(layout: Record<string, number>) {
+  try {
+    localStorage.setItem(PUSH_SPLIT_KEY, JSON.stringify(layout));
+  } catch {
+    /* kept for this dialog only */
+  }
 }
 
 const SILENT_FORCE_PUSH_KEY = "openidea.vcs.silentForcePushTargets";

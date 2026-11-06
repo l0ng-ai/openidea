@@ -110,6 +110,16 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   /** scrollTop set by navigation, whose scroll event isn't the user's. */
   const scrolledTo = useRef<number | null>(null);
   const scrollFrame = useRef(0);
+  /** `<details>` the reader opened or closed, by position: each edit re-renders them as written. */
+  const toggled = useRef(new Map<number, boolean>());
+
+  useLayoutEffect(() => toggled.current.clear(), [path]);
+  useLayoutEffect(() => {
+    ref.current?.querySelectorAll("details").forEach((d, i) => {
+      const open = toggled.current.get(i);
+      if (open !== undefined) d.open = open;
+    });
+  }, [html]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
   useLayoutEffect(() => {
@@ -219,7 +229,13 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
 
   const onClick = (e: MouseEvent) => {
     const a = (e.target as Element).closest("a");
-    if (!a) return;
+    if (!a) {
+      const details = (e.target as Element).closest("summary")?.parentElement;
+      if (details instanceof HTMLDetailsElement && ref.current) {
+        toggled.current.set([...ref.current.querySelectorAll("details")].indexOf(details), !details.open);
+      }
+      return;
+    }
     e.preventDefault();
     const target = resolveLink(path, a.getAttribute("href") ?? "");
     if (!target) return;

@@ -42,6 +42,7 @@ const agent = (partial: Partial<RegistryAgent> & Pick<RegistryAgent, "id" | "nam
   noChecksum: false,
   installed: null,
   update: false,
+  installing: false,
   ...partial,
 });
 
@@ -67,14 +68,16 @@ const AGENTS: RegistryAgent[] = [AMP, CLINE, FAST];
 class FakeBackend implements RegistryBackend {
   registry: AgentRegistry = { agents: AGENTS, warning: null };
   installs: string[] = [];
+  installRequests: RequestId[] = [];
   removed: string[] = [];
   cancelled: RequestId[] = [];
   finish: () => void = () => {};
   fail: (e: unknown) => void = () => {};
   emit: (e: InstallEvent) => void = () => {};
   list = vi.fn(async () => this.registry);
-  install(id: string, _request: RequestId, onEvent: (e: InstallEvent) => void) {
+  install(id: string, request: RequestId, onEvent: (e: InstallEvent) => void) {
     this.installs.push(id);
+    this.installRequests.push(request);
     this.emit = onEvent;
     return new Promise<void>((resolve, reject) => {
       this.finish = resolve;
@@ -267,7 +270,7 @@ describe("Agents settings page", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("shows why an install failed, and cancels one when the page closes", async () => {
+  it("shows why an install failed, cancels one on Cancel, and leaves it running when the page closes", async () => {
     const backend = new FakeBackend();
     const { unmount } = renderRegistry(<AgentRegistryPage backend={backend} />);
     await waitFor(() => expect(row("Cline")).toBeInTheDocument());
@@ -278,10 +281,34 @@ describe("Agents settings page", () => {
     fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
     fireEvent.click(within(row("Amp")).getByRole("button", { name: "Cancel" }));
     expect(backend.cancelled).toHaveLength(1);
-    // Leaving the page stops an install still running.
-    const install = backend.cancelled[0];
+    const cancelled = backend.cancelled[0];
+    await act(async () => backend.fail(new IpcError({ kind: "cancelled", message: "cancelled" })));
+
+    // An install keeps going after the page closes (it is a background task then).
+    fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
+    const running = backend.installRequests.at(-1);
     unmount();
-    expect(backend.cancelled.filter((r) => r === install)).toHaveLength(2);
+    expect(backend.cancelled).not.toContain(running);
+    expect(backend.cancelled.filter((r) => r === cancelled)).toHaveLength(1);
+  });
+
+  it("follows an install started before the page opened until it ends", async () => {
+    const backend = new FakeBackend();
+    const onChanged = vi.fn();
+    backend.registry = { agents: [{ ...AMP, installing: true }, CLINE], warning: null };
+    renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
+    await waitFor(() => expect(row("Amp")).toBeInTheDocument());
+    expect(within(row("Amp")).getByText("Installing Amp in the background…")).toBeInTheDocument();
+    // It is stopped from the background tasks, and nothing else starts meanwhile.
+    for (const name of ["Cancel", "Install", "Remove"]) {
+      expect(within(row("Amp")).queryByRole("button", { name })).toBeNull();
+    }
+    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeDisabled();
+
+    backend.registry = { agents: [{ ...AMP, installed: AMP.version }, CLINE], warning: null };
+    await waitFor(() => expect(within(row("Amp")).getByText("Installed")).toBeInTheDocument(), { timeout: 4000 });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
   });
 
   it("removes an installed agent", async () => {

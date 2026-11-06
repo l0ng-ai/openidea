@@ -241,6 +241,8 @@
   "menu.refactor.extractVariable": "Introduire une variable…",
   "menu.refactor.inline": "Intégrer…",
   "menu.refactor.move": "Déplacer…",
+  "menu.refactor.pullMembersUp": "Remonter les membres…",
+  "menu.refactor.pushMembersDown": "Descendre les membres…",
   "menu.refactor.rename": "Renommer…",
   "menu.refactor.safeDelete": "Suppression sûre…",
   "menu.refactor.thisMenu": "Refactoriser ceci…",

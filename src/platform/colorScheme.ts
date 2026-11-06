@@ -32,6 +32,8 @@ export interface AttributeDef {
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
   defaultItalic?: boolean;
+  /** CodeMirror language name; unset attributes are language defaults. */
+  language?: string;
 }
 
 const syn = (id: string, name: string, path: string[], token: string): AttributeDef => ({
@@ -45,7 +47,7 @@ const syn = (id: string, name: string, path: string[], token: string): Attribute
 const LD = "Language Defaults";
 
 /** IDEA-style attribute tree: General, Language Defaults, then languages. */
-export const ATTRIBUTES: readonly AttributeDef[] = [
+const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
@@ -113,6 +115,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
+  syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
   syn("constant", "Identifiers › Constant", [LD], "constant"),
   syn("field", "Identifiers › Instance field", [LD], "property"),
   { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
@@ -132,6 +135,17 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   ...[1, 2, 3, 4, 5].map((n) => syn(`semantic${n}`, `Semantic highlighting › Color ${n}`, [LD], `rainbow-${n}`)),
   ...[1, 2, 3].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
 
+  syn("pyMethodCall", "Method call", ["Python"], "python-method-call"),
+  syn("pyAnnotation", "Type annotation", ["Python"], "python-annotation"),
+  syn("pyParentheses", "Parentheses", ["Python"], "python-parentheses"),
+  syn("pyBrackets", "Brackets", ["Python"], "python-brackets"),
+  syn("pyBraces", "Braces", ["Python"], "python-braces"),
+  syn("pyNestedFunction", "Nested function definition", ["Python"], "python-nested-function"),
+  syn("pyBytes", "Byte string", ["Python"], "python-bytes"),
+  syn("pyFString", "F-string", ["Python"], "python-fstring"),
+  syn("pyPredefinedDefinition", "Predefined function definition", ["Python"], "python-predefined-definition"),
+  syn("pyPredefinedUsage", "Predefined name usage", ["Python"], "python-predefined-usage"),
+  syn("pyFormat", "Format specifier", ["Python"], "python-format"),
   syn("pySelf", "Self parameter", ["Python"], "self"),
   {
     id: "pyStaticSymbol",
@@ -143,12 +157,39 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   },
   syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
   syn("pyDocstring", "Docstring", ["Python"], "docstring"),
-  syn("pyBuiltin", "Built-in name", ["Python"], "predefined"),
+  syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
   syn("pyDecorator", "Decorator", ["Python"], "annotation"),
+  syn("pyLocalVariable", "Local variable", ["Python"], "python-local-variable"),
+  syn("pyGlobalVariable", "Global variable", ["Python"], "python-global-variable"),
+  syn("pyInstanceAttribute", "Instance attribute", ["Python"], "python-instance-attribute"),
+  syn("pyClassAttribute", "Class attribute", ["Python"], "python-class-attribute"),
+  syn("pyConstant", "Constant", ["Python"], "python-constant"),
+  syn("pyProperty", "Property", ["Python"], "python-property"),
+  syn("pyTypeParameter", "Type parameter", ["Python"], "python-type-parameter"),
   syn("mdHeading", "Heading", ["Markdown"], "markup-heading"),
   syn("mdCode", "Code span", ["Markdown"], "markup-code"),
   syn("mdLink", "Link", ["Markdown"], "link"),
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
+];
+
+const SCHEME_LANGUAGES = { java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+
+export const ATTRIBUTES: readonly AttributeDef[] = [
+  ...BASE_ATTRIBUTES,
+  ...Object.entries(SCHEME_LANGUAGES).flatMap(([id, language]) =>
+    BASE_ATTRIBUTES.filter((a) => a.path[0] === LD && !/^(semantic|bracket)\d$/.test(a.id)).map((a) => ({
+      ...a,
+      id: `${id}.${a.id}`,
+      path: [language, ...a.path.slice(1)],
+      language,
+    })),
+  ),
+  ...[
+    ["brackets", "Brackets", "bracket"],
+    ["separator", "Comma and semicolon", "separator"],
+    ["scriptTag", "PHP tags", "processing-instruction"],
+    ["staticField", "Static field", "static-property"],
+  ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
 ];
 
 // --- scheme base values ------------------------------------------------------
@@ -303,10 +344,12 @@ const EFFECT_CSS: Record<string, (c: string) => string> = {
 /** Declarations for the overrides of one scheme. */
 export function overrideDeclarations(
   overrides: Record<string, TextAttributesOverride> | undefined,
+  language?: string,
 ): Array<[string, string]> {
   const out: Array<[string, string]> = [];
   if (!overrides) return out;
   for (const attr of ATTRIBUTES) {
+    if (attr.language !== language) continue;
     const o = overrides[attr.id];
     if (!o) continue;
     if (isHexColor(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
@@ -401,5 +444,15 @@ export function schemeCss(
   const body = decls
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
-  return body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
+  let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
+  for (const language of Object.values(SCHEME_LANGUAGES)) {
+    const languageBody = [
+      ...overrideDeclarations(valid[id]?.attributes, language),
+      ...overrideDeclarations(overrides?.[id], language),
+    ]
+      .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
+      .map(([k, v]) => `  ${k}: ${v} !important;`);
+    if (languageBody.length) css += `.cm-editor[data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
+  }
+  return css;
 }

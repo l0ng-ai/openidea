@@ -12,6 +12,7 @@ activation = ["on-view:jobs", "on-command:*"]
 
 [capabilities]
 required = ["process:jobs"]
+optional = ["project.read", "vcs.read", "clipboard"]
 
 [[contributes.views]]
 id = "jobs"

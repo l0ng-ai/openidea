@@ -32,6 +32,7 @@ const BUILD_FILES: &[&str] = &[
     "Pipfile",
     "requirements.txt",
     "package.json",
+    "composer.json",
 ];
 
 /// Folder names that are (or contain) conventional roots.
@@ -62,7 +63,10 @@ const ROOT_NAMES: &[&str] = &[
 pub fn affects_roots(rel: &Path) -> bool {
     let mut names = rel.iter().rev().filter_map(|c| c.to_str());
     let Some(name) = names.next() else { return false };
-    BUILD_FILES.contains(&name) || ROOT_NAMES.contains(&name) || names.next() == Some("src")
+    BUILD_FILES.contains(&name)
+        || ROOT_NAMES.contains(&name)
+        || matches!(name, "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt")
+        || names.next() == Some("src")
 }
 
 /// Detects roots below `root`; paths in the result are unique and sorted.
@@ -77,6 +81,29 @@ pub fn detect(root: &Path) -> Vec<SourceFolder> {
             break;
         }
         let dir = if rel.is_empty() { root.to_path_buf() } else { root.join(&rel) };
+        if crate::unity::is_project(&dir) {
+            for (name, kind) in
+                [("Assets", RootKind::Source), ("Packages", RootKind::Source), ("ProjectSettings", RootKind::Resources)]
+            {
+                if dir.join(name).is_dir() {
+                    out.push(SourceFolder {
+                        path: join(&rel, name),
+                        kind,
+                        detected_from: Some(join(&rel, crate::unity::VERSION_FILE)),
+                    });
+                }
+            }
+            // Exclude before the index/watchers start, even if Unity creates its caches later.
+            for name in crate::unity::GENERATED_DIRS {
+                out.push(SourceFolder {
+                    path: join(&rel, name),
+                    kind: RootKind::Excluded,
+                    detected_from: Some(join(&rel, crate::unity::VERSION_FILE)),
+                });
+            }
+            // Assets and PackageCache may contain arbitrary build files; they aren't nested modules.
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         let mut files: Vec<String> = Vec::new();
         let mut dirs: Vec<String> = Vec::new();
@@ -188,6 +215,15 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
         }
     }
 
+    // Before `package.json`: a Laravel app's `tests/` is the PHP test root.
+    if has("composer.json")
+        && let Ok(text) = std::fs::read_to_string(dir.join("composer.json"))
+    {
+        for (sub, kind) in composer_roots(&text) {
+            add(&sub, kind, "composer.json");
+        }
+    }
+
     if has("package.json") {
         // A JVM build's `src` holds source sets, not JavaScript.
         if !has("pom.xml") && !GRADLE_FILES.iter().any(|f| has(f)) {
@@ -202,6 +238,37 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
             add(ex, RootKind::Excluded, "package.json");
         }
     }
+}
+
+/// `autoload.psr-4` folders as Source roots and `autoload-dev.psr-4` ones as Test roots, relative to
+/// the `composer.json` folder; paths that leave it or point into `vendor/` are left out.
+fn composer_roots(text: &str) -> Vec<(String, RootKind)> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (section, kind) in [("autoload", RootKind::Source), ("autoload-dev", RootKind::Test)] {
+        let Some(map) = json.get(section).and_then(|a| a.get("psr-4")).and_then(|m| m.as_object()) else { continue };
+        for value in map.values() {
+            let paths: Vec<&str> = match value {
+                serde_json::Value::String(p) => vec![p.as_str()],
+                serde_json::Value::Array(a) => a.iter().filter_map(|p| p.as_str()).collect(),
+                _ => Vec::new(),
+            };
+            for path in paths {
+                let parts: Vec<&str> = path.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").collect();
+                if path.starts_with(['/', '\\'])
+                    || parts.iter().any(|c| *c == ".." || c.contains(':'))
+                    || parts.first() == Some(&"vendor")
+                {
+                    continue;
+                }
+                let sub = parts.join("/");
+                if !out.iter().any(|(p, _)| *p == sub) {
+                    out.push((sub, kind));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Gradle's conventional `src/<set>/<lang>` folders that exist: `(set, lang)`.
@@ -242,6 +309,84 @@ mod tests {
 
     fn summary(roots: &[SourceFolder]) -> Vec<String> {
         roots.iter().map(|r| format!("{}={:?}@{}", r.path, r.kind, r.detected_from.as_deref().unwrap_or(""))).collect()
+    }
+
+    #[test]
+    fn unity_roots_exclude_future_caches_and_do_not_scan_assets_as_modules() {
+        let dir = tree(&[
+            "Assets/Scripts/Player.cs",
+            "Assets/Plugins/Tool/package.json",
+            "ProjectSettings/ProjectVersion.txt",
+            "Packages/manifest.json",
+            "Library/PackageCache/tool/Cargo.toml",
+        ]);
+        let roots = detect(dir.path());
+        assert!(roots.iter().any(|r| r.path == "Assets" && r.kind == RootKind::Source));
+        assert!(roots.iter().any(|r| r.path == "Packages" && r.kind == RootKind::Source));
+        assert!(!roots.iter().any(|r| r.path.starts_with("Assets/") || r.path.starts_with("Library/")));
+        let effective = super::super::ProjectRoots::compute(roots, &Default::default());
+        for name in crate::unity::GENERATED_DIRS {
+            assert!(effective.excluded_globs().contains(&format!("/{name}")));
+        }
+        for path in ["Assets", "Packages", "ProjectSettings", crate::unity::VERSION_FILE] {
+            assert!(affects_roots(Path::new(path)));
+        }
+    }
+
+    #[test]
+    fn nested_unity_roots_are_anchored_without_excluding_other_projects() {
+        let dir = tree(&[
+            "game/Assets/Scripts/Player.cs",
+            "game/ProjectSettings/ProjectVersion.txt",
+            "server/Cargo.toml",
+            "server/src/main.rs",
+            "Library/Source.cs",
+        ]);
+        let roots = super::super::ProjectRoots::compute(detect(dir.path()), &Default::default());
+        assert!(roots.excluded_globs().contains(&"/game/Library".to_owned()));
+        assert!(!roots.excluded_globs().contains(&"/Library".to_owned()));
+        assert!(roots.roots.iter().any(|r| r.path == "server/src" && r.kind == RootKind::Source));
+    }
+
+    #[test]
+    fn composer_psr4_folders_are_source_and_test_roots() {
+        let dir = tree(&[
+            "app/",
+            "database/factories/",
+            "database/seeders/",
+            "lib/",
+            "tests/",
+            "vendor/acme/src/",
+            "package.json",
+        ]);
+        fs::write(
+            dir.path().join("composer.json"),
+            r#"{
+                "autoload": { "psr-4": {
+                    "App\\": "app/",
+                    "Database\\Factories\\": "database/factories/",
+                    "Database\\Seeders\\": ["database/seeders/", "lib", "missing/"],
+                    "Vendored\\": "vendor/acme/src/",
+                    "Outside\\": "../elsewhere/"
+                } },
+                "autoload-dev": { "psr-4": { "Tests\\": "tests/" } }
+            }"#,
+        )
+        .unwrap();
+        let mut roots = summary(&detect(dir.path()));
+        roots.sort();
+        assert_eq!(
+            roots,
+            [
+                "app=Source@composer.json",
+                "database/factories=Source@composer.json",
+                "database/seeders=Source@composer.json",
+                "lib=Source@composer.json",
+                "tests=Test@composer.json",
+            ]
+        );
+        assert!(affects_roots(Path::new("composer.json")));
+        assert!(composer_roots("not json").is_empty());
     }
 
     #[test]

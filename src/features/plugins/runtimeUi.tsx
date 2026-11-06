@@ -9,10 +9,11 @@ import type { EventKind, PluginEvent, StatusItem, WorkbenchEvent } from "@/bindi
 import { onEditorEvent } from "@/editor/api";
 import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
+import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import { registerStatusItem } from "@/workbench/contributions";
+import { maybeEditorService, registerStatusItem } from "@/workbench/contributions";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
@@ -258,6 +259,15 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
+      return true;
+    case "openLocation":
+      void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
+      return true;
+    case "copyToClipboard":
+      void navigator.clipboard?.writeText(e.text);
+      return true;
+    case "openUrl":
+      void openExternalUrl(e.url);
       return true;
     default:
       return false;

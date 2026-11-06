@@ -1,10 +1,11 @@
 id = "openidea.checkstyle"
 name = "Checkstyle"
-version = "0.1.0"
+version = "0.1.1"
 description = "Checks Java files with Checkstyle when you save them: problems in the editor and the Problems view, quick fixes for tabs, trailing spaces and missing final newlines."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: check on save (a newer save cancels the running check), Google style by default, quick fixes."
+categories = ["linters"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
 activation = ["on-event:file-saved", "on-command:*"]

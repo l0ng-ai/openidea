@@ -5,6 +5,7 @@
 use crate::runtime::{StoreData, clip};
 use crate::sandbox;
 use crate::types::{EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, net_host};
+use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -242,6 +243,24 @@ impl ui::Host for StoreData {
         self.host.status_item(&clip(id, 64), None);
         Ok(())
     }
+
+    fn copy_to_clipboard(&mut self, text: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Clipboard) {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.copy_to_clipboard(client.as_deref(), clip(text, crate::runtime::MAX_TEXT)).map_err(to_wit))
+    }
+
+    fn open_url(&mut self, url: String) -> Fallible<()> {
+        let trimmed = url.trim();
+        let valid = (trimmed.starts_with("https://") || trimmed.starts_with("http://")) && trimmed.len() <= 8192;
+        if !valid {
+            return Ok(Err(wit::Error::Invalid(format!("{url:?}: expected an http:// or https:// URL"))));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_url(client.as_deref(), trimmed.to_owned()).map_err(to_wit))
+    }
 }
 
 impl storage::Host for StoreData {
@@ -292,7 +311,8 @@ impl workspace::HostProject for StoreData {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
         }
-        Ok(Ok(self.table.get(&this)?.root.to_string_lossy().into_owned()))
+        // Paths reach plugins in IPC form (`/` on Windows), as the UI's event paths do, so they compare as text.
+        Ok(Ok(to_ipc(&self.table.get(&this)?.root)))
     }
 
     fn read_file(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<String> {
@@ -328,7 +348,7 @@ impl editor::Host for StoreData {}
 
 impl editor::HostTextEditor for StoreData {
     fn path(&mut self, this: Resource<EditorRes>) -> wasmtime::Result<String> {
-        Ok(self.table.get(&this)?.ctx.path.to_string_lossy().into_owned())
+        Ok(to_ipc(&self.table.get(&this)?.ctx.path))
     }
 
     fn language(&mut self, this: Resource<EditorRes>) -> wasmtime::Result<String> {
@@ -438,22 +458,21 @@ impl vcs::Host for StoreData {
         let token = self.cancel.token();
         Ok(self.host.vcs_fetch(&root, &token).map_err(to_wit))
     }
-}
 
-fn kind_from_wit(k: events::EventKind) -> EventKind {
-    match k {
-        events::EventKind::FileOpened => EventKind::FileOpened,
-        events::EventKind::FileSaved => EventKind::FileSaved,
-        events::EventKind::EditorFocused => EventKind::EditorFocused,
-        events::EventKind::ActionPerformed => EventKind::ActionPerformed,
-        events::EventKind::VcsChanged => EventKind::VcsChanged,
-        events::EventKind::Scheduled => EventKind::Scheduled,
+    fn remotes(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<(String, String)>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.vcs_remotes(&root).map_err(to_wit))
     }
 }
 
 impl events::Host for StoreData {
-    fn subscribe(&mut self, kind: events::EventKind) -> Fallible<()> {
-        let kind = kind_from_wit(kind);
+    fn subscribe(&mut self, kind: String) -> Fallible<()> {
+        let Some(kind) = EventKind::parse(&kind) else {
+            return Ok(Err(wit::Error::Invalid(format!("no event kind {kind:?} in this OpenIDEA"))));
+        };
         if let Some(cap) = kind.capability()
             && let Err(e) = self.require(cap)
         {
@@ -463,8 +482,10 @@ impl events::Host for StoreData {
         Ok(Ok(()))
     }
 
-    fn unsubscribe(&mut self, kind: events::EventKind) -> wasmtime::Result<()> {
-        self.host.subscribe(kind_from_wit(kind), false);
+    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
+        if let Some(kind) = EventKind::parse(&kind) {
+            self.host.subscribe(kind, false);
+        }
         Ok(())
     }
 }
@@ -542,10 +563,10 @@ impl diagnostics::Host for StoreData {
                     diagnostics::Severity::Hint => ide_core::Severity::Hint,
                 },
                 message: clip(d.message, 4096),
-                source: Some(source.clone()),
+                source: Some(d.source.map_or_else(|| source.clone(), |s| clip(s, 128))),
                 code: d.code.map(|c| clip(c, 128)),
-                unnecessary: false,
-                deprecated: false,
+                unnecessary: d.tags.iter().any(|t| t == "unnecessary"),
+                deprecated: d.tags.iter().any(|t| t == "deprecated"),
                 server: Some(source.clone()),
             })
             .collect();
@@ -647,6 +668,21 @@ impl views::Host for StoreData {
         let title = clip(title, crate::runtime::MAX_TITLE);
         Ok(self.host.open_terminal(client.as_deref(), title, &program, args, cwd.as_deref()).map_err(to_wit))
     }
+
+    fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let Some(root) = self.invocation.workspace_root.clone() else {
+            return Ok(Err(wit::Error::Invalid("no project is open in this window".into())));
+        };
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_location(client.as_deref(), &real, line, column).map_err(to_wit))
+    }
 }
 
 impl settings::Host for StoreData {
@@ -660,3 +696,10 @@ impl views_bindings::openidea::plugin::view_types::Host for StoreData {}
 
 /// Largest message between a plugin and its view's frame.
 const MAX_VIEW_MESSAGE: usize = 1 << 20;
+
+pub(crate) mod indexing_bindings {
+    wasmtime::component::bindgen!({
+        world: "indexing", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}

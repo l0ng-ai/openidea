@@ -76,6 +76,8 @@ pub struct RegistryAgent {
     pub installed: Option<String>,
     /// Whether [`Self::version`] is newer than the installed one.
     pub update: bool,
+    /// An install of it is running (it goes on after the Settings page that started it closes).
+    pub installing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
@@ -332,6 +334,7 @@ fn visible(
                 distribution,
                 no_checksum,
                 installed,
+                installing: false,
             })
         })
         .collect();

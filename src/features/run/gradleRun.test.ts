@@ -1,9 +1,31 @@
-import { describe, expect, it } from "vitest";
-import type { GradleModel, RunConfig } from "@/platform/ipc";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
 import { applicationConfig } from "./application";
-import { DELEGATED_DEBUG, delegatedGradleConfig, wrapperGradleVersion } from "./gradleRun";
+import {
+  DELEGATED_DEBUG,
+  delegatedGradleConfig,
+  gradleDelegation,
+  withTestEvents,
+  wrapperGradleVersion,
+} from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
 import { isJvmApplication } from "@/platform/javaLaunch";
+import { useBuildModel } from "@/platform/buildModel";
+import { useProject } from "@/platform/project";
+
+vi.mock("@/platform/ipc", async (original) => {
+  const real = await original<typeof import("@/platform/ipc")>();
+  return {
+    ...real,
+    isTauri: () => true,
+    call: (value: unknown) => value,
+    commands: {
+      ...real.commands,
+      runGradleInitScript: () => Promise.resolve("/tmp/openidea-gradle-run.gradle"),
+      fsReadText: () => Promise.resolve("distributionUrl=https://x/gradle-8.10-bin.zip"),
+    },
+  };
+});
 
 const ROOT = "/w/shop";
 const CORE = "/w/billing/modules/core";
@@ -120,5 +142,77 @@ describe("Build and run using: Gradle", () => {
     expect(debug.args.at(-1)).toBe(DELEGATED_DEBUG);
     expect(debug.args).not.toContain("--debug-jvm");
     expect(jdwpLaunch(debug)!.args.filter((a) => a === DELEGATED_DEBUG)).toHaveLength(1);
+  });
+});
+
+describe("Gradle test runs", () => {
+  const script = "/tmp/openidea-gradle-tests.gradle";
+  it("add the init script that reports each test", () => {
+    expect(
+      withTestEvents({ kind: "gradle", command: "./gradlew", args: ["test", "--tests", "*OrderTest"] }, script).args,
+    ).toEqual(["--init-script", script, "test", "--tests", "*OrderTest"]);
+    expect(withTestEvents({ kind: "shell", command: "C:\\w\\gradlew.bat", args: ["test"] }, script).args).toEqual([
+      "--init-script",
+      script,
+      "test",
+    ]);
+  });
+
+  it("leave other runs and an added script alone", () => {
+    const maven = { kind: "maven", command: "./mvnw", args: ["test"] };
+    expect(withTestEvents(maven, script)).toBe(maven);
+    const twice = withTestEvents({ kind: "gradle", command: "gradle", args: ["test"] }, script);
+    expect(withTestEvents(twice, script)).toBe(twice);
+  });
+});
+
+describe("delegation across independent builds", () => {
+  afterEach(() => {
+    useProject.setState({ project: null, settings: null });
+    useBuildModel.setState({ root: null, model: null, gradleOffline: false });
+  });
+
+  it("selects the module's linked build and preserves composite identity task paths", async () => {
+    const builds = ["first", "second"].map((dir) => ({
+      ...gradle,
+      dir,
+      command: `${ROOT}/${dir}/gradlew`,
+      env: { JAVA_HOME: `/${dir}/jdk` },
+      projects: [{ path: ":app", name: "app", dir: `${dir}/app`, buildFile: null, tasks: [] }],
+    }));
+    useProject.setState({ project: { root: ROOT } as ProjectInfo, settings: null });
+    useBuildModel.setState({ root: ROOT, model: { maven: null, gradle: builds }, gradleOffline: true });
+    const app = {
+      ...applicationConfig({ className: "a.Main" }, "second/app/src/main/java/a/Main.java", []),
+      module: "second/app",
+    };
+    const run = await gradleDelegation(app);
+    expect(run).toMatchObject({ command: `${ROOT}/second/gradlew`, cwd: "second", env: { JAVA_HOME: "/second/jdk" } });
+    expect(run!.args).toContain("--offline");
+    expect(run!.args.at(-1)).toBe(":app:openideaRun");
+  });
+
+  it("prefers the directly linked owner over a longer sibling composite root", async () => {
+    const composite = {
+      ...gradle,
+      dir: "very-long-composite",
+      command: `${ROOT}/very-long-composite/gradlew`,
+      projects: [{ path: ":b:app", name: "app", dir: "b/app", buildFile: null, tasks: [], build: ":b" }],
+    };
+    const direct = {
+      ...gradle,
+      dir: "b",
+      command: `${ROOT}/b/gradlew`,
+      projects: [{ path: ":app", name: "app", dir: "b/app", buildFile: null, tasks: [] }],
+    };
+    useProject.setState({ project: { root: ROOT } as ProjectInfo, settings: null });
+    useBuildModel.setState({ root: ROOT, model: { maven: null, gradle: [composite, direct] } });
+    const app = {
+      ...applicationConfig({ className: "a.Main" }, "b/app/src/main/java/a/Main.java", []),
+      module: "b/app",
+    };
+    const run = await gradleDelegation(app);
+    expect(run).toMatchObject({ command: `${ROOT}/b/gradlew`, cwd: "b" });
+    expect(run!.args.at(-1)).toBe(":app:openideaRun");
   });
 });
