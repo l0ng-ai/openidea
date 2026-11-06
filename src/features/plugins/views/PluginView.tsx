@@ -14,6 +14,7 @@ import {
   useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
 import { tx } from "@/platform/i18n";
@@ -44,13 +45,15 @@ export interface PluginViewProps {
   revision?: number;
   /** Called after an event was handled (custom editors re-render on the document instead). */
   label?: string;
+  /** Context menu entries of a tree or list item, by item key. */
+  itemMenu?: (key: string) => MenuItem[];
 }
 
 /** Table rows asked for beyond the visible ones (each side). */
 const OVERSCAN = 50;
 const ROW_HEIGHT = 24;
 
-export function PluginView({ pluginId, view, doc = null, revision = 0, label }: PluginViewProps) {
+export function PluginView({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
   const [content, setContent] = useState<View | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewport, setViewport] = useState<Viewport | null>(null);
@@ -127,7 +130,14 @@ export function PluginView({ pluginId, view, doc = null, revision = 0, label }: 
         </div>
       )}
       <div className={styles.body}>
-        <Body content={content} send={send} pluginId={pluginId} view={view} onViewport={setViewport} />
+        <Body
+          content={content}
+          send={send}
+          pluginId={pluginId}
+          view={view}
+          onViewport={setViewport}
+          itemMenu={itemMenu}
+        />
       </div>
       {content.status && <div className={styles.status}>{content.status}</div>}
     </div>
@@ -140,15 +150,16 @@ interface BodyProps {
   pluginId: string;
   view: string;
   onViewport: (v: Viewport) => void;
+  itemMenu?: (key: string) => MenuItem[];
 }
 
-function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
+function Body({ content, send, pluginId, view, onViewport, itemMenu }: BodyProps) {
   const body = content.body;
   switch (body.kind) {
     case "message":
       return <EmptyState className={styles.empty} title={body.value} />;
     case "tree":
-      return <TreeBody items={body.value} send={send} />;
+      return <TreeBody items={body.value} send={send} itemMenu={itemMenu} />;
     case "list":
       return (
         <ul className={styles.list} role="listbox">
@@ -162,6 +173,7 @@ function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
               onClick={() => send({ kind: "select", key: i.key })}
               onDoubleClick={() => send({ kind: "activate", key: i.key })}
               onKeyDown={(e) => e.key === "Enter" && send({ kind: "activate", key: i.key })}
+              onContextMenu={(e) => openItemMenu(e, itemMenu, i.key)}
             >
               {i.icon && <Icon name={i.icon} size={14} />}
               <span>{i.label}</span>
@@ -205,7 +217,24 @@ export function treeNodes(items: readonly ViewTreeItem[]): Node[] {
   return roots;
 }
 
-function TreeBody({ items, send }: { items: ViewTreeItem[]; send: (e: ViewEvent) => void }) {
+function openItemMenu(
+  e: ReactMouseEvent | MouseEvent,
+  itemMenu: ((key: string) => MenuItem[]) | undefined,
+  key: string,
+) {
+  const items = itemMenu?.(key) ?? [];
+  if (items.length === 0) return;
+  e.preventDefault();
+  showContextMenu(e, items);
+}
+
+interface TreeBodyProps {
+  items: ViewTreeItem[];
+  send: (e: ViewEvent) => void;
+  itemMenu?: (key: string) => MenuItem[];
+}
+
+function TreeBody({ items, send, itemMenu }: TreeBodyProps) {
   const roots = useMemo(() => treeNodes(items), [items]);
   const expanded = useMemo(() => new Set(items.filter((i) => i.expanded).map((i) => i.key)), [items]);
   return (
@@ -224,6 +253,7 @@ function TreeBody({ items, send }: { items: ViewTreeItem[]; send: (e: ViewEvent)
       onSelectionChange={(_, lead) => lead && send({ kind: "select", key: lead.item.key })}
       onActivate={(n) => send({ kind: "activate", key: n.item.key })}
       multiSelect={false}
+      onContextMenu={itemMenu ? (node, _, e) => node && openItemMenu(e, itemMenu, node.item.key) : undefined}
     />
   );
 }

@@ -121,7 +121,12 @@ pub async fn plugin_navigation_index(
             plugins.index_navigation(
                 &project.root,
                 crate::plugins::navigation::Snapshot { path: &path, version, text: &text, symbols: &symbols, scope },
-                Invocation { client: Some(client.clone()), workspace_root: Some(project.root.clone()), editor: None },
+                Invocation {
+                    client: Some(client.clone()),
+                    workspace_root: Some(project.root.clone()),
+                    editor: None,
+                    selected_paths: Vec::new(),
+                },
             )?;
             // A document edit while WASM was executing must not publish stale ranges.
             if cancel.is_cancelled() || document.is_some_and(|id| project.documents.version(id).ok() != version) {

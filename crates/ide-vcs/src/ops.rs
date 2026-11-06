@@ -95,9 +95,9 @@ fn branch_at(r: &Repo, commit: &str) -> Option<String> {
     }
     ["refs/heads", "refs/remotes"].into_iter().find_map(|refs| {
         let out =
-            run(r.root(), &["for-each-ref", "--points-at", commit, "--format=%(refname:short)", refs], None).ok()?;
-        let names: Vec<String> =
-            out.stdout_str().lines().filter(|l| !l.is_empty() && !l.ends_with("/HEAD")).map(str::to_string).collect();
+            run(r.root(), &["for-each-ref", "--points-at", commit, crate::refs::DIRECT_BRANCH_FORMAT, refs], None)
+                .ok()?;
+        let names: Vec<String> = out.stdout_str().lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
         match names.as_slice() {
             [one] => Some(one.clone()),
             _ => None,

@@ -237,16 +237,20 @@ function CustomFontRow() {
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
+  // Labels share one column (IDEA Appearance): the UI font, fallback and Size
+  // controls all start at the same x instead of drifting with flex wrapping.
   return (
-    <div className={clsx(styles.fontRow, styles.customFontRow, matched && styles.matched)}>
-      <span className={styles.fontOption}>
+    <div className={clsx(styles.customFontRow, matched && styles.matched)}>
+      <span className={styles.fontCheck}>
         <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
+      </span>
+      <span className={styles.fontControl}>
         <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
       </span>
-      <span className={styles.fontOption}>
-        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-fallback`}>
-          <SearchLabel text="Fallback font:" />
-        </label>
+      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
+        <SearchLabel text="Fallback font:" />
+      </label>
+      <span className={styles.fontControl}>
         <FontPicker
           id={`${id}-fallback`}
           label="UI fallback font"
@@ -256,10 +260,10 @@ function CustomFontRow() {
           allowEmpty
         />
       </span>
-      <span className={styles.fontOption}>
-        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-size`}>
-          <SearchLabel text="Size:" />
-        </label>
+      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
+        <SearchLabel text="Size:" />
+      </label>
+      <span className={styles.fontControl}>
         {on ? (
           <NumberInput
             id={`${id}-size`}

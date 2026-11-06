@@ -14,6 +14,7 @@ import type {
   InstallPreview,
   IntellijThemeSource,
   MarketPlugin,
+  PluginContextKey,
   PluginEditor,
   PluginEvent,
   PluginInfo,
@@ -53,6 +54,7 @@ export interface PluginsBackend {
     commandId: string,
     arg: string | null,
     editor: PluginEditor | null,
+    paths: string[],
   ): Promise<string | null>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
@@ -60,7 +62,10 @@ export interface PluginsBackend {
   eventKinds(): Promise<EventKind[]>;
   /** Plugin status bar items (later changes arrive as `statusItemChanged`). */
   statusItems(): Promise<PluginStatusItem[]>;
+  contextKeys(): Promise<PluginContextKey[]>;
   cancelTask(taskId: string): Promise<void>;
+  /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
+  answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
   marketUrl(): Promise<string | null>;
@@ -150,14 +155,19 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor) => call(commands.pluginRunCommand(pluginId, commandId, arg, editor)),
+  runCommand: (pluginId, commandId, arg, editor, paths) =>
+    call(commands.pluginRunCommand(pluginId, commandId, arg, editor, paths)),
   postEvents: async (events) => {
     await commands.pluginPostEvents(events);
   },
   eventKinds: () => commands.pluginEventKinds(),
   statusItems: () => commands.pluginStatusItems(),
+  contextKeys: () => commands.pluginContextKeys(),
   cancelTask: async (taskId) => {
     await commands.pluginCancelTask(taskId);
+  },
+  answerPrompt: async (promptId, answer) => {
+    await commands.pluginAnswerPrompt(promptId, answer);
   },
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
@@ -300,6 +310,7 @@ function samplePlugins(): PluginInfo[] {
     authors: ["OpenIDEA contributors"],
     homepage: null,
     changeNotes: null,
+    icon: null,
     source: "installed" as const,
     enabled: true,
     error: null,
@@ -377,6 +388,7 @@ export function sampleCatalog(): CatalogPlugin[] {
       authors: p.authors,
       homepage: p.homepage,
       changeNotes: `${p.version} — first release.`,
+      icon: null,
       path: `plugins/${p.id}`,
       hasCode: p.hasCode,
       capabilities: p.capabilities.map((c) => ({ ...c, granted: false })),
@@ -496,7 +508,9 @@ export function createMemoryPluginsBackend(
     postEvents: async () => {},
     eventKinds: async () => [],
     statusItems: async () => [],
+    contextKeys: async () => [],
     cancelTask: async () => {},
+    answerPrompt: async () => {},
     market: async () => [],
     marketUrl: async () => marketUrl,
     setMarketUrl: async (url) => {

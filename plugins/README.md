@@ -94,6 +94,8 @@ homepage = "https://example.com"  # optional
 license = "MIT"                   # optional
 change-notes = "1.2.0 — …"        # shown under What's New
 categories = ["tools"]            # marketplace categories, see below
+icon = "icon.svg"                 # optional, see below
+icon-dark = "icon_dark.svg"       # optional
 engines.openidea = "^1.0"         # the plugin API this package needs
 wasm = "dist/plugin.wasm"         # omit for data-only plugins
 activation = ["on-language:markdown"]   # optional, see below
@@ -116,6 +118,14 @@ icon themes or languages is filed under those, any other under `other`.
 Categories an IDE doesn't know, and any after the first three it knows, are
 ignored (`check` warns about both).
 
+`icon` is an SVG of the package shown in Settings › Plugins and the
+marketplace; `icon-dark`, if given, replaces it with dark themes. Each is at
+most 16 KiB and sanitised like file icons (no scripts, external references or
+`foreignObject`); an invalid one fails the package. Without `icon`, the
+plugin gets the generic plugin icon. `icon` is new in API 1.2: IDEs before it
+refuse the manifest, so a package with one declares `engines.openidea = "^1.2"`
+(`check` and installing refuse it otherwise).
+
 All paths are relative to the package directory and may not leave it. A
 manifest is validated as a whole: if one contribution is invalid, nothing is
 installed or loaded. Contribution types the IDE does not know (a newer API) are
@@ -136,7 +146,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
 | `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
 | `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?`                                | no            |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`), `view?`, `command`, `when?`   | no            |
 | `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
 | `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
 | `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
@@ -144,6 +154,25 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
 | `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
 | `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
+
+A `viewItem.context` menu needs `view`, the id of one of the plugin's own
+views. It adds the commands to the right-click menu of the items in that
+view's `tree` or `list`, and each command gets the item's key as its argument.
+`when` clauses can use `viewItem` (the key) and `viewItemKind` (the key up to
+its first `:`, so `pod` for `pod:default/nginx`; the whole key when it has no
+`:`). Only the menu's `when` sees them, not the command's own `when`; a command
+whose `when` is false shows greyed out. Other menus refuse `view`, a web view
+has no item menu, and no menu opens when no declaration matches the item.
+The menu is new in API 1.2, so a plugin using it declares
+`engines.openidea = "^1.2"`. For example:
+
+```toml
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "pods"
+command = "kube.logs"
+when = "viewItemKind == pod"
+```
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
@@ -158,6 +187,10 @@ The path is exact (no globs) and relative to the project root; in a workspace th
 key is true when any of its projects contains the path. It updates when
 files change. An IDE that doesn't know the key treats it as
 false: the plugin still installs and the key reads as false there.
+Plugins can set their own keys, `plugin.<id>.<key>`, with `host::set_context`:
+a key set from a command or event applies to that window, one set outside any
+applies to every window, and a window's value wins over the global one. Keys are
+kept across a window reload and idle reclaim, and dropped when the plugin stops.
 
 ### Background associations
 
@@ -320,22 +353,27 @@ then run `openidea-plugin check`.
 | `host::begin_task(title, cancellable)` → `Task`                          | `tasks.begin`                    | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                               |
 | `host::storage::{get, set, delete, keys}`                                | `storage`                        | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                             |
 | `host::set_status_item(id, item)`, `remove_status_item`                  | `ui`                             | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                 |
+| `host::set_context(key, value)`, `remove_context`                        | `ui.{set,remove}-context`        | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                       |
 | `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
 | `host::copy_to_clipboard(text)`                                          | `ui.copy-to-clipboard`           | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                            |
 | `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
+| `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Asks the user to pick from `PickItem`s and waits: the chosen key(s), or `None` when dismissed. Only from a command or event of a window (else `invalid`); the wait isn't charged to the time limit.                  |
+| `host::input(prompt, value)`                                             | `ui.input`                       | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                            |
+| `host::confirm(title, body)`                                             | `ui.confirm`                     | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                     |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
 | `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
 | `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |
 | `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
+| `host::reveal_view(view)`                                                | `views.reveal`                   | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                              |
 | `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
 | `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
 
 `run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`
-from another feature, or nothing when run from Search Everywhere / a shortcut.
+from another feature, or nothing when run from Search Everywhere / a shortcut. `ctx.selected_paths()` lists the files and folders a Project view or editor tab menu ran the command on (the argument is the first of them); it is empty otherwise. No capability is needed.
 
 ### Events
 

@@ -3966,8 +3966,6 @@
   "Rename '{name}'": "Renombrar '{name}'",
   "Change '{word}' to": "Cambiar '{word}' a",
   "Rename '{word}' to": "Renombrar '{word}' a",
-  "Save '{word}' to project-level dictionary": "Guardar '{word}' en el diccionario del proyecto",
-  "Save '{word}' to application-level dictionary": "Guardar '{word}' en el diccionario de la aplicación",
   "Typo: In word '{word}'": "Error tipográfico: en la palabra '{word}'",
   "Choose Super Class or Interface ({count} found)": "Elegir superclase o interfaz ({count} encontradas)",
   "Choose Super Method of {name} ({count} found)": "Elegir supermétodo de {name} ({count} encontrados)",
