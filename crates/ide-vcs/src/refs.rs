@@ -4,6 +4,9 @@ use crate::repo::{gx, to_string};
 use crate::{Branch, BranchInfo, Repo, Stash};
 use ide_core::IdeResult;
 
+// Filter symbolic refs before shortening; `refname:short` also strips remote `/HEAD` suffixes.
+pub(crate) const DIRECT_BRANCH_FORMAT: &str = "--format=%(if)%(symref)%(then)%(else)%(refname:lstrip=2)%(end)";
+
 pub(crate) fn branch_info(r: &Repo) -> IdeResult<BranchInfo> {
     let repo = r.gix()?;
     let head_ref = repo.head_name().map_err(gx)?;
@@ -93,6 +96,9 @@ pub(crate) fn branches(r: &Repo) -> IdeResult<Vec<Branch>> {
 
     for reference in platform.local_branches().map_err(gx)? {
         let mut reference = reference.map_err(gx)?;
+        if reference.target().try_name().is_some() {
+            continue;
+        }
         let full = reference.name().to_owned();
         let Ok(id) = reference.peel_to_id().map(|id| id.detach()) else { continue };
         let current = head_name.as_ref().is_some_and(|h| h == &full);
@@ -118,11 +124,11 @@ pub(crate) fn branches(r: &Repo) -> IdeResult<Vec<Branch>> {
     }
     for reference in platform.remote_branches().map_err(gx)? {
         let mut reference = reference.map_err(gx)?;
-        let full = reference.name().to_owned();
-        // Skip `refs/remotes/<remote>/HEAD` symbolic pointers.
-        if full.as_bstr().ends_with(b"/HEAD") {
+        // Skip symbolic aliases such as `refs/remotes/<remote>/HEAD`.
+        if reference.target().try_name().is_some() {
             continue;
         }
+        let full = reference.name().to_owned();
         let Ok(id) = reference.peel_to_id().map(|id| id.detach()) else { continue };
         out.push(Branch {
             name: to_string(full.as_ref().shorten()),
