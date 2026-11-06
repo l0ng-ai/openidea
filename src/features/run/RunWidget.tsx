@@ -86,7 +86,7 @@ export function RunWidget() {
               <IconButton
                 icon="resume"
                 size="large"
-                iconSize={18}
+                iconSize={20}
                 className={styles.widgetButton}
                 title="Resume Program"
                 shortcut={shortcutLabel("debug.resume")}
@@ -109,7 +109,7 @@ export function RunWidget() {
             <IconButton
               icon="run"
               size="large"
-              iconSize={18}
+              iconSize={20}
               className={clsx(styles.widgetButton, styles.widgetRun)}
               title={
                 selected
@@ -127,7 +127,7 @@ export function RunWidget() {
             <IconButton
               icon="debug"
               size="large"
-              iconSize={18}
+              iconSize={20}
               className={styles.widgetButton}
               title={selected ? tx`Debug '${selected.name}'` : currentFile ? "Debug Current File" : "Debug"}
               shortcut={shortcutLabel("run.debug")}
@@ -151,7 +151,7 @@ export function RunWidget() {
           ref={moreRef}
           icon="more"
           size="large"
-          iconSize={18}
+          iconSize={20}
           className={styles.widgetButton}
           title="More Actions"
           aria-haspopup="menu"
