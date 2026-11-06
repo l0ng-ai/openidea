@@ -214,7 +214,9 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text (on locale or keymap change) and rebuilds it.
+/// Sets the menu's labels / shortcut text and rebuilds it when they changed.
+/// Focusing another project window re-pushes the same shared menu; an identical
+/// config must not call `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
@@ -223,8 +225,9 @@ pub fn menu_configure(
     state: State<'_, AppState>,
     config: MenuConfig,
 ) {
-    *menu_state.config.lock() = config;
-    menu::install(&app, &menu_state, &state.recent.list());
+    if menu::store_config(&menu_state, config) {
+        menu::install(&app, &menu_state, &state.recent.list());
+    }
 }
 
 /// Rebuilds the menu (e.g. after the recent-projects list changed).

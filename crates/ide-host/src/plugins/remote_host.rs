@@ -124,7 +124,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
 
 impl PluginHost {
     fn package_files(&self, plugin: &super::LoadedPlugin) -> IdeResult<Vec<PathBuf>> {
-        let set = self.registry.prepare(&plugin.pkg).map_err(IdeError::invalid)?;
+        let set = self.prepare(&plugin.pkg).map_err(IdeError::invalid)?;
         Ok(set.files.into_iter().chain(plugin.manifest().wasm.clone()).collect())
     }
 

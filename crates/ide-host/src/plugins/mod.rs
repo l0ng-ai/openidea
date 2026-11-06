@@ -37,7 +37,9 @@ pub mod views;
 pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
-pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
+pub use icons::{
+    MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
+};
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
     read_url as read_market_url, resolve as resolve_market_href,
@@ -184,6 +186,8 @@ const IDLE_BATCH: Duration = Duration::from_secs(2);
 
 struct LoadedPlugin {
     pkg: Package,
+    /// Read at load so disabled and failed plugins show it too.
+    icon: Option<ide_extension::package::PluginIcon>,
     /// The manifest failed to parse: `pkg` is a placeholder.
     invalid: bool,
     source: PluginSource,
@@ -1529,7 +1533,7 @@ impl PluginHost {
                 continue;
             }
             let pkg = Package::new(m.clone(), dir.clone());
-            let problem = match self.registry.prepare(&pkg) {
+            let problem = match self.prepare(&pkg) {
                 Err(e) => Some(e),
                 Ok(_) => m
                     .wasm
@@ -1552,6 +1556,7 @@ impl PluginHost {
                 authors: m.authors,
                 homepage: m.homepage,
                 change_notes: m.change_notes,
+                icon: plugin_icon(&pkg).ok().flatten(),
                 path: dir.into(),
                 problem,
             });
@@ -1646,11 +1651,24 @@ impl PluginHost {
         self.plugins.read().values().any(|p| p.dir() == dir)
     }
 
+    /// Validates the manifest's icon and every declaration of `pkg`; the
+    /// icon files join the package files the declarations reference.
+    fn prepare(&self, pkg: &Package) -> Result<ide_extension::PreparedSet, String> {
+        plugin_icon(pkg)?;
+        let mut set = self.registry.prepare(pkg)?;
+        for icon in [&pkg.manifest.icon, &pkg.manifest.icon_dark].into_iter().flatten() {
+            if !set.files.contains(icon) {
+                set.files.push(icon.clone());
+            }
+        }
+        Ok(set)
+    }
+
     /// Parses and validates a package directory; nothing takes effect.
     fn validate_package(&self, src: &Path) -> IdeResult<(Package, ide_extension::PreparedSet)> {
         let manifest = Manifest::load(src).map_err(IdeError::invalid)?;
         let pkg = Package::new(manifest, src.to_path_buf());
-        let set = self.registry.prepare(&pkg).map_err(IdeError::invalid)?;
+        let set = self.prepare(&pkg).map_err(IdeError::invalid)?;
         if let Some(wasm) = &pkg.manifest.wasm {
             if !src.join(wasm).is_file() {
                 return Err(IdeError::invalid(format!(
@@ -1683,6 +1701,7 @@ impl PluginHost {
             pkg = pkg.with_digest(digest.trim());
         }
         let plugin = Arc::new(LoadedPlugin {
+            icon: plugin_icon(&pkg).ok().flatten(),
             pkg,
             invalid,
             source,
@@ -1732,7 +1751,7 @@ impl PluginHost {
             let publisher = self.verified_publisher(plugin.dir());
             plugin.meta.lock().publisher = publisher;
         }
-        let set = match self.registry.prepare(&plugin.pkg) {
+        let set = match self.prepare(&plugin.pkg) {
             Ok(set) => set,
             Err(e) => return self.set_failed(plugin, e),
         };
@@ -2087,7 +2106,7 @@ impl PluginHost {
             return h.trim().to_owned();
         }
         // Installed before hashes were recorded: hash once and remember.
-        let files = self.registry.prepare(&plugin.pkg).map(|s| s.files).unwrap_or_default();
+        let files = self.prepare(&plugin.pkg).map(|s| s.files).unwrap_or_default();
         let files: Vec<PathBuf> = files.into_iter().chain(plugin.manifest().wasm.clone()).collect();
         let hash = ledger::package_hash(plugin.dir(), &files).unwrap_or_default();
         let _ = std::fs::write(&file, &hash);
@@ -2154,6 +2173,7 @@ impl PluginHost {
             authors: m.authors.clone(),
             homepage: m.homepage.clone(),
             change_notes: m.change_notes.clone(),
+            icon: p.icon.clone(),
             source: p.source,
             path: p.dir().to_path_buf().into(),
             enabled: !self.state.lock().disabled.contains(&m.id),
@@ -2263,6 +2283,8 @@ fn placeholder_manifest(dir: &Path) -> Manifest {
         license: None,
         change_notes: None,
         declared_categories: Vec::new(),
+        icon: None,
+        icon_dark: None,
         engine: ide_extension::ENGINE_VERSION.into(),
         legacy: false,
         wasm: None,

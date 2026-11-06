@@ -56,30 +56,76 @@ fn changed(app: &AppHandle) {
     app.state::<AppState>().sink.emit(IdeEvent::WindowGroupsChanged);
 }
 
-/// Whether `to` already presents `from`'s frame, so moving it would only make it flicker.
-fn same_frame(from: &WebviewWindow, to: &WebviewWindow) -> bool {
-    let (Ok(from_max), Ok(to_max)) = (from.is_maximized(), to.is_maximized()) else { return false };
-    let (Ok(from_full), Ok(to_full)) = (from.is_fullscreen(), to.is_fullscreen()) else { return false };
-    if from_max != to_max || from_full != to_full {
-        return false;
+/// Outer frame in physical pixels. A maximized window is represented by the rectangle it
+/// occupies, not by the maximized flag: that flag can match while the rectangles do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OuterFrame {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+/// Where a group member can be placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameHost {
+    /// The client can move and resize the window.
+    Desktop,
+    /// Wayland does not let clients place top-level windows.
+    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+    Wayland,
+    /// macOS simple fullscreen already covers the screen; rewriting the frame would shrink it.
+    SimpleFullscreen,
+    /// Native fullscreen owns a Space. A different frame is transferred, not assigned.
+    NativeFullscreen,
+}
+
+/// What to write before the target window is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameWrite {
+    /// Already the same rectangle, or this host must not be placed.
+    Leave,
+    TransferFullscreen,
+    Assign(OuterFrame),
+}
+
+/// Two windows are aligned only when their outer rectangles match. Maximized or fullscreen
+/// flags are not a substitute: `show` presents the current rectangle, and a later move is visible.
+fn frame_write(host: FrameHost, from: OuterFrame, to: OuterFrame) -> FrameWrite {
+    match host {
+        FrameHost::Wayland | FrameHost::SimpleFullscreen => FrameWrite::Leave,
+        FrameHost::NativeFullscreen if from == to => FrameWrite::Leave,
+        FrameHost::NativeFullscreen => FrameWrite::TransferFullscreen,
+        FrameHost::Desktop if from == to => FrameWrite::Leave,
+        FrameHost::Desktop => FrameWrite::Assign(from),
     }
-    let same_monitor = match (from.current_monitor(), to.current_monitor()) {
-        (Ok(Some(a)), Ok(Some(b))) => a.position() == b.position() && a.size() == b.size(),
-        // An unmapped window may not report a monitor; treat only equal states as matching.
-        (Ok(None), Ok(None)) | (Err(_), Err(_)) => true,
-        _ => false,
-    };
-    if !same_monitor {
-        return false;
+}
+
+fn outer_frame(window: &WebviewWindow) -> IdeResult<OuterFrame> {
+    let err = |error: tauri::Error| IdeError::internal(error.to_string());
+    let position = window.outer_position().map_err(err)?;
+    let size = window.outer_size().map_err(err)?;
+    Ok(OuterFrame { x: position.x, y: position.y, width: size.width, height: size.height })
+}
+
+fn frame_host(from: &WebviewWindow) -> IdeResult<FrameHost> {
+    if simple_fullscreen(from.label()) {
+        return Ok(FrameHost::SimpleFullscreen);
     }
-    from_full
-        || from_max
-        || (from.outer_position().ok() == to.outer_position().ok() && from.inner_size().ok() == to.inner_size().ok())
+    #[cfg(target_os = "linux")]
+    if crate::linux_window_state::is_wayland() {
+        return Ok(FrameHost::Wayland);
+    }
+    if from.is_fullscreen().map_err(|error| IdeError::internal(error.to_string()))? {
+        return Ok(FrameHost::NativeFullscreen);
+    }
+    Ok(FrameHost::Desktop)
 }
 
 /// Moves a hidden window onto `from`'s monitor. A restored window keeps its normal position on
 /// the monitor it last occupied; maximizing or going fullscreen there would make the window
-/// visibly jump across displays when its tab is selected.
+/// visibly jump across displays when its tab is selected. macOS copies the AppKit frame instead.
+#[cfg(not(target_os = "macos"))]
 fn place_on_monitor(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     // Wayland does not let clients place top-level windows; maximizing stays on that output.
     #[cfg(target_os = "linux")]
@@ -93,45 +139,89 @@ fn place_on_monitor(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     Ok(())
 }
 
+/// Gives `to` the source window's outer frame before `to` is shown.
+///
+/// Tauri's position, size and maximize calls are queued. On macOS the AppKit calls return
+/// before the frame changes, while `show` orders the window front immediately, so the old
+/// rectangle appears and then jumps. The frame is written synchronously instead.
 fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
-    if same_frame(from, to) {
+    let host = frame_host(from)?;
+    if matches!(host, FrameHost::Wayland | FrameHost::SimpleFullscreen) {
         return Ok(());
     }
-    let err = |e: tauri::Error| IdeError::internal(e.to_string());
-    let fullscreen = from.is_fullscreen().map_err(err)?;
-    if fullscreen {
-        #[cfg(target_os = "macos")]
-        crate::macos::transfer_fullscreen(from, to).map_err(err)?;
-        #[cfg(not(target_os = "macos"))]
-        {
-            to.set_fullscreen(false).map_err(err)?;
-            place_on_monitor(from, to)?;
-            from.set_fullscreen(false).map_err(err)?;
-            to.set_fullscreen(true).map_err(err)?;
-        }
-        return Ok(());
+    // Tauri's physical rectangles round through the scale factor. On macOS the AppKit frame is
+    // the one `show` will present, so compare that instead of skipping a real difference.
+    #[cfg(target_os = "macos")]
+    if host == FrameHost::Desktop {
+        return crate::macos::copy_window_frame(from, to).map_err(|error| IdeError::internal(error.to_string()));
     }
-    to.set_fullscreen(false).map_err(err)?;
-    let maximized = from.is_maximized().map_err(err)?;
-    if !maximized {
-        to.unmaximize().map_err(err)?;
-        to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
-        // `set_size` excludes GTK's CSD shadow, which tao's inner size includes on Wayland.
-        #[cfg(target_os = "linux")]
-        let size = crate::linux_window_state::content_size(&from.as_ref().window()).map_err(err)?;
-        #[cfg(not(target_os = "linux"))]
-        let size = from.inner_size().map_err(err)?;
-        #[cfg(target_os = "linux")]
-        crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
-        to.set_size(size).map_err(err)?;
-    } else {
-        // Maximize the target on the source's monitor, not on the monitor it happened to
-        // occupy while hidden.
-        to.unmaximize().map_err(err)?;
+    match frame_write(host, outer_frame(from)?, outer_frame(to)?) {
+        FrameWrite::Leave => Ok(()),
+        FrameWrite::TransferFullscreen => transfer_native_fullscreen(from, to),
+        FrameWrite::Assign(frame) => assign_outer_frame(from, to, frame),
+    }
+}
+
+fn transfer_native_fullscreen(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
+    let err = |error: tauri::Error| IdeError::internal(error.to_string());
+    #[cfg(target_os = "macos")]
+    crate::macos::transfer_fullscreen(from, to).map_err(err)?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        to.set_fullscreen(false).map_err(err)?;
         place_on_monitor(from, to)?;
-        to.maximize().map_err(err)?;
+        from.set_fullscreen(false).map_err(err)?;
+        to.set_fullscreen(true).map_err(err)?;
     }
     Ok(())
+}
+
+fn assign_outer_frame(from: &WebviewWindow, to: &WebviewWindow, _frame: OuterFrame) -> IdeResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::copy_window_frame(from, to).map_err(|error| IdeError::internal(error.to_string()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let err = |error: tauri::Error| IdeError::internal(error.to_string());
+        to.set_fullscreen(false).map_err(err)?;
+        if from.is_maximized().map_err(err)? {
+            // Maximize on the source's monitor. The rectangles differed, so the maximized flags
+            // alone are not enough; a hidden peer would otherwise appear at its old size.
+            to.unmaximize().map_err(err)?;
+            place_on_monitor(from, to)?;
+            to.maximize().map_err(err)?;
+        } else {
+            to.unmaximize().map_err(err)?;
+            to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
+            // `set_size` excludes GTK's CSD shadow, which tao's inner size includes on Wayland.
+            #[cfg(target_os = "linux")]
+            let size = crate::linux_window_state::content_size(&from.as_ref().window()).map_err(err)?;
+            #[cfg(not(target_os = "linux"))]
+            let size = from.inner_size().map_err(err)?;
+            #[cfg(target_os = "linux")]
+            crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
+            to.set_size(size).map_err(err)?;
+        }
+        Ok(())
+    }
+}
+
+/// Shows `to` in place of `from`, at `from`'s frame.
+fn show_at_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
+    let err = |error: tauri::Error| IdeError::internal(error.to_string());
+    // Order the target front in the same AppKit turn as the frame write. A separate `show` runs
+    // after that turn and constrains the titled window, which is the jump. Native fullscreen is
+    // handed over by `copy_frame` instead.
+    #[cfg(target_os = "macos")]
+    if !from.is_fullscreen().map_err(err)? {
+        to.unminimize().map_err(err)?;
+        return crate::macos::present_window_frame(from, to).map_err(err);
+    }
+    copy_frame(from, to)?;
+    to.unminimize().map_err(err)?;
+    to.show().map_err(err)?;
+    to.set_focus().map_err(err)
 }
 
 /// Keeps hidden group members at the selected window's frame. Selecting a tab then only
@@ -235,11 +325,12 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
             && previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
         {
-            copy_frame(&from, &to)?;
+            show_at_frame(&from, &to)?;
+        } else {
+            to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
+            to.show().map_err(|e| IdeError::internal(e.to_string()))?;
+            to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
         }
-        to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
-        to.show().map_err(|e| IdeError::internal(e.to_string()))?;
-        to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
         for member in &previous.members {
             if member != target
                 && let Some(window) = app.get_webview_window(member)
@@ -545,4 +636,55 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameHost, FrameWrite, OuterFrame, frame_write};
+
+    fn frame(x: i32, y: i32, width: u32, height: u32) -> OuterFrame {
+        OuterFrame { x, y, width, height }
+    }
+
+    #[test]
+    fn matching_outer_rects_are_left_alone() {
+        let frame = frame(100, 80, 1200, 800);
+        assert_eq!(frame_write(FrameHost::Desktop, frame, frame), FrameWrite::Leave);
+    }
+
+    #[test]
+    fn a_different_outer_rect_is_assigned_before_the_window_is_shown() {
+        let from = frame(100, 80, 1200, 800);
+        let to = frame(40, 40, 900, 600);
+        assert_eq!(frame_write(FrameHost::Desktop, from, to), FrameWrite::Assign(from));
+    }
+
+    #[test]
+    fn maximized_windows_with_different_rects_still_assign() {
+        let from = frame(0, 25, 1728, 1055);
+        let to = frame(0, 25, 1512, 900);
+        assert_eq!(frame_write(FrameHost::Desktop, from, to), FrameWrite::Assign(from));
+    }
+
+    #[test]
+    fn simple_fullscreen_does_not_copy_a_frame() {
+        let from = frame(0, 0, 1728, 1117);
+        let to = frame(100, 80, 1200, 800);
+        assert_eq!(frame_write(FrameHost::SimpleFullscreen, from, to), FrameWrite::Leave);
+    }
+
+    #[test]
+    fn wayland_does_not_place_a_window() {
+        let from = frame(0, 0, 1200, 800);
+        let to = frame(10, 10, 800, 600);
+        assert_eq!(frame_write(FrameHost::Wayland, from, to), FrameWrite::Leave);
+    }
+
+    #[test]
+    fn native_fullscreen_transfers_only_when_the_rects_differ() {
+        let from = frame(0, 0, 1728, 1117);
+        let other = frame(100, 80, 1200, 800);
+        assert_eq!(frame_write(FrameHost::NativeFullscreen, from, from), FrameWrite::Leave);
+        assert_eq!(frame_write(FrameHost::NativeFullscreen, from, other), FrameWrite::TransferFullscreen);
+    }
 }
