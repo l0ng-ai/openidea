@@ -66,7 +66,7 @@ pub fn observe(app: &tauri::AppHandle) {
     }
 }
 
-pub(crate) fn application_active(app: &tauri::AppHandle) -> bool {
+fn application_active(app: &tauri::AppHandle) -> bool {
     // A settings window, utility window or native dialog is still this application.
     #[cfg(target_os = "macos")]
     {

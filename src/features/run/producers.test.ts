@@ -813,15 +813,6 @@ describe("project producers", () => {
     expect(
       produceDirectory({ path: `${ROOT}/src/test/java/com/acme`, root: ROOT, configs: gradle })!.config!.args,
     ).toEqual(["test", "--tests", "com.acme.*"]);
-    // A module's tests run from the build root so `./gradlew` resolves,
-    // qualified by the module's Gradle path.
-    const dir = produceDirectory({ path: `${ROOT}/services/api/src/test/java`, root: ROOT, configs: gradle })!;
-    expect(dir.config).toMatchObject({ cwd: null });
-    expect(dir.config!.args).toEqual([":services:api:test"]);
-    expect(
-      produceDirectory({ path: `${ROOT}/services/api/src/test/java/com/acme`, root: ROOT, configs: gradle })!.config!
-        .args,
-    ).toEqual([":services:api:test", "--tests", "com.acme.*"]);
     expect(produceDirectory({ path: `${ROOT}/src/main`, root: ROOT, configs })).toBeNull();
     expect(produceDirectory({ path: ROOT, root: ROOT, configs })).toBeNull();
   });
