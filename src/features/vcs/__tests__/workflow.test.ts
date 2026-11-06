@@ -5,6 +5,7 @@ import { linkifyIssues } from "../issueLinks";
 import {
   defaultPushChecked,
   isProtectedBranch,
+  isLeaseRejected,
   isPushRejected,
   pushCandidates,
   pushRepoCommits,
@@ -73,6 +74,16 @@ describe("git settings helpers", () => {
   it("recognises rejected pushes", () => {
     expect(isPushRejected(" ! [rejected]        main -> main (fetch first)")).toBe(true);
     expect(isPushRejected("Permission denied (publickey)")).toBe(false);
+    expect(isPushRejected(" ! [rejected]        main -> main (non-fast-forward)")).toBe(true);
+    // A tag that exists on the remote, a hook or the server refusing: updating doesn't help.
+    expect(
+      isPushRejected(
+        " ! [rejected]        v1 -> v1 (already exists)\nhint: Updates were rejected because the tag already exists in the remote.",
+      ),
+    ).toBe(false);
+    expect(isPushRejected(" ! [remote rejected] main -> main (pre-receive hook declined)")).toBe(false);
+    expect(isPushRejected(" ! [rejected]        main -> main (stale info)")).toBe(false);
+    expect(isLeaseRejected(" ! [rejected]        main -> main (stale info)")).toBe(true);
   });
 
   it("propagates folder colours only when enabled", () => {

@@ -526,6 +526,7 @@ impl Host {
             }));
         }
         self.insert_project(window, project.clone());
+        project.lsp.prewarm_java_configuration();
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.start(&self.runtime);
         }

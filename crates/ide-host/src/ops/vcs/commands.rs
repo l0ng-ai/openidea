@@ -103,12 +103,20 @@ pub enum RemoteOp {
     Pull {
         rebase: bool,
     },
+    /// Update Project › Reset to the Remote Branch.
+    ResetToUpstream,
     Push {
         force_with_lease: bool,
         set_upstream: bool,
         /// Push dialog › Push tags.
         #[serde(default)]
         tags: Option<PushTags>,
+        /// Plain `--force` (Force push anyway).
+        #[serde(default)]
+        force: bool,
+        /// Push dialog › Run Git hooks unchecked (`--no-verify`).
+        #[serde(default)]
+        no_verify: bool,
     },
     /// Deletes a remote branch; `branch` is the remote-tracking name (`origin/feature`).
     DeleteBranch {
@@ -125,6 +133,23 @@ pub enum RemoteOp {
         target: Option<String>,
         #[serde(default)]
         remote: Option<String>,
+        #[serde(default)]
+        force: bool,
+        /// Record the target as upstream (Push dialog › Set upstream).
+        #[serde(default)]
+        set_upstream: bool,
+        #[serde(default)]
+        no_verify: bool,
+    },
+    /// Push Tag › Push to `remote`.
+    PushTag {
+        tag: String,
+        remote: String,
+    },
+    /// Deletes tag `tag` on `remote` (Delete on Remote).
+    DeleteRemoteTag {
+        tag: String,
+        remote: String,
     },
     /// Fast-forwards local `branch` (not checked out) to its upstream.
     UpdateBranch {
@@ -155,11 +180,15 @@ pub struct GitExecutableInfo {
 pub enum GitOperation {
     /// Continue the merge / rebase / cherry-pick / revert in progress.
     Continue,
+    /// Stage and Retry: stage the changes of tracked files, then continue.
+    StageAndContinue,
     Abort,
     Skip,
-    /// Commits oldest first.
+    /// Commits oldest first; `record_origin` adds "(cherry picked from commit …)".
     CherryPick {
         commits: Vec<String>,
+        #[serde(default, rename = "recordOrigin")]
+        record_origin: bool,
     },
     /// Commits newest first.
     Revert {
@@ -572,6 +601,33 @@ pub async fn vcs_undo_commit(host: &Host, window: &str, repo: Option<PathBuf>, c
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.undo_commit(&commit))).await
 }
 
+/// Edit Commit Message: rewrites the commit and its descendants without touching the
+/// working tree.
+pub async fn vcs_reword(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    commit: String,
+    message: String,
+) -> IdeResult<ide_vcs::HeadChange> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.reword(&commit, &message))).await
+}
+
+/// Undo of a history rewrite (Edit Commit Message, Drop, Squash).
+pub async fn vcs_restore_head(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    before: String,
+    after: String,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.restore_head(&before, &after))).await
+}
+
 pub async fn vcs_delete_branch(
     host: &Host,
     window: &str,
@@ -584,6 +640,19 @@ pub async fn vcs_delete_branch(
 }
 
 /// "Restore" of the branch-deleted notification.
+/// Deletes a local tag; the result restores it.
+pub async fn vcs_delete_tag(host: &Host, window: &str, repo: Option<PathBuf>, name: String) -> IdeResult<DeletedTag> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.delete_tag(&name))).await
+}
+
+pub async fn vcs_restore_tag(host: &Host, window: &str, repo: Option<PathBuf>, deleted: DeletedTag) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.restore_tag(&deleted))).await
+}
+
 pub async fn vcs_restore_branch(
     host: &Host,
     window: &str,
@@ -679,26 +748,42 @@ pub async fn vcs_remote(
         let out = |line: String| {
             let _ = on_output.send(line);
         };
-        let recorded = matches!(op, RemoteOp::Pull { .. } | RemoteOp::PullFrom { .. }).then_some("Git pull");
+        let recorded = matches!(op, RemoteOp::Pull { .. } | RemoteOp::PullFrom { .. } | RemoteOp::ResetToUpstream)
+            .then_some("Git pull");
         project.with_repo_recorded(repo.as_deref(), recorded, |r| match op {
             RemoteOp::Fetch => r.fetch(&cancel, &out),
             RemoteOp::Pull { rebase } => r.pull(rebase, &cancel, &out),
-            RemoteOp::Push { force_with_lease, set_upstream, tags } => {
-                r.push_with_tags(force_with_lease, set_upstream, tags, &cancel, &out)
+            RemoteOp::ResetToUpstream => r.reset_to_upstream(&cancel, &out),
+            RemoteOp::Push { force_with_lease, set_upstream, tags, force, no_verify } => {
+                r.push_with(PushOptions { force_with_lease, force, set_upstream, tags, no_verify }, &cancel, &out)
             }
             RemoteOp::DeleteBranch { branch } => r.delete_remote_branch(&branch, &cancel, &out),
-            RemoteOp::PushBranch { branch, revision, force_with_lease, target, remote } => r.push_branch_to(
+            RemoteOp::PushBranch {
+                branch,
+                revision,
+                force_with_lease,
+                target,
+                remote,
+                force,
+                set_upstream,
+                no_verify,
+            } => r.push_branch_to(
                 &branch,
                 PushBranchOptions {
                     revision: revision.as_deref(),
                     target: target.as_deref(),
                     remote: remote.as_deref(),
                     force_with_lease,
+                    force,
+                    set_upstream,
+                    no_verify,
                 },
                 &cancel,
                 &out,
             ),
             RemoteOp::UpdateBranch { branch } => r.update_branch(&branch, &cancel, &out),
+            RemoteOp::PushTag { tag, remote } => r.push_tag(&tag, &remote, &cancel, &out),
+            RemoteOp::DeleteRemoteTag { tag, remote } => r.delete_remote_tag(&tag, &remote, &cancel, &out),
             RemoteOp::PullFrom { remote, branches, rebase, options } => {
                 r.pull_from(&remote, &branches, rebase, &options, &cancel, &out)
             }
@@ -834,9 +919,12 @@ pub async fn vcs_operation(
         };
         project.with_repo_recorded(repo.as_deref(), recorded, |r| match op {
             GitOperation::Continue => r.continue_operation(&cancel, &out),
+            GitOperation::StageAndContinue => r.stage_and_continue(&cancel, &out),
             GitOperation::Abort => r.abort_operation(&cancel, &out),
             GitOperation::Skip => r.skip_operation(&cancel, &out),
-            GitOperation::CherryPick { commits } => r.cherry_pick(&commits, &cancel, &out),
+            GitOperation::CherryPick { commits, record_origin } => {
+                r.cherry_pick_with(&commits, record_origin, &cancel, &out)
+            }
             GitOperation::Revert { commits } => r.revert(&commits, &cancel, &out),
             GitOperation::Reset { commit, mode } => r.reset(&commit, mode, &cancel, &out),
             GitOperation::InteractiveRebase { base, entries } => {
@@ -1018,6 +1106,12 @@ pub async fn vcs_diff_numstat(
 ) -> IdeResult<Vec<FileLineStats>> {
     let project = LogAccess::new(host, window, repo.as_deref());
     blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.diff_numstat(&from, &to, &paths))).await
+}
+
+/// Whether the repository has the executable Git hook `name` (Push dialog › Run Git hooks).
+pub async fn vcs_has_hook(host: &Host, window: &str, repo: Option<PathBuf>, name: String) -> IdeResult<bool> {
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.has_hook(&name))).await
 }
 
 /// The best common ancestor of `a` and `b` (`git merge-base`), if any: the New Pull
@@ -1247,8 +1341,21 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "vcs_undo_commit",
         |c| async move { vcs_undo_commit(&c.host, &c.window, c.arg("repo")?, c.arg("commit")?).await },
     );
+    d.add("vcs_reword", |c| async move {
+        vcs_reword(&c.host, &c.window, c.arg("repo")?, c.arg("commit")?, c.arg("message")?).await
+    });
+    d.add("vcs_restore_head", |c| async move {
+        vcs_restore_head(&c.host, &c.window, c.arg("repo")?, c.arg("before")?, c.arg("after")?).await
+    });
     d.add("vcs_delete_branch", |c| async move {
         vcs_delete_branch(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?).await
+    });
+    d.add(
+        "vcs_delete_tag",
+        |c| async move { vcs_delete_tag(&c.host, &c.window, c.arg("repo")?, c.arg("name")?).await },
+    );
+    d.add("vcs_restore_tag", |c| async move {
+        vcs_restore_tag(&c.host, &c.window, c.arg("repo")?, c.arg("deleted")?).await
     });
     d.add("vcs_restore_branch", |c| async move {
         vcs_restore_branch(&c.host, &c.window, c.arg("repo")?, c.arg("deleted")?).await
@@ -1373,6 +1480,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_diff_numstat", |c| async move {
         vcs_diff_numstat(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("paths")?).await
     });
+    d.add("vcs_has_hook", |c| async move { vcs_has_hook(&c.host, &c.window, c.arg("repo")?, c.arg("name")?).await });
     d.add("vcs_merge_base", |c| async move {
         vcs_merge_base(&c.host, &c.window, c.arg("repo")?, c.arg("a")?, c.arg("b")?).await
     });

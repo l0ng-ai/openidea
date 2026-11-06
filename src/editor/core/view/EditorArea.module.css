@@ -30,6 +30,19 @@
   min-height: 0;
   min-width: 0;
   position: relative;
+  isolation: isolate;
+}
+/*
+ * Kept-alive tabs share the content box; hiding one only skips its rendering, not its layout.
+ * Nothing inherited changes (pointer-events, inert): that would restyle the whole conversation.
+ */
+.kept {
+  position: absolute;
+  inset: 0;
+}
+.keptHidden {
+  content-visibility: hidden;
+  z-index: -1;
 }
 .host {
   flex: 1;

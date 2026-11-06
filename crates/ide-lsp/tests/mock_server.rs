@@ -2377,7 +2377,7 @@ async fn class_file_opening_routes_sources_and_binary_documents() {
     let source = sources.join("p/Outer.java");
     std::fs::write(&source, "package p; class Outer {} ").unwrap();
     s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
-    s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
+    s.respond("workspace/executeCommand", json!({ "org.eclipse.jdt.ls.core.sourcePaths": [sources] }));
     for class in ["Outer", "Outer$Nested", "Outer$1"] {
         let path = h.root.join(format!("target/classes/p/{class}.class"));
         let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
@@ -3394,7 +3394,7 @@ async fn gopls_interactive_command_validates_before_execution_and_applies_edits(
             let reply: Value = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(s.peer().request(
                     "workspace/applyEdit",
-                    json!({"edit": edit}),
+                    json!({ "edit": edit }),
                     None,
                 ))
             })
@@ -3677,6 +3677,54 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
     assert_eq!(result.len(), 1);
     assert_eq!(s.requested("workspace/executeCommand").len(), 1);
     assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_prewarm_starts_java_without_an_open_editor_and_waits_for_import() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration.warmup"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    h.mgr.prewarm_java_configuration();
+    h.mgr.prewarm_java_configuration();
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let config = h.root.join("application.yml");
+    h.mgr.did_open(DocId::next(), &config, &LanguageId::new("yaml"), 1, "app: {}\n");
+    s.peer().notify("language/status", json!({"type": "ServiceReady"})).unwrap();
+    eventually(|| {
+        s.requested("workspace/executeCommand").iter().any(|p| p["command"] == "openidea.java.configuration.warmup")
+    })
+    .await;
+    let requests = s.requested("workspace/executeCommand");
+    let warmup = requests.iter().find(|p| p["command"] == "openidea.java.configuration.warmup").unwrap();
+    assert_eq!(warmup["arguments"], json!(["start", [uri_of(&config)]]));
+    assert!(s.notified("textDocument/didOpen").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_prewarm_respects_trust_shutdown_and_non_java_roots() {
+    let mut fixtures = Vec::new();
+    for mode in ["untrusted", "closed", "non-java"] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        if mode != "non-java" {
+            std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+        }
+        if mode == "untrusted" {
+            h.mgr.set_execution_allowed(false);
+        }
+        h.mgr.prewarm_java_configuration();
+        if mode == "closed" {
+            h.mgr.shutdown_all().await;
+        }
+        fixtures.push(h);
+    }
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    for h in fixtures {
+        assert_eq!(h.launcher.state("jdtls").launches.load(Ordering::SeqCst), 0);
+    }
 }
 
 /// The configuration command indexes the whole project, so Go to Definition (and

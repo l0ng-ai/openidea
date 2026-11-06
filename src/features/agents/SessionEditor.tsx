@@ -1,7 +1,9 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
 import {
   Fragment,
+  memo,
   startTransition,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -15,7 +17,7 @@ import type { AgentChange, AgentEntry, AgentImage, AgentLimit, AgentRetry, Agent
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
+import { editorService, notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import {
   Button,
   EmptyState,
@@ -105,15 +107,17 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     if (!useAgents.getState().entries.has(id)) void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
   }, [id]);
+  // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
+  const shown = useEditorShown();
   useEffect(() => {
-    if (!docked || !changesOpen) return markVisible(id);
-  }, [id, docked, changesOpen]);
+    if (shown && (!docked || !changesOpen)) return markVisible(id);
+  }, [id, docked, changesOpen, shown]);
   useEffect(() => {
     if (view && !useAgents.getState().entries.has(entriesKey(id, view))) {
       void loadEntries(id, view).catch(() => undefined);
     }
   }, [id, view]);
-  const openSubagent = (sub: string) => setPath((p) => [...p, sub]);
+  const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
   const [session] = useState<FocusedSession>(() => ({
@@ -157,7 +161,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           entries={viewEntries ?? null}
           subagent={view ? (cards.at(-1) ?? null) : null}
           onOpenSubagent={openSubagent}
-          finding={finding}
+          finding={finding && shown}
           findFocus={findFocus}
           onCloseFind={() => setFinding(false)}
         />
@@ -441,9 +445,11 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   useEffect(() => {
     if (start > 0) startTransition(() => setShown((n) => n + ENTRY_BATCH));
   }, [start]);
+  // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
+  const visible = useEditorShown();
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el || entries === null) return;
+    if (!el || entries === null || !visible) return;
     if (position.current.stick) el.scrollTop = el.scrollHeight;
     else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
@@ -726,7 +732,8 @@ const TOOL_ICONS: Record<string, string> = {
   think: "todo",
 };
 
-function Entry({
+/** Memoized: the earlier entries rendered behind a reopened conversation leave the rest alone. */
+const Entry = memo(function Entry({
   task,
   entry,
   turn,
@@ -747,12 +754,14 @@ function Entry({
       return <Markdown text={entry.text} cwd={task.cwd} />;
     case "thought":
       return (
-        <details className={styles.thought}>
-          <summary>
-            <T>Thinking</T>
-          </summary>
-          <div className={styles.thoughtText}>{entry.text}</div>
-        </details>
+        <div>
+          <details className={styles.thought}>
+            <summary>
+              <T>Thinking</T>
+            </summary>
+            <div className={styles.thoughtText}>{entry.text}</div>
+          </details>
+        </div>
       );
     case "tool":
       return <ToolEntry task={task} entry={entry} />;
@@ -801,7 +810,7 @@ function Entry({
         </div>
       );
   }
-}
+});
 
 function UserMessage({
   task,
@@ -1049,10 +1058,12 @@ function ToolEntry({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry
   );
   if (!entry.output) return <div className={styles.tool}>{head}</div>;
   return (
-    <details className={styles.toolDetails}>
-      <summary className={styles.tool}>{head}</summary>
-      <pre className={styles.output}>{entry.output}</pre>
-    </details>
+    <div>
+      <details className={styles.toolDetails}>
+        <summary className={styles.tool}>{head}</summary>
+        <pre className={styles.output}>{entry.output}</pre>
+      </details>
+    </div>
   );
 }
 
