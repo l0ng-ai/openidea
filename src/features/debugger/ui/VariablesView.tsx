@@ -1,8 +1,9 @@
 /** Lazy variables tree (scopes, locals, watches, evaluation results). */
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { call, commands, type DebugSessionId, type Variable } from "@/platform/ipc";
-import { Icon, Tree, acquirePopup, showContextMenu, type MenuItem, type TreeHandle } from "@/ui";
+import { Dialog, Icon, Tree, acquirePopup, showContextMenu, type MenuItem, type TreeHandle } from "@/ui";
+import { tx } from "@/platform/i18n";
 import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
 import { addFieldWatchpoint } from "../breakpoints/special";
@@ -229,6 +230,7 @@ export function VariablesView({
   }, [byKey, expanded, children, load]);
 
   const [editing, setEditing] = useState<{ key: string; value: string; error: string | null } | null>(null);
+  const [valuePopup, setValuePopup] = useState<VarNode | null>(null);
   const editable = (n: VarNode | undefined): n is VarNode =>
     !!n && session != null && (n.kind === "var" || n.kind === "watch") && (n.container > 0 || !!n.evaluateName);
   const startEdit = (n: VarNode) => setEditing({ key: n.key, value: n.value, error: null });
@@ -344,11 +346,31 @@ export function VariablesView({
               }}
             />
           ) : (
-            <VarRow node={n} changed={isChanged(n)} />
+            <VarRow node={n} changed={isChanged(n)} onShowValue={setValuePopup} />
           )
         }
       />
+      {valuePopup && <ValueDialog node={valuePopup} onClose={() => setValuePopup(null)} />}
     </div>
+  );
+}
+
+function ValueDialog({ node, onClose }: { node: VarNode; onClose: () => void }) {
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`${node.name}${node.typeName ? ` {${node.typeName}}` : ""}`}
+      width={720}
+      minHeight={260}
+      maxHeight={560}
+      resizable="both"
+      aria-label={`Value of ${node.name}`}
+    >
+      <div className={styles.valuePopupContent}>
+        <pre className={styles.valuePopupValue}>{node.value}</pre>
+      </div>
+    </Dialog>
   );
 }
 
@@ -410,7 +432,30 @@ function nodeIcon(node: VarNode): string {
   return node.depth0 ? "variable" : "field";
 }
 
-function VarRow({ node, changed }: { node: VarNode; changed: boolean }) {
+function VarRow({
+  node,
+  changed,
+  onShowValue,
+}: {
+  node: VarNode;
+  changed: boolean;
+  onShowValue: (node: VarNode) => void;
+}) {
+  const valueRef = useRef<HTMLSpanElement>(null);
+  const [overflow, setOverflow] = useState(false);
+  useLayoutEffect(() => {
+    const el = valueRef.current;
+    if (!el) {
+      setOverflow(false);
+      return;
+    }
+    const update = () => setOverflow(el.scrollWidth > el.clientWidth + 1);
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [node.value]);
   if (node.kind === "message") return <span className={styles.message}>{node.name}</span>;
   if (node.kind === "scope")
     return (
@@ -432,7 +477,22 @@ function VarRow({ node, changed }: { node: VarNode; changed: boolean }) {
       ) : (
         <>
           {node.typeName && <span className={styles.type}>{`{${node.typeName}}`}</span>}
-          <span className={clsx(styles.value, kind && styles[kind])}>{oneLine(node.value)}</span>
+          <span ref={valueRef} className={clsx(styles.value, kind && styles[kind])} title={node.value}>
+            {oneLine(node.value)}
+          </span>
+          {overflow && (
+            <button
+              type="button"
+              className={styles.showValue}
+              title={tx("Show")}
+              onClick={(e) => {
+                e.stopPropagation();
+                onShowValue(node);
+              }}
+            >
+              …{tx("Show")}
+            </button>
+          )}
         </>
       )}
     </span>

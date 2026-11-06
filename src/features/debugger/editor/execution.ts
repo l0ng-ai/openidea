@@ -5,27 +5,74 @@
 import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { EditorDocContext } from "@/editor/api";
-import { useExecutionPoint } from "../state";
+import type { Variable } from "@/platform/ipc";
+import { showHint } from "@/editor/lsp/hint";
+import { activeSession, useExecutionPoint } from "../state";
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { tx } from "@/platform/i18n";
 import { identifiersIn, inlineValue } from "../values";
+import { valueHint } from "./valueTooltip";
 import styles from "./editor.module.css";
 
 /** How far above the execution point inline values are shown. */
 const INLINE_SPAN = 60;
 const MAX_PER_LINE = 4;
 
+interface InlinePart {
+  name: string;
+  text: string;
+  variable: Variable;
+  truncated: boolean;
+}
+
 class InlineValues extends WidgetType {
-  constructor(readonly text: string) {
+  constructor(readonly parts: InlinePart[]) {
     super();
   }
   eq(o: InlineValues) {
-    return o.text === this.text;
+    return (
+      o.parts.length === this.parts.length &&
+      o.parts.every((part, i) => part.name === this.parts[i]?.name && part.text === this.parts[i]?.text)
+    );
   }
-  toDOM() {
+  toDOM(view: EditorView) {
     const span = document.createElement("span");
     span.className = styles.inlineValue!;
-    span.textContent = this.text;
-    span.setAttribute("aria-hidden", "true");
+    for (const [index, part] of this.parts.entries()) {
+      if (index > 0) span.append(document.createTextNode(", "));
+      const piece = document.createElement("span");
+      piece.className = styles.inlineValuePart!;
+      piece.textContent = part.text;
+      piece.title = `${part.name} = ${part.variable.value}`;
+      piece.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const session = activeSession();
+        if (!session || session.status !== "paused") return;
+        showHint(view, () => valueHint(part.name, part.variable, session.id, null), {
+          pos: view.posAtDOM(piece),
+          timeout: 60_000,
+        });
+      });
+      span.append(piece);
+      if (part.truncated) {
+        const show = document.createElement("button");
+        show.type = "button";
+        show.className = styles.inlineShow!;
+        show.textContent = `…${tx("Show")}`;
+        show.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const session = activeSession();
+          if (!session || session.status !== "paused") return;
+          showHint(view, () => valueHint(part.name, part.variable, session.id, null), {
+            pos: view.posAtDOM(show),
+            timeout: 60_000,
+          });
+        });
+        span.append(show);
+      }
+    }
     return span;
   }
   ignoreEvent() {
@@ -46,16 +93,21 @@ function currentExec(path: string): Exec | null {
 }
 
 /** `name: value` pairs for identifiers on `text` that are known locals. */
-export function inlineValuesFor(text: string, values: Record<string, string>): string | null {
-  const parts: string[] = [];
+export function inlineValuesFor(text: string, variables: Record<string, Variable>): InlinePart[] | null {
+  const parts: InlinePart[] = [];
   for (const id of identifiersIn(text)) {
-    if (!Object.hasOwn(values, id)) continue;
-    const v = values[id];
-    if (v === undefined) continue;
-    parts.push(`${id}: ${inlineValue(v, 40)}`);
+    if (!Object.hasOwn(variables, id)) continue;
+    const variable = variables[id];
+    if (variable === undefined) continue;
+    parts.push({
+      name: id,
+      text: `${id}: ${inlineValue(variable.value, 40)}`,
+      variable,
+      truncated: variable.value.length > 40,
+    });
     if (parts.length >= MAX_PER_LINE) break;
   }
-  return parts.length ? parts.join(", ") : null;
+  return parts.length ? parts : null;
 }
 
 function lineDecorations(state: EditorState, exec: Exec | null): DecorationSet {
@@ -133,8 +185,8 @@ export function executionPoint(ctx: EditorDocContext): Extension {
       build(): DecorationSet {
         const exec = this.view.state.field(execField);
         if (!workflowSettings().debugger.inlineValues) return Decoration.none;
-        const values = useExecutionPoint.getState().values;
-        if (!exec || !Object.keys(values).length) return Decoration.none;
+        const { variables } = useExecutionPoint.getState();
+        if (!exec || !Object.keys(variables).length) return Decoration.none;
         const doc = this.view.state.doc;
         const first = Math.max(0, exec.line - INLINE_SPAN);
         const widgets = [];
@@ -143,8 +195,8 @@ export function executionPoint(ctx: EditorDocContext): Extension {
           const endLine = Math.min(doc.lineAt(to).number - 1, exec.line);
           for (let l = startLine; l <= endLine; l++) {
             const line = doc.line(l + 1);
-            const text = inlineValuesFor(line.text, values);
-            if (text) widgets.push(Decoration.widget({ widget: new InlineValues(text), side: 1 }).range(line.to));
+            const parts = inlineValuesFor(line.text, variables);
+            if (parts) widgets.push(Decoration.widget({ widget: new InlineValues(parts), side: 1 }).range(line.to));
           }
         }
         return Decoration.set(widgets, true);

@@ -99,9 +99,17 @@ interface ExecutionPoint {
   /** The selected frame is the top frame (current position, not a caller). */
   top: boolean;
   values: Record<string, string>;
+  /** Full variables behind `values`, for the click-to-show popup. */
+  variables: Record<string, Variable>;
 }
 
-export const useExecutionPoint = create<ExecutionPoint>(() => ({ path: null, line: 0, top: true, values: {} }));
+export const useExecutionPoint = create<ExecutionPoint>(() => ({
+  path: null,
+  line: 0,
+  top: true,
+  values: {},
+  variables: {},
+}));
 
 /** Console buffer: at most this many physical lines per session. */
 const MAX_CONSOLE_LINES = 50_000;
@@ -812,12 +820,17 @@ async function loadThreads(id: DebugSessionId) {
 async function loadLocals(id: DebugSessionId, frameId: number) {
   const frames = useDebug.getState().sessions[id]?.frames;
   const values: Record<string, string> = Object.create(null);
+  const variables: Record<string, Variable> = Object.create(null);
   try {
     const scopes = await call(commands.debugScopes(id, frameId));
     const scope = scopes.find((sc) => !sc.expensive);
     if (scope) {
       const vars = await call(commands.debugVariables(id, scope.variablesReference));
-      for (const v of vars) if (v.name && !Object.hasOwn(values, v.name)) values[v.name] = v.value;
+      for (const v of vars)
+        if (v.name && !Object.hasOwn(values, v.name)) {
+          values[v.name] = v.value;
+          variables[v.name] = v;
+        }
     }
   } catch {
     // No inline values.
@@ -825,7 +838,7 @@ async function loadLocals(id: DebugSessionId, frameId: number) {
   const s = useDebug.getState().sessions[id];
   if (useDebug.getState().active !== id || s?.status !== "paused" || s.selectedFrame !== frameId || s.frames !== frames)
     return;
-  useExecutionPoint.setState({ values });
+  useExecutionPoint.setState({ values, variables });
 }
 
 /** Show Execution Point (⌥F10): back to the suspended thread's top frame, revealed and focused. */
@@ -854,13 +867,14 @@ export function updateExecutionPoint() {
   const s = activeSession();
   const frame = s && s.status === "paused" ? s.frames.find((f) => f.id === s.selectedFrame) : undefined;
   if (!s || !frame || !frame.path) {
-    if (useExecutionPoint.getState().path !== null) useExecutionPoint.setState({ path: null, values: {} });
+    if (useExecutionPoint.getState().path !== null)
+      useExecutionPoint.setState({ path: null, values: {}, variables: {} });
     return;
   }
   const top = s.frames.find((f) => f.path && f.presentationHint !== "label")?.id === frame.id;
   const cur = useExecutionPoint.getState();
   if (cur.path === frame.path && cur.line === frame.line && cur.top === top) return;
-  useExecutionPoint.setState({ path: frame.path, line: frame.line, top, values: {} });
+  useExecutionPoint.setState({ path: frame.path, line: frame.line, top, values: {}, variables: {} });
 }
 
 /** Invalidate suspended data before sending a command that resumes execution. */
@@ -1059,7 +1073,7 @@ export function resetSessions() {
   cancelOutputFlush();
   ansiStreams.clear();
   useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0 });
-  useExecutionPoint.setState({ path: null, line: 0, top: true, values: {} });
+  useExecutionPoint.setState({ path: null, line: 0, top: true, values: {}, variables: {} });
   publishContext();
 }
 
