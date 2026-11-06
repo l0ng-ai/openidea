@@ -140,6 +140,13 @@
   flex: 0 1 auto;
   min-width: 40px;
 }
+/* A closable tab keeps room for its close slot: only the label shrinks. */
+.squeeze .closable {
+  min-width: 64px;
+}
+.squeeze .closeSlot {
+  flex: none;
+}
 .squeeze .tabButton {
   flex: 1 1 auto;
   min-width: 0;
