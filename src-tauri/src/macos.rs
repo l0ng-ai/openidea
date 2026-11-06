@@ -202,6 +202,43 @@ fn present(fullscreen: bool) {
     NSApplication::sharedApplication(mtm).setPresentationOptions(options);
 }
 
+type ShouldTerminate = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize;
+
+/// `NSApplicationTerminateReply`.
+const TERMINATE_CANCEL: usize = 0;
+const TERMINATE_NOW: usize = 1;
+
+/// The Dock's Quit, the system's app menu and a logout ask the application delegate whether it
+/// may terminate; tao's delegate doesn't answer, so AppKit terminated at once, past the exit,
+/// running-process and unsaved-changes prompts. Answer it: cancel, and quit like Cmd+Q does.
+pub fn intercept_system_quit(app: &AppHandle) {
+    let _ = APP.set(app.clone());
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let application = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    unsafe {
+        let delegate: *mut AnyObject = objc2::msg_send![&*application, delegate];
+        if delegate.is_null() {
+            return;
+        }
+        let class = objc2::ffi::object_getClass(delegate.cast()) as *mut AnyClass;
+        let imp: Imp = std::mem::transmute(should_terminate as ShouldTerminate);
+        let added = objc2::ffi::class_addMethod(class, objc2::sel!(applicationShouldTerminate:), imp, c"Q@:@".as_ptr());
+        if !added.as_bool() {
+            tracing::warn!("could not handle applicationShouldTerminate:");
+        }
+    }
+}
+
+unsafe extern "C-unwind" fn should_terminate(_this: *mut AnyObject, _selector: Sel, _sender: *mut AnyObject) -> usize {
+    let Some(app) = APP.get() else { return TERMINATE_NOW };
+    // Our own quit exits through the event loop; a system quit during it goes ahead.
+    if app.try_state::<WindowsState>().is_none_or(|w| w.quitting()) {
+        return TERMINATE_NOW;
+    }
+    crate::dispatch_menu_action(app, "app.quit");
+    TERMINATE_CANCEL
+}
+
 type ToggleFullScreen = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
 
 static NATIVE_TOGGLE_FULLSCREEN: std::sync::OnceLock<ToggleFullScreen> = std::sync::OnceLock::new();
