@@ -161,6 +161,8 @@ pub(super) struct Shared {
     tasks: Mutex<HashMap<u64, TaskEntry>>,
     next_task: AtomicU64,
     prompts: Mutex<HashMap<u64, PromptEntry>>,
+    /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
+    prompts_blocked: Mutex<BTreeSet<String>>,
     next_prompt: AtomicU64,
     /// (plugin, item id) → item, for windows opened later.
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
@@ -192,6 +194,7 @@ impl Shared {
             tasks: Mutex::default(),
             next_task: AtomicU64::new(1),
             prompts: Mutex::default(),
+            prompts_blocked: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             status: Mutex::default(),
             subscriptions: Mutex::default(),
@@ -250,18 +253,7 @@ impl Shared {
         for id in removed {
             self.sink.emit(None, PluginEvent::StatusItemChanged { plugin_id: plugin.to_owned(), id, item: None });
         }
-        // Dropping the senders wakes the calls waiting on the user.
-        let prompts: Vec<u64> = {
-            let mut prompts = self.prompts.lock();
-            let ids: Vec<u64> = prompts.iter().filter(|(_, p)| p.plugin == plugin).map(|(id, _)| *id).collect();
-            for id in &ids {
-                prompts.remove(id);
-            }
-            ids
-        };
-        for id in prompts {
-            self.sink.emit(None, PluginEvent::PromptClosed { prompt_id: id.to_string() });
-        }
+        self.withdraw_prompts(plugin);
         let tasks: Vec<u64> = self.tasks.lock().iter().filter(|(_, t)| t.plugin == plugin).map(|(id, _)| *id).collect();
         for id in tasks {
             self.end_task(id);
@@ -285,6 +277,34 @@ impl Shared {
         t.cancelled = true;
         t.cancel.cancel();
         true
+    }
+
+    /// Closes the prompts `plugin` waits on: the calls waiting for the user
+    /// wake up cancelled (dropping the senders).
+    fn withdraw_prompts(&self, plugin: &str) {
+        let ids: Vec<u64> = {
+            let mut prompts = self.prompts.lock();
+            let ids: Vec<u64> = prompts.iter().filter(|(_, p)| p.plugin == plugin).map(|(id, _)| *id).collect();
+            for id in &ids {
+                prompts.remove(id);
+            }
+            ids
+        };
+        for id in ids {
+            self.sink.emit(None, PluginEvent::PromptClosed { prompt_id: id.to_string() });
+        }
+    }
+
+    /// `plugin` is about to be stopped: withdraws its prompts, and its queued
+    /// calls can't open new ones (they'd keep the stop waiting) until
+    /// [`allow_prompts`](Self::allow_prompts).
+    pub fn block_prompts(&self, plugin: &str) {
+        self.prompts_blocked.lock().insert(plugin.to_owned());
+        self.withdraw_prompts(plugin);
+    }
+
+    pub fn allow_prompts(&self, plugin: &str) {
+        self.prompts_blocked.lock().remove(plugin);
     }
 
     /// The user answered (`Some`) or dismissed (`None`) a prompt.
@@ -380,7 +400,13 @@ impl HostApi for PluginApi {
         let client = from_window(client, "ask the user")?;
         let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
         let (answer, answers) = std::sync::mpsc::sync_channel(1);
-        self.shared.prompts.lock().insert(id, PromptEntry { plugin: self.id().to_owned(), answer });
+        {
+            let blocked = self.shared.prompts_blocked.lock();
+            if blocked.contains(self.id()) {
+                return Err(HostError::Cancelled);
+            }
+            self.shared.prompts.lock().insert(id, PromptEntry { plugin: self.id().to_owned(), answer });
+        }
         let prompt_id = id.to_string();
         self.shared.sink.emit(
             Some(client),

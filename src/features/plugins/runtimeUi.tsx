@@ -250,6 +250,7 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
         title: prompt.prompt,
         initial: prompt.value ?? "",
         validate: () => null,
+        keepWhitespace: true,
         signal,
       });
       return text === null ? null : [text];

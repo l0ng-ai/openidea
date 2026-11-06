@@ -49,8 +49,9 @@ impl Plugin for Jobs {
                 Ok(None)
             }
             "pick" | "pick-many" => {
+                let long_key = "k".repeat(300);
                 let items = [
-                    PickItem::new("a", "Alpha").description("first"),
+                    PickItem::new(if arg == Some("long-key") { &long_key } else { "a" }, "Alpha").description("first"),
                     PickItem::new("b", "Beta"),
                     PickItem::new("c", "Gamma"),
                 ];

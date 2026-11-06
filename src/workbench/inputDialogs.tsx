@@ -29,6 +29,8 @@ export interface PromptInputOptions {
   hint?: ReactNode;
   /** Closes the dialog as cancelled when aborted. */
   signal?: AbortSignal;
+  /** Resolve with the text as typed instead of trimmed. */
+  keepWhitespace?: boolean;
 }
 
 export interface ChooseItemOptions {
@@ -122,15 +124,16 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
   const submit = async () => {
     setTouched(true);
     if (localError || validation.current) return;
-    if (!options.submit) return done(value.trim());
+    const result = options.keepWhitespace ? value : value.trim();
+    if (!options.submit) return done(result);
     const controller = new AbortController();
     validation.current = controller;
     setPending(true);
     try {
-      const message = await options.submit(value.trim(), controller.signal);
+      const message = await options.submit(result, controller.signal);
       if (controller.signal.aborted) return;
       setServerError(message);
-      if (!message) done(value.trim());
+      if (!message) done(result);
     } catch (e) {
       if (!controller.signal.aborted) setServerError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -265,7 +268,10 @@ function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: st
           getKey={(item) => item.key}
           activeIndex={active}
           onActiveChange={setActive}
-          onActivate={options.multiple ? undefined : (item) => done([item.key])}
+          onActivate={(item, _index, e) => {
+            if (!options.multiple) return done([item.key]);
+            if (e.type === "keydown") toggle(item.key);
+          }}
           rowHeight={options.items.some((i) => i.description) ? 36 : 24}
           className={styles.list}
           aria-label={options.title}

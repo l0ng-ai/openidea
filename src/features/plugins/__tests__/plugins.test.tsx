@@ -519,6 +519,23 @@ describe("plugin prompts", () => {
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("2", null));
   });
 
+  it("returns the typed text untrimmed", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "4",
+        prompt: { kind: "input", prompt: "Name", value: "  Main  " },
+      });
+    });
+    await user.click(await screen.findByRole("button", { name: "OK" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("4", ["  Main  "]));
+  });
+
   it("closes a question the plugin gave up on without answering", async () => {
     const answerPrompt = vi.fn().mockResolvedValue(undefined);
     setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });

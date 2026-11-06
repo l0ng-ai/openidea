@@ -376,6 +376,8 @@ pub struct StoreData {
     pub(crate) granted: Vec<Capability>,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
+    /// The running call is a command or an event, so it may ask the user.
+    pub(crate) interactive: bool,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
@@ -556,6 +558,7 @@ impl Runtime {
             granted: setup.granted,
             host: setup.host,
             invocation: Invocation::default(),
+            interactive: false,
             open_tasks: Vec::new(),
             last_report: None,
         };
@@ -855,6 +858,7 @@ impl Runtime {
     ) -> Result<Option<String>, CallError> {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -905,6 +909,7 @@ impl Runtime {
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -918,6 +923,7 @@ impl Runtime {
         let events: Vec<wit_events::Event> = events.into_iter().take(MAX_BATCH).map(event_to_wit).collect();
         self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let r = e.plugin.openidea_plugin_event_handler().call_handle(
                 &mut *store,
                 &events,
@@ -954,6 +960,7 @@ impl Runtime {
         let result = f(&self.exports, &mut self.store);
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
+        data.interactive = false;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
             data.host.task_end(id);

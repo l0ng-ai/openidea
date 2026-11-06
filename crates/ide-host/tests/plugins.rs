@@ -2252,6 +2252,12 @@ fn commands_ask_the_user_and_reveal_their_views() {
     let (result, _) = run_and_answer(&f, "confirm", None, Some(&[]), Duration::from_millis(1200));
     assert_eq!(result.unwrap().as_deref(), Some("true"));
 
+    // Keys come back as given: one that doesn't fit is refused, not cut.
+    f.take_events();
+    let err = f.run("jobs", "pick", Some("long-key")).unwrap_err();
+    assert!(err.contains("item key is longer"), "{err}");
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+
     // Without a window there is nothing to attach the dialog to.
     f.take_events();
     let no_window = Invocation { client: None, ..f.inv() };
@@ -2274,6 +2280,28 @@ fn commands_ask_the_user_and_reveal_their_views() {
         assert!(err.contains("declares no view"), "{view:?}: {err}");
     }
     assert!(f.run("jobs", "reveal", Some("jobs")).is_ok(), "the instance survives");
+}
+
+#[test]
+fn disabling_a_plugin_that_waits_for_an_answer_does_not_hang() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("jobs", "confirm", None));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })) {
+            assert!(Instant::now() < deadline && !running.is_finished(), "the command never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        f.host.set_enabled("jobs", false).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5), "disabling waited for the user");
+        assert!(running.join().unwrap().is_err(), "the waiting command ends with an error");
+    });
+    f.host.set_enabled("jobs", true).unwrap();
+    let (result, _) = run_and_answer(&f, "confirm", None, Some(&[]), Duration::ZERO);
+    assert_eq!(result.unwrap().as_deref(), Some("true"), "prompts work again after the restart");
 }
 
 #[test]

@@ -136,6 +136,7 @@ const MAX_REQUEST_BODY: usize = 8 << 20;
 const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
 const MAX_PICK_ITEMS: usize = 5000;
+const MAX_PICK_KEY: usize = 256;
 
 type Fallible<T> = wasmtime::Result<Result<T, wit::Error>>;
 
@@ -219,11 +220,22 @@ impl StoreData {
     /// Asks the user and waits; the wait doesn't count against the call's
     /// wall-clock budget.
     fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
+        self.require_interactive()?;
         let client = self.invocation.client.clone();
         let started = Instant::now();
         let answer = self.host.ask(client.as_deref(), prompt, &self.cancel.token());
-        self.deadline += started.elapsed();
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
         answer.map_err(to_wit)
+    }
+
+    /// Dialogs belong to commands and events; rendering and providers have no one to ask.
+    fn require_interactive(&self) -> Result<(), wit::Error> {
+        if self.interactive {
+            return Ok(());
+        }
+        Err(wit::Error::Invalid("can only ask the user from a command or event".into()))
     }
 }
 
@@ -281,10 +293,13 @@ impl ui::Host for StoreData {
         if items.len() > MAX_PICK_ITEMS {
             return Ok(Err(wit::Error::Invalid(format!("more than {MAX_PICK_ITEMS} items"))));
         }
+        if items.iter().any(|i| i.key.len() > MAX_PICK_KEY) {
+            return Ok(Err(wit::Error::Invalid(format!("an item key is longer than {MAX_PICK_KEY} bytes"))));
+        }
         let items = items
             .into_iter()
             .map(|i| PickItem {
-                key: clip(i.key, 256),
+                key: i.key,
                 label: clip(i.label, MAX_TITLE),
                 description: i.description.map(|d| clip(d, 1024)),
             })
@@ -304,6 +319,9 @@ impl ui::Host for StoreData {
     }
 
     fn reveal_view(&mut self, view: String) -> Fallible<()> {
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
         let client = self.invocation.client.clone();
         Ok(self.host.reveal_view(client.as_deref(), &clip(view, 64)).map_err(to_wit))
     }

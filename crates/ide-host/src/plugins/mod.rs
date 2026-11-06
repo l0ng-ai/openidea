@@ -1568,6 +1568,9 @@ impl PluginHost {
     /// Deactivates every plugin (also done on drop).
     pub fn shutdown(&self) {
         let actors: Vec<_> = self.plugins.read().values().filter_map(|p| p.runtime.lock().take()).collect();
+        for id in self.plugins.read().keys() {
+            self.shared.block_prompts(id);
+        }
         for a in &actors {
             a.stop(false);
         }
@@ -1867,6 +1870,7 @@ impl PluginHost {
             Err(e) => return Err(IdeError::internal(format!("plugin {:?}: {e}", plugin.id()))),
         };
         *runtime = Some(actor.clone());
+        self.shared.allow_prompts(plugin.id());
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Active;
         meta.has_syntax = has_syntax;
@@ -1964,6 +1968,8 @@ impl PluginHost {
 
     fn stop(&self, plugin: &LoadedPlugin) {
         self.clear_plugin_navigation(plugin.id());
+        // A call waiting on the user would keep the join below waiting.
+        self.shared.block_prompts(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(true);
         }
