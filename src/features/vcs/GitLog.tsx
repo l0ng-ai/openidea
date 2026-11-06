@@ -1709,17 +1709,7 @@ function CommitList() {
           );
         }}
       >
-        {opts.showColumnHeaders && (
-          <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
-            {opts.showRepository && useVcs.getState().roots.length > 1 && (
-              <span className={styles.colRepository}>{tx("Repository")}</span>
-            )}
-            <span className={styles.colSubject}>{tx("Commit")}</span>
-            {columns.map((column) => (
-              <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
-            ))}
-          </div>
-        )}
+        {opts.showColumnHeaders && <ColumnHeaders columns={columns} options={opts} minWidth={minWidth} />}
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}
@@ -1770,16 +1760,78 @@ function CommitList() {
   );
 }
 
+interface ColumnDrag {
+  id: string;
+  target: string;
+}
+function ColumnHeaders({
+  columns,
+  options,
+  minWidth,
+}: {
+  columns: LogColumn[];
+  options: LogOptions;
+  minWidth: number;
+}) {
+  const [drag, setDrag] = useState<ColumnDrag | null>(null);
+  const move = (source: string, target: string) => {
+    const ids = columns.map((c) => c.id);
+    const from = ids.indexOf(source),
+      to = ids.indexOf(target);
+    if (from < 0 || to < 0 || from === to) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, source);
+    updateLogOptions({ columnOrder: ids });
+  };
+  return (
+    <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+      {options.showRepository && useVcs.getState().roots.length > 1 && (
+        <span className={styles.colRepository}>{tx("Repository")}</span>
+      )}
+      <span className={styles.colSubject}>{tx("Commit")}</span>
+      {columns.map((column) => (
+        <LogColumnHeader
+          key={column.id}
+          column={column}
+          columns={columns}
+          options={options}
+          drag={drag}
+          onDragStart={(id) => setDrag({ id, target: id })}
+          onDragOver={(target) => setDrag((d) => (d && d.target !== target ? { ...d, target } : d))}
+          onDragEnd={() => {
+            if (drag && drag.target !== drag.id) move(drag.id, drag.target);
+            setDrag(null);
+          }}
+          onDragCancel={() => setDrag(null)}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Column headers reorder by pointer capture: WebView2 blocks HTML5 drag events
+// while dragDropEnabled is on, so dragging must not rely on them.
 function LogColumnHeader({
   column,
   columns,
   options,
+  drag,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+  onDragCancel,
 }: {
   column: LogColumn;
   columns: LogColumn[];
   options: LogOptions;
+  drag: ColumnDrag | null;
+  onDragStart(id: string): void;
+  onDragOver(target: string): void;
+  onDragEnd(): void;
+  onDragCancel(): void;
 }) {
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const press = useRef<{ x: number; y: number } | null>(null);
+  const resizeDrag = useRef<{ x: number; width: number } | null>(null);
   const width = options.columnWidths[column.id] ?? column.width ?? 120;
   const resize = (value: number) =>
     updateLogOptions({
@@ -1795,21 +1847,45 @@ function LogColumnHeader({
     updateLogOptions({ columnOrder: ids });
   };
   const index = columns.findIndex((c) => c.id === column.id);
+  const hitColumn = (x: number, y: number) =>
+    document.elementFromPoint(x, y)?.closest?.("[data-log-column]")?.getAttribute("data-log-column") ?? null;
   return (
     <span
-      className={clsx(styles.columnCell, styles.columnHeading)}
+      className={clsx(
+        styles.columnCell,
+        styles.columnHeading,
+        drag?.id === column.id && styles.dragSource,
+        drag && drag.target === column.id && drag.id !== column.id && styles.dropTarget,
+      )}
       style={{ width }}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("application/x-openidea-log-column", column.id);
-        e.dataTransfer.effectAllowed = "move";
+      data-log-column={column.id}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        press.current = { x: e.clientX, y: e.clientY };
+        e.currentTarget.setPointerCapture?.(e.pointerId);
       }}
-      onDragOver={(e) => {
-        if (e.dataTransfer.types.includes("application/x-openidea-log-column")) e.preventDefault();
+      onPointerMove={(e) => {
+        const start = press.current;
+        if (!start) return;
+        if (!drag) {
+          if (Math.hypot(e.clientX - start.x, e.clientY - start.y) >= 4) onDragStart(column.id);
+          return;
+        }
+        if (drag.id !== column.id) return;
+        const target = hitColumn(e.clientX, e.clientY);
+        if (target) onDragOver(target);
       }}
-      onDrop={(e) => {
-        e.preventDefault();
-        move(e.dataTransfer.getData("application/x-openidea-log-column"), column.id);
+      onPointerUp={() => {
+        if (!press.current) return;
+        press.current = null;
+        if (drag) onDragEnd();
+      }}
+      onPointerCancel={() => {
+        press.current = null;
+        if (drag) onDragCancel();
+      }}
+      onLostPointerCapture={() => {
+        press.current = null;
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -1841,22 +1917,22 @@ function LogColumnHeader({
         onPointerDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          drag.current = { x: e.clientX, width };
+          resizeDrag.current = { x: e.clientX, width };
           e.currentTarget.setPointerCapture(e.pointerId);
         }}
         onPointerMove={(e) => {
-          if (drag.current && e.currentTarget.hasPointerCapture(e.pointerId))
-            resize(drag.current.width + e.clientX - drag.current.x);
+          if (resizeDrag.current && e.currentTarget.hasPointerCapture(e.pointerId))
+            resize(resizeDrag.current.width + e.clientX - resizeDrag.current.x);
         }}
         onPointerUp={(e) => {
-          drag.current = null;
+          resizeDrag.current = null;
           if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
         }}
         onPointerCancel={() => {
-          drag.current = null;
+          resizeDrag.current = null;
         }}
         onLostPointerCapture={() => {
-          drag.current = null;
+          resizeDrag.current = null;
         }}
         onKeyDown={(e) => {
           if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;

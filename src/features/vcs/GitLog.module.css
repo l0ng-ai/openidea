@@ -198,6 +198,15 @@
   position: relative;
   padding-inline-end: 6px;
   cursor: grab;
+  touch-action: none;
+}
+.columnHeading.dragSource {
+  cursor: grabbing;
+  opacity: 0.6;
+}
+.columnHeading.dropTarget {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
 }
 .columnResize {
   position: absolute;

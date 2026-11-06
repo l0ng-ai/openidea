@@ -161,6 +161,27 @@ describe("log controls", () => {
     fireEvent.keyDown(author, { key: "ArrowRight", altKey: true });
     expect(useLogOptions.getState().columnOrder).toEqual(["date", "author"]);
   });
+
+  it("reorders columns by dragging a header onto another", async () => {
+    useLogOptions.setState({ showColumnHeaders: true, columnOrder: [] });
+    render(<LogView />);
+    await screen.findByRole("separator", { name: "Resize Author column" });
+    const header = (id: string) => document.querySelector<HTMLElement>(`[data-log-column="${id}"]`)!;
+    const author = header("author");
+    const date = header("date");
+    const elementFromPoint = document.elementFromPoint;
+    document.elementFromPoint = () => date;
+    try {
+      fireEvent.pointerDown(author, { button: 0, clientX: 100, clientY: 10 });
+      fireEvent.pointerMove(author, { clientX: 106, clientY: 10 });
+      fireEvent.pointerMove(author, { clientX: 120, clientY: 10 });
+      fireEvent.pointerUp(author);
+    } finally {
+      document.elementFromPoint = elementFromPoint;
+    }
+    await waitFor(() => expect(useLogOptions.getState().columnOrder[0]).toBe("date"));
+    expect(useLogOptions.getState().columnOrder[1]).toBe("author");
+  });
 });
 
 describe("commit details", () => {
