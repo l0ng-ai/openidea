@@ -1099,6 +1099,7 @@ impl PluginHost {
         let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
         api.stream_process(program, args, cwd.as_deref(), cancel, on_line).map_err(|e| match e {
             HostError::Cancelled => IdeError::cancelled(),
+            e @ HostError::Denied(_) => IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e.to_string()),
             HostError::NotFound(m) => IdeError::not_found(m),
             HostError::Invalid(m) => IdeError::invalid(m),
             e => IdeError::unavailable(e.to_string()),

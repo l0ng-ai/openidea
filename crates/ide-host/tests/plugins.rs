@@ -2732,3 +2732,26 @@ fn view_process_cancel_kills_the_child() {
     let orphan = || std::process::Command::new("pgrep").args(["-f", "sleep 30.4321"]).status().unwrap().success();
     assert!(eventually(|| !orphan()), "what the program started is killed too");
 }
+
+#[cfg(unix)]
+#[test]
+fn view_process_stops_when_the_grant_is_revoked() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let started = Instant::now();
+    let watchdog = ide_core::CancellationToken::default();
+    let timer = watchdog.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        timer.cancel();
+    });
+    let result = stream(&f, "while :; do echo tick; sleep 0.05; done", &watchdog, |l| {
+        if l.text == "tick" && started.elapsed() < Duration::from_secs(1) {
+            f.host.set_capability("hello", "process:sh", false).unwrap();
+        }
+    });
+    assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+}

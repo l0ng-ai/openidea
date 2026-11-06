@@ -364,10 +364,23 @@ impl PluginApi {
             read(Box::new(err), true);
         }
         drop(tx);
-        loop {
+        // Revoking the grant removes the pin: stop then.
+        let cap = format!("process:{program}");
+        let pin = (self.id().to_owned(), cap.clone());
+        let stop = |child: &mut std::process::Child| -> Option<HostError> {
             if cancel.is_cancelled() {
-                kill_group(&mut child);
-                return Err(HostError::Cancelled);
+                kill_group(child);
+                return Some(HostError::Cancelled);
+            }
+            if !self.shared.pins.read().contains_key(&pin) {
+                kill_group(child);
+                return Some(HostError::Denied(cap.clone()));
+            }
+            None
+        };
+        loop {
+            if let Some(e) = stop(&mut child) {
+                return Err(e);
             }
             match rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(line) => on_line(line),
@@ -380,9 +393,8 @@ impl PluginApi {
             if let Some(status) = child.try_wait().map_err(failed)? {
                 return Ok(status.code());
             }
-            if cancel.is_cancelled() {
-                kill_group(&mut child);
-                return Err(HostError::Cancelled);
+            if let Some(e) = stop(&mut child) {
+                return Err(e);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
