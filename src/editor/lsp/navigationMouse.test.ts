@@ -10,8 +10,17 @@ import { registerAction } from "@/platform/actions";
 const lspGoto = vi.hoisted(() => vi.fn<typeof commands.lspGoto>());
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
-  return { ...real, isTauri: () => true, commands: { ...real.commands, lspGoto } };
+  // Go to Implementation streams (`lspGotoImplementation`); here it answers all at once.
+  const lspGotoImplementation: typeof commands.lspGotoImplementation = (_request, doc, pos) =>
+    lspGoto(doc, pos, "implementation");
+  return { ...real, isTauri: () => true, commands: { ...real.commands, lspGoto, lspGotoImplementation } };
 });
+vi.mock("@tauri-apps/api/core", async (orig) => ({
+  ...(await orig<object>()),
+  Channel: class {
+    onmessage = () => {};
+  },
+}));
 
 const { gotoTargets, navigationExtension } = await import("./navigation");
 const { lspDoc } = await import("./lsp");
