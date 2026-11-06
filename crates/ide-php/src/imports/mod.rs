@@ -69,7 +69,7 @@ pub struct ImportAction {
 
 /// Whether an action of `kind` is asked for: `only` is empty, or names the
 /// kind or a parent of it (`source` for `source.organizeImports`).
-fn wanted(only: &[String], kind: &str) -> bool {
+pub(crate) fn wanted(only: &[String], kind: &str) -> bool {
     only.is_empty()
         || only.iter().any(|o| kind == o || kind.strip_prefix(o.as_str()).is_some_and(|rest| rest.starts_with('.')))
 }
@@ -217,7 +217,7 @@ fn kind_word(kind: NameKind) -> &'static str {
     }
 }
 
-fn file_edit(path: &Path, edits: Vec<TextEdit>) -> WorkspaceEdit {
+pub(crate) fn file_edit(path: &Path, edits: Vec<TextEdit>) -> WorkspaceEdit {
     WorkspaceEdit {
         files: vec![FileEdit::Edit { path: path.to_path_buf().into(), edits, version: None }],
         preconditions: Vec::new(),

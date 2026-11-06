@@ -193,7 +193,9 @@ impl DocumentObserver for PhpObserver {
 /// kinds the editor shows), semantic tokens, find usages, goto
 /// implementation (also for the gutter markers), the type and call
 /// hierarchies, rename, the reference updates of file moves, and the
-/// import code actions (auto-import fixes, Optimize Imports).
+/// code actions (inspection quick-fixes, auto-import fixes, Optimize
+/// Imports). Diagnostics don't go through it: the engine inspects open
+/// documents in the background and publishes them itself.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -401,12 +403,13 @@ impl crate::language_service::LanguageService for PhpService {
         Some(edit.map(|edit| Renamed { edit, incomplete: None }))
     }
 
-    /// Auto-import fixes for unresolved names in the range, and Optimize
-    /// Imports (`source.organizeImports`).
+    /// The quick-fixes of the inspection problems at the range, auto-import
+    /// fixes for unresolved names in it, and Optimize Imports
+    /// (`source.organizeImports`).
     fn code_actions(&self, doc: DocId, range: Range, only: &[String]) -> Answer<Vec<CodeAction>> {
         let engine = self.0.engine()?;
         let server = engine.server_id();
-        let actions = engine.import_actions(doc, range, only)?;
+        let actions = engine.code_actions(doc, range, only)?;
         Some(Ok(actions.into_iter().map(|action| code_action(action, server)).collect()))
     }
 
@@ -419,7 +422,7 @@ impl crate::language_service::LanguageService for PhpService {
     ) -> Answer<CodeActionQuery> {
         let engine = self.0.engine()?;
         let server = engine.server_id();
-        let actions = engine.import_actions(doc, range, only)?;
+        let actions = engine.code_actions(doc, range, only)?;
         Some(Ok(CodeActionQuery {
             actions: actions.into_iter().map(|action| code_action(action, server)).collect(),
             advertised_kinds: Some(ide_php::imports::ACTION_KINDS.iter().map(|k| k.to_string()).collect()),

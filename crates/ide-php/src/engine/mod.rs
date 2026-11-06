@@ -41,6 +41,8 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, Ser
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::index::{IndexStats, PhpIndex};
+use crate::inspect::Inspections;
+use crate::inspect::runner::Runner;
 use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
 use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
@@ -110,6 +112,8 @@ pub struct OpenDocument {
 pub struct PhpEngine {
     shared: Arc<Shared>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// The background inspection thread ([`crate::inspect`]).
+    inspection_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Default)]
@@ -151,6 +155,9 @@ struct Shared {
     types: TypeCache,
     /// The stub filter and the stub set built for it (on first use).
     stubs: Mutex<(StubFilter, Option<Arc<StubSet>>)>,
+    /// The inspections run over open documents, and their background run.
+    inspection_set: RwLock<Inspections>,
+    inspections: Arc<Runner>,
 }
 
 impl PhpEngine {
@@ -181,13 +188,20 @@ impl PhpEngine {
             parses: ParseCache::new(),
             types: TypeCache::new(),
             stubs: Mutex::new((config.stubs, None)),
+            inspection_set: RwLock::new(Inspections::builtin()),
+            inspections: Arc::default(),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
             .name("openidea-php-engine".into())
             .spawn(move || worker.run())
             .map_err(|e| IdeError::internal(format!("php engine: {e}")))?;
-        Ok(Arc::new(Self { shared, thread: Mutex::new(Some(thread)) }))
+        let runner = shared.inspections.clone();
+        let sink = shared.sink.clone();
+        Ok(Arc::new_cyclic(|engine| {
+            let inspection_thread = runner.start(engine.clone(), sink);
+            Self { shared, thread: Mutex::new(Some(thread)), inspection_thread: Mutex::new(inspection_thread) }
+        }))
     }
 
     /// Stops the worker (cancelling a running scan) and waits for it. The
@@ -200,6 +214,8 @@ impl PhpEngine {
         self.shared.cancel.cancel();
         self.shared.wake.notify_all();
         self.shared.idle.notify_all();
+        let inspection_thread = self.inspection_thread.lock().take();
+        self.shared.inspections.stop(inspection_thread, &self.shared.sink);
         let thread = self.thread.lock().take();
         let Some(thread) = thread else { return };
         if thread.join().is_err() {
@@ -349,6 +365,7 @@ impl PhpEngine {
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
         let document = OpenDocument { doc, path: normalize(path), version, text: Arc::from(text) };
         self.shared.documents.lock().insert(doc, document);
+        self.shared.inspections.schedule(doc);
     }
 
     /// The buffer of an open document changed; `text` is its full new text.
@@ -362,14 +379,21 @@ impl PhpEngine {
         document.text = Arc::from(text);
         drop(documents);
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        self.shared.inspections.schedule(doc);
     }
 
     /// The editor closed the document: the file on disk counts again.
     pub fn document_closed(&self, doc: DocId) {
         if self.shared.documents.lock().remove(&doc).is_some() {
+            self.shared.inspections.closed(doc, &self.shared.sink);
             self.shared.parses.remove(doc);
             self.shared.modification.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// The inspection set and the background run.
+    pub(crate) fn shared_inspections(&self) -> (&RwLock<Inspections>, &Arc<Runner>) {
+        (&self.shared.inspection_set, &self.shared.inspections)
     }
 
     /// Whether the engine holds `doc` as an open document.
@@ -689,7 +713,18 @@ impl Shared {
         if matches!(status.state, EngineState::Failed(_)) {
             status.state = EngineState::Ready;
         }
+        std::mem::drop(status);
+        self.inspect_open_documents();
         Ok(())
+    }
+
+    /// Other files' declarations changed: the open documents are inspected
+    /// again.
+    fn inspect_open_documents(&self) {
+        let open: Vec<DocId> = self.documents.lock().keys().copied().collect();
+        for doc in open {
+            self.inspections.schedule(doc);
+        }
     }
 
     fn open_index(&self) -> IdeResult<Arc<PhpIndex>> {
@@ -713,6 +748,7 @@ impl Shared {
         self.indexing.store(false, Ordering::SeqCst);
         self.emit_index_state(false, files, declarations);
         self.announce(ServerStatus::Ready);
+        self.inspect_open_documents();
         Ok(())
     }
 

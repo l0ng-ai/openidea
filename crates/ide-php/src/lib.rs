@@ -43,6 +43,10 @@
 //!   keys.
 //! - [`imports`]: the auto-import quick-fix for unresolved names, Optimize
 //!   Imports, and inserting `use` statements in the file's own style.
+//! - [`inspect`]: the inspection framework ([`inspect::Inspection`]):
+//!   per-file checks with quick-fixes, `@noinspection` suppression, syntax
+//!   errors from the parser, and the debounced background run publishing
+//!   `IdeEvent::Diagnostics { source: "php" }`.
 //! - [`semantic`]: semantic tokens (classes, interfaces, enums, functions,
 //!   methods, properties, constants, enum cases, parameters and variables,
 //!   with declaration, static, readonly, deprecated and built-in modifiers).
@@ -61,6 +65,7 @@ pub mod complete;
 pub mod engine;
 pub mod imports;
 pub mod index;
+pub mod inspect;
 pub mod meta;
 pub mod names;
 pub mod navigate;

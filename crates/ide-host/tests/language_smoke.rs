@@ -1073,7 +1073,7 @@ async fn php() {
 /// server: the checks it answers so far, the Structure view, go to definition of class names (in a
 /// `new`, an `extends` and a `use` import), of members and of variables, hover, completion
 /// (members, and a class name with auto-import), the auto-import quick fix, Optimize Imports,
-/// parameter info, inlay hints and rename. Not ignored: it
+/// syntax-error diagnostics, parameter info, inlay hints and rename. Not ignored: it
 /// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
@@ -1179,6 +1179,43 @@ async fn php_native() {
             crate::typed("src/Library.php", r"use App\Support\Collection;", r"use App\Model\Genre;"),
             Imports::Removed,
         )
+        .await;
+    // Diagnostics: the engine inspects open documents in the background and publishes them under
+    // `php`; a syntax error typed into a file is reported on its line and goes away with the edit.
+    let (doc, pos, before) = smoke
+        .type_line(crate::typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $broken = ;"))
+        .await;
+    let library = smoke.path("src/Library.php");
+    let latest_php = || {
+        smoke.events.lock().unwrap().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path, source, items } if **path == *library && source == "php" => {
+                Some(items.clone())
+            }
+            _ => None,
+        })
+    };
+    smoke
+        .retry("php diagnostics", smoke.warm_up, || async {
+            match latest_php() {
+                Some(items)
+                    if items.iter().any(|d| {
+                        d.severity == ide_core::Severity::Error && d.range.start.line == pos.line && d.code.is_none()
+                    }) =>
+                {
+                    Ok(())
+                }
+                other => Err(other),
+            }
+        })
+        .await;
+    smoke.restore(doc, &before).await;
+    smoke
+        .retry("php diagnostics cleared", smoke.warm_up, || async {
+            match latest_php() {
+                Some(items) if items.is_empty() => Ok(()),
+                other => Err(other),
+            }
+        })
         .await;
     // Parameter info: the baseline's check, and the engine's parameter-name and type hints.
     let (call, parameter) = PHP.signature;

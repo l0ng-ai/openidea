@@ -318,7 +318,7 @@ The design:
 
 ## Plan 4: Inspections
 
-- [ ] Phase 4.1: Inspection framework
+- [x] Phase 4.1: Inspection framework
   - An `Inspection` trait: id, default severity, a visitor over the parsed file and types, and quick-fixes producing a `WorkspaceEdit`.
   - A background run after document changes, debounced and cancellable, publishing `IdeEvent::Diagnostics { source: "php" }`.
   - Code actions return the quick-fixes that apply at a range.
