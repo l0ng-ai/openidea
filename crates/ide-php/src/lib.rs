@@ -41,6 +41,8 @@
 //!   ([`complete::Completions`]): members, variables, keywords, names with
 //!   auto-import, named arguments, expected values, enum cases and array
 //!   keys.
+//! - [`imports`]: the auto-import quick-fix for unresolved names, Optimize
+//!   Imports, and inserting `use` statements in the file's own style.
 //! - [`semantic`]: semantic tokens (classes, interfaces, enums, functions,
 //!   methods, properties, constants, enum cases, parameters and variables,
 //!   with declaration, static, readonly, deprecated and built-in modifiers).
@@ -57,6 +59,7 @@
 
 pub mod complete;
 pub mod engine;
+pub mod imports;
 pub mod index;
 pub mod meta;
 pub mod names;

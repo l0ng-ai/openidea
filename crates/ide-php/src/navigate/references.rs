@@ -612,7 +612,7 @@ impl<'a> Scan<'a, '_, '_> {
 /// split into names (`list<Foo|Bar>` gives `Foo` and `Bar`, `\A\Foo` stays
 /// whole). Keywords and lower-case scalar names are left to the resolver to
 /// not match.
-pub(super) fn doc_type_names(text: &str) -> Vec<(usize, usize)> {
+pub(crate) fn doc_type_names(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;

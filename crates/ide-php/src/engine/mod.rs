@@ -463,6 +463,24 @@ impl PhpEngine {
         indexed.or_else(|| self.open_declaration(fqn, &pick))
     }
 
+    /// Whether the project (the index or an open buffer) or the bundled
+    /// stubs declare `fqn`.
+    pub(crate) fn declares(&self, kind: NameKind, fqn: &str) -> bool {
+        let stubs = self.stubs();
+        let in_stubs = match kind {
+            NameKind::ClassLike => stubs.class_like(fqn).is_some(),
+            NameKind::Function => stubs.function(fqn).is_some(),
+            NameKind::Constant => stubs.constant(fqn).is_some(),
+            NameKind::Namespace => false,
+        };
+        in_stubs
+            || self
+                .project_declaration(kind, fqn, |summary| {
+                    crate::navigate::find_declaration(summary, kind, fqn).map(|_| ())
+                })
+                .is_some()
+    }
+
     /// Whether the bundled stubs declare `fqn` and the project doesn't.
     pub(crate) fn only_stubs_declare(&self, kind: NameKind, fqn: &str) -> bool {
         let stubs = self.stubs();

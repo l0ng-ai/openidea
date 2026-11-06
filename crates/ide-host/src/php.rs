@@ -18,8 +18,9 @@ use ide_core::{
     CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink, WorkspaceEdit,
 };
 use ide_lsp::types::{
-    CallHierarchy, CompletionItem, CompletionKind, CompletionList, GotoKind, HierarchyDirection, HierarchyItem, Hover,
-    InlayHint, InlayKind, Markup, References, Renamed, SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
+    CallHierarchy, CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, GotoKind,
+    HierarchyDirection, HierarchyItem, Hover, InlayHint, InlayKind, Markup, References, Renamed, SemanticTokens,
+    Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -191,7 +192,8 @@ impl DocumentObserver for PhpObserver {
 /// hints (parameter names and types; Editor › Inlay Hints decides which
 /// kinds the editor shows), semantic tokens, find usages, goto
 /// implementation (also for the gutter markers), the type and call
-/// hierarchies, rename, and the reference updates of file moves.
+/// hierarchies, rename, the reference updates of file moves, and the
+/// import code actions (auto-import fixes, Optimize Imports).
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -399,6 +401,31 @@ impl crate::language_service::LanguageService for PhpService {
         Some(edit.map(|edit| Renamed { edit, incomplete: None }))
     }
 
+    /// Auto-import fixes for unresolved names in the range, and Optimize
+    /// Imports (`source.organizeImports`).
+    fn code_actions(&self, doc: DocId, range: Range, only: &[String]) -> Answer<Vec<CodeAction>> {
+        let engine = self.0.engine()?;
+        let server = engine.server_id();
+        let actions = engine.import_actions(doc, range, only)?;
+        Some(Ok(actions.into_iter().map(|action| code_action(action, server)).collect()))
+    }
+
+    fn code_action_query(
+        &self,
+        doc: DocId,
+        range: Range,
+        only: &[String],
+        _cancel: &CancellationToken,
+    ) -> Answer<CodeActionQuery> {
+        let engine = self.0.engine()?;
+        let server = engine.server_id();
+        let actions = engine.import_actions(doc, range, only)?;
+        Some(Ok(CodeActionQuery {
+            actions: actions.into_iter().map(|action| code_action(action, server)).collect(),
+            advertised_kinds: Some(ide_php::imports::ACTION_KINDS.iter().map(|k| k.to_string()).collect()),
+        }))
+    }
+
     /// Moving PHP files inside the autoload roots updates their namespace,
     /// references and imports (and renames a class named after its file).
     fn will_rename_files(&self, moves: &[(PathBuf, PathBuf)], cancel: &CancellationToken) -> Answer<WorkspaceEdit> {
@@ -407,6 +434,19 @@ impl crate::language_service::LanguageService for PhpService {
             return None;
         }
         Some(engine.file_moves_edit(moves, cancel))
+    }
+}
+
+fn code_action(action: ide_php::imports::ImportAction, server: ide_core::ServerId) -> CodeAction {
+    CodeAction {
+        title: action.title,
+        kind: Some(action.kind.to_owned()),
+        is_preferred: action.preferred,
+        disabled_reason: None,
+        edit: Some(action.edit),
+        command: None,
+        data: None,
+        server,
     }
 }
 

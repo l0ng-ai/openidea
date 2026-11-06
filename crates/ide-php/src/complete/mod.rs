@@ -40,9 +40,7 @@ use std::collections::HashSet;
 
 use ide_core::{CancellationToken, DocId, Pos, Range, TextEdit};
 use mago_span::HasSpan;
-use mago_syntax::cst::{
-    Access, ArgumentList, Call, Expression, MatchArm, Method, Modifier, NamespaceBody, Statement, Trivia, TriviaKind,
-};
+use mago_syntax::cst::{Access, ArgumentList, Call, Expression, MatchArm, Method, Modifier, Trivia, TriviaKind};
 use mago_syntax::walker::Walker;
 use serde::{Deserialize, Serialize};
 
@@ -1260,50 +1258,10 @@ impl<'e, 'r> Collector<'e, 'r> {
         Some((short.to_owned(), Some(self.import_edit(kind, fqn))))
     }
 
-    /// `use Fqn;` after the last import before the caret, else after the
-    /// namespace declaration, else after the opening tag and `declare`s.
+    /// The `use` of `fqn`, placed as the file writes its imports
+    /// ([`crate::imports`]).
     fn import_edit(&self, kind: NameKind, fqn: &str) -> TextEdit {
-        let keyword = match kind {
-            NameKind::Function => "function ",
-            NameKind::Constant => "const ",
-            _ => "",
-        };
-        let line = format!("use {keyword}{fqn};");
-        let offset = self.offset as u32;
-        let program = self.parsed.program();
-        let namespace = program
-            .statements
-            .iter()
-            .filter_map(|statement| match statement {
-                Statement::Namespace(namespace) if namespace.span().start.offset <= offset => Some(namespace),
-                _ => None,
-            })
-            .next_back();
-        let statements = match namespace {
-            Some(namespace) => namespace.statements(),
-            None => &program.statements,
-        };
-        let last_use = statements
-            .iter()
-            .rfind(|statement| matches!(statement, Statement::Use(_)) && statement.span().end.offset <= offset);
-        let (at, text) = if let Some(last_use) = last_use {
-            (last_use.span().end.offset, format!("\n{line}"))
-        } else if let Some(namespace) = namespace {
-            match &namespace.body {
-                NamespaceBody::Implicit(body) => (body.terminator.span().end.offset, format!("\n\n{line}")),
-                NamespaceBody::BraceDelimited(block) => (block.left_brace.end.offset, format!("\n{line}")),
-            }
-        } else {
-            let header = program
-                .statements
-                .iter()
-                .take_while(|statement| matches!(statement, Statement::OpeningTag(_) | Statement::Declare(_)))
-                .last();
-            match header {
-                Some(header) => (header.span().end.offset, format!("\n\n{line}")),
-                None => (0, format!("{line}\n")),
-            }
-        };
+        let (at, text) = crate::imports::import_insertion(self.parsed, self.offset as u32, kind, fqn);
         let pos = self.pos(at as usize);
         TextEdit { range: Range::new(pos, pos), new_text: text }
     }

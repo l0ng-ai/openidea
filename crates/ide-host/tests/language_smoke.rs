@@ -1072,7 +1072,8 @@ async fn php() {
 /// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
 /// server: the checks it answers so far, the Structure view, go to definition of class names (in a
 /// `new`, an `extends` and a `use` import), of members and of variables, hover, completion
-/// (members, and a class name with auto-import), parameter info, inlay hints and rename. Not ignored: it
+/// (members, and a class name with auto-import), the auto-import quick fix, Optimize Imports,
+/// parameter info, inlay hints and rename. Not ignored: it
 /// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
@@ -1155,6 +1156,30 @@ async fn php_native() {
     let (typed, offers) = PHP.completion;
     smoke.completion(typed, offers).await;
     smoke.auto_import(PHP.auto_import).await;
+    // The auto-import quick fix on an unresolved class name, and Optimize Imports dropping an
+    // unused import.
+    let (doc, pos, before) = smoke
+        .type_line(crate::typed(
+            "src/Library.php",
+            "$lent = $book->withAvailability(false);",
+            "        $g = Genre::Fiction;",
+        ))
+        .await;
+    let line = Range::new(Pos::new(pos.line, 0), pos);
+    let actions = ops::lsp::lsp_code_actions(&smoke.host, WINDOW, doc, line, vec!["quickfix".into()]).await.unwrap();
+    let fix =
+        actions.into_iter().find(|a| a.title == r"Import class 'App\Model\Genre'").expect("an import fix for Genre");
+    assert!(fix.is_preferred, "the only candidate is preferred (applied on the fly)");
+    ops::lsp::lsp_apply_code_action(&smoke.host, WINDOW, doc, fix).await.unwrap();
+    let text = smoke.doc("src/Library.php").await.1;
+    assert!(text.contains("use App\\Model\\Book;\nuse App\\Model\\Genre;\n"), "{text}");
+    smoke.restore(doc, &before).await;
+    smoke
+        .organize_imports(
+            crate::typed("src/Library.php", r"use App\Support\Collection;", r"use App\Model\Genre;"),
+            Imports::Removed,
+        )
+        .await;
     // Parameter info: the baseline's check, and the engine's parameter-name and type hints.
     let (call, parameter) = PHP.signature;
     smoke.signature(call, parameter).await;

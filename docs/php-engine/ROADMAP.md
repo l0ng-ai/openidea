@@ -309,7 +309,7 @@ The design:
 - [x] Phase 3.4: Move file or class
       When a PHP file is moved or renamed inside a PSR-4 root, update its namespace and all references and imports. Use the `willRenameFiles` path in `crates/ide-host/src/ops/refactor.rs` with an engine-provided edit. Tests: an ide-host test that moves a fixture file.
 
-- [ ] Phase 3.5: Imports
+- [x] Phase 3.5: Imports
   - Auto-import code action for unresolved class, function or constant names.
   - Optimize Imports: remove unused imports, sort them, and group them by kind.
   - Insert imports respecting the existing grouping style.
