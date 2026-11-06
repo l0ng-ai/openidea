@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "path": { "type": "string", "description": "Project-relative or absolute path." },
+    "start_line": { "type": "integer", "minimum": 1, "description": "First line (1-based); default 1." },
+    "end_line": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Last line (1-based, inclusive); default: 2000 lines from start_line."
+    }
+  },
+  "required": ["path"]
+}

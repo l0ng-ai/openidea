@@ -1,0 +1,122 @@
+id = "openidea.ai-cli-agents"
+name = "AI CLI Agents"
+version = "0.1.0"
+description = "Launches Claude Code and Codex in the IDE's terminal, connected to OpenIDEA's MCP server, and gives them IDE tools: open files, the selection, problems, search, git status, and opening a file at a line."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: Launch Claude Code / Codex with the IDE's MCP server, configure them to reach it from any terminal, Copy MCP Config, eight MCP tools."
+categories = ["ai"]
+engines.openidea = "^1.2"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+# `mcp`: agents call the tools below. `process:claude` / `process:codex`: the
+# CLIs, each optional so the plugin works with only one installed (allow them in
+# Settings › Plugins). `clipboard`: Copy MCP Config.
+required = ["mcp", "project.read", "editor.read", "vcs.read"]
+optional = ["process:claude", "process:codex", "clipboard"]
+
+[[contributes.commands]]
+id = "launch-claude"
+title = "AI CLI Agents: Launch Claude Code"
+category = "AI CLI Agents"
+
+[[contributes.commands]]
+id = "launch-codex"
+title = "AI CLI Agents: Launch Codex"
+category = "AI CLI Agents"
+
+[[contributes.commands]]
+id = "configure-claude-user"
+title = "AI CLI Agents: Auto-Configure Claude Code (User)"
+category = "AI CLI Agents"
+
+[[contributes.commands]]
+id = "configure-claude-project"
+title = "AI CLI Agents: Auto-Configure Claude Code (Project .mcp.json)"
+category = "AI CLI Agents"
+
+[[contributes.commands]]
+id = "configure-codex"
+title = "AI CLI Agents: Auto-Configure Codex"
+category = "AI CLI Agents"
+
+[[contributes.commands]]
+id = "copy-config"
+title = "AI CLI Agents: Copy MCP Config"
+category = "AI CLI Agents"
+
+[[contributes.menus]]
+menu = "tools"
+command = "launch-claude"
+
+[[contributes.menus]]
+menu = "tools"
+command = "launch-codex"
+
+[[contributes.menus]]
+menu = "tools"
+command = "configure-claude-user"
+
+[[contributes.menus]]
+menu = "tools"
+command = "configure-claude-project"
+
+[[contributes.menus]]
+menu = "tools"
+command = "configure-codex"
+
+[[contributes.menus]]
+menu = "tools"
+command = "copy-config"
+
+[contributes.settings]
+title = "AI CLI Agents"
+schema = "settings.schema.json"
+
+[[contributes.mcpTools]]
+name = "get_open_files"
+description = "Files open in the IDE's editor tabs (project-relative paths), the focused one first."
+input-schema = "mcp/empty.json"
+read-only = true
+
+[[contributes.mcpTools]]
+name = "get_current_selection"
+description = "The file focused in the IDE's editor, its language, and the selections (1-based lines and columns) with their text."
+input-schema = "mcp/empty.json"
+read-only = true
+
+[[contributes.mcpTools]]
+name = "read_file"
+description = "Reads a project file as the IDE has it (unsaved editor changes included), with 1-based line numbers; at most 2000 lines per call."
+input-schema = "mcp/read_file.json"
+read-only = true
+
+[[contributes.mcpTools]]
+name = "find_files"
+description = "Project files matching a glob (`**/*.rs`, `src/**/test_*.py`; a pattern without `/` matches file names anywhere). Ignored files are skipped."
+input-schema = "mcp/find_files.json"
+read-only = true
+
+[[contributes.mcpTools]]
+name = "search_text"
+description = "Searches the project's files like the IDE's Find in Files (unsaved changes included, ignored and excluded files skipped): `path:line:column: text` per match."
+input-schema = "mcp/search_text.json"
+read-only = true
+
+[[contributes.mcpTools]]
+name = "get_problems"
+description = "Errors and warnings the IDE's Problems view lists (language servers, inspections, linters) for the project or one file."
+input-schema = "mcp/get_problems.json"
+read-only = true
+
+[[contributes.mcpTools]]
+name = "open_file"
+description = "Opens a project file in the IDE's editor, the caret at a 1-based line and column, so the user sees it."
+input-schema = "mcp/open_file.json"
+
+[[contributes.mcpTools]]
+name = "git_status"
+description = "The project's git repository: branch, upstream, commits ahead and behind, an operation in progress, how many files changed."
+input-schema = "mcp/empty.json"
+read-only = true

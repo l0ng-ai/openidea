@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "query": { "type": "string", "description": "Text to find, or a regular expression with `regex`." },
+    "regex": { "type": "boolean", "description": "`query` is a regular expression (Rust syntax). Default false." },
+    "case_sensitive": { "type": "boolean", "description": "Default false." },
+    "whole_word": { "type": "boolean", "description": "Default false." },
+    "glob": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "File masks to search (`*.rs`, `src/**/*.ts`; `!*.min.js` excludes). Default: every file."
+    },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Most matches returned; default 100." }
+  },
+  "required": ["query"]
+}

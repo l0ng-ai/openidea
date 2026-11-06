@@ -2868,3 +2868,63 @@ fn ide_state_needs_project_read() {
     let state = f.host.call_mcp_tool(&f.project, "ide_state", "{\"query\":\"two\"}").unwrap();
     assert_eq!(state.matches("Err(Denied(\"project.read\"))").count(), 3, "{state}");
 }
+
+/// AI CLI Agents: its tools answer from the IDE's state, and Launch Claude Code
+/// opens the approved `claude` with the server for the session and the token
+/// only in the environment.
+#[cfg(unix)]
+#[test]
+fn official_ai_cli_agents() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits::default());
+    let bin = f.plugins_dir.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("claude"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = bin.clone();
+    f.host.set_program_path(Arc::new(move || Some(path.clone().into_os_string())));
+    let info = f.install(&official("ai-cli-agents"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    let id = "openidea.ai-cli-agents";
+    let src = f.project.join("src");
+    let tool = |name: &str, args: &str| f.host.call_mcp_tool(&f.project, name, args).unwrap();
+
+    f.host.set_open_editors("main", vec![src.join("notes.txt")]);
+    assert_eq!(tool("get_open_files", "{}"), "src/notes.txt");
+    assert_eq!(tool("read_file", r#"{"path":"src/notes.txt","start_line":2}"#), "     2\tfour five\n");
+    assert_eq!(tool("search_text", r#"{"query":"FIVE"}"#), "src/notes.txt:2:6: four five");
+    assert_eq!(tool("find_files", r#"{"pattern":"*.txt"}"#), "src/notes.txt");
+    let problem = ide_core::Diagnostic {
+        range: ide_core::Range::new(ide_core::Pos::new(0, 4), ide_core::Pos::new(0, 7)),
+        severity: ide_core::Severity::Error,
+        message: "bad two".into(),
+        source: Some("lint".into()),
+        code: None,
+        unnecessary: false,
+        deprecated: false,
+        server: None,
+    };
+    f.host.report_problems("main", true, vec![(src.join("notes.txt"), vec![problem])]);
+    assert_eq!(
+        tool("get_problems", "{}"),
+        "1 errors, 0 warnings, 0 other problems in the project\nsrc/notes.txt:1:5: error [lint]: bad two"
+    );
+    assert_eq!(tool("git_status", "{}"), "The project is not in a git repository.");
+
+    f.host.set_capability(id, "process:claude", true).unwrap();
+    f.host.set_mcp_server(Some(McpServerInfo { port: 4321, token: "tok".into(), exe: "/bin/openidea".into() }));
+    f.take_events();
+    f.run(id, "launch-claude", None).unwrap();
+    let (program, args, env, cwd) = f
+        .take_events()
+        .into_iter()
+        .find_map(|(_, e)| match e {
+            PluginEvent::OpenTerminal { program, args, env, cwd, .. } => Some((program, args, env, cwd)),
+            _ => None,
+        })
+        .expect("a terminal");
+    assert_eq!(program.0, bin.join("claude").canonicalize().unwrap());
+    assert_eq!((args[0].as_str(), cwd.0), ("--mcp-config", f.project.clone()));
+    assert!(args[1].contains(&ide_mcp::endpoint_url(4321, &f.project)) && !args[1].contains("tok\""), "{args:?}");
+    assert_eq!(env, [("OPENIDEA_MCP_TOKEN".to_owned(), "tok".to_owned())]);
+}

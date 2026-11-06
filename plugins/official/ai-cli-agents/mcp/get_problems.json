@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "path": { "type": "string", "description": "Only this file's problems (project-relative or absolute)." },
+    "errors_only": {
+      "type": "boolean",
+      "description": "Only errors. Default false: errors, warnings and weaker ones."
+    },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Most problems returned; default 200." }
+  }
+}

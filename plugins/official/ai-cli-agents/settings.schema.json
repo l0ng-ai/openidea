@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "claudeArgs": {
+      "type": "string",
+      "title": "Claude Code: extra arguments",
+      "description": "Added to claude by Launch Claude Code, e.g. --model opus. The program is the claude that was on PATH when its permission was allowed in Settings › Plugins: to use another, put it first on PATH and allow the permission again.",
+      "default": ""
+    },
+    "codexArgs": {
+      "type": "string",
+      "title": "Codex: extra arguments",
+      "description": "Added to codex by Launch Codex, e.g. --model gpt-5. The program is the codex that was on PATH when its permission was allowed in Settings › Plugins.",
+      "default": ""
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "path": { "type": "string", "description": "Project-relative or absolute path." },
+    "line": { "type": "integer", "minimum": 1, "description": "1-based line; default 1." },
+    "column": { "type": "integer", "minimum": 1, "description": "1-based column; default 1." }
+  },
+  "required": ["path"]
+}

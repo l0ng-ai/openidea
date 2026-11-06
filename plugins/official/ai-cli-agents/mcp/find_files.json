@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "pattern": {
+      "type": "string",
+      "description": "Glob relative to the project root (`**/*.ts`); without `/` it matches file names anywhere (`*Test.java`)."
+    },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Most paths returned; default 200." }
+  },
+  "required": ["pattern"]
+}

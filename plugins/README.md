@@ -32,7 +32,8 @@ plugins/
    ├─ excalidraw/             # web view custom editor, file icons, a template
    ├─ graphviz/               # web view with code: live preview, problems from the page, a language
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
-   └─ license-header/         # file-opened events, quick fix, project scan in a task
+   ├─ license-header/         # file-opened events, quick fix, project scan in a task
+   └─ ai-cli-agents/          # bundled: MCP tools, agents in terminals with env, process runs
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, indexer, jobs, language-toy, mcp-tools, misbehave
 ```
