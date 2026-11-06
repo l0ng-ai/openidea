@@ -6,6 +6,7 @@
   "app.about.disclaimer": "Not affiliated with JetBrains.",
   "app.about.license": "Licensed under the Apache License 2.0",
   "app.about.platform": "Platform",
+  "app.about.reportIssue": "Report an Issue",
   "app.about.runtime": "Runtime",
   "app.about.showConfig": "Open Configuration Folder",
   "app.about.tagline": "An open-source IDE inspired by IntelliJ IDEA",
