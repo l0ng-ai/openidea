@@ -221,10 +221,51 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
     }
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else { return result };
     let found = plugin_call(move || plugins.provide_definition(&d, pos)).await.unwrap_or_default();
-    if found.is_empty() {
-        return result.map(without_generated_helpers);
+    let found: Vec<Location> =
+        found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect();
+    let in_string = !found.is_empty() && in_string_literal(host, window, doc, pos).await;
+    definition_targets(result, found, in_string)
+}
+
+async fn in_string_literal(host: &Host, window: &str, doc: DocId, pos: Pos) -> bool {
+    let Ok(project) = host.project(window) else { return false };
+    blocking(move || {
+        let snap = project.documents.text_snapshot(doc)?;
+        if snap.large {
+            return Ok(false);
+        }
+        let s = ide_syntax::Snapshot::doc(doc, snap.version, &snap.language, &snap.text);
+        Ok(string_at(&project.structure, &s, pos))
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn string_at(structure: &ide_syntax::StructureService, snap: &ide_syntax::Snapshot, pos: Pos) -> bool {
+    let cancel = ide_core::CancellationToken::new();
+    let Ok(Some(at)) = structure.node_at(snap, Range::new(pos, pos), &cancel) else { return false };
+    let stringy = |kind: &str| kind.contains("string") || kind.contains("heredoc") || kind.contains("nowdoc");
+    let part = |kind: &str| kind.contains("content") || kind.contains("fragment") || kind.contains("escape");
+    stringy(&at.node.kind) || (part(&at.node.kind) && at.ancestors.first().is_some_and(|parent| stringy(&parent.kind)))
+}
+
+fn definition_targets(
+    server: IdeResult<Vec<Location>>,
+    plugin: Vec<Location>,
+    in_string: bool,
+) -> IdeResult<Vec<Location>> {
+    if plugin.is_empty() {
+        return server.map(without_generated_helpers);
     }
-    Ok(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect())
+    if in_string {
+        return Ok(plugin);
+    }
+    let same_place = |l: &Location| plugin.iter().any(|p| p.path == l.path && p.range.start.line == l.range.start.line);
+    let server: Vec<Location> =
+        without_generated_helpers(server.unwrap_or_default()).into_iter().filter(|l| !same_place(l)).collect();
+    let mut out = plugin;
+    out.extend(server);
+    Ok(out)
 }
 
 fn without_generated_helpers(locations: Vec<Location>) -> Vec<Location> {
@@ -948,6 +989,59 @@ mod tests {
         let edit = TextEdit { range: Range::default(), new_text: "x".into() };
         let eager = plugin_code_action("acme.x", action(vec![("/a".into(), vec![edit])], Some("ref")));
         assert!(eager.edit.is_some() && eager.data.is_none());
+    }
+
+    #[test]
+    fn plugin_definitions_own_strings_and_join_the_server_elsewhere() {
+        let at = |path: &str, line: u32| Location {
+            path: path.into(),
+            range: Range::new(Pos::new(line, 0), Pos::new(line, 4)),
+            uri: None,
+        };
+        let paths = |found: IdeResult<Vec<Location>>| {
+            found.unwrap().into_iter().map(|l| l.path.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
+        let xml = at("/p/src/main/resources/UserMapper.xml", 3);
+        let java = at("/p/src/main/java/UserMapper.java", 7);
+        let helper = at("/p/_ide_helper.php", 1);
+        let route = at("/p/routes/web.php", 2);
+        let guess = at("/p/app/helpers.php", 9);
+
+        assert_eq!(
+            paths(definition_targets(Ok(vec![java.clone(), helper.clone()]), vec![xml.clone()], false)),
+            ["/p/src/main/resources/UserMapper.xml", "/p/src/main/java/UserMapper.java"]
+        );
+        assert_eq!(
+            paths(definition_targets(Ok(vec![xml.clone(), java.clone()]), vec![xml.clone()], false)),
+            ["/p/src/main/resources/UserMapper.xml", "/p/src/main/java/UserMapper.java"]
+        );
+        assert_eq!(
+            paths(definition_targets(Ok(vec![guess.clone(), helper.clone()]), vec![route.clone()], true)),
+            ["/p/routes/web.php"]
+        );
+        assert_eq!(
+            paths(definition_targets(Err(ide_core::IdeError::unavailable("no server")), vec![route.clone()], false)),
+            ["/p/routes/web.php"]
+        );
+        assert_eq!(paths(definition_targets(Ok(vec![helper, guess]), Vec::new(), false)), ["/p/app/helpers.php"]);
+    }
+
+    #[test]
+    fn positions_inside_string_literals_are_told_apart() {
+        let syntax = std::sync::Arc::new(ide_language::Syntax::new());
+        let structure = ide_syntax::StructureService::new(std::sync::Arc::new(ide_language::SyntaxCache::new(syntax)));
+        let php = ide_core::LanguageId::new("php");
+        let text = "<?php\nreturn to_route('users.show', $user);\necho \"Hi {$name}\";\n";
+        let snap = ide_syntax::Snapshot::text(&php, text);
+        assert!(string_at(&structure, &snap, Pos::new(1, 20)), "inside 'users.show'");
+        assert!(!string_at(&structure, &snap, Pos::new(1, 9)), "on to_route");
+        assert!(!string_at(&structure, &snap, Pos::new(1, 35)), "on $user");
+        assert!(!string_at(&structure, &snap, Pos::new(2, 12)), "on an interpolated variable");
+        let java = ide_core::LanguageId::new("java");
+        let text = "class A {\n    User find(long id) { return mapper.selectById(\"users\"); }\n}\n";
+        let snap = ide_syntax::Snapshot::text(&java, text);
+        assert!(!string_at(&structure, &snap, Pos::new(1, 9)), "on a method name");
+        assert!(string_at(&structure, &snap, Pos::new(1, 53)), "inside \"users\"");
     }
 
     #[test]
