@@ -71,6 +71,7 @@ import {
 } from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
+import { languageSemantics } from "./semantic";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
@@ -364,8 +365,6 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   });
 }
 
-const WEB_LANGUAGES = new Set(["html", "css", "scss", "less", "vue", "svelte"]);
-
 const WEB_SIGIL: Record<WebReferenceKind, string> = { class: ".", id: "#", anchor: "#", cssVariable: "" };
 
 /**
@@ -374,7 +373,7 @@ const WEB_SIGIL: Record<WebReferenceKind, string> = { class: ".", id: "#", ancho
  * when there is no such reference at `pos`.
  */
 async function gotoWebReference(view: EditorView, doc: EditorDocContext, pos: Pos, offset: number): Promise<boolean> {
-  if (!WEB_LANGUAGES.has(doc.language) || doc.virtual) return false;
+  if (!languageSemantics(doc.language)?.webReferenceSource || doc.virtual) return false;
   let found;
   try {
     await whenSynced(view);
@@ -505,7 +504,7 @@ async function probeNavigation(
       if (!isUnavailable(e)) throw e;
       navigable = !!(await gotoFallback(view, doc, pos))?.length;
     }
-    if (!navigable && WEB_LANGUAGES.has(doc.language) && !doc.virtual)
+    if (!navigable && languageSemantics(doc.language)?.webReferenceSource && !doc.virtual)
       navigable = !!(await lspRequest(() => commands.webGoto(doc.doc, pos)).catch(() => null))?.targets.length;
   }
   if (!navigable) return null;

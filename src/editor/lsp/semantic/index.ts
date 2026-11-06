@@ -28,6 +28,8 @@ export { languageSemantics, registeredSemantics } from "./languages";
 // Registers each language's semantics (highlighting hooks, construct docs).
 import "./python";
 import "./php";
+// Capability flags for languages without their own folder.
+import "./capabilities";
 
 const semanticBackoff = featureBackoff();
 

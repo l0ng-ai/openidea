@@ -13,10 +13,9 @@ import { SYNTAX_ERRORS_PRODUCER } from "@/platform/inspections";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { setFileDiagnostics } from "./diagnostics";
 import { docOf } from "./lsp";
+import { languageSemantics } from "./semantic";
 
 const INSPECT_DELAY = 500;
-/** Dialects the grammar doesn't follow; the database support checks SQL. */
-const SKIPPED = new Set(["sql", "plaintext"]);
 const RUNNING: ReadonlySet<ServerStatus> = new Set<ServerStatus>(["starting", "ready", "busy"]);
 
 let checked: Promise<ReadonlySet<string>> | null = null;
@@ -55,7 +54,7 @@ function syntaxErrorDiagnostic(e: SyntaxError): Diagnostic {
 export function syntaxErrorsExtension(): Extension {
   return ViewPlugin.define((view: EditorView) => {
     const doc = docOf(view);
-    if (!doc || doc.virtual || SKIPPED.has(doc.language) || !isTauri()) return {};
+    if (!doc || doc.virtual || languageSemantics(doc.language)?.skipSyntaxErrors || !isTauri()) return {};
     let timer: ReturnType<typeof setTimeout> | undefined;
     let seq = 0;
     const run = async () => {

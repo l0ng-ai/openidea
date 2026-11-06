@@ -684,7 +684,9 @@ class FloatingBulb {
 const floatingBulb = ViewPlugin.fromClass(FloatingBulb);
 
 export function intentionsExtension(): Extension {
-  const languageProviders = registeredSemantics().flatMap((s) => (s.intentions ? [s.intentions] : []));
+  const languageProviders = registeredSemantics().flatMap(({ semantics }) =>
+    semantics.intentions ? [semantics.intentions] : [],
+  );
   return [
     bulbField,
     bulbPlugin,

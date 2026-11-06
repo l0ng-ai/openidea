@@ -19,6 +19,7 @@ import { call, commands, isTauri, onIdeEvent, type PathCompletion } from "@/plat
 import { fileIconName, folderIconName } from "@/ui";
 import { setFileDiagnostics } from "./diagnostics";
 import { docOf, lspDoc } from "./lsp";
+import { languageSemantics } from "./semantic";
 import { tx } from "@/platform/i18n";
 
 // --- completion ---------------------------------------------------------------
@@ -37,7 +38,6 @@ const MARKDOWN_LINK = /\]\(([^)\s]*)$/;
 const STRING = /(["'`])([^"'`\\]*)$/;
 /** Module specifiers: the language server completes those. */
 const MODULE_SPECIFIER = /(?:\bimport\b|\bfrom\b|\brequire\s*\(|\bimport\s*\()\s*["'`][^"'`]*$/;
-const JS_LIKE = new Set(["javascript", "typescript", "javascriptreact", "typescriptreact", "vue", "svelte"]);
 
 /** Whether `prefix` already reads like a path (`./`, `../`, `a/b`). */
 export const pathLike = (prefix: string) => /^\.{1,2}\/|\//.test(prefix);
@@ -52,7 +52,7 @@ export function pathContext(before: string, language: string): PathContext | nul
   if (!m) return null;
   // Inside a string only when the quote opens one (an odd count on the line).
   if ((before.split(m[1]!).length - 1) % 2 === 0) return null;
-  if (JS_LIKE.has(language) && MODULE_SPECIFIER.test(before)) return null;
+  if (languageSemantics(language)?.serverCompletesModuleSpecifiers && MODULE_SPECIFIER.test(before)) return null;
   return { prefix: m[2]!, eager: false };
 }
 
@@ -104,7 +104,6 @@ export async function pathCompletionSource(ctx: CompletionContext): Promise<Comp
 
 // --- unresolved references --------------------------------------------------
 
-const WEB_LANGUAGES = new Set(["html", "css", "scss", "less", "vue", "svelte"]);
 const SOURCE = "file-references";
 const INSPECT_DELAY = 600;
 
@@ -112,7 +111,8 @@ const INSPECT_DELAY = 600;
 export function unresolvedReferences(): Extension {
   return ViewPlugin.define((view: EditorView) => {
     const doc = docOf(view);
-    if (!doc || doc.virtual || !WEB_LANGUAGES.has(doc.language) || !isTauri()) return {};
+    const webSource = doc && languageSemantics(doc.language)?.webReferenceSource;
+    if (!doc || doc.virtual || !webSource || !isTauri()) return {};
     let timer: ReturnType<typeof setTimeout> | undefined;
     let seq = 0;
     const run = async () => {
@@ -128,7 +128,7 @@ export function unresolvedReferences(): Extension {
             range: r.range,
             severity: "warning",
             message: tx`Cannot resolve file '${r.value}'`,
-            source: doc.language === "html" || doc.language === "vue" || doc.language === "svelte" ? "HTML" : "CSS",
+            source: webSource,
             code: null,
           })),
         );

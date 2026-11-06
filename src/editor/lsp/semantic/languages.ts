@@ -57,19 +57,32 @@ export interface LanguageSemantics {
   intentions?(view: EditorView): ContributedIntention[];
   /** Fallback for the Implement Methods action when the server offers no code action. */
   implementMethods?(view: EditorView): Promise<boolean>;
+  /** The server offers Generate (constructors, accessors, overrides…); elsewhere the Generate shortcut yields to the New popup, as in IDEA. */
+  generate?: boolean;
+  /** Shorthand fields (`{ x }`, `S { x }`) name both a key and a variable when renaming. */
+  shorthandRename?: boolean;
+  /** Grammar-based syntax-error highlights are noise for this language. */
+  skipSyntaxErrors?: boolean;
+  /** Web references (`href`, `class`, `var(--x)`) resolve without a language server; the diagnostics source label. */
+  webReferenceSource?: "HTML" | "CSS";
+  /** The server completes import/require specifiers itself; file completion stays out of them. */
+  serverCompletesModuleSpecifiers?: boolean;
 }
 
 const registry: Record<string, LanguageSemantics> = {};
 
-export function registerLanguageSemantics(language: string, semantics: LanguageSemantics): void {
-  registry[language.toLowerCase()] = semantics;
+export function registerLanguageSemantics(languages: string | readonly string[], semantics: LanguageSemantics): void {
+  for (const language of typeof languages === "string" ? [languages] : languages) {
+    const id = language.toLowerCase();
+    registry[id] = { ...registry[id], ...semantics };
+  }
 }
 
 export function languageSemantics(language: string | null | undefined): LanguageSemantics | undefined {
   return language ? registry[language.toLowerCase()] : undefined;
 }
 
-/** Every registered provider; language folders register when their module is imported. */
-export function registeredSemantics(): LanguageSemantics[] {
-  return Object.values(registry);
+/** Every registered entry; language folders register when their module is imported. */
+export function registeredSemantics(): Array<{ language: string; semantics: LanguageSemantics }> {
+  return Object.entries(registry).map(([language, semantics]) => ({ language, semantics }));
 }
