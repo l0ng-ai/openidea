@@ -864,7 +864,7 @@ impl PyEnv {
     }
 
     /// The first pixi environment `.pixi/envs/<env>` holding a Python, relative
-    /// to the root (`default` first, then the rest in name order).
+    /// to the root, in name order.
     fn pixi_env(root: &Path) -> Option<String> {
         let envs = root.join(".pixi/envs");
         let mut dirs: Vec<_> =

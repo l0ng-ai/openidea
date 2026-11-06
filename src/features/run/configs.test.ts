@@ -432,6 +432,21 @@ describe("context configuration", () => {
           "-x",
           "worker/test_worker.py",
         ]);
+        // A target stored on the template itself is dropped: the gutter file is
+        // the target, or the run would execute both.
+        cacheRunTemplates([
+          cfg({
+            id: "template:pytest",
+            kind: "pytest",
+            params: { command: "pixi", runnerArgs: "run pytest", target: "tests", options: "-x" },
+          }),
+        ]);
+        expect(contextConfig("worker/test_worker.py", [])!.args).toEqual([
+          "run",
+          "pytest",
+          "-x",
+          "worker/test_worker.py",
+        ]);
         // No template: the detected interpreter / system python as before.
         cacheRunTemplates([]);
         const venv = [

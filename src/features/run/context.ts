@@ -175,12 +175,14 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
  * "Edit configuration templates…" › pytest applied to a gutter/context pytest
  * configuration: its Command and Runner arguments replace the detected
  * interpreter (`pixi` + `run pytest`, a venv's `pytest`, …) while the file the
- * context adds stays the target. Without a template the config is unchanged.
+ * context adds stays the target — a target stored on the template itself is
+ * dropped, or the run would execute both it and the file. Without a template
+ * the config is unchanged.
  */
 function applyPytestTemplate(config: RunConfig): RunConfig {
   const type = typeFor("pytest");
   const template = runTemplate("pytest");
-  const params = type && template ? { ...type.defaults, ...template.params } : null;
+  const params = type && template ? { ...type.defaults, ...template.params, target: "" } : null;
   if (!type || !params) return config;
   const line = type.commandLine(params);
   if (!line) return config;
