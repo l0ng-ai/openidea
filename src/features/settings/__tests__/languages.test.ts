@@ -26,7 +26,7 @@ describe("languages settings", () => {
         jdtlsVmArgs: " -Xmx2g ",
         jdk: 21,
         jdtlsJdk: " /opt/jdk-25 ",
-        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd " },
+        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd ", threads: " 2C " },
       },
     });
     expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
@@ -45,8 +45,10 @@ describe("languages settings", () => {
       linkedProjects: [],
       daemon: false,
       mvndHome: "/opt/mvnd",
+      threads: "2C",
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
   });
 
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {

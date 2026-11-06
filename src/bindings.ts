@@ -5349,6 +5349,11 @@ export type MavenSettings = {
 	 *  `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
 	 */
 	mvndHome?: string,
+	/**
+	 *  Thread count of Maven builds (`-T`): a number of threads (`4`) or a core
+	 *  multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
+	 */
+	threads?: string,
 };
 
 export type MemoryCategory = 

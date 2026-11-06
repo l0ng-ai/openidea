@@ -293,6 +293,41 @@ fn project_jdk_and_maven_settings() {
 }
 
 #[test]
+fn maven_options_carry_the_thread_count_into_the_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    assert!(maven_options(tmp.path(), &s).is_empty(), "empty settings add nothing");
+
+    s.languages.java.maven.user_settings = "m2/settings.xml".into();
+    s.languages.java.maven.local_repository = "m2/repo".into();
+    s.languages.java.maven.threads = "4".into();
+    let settings_file = tmp.path().join("m2/settings.xml").to_string_lossy().into_owned();
+    let repo = tmp.path().join("m2/repo").to_string_lossy().into_owned();
+    assert_eq!(
+        maven_options(tmp.path(), &s),
+        ["-s", settings_file.as_str(), &format!("-Dmaven.repo.local={repo}"), "-T", "4"]
+    );
+
+    // A core multiplier passes through; anything Maven would reject is dropped
+    // rather than failing every build.
+    s.languages.java.maven.threads = "2.5C".into();
+    assert!(maven_options(tmp.path(), &s).ends_with(&["-T".to_owned(), "2.5C".to_owned()]));
+    s.languages.java.maven.threads = "abc".into();
+    assert!(!maven_options(tmp.path(), &s).iter().any(|a| a == "-T"));
+
+    // Run configurations get the options ahead of the goals, once per launch.
+    s.languages.java.maven.threads = "2C".into();
+    let mut configs = vec![run("maven", "./mvnw", &["package"]), run("maven", "./mvnw", &["-T", "8", "package"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let args: Vec<String> = configs[0].args.clone();
+    assert_eq!(args[args.len() - 3..].join(" "), "-T 2C package", "the settings' thread count leads the goals");
+    let args: Vec<String> = configs[1].args.clone();
+    assert_eq!(args[args.len() - 3..].join(" "), "-T 8 package", "the configuration's own -T wins");
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].args.iter().filter(|a| a.as_str() == "-T").count(), 1, "applied once");
+}
+
+#[test]
 fn saved_maven_goal_configs_take_the_configured_launcher() {
     if cfg!(windows) {
         return; // Unix paths
