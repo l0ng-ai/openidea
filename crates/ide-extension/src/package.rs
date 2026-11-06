@@ -314,6 +314,14 @@ pub struct Endorsement {
     pub signature: String,
 }
 
+/// A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginIcon {
+    pub light: String,
+    pub dark: Option<String>,
+}
+
 /// A published plugin version.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

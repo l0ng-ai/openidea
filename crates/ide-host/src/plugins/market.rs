@@ -350,7 +350,7 @@ impl PluginHost {
     pub(super) fn package_files_in(&self, dir: &Path) -> IdeResult<Vec<PathBuf>> {
         let manifest = Manifest::load(dir).map_err(IdeError::invalid)?;
         let pkg = ide_extension::Package::new(manifest, dir.to_path_buf());
-        let set = self.registry.prepare(&pkg).map_err(IdeError::invalid)?;
+        let set = self.prepare(&pkg).map_err(IdeError::invalid)?;
         Ok(set.files.into_iter().chain(pkg.manifest.wasm.clone()).collect())
     }
 

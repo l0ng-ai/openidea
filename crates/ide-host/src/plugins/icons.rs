@@ -26,6 +26,7 @@
 
 use super::icon_extensions::{Choice, DARK_SUFFIX, Extensions, Group, IconDefinition, Pattern, check_icon_id};
 use super::icon_settings::{self, SettingsSection};
+use ide_extension::package::PluginIcon;
 use ide_extension::{Package, UiDecl, check_relative, decode, validate_item_id};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,6 +36,8 @@ pub const POINT_ID: &str = "iconThemes";
 const MAX_ICONS: usize = 5000;
 const MAX_SVG: usize = 64 << 10;
 const MAX_MAPPINGS: usize = 20_000;
+/// A plugin's own icon is inline in every plugin listing and index entry.
+pub const MAX_PLUGIN_ICON: usize = 16 << 10;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +101,20 @@ pub(super) fn read_icon(pkg: &Package, path: &std::path::Path) -> Result<String,
         return Err(format!("{}: larger than {} KiB", path.display(), MAX_SVG >> 10));
     }
     sanitize_svg(&svg).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The manifest's `icon` / `icon-dark`, read and sanitised.
+pub fn plugin_icon(pkg: &Package) -> Result<Option<PluginIcon>, String> {
+    let read = |path: &std::path::Path| {
+        let svg = read_icon(pkg, path)?;
+        if svg.len() > MAX_PLUGIN_ICON {
+            return Err(format!("{}: larger than {} KiB", path.display(), MAX_PLUGIN_ICON >> 10));
+        }
+        Ok(svg)
+    };
+    let Some(light) = &pkg.manifest.icon else { return Ok(None) };
+    let dark = pkg.manifest.icon_dark.as_deref().map(read).transpose()?;
+    Ok(Some(PluginIcon { light: read(light)?, dark }))
 }
 
 pub(super) fn icon_theme(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
