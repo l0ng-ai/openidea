@@ -162,6 +162,22 @@
   border-right: 1px solid var(--border);
 }
 
+/* A sortable table's header: clickable, the sorted one marked by an arrow. */
+.headerCell {
+  cursor: pointer;
+  user-select: none;
+}
+
+.headerCell:hover,
+.headerCell:focus-visible {
+  background: var(--bg-hover);
+}
+
+.sortIcon {
+  margin-left: 4px;
+  vertical-align: -2px;
+}
+
 .tableEmpty {
   padding: 32px 12px;
   color: var(--fg-muted);

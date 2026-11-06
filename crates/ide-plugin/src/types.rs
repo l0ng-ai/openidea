@@ -445,6 +445,14 @@ pub struct ViewField {
     pub value: FieldValue,
 }
 
+/// A sortable table's order: the column and the direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSort {
+    pub column: u32,
+    pub descending: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewTable {
@@ -453,6 +461,10 @@ pub struct ViewTable {
     pub first_row: u32,
     pub rows: Vec<Vec<String>>,
     pub editable: bool,
+    /// The plugin opted its headers in to click-to-sort (a `table` body through `other`).
+    pub sortable: bool,
+    /// The sort the plugin orders by (none: no arrow yet).
+    pub sort: Option<TableSort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -497,4 +509,7 @@ pub enum ViewEvent {
     InsertRow { before: u32 },
     DeleteRows { rows: Vec<u32> },
     Message { text: String },
+    // A sortable table's header click: the column and the direction (leaves
+    // as an `other` view-event, kind `sort`). See `TableSort`.
+    Sort { column: u32, descending: bool },
 }

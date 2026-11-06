@@ -9,7 +9,8 @@ use crate::types::{
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
-    FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
+    FieldValue, TableSort, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem,
+    Viewport,
 };
 use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
 use ide_core::CancellationToken;
@@ -1071,12 +1072,54 @@ fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
     s.map(|s| clip(s, max))
 }
 
+/// A `table` body carried by the `other` case (the sortable variant, plugins/
+/// README.md §10): the usual table fields as JSON plus `sort`, the column the
+/// plugin orders by and the direction, or null. Anything unparsable degrades
+/// like a body this host doesn't know.
+fn sortable_table_from_json(data: &str) -> Option<ViewTable> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Json {
+        #[serde(default)]
+        columns: Vec<String>,
+        #[serde(default)]
+        total_rows: u32,
+        #[serde(default)]
+        first_row: u32,
+        #[serde(default)]
+        rows: Vec<Vec<String>>,
+        #[serde(default)]
+        editable: bool,
+        #[serde(default)]
+        sort: Option<TableSort>,
+    }
+    let json: Json = serde_json::from_str(data).ok()?;
+    Some(ViewTable {
+        columns: json.columns.into_iter().take(1000).map(|c| clip(c, MAX_TITLE)).collect(),
+        total_rows: json.total_rows,
+        first_row: json.first_row,
+        rows: json
+            .rows
+            .into_iter()
+            .take(MAX_TABLE_ROWS as usize)
+            .map(|r| r.into_iter().take(1000).map(|c| clip(c, MAX_CELL)).collect())
+            .collect(),
+        editable: json.editable,
+        sortable: true,
+        sort: json.sort,
+    })
+}
+
 fn view_from_wit(v: wit_vt::View) -> View {
     let body = match v.body {
         wit_vt::Body::Message(m) => ViewBody::Message(clip(m, 16 << 10)),
-        wit_vt::Body::Other(e) => {
-            ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64)))
-        }
+        wit_vt::Body::Other(e) => match e.kind.as_str() {
+            "table" => match sortable_table_from_json(&e.data) {
+                Some(t) => ViewBody::Table(t),
+                None => ViewBody::Message("This view needs a newer version of OpenIDEA (table).".into()),
+            },
+            _ => ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64))),
+        },
         wit_vt::Body::Tree(items) => ViewBody::Tree(
             items
                 .into_iter()
@@ -1135,6 +1178,9 @@ fn view_from_wit(v: wit_vt::View) -> View {
                 .map(|r| r.into_iter().take(1000).map(|c| clip(c, MAX_CELL)).collect())
                 .collect(),
             editable: t.editable,
+            // The plain body predates sortable headers; `other` kind `table` opts in.
+            sortable: false,
+            sort: None,
         }),
         wit_vt::Body::Html(h) => ViewBody::Html(clip(h, MAX_HTML)),
     };
@@ -1168,6 +1214,12 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
         ViewEvent::InsertRow { before } => W::InsertRow(before),
         ViewEvent::DeleteRows { rows } => W::DeleteRows(rows),
         ViewEvent::Message { text } => W::Message(text),
+        // A sortable table's header click, as an `other` view-event (plugins/
+        // README.md §10): the SDKs decode the kinds they know.
+        ViewEvent::Sort { column, descending } => W::Other(wit_types::Extension {
+            kind: "sort".into(),
+            data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
+        }),
     }
 }
 
@@ -1212,5 +1264,42 @@ mod tests {
         ])));
         let ViewBody::Form(fields) = form.body else { panic!("a form") };
         assert_eq!(fields.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), ["name"], "unknown fields are left out");
+    }
+
+    #[test]
+    fn a_sortable_table_arrives_through_other() {
+        let view = |data| wit_vt::View {
+            toolbar: Vec::new(),
+            body: wit_vt::Body::Other(wit_types::Extension { kind: "table".into(), data: data.into() }),
+            status: None,
+        };
+        let shown = view_from_wit(view(
+            r#"{"columns":["ext","files"],"totalRows":3,"firstRow":1,"rows":[["rs","2"],["md","1"]],
+                "editable":false,"sort":{"column":1,"descending":true}}"#,
+        ));
+        let ViewBody::Table(t) = shown.body else { panic!("{shown:?}") };
+        assert_eq!(t.columns, ["ext".to_owned(), "files".into()]);
+        assert_eq!((t.total_rows, t.first_row, t.editable), (3, 1, false));
+        assert!(t.sortable, "a `table` through `other` opts the headers in");
+        assert_eq!(t.sort, Some(TableSort { column: 1, descending: true }));
+
+        // No sort yet: still clickable headers, just no arrow.
+        let fresh = view_from_wit(view(
+            r#"{"columns":["a"],"totalRows":0,"firstRow":0,"rows":[],"editable":false,"sort":null}"#,
+        ));
+        let ViewBody::Table(t) = fresh.body else { panic!("{fresh:?}") };
+        assert!(t.sortable);
+        assert_eq!(t.sort, None);
+
+        // Broken JSON degrades like any body the host doesn't know.
+        let broken = view_from_wit(view("{not json"));
+        assert!(matches!(broken.body, ViewBody::Message(_)), "{broken:?}");
+    }
+
+    #[test]
+    fn a_sort_click_leaves_as_an_other_extension() {
+        let wit = event_to_wit_view(ViewEvent::Sort { column: 2, descending: true });
+        let wit_vt::ViewEvent::Other(e) = wit else { panic!("{wit:?}") };
+        assert_eq!((e.kind.as_str(), e.data.as_str()), ("sort", r#"{"column":2,"descending":true}"#));
     }
 }
