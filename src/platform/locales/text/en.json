@@ -36,5 +36,12 @@
   "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container": "For web requests: the XDEBUG_SESSION cookie or query parameter; point xdebug.client_host at this machine when PHP runs in a container",
   "e.g. /var/www/html": "e.g. /var/www/html",
   "Listening for Xdebug on port {port}": "Listening for Xdebug on port {port}",
-  "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port.": "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port."
+  "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port.": "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port.",
+  "Unable to load image: {path}": "Unable to load image: {path}",
+  "Updates": "Updates",
+  "Update source": "Update source",
+  "Where updates are downloaded from. If it can't be reached, the other source is tried.": "Where updates are downloaded from. If it can't be reached, the other source is tried.",
+  "Automatic": "Automatic",
+  "CNB (China mirror)": "CNB (China mirror)",
+  "Remote connection cancelled": "Remote connection cancelled"
 }
