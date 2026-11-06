@@ -731,6 +731,23 @@ export const commands = {
 	 */
 	mavenExcludeDependency: (pom: string, dependency: ArtifactKey, exclusion: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_exclude_dependency", { pom, dependency, exclusion })),
 	/**
+	 *  The go-to-declaration target at `pos` of a Maven POM: the definition of the
+	 *  `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
+	 *  entry providing the dependency's / plugin's version, along the parent chain.
+	 */
+	mavenGotoDeclaration: (pom: string, pos: Pos) => typedError<{
+	/**
+	 *  Absolute path of the file with the declaration: the POM itself, or a parent
+	 *  POM of the local repository when the definition is inherited from one.
+	 */
+	path: string,
+	range: Range,
+	/**  What was found. */
+	kind: PomGotoKind,
+	/**  The declaration as named for the user (`example.version`, `com.example:example-lib`). */
+	label: string,
+} | null, IdeError>(__TAURI_INVOKE("maven_goto_declaration", { pom, pos })),
+	/**
 	 *  Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
 	 *  module) / Build Artifacts, streaming the console and messages on `on_event`; cancellable
 	 *  with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
@@ -5898,6 +5915,29 @@ export type PluginsSnapshot = {
 	/**  UI contributions of live plugins, projected by the client. */
 	ui: UiContribution[],
 };
+
+/**  What a go-to-declaration in a POM found, and where. */
+export type PomGoto = {
+	/**
+	 *  Absolute path of the file with the declaration: the POM itself, or a parent
+	 *  POM of the local repository when the definition is inherited from one.
+	 */
+	path: string,
+	range: Range,
+	/**  What was found. */
+	kind: PomGotoKind,
+	/**  The declaration as named for the user (`example.version`, `com.example:example-lib`). */
+	label: string,
+};
+
+/**  The kind of declaration a POM go-to-declaration found. */
+export type PomGotoKind = 
+/**  A `<properties>` entry of the POM or one of its parents. */
+"property" | 
+/**  A `<dependencyManagement>` entry providing the dependency's version. */
+"managedDependency" | 
+/**  A `<pluginManagement>` entry providing the plugin's version. */
+"managedPlugin";
 
 /**  A 0-based line / UTF-16 column position. */
 export type Pos = {
