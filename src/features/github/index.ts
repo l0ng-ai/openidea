@@ -17,6 +17,7 @@ import {
   maybeEditorService,
   registerCloneSource,
   registerEditorKind,
+  registerGitLogChecks,
   registerOverlay,
   registerToolWindow,
 } from "@/workbench/contributions";
@@ -318,6 +319,7 @@ export function activate(): () => void {
       order: 10,
       component: lazyComponent(() => import("./clone/GitHubCloneSource").then((m) => m.GitHubCloneSource)),
     }),
+    registerGitLogChecks(lazyComponent(() => import("./LogCommitChecks").then((m) => m.LogCommitChecks))),
     registerToolWindow({
       id: WINDOW,
       title: "Pull Requests",
