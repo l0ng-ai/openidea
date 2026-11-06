@@ -367,6 +367,8 @@ pub struct AppearanceSettings {
     pub red_green_vision: bool,
     pub different_tool_window_background: bool,
     pub compact_mode: bool,
+    /// IDEA "Use smaller indents in trees": tool window trees indent less per level.
+    pub small_tree_indents: bool,
     pub full_path_in_title: bool,
     pub project_colors_in_toolbar: bool,
     pub dnd_with_alt_only: bool,
@@ -437,6 +439,7 @@ impl Default for AppearanceSettings {
             red_green_vision: false,
             different_tool_window_background: false,
             compact_mode: false,
+            small_tree_indents: false,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
             dnd_with_alt_only: false,

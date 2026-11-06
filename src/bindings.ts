@@ -1737,6 +1737,8 @@ export type AppearanceSettings = {
 	redGreenVision?: boolean,
 	differentToolWindowBackground?: boolean,
 	compactMode?: boolean,
+	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
+	smallTreeIndents?: boolean,
 	fullPathInTitle?: boolean,
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,

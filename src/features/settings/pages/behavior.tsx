@@ -334,6 +334,11 @@ function UiOptionsGrid() {
             label="Drag-and-drop with Alt pressed only"
             hint="Applies to editor tabs and tool window buttons"
           />
+          <BoundToggle
+            k="appearance.smallTreeIndents"
+            label="Use smaller indents in trees"
+            hint="Project, Structure, Commit and other tool window trees indent less per level"
+          />
           <BoundToggle k="appearance.menuIcons" label="Display icons in menu items" />
         </>
       }
@@ -642,6 +647,8 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
               "Use project colors in main toolbar",
               "Drag-and-drop with Alt pressed only",
               "Display icons in menu items",
+              "Use smaller indents in trees",
+              "tree indent",
             ],
             component: UiOptionsGrid,
           },
