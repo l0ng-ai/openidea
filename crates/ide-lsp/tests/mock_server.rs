@@ -2254,6 +2254,106 @@ async fn noop_handler_is_usable_for_raw_peers() {
 // ------------------------------------------------------------------ virtual documents
 
 #[tokio::test(flavor = "multi_thread")]
+async fn csharp_metadata_navigation_and_generated_documents() {
+    let mut caps = incremental_caps();
+    caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness_for("csharp", "cs", &[("other-csharp", incremental_caps()), ("csharp-ls", caps)], &[]);
+    let (doc, path) = h.open("Player.cs", "class Player : MonoBehaviour {}\n");
+    h.wait_status("other-csharp", ServerStatus::Ready).await;
+    h.wait_status("csharp-ls", ServerStatus::Ready).await;
+    let s = h.launcher.state("csharp-ls");
+    let other = h.launcher.state("other-csharp");
+    eventually(|| !s.requested("textDocument/diagnostic").is_empty()).await;
+    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"]["csharp"]["metadataUris"], true);
+    assert!(other.requested("initialize")[0]["capabilities"]["experimental"]["csharp"].is_null());
+
+    let uri = "csharp:/D:/My%20Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs";
+    let text = "namespace UnityEngine;\npublic class MonoBehaviour {\n    public void CancelInvoke() {}\n}\n";
+    s.respond("csharp/metadata", json!({ "assemblyName": "UnityEngine.CoreModule", "source": text }));
+    // Both Location and LocationLink preserve the server's type/member selection.
+    for (response, range) in [
+        (
+            json!({ "uri": uri.replace("%20", " "), "range": {"start":{"line":1,"character":13},"end":{"line":1,"character":26}} }),
+            rng(1, 13, 1, 26),
+        ),
+        (
+            json!([{ "targetUri": uri, "targetRange": {"start":{"line":0,"character":0},"end":{"line":3,"character":1}}, "targetSelectionRange": {"start":{"line":2,"character":16},"end":{"line":2,"character":28}} }]),
+            rng(2, 16, 2, 28),
+        ),
+    ] {
+        s.respond("textDocument/definition", response);
+        let defs = h.mgr.goto(doc, Pos::new(0, 16), GotoKind::Definition).await.unwrap();
+        assert_eq!(defs, vec![ide_core::Location { path: uri.into(), range, uri: Some(uri.into()) }]);
+        let vd = h.mgr.virtual_document(uri).await.unwrap();
+        assert_eq!(vd.text, text);
+        assert_eq!(vd.title, "UnityEngine.MonoBehaviour.cs");
+        assert_eq!(vd.language_id.as_str(), "csharp");
+        assert_eq!(vd.description.as_deref(), Some("UnityEngine.CoreModule"));
+        assert!(vd.decompiled);
+    }
+    assert_eq!(s.requested("csharp/metadata"), vec![json!({"textDocument":{"uri":uri}})]);
+    assert!(other.requested("csharp/metadata").is_empty());
+
+    let vdoc = DocId::next();
+    h.mgr.did_open_virtual(vdoc, uri, &h.lang, 0, text);
+    eventually(|| s.docs.lock().contains_key(uri)).await;
+    s.respond("textDocument/hover", json!({"contents":"class MonoBehaviour"}));
+    h.mgr.hover(vdoc, Pos::new(1, 13), Default::default()).await.unwrap();
+    assert_eq!(s.requested("textDocument/hover").last().unwrap()["textDocument"]["uri"], uri);
+    assert!(other.requested("textDocument/hover").is_empty());
+    h.mgr.did_close(vdoc);
+    eventually(|| !s.docs.lock().contains_key(uri)).await;
+    assert!(s.notified("textDocument/didChange").is_empty());
+
+    // Generated sources use the same request but are not decompiled, even under a directory named decompiled.
+    let generated = "csharp:/work/decompiled/Game.csproj/generated/Generator/Player.g.cs";
+    s.respond("csharp/metadata", json!({"source":"partial class Player {}"}));
+    let vd = h.mgr.virtual_document(generated).await.unwrap();
+    assert_eq!(vd.title, "Player.g.cs");
+    assert_eq!(vd.language_id.as_str(), "csharp");
+    assert!(vd.description.is_none());
+    assert!(!vd.decompiled);
+    // Generated and ordinary source still get diagnostics; decompiled assemblies do not.
+    let generated_doc = DocId::next();
+    h.mgr.did_open_virtual(generated_doc, generated, &vd.language_id, 0, &vd.text);
+    eventually(|| s.requested("textDocument/diagnostic").iter().any(|p| p["textDocument"]["uri"] == generated)).await;
+    assert!(s.requested("textDocument/diagnostic").iter().all(|p| p["textDocument"]["uri"] != uri));
+    h.mgr.did_close(generated_doc);
+
+    // Ordinary definitions still resolve to a disk path.
+    s.respond(
+        "textDocument/definition",
+        json!({"uri":uri_of(&path),"range":{"start":{"line":0,"character":6},"end":{"line":0,"character":12}}}),
+    );
+    let defs = h.mgr.goto(doc, Pos::new(0, 6), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].path, path);
+    assert!(defs[0].uri.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn csharp_metadata_failures_can_be_retried() {
+    let h = harness_for("csharp", "cs", &[("csharp-ls", incremental_caps())], &[]);
+    h.open("App.cs", "class App {}\n");
+    h.wait_status("csharp-ls", ServerStatus::Ready).await;
+    let s = h.launcher.state("csharp-ls");
+    let uri = "csharp:/work/App.csproj/decompiled/System.String.cs";
+    for response in [Value::Null, json!({"source":""})] {
+        s.respond("csharp/metadata", response);
+        let err = h.mgr.virtual_document(uri).await.unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
+        assert!(err.message.contains("System.String.cs"));
+    }
+    s.errors.lock().insert("csharp/metadata".into(), (-32603, "decompilation failed".into()));
+    assert!(h.mgr.virtual_document(uri).await.unwrap_err().message.contains("decompilation failed"));
+    s.errors.lock().remove("csharp/metadata");
+    s.respond("csharp/metadata", json!({"source":"public class String {}", "assemblyName":""}));
+    let vd = h.mgr.virtual_document(uri).await.unwrap();
+    assert!(vd.decompiled);
+    assert!(vd.description.is_none());
+    assert_eq!(s.requested("csharp/metadata").len(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn virtual_locations_and_text_document_content() {
     let mut caps = incremental_caps();
     caps["typeHierarchyProvider"] = json!(true);
