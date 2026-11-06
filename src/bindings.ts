@@ -80,6 +80,8 @@ export const commands = {
 	settingsExport: (path: string, storage: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("settings_export", { path, storage })),
 	/**  Import Settings…: replaces the global settings with the file's; every window re-reads them. */
 	settingsImport: (path: string) => typedError<SettingsImport_Serialize, IdeError>(__TAURI_INVOKE("settings_import", { path })),
+	/**  Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it. */
+	settingsReadJetbrains: (path: string) => typedError<JetBrainsSettings, IdeError>(__TAURI_INVOKE("settings_read_jetbrains", { path })),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
 	 *  projects); an empty `name` restores the folder name. Stored in the project's settings.
@@ -4718,6 +4720,16 @@ export type JdkReleases = {
 export type JdkVendor = {
 	id: string,
 	name: string,
+};
+
+/**
+ *  A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+ *  entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
+ */
+export type JetBrainsSettings = {
+	entries: string[],
+	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
+	files: { [key in string]: string },
 };
 
 export type JvmFilePresentation = {

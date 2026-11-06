@@ -316,6 +316,48 @@ impl SettingsStore {
     }
 }
 
+/// A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+/// entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JetBrainsSettings {
+    pub entries: Vec<String>,
+    /// Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads.
+    pub files: BTreeMap<String, String>,
+}
+
+const JETBRAINS_MARKER: &str = "IntelliJ IDEA Global Settings";
+const JETBRAINS_OPTIONS: [&str; 4] =
+    ["options/editor-font.xml", "options/colors.scheme.xml", "options/editor.xml", "options/ide.general.xml"];
+const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
+
+pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
+    use std::io::Read;
+    let not_jetbrains = || IdeError::invalid("not a JetBrains settings archive");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?).map_err(|_| not_jetbrains())?;
+    let mut entries = Vec::with_capacity(archive.len());
+    let mut files = BTreeMap::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|_| not_jetbrains())?;
+        let name = entry.name().map_err(|_| not_jetbrains())?.into_owned();
+        let wanted = JETBRAINS_OPTIONS.contains(&name.as_str())
+            || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"));
+        if wanted {
+            let mut text = String::new();
+            entry
+                .take(JETBRAINS_MAX_TEXT)
+                .read_to_string(&mut text)
+                .map_err(|e| IdeError::invalid(format!("{name}: {e}")))?;
+            files.insert(name.clone(), text);
+        }
+        entries.push(name);
+    }
+    if !entries.iter().any(|e| e == JETBRAINS_MARKER) {
+        return Err(not_jetbrains());
+    }
+    Ok(JetBrainsSettings { entries, files })
+}
+
 const BUNDLE_FORMAT: &str = "openidea-settings";
 const BUNDLE_VERSION: u32 = 1;
 
@@ -544,6 +586,38 @@ mod tests {
         std::fs::write(&bad, r#"{"format":"other","version":1,"settings":""}"#).unwrap();
         assert!(target.import_bundle(&bad).is_err());
         assert_eq!(target.effective().editor.font_size, 17.0);
+    }
+
+    #[test]
+    fn reads_jetbrains_settings_archives() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let write = |name: &str, entries: &[(&str, &str)]| {
+            let path = tmp.path().join(name);
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            for (entry, text) in entries {
+                zip.start_file(*entry, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(text.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        };
+        let ok = write(
+            "settings.zip",
+            &[
+                (JETBRAINS_MARKER, ""),
+                ("colors/_@user_Darcula.icls", "<scheme name=\"_@user_Darcula\"/>"),
+                ("options/editor-font.xml", "<application/>"),
+                ("options/vcs.xml", "<application/>"),
+                ("keymaps/macOS.xml", "<keymap/>"),
+            ],
+        );
+        let read = read_jetbrains_settings(&ok).unwrap();
+        assert_eq!(read.entries.len(), 5);
+        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
+        std::fs::write(tmp.path().join("plain.zip"), "not a zip").unwrap();
+        assert!(read_jetbrains_settings(&tmp.path().join("plain.zip")).is_err());
     }
 
     #[test]
