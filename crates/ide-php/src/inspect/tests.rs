@@ -86,11 +86,21 @@ struct Project {
 
 impl Project {
     fn new() -> Self {
+        Self::with_files(&[])
+    }
+
+    /// A project with `files` on disk (relative path, text), indexed.
+    fn with_files(files: &[(&str, &str)]) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap();
         let root = base.join("project");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("index.php"), "<?php\n").unwrap();
+        for (rel, text) in files {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
         let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
         let sink: SharedSink = {
             let events = events.clone();
@@ -347,11 +357,13 @@ fn replacing_the_inspections_runs_them_again() {
     let doc = p.open("src/a.php", "<?php\ntodo();\n");
     assert!(p.engine.wait_inspections(WAIT));
     assert_eq!(p.published("src/a.php").unwrap().len(), 1);
-    p.engine.set_inspections(Inspections::builtin());
+    p.engine.set_inspections(Inspections::default());
     assert!(p.engine.wait_inspections(WAIT));
     assert_eq!(p.published("src/a.php"), Some(Vec::new()));
     assert!(p.engine.inspected(doc).unwrap().problems.is_empty());
     assert_eq!(p.engine.inspections().ids(), Vec::<&str>::new());
+    p.engine.set_inspections(Inspections::builtin());
+    assert_eq!(p.engine.inspections().ids(), ["PhpUndefinedClass", "PhpUndefinedFunction", "PhpUndefinedConstant"]);
 }
 
 #[test]
@@ -369,3 +381,6 @@ fn tag_ids_and_matching() {
     assert!(found.suppresses("b", at));
     assert!(!found.suppresses("D", at) && !found.suppresses("F", at));
 }
+
+#[path = "undefined_tests.rs"]
+mod undefined_tests;

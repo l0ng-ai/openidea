@@ -327,7 +327,7 @@ The design:
 
   Tests: framework unit tests and the Native `language_smoke` diagnostic check.
 
-- [ ] Phase 4.2: Undefined symbols
+- [x] Phase 4.2: Undefined symbols
       Inspections for undefined classes, interfaces, traits, functions and constants. They respect `class_exists` / `function_exists` guards and `@noinspection`. Avoid false positives on the corpora: run the comparison harness, and record the false-positive count in PROGRESS.
 
 - [ ] Phase 4.3: Undefined members

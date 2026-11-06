@@ -580,7 +580,7 @@ impl Declarations for PhpEngine {
 }
 
 /// `.phpstorm.meta.php`, or a file inside a `.phpstorm.meta.php` directory.
-fn is_meta_path(path: &Path) -> bool {
+pub(crate) fn is_meta_path(path: &Path) -> bool {
     path.components().any(|part| part.as_os_str().eq_ignore_ascii_case(".phpstorm.meta.php"))
 }
 

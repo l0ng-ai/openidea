@@ -4,8 +4,9 @@
 //!   `@noinspection`), a default severity and a check that visits one
 //!   parsed file with its types through an [`InspectionContext`] and
 //!   reports [`Problem`]s. A problem may carry [`QuickFix`]es, each a
-//!   `WorkspaceEdit`. The checks of later phases are registered in
-//!   [`Inspections::builtin`]; [`PhpEngine::set_inspections`] replaces the
+//!   `WorkspaceEdit`. The checks are registered in
+//!   [`Inspections::builtin`] ([`undefined`]: undefined class-likes,
+//!   functions and constants); [`PhpEngine::set_inspections`] replaces the
 //!   set (tests, and the settings of phase 4.10).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
@@ -32,6 +33,7 @@ pub(crate) mod runner;
 pub mod suppress;
 #[cfg(test)]
 mod tests;
+pub mod undefined;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -67,10 +69,14 @@ pub struct Inspections {
 }
 
 impl Inspections {
-    /// The engine's own inspections. The checks themselves arrive with the
-    /// later phases of Plan 4; syntax errors are reported regardless.
+    /// The engine's own inspections (syntax errors are reported
+    /// regardless).
     pub fn builtin() -> Self {
-        Self::default()
+        Self::new(vec![
+            Arc::new(undefined::UndefinedClass),
+            Arc::new(undefined::UndefinedFunction),
+            Arc::new(undefined::UndefinedConstant),
+        ])
     }
 
     pub fn new(list: Vec<Arc<dyn Inspection>>) -> Self {
