@@ -278,6 +278,28 @@ pub struct AgentPermissionOption {
     pub kind: String,
 }
 
+/// A question the agent asks with `AskUserQuestion`, answered by picking options or typing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestion {
+    #[serde(default)]
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    pub options: Vec<AgentQuestionOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
 /// One item of a task's conversation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -350,6 +372,10 @@ pub enum AgentEntry {
         id: u32,
         title: String,
         options: Vec<AgentPermissionOption>,
+        /// Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
+        /// of question to answer instead of an option.
+        #[serde(default)]
+        questions: Vec<AgentQuestion>,
         /// Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled".
         chosen: Option<String>,
     },

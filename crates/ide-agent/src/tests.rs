@@ -156,6 +156,24 @@ impl Handler for FakeAgent {
                     self.say(&session, "ok");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "ask" {
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session,
+                                "toolCall": {"toolCallId": "q1", "title": "AskUserQuestion", "_meta": {"questions": [
+                                    {"question": "Which layout?", "options": [{"label": "List"}, {"label": "Grid"}]},
+                                    {"question": "Which checks?", "multiSelect": true,
+                                     "options": [{"label": "Disk"}, {"label": "GPU temps"}]}]}},
+                                "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    self.say(&session, &format!("answered {chosen}"));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "wait" {
                     // Works until cancelled.
                     while !self.calls.lock().iter().any(|c| c == "session/cancel") {
@@ -607,6 +625,44 @@ fn prompts_become_acp_content_blocks() {
     assert!(old["entries"][1].get("attachments").is_none());
     assert_eq!(title_of(&AgentPrompt { files: p.files.clone(), ..AgentPrompt::default() }), "my file.rs");
     assert!(clean(text(" ")).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn answered_questions_close_the_question_with_every_picked_label() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("ask"),
+            provider: "codex".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let question = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let reply = json!({"Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"]}).to_string();
+    mgr.respond(&task.id, question, Some(reply)).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "List; Disk, GPU temps")),
+        "{entries:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

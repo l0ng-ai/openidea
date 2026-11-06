@@ -1647,17 +1647,38 @@ impl Task {
                     .collect()
             })
             .unwrap_or_default();
+        let questions: Vec<AgentQuestion> = params
+            .pointer("/toolCall/_meta/questions")
+            .and_then(|questions| serde_json::from_value(questions.clone()).ok())
+            .unwrap_or_default();
+        let asked: Vec<String> = questions.iter().map(|question| question.question.clone()).collect();
         let (tx, rx) = std::sync::mpsc::channel();
-        let entry = self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), chosen: None });
+        let entry =
+            self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), questions, chosen: None });
         self.permissions.lock().insert(id, tx);
         self.set_status(AgentStatus::NeedsInput, None);
         self.approve_pending();
 
         let answer = rx.recv().ok().flatten();
-        let name = answer
-            .as_ref()
-            .and_then(|a| options.iter().find(|o| &o.id == a))
-            .map_or_else(|| "Cancelled".to_owned(), |o| o.name.clone());
+        let answers = answer
+            .as_deref()
+            .filter(|_| !asked.is_empty())
+            .and_then(|reply| serde_json::from_str::<serde_json::Map<String, Value>>(reply).ok());
+        let name = match answers {
+            Some(answers) => asked
+                .iter()
+                .filter_map(|question| answers.get(question))
+                .map(|items| match items {
+                    Value::Array(items) => items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
+                    item => item.as_str().unwrap_or_default().to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+            None => answer
+                .as_ref()
+                .and_then(|reply| options.iter().find(|option| &option.id == reply))
+                .map_or_else(|| "Cancelled".to_owned(), |option| option.name.clone()),
+        };
         {
             let mut s = self.state.lock();
             if let Some(AgentEntry::Permission { chosen, .. }) = s.conversation.main.entries.get_mut(entry) {
