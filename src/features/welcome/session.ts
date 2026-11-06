@@ -6,7 +6,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isCancelled, isTauri, type Settings } from "@/platform/ipc";
-import { openProject, startupLaunchHandled, useProject } from "@/platform/project";
+import { closeProject, openProject, startupLaunchHandled, useProject } from "@/platform/project";
 import { connectRemote, projectLocation, resolveRemoteLocation, useRemoteProgress } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 
@@ -90,11 +90,11 @@ export function cancelReopen() {
   write(SESSION_KEY, null);
   windowProject(null);
   useSession.setState({ reopening: null });
-  useRemoteProgress.setState({ progress: null, location: null });
-  useProject.setState({ opening: false, openingPath: null });
-  if (isTauri()) {
-    void commands.remoteDisconnect().catch(() => {});
-    void commands.closeProject().catch(() => {});
+  // A local open can't be interrupted; `reopen` closes it again once it finishes.
+  if (useRemoteProgress.getState().location) {
+    useRemoteProgress.setState({ progress: null, location: null });
+    useProject.setState({ opening: false, openingPath: null });
+    if (isTauri()) void commands.remoteDisconnect().catch(() => {});
   }
 }
 
@@ -138,12 +138,17 @@ async function reopen(path: string) {
   try {
     const remote = await resolveRemoteLocation(path);
     if (remote) await connectRemote(remote.target, remote.path);
-    else await openProject(path);
-    if (reopenEpoch === epoch) {
-      const opened = projectLocation(useProject.getState().project?.root) ?? path;
-      write(SESSION_KEY, opened);
-      windowProject(opened);
+    else {
+      const project = await openProject(path);
+      // Cancelled while opening: close it again unless the user has opened another project since.
+      if (reopenEpoch !== epoch) {
+        if (useProject.getState().project?.root === project.root) await closeProject().catch(() => {});
+        return;
+      }
     }
+    const opened = projectLocation(useProject.getState().project?.root) ?? path;
+    write(SESSION_KEY, opened);
+    windowProject(opened);
   } catch (e) {
     write(SESSION_KEY, null);
     windowProject(null);
