@@ -480,6 +480,64 @@ describe("bridge events", () => {
   });
 });
 
+describe("plugin prompts", () => {
+  it("shows a plugin's question and reports the answer or the dismissal", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "1",
+        prompt: {
+          kind: "quickPick",
+          title: "Pick targets",
+          multiple: true,
+          items: [
+            { key: "a", label: "Alpha", description: null },
+            { key: "b", label: "Beta", description: "second" },
+          ],
+        },
+      });
+    });
+    await user.click(await screen.findByRole("checkbox", { name: "Beta" }));
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("1", ["b"]));
+
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "2",
+        prompt: { kind: "input", prompt: "Name", value: "Main" },
+      });
+    });
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("2", null));
+  });
+
+  it("closes a question the plugin gave up on without answering", async () => {
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "3",
+        prompt: { kind: "input", prompt: "Name", value: null },
+      });
+    });
+    await screen.findByRole("dialog");
+    act(() => handlePluginEvent({ type: "promptClosed", promptId: "3" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(answerPrompt).not.toHaveBeenCalled();
+  });
+});
+
 describe("PluginsPage", () => {
   it("lists plugins, shows details, toggles and applies themes", async () => {
     const user = userEvent.setup();

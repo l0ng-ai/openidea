@@ -8,7 +8,7 @@
 use crate::host::Invocation;
 use crate::types::*;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 
@@ -68,6 +68,8 @@ struct State {
     fetch_error: Option<Error>,
     clipboard: Option<String>,
     opened_urls: Vec<String>,
+    answers: VecDeque<Option<Vec<String>>>,
+    revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
@@ -222,6 +224,19 @@ impl MockHost {
     /// URLs opened with [`crate::host::open_url`], in order.
     pub fn opened_urls(&self) -> Vec<String> {
         self.state.borrow().opened_urls.clone()
+    }
+
+    /// The answer the next [`crate::host::quick_pick`], [`crate::host::input`] or
+    /// [`crate::host::confirm`] gets: the chosen keys, the text (one element),
+    /// anything for OK, or `None` for dismissed. Unscripted prompts are dismissed.
+    pub fn answer_next_prompt(&self, answer: Option<&[&str]>) {
+        let answer = answer.map(|a| a.iter().map(|&s| s.to_owned()).collect());
+        self.state.borrow_mut().answers.push_back(answer);
+    }
+
+    /// Views brought forward with [`crate::host::reveal_view`], in order.
+    pub fn revealed_views(&self) -> Vec<String> {
+        self.state.borrow().revealed_views.clone()
     }
 
     /// Makes `vcs-fetch` fail.
@@ -394,6 +409,31 @@ pub mod current {
             s.opened_urls.push(trimmed.to_owned());
             Ok(())
         })
+    }
+
+    pub fn quick_pick(_title: &str, items: &[PickItem], multiple: bool) -> Result<Option<Vec<String>>, Error> {
+        let answer = with(|s| s.answers.pop_front().flatten());
+        let Some(keys) = answer else { return Ok(None) };
+        if let Some(unknown) = keys.iter().find(|k| !items.iter().any(|i| &i.key == *k)) {
+            return Err(Error::Invalid(format!("{unknown:?} is not one of the items")));
+        }
+        if !multiple && keys.len() > 1 {
+            return Err(Error::Invalid("more than one item chosen".into()));
+        }
+        Ok(Some(keys))
+    }
+
+    pub fn input(_prompt: &str, _value: Option<&str>) -> Result<Option<String>, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn confirm(_title: &str, _message: &str) -> Result<bool, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).is_some())
+    }
+
+    pub fn reveal_view(view: &str) -> Result<(), Error> {
+        with(|s| s.revealed_views.push(view.to_owned()));
+        Ok(())
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -740,6 +780,20 @@ mod tests {
         host::open_url("https://example.com/a").unwrap();
         assert_eq!(mock.opened_urls(), ["https://example.com/a"]);
         assert!(matches!(host::open_url("file:///etc/passwd"), Err(Error::Invalid(_))));
+        let items = [PickItem::new("a", "A"), PickItem::new("b", "B").description("second")];
+        assert_eq!(host::quick_pick("Pick", &items, false).unwrap(), None);
+        mock.answer_next_prompt(Some(&["b"]));
+        assert_eq!(host::quick_pick("Pick", &items, false).unwrap(), Some(vec!["b".to_owned()]));
+        mock.answer_next_prompt(Some(&["zzz"]));
+        assert!(matches!(host::quick_pick("Pick", &items, true), Err(Error::Invalid(_))));
+        mock.answer_next_prompt(Some(&["x.txt"]));
+        assert_eq!(host::input("Name", Some("a.txt")).unwrap().as_deref(), Some("x.txt"));
+        mock.answer_next_prompt(Some(&[]));
+        assert!(host::confirm("Sure?", "Really").unwrap());
+        mock.answer_next_prompt(None);
+        assert!(!host::confirm("Sure?", "Really").unwrap());
+        host::reveal_view("panel").unwrap();
+        assert_eq!(mock.revealed_views(), ["panel"]);
         {
             let task = host::begin_task("Work", true);
             task.report(1, Some(2), None);

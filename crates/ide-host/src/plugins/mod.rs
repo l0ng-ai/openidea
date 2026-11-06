@@ -1261,6 +1261,12 @@ impl PluginHost {
         task_id.parse().is_ok_and(|id| self.shared.cancel_task(id))
     }
 
+    /// The user answered (`Some`) or dismissed (`None`) a prompt
+    /// (`PromptRequested`); false when it is no longer waiting.
+    pub fn answer_prompt(&self, prompt_id: &str, answer: Option<Vec<String>>) -> bool {
+        prompt_id.parse().is_ok_and(|id| self.shared.answer_prompt(id, answer))
+    }
+
     /// Kinds of workbench events some running or activatable plugin wants;
     /// the UI reports only these.
     pub fn event_kinds(&self) -> BTreeSet<EventKind> {

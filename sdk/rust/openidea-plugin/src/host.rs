@@ -81,6 +81,30 @@ mod imp {
         wit::ui::open_url(url).map_err(error)
     }
 
+    pub fn quick_pick(title: &str, items: &[PickItem], multiple: bool) -> Result<Option<Vec<String>>, Error> {
+        let items: Vec<wit::ui::PickItem> = items
+            .iter()
+            .map(|i| wit::ui::PickItem {
+                key: i.key.clone(),
+                label: i.label.clone(),
+                description: i.description.clone(),
+            })
+            .collect();
+        wit::ui::quick_pick(title, &items, multiple).map_err(error)
+    }
+
+    pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::input(prompt, value).map_err(error)
+    }
+
+    pub fn confirm(title: &str, message: &str) -> Result<bool, Error> {
+        wit::ui::confirm(title, message).map_err(error)
+    }
+
+    pub fn reveal_view(view: &str) -> Result<(), Error> {
+        wit::ui::reveal_view(view).map_err(error)
+    }
+
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         wit::storage::get(key).map_err(error)
     }
@@ -553,6 +577,34 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
 /// Opens an `http://` or `https://` URL in the user's default browser.
 pub fn open_url(url: &str) -> Result<(), Error> {
     imp::open_url(url)
+}
+
+/// Shows a list in the window the current command or event came from and
+/// waits: the keys of the chosen items (one unless `multiple`), or `None` when
+/// the user dismisses it. Needs no capability; [`Error::Invalid`] outside a
+/// command or event of a window (and in editor providers). The wait doesn't
+/// count against the call's time budget, but the plugin handles nothing else
+/// meanwhile.
+pub fn quick_pick(title: &str, items: &[PickItem], multiple: bool) -> Result<Option<Vec<String>>, Error> {
+    imp::quick_pick(title, items, multiple)
+}
+
+/// Asks for a line of text, pre-filled with `value`; `None` when dismissed.
+/// Same rules as [`quick_pick`].
+pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    imp::input(prompt, value)
+}
+
+/// Asks for confirmation: `true` on OK, `false` on Cancel or Escape.
+/// Same rules as [`quick_pick`].
+pub fn confirm(title: &str, message: &str) -> Result<bool, Error> {
+    imp::confirm(title, message)
+}
+
+/// Brings one of the plugin's declared views to the front in the window the
+/// current command or event came from.
+pub fn reveal_view(view: &str) -> Result<(), Error> {
+    imp::reveal_view(view)
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of

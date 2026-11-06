@@ -2,7 +2,9 @@
 
 use super::theme::ThemeDef;
 use ide_extension::{CapabilityInfo, ContributionInfo, UiContribution};
-pub use ide_plugin::{ActionPerformed, ActionSource, EventKind, NotificationLevel, StatusItem, WorkbenchEvent};
+pub use ide_plugin::{
+    ActionPerformed, ActionSource, EventKind, NotificationLevel, PickItem, Prompt, StatusItem, WorkbenchEvent,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -205,6 +207,16 @@ pub enum PluginEvent {
     /// Open `url` (`http(s)://`) in the system browser.
     #[serde(rename_all = "camelCase")]
     OpenUrl { plugin_id: String, url: String },
+    /// A command waits for the user's answer: show `prompt`, then report it with
+    /// `plugin_answer_prompt(prompt_id, …)`.
+    #[serde(rename_all = "camelCase")]
+    PromptRequested { plugin_id: String, prompt_id: String, prompt: Prompt },
+    /// The call that asked gave up (cancelled, or its plugin stopped): close the prompt.
+    #[serde(rename_all = "camelCase")]
+    PromptClosed { prompt_id: String },
+    /// Bring the tool window of the plugin's view `view` to the front.
+    #[serde(rename_all = "camelCase")]
+    RevealView { plugin_id: String, view: String },
 }
 
 /// Delivers events to the UI. `client` is the window that invoked the plugin

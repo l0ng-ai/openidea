@@ -5,7 +5,7 @@
 
 use crate::types::{CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument};
 use crate::types::{
-    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput,
+    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
@@ -53,6 +53,24 @@ pub trait HostApi: Send + Sync {
     }
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let _ = (client, url);
+        Ok(())
+    }
+    /// Shows `prompt` in `client`'s window and waits for the answer until the
+    /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
+    /// text (`Input`, one element) or any value (`Confirm`: OK); `None` when
+    /// dismissed.
+    fn ask(
+        &self,
+        client: Option<&str>,
+        prompt: Prompt,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Vec<String>>, HostError> {
+        let _ = (client, prompt, cancel);
+        Ok(None)
+    }
+    /// Brings the plugin's declared view to the front in `client`'s window.
+    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
+        let _ = (client, view);
         Ok(())
     }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.

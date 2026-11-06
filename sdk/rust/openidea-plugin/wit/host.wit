@@ -17,6 +17,13 @@ interface ui {
         command: option<string>,
     }
 
+    record pick-item {
+        /// Returned when the item is chosen.
+        key: string,
+        label: string,
+        description: option<string>,
+    }
+
     /// Shows a notification balloon in the window the current command or
     /// event came from (every window when there is none).
     show-notification: func(level: notification-level, title: string, body: string);
@@ -27,6 +34,21 @@ interface ui {
     copy-to-clipboard: func(text: string) -> result<_, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.
     open-url: func(url: string) -> result<_, error>;
+    /// Shows a list in the window the current command or event came from and
+    /// waits for the answer: the keys of the chosen items (one unless
+    /// `multiple`), or `none` when the user dismisses it. Needs no capability.
+    /// Returns `invalid` outside a command or event of a window (including
+    /// in editor providers). Waiting doesn't count against the call's budget.
+    quick-pick: func(title: string, items: list<pick-item>, multiple: bool) -> result<option<list<string>>, error>;
+    /// Asks for a line of text, pre-filled with `value`; `none` when dismissed.
+    /// Same rules as `quick-pick`.
+    input: func(prompt: string, value: option<string>) -> result<option<string>, error>;
+    /// Asks for confirmation with OK and Cancel: `true` on OK, `false` on
+    /// Cancel or Escape. Same rules as `quick-pick`.
+    confirm: func(title: string, message: string) -> result<bool, error>;
+    /// Brings one of the plugin's own declared views (`[[views]]`) to the
+    /// front in the window the current command or event came from.
+    reveal-view: func(view: string) -> result<_, error>;
 }
 
 /// Persistent key-value storage of the plugin (survives restarts and idle

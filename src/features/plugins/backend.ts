@@ -61,6 +61,8 @@ export interface PluginsBackend {
   /** Plugin status bar items (later changes arrive as `statusItemChanged`). */
   statusItems(): Promise<PluginStatusItem[]>;
   cancelTask(taskId: string): Promise<void>;
+  /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
+  answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
   marketUrl(): Promise<string | null>;
@@ -158,6 +160,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   statusItems: () => commands.pluginStatusItems(),
   cancelTask: async (taskId) => {
     await commands.pluginCancelTask(taskId);
+  },
+  answerPrompt: async (promptId, answer) => {
+    await commands.pluginAnswerPrompt(promptId, answer);
   },
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
@@ -497,6 +502,7 @@ export function createMemoryPluginsBackend(
     eventKinds: async () => [],
     statusItems: async () => [],
     cancelTask: async () => {},
+    answerPrompt: async () => {},
     market: async () => [],
     marketUrl: async () => marketUrl,
     setMarketUrl: async (url) => {

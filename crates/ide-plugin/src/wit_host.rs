@@ -2,9 +2,11 @@
 //! types and the implementation of every import. Capabilities are checked
 //! here; a missing one returns `error::denied` (the plugin can degrade).
 
-use crate::runtime::{StoreData, clip};
+use crate::runtime::{MAX_TITLE, StoreData, clip};
 use crate::sandbox;
-use crate::types::{EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, net_host};
+use crate::types::{
+    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, PickItem, Prompt, StatusItem, net_host,
+};
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use std::path::{Path, PathBuf};
@@ -133,6 +135,7 @@ const MAX_DIAGNOSTICS: usize = 5_000;
 const MAX_REQUEST_BODY: usize = 8 << 20;
 const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
+const MAX_PICK_ITEMS: usize = 5000;
 
 type Fallible<T> = wasmtime::Result<Result<T, wit::Error>>;
 
@@ -212,6 +215,18 @@ impl log::Host for StoreData {
     }
 }
 
+impl StoreData {
+    /// Asks the user and waits; the wait doesn't count against the call's
+    /// wall-clock budget.
+    fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
+        let client = self.invocation.client.clone();
+        let started = Instant::now();
+        let answer = self.host.ask(client.as_deref(), prompt, &self.cancel.token());
+        self.deadline += started.elapsed();
+        answer.map_err(to_wit)
+    }
+}
+
 impl ui::Host for StoreData {
     fn show_notification(
         &mut self,
@@ -260,6 +275,37 @@ impl ui::Host for StoreData {
         }
         let client = self.invocation.client.clone();
         Ok(self.host.open_url(client.as_deref(), trimmed.to_owned()).map_err(to_wit))
+    }
+
+    fn quick_pick(&mut self, title: String, items: Vec<ui::PickItem>, multiple: bool) -> Fallible<Option<Vec<String>>> {
+        if items.len() > MAX_PICK_ITEMS {
+            return Ok(Err(wit::Error::Invalid(format!("more than {MAX_PICK_ITEMS} items"))));
+        }
+        let items = items
+            .into_iter()
+            .map(|i| PickItem {
+                key: clip(i.key, 256),
+                label: clip(i.label, MAX_TITLE),
+                description: i.description.map(|d| clip(d, 1024)),
+            })
+            .collect();
+        let prompt = Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple };
+        Ok(self.ask(prompt))
+    }
+
+    fn input(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
+        let prompt = Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)) };
+        Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
+    }
+
+    fn confirm(&mut self, title: String, message: String) -> Fallible<bool> {
+        let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(message, 16 << 10) };
+        Ok(self.ask(prompt).map(|answer| answer.is_some()))
+    }
+
+    fn reveal_view(&mut self, view: String) -> Fallible<()> {
+        let client = self.invocation.client.clone();
+        Ok(self.host.reveal_view(client.as_deref(), &clip(view, 64)).map_err(to_wit))
     }
 }
 

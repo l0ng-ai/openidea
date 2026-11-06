@@ -7,8 +7,8 @@ use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
-    EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel, ProcessOutput, RepositoryStatus,
-    StatusItem,
+    EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel, ProcessOutput, Prompt,
+    RepositoryStatus, StatusItem,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -146,6 +146,12 @@ struct TaskEntry {
     cancelled: bool,
 }
 
+/// A question a plugin's call waits on.
+struct PromptEntry {
+    plugin: String,
+    answer: std::sync::mpsc::SyncSender<Option<Vec<String>>>,
+}
+
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
@@ -154,6 +160,8 @@ pub(super) struct Shared {
     pub data_dir: PathBuf,
     tasks: Mutex<HashMap<u64, TaskEntry>>,
     next_task: AtomicU64,
+    prompts: Mutex<HashMap<u64, PromptEntry>>,
+    next_prompt: AtomicU64,
     /// (plugin, item id) → item, for windows opened later.
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
@@ -183,6 +191,8 @@ impl Shared {
             data_dir,
             tasks: Mutex::default(),
             next_task: AtomicU64::new(1),
+            prompts: Mutex::default(),
+            next_prompt: AtomicU64::new(1),
             status: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
@@ -240,6 +250,18 @@ impl Shared {
         for id in removed {
             self.sink.emit(None, PluginEvent::StatusItemChanged { plugin_id: plugin.to_owned(), id, item: None });
         }
+        // Dropping the senders wakes the calls waiting on the user.
+        let prompts: Vec<u64> = {
+            let mut prompts = self.prompts.lock();
+            let ids: Vec<u64> = prompts.iter().filter(|(_, p)| p.plugin == plugin).map(|(id, _)| *id).collect();
+            for id in &ids {
+                prompts.remove(id);
+            }
+            ids
+        };
+        for id in prompts {
+            self.sink.emit(None, PluginEvent::PromptClosed { prompt_id: id.to_string() });
+        }
         let tasks: Vec<u64> = self.tasks.lock().iter().filter(|(_, t)| t.plugin == plugin).map(|(id, _)| *id).collect();
         for id in tasks {
             self.end_task(id);
@@ -263,6 +285,12 @@ impl Shared {
         t.cancelled = true;
         t.cancel.cancel();
         true
+    }
+
+    /// The user answered (`Some`) or dismissed (`None`) a prompt.
+    pub fn answer_prompt(&self, id: u64, answer: Option<Vec<String>>) -> bool {
+        let Some(prompt) = self.prompts.lock().remove(&id) else { return false };
+        prompt.answer.send(answer).is_ok()
     }
 
     fn end_task(&self, id: u64) {
@@ -340,6 +368,46 @@ impl HostApi for PluginApi {
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let client = from_window(client, "open a URL")?;
         self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
+    }
+
+    fn ask(
+        &self,
+        client: Option<&str>,
+        prompt: Prompt,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Vec<String>>, HostError> {
+        let client = from_window(client, "ask the user")?;
+        let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
+        let (answer, answers) = std::sync::mpsc::sync_channel(1);
+        self.shared.prompts.lock().insert(id, PromptEntry { plugin: self.id().to_owned(), answer });
+        let prompt_id = id.to_string();
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::PromptRequested { plugin_id: self.id().to_owned(), prompt_id: prompt_id.clone(), prompt },
+        );
+        loop {
+            match answers.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => return Ok(answer),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !cancel.is_cancelled() => {}
+                Err(_) => {
+                    self.shared.prompts.lock().remove(&id);
+                    self.shared.sink.emit(Some(client), PluginEvent::PromptClosed { prompt_id });
+                    return Err(HostError::Cancelled);
+                }
+            }
+        }
+    }
+
+    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
+        let client = from_window(client, "reveal a view")?;
+        let declared = self.shared.ui.items(super::ui_points::VIEWS, Some(self.id())).iter().any(|i| i.key == view);
+        if !declared {
+            return Err(HostError::NotFound(format!("the plugin declares no view {view:?}")));
+        }
+        self.shared
+            .sink
+            .emit(Some(client), PluginEvent::RevealView { plugin_id: self.id().to_owned(), view: view.to_owned() });
         Ok(())
     }
 

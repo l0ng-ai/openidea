@@ -4,7 +4,7 @@
 
 use openidea_plugin::host;
 use openidea_plugin::views::{Body, Button, TreeItem, View, ViewEvent, Viewport, Views};
-use openidea_plugin::{Error, Invocation, Plugin, register_plugin};
+use openidea_plugin::{Error, Invocation, PickItem, Plugin, register_plugin};
 
 pub const VIEW: &str = "jobs";
 
@@ -48,6 +48,18 @@ impl Plugin for Jobs {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)
             }
+            "pick" | "pick-many" => {
+                let items = [
+                    PickItem::new("a", "Alpha").description("first"),
+                    PickItem::new("b", "Beta"),
+                    PickItem::new("c", "Gamma"),
+                ];
+                let picked = host::quick_pick("Pick", &items, id == "pick-many")?;
+                Ok(Some(picked.map_or("none".to_owned(), |keys| keys.join(","))))
+            }
+            "input" => Ok(Some(host::input("Name", arg)?.unwrap_or_else(|| "none".to_owned()))),
+            "confirm" => Ok(Some(host::confirm("Delete", "Really?")?.to_string())),
+            "reveal" => host::reveal_view(arg.unwrap_or_default()).map(|()| None),
             _ => Err(Error::NotFound(format!("command {id}"))),
         }
     }

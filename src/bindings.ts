@@ -1025,6 +1025,11 @@ export const commands = {
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
 	pluginCancelTask: (taskId: string) => __TAURI_INVOKE<boolean>("plugin_cancel_task", { taskId }),
 	/**
+	 *  Reports the user's answer to a plugin's `promptRequested`: the chosen keys
+	 *  (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
+	 */
+	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
+	/**
 	 *  Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
 	 *  a tool window, the window's active editor, as commands get it).
 	 */
@@ -5643,6 +5648,13 @@ export type PhpSettings = {
 	phpstanConfig?: string,
 };
 
+/**  An entry of a plugin's `quick-pick`. */
+export type PickItem = {
+	key: string,
+	label: string,
+	description: string | null,
+};
+
 /**  The focused editor when a plugin command is invoked. */
 export type PluginEditor = {
 	path: string,
@@ -5689,7 +5701,16 @@ export type PluginEvent =
 /**  Copy `text` to the system clipboard. */
 { type: "copyToClipboard"; pluginId: string; text: string } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
-{ type: "openUrl"; pluginId: string; url: string };
+{ type: "openUrl"; pluginId: string; url: string } | 
+/**
+ *  A command waits for the user's answer: show `prompt`, then report it with
+ *  `plugin_answer_prompt(prompt_id, …)`.
+ */
+{ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt } | 
+/**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
+{ type: "promptClosed"; promptId: string } | 
+/**  Bring the tool window of the plugin's view `view` to the front. */
+{ type: "revealView"; pluginId: string; view: string };
 
 export type PluginInfo = {
 	id: string,
@@ -6018,6 +6039,9 @@ export type ProjectStructureSettings = {
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
 };
+
+/**  What a plugin asks the user (`ui.quick-pick`, `ui.input`, `ui.confirm`). */
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
 
 export type ProxyKind = "http" | "socks";
 

@@ -5,7 +5,7 @@
  * batches.
  */
 import { create } from "zustand";
-import type { EventKind, PluginEvent, StatusItem, WorkbenchEvent } from "@/bindings";
+import type { EventKind, PluginEvent, Prompt, StatusItem, WorkbenchEvent } from "@/bindings";
 import { onEditorEvent } from "@/editor/api";
 import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
@@ -13,10 +13,12 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import { maybeEditorService, registerStatusItem } from "@/workbench/contributions";
+import { maybeEditorService, registerStatusItem, toolWindowService } from "@/workbench/contributions";
+import { pickItems, promptInput } from "@/workbench/inputDialogs";
+import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
-import { bumpView, deliverViewMessage } from "./views/viewStore";
+import { bumpView, deliverViewMessage, pluginToolWindowId } from "./views/viewStore";
 import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
@@ -236,6 +238,38 @@ function trackWorkbenchEvents(): () => void {
   };
 }
 
+const openPrompts = new Map<string, AbortController>();
+
+/** The user's answer in the shape `plugin_answer_prompt` takes: `null` when dismissed. */
+async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
+  switch (prompt.kind) {
+    case "quickPick":
+      return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal });
+    case "input": {
+      const text = await promptInput({
+        title: prompt.prompt,
+        initial: prompt.value ?? "",
+        validate: () => null,
+        signal,
+      });
+      return text === null ? null : [text];
+    }
+    case "confirm":
+      return (await confirm({ title: prompt.title, message: prompt.message, ok: "OK", signal })) ? [] : null;
+  }
+}
+
+async function answerPrompt(promptId: string, prompt: Prompt) {
+  const controller = new AbortController();
+  openPrompts.set(promptId, controller);
+  const answer = await askUser(prompt, controller.signal);
+  openPrompts.delete(promptId);
+  if (controller.signal.aborted) return;
+  await pluginsBackend()
+    .answerPrompt(promptId, answer)
+    .catch(() => {});
+}
+
 /** Handles the runtime UI events; returns whether `e` was one. */
 export function handleRuntimeEvent(e: PluginEvent): boolean {
   switch (e.type) {
@@ -268,6 +302,16 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "openUrl":
       void openExternalUrl(e.url);
+      return true;
+    case "promptRequested":
+      void answerPrompt(e.promptId, e.prompt);
+      return true;
+    case "promptClosed":
+      openPrompts.get(e.promptId)?.abort();
+      openPrompts.delete(e.promptId);
+      return true;
+    case "revealView":
+      toolWindowService().show(pluginToolWindowId(e.pluginId, e.view), true);
       return true;
     default:
       return false;

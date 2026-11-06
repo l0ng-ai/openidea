@@ -143,6 +143,26 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// An entry of [`crate::host::quick_pick`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickItem {
+    /// Returned when the item is chosen.
+    pub key: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+impl PickItem {
+    pub fn new(key: &str, label: &str) -> Self {
+        Self { key: key.to_owned(), label: label.to_owned(), description: None }
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_owned());
+        self
+    }
+}
+
 /// Kinds of workbench events; later SDKs add more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
