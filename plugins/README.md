@@ -94,6 +94,8 @@ homepage = "https://example.com"  # optional
 license = "MIT"                   # optional
 change-notes = "1.2.0 — …"        # shown under What's New
 categories = ["tools"]            # marketplace categories, see below
+icon = "icon.svg"                 # optional, see below
+icon-dark = "icon_dark.svg"       # optional
 engines.openidea = "^1.0"         # the plugin API this package needs
 wasm = "dist/plugin.wasm"         # omit for data-only plugins
 activation = ["on-language:markdown"]   # optional, see below
@@ -115,6 +117,12 @@ when = "editorFocus"              # optional: same expressions as built-in actio
 icon themes or languages is filed under those, any other under `other`.
 Categories an IDE doesn't know, and any after the first three it knows, are
 ignored (`check` warns about both).
+
+`icon` is an SVG of the package shown in Settings › Plugins and the
+marketplace; `icon-dark`, if given, replaces it with dark themes. Each is at
+most 16 KiB and sanitised like file icons (no scripts, external references or
+`foreignObject`); an invalid one fails the package. Without `icon`, the
+plugin gets the generic plugin icon.
 
 All paths are relative to the package directory and may not leave it. A
 manifest is validated as a whole: if one contribution is invalid, nothing is

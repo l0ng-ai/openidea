@@ -54,6 +54,10 @@ pub struct Manifest {
     pub change_notes: Option<String>,
     /// Marketplace categories as declared (see [`Manifest::categories`]).
     pub declared_categories: Vec<String>,
+    /// SVG shown in Settings › Plugins and the marketplace.
+    pub icon: Option<PathBuf>,
+    /// Its variant for dark themes.
+    pub icon_dark: Option<PathBuf>,
     /// `engines.openidea` (a semver requirement), or the legacy `openidea-api`.
     pub engine: String,
     /// Written in the 0.1 format.
@@ -175,6 +179,10 @@ struct Raw {
     #[serde(default)]
     categories: Vec<String>,
     #[serde(default)]
+    icon: Option<PathBuf>,
+    #[serde(default)]
+    icon_dark: Option<PathBuf>,
+    #[serde(default)]
     engines: Option<Engines>,
     /// 0.1 format.
     #[serde(default)]
@@ -253,6 +261,8 @@ impl Manifest {
             license: raw.license,
             change_notes: raw.change_notes,
             declared_categories: raw.categories,
+            icon: raw.icon,
+            icon_dark: raw.icon_dark,
             engine,
             legacy,
             wasm: raw.wasm,
@@ -290,6 +300,15 @@ impl Manifest {
         }
         if let Some(wasm) = &self.wasm {
             check_relative(wasm, "wasm")?;
+        }
+        if let Some(icon) = &self.icon {
+            check_relative(icon, "icon")?;
+        }
+        if let Some(dark) = &self.icon_dark {
+            if self.icon.is_none() {
+                return Err("`icon-dark` needs `icon`".into());
+            }
+            check_relative(dark, "icon-dark")?;
         }
         if self.wasm.is_none() && !self.activation.is_empty() {
             return Err("`activation` needs `wasm`: there is no code to activate".into());
@@ -547,6 +566,24 @@ mod tests {
             err("id = \"a..b\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"").contains("plugin id")
         );
         assert!(err("id = \"ok\"\nname = \"N\"\nversion = \"1.0\"\nengines.openidea = \"^1.0\"").contains("version"));
+    }
+
+    const BASE: &str = "id = \"ok\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n";
+
+    #[test]
+    fn parses_icons() {
+        let m = Manifest::parse(&format!("{BASE}icon = \"icon.svg\"\nicon-dark = \"icon_dark.svg\"\n")).unwrap();
+        assert_eq!(m.icon.as_deref(), Some(Path::new("icon.svg")));
+        assert_eq!(m.icon_dark.as_deref(), Some(Path::new("icon_dark.svg")));
+        assert_eq!(Manifest::parse(BASE).unwrap().icon, None);
+    }
+
+    #[test]
+    fn rejects_invalid_icons() {
+        assert!(err(&format!("{BASE}icon-dark = \"d.svg\"\n")).contains("`icon-dark` needs `icon`"));
+        assert!(err(&format!("{BASE}icon = \"../x.svg\"\n")).contains("icon"));
+        assert!(err(&format!("{BASE}icon = \"/abs.svg\"\n")).contains("icon"));
+        assert!(err(&format!("{BASE}icon = \"i.svg\"\nicon-dark = \"../d.svg\"\n")).contains("icon-dark"));
     }
 
     #[test]

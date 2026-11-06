@@ -2262,6 +2262,8 @@ fn placeholder_manifest(dir: &Path) -> Manifest {
         license: None,
         change_notes: None,
         declared_categories: Vec::new(),
+        icon: None,
+        icon_dark: None,
         engine: ide_extension::ENGINE_VERSION.into(),
         legacy: false,
         wasm: None,
