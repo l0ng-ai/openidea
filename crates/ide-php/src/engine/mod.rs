@@ -291,7 +291,18 @@ impl PhpEngine {
             *stubs = (filter, None);
             drop(stubs);
             self.shared.modification.fetch_add(1, Ordering::SeqCst);
+            // The language level and the built-ins changed: inspect again.
+            let (_, runner) = self.shared_inspections();
+            runner.forget_results();
+            for document in self.open_documents() {
+                runner.schedule(document.doc);
+            }
         }
+    }
+
+    /// The project's PHP language level (the stub filter's version).
+    pub fn language_level(&self) -> crate::stubs::PhpVersion {
+        self.shared.stubs.lock().0.version
     }
 
     /// The built-in declarations the project sees (built on first use, which

@@ -43,6 +43,7 @@ use crate::names::{FileNames, NameKind, NameRole, Resolution};
 use crate::navigate::find_declaration;
 use crate::summary::{ClassKind, DocBlock, FileSummary, Loc, PropertyAccess};
 use crate::syntax::ParsedFile;
+use crate::types::expr::{MAX_CHAIN, chain_depth};
 use crate::types::{Context, ExprTypes, Frame, Resolver, Type};
 
 /// The token types, in legend order.
@@ -104,26 +105,54 @@ impl PhpEngine {
     /// when the engine doesn't hold it.
     pub fn semantic_tokens(&self, doc: DocId) -> Option<Vec<SemanticToken>> {
         let parsed = self.parsed_document(doc)?;
-        let resolver = self.resolver();
         let names = FileNames::resolve(&parsed);
         let here = FileSummary::extract(&parsed);
-        let types = ExprTypes::new(&parsed, &names, &here, &resolver);
+        Some(finish(&parsed, self.semantic_spans(&parsed, &names, &here)))
+    }
+
+    /// The semantic tokens of a parsed file by start byte: end byte, type
+    /// and [`modifier`] bits (the deprecation inspection reads them too).
+    pub(crate) fn semantic_spans(
+        &self,
+        parsed: &ParsedFile,
+        names: &FileNames,
+        here: &FileSummary,
+    ) -> BTreeMap<u32, (u32, TokenType, u32)> {
+        let resolver = self.resolver();
+        let types = ExprTypes::new(parsed, names, here, &resolver);
         let mut tokens = Tokens {
             engine: self,
-            parsed: &parsed,
-            here: &here,
+            here,
             resolver: &resolver,
             types: &types,
             frames: Vec::new(),
             found: BTreeMap::new(),
             builtin: RefCell::new(HashMap::new()),
+            deep: false,
             names: HashMap::new(),
         };
         tokens.declarations();
-        tokens.names(&names);
+        tokens.names(names);
         TokenWalker.walk_program(parsed.program(), &mut tokens);
-        Some(tokens.finish())
+        tokens.found
     }
+}
+
+/// Tokens on one line each (a name never spans lines), in order.
+fn finish(parsed: &ParsedFile, found: BTreeMap<u32, (u32, TokenType, u32)>) -> Vec<SemanticToken> {
+    let lines = parsed.line_index();
+    found
+        .into_iter()
+        .filter_map(|(start, (end, ty, modifiers))| {
+            let range = lines.range(start, end);
+            (range.start.line == range.end.line && range.end.col > range.start.col).then_some(SemanticToken {
+                start: range.start,
+                len: range.end.col - range.start.col,
+                ty,
+                modifiers,
+            })
+        })
+        .collect()
 }
 
 /// Whether a docblock or attribute list marks a declaration deprecated.
@@ -145,7 +174,6 @@ const SUPERGLOBALS: &[&[u8]] =
 
 struct Tokens<'a, 'r> {
     engine: &'r PhpEngine,
-    parsed: &'a ParsedFile,
     here: &'a FileSummary,
     resolver: &'r Resolver<'r>,
     types: &'r ExprTypes<'a, 'r>,
@@ -156,6 +184,9 @@ struct Tokens<'a, 'r> {
     builtin: RefCell<HashMap<(NameKind, String), bool>>,
     /// Class-like, function and constant names already looked up.
     names: HashMap<(NameKind, String), (TokenType, u32)>,
+    /// The expression being visited ends a chain over [`MAX_CHAIN`] links:
+    /// its receiver isn't typed.
+    deep: bool,
 }
 
 impl<'a> Tokens<'a, '_> {
@@ -171,23 +202,6 @@ impl<'a> Tokens<'a, '_> {
 
     fn add_span(&mut self, span: Span, ty: TokenType, modifiers: u32) {
         self.add(span.start.offset, span.end.offset, ty, modifiers);
-    }
-
-    /// Tokens on one line each (a name never spans lines), in order.
-    fn finish(self) -> Vec<SemanticToken> {
-        let lines = self.parsed.line_index();
-        self.found
-            .into_iter()
-            .filter_map(|(start, (end, ty, modifiers))| {
-                let range = lines.range(start, end);
-                (range.start.line == range.end.line && range.end.col > range.start.col).then_some(SemanticToken {
-                    start: range.start,
-                    len: range.end.col - range.start.col,
-                    ty,
-                    modifiers,
-                })
-            })
-            .collect()
     }
 
     /// Whether only the bundled stubs declare `fqn`.
@@ -384,13 +398,16 @@ impl<'a> Tokens<'a, '_> {
 
     fn selector(&mut self, kind: Member, selector: &ClassLikeMemberSelector<'_>, receiver: impl FnOnce(&Self) -> Type) {
         if let ClassLikeMemberSelector::Identifier(name) = selector {
-            let receiver = receiver(self);
+            // Typing a long chain goes through every link recursively (the
+            // stack of a debug build ends a few hundred links in).
+            let receiver = if self.deep { Type::Mixed } else { receiver(self) };
             let context = self.types.context(&self.frames);
             self.member(kind, &receiver, &context, &String::from_utf8_lossy(name.value), name.span);
         }
     }
 
     fn expression(&mut self, expr: &'a Expression<'a>) {
+        self.deep = chain_depth(expr) > MAX_CHAIN;
         match expr {
             Expression::Call(Call::Method(call)) => {
                 self.selector(Member::Method, &call.method, |cx| cx.types.type_of(call.object, &cx.frames))

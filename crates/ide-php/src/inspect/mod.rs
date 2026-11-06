@@ -13,7 +13,8 @@
 //!   ([`Inspections::builtin_with`]); [`unused`]: unused imports, private
 //!   members and parameters; [`control`]: unreachable statements, missing
 //!   returns, `void` functions returning a value and `never` functions
-//!   returning); [`PhpEngine::set_inspections`] replaces the
+//!   returning; [`level`]: syntax newer than the project's PHP version and
+//!   uses of deprecated symbols); [`PhpEngine::set_inspections`] replaces the
 //!   set (tests, and the settings of phase 4.10).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
@@ -38,6 +39,7 @@
 
 pub mod calls;
 pub mod control;
+pub mod level;
 pub mod members;
 pub(crate) mod runner;
 pub mod suppress;
@@ -113,6 +115,8 @@ impl Inspections {
             Arc::new(control::MissingReturn),
             Arc::new(control::VoidReturn),
             Arc::new(control::NeverReturn),
+            Arc::new(level::LanguageLevel),
+            Arc::new(level::Deprecation),
         ])
     }
 

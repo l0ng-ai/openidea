@@ -228,3 +228,15 @@ function lend(Book $book, ?string $note = null): int
 ";
     assert_eq!(golden(text), expected);
 }
+
+#[test]
+fn long_chains_are_not_typed_link_by_link() {
+    let chain = "->isbn()".repeat(400);
+    let text = format!(
+        "<?php\nnamespace App;\n\nuse App\\Model\\Book;\n\nfunction f(Book $book) {{ $book->oldIsbn(){chain}; $book->oldIsbn(); }}\n"
+    );
+    let tokens = golden(&text);
+    // The links are methods; the short call is still typed (deprecated).
+    assert_eq!(tokens.lines().filter(|line| line.ends_with(" isbn method")).count(), 400);
+    assert!(tokens.lines().any(|line| line.ends_with("oldIsbn method [deprecated]")), "{tokens}");
+}

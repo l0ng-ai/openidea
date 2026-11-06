@@ -388,6 +388,8 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpMissingReturnStatement",
             "PhpVoidFunctionReturnsValue",
             "PhpNeverFunctionReturns",
+            "PhpLanguageLevel",
+            "PhpDeprecation",
         ]
     );
 }
@@ -436,3 +438,6 @@ mod unused_tests;
 
 #[path = "control_tests.rs"]
 mod control_tests;
+
+#[path = "level_tests.rs"]
+mod level_tests;

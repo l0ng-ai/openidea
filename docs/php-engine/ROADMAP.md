@@ -349,7 +349,7 @@ The design:
 - [x] Phase 4.7: Control flow
       Inspections for unreachable code, missing return in a non-void function, `void` returning a value, and `never` returning. Tests: unit tests.
 
-- [ ] Phase 4.8: Language level and deprecation
+- [x] Phase 4.8: Language level and deprecation
   - Use of a feature newer than the project's PHP version: enums, readonly, match, nullsafe, first-class callables, typed class constants, and so on.
   - Use of `@deprecated` and `#[\Deprecated]` symbols, shown struck through via the diagnostic tag.
 
