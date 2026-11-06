@@ -200,7 +200,6 @@ pub fn run() {
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
             {
-                titlebar::forget(window);
                 macos::forget_fullscreen(window.label());
             }
             if windows::auxiliary_parent(window.label()).is_none() {
