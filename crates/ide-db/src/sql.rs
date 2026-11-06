@@ -396,6 +396,18 @@ pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
     }
 }
 
+/// The statement that makes unqualified names resolve in `schema` on the
+/// connection that runs it (a query console's active schema; `None`: the driver
+/// has no schema to switch — SQLite's `main`, ClickHouse's `USE` differs).
+pub fn use_schema(driver: DbDriver, schema: &str) -> Option<String> {
+    match driver {
+        DbDriver::Sqlite | DbDriver::Clickhouse => None,
+        DbDriver::Postgres => Some(format!("SET search_path TO {}", quote_ident(driver, schema))),
+        DbDriver::Mysql | DbDriver::SqlServer => Some(format!("USE {}", quote_ident(driver, schema))),
+        DbDriver::Oracle => Some(format!("ALTER SESSION SET CURRENT_SCHEMA = {}", quote_ident(driver, schema))),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbSortKey")]
@@ -992,6 +1004,17 @@ mod tests {
         );
         assert!(object_ddl(DbDriver::Sqlite, "main", K::Function, "f").is_none());
         assert!(object_ddl(DbDriver::Postgres, "s", K::Sequence, "q").unwrap().0.contains("sequencename = 'q'"));
+    }
+
+    #[test]
+    fn schema_switch_statement_per_dialect() {
+        assert_eq!(use_schema(DbDriver::Postgres, "app data"), Some("SET search_path TO \"app data\"".into()));
+        assert_eq!(use_schema(DbDriver::Mysql, "a`b"), Some("USE `a``b`".into()));
+        assert_eq!(use_schema(DbDriver::SqlServer, "dbo"), Some("USE [dbo]".into()));
+        assert_eq!(use_schema(DbDriver::Oracle, "hr"), Some("ALTER SESSION SET CURRENT_SCHEMA = \"hr\"".into()));
+        // Single-schema (SQLite) and not-yet-supported drivers: no dropdown, no switch.
+        assert_eq!(use_schema(DbDriver::Sqlite, "main"), None);
+        assert_eq!(use_schema(DbDriver::Clickhouse, "default"), None);
     }
 
     #[test]
