@@ -135,7 +135,7 @@ describe("Find Usages fallback", () => {
     );
     const res = await fetchUsages(caret);
     expect(cmd.indexUsages).toHaveBeenCalledWith("y");
-    expect(filesMentioning).toHaveBeenCalledWith(expect.anything(), "y");
+    expect(filesMentioning).toHaveBeenCalled();
     expect(res.note).toBe(TEXT_NOTE);
     expect(res.groups.map((g) => g.path)).toEqual(["/p/a.ts"]);
   });

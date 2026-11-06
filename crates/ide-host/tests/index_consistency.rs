@@ -116,8 +116,8 @@ async fn index_goto_agrees_with_the_language_server() {
         let lsp = ops::lsp::lsp_goto(&host, WINDOW, doc, pos, GotoKind::Definition).await.unwrap_or_default();
         let index: Option<IndexGoto> =
             ops::nav::index_goto(&host, WINDOW, doc, pos, s.word.to_string()).await.unwrap_or_default();
-        let lsp_key = lsp.first().map(|l| key(l));
-        let index_key = index.and_then(|g| g.targets.first().map(|l| key(l)));
+        let lsp_key = lsp.first().map(key);
+        let index_key = index.and_then(|g| g.targets.first().map(key));
         total += 1;
         if lsp_key.is_some() && lsp_key == index_key {
             agree += 1;

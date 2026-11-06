@@ -4,12 +4,13 @@ import { EditorView } from "@codemirror/view";
 import type { commands } from "@/platform/ipc";
 
 const lspGoto = vi.hoisted(() => vi.fn<typeof commands.lspGoto>());
+const indexGoto = vi.hoisted(() => vi.fn<typeof commands.indexGoto>());
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
-  return { ...real, isTauri: () => true, commands: { ...real.commands, lspGoto } };
+  return { ...real, isTauri: () => true, commands: { ...real.commands, lspGoto, indexGoto } };
 });
 
-const { gotoTargets } = await import("./navigation");
+const { gotoTargets, navigationExtension } = await import("./navigation");
 const { lspDoc } = await import("./lsp");
 const { provideEditorService } = await import("@/workbench/contributions");
 const openFile = vi.fn(async () => {});
@@ -19,10 +20,16 @@ let view: EditorView;
 beforeEach(() => {
   vi.useFakeTimers();
   openFile.mockClear();
+  lspGoto.mockClear();
+  indexGoto.mockClear();
+  indexGoto.mockResolvedValue({ status: "ok", data: null });
   view = new EditorView({
     state: EditorState.create({
       doc: "run()",
-      extensions: [lspDoc.of({ doc: 1, path: "/p/main.rs", language: "rust", uiMode: "Rust", readOnly: false })],
+      extensions: [
+        lspDoc.of({ doc: 1, path: "/p/main.rs", language: "rust", uiMode: "Rust", readOnly: false }),
+        navigationExtension(),
+      ],
     }),
     parent: document.body,
   });
@@ -58,5 +65,32 @@ describe("slow navigation feedback", () => {
     await pending;
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Server timed out");
     expect(openFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("⌘-hover link probing", () => {
+  const target = { path: "/p/lib.rs", range: { start: { line: 3, col: 4 }, end: { line: 3, col: 7 } }, uri: null };
+  /** ⌘-hover over the word at `pos` (jsdom has no layout, so the position is stubbed). */
+  const hover = (pos = 0) => {
+    vi.spyOn(view, "posAtCoords").mockReturnValue(pos);
+    view.contentDOM.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, metaKey: true }));
+  };
+
+  it("underlines from the project index without a server round-trip", async () => {
+    indexGoto.mockResolvedValueOnce({ status: "ok", data: { targets: [target], note: "certain" } });
+    hover();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("run");
+    expect(indexGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 0 }, "run");
+    expect(lspGoto).not.toHaveBeenCalled();
+  });
+
+  it("keeps probing the server when the index cannot answer", async () => {
+    lspGoto.mockResolvedValueOnce({ status: "ok", data: [] });
+    hover();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(indexGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 0 }, "run");
+    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 0 }, "definition");
+    expect(view.dom.querySelector(".cm-lsp-link")).toBeNull();
   });
 });
