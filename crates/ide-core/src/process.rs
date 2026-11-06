@@ -72,6 +72,56 @@ pub fn kill_tree_of(pid: u32) {
     let _ = pid;
 }
 
+/// Force-kills a process by id, including a debuggee that is not a process-group leader.
+pub fn force_kill_process(pid: u32) -> std::io::Result<()> {
+    if pid == 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid process id"));
+    }
+    #[cfg(unix)]
+    {
+        let pid = libc::pid_t::try_from(pid)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid process id"))?;
+        // SAFETY: a positive pid targets the recorded process, not its parent's group.
+        if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(error) };
+    }
+    #[cfg(windows)]
+    {
+        taskkill_tree_of(pid);
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "process termination is unavailable"))
+    }
+}
+
+/// Whether the operating system still reports a process as running.
+pub fn is_process_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: signal 0 checks existence without sending a signal.
+        return unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    }
+    #[cfg(windows)]
+    {
+        return windows_tree::is_running(pid);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,
@@ -191,6 +241,12 @@ mod windows_tree {
         let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         // SAFETY: as above.
         (!handle.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
+    }
+
+    pub(super) fn is_running(pid: u32) -> bool {
+        let Some(process) = open(pid) else { return false };
+        // SAFETY: the handle remains owned for the duration of this nonblocking wait.
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == windows_sys::Win32::Foundation::WAIT_TIMEOUT }
     }
 
     /// When the process started, in 100 ns ticks since 1601.

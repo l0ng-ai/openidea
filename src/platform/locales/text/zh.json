@@ -6384,5 +6384,6 @@
   "CNB (China mirror)": "CNB（国内镜像）",
   "Remote connection cancelled": "远程连接已取消",
   "Maven Goals": "Maven 目标",
-  "Gradle Tasks": "Gradle 任务"
+  "Gradle Tasks": "Gradle 任务",
+  "Force Stop": "强制停止"
 }

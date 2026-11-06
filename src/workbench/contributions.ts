@@ -1445,12 +1445,13 @@ export function showStatusInfo(text: string, ms = 8000) {
 
 /** Live debugger roots exposed to the run toolbar without coupling feature stores. */
 export interface DebugRunSession {
-  starting?: boolean;
   id: number;
   configId: string | null;
   name: string;
   startedAt: number;
   paused: boolean;
+  starting?: boolean;
+  stopping?: boolean;
   rerun: (() => void) | null;
   stop: () => void;
   resume: () => void;

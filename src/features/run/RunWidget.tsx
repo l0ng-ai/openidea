@@ -30,7 +30,7 @@ export function RunWidget() {
   const debug = useDebugRunSessions((s) => s.sessions);
   const compoundRunning = compoundTargets(selected, running, debug);
   const target = selectedTarget(selectedId, running, debug);
-  const { active, debugging, showLoading, launch } = useLaunchFeedback(selectedId, target, compoundRunning);
+  const { active, debugging, stopping, showLoading, launch } = useLaunchFeedback(selectedId, target, compoundRunning);
   const count = running.length + debug.length;
   const stopName = compoundRunning.length
     ? selected?.name
@@ -127,7 +127,7 @@ export function RunWidget() {
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledRun)}
               title={tx`Rerun '${selected?.name ?? target?.name ?? ""}'`}
               shortcut={shortcutLabel("run.run")}
-              disabled={!!target && !target.rerun}
+              disabled={stopping || (!!target && !target.rerun)}
               onClick={() => void launch("run.run")}
             />
           </>
@@ -166,10 +166,17 @@ export function RunWidget() {
         {!showLoading && count > 0 && (
           <IconButton
             icon="stop-filled"
+            aria-busy={stopping || undefined}
             size="large"
             iconSize={16}
             className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
-            title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
+            title={
+              stopping
+                ? tx("Force Stop")
+                : active || count === 1
+                  ? tx`Stop '${stopName ?? ""}'`
+                  : tx`Stop (${count} running)`
+            }
             shortcut={shortcutLabel("run.stop")}
             onClick={() => void executeAction("run.stop", "widget")}
           />
@@ -208,6 +215,7 @@ function useLaunchFeedback(
   const pending = pendingLaunch?.configId === selectedId ? pendingLaunch : null;
   const debugging = pending ? pending.debug : !!target?.debug;
   const starting = !!pending || !!target?.starting || compoundRunning.some((session) => session.starting);
+  const stopping = !!target?.stopping || compoundRunning.some((session) => session.stopping);
   const launch = async (action: "run.run" | "run.debug") => {
     if (launching.current) return;
     launching.current = true;
@@ -234,6 +242,6 @@ function useLaunchFeedback(
     return () => clearTimeout(timer);
   }, [runningKey, feedback.settled]);
   // Keep short-lived processes in the loading phase to avoid flashing the red Stop button.
-  const showLoading = starting || (active && !target?.paused && !feedback.settled);
-  return { active, debugging, showLoading, launch };
+  const showLoading = !stopping && (starting || (active && !target?.paused && !feedback.settled));
+  return { active, debugging, stopping, showLoading, launch };
 }

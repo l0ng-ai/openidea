@@ -51,6 +51,7 @@ export interface DebugSession {
   /** Process the session is attached to (a Run tab's build tool); stopped with the session. */
   process: RunId | null;
   status: SessionStatus;
+  stopping?: boolean;
   stoppedThread: number | null;
   stopReason: string | null;
   stopDescription: string | null;
@@ -105,6 +106,7 @@ export const useExecutionPoint = create<ExecutionPoint>(() => ({ path: null, lin
 
 /** Console buffer: at most this many physical lines per session. */
 const MAX_CONSOLE_LINES = 50_000;
+const PROCESS_EXIT_POLL_MS = 50;
 let lineSeq = 0;
 /** ANSI state per session and output category (a colour can span several output events). */
 const ansiStreams = new Map<DebugSessionId, Map<string, AnsiStream>>();
@@ -296,7 +298,8 @@ export function publishContext() {
           startedAt: session.startedAt ?? 0,
           status: paused ? ("paused" as const) : session.status,
           processId: session.process,
-          rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
+          rerun:
+            !session.stopping && (session.runConfig || session.launch) ? () => void rerunSession(session.id) : null,
           stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
           show: () => {
             if (!useDebug.getState().sessions[session.id]) return;
@@ -319,7 +322,9 @@ export function publishContext() {
           startedAt: session.startedAt ?? 0,
           paused: !!paused,
           starting: session.status === "starting",
-          rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
+          stopping: session.stopping,
+          rerun:
+            !session.stopping && (session.runConfig || session.launch) ? () => void rerunSession(session.id) : null,
           stop: () => void stopSession(session.id),
           resume: () => {
             selectSession(paused?.id ?? session.id);
@@ -627,16 +632,25 @@ export async function stopSession(id: DebugSessionId, options: { stopProcess?: b
     markTerminated(root.id);
     return;
   }
+  const forcing = !!root.stopping;
+  const runId = options.stopProcess === false ? null : root.process;
+  if (!forcing) patch(root.id, { stopping: true });
   try {
-    await call(commands.debugStop(root.id));
-  } catch (e) {
-    // Already gone: mark it finished locally.
-    console.warn("debugStop failed", e);
+    // Signal an attached Maven/Gradle run first; a repeated request force-kills its process group.
+    if (runId != null) await call(commands.runStop(runId));
+    if (!forcing || runId === null) await call(commands.debugStop(root.id));
+    // The first request owns completion; later clicks only escalate termination.
+    if (forcing) return;
+    if (runId != null) {
+      while ((await commands.runList()).some((run) => run.id === runId && run.running)) {
+        await new Promise((resolve) => setTimeout(resolve, PROCESS_EXIT_POLL_MS));
+      }
+    }
     markTerminated(root.id);
+  } catch (error) {
+    if (!forcing) patch(root.id, { stopping: false });
+    notifications().notify({ level: "error", title: "Cannot stop process", body: String(error) });
   }
-  // Detaching leaves an attached JVM running: stop the process it belongs to, like IDEA.
-  if (options.stopProcess !== false && root.process != null)
-    await call(commands.runStop(root.process)).catch(() => undefined);
 }
 
 /**
@@ -714,7 +728,14 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
 }
 
 function markTerminated(id: DebugSessionId) {
-  patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
+  patch(id, {
+    stopping: false,
+    status: "terminated",
+    endedAt: Date.now(),
+    frames: [],
+    selectedFrame: null,
+    stoppedThread: null,
+  });
   const st = useDebug.getState();
   if (st.active === id) {
     // Prefer another live session (e.g. the parent of a finished child).
@@ -1047,7 +1068,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       appendConsole(id, "system", `\nProcess finished with exit code ${event.code}\n`);
       break;
     case "terminated":
-      markTerminated(id);
+      if (!s.stopping) markTerminated(id);
       break;
   }
 }
