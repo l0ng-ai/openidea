@@ -6381,5 +6381,6 @@
   "Updates": "更新",
   "Update source": "更新源",
   "Where updates are downloaded from. If it can't be reached, the other source is tried.": "从哪里下载更新。无法连接时会改用另一个源。",
-  "CNB (China mirror)": "CNB（国内镜像）"
+  "CNB (China mirror)": "CNB（国内镜像）",
+  "Remote connection cancelled": "远程连接已取消"
 }
