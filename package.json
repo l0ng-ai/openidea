@@ -29,7 +29,8 @@
     "dev:status": "node scripts/dev-status.ts",
     "e2e": "playwright test",
     "perf": "node perf/run.ts",
-    "perf:rust": "node perf/rust.ts"
+    "perf:rust": "node perf/rust.ts",
+    "release:prepare": "node scripts/release-prepare.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"
