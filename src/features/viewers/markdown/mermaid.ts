@@ -112,6 +112,27 @@ function remember(k: string, r: Result) {
   cache.set(k, r);
 }
 
+let copies = 0;
+
+function giveUniqueIds(out: HTMLElement) {
+  const elements = [...out.querySelectorAll("[id]")];
+  if (!elements.length) return;
+  const suffix = `-copy${++copies}`;
+  const renamed = new Map(elements.map((element) => [element.id, `${element.id}${suffix}`]));
+  const ids = [...renamed.keys()]
+    .sort((first, second) => second.length - first.length)
+    .map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const reference = new RegExp(`#(${ids.join("|")})(?![\\w-])`, "g");
+  const rename = (text: string) => text.replace(reference, (_match, id: string) => `#${renamed.get(id)}`);
+  for (const element of elements) element.id = renamed.get(element.id)!;
+  for (const element of out.querySelectorAll("*")) {
+    for (const attribute of element.attributes) {
+      if (attribute.value.includes("#")) attribute.value = rename(attribute.value);
+    }
+    if (element.localName === "style") element.textContent = rename(element.textContent ?? "");
+  }
+}
+
 function show(block: HTMLElement, result: Result | null, stale?: Node) {
   block.querySelector(`:scope > .${OUTPUT_CLASS}`)?.remove();
   const out = document.createElement("div");
@@ -132,7 +153,10 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
     return;
   }
   block.append(out);
-  if (block.getAttribute(RENDERED_ATTR) === "ok") attachPanZoom(out);
+  if (block.getAttribute(RENDERED_ATTR) === "ok") {
+    giveUniqueIds(out);
+    attachPanZoom(out);
+  }
 }
 
 export const hasMermaid = (root: ParentNode) => root.querySelector(MERMAID_SELECTOR) !== null;

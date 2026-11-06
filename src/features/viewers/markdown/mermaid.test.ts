@@ -109,6 +109,37 @@ describe("mermaid in the markdown preview", () => {
     expect(ids.size).toBe(2);
   });
 
+  it("gives every copy of a diagram its own ids, so a copy's markers resolve inside it", async () => {
+    m.render.mockImplementationOnce(async (id: string) => ({
+      svg:
+        `<svg id="${id}"><style>#${id} .edge{stroke:red}</style><defs>` +
+        `<marker id="${id}_end"><path d="M0,0"/></marker><marker id="${id}_end-circle"><path d="M0,0"/></marker></defs>` +
+        `<path class="edge" marker-end="url(#${id}_end)" marker-start="url(#${id}_end-circle)"/>` +
+        `<use href="#${id}_end"/></svg>`,
+    }));
+    const first = preview(SEQ);
+    await renderMermaidIn(first, []).done;
+    const second = preview(SEQ);
+    renderMermaidIn(second, []);
+    expect(m.render).toHaveBeenCalledTimes(1);
+
+    const idsOf = (root: HTMLElement) => [...root.querySelectorAll("[id]")].map((element) => element.id);
+    const [one, two] = [idsOf(first), idsOf(second)];
+    expect(one).toHaveLength(3);
+    expect(one.filter((id) => two.includes(id))).toEqual([]);
+    for (const root of [first, second]) {
+      const own = new Set(idsOf(root));
+      const path = root.querySelector("path.edge")!;
+      const referenced = [
+        path.getAttribute("marker-end"),
+        path.getAttribute("marker-start"),
+        root.querySelector("use")!.getAttribute("href"),
+      ].map((value) => /#([\w-]+)/.exec(value!)![1]!);
+      expect(referenced.every((id) => own.has(id))).toBe(true);
+      expect(root.querySelector("style")!.textContent).toContain(`#${root.querySelector("svg")!.id} .edge`);
+    }
+  });
+
   it("re-renders when switching between built-in palette themes of the same light / dark base", async () => {
     const root = document.documentElement;
     const previous = root.dataset.colorTheme;

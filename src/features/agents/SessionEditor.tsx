@@ -457,12 +457,20 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const observer = new ResizeObserver(() => {
+    const resized = new ResizeObserver(() => {
       if (position.current.stick) el.scrollTop = el.scrollHeight;
     });
-    observer.observe(el);
+    const observeEntries = () => {
+      resized.disconnect();
+      resized.observe(el);
+      for (const entry of el.children) resized.observe(entry);
+    };
+    observeEntries();
+    const added = new MutationObserver(observeEntries);
+    added.observe(el, { childList: true });
     return () => {
-      observer.disconnect();
+      added.disconnect();
+      resized.disconnect();
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
   }, [key, positions]);

@@ -341,6 +341,48 @@ describe("session state across tasks and hosts", () => {
     expect(stream().scrollTop).toBe(120);
   });
 
+  it("follows the end when an entry grows after it rendered, like a diagram that draws late", async () => {
+    const observers: Array<{ callback: () => void; observed: Set<Element> }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observed = new Set<Element>();
+        constructor(public callback: () => void) {
+          observers.push(this);
+        }
+        observe(target: Element) {
+          this.observed.add(target);
+        }
+        disconnect() {
+          this.observed.clear();
+        }
+      },
+    );
+    const tops = new WeakMap<Element, number>();
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get(this: Element) {
+        return tops.get(this) ?? 0;
+      },
+      set(this: Element, top: number) {
+        tops.set(this, top);
+      },
+    });
+    const height = vi.spyOn(Element.prototype, "scrollHeight", "get").mockReturnValue(500);
+    try {
+      render(<SessionEditor input={input("A")} />);
+      const reply = (await screen.findByText("Answer A")).closest(`.${styles.stream} > *`)!;
+      expect(stream().scrollTop).toBe(500);
+      height.mockReturnValue(900);
+      for (const observer of observers.filter((candidate) => candidate.observed.has(reply))) {
+        act(() => observer.callback());
+      }
+      expect(stream().scrollTop).toBe(900);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("restores after entries load and clears positions on project disconnect", async () => {
     useAgents.getState().scrollPositions.set("A", { top: 230, stick: false });
     useAgents.setState({ entries: new Map() });

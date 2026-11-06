@@ -11,6 +11,13 @@ const readImage = vi.fn<(path: string) => Promise<string>>();
 const PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 vi.mock("@/workbench/contributions", () => ({ editorService: () => ({ openFile }) }));
 vi.mock("@/platform/openUrl", () => ({ openExternalUrl }));
+const { renderMermaidIn } = vi.hoisted(() => ({
+  renderMermaidIn: vi.fn(() => ({ async: false, done: Promise.resolve(), cancel: () => {} })),
+}));
+vi.mock("@/features/viewers/markdown/mermaid", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/viewers/markdown/mermaid")>()),
+  renderMermaidIn,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -165,4 +172,38 @@ it("reports network or decode failures without leaving a broken source", () => {
   fireEvent.error(screen.getByRole("img"));
   expect(screen.getByRole("img")).not.toHaveAttribute("src");
   expect(screen.getByRole("img")).toHaveAttribute("alt", "Unable to load image: https://example.com/gone.png");
+});
+
+it("hands mermaid fences to the diagram renderer instead of highlighting them", () => {
+  const { container } = render(<Markdown text={"```mermaid\nflowchart LR\n  A --> B\n```"} cwd="/repo" />);
+  const block = container.querySelector("[data-mermaid]")!;
+  expect(block.querySelector("code")!.textContent!.trimEnd()).toBe("flowchart LR\n  A --> B");
+  expect(block.querySelector("pre button[data-copy]")).toBeNull();
+  expect(block.querySelector<HTMLElement>(":scope > button[data-copy]")!.dataset.copy).toBe("flowchart LR\n  A --> B");
+  expect(renderMermaidIn).toHaveBeenCalledWith(container.firstElementChild, expect.any(Array));
+});
+
+it("draws diagrams again in the new theme after a theme switch", async () => {
+  document.documentElement.dataset.theme = "dark";
+  render(<Markdown text={"```mermaid\nflowchart LR\n  A --> B\n```"} cwd="/repo" />);
+  expect(renderMermaidIn).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    document.documentElement.dataset.theme = "light";
+  });
+  expect(renderMermaidIn).toHaveBeenCalledTimes(2);
+});
+
+it("keeps other fences as highlighted code with a copy button", () => {
+  const { container } = render(<Markdown text={"```ts\nconst a = 1;\n```"} cwd="/repo" />);
+  expect(container.querySelector("[data-mermaid]")).toBeNull();
+  expect(container.querySelector("pre button[data-copy]")).not.toBeNull();
+  expect(renderMermaidIn).not.toHaveBeenCalled();
+});
+
+it("does not treat a mermaid placeholder written in the reply as a diagram", () => {
+  const { container } = render(
+    <Markdown text={'<div data-mermaid=""><pre><code>flowchart LR</code></pre></div>'} cwd="/repo" />,
+  );
+  expect(container.querySelector("[data-mermaid]")).toBeNull();
+  expect(renderMermaidIn).not.toHaveBeenCalled();
 });

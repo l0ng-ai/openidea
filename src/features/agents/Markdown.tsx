@@ -2,14 +2,16 @@
  * Agent messages: Markdown → sanitized HTML (marked + DOMPurify). Fenced code is
  * highlighted and gets a Copy button; inline code naming a file of the task opens it.
  */
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Marked } from "marked";
+import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "@/features/viewers/markdown/mermaid";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { iconNode } from "@/editor/lsp/iconMarkup";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { copyText } from "@/ui";
 import { editorService } from "@/workbench/contributions";
 import { fileHref, pathLink, type PathLink } from "./conversation";
@@ -64,7 +66,16 @@ function renderHtml(text: string): string {
     ALLOW_DATA_ATTR: false,
   }) as HTMLElement;
   root.querySelectorAll("li").forEach(wrapLooseText);
+  root.querySelectorAll("pre > code.language-mermaid").forEach(wrapMermaid);
   return root.innerHTML;
+}
+
+function wrapMermaid(code: Element) {
+  const pre = code.parentElement!;
+  const block = code.ownerDocument.createElement("div");
+  block.setAttribute("data-mermaid", "");
+  pre.replaceWith(block);
+  block.append(pre);
 }
 
 const BLOCK = new Set(["UL", "OL", "P", "PRE", "BLOCKQUOTE", "TABLE", "HR", "DIV", "H1", "H2", "H3", "H4", "H5", "H6"]);
@@ -118,10 +129,11 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
   const disposeImages = loadImages(root, cwd, images);
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement!;
+    const diagram = code.closest<HTMLElement>(MERMAID_SELECTOR);
     const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice("language-".length) ?? null;
     const text = (code.textContent ?? "").replace(/\n+$/, "");
     code.textContent = text;
-    void highlightInto(code, text, lang);
+    if (!diagram) void highlightInto(code, text, lang);
     const copy = document.createElement("button");
     copy.type = "button";
     copy.className = styles.codeCopy!;
@@ -130,7 +142,7 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
     copy.setAttribute("aria-label", label);
     copy.appendChild(iconNode("copy", 14));
     copy.dataset.copy = text;
-    pre.appendChild(copy);
+    (diagram ?? pre).appendChild(copy);
   });
   root.querySelectorAll<HTMLElement>("code").forEach((code) => {
     if (code.parentElement?.tagName === "PRE" || code.closest("a")) return;
@@ -155,7 +167,15 @@ export function Markdown({ text, cwd }: { text: string; cwd: string }) {
   const html = useMemo(() => markdownHtml(text), [text]);
   const ref = useRef<HTMLDivElement>(null);
   const images = useRef(new Map<string, Promise<string>>());
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
+  const diagrams = useRef<Node[]>([]);
   useLayoutEffect(() => (ref.current ? enhance(ref.current, cwd, images.current) : undefined), [html, cwd]);
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root || !hasMermaid(root)) return;
+    const pass = renderMermaidIn(root, diagrams.current);
+    return () => pass.cancel();
+  }, [html, theme]);
   return (
     <div
       ref={ref}
