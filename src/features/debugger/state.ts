@@ -25,6 +25,7 @@ import {
 } from "@/platform/ipc";
 import { confirmTerminate } from "@/workbench/confirmTerminate";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import { startedPort } from "@/features/run/serverPort";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
@@ -296,6 +297,7 @@ export function publishContext() {
           startedAt: session.startedAt ?? 0,
           status: paused ? ("paused" as const) : session.status,
           processId: session.process,
+          httpPort: sessionHttpPort(session.id),
           rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
           stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
           show: () => {
@@ -342,6 +344,30 @@ export function publishContext() {
 
 // --- console -----------------------------------------------------------------
 
+/**
+ * The HTTP port the session's application announced on its console ("Tomcat started on
+ * port 8080"), the same embedded web server line the Run console is parsed for. Kept per
+ * session, so the Services node keeps the port after the line scrolls out of the buffer.
+ */
+const announcedPorts = new Map<DebugSessionId, number>();
+
+export function sessionHttpPort(id: DebugSessionId): number | undefined {
+  let port: number | undefined;
+  for (const line of useDebug.getState().console[id] ?? []) {
+    const found = startedPort(line.text);
+    if (found !== null) port = found;
+  }
+  if (port !== undefined) announcedPorts.set(id, port);
+  else port = announcedPorts.get(id);
+  return port;
+}
+
+/** Republishes Services metadata only when a console announced a port it had not shown yet. */
+function republishForPorts() {
+  const published = useDebugRunSessions.getState().serviceSessions;
+  if (published.some((d) => d.httpPort !== sessionHttpPort(d.id))) publishContext();
+}
+
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
   flushConsoleOutput();
@@ -355,6 +381,7 @@ export function appendConsole(session: DebugSessionId, category: string, raw: st
     trimConsole(next);
     return { console: { ...s.console, [session]: next } };
   });
+  republishForPorts();
 }
 
 /**
@@ -397,6 +424,7 @@ function flushConsoleOutput() {
     }
     return { console: consoleBySession };
   });
+  republishForPorts();
 }
 
 /** Split styled output at real line breaks, retaining partial lines across events. */
@@ -1058,6 +1086,7 @@ export function resetSessions() {
   pendingOutput.length = 0;
   cancelOutputFlush();
   ansiStreams.clear();
+  announcedPorts.clear();
   useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {} });
   publishContext();
