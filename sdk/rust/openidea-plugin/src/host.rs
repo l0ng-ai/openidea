@@ -332,8 +332,8 @@ impl<'a> Invocation<'a> {
         imp::invocation_editor(self.inner).map(|inner| TextEditor { inner })
     }
 
-    /// The files and folders the command was run on, as absolute paths (a URI for a virtual
-    /// document). Empty when it was not run on any.
+    /// The files and folders the command was run on, as absolute paths. Empty when it was not
+    /// run on any, or when the menu was for a tab without a file (a virtual document).
     pub fn selected_paths(&self) -> Vec<String> {
         imp::invocation_selected_paths(self.inner)
     }
