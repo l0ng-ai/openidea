@@ -103,6 +103,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-platform-verifier = "0.7"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "postgres", "mysql"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
+oracle = { version = "0.6", default-features = false }
 bb8 = "0.9"
 uuid = { version = "1", features = ["v4"] }
 # OS credential stores

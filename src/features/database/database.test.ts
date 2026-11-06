@@ -171,13 +171,24 @@ describe("parseSourceUrl", () => {
     });
   });
 
-  it("reads SQLite files and rejects other drivers", () => {
+  it("reads SQLite and Oracle URLs and rejects other drivers", () => {
     expect(parseSourceUrl("jdbc:sqlite:C:/data/shop.db")?.source).toEqual({
       driver: "sqlite",
       file: "C:/data/shop.db",
       name: "shop",
     });
-    expect(parseSourceUrl("oracle://x")).toBeNull();
+    expect(parseSourceUrl("oracle://scott:tiger@db.local:1521/ORCLPDB1")).toEqual({
+      source: { driver: "oracle", host: "db.local", port: 1521, user: "scott", database: "ORCLPDB1" },
+      password: "tiger",
+    });
+    expect(parseSourceUrl("jdbc:oracle:thin:@//db.local:1521/ORCL")?.source).toEqual({
+      driver: "oracle",
+      host: "db.local",
+      port: 1521,
+      user: "",
+      database: "ORCL",
+    });
+    expect(parseSourceUrl("unknown://x")).toBeNull();
   });
 });
 
@@ -190,9 +201,10 @@ describe("data source types", () => {
     });
     expect(vendorPreset(vendorById("postgres")!)).toEqual({ driver: "postgres", vendor: "", port: 5432 });
     expect(vendorPreset(vendorById("supabase")!).ssl).toBe("require");
-    expect(VENDORS.every((v) => ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse"].includes(v.driver))).toBe(
-      true,
-    );
+    expect(vendorPreset(vendorById("oracle")!)).toEqual({ driver: "oracle", vendor: "", port: 1521 });
+    expect(
+      VENDORS.every((v) => ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse", "oracle"].includes(v.driver)),
+    ).toBe(true);
     const labels = VENDORS.map((v) => v.label);
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });

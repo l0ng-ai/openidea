@@ -6323,5 +6323,11 @@
   "The project is mounted here; paths and the working directory are mapped into it.": "项目挂载在此处；路径和工作目录会映射到其中。",
   "Published ports": "发布的端口",
   "Run as the image's user, not the project folder's owner (Linux)": "以镜像的用户运行，而不是项目文件夹的所有者（Linux）",
-  "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine.": "Docker 连接来自“服务”工具窗口。每次运行都会使用一个新容器，运行结束后删除；调试、覆盖率和性能分析仍在本机进行。"
+  "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine.": "Docker 连接来自“服务”工具窗口。每次运行都会使用一个新容器，运行结束后删除；调试、覆盖率和性能分析仍在本机进行。",
+  "Service name, e.g. ORCLPDB1": "服务名，例如 ORCLPDB1",
+  "Current schema:": "当前模式：",
+  "HR (ALTER SESSION SET CURRENT_SCHEMA)": "HR（ALTER SESSION SET CURRENT_SCHEMA）",
+  "Instant Client:": "Instant Client：",
+  "Directory of Oracle Instant Client 19 or later. Empty: ORACLE_HOME or the system library path.": "Oracle Instant Client 19 或更高版本的目录。留空则使用 ORACLE_HOME 或系统库路径。",
+  "Session parameters set after connecting (ALTER SESSION SET name = value). connect_timeout is in seconds.": "连接后设置的会话参数（ALTER SESSION SET name = value）。connect_timeout 以秒为单位。"
 }

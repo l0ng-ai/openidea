@@ -64,6 +64,7 @@ export const VENDORS: readonly DbVendor[] = [
     icon: "db-oceanbase",
     scheme: "oceanbase",
   },
+  { id: "oracle", label: "Oracle", driver: "oracle", port: 1521, icon: "db-oracle", scheme: "oracle" },
   { id: "postgres", label: "PostgreSQL", driver: "postgres", port: 5432, icon: "db-postgres", scheme: "postgresql" },
   {
     id: "singlestore",
@@ -137,6 +138,8 @@ const SCHEMES: Record<string, string> = {
   singlestore: "singlestore",
   memsql: "singlestore",
   oceanbase: "oceanbase",
+  oracle: "oracle",
+  oracledb: "oracle",
   sqlserver: "sqlServer",
   mssql: "sqlServer",
 };
