@@ -814,3 +814,10 @@ pub(crate) mod indexing_bindings {
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }
+
+pub(crate) mod semantic_bindings {
+    wasmtime::component::bindgen!({
+        world: "semantic-tokens", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}

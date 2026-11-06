@@ -34,10 +34,10 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.2.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.3.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -402,7 +402,7 @@ declaration matches the file's language are called (and loaded):
 
 ```toml
 [[contributes.providers]]
-kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions"
+kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
@@ -431,6 +431,31 @@ handlers short where you can; a provider call queued behind a long one is
 dropped at 50 ms like a slow one. Inline completion is exempt from the 50 ms (it may
 need the network) but is cancelled as soon as the user types on: check
 `Task::is_cancelled` or just let the host interrupt the call.
+
+#### Semantic highlighting
+
+The `semantic-tokens` kind (API 1.3: `engines.openidea = "^1.3"`) colours
+tokens in documents of the declared languages, including languages the plugin
+doesn't contribute, such as `php`. Register with
+`register_plugin!(MyPlugin, semantic_tokens)` (any combination works:
+`(MyPlugin, providers, views, semantic_tokens)`) and implement
+`openidea_plugin::semantic_tokens::SemanticTokens`:
+
+```rust
+impl SemanticTokens for MyPlugin {
+    fn semantic_tokens(&mut self, doc: &Document) -> Vec<SemanticToken> {
+        let (start, end) = (text::position(&doc.text, 10), text::position(&doc.text, 14));
+        vec![SemanticToken::new(Range { start, end }, TokenKind::Method)]
+    }
+}
+```
+
+A token covers part of one line and carries an LSP token kind (`TokenKind`:
+`method`, `property`, `type`, …) and modifiers (`TokenModifier`: `static`,
+`deprecated`, …); the WIT takes them as kebab-case strings. The tokens join
+the language server's semantic tokens and win where they overlap one, so the
+editor's colour scheme styles them like the server's. They are asked again
+after each edit, under the edit-path budget; at most 65,536 per document.
 
 ### Network and secrets
 
@@ -972,8 +997,8 @@ the API itself follows _Evolving the plugin API_ below.
 
 ## 10. Evolving the plugin API
 
-Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36 and 1.1.0
-with 0.1.37. wasmtime decides what stays compatible: it resolves interface names
+Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
+with 0.1.37 and 1.2.0 with 0.1.38. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
