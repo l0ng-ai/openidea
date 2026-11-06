@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
-import { clipboardDocumentPath, clipboardFilesExtension, pasteEditorClipboard } from "./clipboard";
+import { clipboardDocumentPath, clipboardFilesExtension, pasteEditorClipboard, pasteEditorText } from "./clipboard";
 import { markdownImages } from "./markdownImages";
 
 vi.mock("@/platform/remote", () => ({ isRemoteWindow: vi.fn(() => false) }));
@@ -203,4 +203,54 @@ it("does not insert into a read-only editor", async () => {
   await pasteEditorClipboard(view);
   expect(view.state.doc.toString()).toBe("");
   expect(list).not.toHaveBeenCalled();
+});
+
+describe("multi-caret paste", () => {
+  const view = (doc: string, ranges: Array<[number, number]>) => {
+    const v = new EditorView({
+      state: EditorState.create({
+        doc,
+        selection: EditorSelection.create(
+          ranges.length > 1
+            ? ranges.map(([from, to]) => EditorSelection.range(from, to))
+            : [EditorSelection.cursor(ranges[0]![0])],
+        ),
+        extensions: EditorState.allowMultipleSelections.of(true),
+      }),
+      parent: document.body,
+    });
+    views.push(v);
+    return v;
+  };
+
+  it("pastes one line per caret when the counts match", () => {
+    const line = 'icjsdiocjosid "" cdscsd';
+    // A caret inside each pair of quotes (index 15), as in the issue.
+    const v = view(
+      Array(7).fill(line).join("\n"),
+      Array.from({ length: 7 }, (_, i) => {
+        const from = i * (line.length + 1) + 15;
+        return [from, from] as [number, number];
+      }),
+    );
+    pasteEditorText(v, "s\nd\nd\ns\nd\nd\ne");
+    expect(v.state.doc.toString()).toBe(
+      Array.from({ length: 7 }, (_, i) => `icjsdiocjosid "${"sddsdde"[i]}" cdscsd`).join("\n"),
+    );
+  });
+
+  it("pastes the whole text at every caret when the counts differ", () => {
+    const v = view("a b", [
+      [1, 1],
+      [3, 3],
+    ]);
+    pasteEditorText(v, "x\ny\nz");
+    expect(v.state.doc.toString()).toBe("ax\ny\nz bx\ny\nz");
+  });
+
+  it("pastes the whole text at a single caret", () => {
+    const v = view("a", [[1, 1]]);
+    pasteEditorText(v, "x\ny");
+    expect(v.state.doc.toString()).toBe("ax\ny");
+  });
 });
