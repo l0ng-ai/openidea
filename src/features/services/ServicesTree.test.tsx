@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { SERVICES_WINDOW, useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
-import { useToolWindowLayout } from "@/workbench/toolwindows/store";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { ToolWindowShownProvider, useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
 import { selectedServices, selectionActions, selectionMenu } from "./selection";
@@ -78,12 +77,17 @@ describe("Services selection → actions", () => {
   });
 
   it("drops the detail pane (and what it streams) while the Services window is hidden", () => {
-    const { row } = setup();
-    fireEvent.mouseDown(row("one"));
+    const view = (shown: boolean) => (
+      <ToolWindowShownProvider value={shown}>
+        <ServicesTreeView />
+      </ToolWindowShownProvider>
+    );
+    const { rerender } = render(view(true));
+    fireEvent.mouseDown(within(screen.getByRole("tree", { name: "Services" })).getByText("one"));
     expect(screen.getByTestId("detail")).toHaveTextContent("one");
-    act(() => useToolWindowLayout.setState({ mounted: new Set([SERVICES_WINDOW]) }));
+    rerender(view(false));
     expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
-    act(() => useToolWindowLayout.setState({ mounted: new Set() }));
+    rerender(view(true));
     expect(screen.getByTestId("detail")).toHaveTextContent("one");
   });
 

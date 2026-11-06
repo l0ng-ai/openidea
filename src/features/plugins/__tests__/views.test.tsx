@@ -12,6 +12,7 @@ import { matchesPattern } from "../views/customEditor";
 import { FRAME_CSP, FRAME_TAG, frameDocument, frameTheme, type FrameTheme } from "../views/frame";
 import { PluginView, treeNodes, wantedViewport } from "../views/PluginView";
 import { bumpView } from "../views/viewStore";
+import { ToolWindowShownProvider } from "@/workbench/contributions";
 
 let undefinePoints: () => void = () => {};
 
@@ -349,5 +350,19 @@ describe("tabs, text and process bodies", () => {
     expect(stops.at(0)).toHaveBeenCalled();
     unmount();
     expect(stops.at(1)).toHaveBeenCalled();
+  });
+  it("stops the program while its tool window is hidden", async () => {
+    const { backend, stops } = streaming({ toolbar: [], status: null, body: { kind: "process", value: process } });
+    const view = (shown: boolean) => (
+      <ToolWindowShownProvider value={shown}>
+        <PluginView pluginId="kube" view="pods" />
+      </ToolWindowShownProvider>
+    );
+    const { rerender } = render(view(true));
+    await waitFor(() => expect(backend.streamProcess).toHaveBeenCalledTimes(1));
+    rerender(view(false));
+    expect(stops.at(0)).toHaveBeenCalled();
+    rerender(view(true));
+    expect(backend.streamProcess).toHaveBeenCalledTimes(2);
   });
 });

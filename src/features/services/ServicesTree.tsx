@@ -24,14 +24,13 @@ import {
   type TreeReorder,
 } from "@/ui";
 import {
-  SERVICES_WINDOW,
   useServiceProviders,
+  useToolWindowShown,
   serviceProviders,
   type ServiceProviderContribution,
   type ServiceTreeItem,
   type ServiceItemAction,
 } from "@/workbench/contributions";
-import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   addServiceMenu,
   clearProviderRoots,
@@ -138,9 +137,7 @@ export function ServicesTreeView() {
 
   const Detail = owner?.detail;
   // A hidden tool window stays mounted: drop the pane so a log it follows stops.
-  const hidden = useToolWindowLayout(
-    (s) => s.mounted.has(SERVICES_WINDOW) && !Object.values(s.visible).includes(SERVICES_WINDOW),
-  );
+  const shown = useToolWindowShown();
   const add = shortcutLabel("services.addService");
 
   return (
@@ -258,7 +255,7 @@ export function ServicesTreeView() {
           </SplitPanel>
           <SplitHandle />
           <SplitPanel minSize="200px">
-            {selected && Detail && !hidden ? (
+            {selected && Detail && shown ? (
               <Detail key={selected.item.key} item={selected.item} />
             ) : (
               <EmptyState title="Select service to view details" />

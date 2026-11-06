@@ -42,6 +42,7 @@ import {
   type MenuItem,
 } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
+import { useEditorShown, useToolWindowShown } from "@/workbench/contributions";
 import { pluginsBackend } from "../backend";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
@@ -241,6 +242,10 @@ function PaneBody({ body, pluginId, view }: { body: ViewBody; pluginId: string; 
 }
 
 function ProcessBody({ process, pluginId, view }: { process: ViewProcess; pluginId: string; view: string }) {
+  // Hidden tool windows and editor tabs stay mounted: stop the program meanwhile.
+  const toolWindowShown = useToolWindowShown();
+  const editorShown = useEditorShown();
+  if (!toolWindowShown || !editorShown) return null;
   return (
     <LogPane
       sourceKey={[pluginId, view, process.program, ...process.args].join("\0")}
