@@ -60,6 +60,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     authors: [],
     homepage: null,
     changeNotes: null,
+    icon: null,
     source: "installed",
     path: `/plugins/${partial.id}`,
     enabled: true,
@@ -531,6 +532,16 @@ describe("PluginsPage", () => {
     act(() => useProject.setState({ project: { ...project, trusted: true } }));
     expect(await imports()).toHaveLength(2);
     act(() => useProject.setState({ project: null }));
+  });
+
+  it("shows a plugin's own icon in its row and details", async () => {
+    const icon = { light: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>', dark: null };
+    setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "iconic", name: "Iconic", icon })]));
+    render(<PluginsPage />);
+    const list = await screen.findByRole("list", { name: "Installed plugins" });
+    await waitFor(() => expect(within(list).getByText("Iconic")).toBeInTheDocument());
+    expect(list.querySelector("circle")).not.toBeNull();
+    expect(screen.getByLabelText("Iconic details").querySelector("circle")).not.toBeNull();
   });
 
   it("restarts a failed plugin instead of disabling it", async () => {

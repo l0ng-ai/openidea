@@ -668,6 +668,7 @@ fn contribution_only_plugins() {
     let theme = f.install(&theme_template());
     assert_eq!(theme.status, PluginStatus::Static);
     assert!(!theme.has_code);
+    assert!(theme.icon.is_none());
     assert_eq!(f.theme_kinds("openidea.harbor-night")[0].0, "harbor-night");
     let lang = f.install(&sample("language-toy"));
     assert_eq!(lang.status, PluginStatus::Static);
@@ -2659,4 +2660,62 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
+}
+
+/// A data-only package `id` in `dir` whose manifest ends with `extra`, plus `files`.
+fn icon_package(dir: &Path, id: &str, extra: &str, files: &[(&str, &str)]) -> PathBuf {
+    let pkg = dir.join(id);
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("id = \"{id}\"\nname = \"Iconic\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n{extra}"),
+    )
+    .unwrap();
+    for (name, text) in files {
+        std::fs::write(pkg.join(name), text).unwrap();
+    }
+    pkg
+}
+
+const RECT: &str = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+const CIRCLE: &str = r#"<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>"#;
+
+#[test]
+fn plugin_icons_install_with_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = icon_package(
+        tmp.path(),
+        "iconic",
+        "icon = \"icon.svg\"\nicon-dark = \"icon_dark.svg\"\n",
+        &[("icon.svg", RECT), ("icon_dark.svg", CIRCLE)],
+    );
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    let icon = info.icon.expect("icon");
+    assert!(icon.light.contains("<rect"), "{}", icon.light);
+    assert!(icon.dark.unwrap().contains("<circle"));
+    assert!(f.installed("iconic").join("icon_dark.svg").is_file());
+
+    f.host.set_enabled("iconic", false).unwrap();
+    assert!(f.host.info_of("iconic").unwrap().icon.is_some(), "disabled plugins keep their icon");
+}
+
+#[test]
+fn invalid_plugin_icons_refuse_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let big = format!("<svg>{}</svg>", "<path d=\"M0 0h1v1z\"/>".repeat(1000));
+    let padded = format!("<svg><!--{}--><rect/></svg>", " ".repeat(20 << 10));
+    let cases = [
+        ("scripted", "icon = \"icon.svg\"\n", "<svg><script>alert(1)</script></svg>".to_owned(), "icon.svg"),
+        ("oversized", "icon = \"icon.svg\"\n", big, "16 KiB"),
+        ("padded", "icon = \"icon.svg\"\n", padded, "16 KiB"),
+        ("missing", "icon = \"missing.svg\"\n", RECT.to_owned(), "missing.svg"),
+    ];
+    for (id, extra, svg, expected) in cases {
+        let pkg = icon_package(tmp.path(), id, extra, &[("icon.svg", &svg)]);
+        let err = f.host.preview_install(&pkg).map(|_| ()).unwrap_err().message;
+        assert!(err.contains(expected), "{id}: {err}");
+    }
 }
