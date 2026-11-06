@@ -301,6 +301,21 @@ fn nested_builds_of_every_kind_and_depth() {
     let builds: Vec<&str> =
         ids(&c).into_iter().filter(|id| id.starts_with("maven:package") || id.starts_with("gradle:build")).collect();
     assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing"]);
+    let model = ide_build::load(dir.path(), &dir.path().join("cache"), None);
+    for config in c.iter().filter(|c| c.kind == "gradle") {
+        let cwd = config.cwd.as_deref().unwrap();
+        assert!(model.gradle.iter().any(|g| Path::new(&g.dir) == cwd), "{} has no build model", config.id);
+    }
+    let plan = ide_build::compile::plan(
+        dir.path(),
+        &model,
+        ide_build::compile::BuildKind::Build,
+        Some(&dir.path().join("services/api/app/src/main/kotlin/com/acme/Api.kt")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(plan.steps[0].cwd, dir.path().join("services/api"));
+    assert_eq!(plan.steps[0].args, ["--console=plain", ":app:classes", ":app:testClasses"]);
 }
 
 #[test]
