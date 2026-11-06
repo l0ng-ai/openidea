@@ -103,7 +103,7 @@ export function pip(
 
 /** Interpreter the project uses when none is configured (its virtualenv). */
 export function effectivePython(): Promise<string | null> {
-  return isTauri() ? call(commands.sdkPythonEffective()) : Promise.resolve(null);
+  return isTauri() ? call(commands.sdkPythonEffective(null)) : Promise.resolve(null);
 }
 
 /** The PHP language level of the project `path` belongs to; null outside Tauri. */

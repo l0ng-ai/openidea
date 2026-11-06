@@ -10,13 +10,22 @@
  * globally installed tools.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { ipcPath, isSameOrInside } from "@/platform/paths";
 import { isTestPath } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { applicationConfig, jvmModuleDir } from "./application";
 import { formatArgs } from "./configs";
 import { goGenerateConfig } from "./goGenerate";
 import { goTestParts } from "./goArguments";
-import { configScope, contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
+import {
+  allClosest,
+  contextConfig,
+  fileRole,
+  projectPython,
+  testBasesFor,
+  testConfigFor,
+  relToCwd as relativeToCwd,
+} from "./context";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
@@ -103,6 +112,26 @@ function relTo(path: string, root: string | null): string {
   return root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
 }
 
+function scopedInput<T extends Pick<ContextInput, "root" | "configs">>(input: T): T {
+  const root = input.root && ipcPath(input.root).replace(/\/+$/, "");
+  if (!root) return input;
+  const relative = (value: string) => {
+    const path = ipcPath(value);
+    return path === root ? "" : path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+  };
+  return {
+    ...input,
+    configs: input.configs.map((c) => ({
+      ...c,
+      cwd: c.cwd == null ? c.cwd : relative(c.cwd),
+      ...(c.module == null ? {} : { module: relative(c.module) }),
+      ...(c.kind === "go" && c.params?.module != null
+        ? { params: { ...c.params, module: relative(c.params.module) } }
+        : {}),
+    })),
+  };
+}
+
 /** Short stable hash, so compiled binaries of same-named files don't collide. */
 function hash(s: string): string {
   let h = 5381;
@@ -136,7 +165,7 @@ function mkdirLine(dir: string, windows = false): string {
 /** Absolute directory of a configuration's working directory (a Go module). */
 export function goModuleDir(root: string, cwd: string | null): string {
   const rel = (cwd ?? "").replace(/^\.(?:\/|$)/, "").replace(/\/+$/, "");
-  if (rel.startsWith("/")) return rel;
+  if (rel.startsWith("/") || /^[A-Za-z]:\//.test(rel)) return rel;
   return rel ? `${root}/${rel}` : root;
 }
 
@@ -384,10 +413,25 @@ function isProjectPath(input: Pick<ContextInput, "path" | "root" | "contentRoots
 function site(input: ContextInput): FileSite {
   const inside = isProjectPath(input);
   const rel = relTo(input.path, input.root);
+  const language = scriptLanguage(input.path, input.content);
+  const kinds: Record<string, string[]> = {
+    js: ["npm", "deno", "bun", "node"],
+    ts: ["npm", "deno", "bun", "node"],
+    python: ["python", "pytest", "django-test"],
+    ruby: ["ruby", "rake", "rspec"],
+    php: ["php", "phpunit", "composer"],
+  };
+  const owner =
+    inside && language
+      ? allClosest(
+          input.configs.filter((c) => kinds[language]?.includes(c.kind)),
+          rel,
+        )[0]
+      : undefined;
   return {
     idPath: rel,
-    arg: inside ? rel : baseName(input.path),
-    cwd: inside ? null : dirName(input.path),
+    arg: inside ? (owner ? relativeToCwd(rel, owner) : rel) : baseName(input.path),
+    cwd: inside ? owner?.cwd || null : dirName(input.path),
     file: baseName(input.path),
     inProject: inside,
   };
@@ -442,13 +486,21 @@ function pythonModule(input: ContextInput): { name: string; dir: string } | null
 /** Python: the interpreter from settings, the detected project interpreter, then `python3` on the PATH. */
 function pythonCommand(input: ContextInput, env: ToolEnv, s: FileSite): { command: string; prefix: string[] } | null {
   if (env.python) return { command: env.python, prefix: [] };
-  const py = projectPython([...input.configs]);
+  const py = projectPython([...input.configs], relTo(input.path, input.root));
   if (py) {
     // A venv-relative interpreter is relative to the project root.
+    const owner = allClosest(
+      input.configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+      relTo(input.path, input.root),
+    )[0];
+    const cwd = owner?.cwd ?? "";
+    const relativeCommand = py.command.includes("/") && !py.command.startsWith("/") && !/^[A-Za-z]:/.test(py.command);
     const command =
-      !s.inProject && input.root && py.command.includes("/") && !py.command.startsWith("/")
-        ? `${input.root}/${py.command.replace(/^\.\//, "")}`
-        : py.command;
+      relativeCommand && cwd
+        ? `${goModuleDir(input.root ?? "", cwd)}/${py.command.replace(/^\.\//, "")}`
+        : !s.inProject && input.root && relativeCommand
+          ? `${input.root}/${py.command.replace(/^\.\//, "")}`
+          : py.command;
     return { command, prefix: py.prefix };
   }
   const t = pick(env, ["python3", "python"]);
@@ -599,8 +651,20 @@ function simple(
 }
 
 /** `-I<dir>` for each Sources root of the project (the project root itself is already the cwd). */
-const rubyLoadPath = (roots: readonly { path: string; kind: string }[]): string[] =>
-  roots.filter((r) => r.kind === "source" && r.path !== "").map((r) => `-I${r.path}`);
+const rubyLoadPath = (
+  roots: readonly { path: string; kind: string }[],
+  cwd: string | null,
+  root: string | null,
+): string[] =>
+  roots
+    .filter((r) => r.kind === "source" && r.path !== "")
+    .flatMap((r) => {
+      if (!cwd) return [`-I${r.path}`];
+      const dir = goModuleDir(root ?? "", cwd);
+      const source = goModuleDir(root ?? "", r.path);
+      if (!isSameOrInside(source, dir)) return [];
+      return [`-I${source === dir ? "." : source.slice(dir.length + 1)}`];
+    });
 
 const hasGoMain = (content?: string) => content === undefined || /^\s*package\s+main\b/m.test(content);
 const hasRustMain = (content?: string) =>
@@ -614,11 +678,10 @@ const hasKotlinMain = (content?: string) => content === undefined || /^(?:suspen
  * directory at or above it): a build nested in a folder of repositories owns only its files.
  */
 function buildOwners(rel: string, configs: readonly RunConfig[], kinds: readonly string[]): RunConfig[] {
-  return configs.filter((c) => {
-    if (!kinds.includes(c.kind) || c.id.startsWith("context:")) return false;
-    const cwd = configScope(c);
-    return !cwd || rel.startsWith(cwd + "/");
-  });
+  return allClosest(
+    configs.filter((c) => kinds.includes(c.kind)),
+    rel,
+  );
 }
 
 const cargoOwner = (rel: string, configs: readonly RunConfig[]) => buildOwners(rel, configs, ["cargo"]);
@@ -655,6 +718,7 @@ function godotScene(rel: string, configs: readonly RunConfig[]): Produced | null
 
 /** The file as a whole: tests of a test file, the project's run target, or the runtime for its language. */
 export function produceFile(input: ContextInput, env: ToolEnv): Produced | null {
+  input = scopedInput(input);
   const s = site(input);
   const lang = scriptLanguage(input.path, input.content);
   const configs = [...input.configs];
@@ -685,12 +749,23 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     if (lang === "rust" && cargoOwner(rel, configs).length) {
       const example = /(?:^|\/)examples\/([^/]+)\.rs$/.exec(rel)?.[1];
       if (example && hasRustMain(input.content)) {
-        const base = cargoOwner(rel, configs).find((c) => c.id.startsWith("cargo:run")) ?? cargoOwner(rel, configs)[0]!;
+        const base = cargoOwner(rel, configs).find((c) => c.args[0] === "run") ?? cargoOwner(rel, configs)[0]!;
         const config: RunConfig = {
           ...base,
           id: `context:file:${rel}`,
           name: `Run ${example}`,
-          args: ["run", "--example", example],
+          args: [
+            "run",
+            ...base.args.flatMap((arg, i, args) =>
+              ["-p", "--package", "--manifest-path"].includes(arg)
+                ? [arg, args[i + 1]!]
+                : /^(?:--package=|--manifest-path=|-p.)/.test(arg)
+                  ? [arg]
+                  : [],
+            ),
+            "--example",
+            example,
+          ],
           env: { ...base.env },
           isTest: false,
           detected: true,
@@ -811,7 +886,10 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     }
     case "ruby":
       // Sources roots go on the load path (`-Ilib`), as `rake test` does; paths are project-relative.
-      return simple(lang, s, env, lang, () => [...(s.inProject ? rubyLoadPath(currentRoots()) : []), s.arg]);
+      return simple(lang, s, env, lang, () => [
+        ...(s.inProject ? rubyLoadPath(currentRoots(), s.cwd, input.root) : []),
+        s.arg,
+      ]);
     case "php":
       if (env.php) return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [s.arg], "php-debug") };
       return simple(lang, s, env, lang, () => [s.arg], "php-debug");
@@ -926,6 +1004,7 @@ export function fileTargets(
   input: Pick<ContextInput, "path" | "root" | "configs" | "contentRoots">,
   content: string,
 ): RunTarget[] {
+  input = scopedInput(input);
   const s = { inProject: isProjectPath(input), rel: relTo(input.path, input.root) };
   const rust = /\.rs$/.test(input.path);
   if (/\.(c|cpp|cc|cxx)$/.test(input.path)) return standaloneTargets(content, input.path);
@@ -980,6 +1059,7 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
  * main function — else the file.
  */
 export function produceContext(input: ContextInput, env: ToolEnv): Produced | null {
+  input = scopedInput(input);
   if (input.content !== undefined && input.line !== undefined) {
     const targets = fileTargets(input, input.content.slice(0, 400_000));
     const inner = innermostTarget(input.content, targets, input.line, /\.(py|rb)$/.test(input.path));
@@ -997,6 +1077,7 @@ export function produceContext(input: ContextInput, env: ToolEnv): Produced | nu
  * like IDEA, the user then chooses one. A single production otherwise.
  */
 export function produceContextChoices(input: ContextInput, env: ToolEnv): Produced[] {
+  input = scopedInput(input);
   const produced = produceContext(input, env);
   if (!produced?.config || produced.scope === "directory" || !isProjectPath(input)) return produced ? [produced] : [];
   const rel = relTo(input.path, input.root);
@@ -1046,6 +1127,7 @@ function rubyDirectory(
   relToCwd: (c: RunConfig) => string,
   make: (base: RunConfig, label: string, args: string[]) => Produced,
   label: string,
+  root: string | null,
 ): Produced | null {
   const rspec = closest(["rspec"]);
   if (rspec) return make(rspec, label, [...rspec.args, relToCwd(rspec)]);
@@ -1058,13 +1140,14 @@ function rubyDirectory(
   const minitest = closest(["ruby"]);
   if (!minitest) return null;
   const at = minitest.args.indexOf("-e");
-  const flags = rubyLoadPath(currentRoots()).filter((f) => !minitest.args.includes(f));
+  const flags = rubyLoadPath(currentRoots(), minitest.cwd, root).filter((f) => !minitest.args.includes(f));
   const args = [...minitest.args.slice(0, -1)];
   args.splice(at < 0 ? args.length : at, 0, ...flags);
   return make(minitest, label, [...args, relToCwd(minitest)]);
 }
 
 export function produceDirectory(input: ContextInput): Produced | null {
+  input = scopedInput(input);
   const { root } = input;
   if (!root || !isProjectPath(input) || input.path === root) return null;
   const rel = relTo(input.path, root);
@@ -1074,26 +1157,23 @@ export function produceDirectory(input: ContextInput): Produced | null {
   const marked = isTestPath(currentRoots(), rel);
   const tests = input.configs.filter((c) => c.isTest);
   if (!TEST_DIR.test(rel) && !jvmRoot && !jvmPackage && !marked && !/(^|\/)src\/test(\/|$)/.test(rel)) return null;
-  const closest = (kinds: string[]) => {
-    const cands = tests.filter((c) => kinds.includes(c.kind));
-    const score = (c: RunConfig) => {
-      const cwd = (c.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
-      if (!cwd) return 0;
-      return rel === cwd || rel.startsWith(cwd + "/") ? cwd.length : -1;
-    };
-    return cands
-      .map((c) => [c, score(c)] as const)
-      .filter(([, n]) => n >= 0)
-      .sort((a, b) => b[1] - a[1])[0]?.[0];
-  };
-  const relToCwd = (c: RunConfig) => {
-    const cwd = (c.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
-    return cwd && rel.startsWith(cwd + "/") ? rel.slice(cwd.length + 1) : rel === cwd ? "" : rel;
-  };
+  const closest = (kinds: string[]) =>
+    allClosest(
+      tests.filter((c) => kinds.includes(c.kind)),
+      rel,
+    )[0];
+  const relToCwd = (c: RunConfig) => relativeToCwd(rel, c);
   const make = (base: RunConfig, label: string, args: string[]): Produced => ({
     name: label,
     scope: "directory",
-    config: { ...base, id: `context:dir:${base.id}:${rel}`, name: label, args, env: { ...base.env }, detected: true },
+    config: {
+      ...base,
+      id: `context:dir:${base.id}:${rel}`,
+      name: label,
+      args,
+      env: { ...base.env },
+      detected: true,
+    },
   });
   const testsIn = `Tests in '${name}'`;
 
@@ -1114,7 +1194,7 @@ export function produceDirectory(input: ContextInput): Produced | null {
     }
   }
   const js = closest(["npm", "bun", "deno"]);
-  const ruby = marked && !js && rubyDirectory(closest, relToCwd, make, testsIn);
+  const ruby = marked && !js && rubyDirectory(closest, relToCwd, make, testsIn, root);
   if (ruby) return ruby;
   const py = closest(["pytest"]);
   const django = closest(["django-test"]);

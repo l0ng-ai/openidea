@@ -70,6 +70,18 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
         .or_else(|| pinned::pinned_python(root))
 }
 
+/// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
+pub fn python_interpreter_near(root: &Path, near: Option<&Path>, s: &Settings) -> Option<PathBuf> {
+    if let Some(python) = setting_path(root, &s.languages.python.interpreter) {
+        return Some(python);
+    }
+    let near = near.filter(|dir| dir.starts_with(root)).unwrap_or(root);
+    near.ancestors()
+        .take_while(|dir| dir.starts_with(root))
+        .find_map(project_venv_python)
+        .or_else(|| pinned::pinned_python(near))
+}
+
 /// The project Ruby: the configured one, else the `.ruby-version` / mise / asdf
 /// install, else `ruby` on PATH.
 pub fn ruby_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
@@ -1044,19 +1056,28 @@ fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
 /// (and Maven the configured home and options).
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
     let explicit_python = setting_path(root, &s.languages.python.interpreter);
-    let python = python_interpreter(root, s);
     let pm = non_empty(&s.languages.node.package_manager);
-    let node = node_dir(root, s);
     let php = setting_path(root, &s.languages.php.interpreter);
     let rust = rust_bin(root, s);
-    let go = goroot(root, s);
     let gopath = setting_path(root, &s.languages.go.gopath);
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
-    let ruby = ruby_interpreter(root, s);
 
     for c in configs.iter_mut() {
+        let owner = ide_run::scope::owner(root, c);
+        let python = explicit_python.clone().or_else(|| python_interpreter(&owner, s));
+        let node = if non_empty(&s.languages.node.interpreter).is_some() {
+            node_dir(root, s)
+        } else {
+            node_dir(&owner, s).or_else(|| node_dir(root, s))
+        };
+        let go = if non_empty(&s.languages.go.goroot).is_some() {
+            goroot(root, s)
+        } else {
+            goroot(&owner, s).or_else(|| goroot(root, s))
+        };
+        let ruby = setting_path(root, &s.languages.ruby.interpreter).or_else(|| ruby_interpreter(&owner, s));
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
@@ -1087,8 +1108,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     path_dirs.push(venv.join(bin_dir()));
                 }
             }
-            "npm" => {
+            "npm" | "node" | "deno" | "bun" => {
                 if let Some(pm) = pm
+                    && c.kind == "npm"
                     && c.detected
                     && matches!(c.command.as_str(), "npm" | "pnpm" | "yarn" | "bun")
                 {

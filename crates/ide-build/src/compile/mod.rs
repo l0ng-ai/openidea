@@ -388,18 +388,7 @@ fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
 
 /// `pnpm` / `yarn` / `bun` / `npm`, from the lock file next to `package.json` or above it.
 fn package_manager(dir: &Path) -> &'static str {
-    for d in dir.ancestors() {
-        if d.join("pnpm-lock.yaml").is_file() {
-            return "pnpm";
-        } else if d.join("yarn.lock").is_file() {
-            return "yarn";
-        } else if d.join("bun.lockb").is_file() || d.join("bun.lock").is_file() {
-            return "bun";
-        } else if d.join("package-lock.json").is_file() {
-            return "npm";
-        }
-    }
-    "npm"
+    ide_core::project_roots::package_manager(dir)
 }
 
 fn has_build_script(dir: &Path) -> bool {

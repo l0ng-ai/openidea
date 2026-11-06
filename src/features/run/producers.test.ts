@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as projectRoots from "@/platform/projectRoots";
 import type { HierarchyItem, RunConfig } from "@/platform/ipc";
 import {
   innermostTarget,
@@ -1078,4 +1079,110 @@ describe("CMake file context", () => {
     expect(p?.config).toBeUndefined();
     expect(p?.missing?.body).toContain("CMake Configure");
   });
+});
+
+describe("module ownership across languages", () => {
+  it.each([
+    ["npm", "other.test.ts", ["run", "test"]],
+    ["deno", "other.test.ts", ["test"]],
+    ["cargo", "tests/other.rs", ["test"]],
+    ["go", "other_test.go", ["test", "./..."]],
+    ["phpunit", "OtherTest.php", []],
+    ["rspec", "other_spec.rb", []],
+    ["maven", "OtherTest.java", ["test"]],
+    ["gradle", "OtherTest.kt", ["test"]],
+  ])("%s never borrows a sibling test configuration", (kind, file, args) => {
+    const configs = [cfg({ id: "sibling", kind, args, cwd: "apps/one", isTest: true })];
+    const result = produceFile({ root: ROOT, path: `${ROOT}/apps/two/${file}`, configs }, OPTIMISTIC);
+    expect(result?.config?.id ?? "").not.toContain("sibling");
+  });
+
+  it("selects the nearest Python interpreter and ignores temporary configs", () => {
+    const configs = [
+      cfg({
+        id: "one",
+        kind: "pytest",
+        command: "/env/one/bin/pytest",
+        cwd: "one",
+        isTest: true,
+      }),
+      cfg({
+        id: "two",
+        kind: "pytest",
+        command: "/env/two/bin/pytest",
+        cwd: "two",
+        isTest: true,
+      }),
+      cfg({
+        id: "context:old",
+        kind: "python",
+        command: "/env/stale/python",
+        cwd: "two",
+      }),
+    ];
+    expect(produceFile({ root: ROOT, path: `${ROOT}/two/main.py`, configs }, OPTIMISTIC)?.config?.command).toBe(
+      "/env/two/bin/python",
+    );
+  });
+
+  it("a Cargo package owns its binary even when commands run at the workspace root", () => {
+    const configs = [
+      cfg({
+        id: "cargo:run:one",
+        kind: "cargo",
+        module: "crates/one",
+        args: ["run", "-p", "one", "--bin", "server"],
+      }),
+      cfg({
+        id: "workspace:member:cargo:run:two",
+        kind: "cargo",
+        module: "crates/two",
+        args: ["run", "-p", "two", "--bin", "server"],
+      }),
+    ];
+    const result = produceFile({ root: ROOT, path: `${ROOT}/crates/two/src/bin/server.rs`, configs }, OPTIMISTIC);
+    expect(result?.config?.args).toEqual(configs[1]!.args);
+    expect(result?.config?.cwd).toBeNull();
+  });
+
+  it.each(["/work/app", "C:/work/app"])("matches absolute workspace configs under %s", (root) => {
+    const configs = [
+      cfg({
+        id: "test",
+        kind: "npm",
+        cwd: `${root}/apps/web`,
+        module: `${root}/apps/web`,
+        args: ["run", "test"],
+        isTest: true,
+      }),
+    ];
+    const result = produceFile({ root, path: `${root}/apps/web/a.test.ts`, configs }, OPTIMISTIC);
+    expect(result?.config).toMatchObject({
+      cwd: "apps/web",
+      args: ["run", "test", "--", "a.test.ts"],
+    });
+  });
+});
+
+it("runs scripts from their owning module with arguments relative to that directory", () => {
+  const configs = [cfg({ id: "web", kind: "npm", cwd: "apps/web", module: "apps/web" })];
+  expect(produceFile({ root: ROOT, path: `${ROOT}/apps/web/src/main.js`, configs }, OPTIMISTIC)?.config).toMatchObject({
+    cwd: "apps/web",
+    args: ["src/main.js"],
+  });
+});
+
+it("nested Ruby scripts use their own source paths relative to their cwd", () => {
+  const spy = vi.spyOn(projectRoots, "currentRoots").mockReturnValue([
+    { path: "apps/ruby/lib", kind: "source", detectedFrom: null },
+    { path: "apps/other/lib", kind: "source", detectedFrom: null },
+  ]);
+  try {
+    const configs = [cfg({ id: "ruby", kind: "rake", cwd: "apps/ruby", args: ["test"] })];
+    expect(
+      produceFile({ root: ROOT, path: `${ROOT}/apps/ruby/bin/main.rb`, configs }, OPTIMISTIC)?.config,
+    ).toMatchObject({ cwd: "apps/ruby", args: ["-Ilib", "bin/main.rb"] });
+  } finally {
+    spy.mockRestore();
+  }
 });

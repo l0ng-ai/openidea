@@ -54,19 +54,26 @@ function testKinds(relPath: string): string[] {
 
 /** The module owning a configuration's targets, relative to the project root. */
 export function configScope(config: RunConfig): string {
-  return (config.kind === "go" ? (config.params?.module ?? config.cwd ?? "") : (config.cwd ?? ""))
-    .replace(/^\.\/?/, "")
+  return (
+    config.kind === "go"
+      ? (config.params?.module ?? config.module ?? config.cwd ?? "")
+      : (config.module ?? config.cwd ?? "")
+  )
+    .replace(/^\.(?:\/|$)/, "")
     .replace(/\/+$/, "");
 }
 
 /** Configs whose working directory most specifically contains `relPath` (ties in their original order). */
-function allClosest(configs: RunConfig[], relPath: string): RunConfig[] {
+export function allClosest(configs: readonly RunConfig[], relPath: string): RunConfig[] {
   const score = (c: RunConfig) => {
     const cwd = configScope(c);
     if (!cwd) return 0;
     return relPath === cwd || relPath.startsWith(cwd + "/") ? cwd.length : -1;
   };
-  const scored = configs.map((c) => [c, score(c)] as const).filter(([, s]) => s >= 0);
+  const scored = configs
+    .filter((c) => !c.id.startsWith("context:"))
+    .map((c) => [c, score(c)] as const)
+    .filter(([, s]) => s >= 0);
   const best = Math.max(...scored.map(([, s]) => s));
   return scored.filter(([, s]) => s === best).map(([c]) => c);
 }
@@ -78,8 +85,10 @@ function closest(configs: RunConfig[], relPath: string): RunConfig | undefined {
 
 /** `relPath` relative to the working directory of `config`. */
 export function relToCwd(relPath: string, config: RunConfig): string {
-  const cwd = configScope(config);
-  return cwd && relPath.startsWith(cwd + "/") ? relPath.slice(cwd.length + 1) : relPath;
+  const cwd = (config.kind === "go" ? configScope(config) : (config.cwd ?? ""))
+    .replace(/^\.(?:\/|$)/, "")
+    .replace(/\/+$/, "");
+  return relPath === cwd ? "" : cwd && relPath.startsWith(cwd + "/") ? relPath.slice(cwd.length + 1) : relPath;
 }
 
 function derived(base: RunConfig, relPath: string, patch: Partial<RunConfig>): RunConfig {
@@ -98,14 +107,22 @@ function derived(base: RunConfig, relPath: string, patch: Partial<RunConfig>): R
  * The project's Python interpreter as `(command, leading args)`, derived from
  * detected configs (venv / uv / poetry), or null when none says.
  */
-export function projectPython(configs: RunConfig[]): { command: string; prefix: string[] } | null {
+export function projectPython(configs: RunConfig[], relPath?: string): { command: string; prefix: string[] } | null {
+  if (relPath !== undefined)
+    configs = allClosest(
+      configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+      relPath,
+    );
   const py = configs.find((c) => c.kind === "python");
   if (py) {
     // The interpreter part ends where the program starts: `-m`, or the script (`manage.py`). What follows
     // (`runserver`, `test`…) belongs to that program, never to the interpreter.
     const end = py.args.findIndex((a) => a === "-m" || a.endsWith(".py"));
     const python = py.args.findIndex((a) => /^python[\d.]*$/.test(a));
-    return { command: py.command, prefix: py.args.slice(0, end >= 0 ? end : python + 1) };
+    return {
+      command: py.command,
+      prefix: py.args.slice(0, end >= 0 ? end : python + 1),
+    };
   }
   const pytest = configs.find((c) => c.kind === "pytest");
   if (!pytest) return null;
@@ -124,15 +141,20 @@ export function projectPython(configs: RunConfig[]): { command: string; prefix: 
  */
 function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null {
   if (!relPath.endsWith(".py")) return null;
-  const py = projectPython(configs);
+  const owners = allClosest(
+    configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+    relPath,
+  );
+  const py = projectPython(owners);
   return {
     id: "pytest:implicit",
     name: "pytest",
     kind: "pytest",
     command: py?.command ?? "python3",
     args: [...(py?.prefix ?? []), "-m", "pytest"],
-    cwd: null,
-    env: {},
+    cwd: owners[0]?.cwd ?? null,
+    module: owners[0]?.module,
+    env: { ...owners[0]?.env },
     detected: true,
     isTest: true,
     debugAdapter: "debugpy",
@@ -151,7 +173,7 @@ export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[]
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
   if (best.length) return best;
-  const fallback = (kinds.includes("go") ? undefined : candidates[0]) ?? implicitPytest(relPath, configs);
+  const fallback = implicitPytest(relPath, configs);
   return fallback ? [fallback] : [];
 }
 
@@ -217,9 +239,12 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
 function mainConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null {
   if (relPath.endsWith(".rs")) {
     const bin = /src\/bin\/([^/]+)\.rs$/.exec(relPath)?.[1];
-    const runs = configs.filter((c) => c.kind === "cargo" && c.id.startsWith("cargo:run"));
+    const runs = allClosest(
+      configs.filter((c) => c.kind === "cargo" && c.args[0] === "run"),
+      relPath,
+    );
     const byBin = bin ? runs.find((c) => c.id === `cargo:run:${bin}` || c.args.includes(bin)) : undefined;
-    return byBin ?? closest(runs, relPath) ?? runs[0] ?? null;
+    return byBin ?? runs[0] ?? null;
   }
   if (relPath.endsWith(".go")) {
     const gos = allClosest(
@@ -233,7 +258,13 @@ function mainConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null 
     const dir = dirOf(relToCwd(relPath, base));
     const target = dir ? `./${dir}` : ".";
     if (base.params?.goKind === "build") {
-      const params = { ...base.params, goKind: "build", scope: "package", target, runAfterBuild: "true" };
+      const params = {
+        ...base.params,
+        goKind: "build",
+        scope: "package",
+        target,
+        runAfterBuild: "true",
+      };
       return derived(base, relPath, {
         ...goBuildType.commandLine(params),
         params,

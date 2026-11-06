@@ -1615,3 +1615,35 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
         assert_eq!(next[1].args, ["-Dmaven.repo.local=/m3/repo", "-s", "/mine.xml", "test"]);
     }
 }
+
+#[test]
+fn nested_python_configs_get_their_own_virtualenv_but_explicit_settings_stay_project_relative() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let _outer = fake_venv(root, ".venv");
+    let nested = fake_venv(&root.join("apps/python"), ".venv");
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("apps/python".into());
+    apply_to_run_configs(std::slice::from_mut(&mut config), root, &Settings::default());
+    assert_eq!(config.env["VIRTUAL_ENV"], nested.parent().unwrap().parent().unwrap().to_string_lossy());
+    let mut settings = Settings::default();
+    settings.languages.python.interpreter = "custom/bin/python".into();
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("apps/python".into());
+    apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+    assert_eq!(config.command, root.join("custom/bin/python").to_string_lossy());
+}
+
+#[test]
+fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let outer = fake_venv(root, ".venv");
+    let inner = fake_venv(&root.join("apps/api"), ".venv");
+    let near = root.join("apps/api/src/package");
+    let mut settings = Settings::default();
+    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(inner));
+    assert_eq!(crate::apply::python_interpreter_near(root, Some(&root.join("apps/other")), &settings), Some(outer));
+    settings.languages.python.interpreter = "selected/python".into();
+    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(root.join("selected/python")));
+}

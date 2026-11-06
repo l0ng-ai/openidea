@@ -224,35 +224,8 @@ pub fn build_dir(root: &Path) -> Option<PathBuf> {
 }
 
 fn build_dirs(root: &Path) -> Vec<PathBuf> {
-    let has = |d: &Path| SETTINGS_FILES.iter().chain(BUILD_FILES).any(|f| d.join(f).is_file());
-    if has(root) {
-        return vec![root.to_path_buf()];
-    }
-    let mut builds = Vec::new();
-    let mut pending = vec![(root.to_path_buf(), 0)];
-    while let Some((dir, depth)) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with('.')
-                || matches!(name.as_ref(), "node_modules" | "target" | "build" | "dist" | "vendor" | "src" | "out")
-            {
-                continue;
-            }
-            let path = entry.path();
-            if has(&path) {
-                builds.push(path);
-            } else if depth + 1 < 3 {
-                pending.push((path, depth + 1));
-            }
-        }
-    }
-    builds.sort();
-    builds
+    let markers: Vec<_> = SETTINGS_FILES.iter().chain(BUILD_FILES).copied().collect();
+    ide_core::project_roots::discover(root, &markers)
 }
 
 fn wrapper(dir: &Path) -> String {
@@ -735,7 +708,7 @@ mod tests {
         let models = super::load_linked(root, &Default::default());
         assert_eq!(
             models.iter().map(|m| m.dir.as_str()).collect::<Vec<_>>(),
-            ["fixtures/kotlin-gradle", "services/backend/api", "standalone"]
+            ["fixtures/kotlin-gradle", "ignored/src", "services/backend/api", "standalone"]
         );
         std::fs::write(root.join("build.gradle.kts"), "").unwrap();
         let models = super::load_linked(root, &Default::default());

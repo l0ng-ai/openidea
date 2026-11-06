@@ -1013,10 +1013,7 @@ pub(crate) fn plugin(
 
 // ---------------------------------------------------------------- loading
 
-/// Directories never searched for POMs.
-const SKIP_DIRS: &[&str] = &["node_modules", "target", "build", "out", "dist", "src", "vendor"];
 const MAX_PROJECTS: usize = 1000;
-const POM_SEARCH_DEPTH: usize = 3;
 
 fn rel_path(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
@@ -1027,44 +1024,7 @@ fn rel_path(root: &Path, p: &Path) -> String {
 /// aggregate POM directly inside `src/` counts too (issue #1001: `src/pom.xml`
 /// with its modules beside it, `src/app/pom.xml` and so on).
 fn top_level_poms(root: &Path) -> Vec<PathBuf> {
-    let top = root.join("pom.xml");
-    if top.is_file() {
-        return vec![top];
-    }
-    let mut out = Vec::new();
-    let src_pom = root.join("src").join("pom.xml");
-    if src_pom.is_file() {
-        out.push(src_pom);
-    }
-    let mut queue: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
-    while let Some((dir, depth)) = queue.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if e.file_type().is_ok_and(|t| t.is_dir()) && !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str())
-            {
-                dirs.push(e.path());
-            }
-        }
-        dirs.sort();
-        for d in dirs.into_iter().rev() {
-            let pom = d.join("pom.xml");
-            if pom.is_file() {
-                out.push(pom);
-                continue;
-            }
-            let src_pom = d.join("src").join("pom.xml");
-            if src_pom.is_file() {
-                out.push(src_pom);
-            }
-            if depth + 1 < POM_SEARCH_DEPTH {
-                queue.push((d, depth + 1));
-            }
-        }
-    }
-    out.sort();
-    out
+    ide_core::project_roots::discover(root, &["pom.xml"]).into_iter().map(|dir| dir.join("pom.xml")).collect()
 }
 
 /// Whether `root` holds a Maven build (cheap: the same search as [`load`] without parsing).

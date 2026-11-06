@@ -131,9 +131,25 @@ fn cargo_workspace() {
         ("cli/src/main.rs", ""),
     ]);
     let c = detect(dir.path());
-    assert_eq!(ids(&c), ["cargo:run:openidea-cli", "cargo:test", "cargo:build"]);
+    assert_eq!(
+        ids(&c),
+        [
+            "cargo:run:openidea-cli",
+            "cargo:test:core",
+            "cargo:test:openidea-cli",
+            "cargo:test",
+            "cargo:build",
+            "cargo:run:skip:crates/skip",
+            "cargo:test:crates/skip",
+            "cargo:build:crates/skip"
+        ]
+    );
     assert_eq!(cmdline(&c[0]), "cargo run -p openidea-cli --bin openidea-cli");
     assert_eq!(cmdline(find(&c, "cargo:test")), "cargo test --workspace");
+    let test = find(&c, "cargo:test:core");
+    assert_eq!(test.extras.module.as_deref(), Some("crates/core"));
+    assert_eq!(cmdline(test), "cargo test -p core");
+    assert_eq!(find(&c, "cargo:run:skip:crates/skip").cwd.as_deref(), Some(Path::new("crates/skip")));
 }
 
 #[test]
@@ -300,7 +316,7 @@ fn nested_builds_of_every_kind_and_depth() {
     assert_eq!((billing.cwd.as_deref(), billing.extras.module.as_deref()), (None, Some("billing")));
     let builds: Vec<&str> =
         ids(&c).into_iter().filter(|id| id.starts_with("maven:package") || id.starts_with("gradle:build")).collect();
-    assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing"]);
+    assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing", "maven:package:tool/src"]);
     let model = ide_build::load(dir.path(), &dir.path().join("cache"), None);
     for config in c.iter().filter(|c| c.kind == "gradle") {
         let cwd = config.cwd.as_deref().unwrap();
@@ -400,6 +416,7 @@ fn nested_go_modules_keep_their_working_directories() {
         [
             "go:run:server:fixtures/go-app",
             "go:test:fixtures/go-app",
+            "go:test:fixtures/go-app/nested",
             "go:run:services/backend/api",
             "go:test:services/backend/api",
         ]
@@ -602,7 +619,7 @@ fn nested_packages_in_polyglot_repo() {
 }
 
 #[test]
-fn root_package_disables_nested_scan() {
+fn independent_packages_remain_visible_under_a_root_package() {
     let dir = project(&[
         ("package.json", r#"{"scripts":{"build":"tsc"}}"#),
         ("tools/package.json", r#"{"scripts":{"gen":"x"}}"#),
@@ -610,9 +627,9 @@ fn root_package_disables_nested_scan() {
         ("svc/go.mod", "module y\n"),
     ]);
     let c = detect(dir.path());
-    assert!(!ids(&c).contains(&"npm:tools:gen"));
+    assert!(ids(&c).contains(&"npm:tools:gen"));
     assert!(ids(&c).contains(&"go:test"));
-    assert!(!ids(&c).contains(&"go:test:svc"));
+    assert!(ids(&c).contains(&"go:test:svc"));
 }
 
 #[test]
@@ -903,4 +920,50 @@ fn ruby_without_bundler_runs_bare_tools() {
     assert_eq!(ids(&c), ["rake:test"]);
     assert_eq!(cmdline(&c[0]), "rake test");
     assert!(detect(project(&[("a.rb", "puts 1\n")]).path()).is_empty());
+}
+
+#[test]
+fn all_builtin_families_find_independent_nested_projects_and_keep_owners() {
+    let cases = [
+        ("package.json", r#"{"scripts":{"test":"vitest"}}"#, "npm"),
+        ("deno.json", r#"{"tasks":{"test":"deno test"}}"#, "deno"),
+        ("Cargo.toml", "[package]\nname='demo'\nversion='0.1.0'\n[workspace]", "cargo"),
+        ("go.mod", "module demo", "go"),
+        ("pom.xml", "<project/>", "maven"),
+        ("build.gradle.kts", "plugins { application }", "gradle"),
+        ("pyproject.toml", "[tool.pytest.ini_options]", "pytest"),
+        ("phpunit.xml", "<phpunit/>", "phpunit"),
+        ("Rakefile.rb", "task :test do\nend", "rake"),
+        ("CMakeLists.txt", "project(demo)", "cmake"),
+        ("Makefile", "test:\n\techo ok", "make"),
+        ("justfile", "test:\n    echo ok", "just"),
+        ("project.godot", "[application]\nrun/main_scene=\"res://main.tscn\"", "godot"),
+    ];
+    for (marker, text, kind) in cases {
+        let dir = project(&[
+            ("package.json", r#"{"scripts":{"build":"echo root"}}"#),
+            (&format!("packages/apps/demo/{marker}"), text),
+        ]);
+        let configs = detect(dir.path());
+        let found: Vec<_> = configs
+            .iter()
+            .filter(|c| c.kind == kind && c.cwd.as_deref() == Some(Path::new("packages/apps/demo")))
+            .collect();
+        assert!(!found.is_empty(), "{kind}: {configs:?}");
+        for c in found {
+            // JVM and Go configs already identify ownership through cwd / their typed model.
+            if !matches!(kind, "gradle" | "maven" | "go" | "godot") {
+                assert_eq!(c.extras.module.as_deref(), Some("packages/apps/demo"));
+            }
+        }
+    }
+}
+
+#[test]
+fn cmake_subdirectories_are_not_independent_builds() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)\nadd_subdirectory(lib)"),
+        ("lib/CMakeLists.txt", "add_library(lib lib.cpp)"),
+    ]);
+    assert!(detect(dir.path()).iter().filter(|c| c.kind == "cmake").all(|c| c.cwd.is_none()));
 }
