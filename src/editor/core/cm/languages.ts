@@ -19,6 +19,7 @@ import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
+import { JS_TAGS } from "./jsTags";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -120,6 +121,11 @@ const OWN_MODES = [
     load: () => import("./erb").then((m) => m.erb()),
   }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
+  LanguageDescription.of({
+    name: "Astro",
+    extensions: ["astro"],
+    load: () => import("./astro").then((m) => m.astro()),
+  }),
   LanguageDescription.of({
     name: "YAML",
     alias: ["yml"],
@@ -251,9 +257,6 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ValueName FontName Unit": t.attributeValue,
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
-
-// @lezer/javascript styles `.` as a deref operator, but not `?.`.
-const JS_TAGS: Parameters<typeof styleTags>[0] = { "?.": t.derefOperator };
 
 // @lezer/java tags annotations as plain identifiers.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
