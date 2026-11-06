@@ -37,17 +37,30 @@
 .fontInput {
   width: 220px;
 }
+/* Custom font block (IDEA Appearance): labels share one column, so the UI font,
+   fallback and Size controls all start at the same x. */
 .customFontRow {
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+  row-gap: 4px;
+  min-height: 28px;
+  padding: 2px 6px;
+  margin: 0 -6px;
+  border-radius: var(--radius-row);
 }
-.fontOption {
-  display: inline-flex;
+.customFontRow > .fontLabel {
+  padding-top: 3px;
+  white-space: nowrap;
+}
+.customFontRow > .fontCheck {
+  white-space: nowrap;
+}
+.fontControl {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  max-width: 100%;
-}
-.fontOption > label {
-  flex-shrink: 0;
+  min-width: 0;
 }
 .sizeInput {
   width: 64px;
