@@ -1268,7 +1268,7 @@ mod tests {
 
     #[test]
     fn a_sortable_table_arrives_through_other() {
-        let view = |data| wit_vt::View {
+        let view = |data: &str| wit_vt::View {
             toolbar: Vec::new(),
             body: wit_vt::Body::Other(wit_types::Extension { kind: "table".into(), data: data.into() }),
             status: None,
