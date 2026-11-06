@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
-import { findLanguageDescription, loadSupport } from "../core/cm/languages";
-import { pythonSyntaxRanges, pythonFallbackRanges, pythonSymbolKinds } from "./pythonHighlight";
-import { semanticRanges } from "./semantic";
+import { findLanguageDescription, loadSupport } from "../../../core/cm/languages";
+import { pythonSyntaxRanges, pythonFallbackRanges, pythonSymbolKinds } from "./highlight";
+import { semanticRanges } from "../index";
 
 async function parse(source: string) {
   const support = await loadSupport(findLanguageDescription("Python", "demo.py")!);
