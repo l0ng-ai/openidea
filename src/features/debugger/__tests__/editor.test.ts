@@ -3,8 +3,14 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, GutterMarker, gutter, lineNumbers } from "@codemirror/view";
 import { breakpointGutter, lookOf } from "../editor/breakpointGutter";
 import { executionPoint } from "../editor/execution";
-import { breakpointsOf, loadBreakpoints, toggleBreakpoint, updateBreakpoint } from "../breakpoints/store";
-import { adoptSession, useExecutionPoint, useDebug, handleDebugEvent } from "../state";
+import {
+  breakpointsOf,
+  loadBreakpoints,
+  toggleBreakpoint,
+  updateBreakpoint,
+  useBreakpoints,
+} from "../breakpoints/store";
+import { adoptSession, useExecutionPoint, useDebug, handleDebugEvent, type DebugSession } from "../state";
 import { getContext } from "@/platform/context";
 import styles from "../editor/editor.module.css";
 
@@ -50,6 +56,38 @@ describe("breakpoint gutter", () => {
     updateBreakpoint(ctx.path, bp.id, { enabled: false });
     await flush();
     expect(view.dom.querySelector(`.${styles.disabled}`)?.textContent).toBe("4");
+  });
+});
+
+describe("breakpoint gutter redraws", () => {
+  it("follows a session starting and ending, not every update of a running one", async () => {
+    localStorage.clear();
+    loadBreakpoints("/proj");
+    useDebug.setState({ sessions: {} });
+    const view = makeView("a\nb");
+    toggleBreakpoint(ctx.path, 0);
+    const id = breakpointsOf(ctx.path)[0]!.id;
+    useBreakpoints.setState({ status: { [id]: { verified: true, message: null, line: 0 } } });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.verified}`)).toBeNull();
+
+    const session = { id: 9, status: "running" } as DebugSession;
+    useDebug.setState({ sessions: { 9: session } });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.verified}`)).not.toBeNull();
+
+    const reads = vi.spyOn(useBreakpoints, "getState");
+    useDebug.setState({ sessions: { 9: { ...session, status: "paused" } } });
+    useBreakpoints.setState({
+      status: { [id]: useBreakpoints.getState().status[id]!, other: { verified: true, message: null, line: 3 } },
+    });
+    reads.mockClear();
+    await flush();
+    expect(reads).not.toHaveBeenCalled();
+
+    useDebug.setState({ sessions: { 9: { ...session, status: "terminated" } } });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.verified}`)).toBeNull();
   });
 });
 

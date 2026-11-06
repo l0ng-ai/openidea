@@ -19,6 +19,7 @@ mod session;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
+use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
 use parking_lot::Mutex;
@@ -510,6 +511,18 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
     }
 }
 
+/// States of a file's line breakpoints that no session has been sent.
+fn unsent(breakpoints: &[Breakpoint]) -> Vec<BreakpointState> {
+    breakpoints
+        .iter()
+        .map(|b| BreakpointState {
+            line: b.line,
+            verified: false,
+            message: (!b.enabled).then(|| "Disabled".to_owned()),
+        })
+        .collect()
+}
+
 /// States for breakpoints no session has verified yet.
 fn unverified(enabled: impl Iterator<Item = bool>) -> Vec<BreakpointState> {
     enabled
@@ -877,12 +890,20 @@ impl DebugManager {
             let _ = tokio::time::timeout(INIT_TIMEOUT, initialized.wait_for(|v| *v)).await;
         }
 
-        let files: Vec<(PathBuf, Vec<Breakpoint>)> =
-            self.breakpoints.lock().iter().map(|(p, b)| (p.clone(), b.clone())).collect();
+        // A fresh adapter has no breakpoints, so a file with none enabled needs no request; the
+        // others go out together, as VS Code sends them, instead of one round trip per file.
+        let (files, idle): (Vec<_>, Vec<_>) = self
+            .breakpoints
+            .lock()
+            .iter()
+            .map(|(p, b)| (p.clone(), b.clone()))
+            .partition(|(_, b)| b.iter().any(|b| b.enabled));
+        let sent = join_all(files.iter().map(|(path, bps)| s.send_breakpoints(path, bps, None))).await;
         // Breakpoint states follow the owner's first session.
         let first = self.live_sessions().into_iter().find(|f| f.owner.key == s.owner.key).map(|f| f.id) == Some(s.id);
-        for (path, bps) in files {
-            match s.send_breakpoints(&path, &bps, None).await {
+        let idle = idle.into_iter().map(|(path, bps)| (path, Ok(unsent(&bps))));
+        for (path, result) in files.into_iter().map(|(path, _)| path).zip(sent).chain(idle) {
+            match result {
                 Ok(states) => {
                     if first {
                         self.states.lock().insert(path.clone(), states);
@@ -990,16 +1011,7 @@ impl DebugManager {
                 Err(e) => tracing::debug!("setBreakpoints on session {} failed: {e}", s.id.0),
             }
         }
-        let states = result.unwrap_or_else(|| {
-            breakpoints
-                .iter()
-                .map(|b| BreakpointState {
-                    line: b.line,
-                    verified: false,
-                    message: (!b.enabled).then(|| "Disabled".to_owned()),
-                })
-                .collect()
-        });
+        let states = result.unwrap_or_else(|| unsent(&breakpoints));
         self.states.lock().insert(path, states.clone());
         Ok(states)
     }
@@ -1327,13 +1339,26 @@ impl DebugManager {
     /// Sends empty breakpoint lists (line, function, data) to `session` until its next
     /// stop, when the stored ones are restored. `except` is left to the caller.
     async fn suspend_breakpoints(&self, session: &Arc<Session>, except: Option<&Path>) -> IdeResult<()> {
-        let files: Vec<PathBuf> = self.breakpoints.lock().keys().cloned().collect();
-        for path in files {
-            if Some(path.as_path()) == except {
-                continue;
+        // While paused the adapter holds the stored lists: only files with something enabled change.
+        let files: Vec<PathBuf> = self
+            .breakpoints
+            .lock()
+            .iter()
+            .filter(|(path, bps)| Some(path.as_path()) != except && bps.iter().any(|b| b.enabled))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let sent = join_all(files.iter().map(|path| session.send_breakpoints(path, &[], None))).await;
+        let mut failed = None;
+        for (path, result) in files.into_iter().zip(sent) {
+            match result {
+                Ok(_) => {
+                    session.pending_restore.lock().files.insert(path);
+                }
+                Err(e) => failed = failed.or(Some(e)),
             }
-            session.send_breakpoints(&path, &[], None).await?;
-            session.pending_restore.lock().files.insert(path);
+        }
+        if let Some(e) = failed {
+            return Err(e.into());
         }
         if !self.function_breakpoints.lock().is_empty() && session.supports("supportsFunctionBreakpoints") {
             session.send_function_breakpoints(&[]).await?;
@@ -1349,9 +1374,11 @@ impl DebugManager {
     /// Re-sends what [`suspend_breakpoints`](Self::suspend_breakpoints) / run to cursor replaced.
     pub(crate) async fn restore_breakpoints(&self, session: &Arc<Session>) {
         let pending = std::mem::take(&mut *session.pending_restore.lock());
-        for path in pending.files {
-            let bps = self.stored_breakpoints(&path);
-            if let Err(e) = session.send_breakpoints(&path, &bps, None).await {
+        let files: Vec<(PathBuf, Vec<Breakpoint>)> =
+            pending.files.into_iter().map(|path| (path.clone(), self.stored_breakpoints(&path))).collect();
+        let sent = join_all(files.iter().map(|(path, bps)| session.send_breakpoints(path, bps, None))).await;
+        for ((path, _), result) in files.iter().zip(sent) {
+            if let Err(e) = result {
                 tracing::debug!("restoring breakpoints of {} failed: {e}", path.display());
             }
         }

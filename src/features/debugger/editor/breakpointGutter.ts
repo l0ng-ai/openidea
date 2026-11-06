@@ -185,14 +185,19 @@ export function breakpointGutter(ctx: EditorDocContext): Extension {
       private unsubs: Array<() => void>;
       private pending = false;
       private destroyed = false;
+      private running = sessionsRunning();
       constructor(readonly view: EditorView) {
         this.unsubs = [
           useBreakpoints.subscribe((s, prev) => {
-            if (s.byFile[path] !== prev.byFile[path] || s.status !== prev.status || s.muted !== prev.muted)
-              this.scheduleRebuild();
+            // States arrive per file: another file's don't change this one's markers.
+            const states = (s.byFile[path] ?? []).some((b) => s.status[b.id] !== prev.status[b.id]);
+            if (s.byFile[path] !== prev.byFile[path] || states || s.muted !== prev.muted) this.scheduleRebuild();
           }),
+          // The markers only show whether a session runs, while each step updates `sessions` several times.
           useDebug.subscribe((s, prev) => {
-            if (s.sessions !== prev.sessions) this.scheduleRebuild();
+            if (s.sessions === prev.sessions || sessionsRunning() === this.running) return;
+            this.running = !this.running;
+            this.scheduleRebuild();
           }),
           useSpecialBreakpoints.subscribe((s, prev) => {
             if (s.methods !== prev.methods || s.fields !== prev.fields || s.status !== prev.status)
