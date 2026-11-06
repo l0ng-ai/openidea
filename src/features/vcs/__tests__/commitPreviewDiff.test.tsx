@@ -1,5 +1,23 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { EditorInput } from "@/workbench/contributions";
+
+const editor = vi.hoisted(() => ({
+  input: null as EditorInput | null,
+  follow: null as ((input: EditorInput | null) => void) | null,
+}));
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  maybeEditorService: () => ({
+    activeInput: () => editor.input,
+    onActiveInputChange: (follow: typeof editor.follow) => {
+      editor.follow = follow;
+      return () => {
+        editor.follow = null;
+      };
+    },
+  }),
+}));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -20,6 +38,7 @@ vi.mock("../diffInput", async (original) => ({
 
 import { CommitToolWindow } from "../CommitView";
 import { setCommitDiffPreview, useCommit } from "../commitStore";
+import { diffInput, workingDiffData } from "../diffInput";
 import { useVcs } from "../store";
 
 /** The splitter between the changes and the preview: the only vertical one in the layout. */
@@ -140,4 +159,28 @@ describe("Commit tool window Preview Diff (#1599)", () => {
     expect(screen.getByText("No changes to preview")).toBeTruthy();
     expect(screen.queryByTestId("diff-preview")).toBeNull();
   });
+});
+
+it("follows the active working diff without following other revisions or taking focus", () => {
+  useCommit.setState({ commitDiffPreview: false, selection: [] });
+  useVcs.setState({
+    available: true,
+    root: "/p",
+    repo: "/p",
+    roots: ["/p"],
+    status: [modified("/p/a.ts"), modified("/p/b.ts")],
+  });
+  render(<CommitToolWindow />);
+  const message = screen.getByPlaceholderText("Commit Message");
+  message.focus();
+  act(() => editor.follow?.(diffInput(workingDiffData("/p/b.ts"))));
+  expect(useCommit.getState().selection).toEqual(["/p/b.ts"]);
+  expect(screen.getByRole("treeitem", { name: /b.ts/ })).toHaveAttribute("aria-selected", "true");
+  expect(document.activeElement).toBe(message);
+  act(() =>
+    editor.follow?.(
+      diffInput({ path: "/p/a.ts", left: { type: "rev", rev: "old" }, right: { type: "rev", rev: "new" } }),
+    ),
+  );
+  expect(useCommit.getState().selection).toEqual(["/p/b.ts"]);
 });

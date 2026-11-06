@@ -1055,6 +1055,17 @@ fn spawn_pump(
             }
         }
 
+        // The launcher may exit before its JVM or other descendants release their resources.
+        #[cfg(unix)]
+        if entry.stopping.load(Ordering::Acquire) {
+            let pid = *entry.pid.lock();
+            if let Some(pid) = pid {
+                while group_alive(pid, &entry) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+
         let (code, message) = describe_exit(status);
         on_output(OutputChunk::System { text: format!("\n{message}\n") });
         entry.stdin.lock().take();

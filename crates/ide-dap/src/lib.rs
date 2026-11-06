@@ -285,6 +285,7 @@ const INIT_TIMEOUT: Duration = Duration::from_secs(20);
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const PROCESS_EXIT_POLL: Duration = Duration::from_millis(50);
 /// Redefining many classes in a large JVM can take a while.
 const HOT_SWAP_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -983,8 +984,18 @@ impl DebugManager {
     }
 
     /// The connection dropped (adapter exited or `shutdown` finished).
-    pub(crate) fn session_closed(&self, s: &Arc<Session>) {
-        s.kill_processes();
+    pub(crate) async fn session_closed(&self, s: &Arc<Session>) {
+        let _cleanup = s.cleanup_lock.lock().await;
+        if s.terminated.load(Ordering::Acquire) {
+            return;
+        }
+        s.kill_processes().await;
+        let pid = *s.debuggee_pid.lock();
+        if let Some(pid) = pid.filter(|_| s.stop_requested.load(Ordering::Acquire)) {
+            while ide_core::process::is_process_running(pid) {
+                tokio::time::sleep(PROCESS_EXIT_POLL).await;
+            }
+        }
         let removed = self.sessions.lock().remove(&s.id).is_some();
         self.order.lock().retain(|id| *id != s.id);
         if removed && !s.terminated.swap(true, Ordering::AcqRel) {
@@ -994,6 +1005,9 @@ impl DebugManager {
 
     /// Ends a session: `terminate` (when asked and supported) → `disconnect` → kill.
     pub(crate) async fn shutdown(&self, s: &Arc<Session>, terminate: bool) {
+        if terminate {
+            s.stop_requested.store(true, Ordering::Release);
+        }
         if !s.conn.is_closed() {
             if terminate && s.request == "launch" && s.supports("supportsTerminateRequest") {
                 let _ = s.conn.request_timeout("terminate", json!({ "restart": false }), SHUTDOWN_TIMEOUT).await;
@@ -1008,7 +1022,7 @@ impl DebugManager {
                 .await;
         }
         s.conn.close();
-        self.session_closed(s);
+        self.session_closed(s).await;
         if s.adapter == "delve" && s.spec.server_host.is_none() {
             let cwd = s.spec.cwd.clone();
             tokio::task::spawn_blocking(move || remove_delve_binaries(&cwd));
@@ -1577,10 +1591,32 @@ impl DebugManager {
         }
     }
 
+    async fn force_shutdown(&self, session: &Arc<Session>) -> IdeResult<()> {
+        if session.terminated.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let pid = *session.debuggee_pid.lock();
+        if let Some(pid) = pid {
+            tokio::task::spawn_blocking(move || ide_core::process::force_kill_process(pid))
+                .await
+                .map_err(|error| IdeError::internal(format!("cannot stop debuggee: {error}")))?
+                .map_err(|error| IdeError::internal(format!("cannot stop debuggee: {error}")))?;
+        }
+        session.conn.close();
+        self.session_closed(session).await;
+        Ok(())
+    }
+
     /// Stops a session and its child sessions.
     pub async fn stop(&self, s: DebugSessionId) -> IdeResult<()> {
         let session = self.session(s)?;
         let children: Vec<Arc<Session>> = self.live_sessions().into_iter().filter(|c| c.parent == Some(s)).collect();
+        if session.stop_requested.swap(true, Ordering::AcqRel) {
+            for child in children {
+                self.force_shutdown(&child).await?;
+            }
+            return self.force_shutdown(&session).await;
+        }
         for child in children {
             self.shutdown(&child, true).await;
         }

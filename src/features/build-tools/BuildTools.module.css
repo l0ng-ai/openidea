@@ -82,6 +82,10 @@
 .selectedLabel {
   color: var(--fg-strong);
 }
+.skippedGoal {
+  color: var(--fg-subtle);
+  text-decoration: line-through;
+}
 .detail {
   flex: 0 100 auto;
   min-width: 0;
@@ -95,7 +99,7 @@
 
 /* Execute Maven Goal / Gradle Task popup */
 .popup {
-  width: 560px;
+  width: 620px;
   max-width: calc(100vw - 32px);
   overflow: hidden;
 }
@@ -124,18 +128,37 @@
   padding: 6px 10px;
   border-bottom: 1px solid var(--border-popup);
 }
+.commandIcon {
+  flex: none;
+}
 .inputPrefix {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  color: var(--fg-subtle);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg-strong);
 }
 .input {
   flex: 1;
-  font-family: var(--font-mono);
+  min-width: 0;
+  font-family: var(--font-ui);
+}
+.completionSection {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 0;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.completionSection::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-popup);
 }
 .completions {
-  max-height: 280px;
+  max-height: min(380px, 55vh);
   height: auto;
 }
 .completion {
@@ -146,8 +169,10 @@
   flex: 1;
 }
 .completionLabel {
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
   color: var(--fg-emphasis);
   white-space: pre;
   overflow: hidden;
@@ -157,6 +182,12 @@
   color: var(--fg-strong);
 }
 .completionDetail {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
   margin-left: auto;
   color: var(--fg-subtle);
   font-size: var(--fs-small);

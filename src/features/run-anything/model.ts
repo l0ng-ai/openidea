@@ -64,13 +64,18 @@ export function buildRows(
   providers: readonly RunAnythingProvider[],
   runLine: (line: string) => void,
 ): Row[] {
-  const rows: Row[] = [];
-  const section = (key: string, label: string, items: RunAnythingItem[]) => {
-    if (!items.length) return;
-    rows.push({ kind: "section", key: `s:${key}`, label });
-    for (const item of items) rows.push({ kind: "item", key: `${key}:${item.key}`, item, group: key });
+  const groups = new Map<string, { label: string; items: RunAnythingItem[]; commands: Set<string> }>();
+  const addItems = (key: string, label: string, items: RunAnythingItem[]) => {
+    const group = groups.get(key) ?? { label, items: [], commands: new Set<string>() };
+    for (const item of items) {
+      const command = (item.completion ?? item.label).trim();
+      if (group.commands.has(command)) continue;
+      group.commands.add(command);
+      group.items.push(item);
+    }
+    if (group.items.length) groups.set(key, group);
   };
-  section(
+  addItems(
     "recent",
     "Recent",
     history
@@ -81,11 +86,21 @@ export function buildRows(
   for (const p of providers) {
     let items: RunAnythingItem[] = [];
     try {
-      items = p.items(query).slice(0, GROUP_LIMIT);
+      items = p.items(query);
     } catch (e) {
       console.error(`run anything provider ${p.id} failed`, e);
     }
-    section(p.id, p.group, items);
+    for (const item of items) {
+      const group = item.group;
+      const key = group?.id === "recent" ? "recent" : group ? `${p.id}:${group.id}` : p.id;
+      addItems(key, group?.label ?? p.group, [item]);
+    }
+  }
+  const rows: Row[] = [];
+  for (const [key, group] of groups) {
+    rows.push({ kind: "section", key: `s:${key}`, label: group.label });
+    for (const item of group.items.slice(0, GROUP_LIMIT))
+      rows.push({ kind: "item", key: `${key}:${item.key}`, item, group: key });
   }
   return rows;
 }

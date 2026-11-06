@@ -49,6 +49,10 @@ pub(crate) struct Session {
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
     pub terminated: AtomicBool,
+    /// Local program reported by the adapter, including java-debug's JVM inside jdtls.
+    pub debuggee_pid: Mutex<Option<u32>>,
+    pub stop_requested: AtomicBool,
+    pub cleanup_lock: tokio::sync::Mutex<()>,
     /// Breakpoints replaced for run to cursor / force stepping, restored on the next stop.
     pub pending_restore: Mutex<PendingRestore>,
     /// Adapter breakpoint id → (file, index in the stored list).
@@ -96,6 +100,9 @@ impl Session {
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
             terminated: AtomicBool::new(false),
+            debuggee_pid: Mutex::new(None),
+            stop_requested: AtomicBool::new(false),
+            cleanup_lock: tokio::sync::Mutex::new(()),
             pending_restore: Mutex::default(),
             breakpoint_ids: Mutex::new(HashMap::new()),
             resolved_paths: Mutex::new(HashMap::new()),
@@ -260,17 +267,24 @@ impl Session {
         Ok(align_states(list.iter().map(|b| b.enabled), &enabled, &body))
     }
 
-    /// Kills the adapter and every debuggee we started.
-    pub fn kill_processes(&self) {
+    /// Kills and reaps the adapter and every debuggee we started.
+    pub async fn kill_processes(&self) {
         self.kotlin_relay.lock().take();
-        if let Some(mut c) = self.adapter_process.lock().take() {
-            let _ = c.start_kill();
+        let adapter = self.adapter_process.lock().take();
+        if let Some(mut child) = adapter {
+            let _ = child.kill().await;
         }
-        for mut c in std::mem::take(&mut *self.debuggees.lock()) {
-            let _ = c.start_kill();
+        let debuggees = std::mem::take(&mut *self.debuggees.lock());
+        for mut child in debuggees {
+            let _ = child.kill().await;
         }
-        if let Some(mut program) = self.program.lock().take() {
-            let _ = program.child.kill();
+        let program = self.program.lock().take();
+        if let Some(mut program) = program {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = program.child.kill();
+                let _ = program.child.wait();
+            })
+            .await;
         }
     }
 }
@@ -336,7 +350,7 @@ pub(crate) async fn event_loop(
         }
     }
     if let Some(mgr) = manager.upgrade() {
-        mgr.session_closed(&session);
+        mgr.session_closed(&session).await;
     }
 }
 
@@ -347,6 +361,13 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
     let int = |k: &str| body.get(k).and_then(Value::as_i64);
     let str_ = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_owned);
     match event {
+        "process" | "processid" => {
+            // java-debug uses its own processid event for JVMs launched inside jdtls.
+            if s.request == "launch" && body.get("isLocalProcess").and_then(Value::as_bool) != Some(false) {
+                let pid = int("systemProcessId").or_else(|| int("processId"));
+                *s.debuggee_pid.lock() = pid.and_then(|pid| u32::try_from(pid).ok()).filter(|&pid| pid > 0);
+            }
+        }
         "initialized" => {
             s.initialized.send_replace(true);
             s.emit(DebugEvent::Initialized);
@@ -390,9 +411,6 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         }
         "exited" => {}
         "terminated" => {
-            if !s.terminated.swap(true, Ordering::AcqRel) {
-                s.emit(DebugEvent::Terminated);
-            }
             let mgr = mgr.clone();
             let s = s.clone();
             tokio::spawn(async move { mgr.shutdown(&s, false).await });
